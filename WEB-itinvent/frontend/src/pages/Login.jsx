@@ -1,0 +1,149 @@
+import { useMemo, useState } from 'react';
+import {
+  Alert,
+  Box,
+  Button,
+  Card,
+  CardContent,
+  CircularProgress,
+  Container,
+  IconButton,
+  InputAdornment,
+  Stack,
+  TextField,
+  Typography,
+} from '@mui/material';
+import { alpha, useTheme } from '@mui/material/styles';
+import { LockOutlined, Visibility, VisibilityOff } from '@mui/icons-material';
+import { useAuth } from '../contexts/AuthContext';
+import { buildOfficeUiTokens, getOfficePanelSx, getOfficeQuietActionSx } from '../theme/officeUiTokens';
+
+function Login() {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const { login } = useAuth();
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
+  const isSubmitDisabled = useMemo(
+    () => loading || !username.trim() || !password.trim(),
+    [loading, username, password],
+  );
+
+  const handleSubmit = async (event) => {
+    event.preventDefault();
+    setError(null);
+    setLoading(true);
+
+    const result = await login(username.trim(), password);
+    setLoading(false);
+
+    if (result.success) {
+      window.location.assign('https://hubit.zsgp.ru/dashboard');
+      return;
+    }
+    setError(result.error);
+  };
+
+  return (
+    <Box
+      sx={{
+        minHeight: '100vh',
+        display: 'flex',
+        alignItems: 'center',
+        bgcolor: ui.pageBg,
+        px: 2,
+      }}
+    >
+      <Container maxWidth="sm">
+        <Card sx={{ ...getOfficePanelSx(ui, { borderRadius: '22px', boxShadow: ui.dialogShadow }) }}>
+          <CardContent sx={{ p: { xs: 3, sm: 4 } }}>
+            <Stack spacing={2} alignItems="center" sx={{ mb: 3 }}>
+              <Box
+                sx={{
+                  width: 60,
+                  height: 60,
+                  borderRadius: '18px',
+                  display: 'grid',
+                  placeItems: 'center',
+                  bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.08),
+                  border: '1px solid',
+                  borderColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.24 : 0.14),
+                }}
+              >
+                <LockOutlined sx={{ color: theme.palette.primary.main }} />
+              </Box>
+              <Box textAlign="center">
+                <Typography component="h1" variant="h5" sx={{ fontWeight: 800 }}>
+                  HUB-IT
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  Вход в систему
+                </Typography>
+              </Box>
+            </Stack>
+
+            {error && (
+              <Alert severity="error" sx={{ mb: 2 }}>
+                {error}
+              </Alert>
+            )}
+
+            <Box component="form" onSubmit={handleSubmit}>
+              <TextField
+                fullWidth
+                label="Логин"
+                margin="normal"
+                required
+                autoFocus
+                autoComplete="username"
+                value={username}
+                onChange={(event) => setUsername(event.target.value)}
+                disabled={loading}
+              />
+              <TextField
+                fullWidth
+                label="Пароль"
+                margin="normal"
+                required
+                autoComplete="current-password"
+                type={showPassword ? 'text' : 'password'}
+                value={password}
+                onChange={(event) => setPassword(event.target.value)}
+                disabled={loading}
+                InputProps={{
+                  endAdornment: (
+                    <InputAdornment position="end">
+                      <IconButton
+                        edge="end"
+                        onClick={() => setShowPassword((prev) => !prev)}
+                        aria-label="toggle password visibility"
+                        sx={getOfficeQuietActionSx(ui, theme)}
+                      >
+                        {showPassword ? <VisibilityOff /> : <Visibility />}
+                      </IconButton>
+                    </InputAdornment>
+                  ),
+                }}
+              />
+              <Button
+                fullWidth
+                type="submit"
+                variant="contained"
+                sx={{ mt: 3, py: 1.2, fontWeight: 700 }}
+                disabled={isSubmitDisabled}
+              >
+                {loading ? <CircularProgress size={22} color="inherit" /> : 'Войти'}
+              </Button>
+            </Box>
+          </CardContent>
+        </Card>
+      </Container>
+    </Box>
+  );
+}
+
+export default Login;

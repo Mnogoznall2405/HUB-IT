@@ -1,0 +1,230 @@
+# 📚 IT-invent Bot Documentation
+
+Добро пожаловать в документацию IT-invent Bot v2.0.1! Здесь вы найдете всю необходимую информацию о боте для инвентаризации IT-оборудования.
+
+## 📖 Содержание
+
+### 👥 Пользователям
+- **[Основное руководство](user-guides/main-guide.md)** - полное руководство по использованию бота
+- **[Экспорт картриджей](user-guides/cartridge-export.md)** - инструкция по экспорту замен комплектующих МФУ
+- **[Работа с оборудованием](user-guides/equipment-work.md)** - регистрация выполненных работ
+
+### 🔧 Разработчикам
+- **[Архитектура](technical/architecture.md)** - структура проекта и компоненты
+- **[Установка и настройка](technical/setup.md)** - развертывание и конфигурация
+- **[API документация](technical/api.md)** - описание функций и модулей
+- **[LLM модели](technical/llm-models.md)** - конфигурация моделей ИИ
+
+### 📋 Администраторам
+- **[Развертывание](technical/deployment.md)** - установка в производственной среде
+- **[База данных](technical/database.md)** - работа с SQL Server
+- **[Мониторинг](technical/monitoring.md)** - логирование и отладка
+
+### 🗂️ Архив
+- Исторические документы и устаревшие инструкции
+
+---
+
+## 🚀 Быстрый старт
+
+### Установка
+
+```bash
+# 1. Установите зависимости
+pip install -r requirements.txt
+
+# 2. Настройте .env файл (скопируйте .env.example)
+# Укажите токен бота, настройки БД и API ключи
+
+# 3. Запустите бота
+python -m bot.main
+```
+
+### Первый запуск
+
+После установки зависимостей и настройки `.env`:
+
+```bash
+python -m bot.main
+```
+
+Бот готов к работе! 🎉
+
+---
+
+## ✨ Основные возможности
+
+- 🔎 **Поиск оборудования** - по серийному номеру (текст/фото) или сотруднику
+- 🤖 **OCR** - автоматическое распознавание серийных номеров с фотографий
+- 💡 **Автоподсказки** - умный поиск сотрудников при вводе ФИО
+- 📦 **Перемещение с актом** - генерация PDF-актов приема-передачи
+- 🗄️ **Множественные БД** - работа с несколькими базами данных
+- 📊 **Экспорт данных** - выгрузка в Excel/CSV с отправкой на email
+- 📝 **Ненайденное оборудование** - учёт оборудования вне БД
+
+---
+
+## 📋 Требования
+
+- Python 3.8+
+- Microsoft SQL Server (доступ через ODBC)
+- Telegram Bot Token
+- OpenRouter API Key (для OCR)
+- Microsoft Word (опционально, для конвертации PDF)
+
+---
+
+## 📁 Структура проекта
+
+```
+itinvent-bot/
+├── bot/                    # Основной код бота
+│   ├── handlers/          # Обработчики команд
+│   ├── services/          # Бизнес-логика
+│   ├── utils/             # Вспомогательные функции
+│   ├── config.py          # Конфигурация
+│   └── main.py            # Точка входа
+├── data/                   # JSON файлы с данными
+│   ├── unfound_equipment.json
+│   ├── equipment_transfers.json
+│   ├── cartridge_replacements.json
+│   ├── equipment_installations.json
+│   ├── export_state.json
+│   └── user_db_selection.json
+├── docs/                   # Документация
+├── templates/              # Шаблоны документов
+├── transfer_acts/          # Сгенерированные акты
+├── exports/                # Экспортированные файлы
+├── requirements.txt        # Зависимости Python
+└── .env                    # Конфигурация (не в git!)
+```
+
+---
+
+## 📚 Документация
+
+Вся документация находится в папке [`docs/`](docs/):
+
+### Для пользователей
+- [**QUICK_START.md**](docs/QUICK_START.md) - Быстрый старт (2 минуты)
+- [**TESTING_GUIDE.md**](docs/TESTING_GUIDE.md) - Руководство по тестированию
+- [**ИНСТРУКЦИЯ_ПО_РАБОТЕ_С_БОТОМ.md**](docs/ИНСТРУКЦИЯ_ПО_РАБОТЕ_С_БОТОМ.md) - Подробная инструкция
+
+### Для разработчиков
+- [**bot/README.md**](bot/README.md) - Документация модульной архитектуры
+- [**CHANGELOG.md**](docs/CHANGELOG.md) - История изменений
+- [**MIGRATION_GUIDE.md**](docs/MIGRATION_GUIDE.md) - Руководство по миграции
+
+### Технические детали
+- [**FIXES.md**](docs/FIXES.md) - Детальное описание исправлений
+- [**SUMMARY.md**](docs/SUMMARY.md) - Полная сводка работ
+- [**REFACTORING_COMPLETE.md**](docs/REFACTORING_COMPLETE.md) - Отчёт о рефакторинге
+
+### Установка и настройка
+- [**INSTALL_PYTHON_DOCX.md**](docs/INSTALL_PYTHON_DOCX.md) - Установка python-docx
+- [**HOTFIX_PDF_TYPES.md**](docs/HOTFIX_PDF_TYPES.md) - Исправление ошибки типов
+- [**HOTFIX_TRANSFER_PARAMS.md**](docs/HOTFIX_TRANSFER_PARAMS.md) - Исправление параметров
+
+---
+
+## 🔧 Конфигурация
+
+Создайте файл `.env` в корне проекта:
+
+```bash
+# Telegram Bot
+TELEGRAM_BOT_TOKEN=your_bot_token_here
+OPENROUTER_API_KEY=your_openrouter_key_here
+
+# Main Database
+SQL_SERVER_HOST=your_server_host
+SQL_SERVER_DATABASE=ITINVENT
+SQL_SERVER_USERNAME=your_username
+SQL_SERVER_PASSWORD=your_password
+
+# Access Control
+ALLOWED_GROUP_ID=your_telegram_group_id
+ALLOWED_USERS=user_id1,user_id2
+
+# SMTP (optional)
+SMTP_SERVER=your_smtp_server
+SMTP_PORT=25
+EMAIL_ADDRESS=bot@example.com
+```
+
+---
+
+## 🎯 Основные команды
+
+- `/start` - Главное меню
+- `/help` - Справка по командам
+- `/cancel` - Отмена текущей операции
+- `/done` - Завершение загрузки фотографий
+
+---
+
+## 🧪 Тестирование
+
+Подробное руководство: [**TESTING_GUIDE.md**](docs/TESTING_GUIDE.md)
+
+Быстрая проверка:
+```bash
+# Проверка установки
+python -c "from docx import Document; print('OK')"
+
+# Запуск бота
+python -m bot.main
+```
+
+---
+
+## 📦 Зависимости
+
+Основные библиотеки:
+- `python-telegram-bot[job-queue]==21.9` - Telegram Bot API
+- `openai>=1.99.0` - OpenRouter API (OCR)
+- `python-docx>=0.8.11` - Создание DOCX документов
+- `docx2pdf>=0.1.8` - Конвертация в PDF
+- `pyodbc>=4.0.0` - SQL Server подключение
+- `pandas>=2.0.0` - Работа с данными
+- `openpyxl>=3.1.0` - Excel экспорт
+
+Полный список: [requirements.txt](requirements.txt)
+
+---
+
+## 🔄 Версии
+
+**Текущая версия:** 2.0.1
+
+### Что нового в 2.0.1:
+- ✅ Исправлены переносы строк в сообщениях
+- ✅ Исправлена команда `/done`
+- ✅ Добавлены автоподсказки сотрудников
+- ✅ Реализована генерация PDF-актов
+- ✅ Исправлены ошибки типов данных
+
+Подробнее: [**CHANGELOG.md**](docs/CHANGELOG.md)
+
+---
+
+## 🤝 Поддержка
+
+При возникновении проблем:
+
+1. Проверьте логи: `type bot.log`
+2. Убедитесь, что все зависимости установлены
+3. Проверьте настройки в `.env`
+4. Обратитесь к документации в папке `docs/`
+
+---
+
+## 📝 Лицензия
+
+Внутренний проект для управления IT-инвентаризацией.
+
+---
+
+## 🎉 Готово к использованию!
+
+Бот полностью настроен и готов к работе. Следуйте [**QUICK_START.md**](docs/QUICK_START.md) для быстрого начала работы.

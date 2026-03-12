@@ -1,0 +1,138 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.env
+.venv
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Logs
+*.log
+*.log.*
+logs/
+.coverage
+
+# Telegram bot specific
+.env
+temp_*.jpg
+temp_transfer_*.jpg
+*.session
+
+# Node.js (if used for frontend)
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+*.old
+temp/
+tmp/
+.tmp/
+.tmp_pytest/
+.pytest_cache/
+.pytest_basetemp/
+.pytest_runtime/
+.pytest_tmp/
+tmp_pytest_*/
+
+# Documentation build
+docs/_build/
+
+# Project specific
+/transfer_acts/
+exports/*.*
+!exports/.gitkeep
+.git_corrupt_*/
+codex-write-test.txt
+recovered_records*.json
+Снимок экрана 2026-02-25 120245.png
+/IT База знаний/
+/_Сети/
+/documentation/archive/
+LLM_PROJECT_CONTEXT.md
+CHANGELOG.md
+data/*
+!data/.gitignore
+!data/README.md
+!data/custom_snmp.json
+data/*.db
+data/*.sqlite
+data/*.sqlite3
+data/*.db-shm
+data/*.db-wal
+data/scan_server/
+data/scan_server/*.backup_*
+/archive/
+/backups/
+/htmlcov/
+/cxfreeze-*/
+bot.log*
+
+# Claude
+.claude/
+
+# Kiro
+.kiro/
+
+# Test files
+test_*.py
+test_*.bat
+*_test.py
+*_test.bat
+quick_test.py
+temp_test_*.py
+!tests/test_*.py
+!tests/**/*_test.py
+!WEB-itinvent/frontend/src/lib/
+!WEB-itinvent/frontend/src/lib/**

@@ -1,0 +1,7 @@
+# Игнорируем все JSON файлы с данными
+*.json
+
+# Но оставляем примеры (если будут)
+!*_example.json
+!*_template.json
+!custom_snmp.json
