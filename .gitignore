@@ -84,6 +84,7 @@ tmp/
 .pytest_basetemp/
 .pytest_runtime/
 .pytest_tmp/
+tests/pytest_tmp_run/
 tmp_pytest_*/
 
 # Documentation build
@@ -117,6 +118,9 @@ data/scan_server/*.backup_*
 /backups/
 /htmlcov/
 /cxfreeze-*/
+/tools/*.zip
+/tools/node-*/
+/tools/nodejs/
 bot.log*
 
 # Claude

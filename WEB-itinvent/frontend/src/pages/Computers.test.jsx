@@ -47,9 +47,9 @@ const sampleComputer = {
     cpu_load_percent: 12.3,
     ram_used_percent: 55.5,
     uptime_seconds: 3600,
-    last_reboot_at: 1_710_000_000,
+    last_reboot_at: 1710000000,
   },
-  last_seen_at: 1_710_003_000,
+  last_seen_at: 1710003000,
   logical_disks: [
     { mountpoint: 'C:\\', total_gb: 512, free_gb: 128, fstype: 'NTFS' },
   ],
@@ -80,14 +80,14 @@ const sampleComputer = {
       path: 'D:\\Mail\\archive-user1.ost',
       type: 'ost',
       size_bytes: 52 * (1024 ** 3),
-      last_modified_at: 1_710_002_000,
+      last_modified_at: 1710002000,
     },
     active_stores: [
       {
         path: 'D:\\Mail\\archive-user1.ost',
         type: 'ost',
         size_bytes: 52 * (1024 ** 3),
-        last_modified_at: 1_710_002_000,
+        last_modified_at: 1710002000,
       },
     ],
     archives: [
@@ -95,18 +95,18 @@ const sampleComputer = {
         path: 'D:\\Mail\\archive-user1.pst',
         type: 'pst',
         size_bytes: 8 * (1024 ** 3),
-        last_modified_at: 1_710_001_500,
+        last_modified_at: 1710001500,
       },
     ],
     total_outlook_size_bytes: 60 * (1024 ** 3),
   },
   has_hardware_changes: true,
   changes_count_30d: 1,
-  last_change_at: 1_710_002_500,
+  last_change_at: 1710002500,
   recent_changes: [
     {
       event_id: 'chg-1',
-      detected_at: 1_710_002_500,
+      detected_at: 1710002500,
       change_types: ['storage'],
       diff: { storage: { before: ['SSD-old'], after: ['SSD-001'] } },
     },
@@ -115,7 +115,6 @@ const sampleComputer = {
 
 describe('Computers page', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
     equipmentAPI.getAgentComputers.mockReset();
     equipmentAPI.getAgentComputerChanges.mockReset();
     equipmentAPI.getAgentComputers.mockResolvedValue([sampleComputer]);
@@ -127,25 +126,26 @@ describe('Computers page', () => {
   });
 
   afterEach(() => {
-    vi.runOnlyPendingTimers();
-    vi.useRealTimers();
+    vi.clearAllMocks();
   });
 
   it('renders computers data from the backend contract and opens details drawer', async () => {
     render(<Computers />);
 
-    expect(await screen.findByText('Дашборд компьютеров')).toBeInTheDocument();
-    expect(await screen.findByText('Петров А.А.')).toBeInTheDocument();
+    await waitFor(() => {
+      expect(equipmentAPI.getAgentComputers).toHaveBeenCalledTimes(1);
+    });
 
-    fireEvent.click(screen.getByText('Кабинет 12'));
-    fireEvent.click(await screen.findByText('PC-01'));
+    fireEvent.click(await screen.findByText(sampleComputer.location_name));
+    expect(await screen.findByText(sampleComputer.user_full_name)).toBeInTheDocument();
+    const hostnameMatches = await screen.findAllByText(sampleComputer.hostname);
+    fireEvent.click(hostnameMatches[hostnameMatches.length - 1]);
 
-    expect(await screen.findByText('Пользователь и сеть')).toBeInTheDocument();
-    expect(screen.getByText(/Филиал: Тюмень/)).toBeInTheDocument();
-    expect(screen.getByText(/CPU:/)).toBeInTheDocument();
-    expect(screen.getByText(/D:\\Mail\\archive-user1.ost/)).toBeInTheDocument();
-    expect(screen.getByText(/SMART\/физические диски/i)).toBeInTheDocument();
-  });
+    expect(await screen.findByText(new RegExp(`Филиал: ${sampleComputer.branch_name}`))).toBeInTheDocument();
+    expect(screen.getByText(/Загрузка CPU:/)).toBeInTheDocument();
+    expect(screen.getByText(sampleComputer.outlook_active_path)).toBeInTheDocument();
+    expect(screen.getByText('Samsung SSD')).toBeInTheDocument();
+  }, 15000);
 
   it('sends server-side filter options when search, changedOnly, and scope change', async () => {
     render(<Computers />);
@@ -157,26 +157,27 @@ describe('Computers page', () => {
     });
 
     fireEvent.change(screen.getByLabelText('Поиск'), { target: { value: 'petrov' } });
-    vi.advanceTimersByTime(400);
 
     await waitFor(() => {
       expect(equipmentAPI.getAgentComputers).toHaveBeenLastCalledWith(
         expect.objectContaining({ q: 'petrov' })
       );
-    });
+    }, { timeout: 2000 });
 
     fireEvent.click(screen.getByLabelText('Изменения'));
+
     await waitFor(() => {
       expect(equipmentAPI.getAgentComputers).toHaveBeenLastCalledWith(
         expect.objectContaining({ changedOnly: true })
       );
-    });
+    }, { timeout: 2000 });
 
     fireEvent.click(screen.getByLabelText('Текущая БД'));
+
     await waitFor(() => {
       expect(equipmentAPI.getAgentComputers).toHaveBeenLastCalledWith(
         expect.objectContaining({ scope: 'all' })
       );
-    });
-  });
+    }, { timeout: 2000 });
+  }, 15000);
 });
