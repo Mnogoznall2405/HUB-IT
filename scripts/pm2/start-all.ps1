@@ -6,28 +6,30 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
 $ecosystemAll = Join-Path $projectRoot 'scripts\pm2\ecosystem.all.config.js'
+$pm2Cmd = Join-Path $projectRoot 'pm2.cmd'
 $processNames = @('itinvent-backend', 'itinvent-scan', 'itinvent-bot')
 
 function Get-Pm2Snapshot {
-    $jlistRaw = & pm2 jlist 2>$null
+    $jlistRaw = & $pm2Cmd jlist 2>$null
     if ($LASTEXITCODE -ne 0 -or -not $jlistRaw) {
         return @()
     }
 
-    $rows = @(
-        $jlistRaw | & node -e "const fs=require('fs'); const raw=fs.readFileSync(0,'utf8'); const data=JSON.parse(raw); for (const item of data) { const status=(item.pm2_env&&item.pm2_env.status)||''; const pid=item.pid||0; const restarts=(item.pm2_env&&item.pm2_env.restart_time)||0; const mem=((item.monit&&item.monit.memory)||0)/1024/1024; console.log([item.name||'', status, String(pid), mem.toFixed(1), String(restarts)].join('\t')); }"
-    )
+    try {
+        $rows = @($jlistRaw | ConvertFrom-Json -Depth 10)
+    } catch {
+        return @()
+    }
 
     return @(
         $rows | ForEach-Object {
             if (-not $_) { return }
-            $parts = $_ -split "`t"
             [pscustomobject]@{
-                Name      = $parts[0]
-                Status    = $parts[1]
-                PID       = $parts[2]
-                MemoryMB  = $parts[3]
-                Restarts  = $parts[4]
+                Name      = $_.name
+                Status    = $_.pm2_env.status
+                PID       = $_.pid
+                MemoryMB  = '{0:N1}' -f ((($_.monit.memory) | ForEach-Object { [double]$_ }) / 1MB)
+                Restarts  = $_.pm2_env.restart_time
             }
         }
     )
@@ -53,17 +55,17 @@ if (-not $existingProcesses) {
 Write-Host 'PM2: cleaning old processes...' -ForegroundColor Cyan
 foreach ($name in $processNames) {
     if ($existingProcesses -contains $name) {
-        & pm2 delete $name | Out-Null
+        & $pm2Cmd delete $name | Out-Null
     }
 }
 
 Write-Host 'PM2: starting all processes...' -ForegroundColor Cyan
-& pm2 start $ecosystemAll | Out-Null
+& $pm2Cmd start $ecosystemAll | Out-Null
 
 Write-Host 'PM2: current process list:' -ForegroundColor Cyan
 Show-Pm2Snapshot
 
 if ($SaveState) {
     Write-Host 'PM2: saving current state...' -ForegroundColor Cyan
-    & pm2 save | Out-Host
+    & $pm2Cmd save | Out-Host
 }

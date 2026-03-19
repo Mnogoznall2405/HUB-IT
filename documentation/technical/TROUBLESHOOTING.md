@@ -90,7 +90,7 @@ Select-String -Path bot.log -Pattern "\[SUGGESTIONS\]|\[SHOW_SUGGESTIONS\]" | Se
 - PDF-файлы не генерируются
 
 **Решения:**
-1. Проверьте наличие шаблона: `templates/transfer_act_template.docx`
+1. Проверьте наличие шаблона: `templates/docx_transfer_act.docx`
 2. Убедитесь, что Microsoft Word установлен
 3. Проверьте права доступа к папке `transfer_acts/`
 4. Проверьте, что библиотека `docx2pdf` установлена
@@ -98,7 +98,7 @@ Select-String -Path bot.log -Pattern "\[SUGGESTIONS\]|\[SHOW_SUGGESTIONS\]" | Se
 **Проверка:**
 ```powershell
 # Проверка шаблона
-Test-Path templates\transfer_act_template.docx
+Test-Path templates\docx_transfer_act.docx
 
 # Проверка папки
 Test-Path transfer_acts

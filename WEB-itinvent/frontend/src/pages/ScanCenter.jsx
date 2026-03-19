@@ -1,20 +1,31 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
+  Card,
+  CardContent,
   Chip,
   CircularProgress,
-  Divider,
   Drawer,
   FormControl,
+  FormControlLabel,
   Grid,
-  IconButton,
   InputLabel,
   MenuItem,
   Paper,
   Select,
   Stack,
+  Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TablePagination,
+  TableRow,
+  TableSortLabel,
   TextField,
   Typography,
 } from '@mui/material';
@@ -25,96 +36,24 @@ import {
 } from '@mui/icons-material';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
-import { equipmentAPI, scanAPI } from '../api/client';
+import { scanAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
-import { useTheme } from '@mui/material/styles';
-import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
-function StatCard({ title, value, helper, color = 'inherit' }) {
-  const theme = useTheme();
-  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  return (
-    <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui, { p: 2, height: '100%' }) }}>
-      <Typography variant="body2" color="text.secondary">{title}</Typography>
-      <Typography variant="h4" sx={{ fontWeight: 700, color, lineHeight: 1.2 }}>{value}</Typography>
-      <Typography variant="caption" color="text.secondary">{helper}</Typography>
-    </Paper>
-  );
-}
+const AUTO_REFRESH_MS = 30_000;
+const TASK_POLL_MS = 2_500;
+const DEFAULT_ROWS_PER_PAGE = 25;
+const ROWS_PER_PAGE_OPTIONS = [25, 50, 100];
+const ACTIVE_TASK_STATUSES = new Set(['queued', 'delivered', 'acknowledged']);
 
-function MiniBars({ title, rows, color = '#1565c0' }) {
-  const theme = useTheme();
-  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  const list = Array.isArray(rows) ? rows.slice(0, 8) : [];
-  const max = list.reduce((acc, item) => Math.max(acc, Number(item.count || item.value || 0)), 0) || 1;
+function useDebouncedValue(value, delayMs = 300) {
+  const [debounced, setDebounced] = useState(value);
 
-  return (
-    <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui, { p: 2, height: '100%' }) }}>
-      <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1.2 }}>{title}</Typography>
-      {list.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">Нет данных</Typography>
-      ) : (
-        <Stack spacing={0.9}>
-          {list.map((row, idx) => {
-            const label = String(row.label || row.branch || row.severity || '-');
-            const value = Number(row.value || row.count || 0);
-            const width = Math.max(4, Math.round((value / max) * 100));
-            return (
-              <Box key={`${label}-${idx}`}>
-                <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.2 }}>
-                  <Typography variant="caption" sx={{ fontWeight: 600 }}>{label}</Typography>
-                  <Typography variant="caption" color="text.secondary">{value}</Typography>
-                </Box>
-                <Box sx={{ height: 7, bgcolor: ui.actionBg, borderRadius: 3, overflow: 'hidden' }}>
-                  <Box sx={{ width: `${width}%`, height: '100%', bgcolor: color }} />
-                </Box>
-              </Box>
-            );
-          })}
-        </Stack>
-      )}
-    </Paper>
-  );
-}
+  useEffect(() => {
+    const timer = window.setTimeout(() => setDebounced(value), delayMs);
+    return () => window.clearTimeout(timer);
+  }, [value, delayMs]);
 
-function DailyBars({ rows }) {
-  const theme = useTheme();
-  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  const list = Array.isArray(rows) ? rows.slice(-14) : [];
-  const max = list.reduce((acc, item) => Math.max(acc, Number(item.count || 0)), 0) || 1;
-
-  return (
-    <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui, { p: 2, height: '100%' }) }}>
-      <Typography variant="subtitle1" sx={{ fontWeight: 700, mb: 1.2 }}>Динамика за 14 дней</Typography>
-      {list.length === 0 ? (
-        <Typography variant="body2" color="text.secondary">Нет данных</Typography>
-      ) : (
-        <Box sx={{ display: 'flex', alignItems: 'flex-end', gap: 0.6, height: 132 }}>
-          {list.map((row) => {
-            const value = Number(row.count || 0);
-            const h = Math.max(3, Math.round((value / max) * 100));
-            return (
-              <Box key={String(row.date)} sx={{ flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                <Box
-                  title={`${row.date}: ${value}`}
-                  sx={{
-                    width: '100%',
-                    height: `${h}%`,
-                    minHeight: 3,
-                    borderRadius: 1,
-                    bgcolor: value > 0 ? 'warning.main' : ui.actionBg,
-                  }}
-                />
-                <Typography variant="caption" color="text.secondary" sx={{ mt: 0.3, fontSize: '0.62rem' }}>
-                  {String(row.date || '').slice(5)}
-                </Typography>
-              </Box>
-            );
-          })}
-        </Box>
-      )}
-    </Paper>
-  );
+  return debounced;
 }
 
 function formatTs(ts) {
@@ -135,26 +74,30 @@ function formatAge(seconds) {
 
 function formatLastSeen(seconds, isOnline) {
   const age = formatAge(seconds);
-  if (age === '-') return 'последний контакт: -';
-  if (isOnline) return `в сети, обновлено ${age} назад`;
-  return `не в сети ${age}`;
+  if (age === '-') return '-';
+  return isOnline ? `в сети, обновлено ${age} назад` : `не в сети ${age}`;
+}
+
+function formatTaskTimestamp(task) {
+  if (!task) return '-';
+  return formatTs(task.completed_at || task.updated_at || task.acked_at || task.delivered_at || task.created_at);
+}
+
+function taskTimestampLabel(task) {
+  const normalized = String(task?.command || '').trim().toLowerCase();
+  if (normalized === 'scan_now') return 'Последний скан';
+  if (normalized === 'ping') return 'Последняя проверка связи';
+  return 'Последняя задача';
 }
 
 function normalizeHost(value) {
   return String(value || '').trim().toLowerCase();
 }
 
-function firstIpv4(value) {
-  const text = String(value || '');
-  const match = text.match(/\b\d{1,3}(?:\.\d{1,3}){3}\b/);
-  return match ? match[0] : '';
-}
-
 function inferFileExt(value) {
-  const text = String(value || '').trim();
+  const text = String(value || '').trim().replace(/\\/g, '/');
   if (!text) return '';
-  const normalized = text.replace(/\\/g, '/');
-  const name = normalized.split('/').pop() || '';
+  const name = text.split('/').pop() || '';
   const idx = name.lastIndexOf('.');
   if (idx < 0 || idx === name.length - 1) return '';
   return name.slice(idx + 1).toLowerCase();
@@ -173,165 +116,65 @@ function getIncidentSourceKind(incident) {
   const source = String(incident?.source_kind || '').trim().toLowerCase();
   if (source) return source;
   const ext = getIncidentFileExt(incident);
-  if (!ext) return '';
   if (ext === 'pdf') return 'pdf';
   if (['txt', 'rtf', 'csv', 'json', 'xml', 'ini', 'conf', 'md', 'log'].includes(ext)) return 'text';
-  return 'metadata';
+  return ext ? 'metadata' : '';
 }
 
-function parseDateToEpoch(dateValue, endOfDay = false) {
-  const value = String(dateValue || '').trim();
-  if (!value) return null;
-  const stamp = endOfDay ? `${value}T23:59:59` : `${value}T00:00:00`;
-  const ms = new Date(stamp).getTime();
-  if (!Number.isFinite(ms)) return null;
-  return Math.floor(ms / 1000);
+function taskStatusLabel(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'queued') return 'В очереди';
+  if (normalized === 'delivered') return 'Доставлено агенту';
+  if (normalized === 'acknowledged') return 'Выполняется';
+  if (normalized === 'completed') return 'Завершено';
+  if (normalized === 'failed') return 'Ошибка';
+  if (normalized === 'expired') return 'Просрочено';
+  return '-';
 }
 
-function buildIncidentSearchText(item) {
-  const base = [
-    item?.hostname,
-    item?.user_login,
-    item?.user_full_name,
-    item?.file_path,
-    item?.file_name,
-    item?.short_reason,
-    item?.reason,
-    item?.pattern,
-    item?.patterns,
-    item?.source_kind,
-    item?.file_ext,
-  ].map((v) => String(v || '').toLowerCase());
-  const matches = Array.isArray(item?.matched_patterns) ? item.matched_patterns : [];
-  const fragments = matches.flatMap((entry) => ([
-    String(entry?.pattern_name || '').toLowerCase(),
-    String(entry?.pattern || '').toLowerCase(),
-    String(entry?.value || '').toLowerCase(),
-    String(entry?.snippet || '').toLowerCase(),
-  ]));
-  return [...base, ...fragments].join(' ');
+function taskStatusColor(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'acknowledged') return 'info';
+  if (normalized === 'completed') return 'success';
+  if (normalized === 'failed' || normalized === 'expired') return 'error';
+  if (normalized === 'queued' || normalized === 'delivered') return 'warning';
+  return 'default';
 }
 
-function applyIncidentFilters(items, filters) {
-  const rows = Array.isArray(items) ? items : [];
-  const qNeedle = String(filters?.q || '').trim().toLowerCase();
-  const statusFilter = String(filters?.status || 'all').trim().toLowerCase();
-  const severityFilter = String(filters?.severity || 'all').trim().toLowerCase();
-  const sourceFilter = String(filters?.source_kind || 'all').trim().toLowerCase();
-  const fileExtFilter = String(filters?.file_ext || '').trim().replace(/^\./, '').toLowerCase();
-  const hasFragment = Boolean(filters?.has_fragment);
-  const dateFrom = parseDateToEpoch(filters?.date_from, false);
-  const dateTo = parseDateToEpoch(filters?.date_to, true);
-
-  return rows.filter((item) => {
-    const createdAt = Number(item?.created_at || 0);
-    if (dateFrom !== null && createdAt < dateFrom) return false;
-    if (dateTo !== null && createdAt > dateTo) return false;
-
-    if (statusFilter !== 'all') {
-      const status = String(item?.status || '').trim().toLowerCase();
-      if (status !== statusFilter) return false;
-    }
-
-    if (severityFilter !== 'all') {
-      const severity = String(item?.severity || '').trim().toLowerCase();
-      if (severity !== severityFilter) return false;
-    }
-
-    if (sourceFilter !== 'all') {
-      const source = getIncidentSourceKind(item);
-      if (source !== sourceFilter) return false;
-    }
-
-    if (fileExtFilter) {
-      const ext = getIncidentFileExt(item);
-      if (ext !== fileExtFilter) return false;
-    }
-
-    if (hasFragment) {
-      const matches = Array.isArray(item?.matched_patterns) ? item.matched_patterns : [];
-      const hasAny = matches.some((entry) => (
-        String(entry?.snippet || '').trim()
-        || String(entry?.value || '').trim()
-      ));
-      if (!hasAny) return false;
-    }
-
-    if (qNeedle) {
-      const haystack = buildIncidentSearchText(item);
-      if (!haystack.includes(qNeedle)) return false;
-    }
-
-    return true;
-  });
+function severityColor(value) {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'high') return 'error';
+  if (normalized === 'medium') return 'warning';
+  if (normalized === 'low') return 'info';
+  return 'default';
 }
 
-function parseIncidentItems(response) {
-  if (Array.isArray(response?.items)) return response.items;
-  if (Array.isArray(response)) return response;
-  return [];
+function isActiveTask(task) {
+  return Boolean(task) && ACTIVE_TASK_STATUSES.has(String(task.status || '').trim().toLowerCase());
 }
 
-function canonicalHost(value) {
-  const normalized = normalizeHost(value);
-  if (!normalized) return '';
-  return normalized
-    .replace(/\$$/, '')
-    .split(/[.\s/\\]+/)[0];
+function commandLabel(command) {
+  const normalized = String(command || '').trim().toLowerCase();
+  if (normalized === 'scan_now') return 'Скан';
+  if (normalized === 'ping') return 'Проверка связи';
+  return normalized || '-';
 }
 
-function incidentMatchesHost(item, host) {
-  const hostNeedle = canonicalHost(host);
-  if (!hostNeedle) return false;
-  const candidates = [
-    item?.hostname,
-    item?.host,
-    item?.agent_id,
-    item?.agentId,
-    item?.computer_name,
-    item?.computer,
-    item?.device_name,
-    item?.machine_name,
-  ];
-  return candidates.some((candidate) => {
-    const probe = canonicalHost(candidate);
-    if (!probe) return false;
-    return probe === hostNeedle || probe.includes(hostNeedle) || hostNeedle.includes(probe);
-  });
-}
-
-function filterIncidentsByHost(items, host) {
-  const rows = Array.isArray(items) ? items : [];
-  return rows.filter((item) => incidentMatchesHost(item, host));
-}
-
-function uniqueIncidents(items) {
-  const rows = Array.isArray(items) ? items : [];
-  const seen = new Set();
-  const out = [];
-  rows.forEach((item) => {
-    const id = String(item?.id || '').trim();
-    const key = id || [
-      canonicalHost(item?.hostname || item?.host || item?.agent_id || item?.computer_name),
-      String(item?.created_at || ''),
-      String(item?.file_path || item?.file_name || ''),
-      String(item?.pattern || ''),
-    ].join('|');
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    out.push(item);
-  });
-  return out;
-}
-
-function resolvePcIp(pc) {
-  const direct = String(pc?.ip_primary || '').trim();
-  if (direct) return direct;
-  if (Array.isArray(pc?.ip_list) && pc.ip_list.length > 0) {
-    const candidate = firstIpv4(pc.ip_list[0]);
-    if (candidate) return candidate;
+function summarizeTaskResult(task) {
+  if (!task) return '-';
+  const status = String(task.status || '').trim().toLowerCase();
+  const result = task.result && typeof task.result === 'object' ? task.result : {};
+  if (status === 'failed') {
+    return String(task.error_text || 'Ошибка выполнения').trim() || 'Ошибка выполнения';
   }
-  return firstIpv4(pc?.ip_address || '');
+  if (status !== 'completed') return '-';
+  if (String(task.command || '').toLowerCase() === 'ping') {
+    return result.pong ? 'Связь подтверждена' : 'Проверка завершена';
+  }
+  if (String(task.command || '').toLowerCase() === 'scan_now') {
+    return `Скан: ${Number(result.scanned || 0)} · отправлено: ${Number(result.queued || 0)} · пропущено: ${Number(result.skipped || 0)}`;
+  }
+  return 'Задача выполнена';
 }
 
 function renderFragments(incident) {
@@ -346,93 +189,19 @@ function renderFragments(incident) {
           <Typography variant="caption" sx={{ fontWeight: 700 }}>
             {item.pattern_name || item.pattern || 'pattern'}
           </Typography>
-          {!!String(item.value || '').trim() && (
-            <Typography variant="caption" sx={{ display: 'block' }}>
-              Значение: {String(item.value)}
-            </Typography>
-          )}
-          {!!String(item.snippet || '').trim() && (
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-              Фрагмент: {String(item.snippet)}
-            </Typography>
-          )}
+          {!!String(item.value || '').trim() && <Typography variant="caption" sx={{ display: 'block' }}>Значение: {String(item.value)}</Typography>}
+          {!!String(item.snippet || '').trim() && <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>Фрагмент: {String(item.snippet)}</Typography>}
         </Paper>
       ))}
     </Stack>
   );
 }
 
-function aggregateHostsFromIncidents(items) {
-  const rows = Array.isArray(items) ? items : [];
-  const map = new Map();
-  rows.forEach((item) => {
-    const host = String(item?.hostname || '').trim();
-    if (!host) return;
-    const key = host.toLowerCase();
-    const createdAt = Number(item?.created_at || 0);
-    const status = String(item?.status || '').toLowerCase();
-    const severity = String(item?.severity || '').toLowerCase();
-    const source = String(item?.source_kind || '').trim().toLowerCase();
-    const ext = inferFileExt(item?.file_name) || inferFileExt(item?.file_path);
-
-    let entry = map.get(key);
-    if (!entry) {
-      entry = {
-        hostname: host,
-        incidents_total: 0,
-        incidents_new: 0,
-        last_incident_at: 0,
-        top_severity: 'none',
-        branch: String(item?.branch || '').trim(),
-        user: String(item?.user_full_name || item?.user_login || '').trim(),
-        ip_address: '',
-        _ext_counts: {},
-        _source_counts: {},
-      };
-      map.set(key, entry);
-    }
-
-    entry.incidents_total += 1;
-    if (status === 'new') entry.incidents_new += 1;
-    if (createdAt > Number(entry.last_incident_at || 0)) {
-      entry.last_incident_at = createdAt;
-      if (!entry.branch) entry.branch = String(item?.branch || '').trim();
-      if (!entry.user) entry.user = String(item?.user_full_name || item?.user_login || '').trim();
-    }
-
-    const rank = severity === 'high' ? 3 : severity === 'medium' ? 2 : severity === 'low' ? 1 : 0;
-    const prevRank = entry.top_severity === 'high' ? 3 : entry.top_severity === 'medium' ? 2 : entry.top_severity === 'low' ? 1 : 0;
-    if (rank > prevRank) {
-      entry.top_severity = rank === 3 ? 'high' : rank === 2 ? 'medium' : rank === 1 ? 'low' : 'none';
-    }
-
-    if (ext) entry._ext_counts[ext] = Number(entry._ext_counts[ext] || 0) + 1;
-    if (source) entry._source_counts[source] = Number(entry._source_counts[source] || 0) + 1;
-  });
-
-  return Array.from(map.values()).map((entry) => {
-    const topExts = Object.entries(entry._ext_counts)
-      .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0]), 'ru'))
-      .slice(0, 5)
-      .map(([name]) => String(name));
-    const topSourceKinds = Object.entries(entry._source_counts)
-      .sort((a, b) => Number(b[1]) - Number(a[1]) || String(a[0]).localeCompare(String(b[0]), 'ru'))
-      .slice(0, 5)
-      .map(([name]) => String(name));
-
-    return {
-      hostname: entry.hostname,
-      incidents_total: entry.incidents_total,
-      incidents_new: entry.incidents_new,
-      last_incident_at: Number(entry.last_incident_at || 0),
-      top_severity: entry.top_severity,
-      branch: entry.branch,
-      user: entry.user,
-      ip_address: entry.ip_address,
-      top_exts: topExts,
-      top_source_kinds: topSourceKinds,
-    };
-  });
+function sortToggle(currentBy, currentDir, nextBy) {
+  if (currentBy === nextBy) {
+    return currentDir === 'asc' ? 'desc' : 'asc';
+  }
+  return 'desc';
 }
 
 function ScanCenter() {
@@ -441,18 +210,43 @@ function ScanCenter() {
   const canScanTasks = hasPermission('scan.tasks');
 
   const [dashboard, setDashboard] = useState({ totals: {}, daily: [], by_severity: [], by_branch: [], new_hosts: [] });
-  const [hosts, setHosts] = useState([]);
-  const [agents, setAgents] = useState([]);
-  const [computers, setComputers] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [q, setQ] = useState('');
-  const [busyIncident, setBusyIncident] = useState('');
+  const [dashboardLoading, setDashboardLoading] = useState(true);
+
+  const [branchFilter, setBranchFilter] = useState('');
+  const [branchOptions, setBranchOptions] = useState([]);
+  const [branchOptionsLoading, setBranchOptionsLoading] = useState(true);
+  const [autoRefreshPaused, setAutoRefreshPaused] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+  const [taskNotice, setTaskNotice] = useState(null);
+
+  const [agentRows, setAgentRows] = useState([]);
+  const [agentTotal, setAgentTotal] = useState(0);
+  const [agentsLoading, setAgentsLoading] = useState(true);
+  const [agentPage, setAgentPage] = useState(0);
+  const [agentRowsPerPage, setAgentRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
+  const [agentQ, setAgentQ] = useState('');
+  const [agentOnline, setAgentOnline] = useState('all');
+  const [agentTaskStatus, setAgentTaskStatus] = useState('all');
+  const [agentSortBy, setAgentSortBy] = useState('online');
+  const [agentSortDir, setAgentSortDir] = useState('desc');
   const [busyTaskAgent, setBusyTaskAgent] = useState('');
-  const [busyAckAllHost, setBusyAckAllHost] = useState(false);
+  const [trackedTaskAgentIds, setTrackedTaskAgentIds] = useState([]);
+
+  const [hostRows, setHostRows] = useState([]);
+  const [hostTotal, setHostTotal] = useState(0);
+  const [hostsLoading, setHostsLoading] = useState(true);
+  const [hostPage, setHostPage] = useState(0);
+  const [hostRowsPerPage, setHostRowsPerPage] = useState(DEFAULT_ROWS_PER_PAGE);
+  const [hostQ, setHostQ] = useState('');
+  const [hostStatus, setHostStatus] = useState('all');
+  const [hostSeverity, setHostSeverity] = useState('all');
+  const [hostSortBy, setHostSortBy] = useState('incidents_new');
+  const [hostSortDir, setHostSortDir] = useState('desc');
 
   const [hostDrawerOpen, setHostDrawerOpen] = useState(false);
   const [selectedHost, setSelectedHost] = useState('');
-  const [hostIncidentPool, setHostIncidentPool] = useState([]);
+  const [hostIncidents, setHostIncidents] = useState([]);
+  const [hostIncidentsTotal, setHostIncidentsTotal] = useState(0);
   const [hostLoading, setHostLoading] = useState(false);
   const [incidentQ, setIncidentQ] = useState('');
   const [incidentStatus, setIncidentStatus] = useState('all');
@@ -462,231 +256,224 @@ function ScanCenter() {
   const [incidentDateFrom, setIncidentDateFrom] = useState('');
   const [incidentDateTo, setIncidentDateTo] = useState('');
   const [incidentHasFragment, setIncidentHasFragment] = useState(false);
+  const [busyIncident, setBusyIncident] = useState('');
+  const [busyAckAllHost, setBusyAckAllHost] = useState(false);
+
+  const agentsRequestIdRef = useRef(0);
+  const hostsRequestIdRef = useRef(0);
   const hostIncidentRequestIdRef = useRef(0);
+  const skipInitialAgentsEffectRef = useRef(true);
+  const skipInitialHostsEffectRef = useRef(true);
 
-  const resetHostFilters = () => {
-    setIncidentQ('');
-    setIncidentStatus('all');
-    setIncidentSeverity('all');
-    setIncidentSourceKind('all');
-    setIncidentFileExt('');
-    setIncidentDateFrom('');
-    setIncidentDateTo('');
-    setIncidentHasFragment(false);
-  };
+  const debouncedBranch = useDebouncedValue(branchFilter);
+  const debouncedAgentQ = useDebouncedValue(agentQ);
+  const debouncedHostQ = useDebouncedValue(hostQ);
+  const debouncedIncidentQ = useDebouncedValue(incidentQ);
 
-  const load = async () => {
+  const totals = dashboard.totals || {};
+
+  const hostMetaByName = useMemo(() => {
+    const map = {};
+    hostRows.forEach((row) => {
+      map[normalizeHost(row.hostname)] = {
+        branch: String(row.branch || '').trim(),
+        user: String(row.user || '').trim(),
+        ip: String(row.ip_address || '').trim(),
+      };
+    });
+    agentRows.forEach((row) => {
+      const key = normalizeHost(row.hostname || row.agent_id);
+      if (!key) return;
+      if (!map[key]) map[key] = {};
+      if (!map[key].branch) map[key].branch = String(row.branch || '').trim();
+      if (!map[key].ip) map[key].ip = String(row.ip_address || '').trim();
+    });
+    return map;
+  }, [agentRows, hostRows]);
+
+  const incidentSourceOptions = useMemo(() => {
+    const set = new Set();
+    hostIncidents.forEach((item) => {
+      const source = getIncidentSourceKind(item);
+      if (source) set.add(source);
+    });
+    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ru'));
+  }, [hostIncidents]);
+
+  const hostNewCount = useMemo(
+    () => hostIncidents.filter((item) => String(item.status || '').toLowerCase() === 'new').length,
+    [hostIncidents],
+  );
+
+  const loadDashboard = async ({ silent = false } = {}) => {
+    if (!silent) setDashboardLoading(true);
     try {
-      setLoading(true);
-      const [dashboardRes, hostsRes, agentsRes, computersRes] = await Promise.allSettled([
-        scanAPI.getDashboard(),
-        scanAPI.getHosts({ limit: 300 }),
-        scanAPI.getAgents(),
-        equipmentAPI.getAgentComputers(),
-      ]);
-
-      const dashboardData = dashboardRes.status === 'fulfilled' && dashboardRes.value && typeof dashboardRes.value === 'object'
-        ? dashboardRes.value
-        : { totals: {}, daily: [], by_severity: [], by_branch: [], new_hosts: [] };
-      let hostData = hostsRes.status === 'fulfilled' ? hostsRes.value : [];
-      const agentData = agentsRes.status === 'fulfilled' ? agentsRes.value : [];
-      const pcData = computersRes.status === 'fulfilled' ? computersRes.value : [];
-
-      const hostStatusCode = Number(hostsRes?.reason?.response?.status || 0);
-      if ((!Array.isArray(hostData) || hostData.length === 0) && hostStatusCode === 404) {
-        try {
-          const incidentsData = await scanAPI.getIncidents({ limit: 500, offset: 0 });
-          hostData = aggregateHostsFromIncidents(incidentsData?.items);
-        } catch (fallbackError) {
-          console.error('Scan hosts fallback failed', fallbackError);
-          hostData = [];
-        }
-      }
-
-      setDashboard(dashboardData);
-      setHosts(Array.isArray(hostData) ? hostData : []);
-      setAgents(Array.isArray(agentData) ? agentData : []);
-      setComputers(Array.isArray(pcData) ? pcData : []);
+      const data = await scanAPI.getDashboard();
+      setDashboard(data && typeof data === 'object' ? data : { totals: {}, daily: [], by_severity: [], by_branch: [], new_hosts: [] });
     } catch (error) {
-      console.error('Scan center load failed', error);
+      console.error('Scan dashboard load failed', error);
     } finally {
-      setLoading(false);
+      if (!silent) setDashboardLoading(false);
     }
   };
 
-  useEffect(() => {
-    load();
-  }, []);
-
-  const computerMetaByHost = useMemo(() => {
-    const map = {};
-    computers.forEach((pc) => {
-      const host = normalizeHost(pc?.hostname);
-      if (!host) return;
-      const prev = map[host] || {};
-      map[host] = {
-        branch_name: String(pc?.branch_name || prev.branch_name || '').trim(),
-        user_full_name: String(pc?.user_full_name || prev.user_full_name || '').trim(),
-        user_login: String(pc?.user_login || prev.user_login || '').trim(),
-        ip_address: String(resolvePcIp(pc) || prev.ip_address || '').trim(),
-      };
-    });
-    return map;
-  }, [computers]);
-
-  const getHostMeta = (item) => {
-    const host = normalizeHost(item?.hostname || item?.agent_id || selectedHost);
-    return computerMetaByHost[host] || {};
+  const loadBranchOptions = async () => {
+    setBranchOptionsLoading(true);
+    try {
+      const data = await scanAPI.getBranches();
+      setBranchOptions(Array.isArray(data) ? data.filter((item) => String(item || '').trim()) : []);
+    } catch (error) {
+      console.error('Scan branches load failed', error);
+      setBranchOptions([]);
+    } finally {
+      setBranchOptionsLoading(false);
+    }
   };
 
-  const resolveBranch = (item) => {
-    const meta = getHostMeta(item);
-    return String(item?.branch || meta.branch_name || '').trim() || 'Без филиала';
+  const loadAgents = async ({ silent = false } = {}) => {
+    const requestId = agentsRequestIdRef.current + 1;
+    agentsRequestIdRef.current = requestId;
+    if (!silent) setAgentsLoading(true);
+    try {
+      const response = await scanAPI.getAgentsTable({
+        q: debouncedAgentQ || undefined,
+        branch: debouncedBranch || undefined,
+        online: agentOnline === 'all' ? undefined : agentOnline,
+        task_status: agentTaskStatus === 'all' ? undefined : agentTaskStatus,
+        limit: agentRowsPerPage,
+        offset: agentPage * agentRowsPerPage,
+        sort_by: agentSortBy,
+        sort_dir: agentSortDir,
+      });
+      if (requestId !== agentsRequestIdRef.current) return;
+      setAgentRows(Array.isArray(response?.items) ? response.items : []);
+      setAgentTotal(Number(response?.total || 0));
+    } catch (error) {
+      console.error('Scan agents load failed', error);
+      if (requestId === agentsRequestIdRef.current) {
+        setAgentRows([]);
+        setAgentTotal(0);
+      }
+    } finally {
+      if (requestId === agentsRequestIdRef.current && !silent) {
+        setAgentsLoading(false);
+      }
+    }
   };
 
-  const resolveUser = (item) => {
-    const meta = getHostMeta(item);
-    const full = String(item?.user_full_name || meta.user_full_name || '').trim();
-    const login = String(item?.user_login || meta.user_login || '').trim();
-    return full || login || '-';
+  const loadHosts = async ({ silent = false } = {}) => {
+    const requestId = hostsRequestIdRef.current + 1;
+    hostsRequestIdRef.current = requestId;
+    if (!silent) setHostsLoading(true);
+    try {
+      const response = await scanAPI.getHostsTable({
+        q: debouncedHostQ || undefined,
+        branch: debouncedBranch || undefined,
+        status: hostStatus === 'all' ? undefined : hostStatus,
+        severity: hostSeverity === 'all' ? undefined : hostSeverity,
+        limit: hostRowsPerPage,
+        offset: hostPage * hostRowsPerPage,
+        sort_by: hostSortBy,
+        sort_dir: hostSortDir,
+      });
+      if (requestId !== hostsRequestIdRef.current) return;
+      setHostRows(Array.isArray(response?.items) ? response.items : []);
+      setHostTotal(Number(response?.total || 0));
+    } catch (error) {
+      console.error('Scan hosts load failed', error);
+      if (requestId === hostsRequestIdRef.current) {
+        setHostRows([]);
+        setHostTotal(0);
+      }
+    } finally {
+      if (requestId === hostsRequestIdRef.current && !silent) {
+        setHostsLoading(false);
+      }
+    }
   };
 
-  const resolveIp = (item) => {
-    const meta = getHostMeta(item);
-    return String(item?.ip_address || meta.ip_address || '').trim() || '-';
-  };
-
-  const hostRows = useMemo(() => {
-    const list = Array.isArray(hosts) ? hosts : [];
-    return list.map((item) => {
-      const host = String(item.hostname || '').trim();
-      const meta = computerMetaByHost[normalizeHost(host)] || {};
-      const branchValue = String(item.branch || meta.branch_name || '').trim() || 'Без филиала';
-      const userValue = String(item.user || meta.user_full_name || meta.user_login || '').trim() || '-';
-      const ipValue = String(item.ip_address || meta.ip_address || '').trim() || '-';
-      return {
-        hostname: host || 'unknown-host',
-        total: Number(item.incidents_total || 0),
-        newCount: Number(item.incidents_new || 0),
-        lastTs: Number(item.last_incident_at || 0),
-        branch: branchValue,
-        user: userValue,
-        ip: ipValue,
-        topSeverity: String(item.top_severity || 'none'),
-        topExts: Array.isArray(item.top_exts) ? item.top_exts : [],
-        topSourceKinds: Array.isArray(item.top_source_kinds) ? item.top_source_kinds : [],
-      };
-    }).sort((a, b) => b.newCount - a.newCount || b.lastTs - a.lastTs);
-  }, [hosts, computerMetaByHost]);
-
-  const filteredHostRows = useMemo(() => {
-    const needle = String(q || '').trim().toLowerCase();
-    if (!needle) return hostRows;
-    return hostRows.filter((row) => {
-      const text = [row.hostname, row.branch, row.user, row.ip].map((v) => String(v || '').toLowerCase()).join(' ');
-      return text.includes(needle);
-    });
-  }, [hostRows, q]);
-
-  const loadHostIncidents = async (host) => {
+  const loadHostIncidents = async ({ silent = false } = {}) => {
+    const host = String(selectedHost || '').trim();
     if (!host) return;
     const requestId = hostIncidentRequestIdRef.current + 1;
     hostIncidentRequestIdRef.current = requestId;
-    setHostLoading(true);
+    if (!silent) setHostLoading(true);
     try {
-      let hostItems = [];
-
-      const hostQueryVariants = [
-        { hostname: host },
-        { host },
-        { agent_id: host },
-        { agentId: host },
-        { computer_name: host },
-      ];
-      for (const variant of hostQueryVariants) {
-        const response = await scanAPI.getIncidents({
-          ...variant,
-          limit: 500,
-          offset: 0,
-        });
-        if (requestId !== hostIncidentRequestIdRef.current) return;
-        const items = parseIncidentItems(response);
-        const matched = filterIncidentsByHost(items, host);
-        if (matched.length > 0) {
-          hostItems = matched;
-          break;
-        }
-      }
-
-      // Full fallback: old API can ignore host params entirely.
-      // In this case we page through common incident feed and filter locally.
-      if (hostItems.length === 0) {
-        const batchSize = 500;
-        const maxPages = 20;
-        let offset = 0;
-        const collected = [];
-        for (let page = 0; page < maxPages; page += 1) {
-          const fallbackResponse = await scanAPI.getIncidents({
-            limit: batchSize,
-            offset,
-          });
-          if (requestId !== hostIncidentRequestIdRef.current) return;
-          const fallbackItems = parseIncidentItems(fallbackResponse);
-          if (fallbackItems.length === 0) break;
-          collected.push(...filterIncidentsByHost(fallbackItems, host));
-          if (fallbackItems.length < batchSize) break;
-          offset += batchSize;
-        }
-        hostItems = collected;
-      }
-
+      const response = await scanAPI.getIncidents({
+        hostname: host,
+        q: debouncedIncidentQ || undefined,
+        status: incidentStatus === 'all' ? undefined : incidentStatus,
+        severity: incidentSeverity === 'all' ? undefined : incidentSeverity,
+        source_kind: incidentSourceKind === 'all' ? undefined : incidentSourceKind,
+        file_ext: incidentFileExt || undefined,
+        date_from: incidentDateFrom || undefined,
+        date_to: incidentDateTo || undefined,
+        has_fragment: incidentHasFragment ? true : undefined,
+        limit: 5000,
+        offset: 0,
+      });
       if (requestId !== hostIncidentRequestIdRef.current) return;
-      const uniqueHostItems = uniqueIncidents(hostItems);
-      setHostIncidentPool(uniqueHostItems.slice().sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0)));
+      setHostIncidents(Array.isArray(response?.items) ? response.items : []);
+      setHostIncidentsTotal(Number(response?.total || 0));
     } catch (error) {
       console.error('Host incidents load failed', error);
       if (requestId === hostIncidentRequestIdRef.current) {
-        setHostIncidentPool([]);
+        setHostIncidents([]);
+        setHostIncidentsTotal(0);
       }
     } finally {
-      if (requestId === hostIncidentRequestIdRef.current) {
+      if (requestId === hostIncidentRequestIdRef.current && !silent) {
         setHostLoading(false);
       }
     }
   };
 
-  const openHostDetails = (hostname) => {
-    const host = String(hostname || '').trim();
-    if (!host) return;
-    resetHostFilters();
-    setSelectedHost(host);
-    setHostDrawerOpen(true);
+  const refreshAll = async ({ silent = true } = {}) => {
+    if (!silent) setRefreshing(true);
+    try {
+      await Promise.all([
+        loadDashboard({ silent }),
+        loadAgents({ silent }),
+        loadHosts({ silent }),
+        hostDrawerOpen && selectedHost ? loadHostIncidents({ silent }) : Promise.resolve(),
+      ]);
+    } finally {
+      if (!silent) setRefreshing(false);
+    }
   };
 
   useEffect(() => {
+    loadBranchOptions();
+    refreshAll({ silent: false });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useEffect(() => {
+    if (skipInitialAgentsEffectRef.current) {
+      skipInitialAgentsEffectRef.current = false;
+      return;
+    }
+    loadAgents({ silent: agentRows.length > 0 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedAgentQ, debouncedBranch, agentOnline, agentTaskStatus, agentPage, agentRowsPerPage, agentSortBy, agentSortDir]);
+
+  useEffect(() => {
+    if (skipInitialHostsEffectRef.current) {
+      skipInitialHostsEffectRef.current = false;
+      return;
+    }
+    loadHosts({ silent: hostRows.length > 0 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [debouncedHostQ, debouncedBranch, hostStatus, hostSeverity, hostPage, hostRowsPerPage, hostSortBy, hostSortDir]);
+
+  useEffect(() => {
     if (!hostDrawerOpen || !selectedHost) return;
-    loadHostIncidents(selectedHost);
+    loadHostIncidents({ silent: hostIncidents.length > 0 || hostIncidentsTotal > 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     hostDrawerOpen,
     selectedHost,
-  ]);
-
-  const hostIncidents = useMemo(() => {
-    const filtered = applyIncidentFilters(hostIncidentPool, {
-      q: incidentQ,
-      status: incidentStatus,
-      severity: incidentSeverity,
-      source_kind: incidentSourceKind,
-      file_ext: incidentFileExt,
-      date_from: incidentDateFrom,
-      date_to: incidentDateTo,
-      has_fragment: incidentHasFragment,
-    });
-    return filtered.slice().sort((a, b) => Number(b.created_at || 0) - Number(a.created_at || 0));
-  }, [
-    hostIncidentPool,
-    incidentQ,
+    debouncedIncidentQ,
     incidentStatus,
     incidentSeverity,
     incidentSourceKind,
@@ -696,83 +483,116 @@ function ScanCenter() {
     incidentHasFragment,
   ]);
 
-  const ackIncident = async (incident) => {
+  useEffect(() => {
+    if (autoRefreshPaused) return undefined;
+    const timer = window.setInterval(() => {
+      refreshAll({ silent: true });
+    }, AUTO_REFRESH_MS);
+    return () => window.clearInterval(timer);
+  }, [autoRefreshPaused, hostDrawerOpen, selectedHost, debouncedBranch, debouncedAgentQ, debouncedHostQ, debouncedIncidentQ, incidentStatus, incidentSeverity, incidentSourceKind, incidentFileExt, incidentDateFrom, incidentDateTo, incidentHasFragment, agentOnline, agentTaskStatus, hostStatus, hostSeverity, agentPage, hostPage, agentRowsPerPage, hostRowsPerPage, agentSortBy, agentSortDir, hostSortBy, hostSortDir]);
+
+  const monitoredAgentIds = useMemo(() => {
+    const ids = new Set(trackedTaskAgentIds);
+    agentRows.forEach((row) => {
+      if (isActiveTask(row.active_task)) ids.add(String(row.agent_id || '').trim());
+    });
+    return Array.from(ids).filter(Boolean);
+  }, [trackedTaskAgentIds, agentRows]);
+
+  useEffect(() => {
+    if (monitoredAgentIds.length === 0) return undefined;
+    let cancelled = false;
+
+    const tick = async () => {
+      try {
+        const responses = await Promise.all(
+          monitoredAgentIds.map(async (agentId) => {
+            const data = await scanAPI.getTasks({ agent_id: agentId, limit: 20, offset: 0 });
+            return [agentId, Array.isArray(data?.items) ? data.items : []];
+          }),
+        );
+        if (cancelled) return;
+        const tasksByAgent = new Map(responses);
+        setAgentRows((prev) => prev.map((row) => {
+          const tasks = tasksByAgent.get(String(row.agent_id || '').trim());
+          if (!tasks) return row;
+          const activeTask = tasks.find((item) => isActiveTask(item)) || null;
+          return {
+            ...row,
+            active_task: activeTask,
+            last_task: tasks[0] || row.last_task || null,
+            queue_size: tasks.filter((item) => isActiveTask(item)).length,
+          };
+        }));
+        setTrackedTaskAgentIds((prev) => prev.filter((agentId) => {
+          const tasks = tasksByAgent.get(agentId) || [];
+          return tasks.some((item) => isActiveTask(item));
+        }));
+      } catch (error) {
+        if (!cancelled) {
+          console.error('Scan task polling failed', error);
+        }
+      }
+    };
+
+    tick();
+    const timer = window.setInterval(tick, TASK_POLL_MS);
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [monitoredAgentIds]);
+
+  const patchHostNewCount = (hostname, delta) => {
+    const host = normalizeHost(hostname);
+    if (!host || !delta) return;
+    setHostRows((prev) => prev.map((row) => (
+      normalizeHost(row.hostname) === host
+        ? { ...row, incidents_new: Math.max(0, Number(row.incidents_new || 0) + delta) }
+        : row
+    )));
+    setDashboard((prev) => {
+      const next = { ...(prev || {}) };
+      const nextTotals = { ...(next.totals || {}) };
+      nextTotals.incidents_new = Math.max(0, Number(nextTotals.incidents_new || 0) + delta);
+      next.totals = nextTotals;
+      return next;
+    });
+  };
+
+  const handleAckIncident = async (incident) => {
     if (!canScanAck) return;
     const incidentId = String(incident?.id || '').trim();
     if (!incidentId) return;
-    const keepScroll = window.scrollY;
+    setBusyIncident(incidentId);
     try {
-      const wasNew = String(incident?.status || '').toLowerCase() === 'new';
-      const hostKey = normalizeHost(incident?.hostname || selectedHost);
-      setBusyIncident(incidentId);
       await scanAPI.ackIncident(incidentId, 'web-user');
-      setHostIncidentPool((prev) => prev.map((item) => {
-        if (String(item.id) !== incidentId) return item;
-        return { ...item, status: 'ack' };
-      }));
-      if (wasNew) {
-        setHosts((prev) => prev.map((row) => {
-          if (normalizeHost(row.hostname) !== hostKey) return row;
-          return { ...row, incidents_new: Math.max(0, Number(row.incidents_new || 0) - 1) };
-        }));
+      if (String(incident?.status || '').toLowerCase() === 'new') {
+        patchHostNewCount(selectedHost, -1);
       }
-      setDashboard((prev) => {
-        const next = { ...(prev || {}) };
-        const totals = { ...(next.totals || {}) };
-        if (wasNew) {
-          totals.incidents_new = Math.max(0, Number(totals.incidents_new || 0) - 1);
-        }
-        next.totals = totals;
-        return next;
-      });
+      await loadHostIncidents({ silent: true });
     } catch (error) {
       console.error('Ack incident failed', error);
     } finally {
       setBusyIncident('');
-      requestAnimationFrame(() => {
-        window.scrollTo({ top: keepScroll, behavior: 'auto' });
-      });
     }
   };
 
-  const ackAllHostIncidents = async () => {
+  const handleAckAllHostIncidents = async () => {
     if (!canScanAck) return;
-    const pendingIds = hostIncidentPool
+    const pendingIds = hostIncidents
       .filter((item) => String(item.status || '').toLowerCase() === 'new')
       .map((item) => String(item.id || '').trim())
       .filter(Boolean);
     if (pendingIds.length === 0) return;
-
     setBusyAckAllHost(true);
     try {
       const results = await Promise.allSettled(
-        pendingIds.map((id) => scanAPI.ackIncident(id, 'web-user')),
+        pendingIds.map((incidentId) => scanAPI.ackIncident(incidentId, 'web-user')),
       );
-      const ackedIds = pendingIds.filter((_, idx) => results[idx]?.status === 'fulfilled');
-      const ackedSet = new Set(ackedIds.map((id) => String(id)));
-      if (ackedSet.size > 0) {
-        const hostKey = normalizeHost(selectedHost);
-        const oldNewCount = hostIncidentPool.filter((item) => (
-          String(item.status || '').toLowerCase() === 'new' && ackedSet.has(String(item.id))
-        )).length;
-        setHostIncidentPool((prev) => prev.map((item) => {
-          if (!ackedSet.has(String(item.id))) return item;
-          return { ...item, status: 'ack' };
-        }));
-        if (oldNewCount > 0) {
-          setHosts((prev) => prev.map((row) => {
-            if (normalizeHost(row.hostname) !== hostKey) return row;
-            return { ...row, incidents_new: Math.max(0, Number(row.incidents_new || 0) - oldNewCount) };
-          }));
-        }
-        setDashboard((prev) => {
-          const next = { ...(prev || {}) };
-          const totals = { ...(next.totals || {}) };
-          totals.incidents_new = Math.max(0, Number(totals.incidents_new || 0) - oldNewCount);
-          next.totals = totals;
-          return next;
-        });
-      }
+      const acked = results.filter((item) => item.status === 'fulfilled').length;
+      if (acked > 0) patchHostNewCount(selectedHost, -acked);
+      await loadHostIncidents({ silent: true });
     } catch (error) {
       console.error('Ack all host incidents failed', error);
     } finally {
@@ -780,259 +600,464 @@ function ScanCenter() {
     }
   };
 
+  const openHostDetails = (hostname) => {
+    const host = String(hostname || '').trim();
+    if (!host) return;
+    setSelectedHost(host);
+    setIncidentQ('');
+    setIncidentStatus('all');
+    setIncidentSeverity('all');
+    setIncidentSourceKind('all');
+    setIncidentFileExt('');
+    setIncidentDateFrom('');
+    setIncidentDateTo('');
+    setIncidentHasFragment(false);
+    setHostDrawerOpen(true);
+  };
+
   const enqueueTask = async (agentId, command) => {
     if (!canScanTasks) return;
+    const normalizedAgentId = String(agentId || '').trim();
+    if (!normalizedAgentId) return;
     try {
-      setBusyTaskAgent(agentId);
-      await scanAPI.createTask({
-        agent_id: agentId,
+      setBusyTaskAgent(normalizedAgentId);
+      const response = await scanAPI.createTask({
+        agent_id: normalizedAgentId,
         command,
-        dedupe_key: `${command}:${agentId}`,
+        dedupe_key: `${command}:${normalizedAgentId}`,
       });
-      await load();
+      const task = response?.task && typeof response.task === 'object' ? response.task : null;
+      if (task) {
+        setAgentRows((prev) => prev.map((row) => (
+          String(row.agent_id || '').trim() === normalizedAgentId
+            ? {
+              ...row,
+              active_task: task,
+              last_task: row.last_task || task,
+              queue_size: Math.max(1, Number(row.queue_size || 0)),
+            }
+            : row
+        )));
+        setTrackedTaskAgentIds((prev) => Array.from(new Set([...prev, normalizedAgentId])));
+      }
+      setTaskNotice({
+        severity: 'info',
+        text: `${commandLabel(command)} отправлена для ${normalizedAgentId}`,
+      });
     } catch (error) {
       console.error('Create task failed', error);
+      setTaskNotice({
+        severity: 'error',
+        text: `Не удалось отправить ${commandLabel(command).toLowerCase()} для ${normalizedAgentId}`,
+      });
     } finally {
       setBusyTaskAgent('');
     }
   };
 
-  const totals = dashboard.totals || {};
-  const hostNewCount = hostIncidentPool.filter((item) => String(item.status || '').toLowerCase() === 'new').length;
-  const hostExtOptions = useMemo(() => {
-    const set = new Set();
-    hostIncidentPool.forEach((item) => {
-      const ext = getIncidentFileExt(item);
-      if (ext) set.add(ext);
-    });
-    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ru'));
-  }, [hostIncidentPool]);
-  const hostSourceOptions = useMemo(() => {
-    const set = new Set();
-    hostIncidentPool.forEach((item) => {
-      const source = getIncidentSourceKind(item);
-      if (source) set.add(source);
-    });
-    return Array.from(set).sort((a, b) => a.localeCompare(b, 'ru'));
-  }, [hostIncidentPool]);
-  const sourceSelectOptions = useMemo(() => {
-    const base = ['text', 'pdf', 'pdf_slice'];
-    const known = new Set(base);
-    const extra = hostSourceOptions.filter((option) => !known.has(option));
-    return [...base, ...extra];
-  }, [hostSourceOptions]);
+  const resolveIncidentIp = (incident) => {
+    const meta = hostMetaByName[normalizeHost(incident?.hostname || selectedHost)] || {};
+    return String(incident?.ip_address || meta.ip || '').trim() || '-';
+  };
+
+  const renderSummaryCard = (title, value, helper, color = 'text.primary') => (
+    <Card variant="outlined" sx={{ height: '100%' }}>
+      <CardContent>
+        <Typography variant="body2" color="text.secondary">{title}</Typography>
+        <Typography variant="h4" sx={{ fontWeight: 700, color }}>{value}</Typography>
+        <Typography variant="caption" color="text.secondary">{helper}</Typography>
+      </CardContent>
+    </Card>
+  );
 
   return (
     <MainLayout>
       <PageShell sx={{ width: '100%', pb: 2 }}>
-        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2 }}>
-          <Typography variant="h5" sx={{ fontWeight: 700 }}>Центр сканирования</Typography>
-          <IconButton onClick={load} disabled={loading} color="primary">
-            <RefreshIcon />
-          </IconButton>
+        <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 2, flexWrap: 'wrap' }}>
+          <Box>
+            <Typography variant="h5" sx={{ fontWeight: 700 }}>Центр сканирования</Typography>
+            <Typography variant="body2" color="text.secondary">
+              Обзор агентов, задач и инцидентов без полного reload страницы.
+            </Typography>
+          </Box>
+          <Stack direction="row" spacing={1} sx={{ alignItems: 'center', flexWrap: 'wrap' }}>
+            <FormControlLabel
+              control={<Switch checked={!autoRefreshPaused} onChange={(event) => setAutoRefreshPaused(!event.target.checked)} />}
+              label={autoRefreshPaused ? 'Автообновление: пауза' : 'Автообновление: 30с'}
+            />
+            <Button
+              type="button"
+              variant="outlined"
+              startIcon={refreshing ? <CircularProgress size={16} /> : <RefreshIcon />}
+              onClick={() => refreshAll({ silent: false })}
+              disabled={refreshing}
+            >
+              Обновить
+            </Button>
+          </Stack>
         </Box>
 
-        {!loading && Number(totals.incidents_new || 0) > 0 && (
+        {taskNotice && (
+          <Alert severity={taskNotice.severity} sx={{ mb: 2 }} onClose={() => setTaskNotice(null)}>
+            {taskNotice.text}
+          </Alert>
+        )}
+
+        {!dashboardLoading && Number(totals.incidents_new || 0) > 0 && (
           <Alert severity="warning" icon={<WarningAmberIcon fontSize="inherit" />} sx={{ mb: 2 }}>
             <Typography variant="body2" sx={{ fontWeight: 600 }}>
               Новые инциденты: {Number(totals.incidents_new || 0)}
             </Typography>
             <Typography variant="body2">
               {(Array.isArray(dashboard.new_hosts) ? dashboard.new_hosts : []).slice(0, 8).join(', ')}
-              {(Array.isArray(dashboard.new_hosts) ? dashboard.new_hosts.length : 0) > 8
-                ? ` и еще ${(Array.isArray(dashboard.new_hosts) ? dashboard.new_hosts.length : 0) - 8}`
-                : ''}
             </Typography>
           </Alert>
         )}
 
         <Grid container spacing={2} sx={{ mb: 2 }}>
-          <Grid item xs={12} sm={6} md={3}>
-            <StatCard title="Агенты" value={Number(totals.agents_total || 0)} helper="зарегистрировано" />
-          </Grid>
-          <Grid item xs={12} sm={6} md={3}>
-            <StatCard title="В сети" value={Number(totals.agents_online || 0)} helper="активны за 5 минут" color="success.main" />
-          </Grid>
-          <Grid item xs={12} sm={6} md={3}>
-            <StatCard title="Новые инциденты" value={Number(totals.incidents_new || 0)} helper="статус NEW" color="warning.main" />
-          </Grid>
-          <Grid item xs={12} sm={6} md={3}>
-            <StatCard title="Очередь задач" value={Number(totals.queue_active || 0)} helper={`просрочено: ${Number(totals.queue_expired || 0)}`} color="info.main" />
-          </Grid>
-        </Grid>
-
-        <Grid container spacing={2} sx={{ mb: 2 }}>
-          <Grid item xs={12} md={4}>
-            <MiniBars title="Инциденты по severity" rows={dashboard.by_severity || []} color="#b71c1c" />
-          </Grid>
-          <Grid item xs={12} md={4}>
-            <MiniBars title="Инциденты по филиалам" rows={dashboard.by_branch || []} color="#1565c0" />
-          </Grid>
-          <Grid item xs={12} md={4}>
-            <DailyBars rows={dashboard.daily || []} />
-          </Grid>
+          <Grid item xs={12} sm={6} md={3}>{renderSummaryCard('Агенты', Number(totals.agents_total || 0), 'зарегистрировано')}</Grid>
+          <Grid item xs={12} sm={6} md={3}>{renderSummaryCard('В сети', Number(totals.agents_online || 0), 'активны за 5 минут', 'success.main')}</Grid>
+          <Grid item xs={12} sm={6} md={3}>{renderSummaryCard('Новые инциденты', Number(totals.incidents_new || 0), 'статус NEW', 'warning.main')}</Grid>
+          <Grid item xs={12} sm={6} md={3}>{renderSummaryCard('Очередь задач', Number(totals.queue_active || 0), `просрочено: ${Number(totals.queue_expired || 0)}`, 'info.main')}</Grid>
         </Grid>
 
         <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-          <TextField
+          <Autocomplete
             size="small"
             fullWidth
-            label="Поиск по ПК, филиалу, пользователю, IP"
-            value={q}
-            onChange={(e) => setQ(e.target.value)}
-            placeholder="TMN-IT-0009, филиал, ФИО, IP"
+            options={branchOptions}
+            loading={branchOptionsLoading}
+            value={branchOptions.includes(branchFilter) ? branchFilter : null}
+            onChange={(_, nextValue) => {
+              setBranchFilter(nextValue || '');
+              setAgentPage(0);
+              setHostPage(0);
+            }}
+            clearOnEscape
+            noOptionsText="Филиалы не найдены"
+            loadingText="Загрузка филиалов..."
+            renderInput={(params) => (
+              <TextField
+                {...params}
+                label="Филиал"
+                placeholder="Выберите филиал"
+              />
+            )}
           />
         </Paper>
 
-        <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>Компьютеры с находками</Typography>
         <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-          {loading ? (
-            <Box sx={{ py: 2, display: 'flex', justifyContent: 'center' }}><CircularProgress size={28} /></Box>
-          ) : filteredHostRows.length === 0 ? (
-            <Typography color="text.secondary">Инцидентов пока нет.</Typography>
-          ) : (
-            <Stack spacing={1}>
-              {filteredHostRows.slice(0, 100).map((row) => (
-                <Paper key={row.hostname} variant="outlined" sx={{ p: 1.2 }}>
-                  <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1 }}>
-                    <Box>
-                      <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>{row.hostname}</Typography>
-                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                        {row.branch || 'Без филиала'} · {row.user || '-'} · IP: {row.ip || '-'}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">
-                        Всего: {row.total} · Новые: {row.newCount} · Последний: {formatTs(row.lastTs)}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                        Типы: {(row.topExts || []).join(', ') || '-'} · Источники: {(row.topSourceKinds || []).join(', ') || '-'}
-                      </Typography>
-                    </Box>
-                    <Button type="button" size="small" variant="outlined" onClick={() => openHostDetails(row.hostname)}>
-                      Просмотреть инциденты
-                    </Button>
-                  </Box>
-                </Paper>
-              ))}
-            </Stack>
-          )}
+          <Stack spacing={1.5}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+              <Typography variant="h6" sx={{ fontWeight: 700 }}>Агенты и очередь</Typography>
+              <Chip size="small" label={`Всего: ${agentTotal}`} />
+            </Box>
+            <Grid container spacing={1.2}>
+              <Grid item xs={12} md={5}>
+                <TextField
+                  size="small"
+                  fullWidth
+                  label="Поиск по агентам"
+                  value={agentQ}
+                  onChange={(event) => {
+                    setAgentQ(event.target.value);
+                    setAgentPage(0);
+                  }}
+                  placeholder="Hostname, agent_id, IP, филиал"
+                />
+              </Grid>
+              <Grid item xs={12} md={3}>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Сеть</InputLabel>
+                  <Select value={agentOnline} label="Сеть" onChange={(event) => { setAgentOnline(event.target.value); setAgentPage(0); }}>
+                    <MenuItem value="all">Все</MenuItem>
+                    <MenuItem value="online">В сети</MenuItem>
+                    <MenuItem value="offline">Не в сети</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+              <Grid item xs={12} md={4}>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Статус задачи</InputLabel>
+                  <Select value={agentTaskStatus} label="Статус задачи" onChange={(event) => { setAgentTaskStatus(event.target.value); setAgentPage(0); }}>
+                    <MenuItem value="all">Все</MenuItem>
+                    <MenuItem value="active">Любая активная</MenuItem>
+                    <MenuItem value="queued">В очереди</MenuItem>
+                    <MenuItem value="delivered">Доставлено</MenuItem>
+                    <MenuItem value="acknowledged">Выполняется</MenuItem>
+                    <MenuItem value="completed">Завершено</MenuItem>
+                    <MenuItem value="failed">Ошибка</MenuItem>
+                    <MenuItem value="expired">Просрочено</MenuItem>
+                    <MenuItem value="none">Без активной задачи</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+            </Grid>
+            <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 520 }}>
+              <Table stickyHeader size="small" sx={{ minWidth: 1160 }}>
+                <TableHead>
+                  <TableRow>
+                    {[
+                      ['hostname', 'Hostname'],
+                      ['branch', 'Филиал'],
+                      ['ip_address', 'IP'],
+                      ['online', 'Связь'],
+                      ['last_seen_at', 'Последний heartbeat'],
+                      ['active_task', 'Активная задача'],
+                      ['queue_size', 'Очередь'],
+                      ['last_result', 'Последняя задача'],
+                    ].map(([key, label]) => (
+                      <TableCell key={key} sortDirection={agentSortBy === key ? agentSortDir : false}>
+                        <TableSortLabel
+                          active={agentSortBy === key}
+                          direction={agentSortBy === key ? agentSortDir : 'desc'}
+                          onClick={() => {
+                            setAgentSortDir(sortToggle(agentSortBy, agentSortDir, key));
+                            setAgentSortBy(key);
+                          }}
+                        >
+                          {label}
+                        </TableSortLabel>
+                      </TableCell>
+                    ))}
+                    <TableCell align="right">Действия</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {agentsLoading && agentRows.length === 0 ? (
+                    <TableRow><TableCell colSpan={9} align="center"><CircularProgress size={24} /></TableCell></TableRow>
+                  ) : agentRows.length === 0 ? (
+                    <TableRow><TableCell colSpan={9} align="center">Нет данных по агентам.</TableCell></TableRow>
+                  ) : agentRows.map((agent) => (
+                    <TableRow hover key={agent.agent_id}>
+                      <TableCell>
+                        <Typography variant="body2" sx={{ fontWeight: 700 }}>{String(agent.hostname || agent.agent_id || '').trim() || '-'}</Typography>
+                        <Typography variant="caption" color="text.secondary">{String(agent.agent_id || '').trim() || '-'}</Typography>
+                      </TableCell>
+                      <TableCell>{String(agent.branch || '').trim() || 'Без филиала'}</TableCell>
+                      <TableCell>{String(agent.ip_address || '').trim() || '-'}</TableCell>
+                      <TableCell>
+                        <Chip size="small" color={agent.is_online ? 'success' : 'default'} label={agent.is_online ? 'В сети' : 'Не в сети'} />
+                        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.5 }}>
+                          {formatLastSeen(agent.age_seconds, agent.is_online)}
+                        </Typography>
+                      </TableCell>
+                      <TableCell>{formatTs(agent.last_seen_at)}</TableCell>
+                      <TableCell>
+                        {agent.active_task ? (
+                          <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap">
+                            <Chip
+                              size="small"
+                              variant="outlined"
+                              label={String(agent.active_task.command || '').toLowerCase() === 'scan_now' ? 'Сканирование' : 'Проверка связи'}
+                            />
+                            <Chip size="small" color={taskStatusColor(agent.active_task.status)} label={taskStatusLabel(agent.active_task.status)} />
+                          </Stack>
+                        ) : '-'}
+                      </TableCell>
+                      <TableCell>{Number(agent.queue_size || 0)}</TableCell>
+                      <TableCell>
+                        {agent.last_task ? (
+                          <>
+                            <Typography variant="body2">{summarizeTaskResult(agent.last_task)}</Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                              {`${commandLabel(agent.last_task.command)} · ${taskStatusLabel(agent.last_task.status)}`}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                              {`${taskTimestampLabel(agent.last_task)}: ${formatTaskTimestamp(agent.last_task)}`}
+                            </Typography>
+                          </>
+                        ) : '-'}
+                      </TableCell>
+                      <TableCell align="right">
+                        <Stack direction="row" spacing={1} justifyContent="flex-end">
+                          <Button
+                            type="button"
+                            size="small"
+                            variant="outlined"
+                            startIcon={<PlayArrowIcon />}
+                            disabled={!canScanTasks || busyTaskAgent === agent.agent_id}
+                            onClick={() => enqueueTask(agent.agent_id, 'scan_now')}
+                          >
+                            Сканировать
+                          </Button>
+                          <Button
+                            type="button"
+                            size="small"
+                            variant="outlined"
+                            disabled={!canScanTasks || busyTaskAgent === agent.agent_id}
+                            onClick={() => enqueueTask(agent.agent_id, 'ping')}
+                          >
+                            Проверить связь
+                          </Button>
+                          <Button type="button" size="small" variant="contained" onClick={() => openHostDetails(agent.hostname || agent.agent_id)}>
+                            Инциденты
+                          </Button>
+                        </Stack>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            <TablePagination
+              component="div"
+              count={agentTotal}
+              page={agentPage}
+              onPageChange={(_, nextPage) => setAgentPage(nextPage)}
+              rowsPerPage={agentRowsPerPage}
+              onRowsPerPageChange={(event) => {
+                setAgentRowsPerPage(Number(event.target.value));
+                setAgentPage(0);
+              }}
+              rowsPerPageOptions={ROWS_PER_PAGE_OPTIONS}
+              labelRowsPerPage="Строк на странице"
+            />
+          </Stack>
         </Paper>
 
-        <Typography variant="h6" sx={{ fontWeight: 700, mb: 1 }}>Агенты и очередь</Typography>
-        <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
-          {loading ? (
-            <Box sx={{ py: 2, display: 'flex', justifyContent: 'center' }}><CircularProgress size={28} /></Box>
-          ) : agents.length === 0 ? (
-            <Typography color="text.secondary">Нет данных по агентам.</Typography>
-          ) : (
-            <Stack spacing={1.5}>
-              {agents.map((agent) => {
-                const hostName = String(agent.hostname || agent.agent_id || '').trim();
-                return (
-                  <Paper key={agent.agent_id} variant="outlined" sx={{ p: 1.5 }}>
-                    <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                      <Box>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
-                          {hostName || '-'}
-                        </Typography>
-                        <Typography variant="caption" color="text.secondary">
-                          {resolveBranch(agent)} · IP: {resolveIp(agent)} · {formatLastSeen(agent.age_seconds, agent.is_online)}
-                        </Typography>
-                      </Box>
-                      <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
-                        <Chip size="small" color={agent.is_online ? 'success' : 'default'} label={agent.is_online ? 'В сети' : 'Не в сети'} />
-                        <Chip size="small" label={`Очередь: ${Number(agent.queue_size || 0)}`} />
-                        <Button
-                          type="button"
-                          size="small"
-                          variant="outlined"
-                          startIcon={<PlayArrowIcon />}
-                          disabled={!canScanTasks || busyTaskAgent === agent.agent_id}
-                          onClick={() => enqueueTask(agent.agent_id, 'scan_now')}
+        <Paper variant="outlined" sx={{ p: 2 }}>
+          <Stack spacing={1.5}>
+            <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
+              <Typography variant="h6" sx={{ fontWeight: 700 }}>Компьютеры с находками</Typography>
+              <Chip size="small" label={`Всего: ${hostTotal}`} />
+            </Box>
+            <Grid container spacing={1.2}>
+              <Grid item xs={12} md={6}>
+                <TextField
+                  size="small"
+                  fullWidth
+                  label="Поиск по хостам"
+                  value={hostQ}
+                  onChange={(event) => {
+                    setHostQ(event.target.value);
+                    setHostPage(0);
+                  }}
+                  placeholder="ПК, пользователь, IP, филиал"
+                />
+              </Grid>
+              <Grid item xs={12} md={3}>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Статус</InputLabel>
+                  <Select value={hostStatus} label="Статус" onChange={(event) => { setHostStatus(event.target.value); setHostPage(0); }}>
+                    <MenuItem value="all">Все</MenuItem>
+                    <MenuItem value="new">NEW</MenuItem>
+                    <MenuItem value="ack">ACK</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+              <Grid item xs={12} md={3}>
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Severity</InputLabel>
+                  <Select value={hostSeverity} label="Severity" onChange={(event) => { setHostSeverity(event.target.value); setHostPage(0); }}>
+                    <MenuItem value="all">Все</MenuItem>
+                    <MenuItem value="high">High</MenuItem>
+                    <MenuItem value="medium">Medium</MenuItem>
+                    <MenuItem value="low">Low</MenuItem>
+                    <MenuItem value="none">None</MenuItem>
+                  </Select>
+                </FormControl>
+              </Grid>
+            </Grid>
+            <TableContainer component={Paper} variant="outlined" sx={{ maxHeight: 520 }}>
+              <Table stickyHeader size="small" sx={{ minWidth: 1240 }}>
+                <TableHead>
+                  <TableRow>
+                    {[
+                      ['hostname', 'Hostname'],
+                      ['branch', 'Филиал'],
+                      ['user', 'Пользователь'],
+                      ['ip_address', 'IP'],
+                      ['incidents_new', 'Новые'],
+                      ['incidents_total', 'Всего'],
+                      ['severity', 'Severity'],
+                      ['last_incident_at', 'Последний инцидент'],
+                    ].map(([key, label]) => (
+                      <TableCell key={key} sortDirection={hostSortBy === key ? hostSortDir : false}>
+                        <TableSortLabel
+                          active={hostSortBy === key}
+                          direction={hostSortBy === key ? hostSortDir : 'desc'}
+                          onClick={() => {
+                            setHostSortDir(sortToggle(hostSortBy, hostSortDir, key));
+                            setHostSortBy(key);
+                          }}
                         >
-                          Сканировать
+                          {label}
+                        </TableSortLabel>
+                      </TableCell>
+                    ))}
+                    <TableCell>Типы</TableCell>
+                    <TableCell align="right">Действия</TableCell>
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {hostsLoading && hostRows.length === 0 ? (
+                    <TableRow><TableCell colSpan={10} align="center"><CircularProgress size={24} /></TableCell></TableRow>
+                  ) : hostRows.length === 0 ? (
+                    <TableRow><TableCell colSpan={10} align="center">Инцидентов пока нет.</TableCell></TableRow>
+                  ) : hostRows.map((row) => (
+                    <TableRow hover key={row.hostname}>
+                      <TableCell>{row.hostname}</TableCell>
+                      <TableCell>{row.branch || 'Без филиала'}</TableCell>
+                      <TableCell>{row.user || '-'}</TableCell>
+                      <TableCell>{row.ip_address || '-'}</TableCell>
+                      <TableCell><Chip size="small" color={Number(row.incidents_new || 0) > 0 ? 'warning' : 'default'} label={Number(row.incidents_new || 0)} /></TableCell>
+                      <TableCell>{Number(row.incidents_total || 0)}</TableCell>
+                      <TableCell><Chip size="small" color={severityColor(row.top_severity)} label={String(row.top_severity || 'none')} /></TableCell>
+                      <TableCell>{formatTs(row.last_incident_at)}</TableCell>
+                      <TableCell>
+                        <Typography variant="body2">{(Array.isArray(row.top_exts) ? row.top_exts : []).join(', ') || '-'}</Typography>
+                        <Typography variant="caption" color="text.secondary">{(Array.isArray(row.top_source_kinds) ? row.top_source_kinds : []).join(', ') || '-'}</Typography>
+                      </TableCell>
+                      <TableCell align="right">
+                        <Button type="button" size="small" variant="outlined" onClick={() => openHostDetails(row.hostname)}>
+                          Просмотреть
                         </Button>
-                        <Button
-                          type="button"
-                          size="small"
-                          variant="outlined"
-                          disabled={!canScanTasks || busyTaskAgent === agent.agent_id}
-                          onClick={() => enqueueTask(agent.agent_id, 'ping')}
-                        >
-                          Проверить связь
-                        </Button>
-                        <Button
-                          type="button"
-                          size="small"
-                          variant="contained"
-                          onClick={() => openHostDetails(hostName)}
-                          disabled={!hostName}
-                        >
-                          Просмотреть инциденты
-                        </Button>
-                      </Box>
-                    </Box>
-                  </Paper>
-                );
-              })}
-            </Stack>
-          )}
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            </TableContainer>
+            <TablePagination
+              component="div"
+              count={hostTotal}
+              page={hostPage}
+              onPageChange={(_, nextPage) => setHostPage(nextPage)}
+              rowsPerPage={hostRowsPerPage}
+              onRowsPerPageChange={(event) => {
+                setHostRowsPerPage(Number(event.target.value));
+                setHostPage(0);
+              }}
+              rowsPerPageOptions={ROWS_PER_PAGE_OPTIONS}
+              labelRowsPerPage="Строк на странице"
+            />
+          </Stack>
         </Paper>
 
         <Drawer anchor="right" open={hostDrawerOpen} onClose={() => setHostDrawerOpen(false)}>
-          <Box sx={{ width: { xs: 360, sm: 620 }, p: 2.2 }}>
-            <Typography variant="h6" sx={{ fontWeight: 700 }}>
-              {selectedHost || 'Компьютер'}
+          <Box sx={{ width: { xs: 360, sm: 720 }, p: 2.2 }}>
+            <Typography variant="h6" sx={{ fontWeight: 700 }}>{selectedHost || 'Компьютер'}</Typography>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 1 }}>
+              Показано: {hostIncidents.length} из {hostIncidentsTotal}
             </Typography>
-            <Typography variant="caption" color="text.secondary">
-              Все найденные инциденты по выбранному ПК
-            </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.4 }}>
-              Показано: {hostIncidents.length} из {hostIncidentPool.length}
-            </Typography>
-            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mt: 1.2, mb: 0.6, flexWrap: 'wrap' }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap', mb: 1 }}>
               <Chip size="small" color={hostNewCount > 0 ? 'warning' : 'default'} label={`Новых: ${hostNewCount}`} />
-              <Button
-                type="button"
-                size="small"
-                variant="contained"
-                onClick={ackAllHostIncidents}
-                disabled={!canScanAck || hostLoading || busyAckAllHost || hostNewCount === 0}
-              >
+              <Button type="button" size="small" variant="contained" onClick={handleAckAllHostIncidents} disabled={!canScanAck || hostLoading || busyAckAllHost || hostNewCount === 0}>
                 Просмотрено все
               </Button>
-              <Button
-                type="button"
-                size="small"
-                variant={incidentHasFragment ? 'contained' : 'outlined'}
-                onClick={() => setIncidentHasFragment((prev) => !prev)}
-              >
+              <Button type="button" size="small" variant={incidentHasFragment ? 'contained' : 'outlined'} onClick={() => setIncidentHasFragment((prev) => !prev)}>
                 Только с фрагментами
-              </Button>
-              <Button
-                type="button"
-                size="small"
-                variant="outlined"
-                onClick={resetHostFilters}
-                disabled={hostLoading}
-              >
-                Сброс фильтров
               </Button>
             </Box>
             <Grid container spacing={1.2} sx={{ mb: 1 }}>
               <Grid item xs={12}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Поиск по пути/фрагменту/паттерну"
-                  value={incidentQ}
-                  onChange={(e) => setIncidentQ(e.target.value)}
-                  placeholder="pdf, паспорт, ДСП, путь файла"
-                />
+                <TextField size="small" fullWidth label="Поиск по пути/фрагменту/паттерну" value={incidentQ} onChange={(event) => setIncidentQ(event.target.value)} />
               </Grid>
               <Grid item xs={6}>
                 <FormControl size="small" fullWidth>
                   <InputLabel>Статус</InputLabel>
-                  <Select value={incidentStatus} label="Статус" onChange={(e) => setIncidentStatus(e.target.value)}>
+                  <Select value={incidentStatus} label="Статус" onChange={(event) => setIncidentStatus(event.target.value)}>
                     <MenuItem value="all">Все</MenuItem>
                     <MenuItem value="new">NEW</MenuItem>
                     <MenuItem value="ack">ACK</MenuItem>
@@ -1042,7 +1067,7 @@ function ScanCenter() {
               <Grid item xs={6}>
                 <FormControl size="small" fullWidth>
                   <InputLabel>Severity</InputLabel>
-                  <Select value={incidentSeverity} label="Severity" onChange={(e) => setIncidentSeverity(e.target.value)}>
+                  <Select value={incidentSeverity} label="Severity" onChange={(event) => setIncidentSeverity(event.target.value)}>
                     <MenuItem value="all">Все</MenuItem>
                     <MenuItem value="high">High</MenuItem>
                     <MenuItem value="medium">Medium</MenuItem>
@@ -1053,70 +1078,26 @@ function ScanCenter() {
               <Grid item xs={6}>
                 <FormControl size="small" fullWidth>
                   <InputLabel>Источник</InputLabel>
-                  <Select value={incidentSourceKind} label="Источник" onChange={(e) => setIncidentSourceKind(e.target.value)}>
+                  <Select value={incidentSourceKind} label="Источник" onChange={(event) => setIncidentSourceKind(event.target.value)}>
                     <MenuItem value="all">Все</MenuItem>
-                    {sourceSelectOptions.map((option) => (
-                      <MenuItem key={option} value={option}>{option}</MenuItem>
-                    ))}
+                    {incidentSourceOptions.map((option) => <MenuItem key={option} value={option}>{option}</MenuItem>)}
                   </Select>
                 </FormControl>
               </Grid>
               <Grid item xs={6}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  label="Расширение файла"
-                  value={incidentFileExt}
-                  onChange={(e) => setIncidentFileExt(e.target.value)}
-                  placeholder={hostExtOptions[0] || 'pdf/txt/docx'}
-                />
+                <TextField size="small" fullWidth label="Расширение файла" value={incidentFileExt} onChange={(event) => setIncidentFileExt(event.target.value)} placeholder="pdf/txt/docx" />
               </Grid>
               <Grid item xs={6}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  type="date"
-                  label="Дата с"
-                  value={incidentDateFrom}
-                  onChange={(e) => setIncidentDateFrom(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
-                />
+                <TextField size="small" fullWidth type="date" label="Дата с" value={incidentDateFrom} onChange={(event) => setIncidentDateFrom(event.target.value)} InputLabelProps={{ shrink: true }} />
               </Grid>
               <Grid item xs={6}>
-                <TextField
-                  size="small"
-                  fullWidth
-                  type="date"
-                  label="Дата по"
-                  value={incidentDateTo}
-                  onChange={(e) => setIncidentDateTo(e.target.value)}
-                  InputLabelProps={{ shrink: true }}
-                />
+                <TextField size="small" fullWidth type="date" label="Дата по" value={incidentDateTo} onChange={(event) => setIncidentDateTo(event.target.value)} InputLabelProps={{ shrink: true }} />
               </Grid>
             </Grid>
-            <Divider sx={{ my: 1.3 }} />
-
             {hostLoading ? (
               <Box sx={{ py: 3, display: 'flex', justifyContent: 'center' }}><CircularProgress size={30} /></Box>
             ) : hostIncidents.length === 0 ? (
-              <Box>
-                <Typography color="text.secondary">
-                  {hostIncidentPool.length > 0
-                    ? 'По текущим фильтрам ничего не найдено.'
-                    : 'Инциденты для этого ПК не найдены.'}
-                </Typography>
-                {hostIncidentPool.length > 0 && (
-                  <Button
-                    type="button"
-                    size="small"
-                    variant="text"
-                    onClick={resetHostFilters}
-                    sx={{ mt: 0.5 }}
-                  >
-                    Сбросить фильтры
-                  </Button>
-                )}
-              </Box>
+              <Typography color="text.secondary">Инциденты по текущим фильтрам не найдены.</Typography>
             ) : (
               <Stack spacing={1.3}>
                 {hostIncidents.map((incident) => (
@@ -1126,15 +1107,9 @@ function ScanCenter() {
                         {incident.severity || '-'} · {formatTs(incident.created_at)}
                       </Typography>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Chip size="small" color={incident.status === 'new' ? 'warning' : 'default'} label={incident.status || '-'} />
-                        {incident.status === 'new' && (
-                          <Button
-                            type="button"
-                            size="small"
-                            variant="outlined"
-                            disabled={!canScanAck || busyIncident === incident.id}
-                            onClick={(e) => { e.preventDefault(); ackIncident(incident); }}
-                          >
+                        <Chip size="small" color={String(incident.status || '').toLowerCase() === 'new' ? 'warning' : 'default'} label={incident.status || '-'} />
+                        {String(incident.status || '').toLowerCase() === 'new' && (
+                          <Button type="button" size="small" variant="outlined" disabled={!canScanAck || busyIncident === incident.id} onClick={() => handleAckIncident(incident)}>
                             ACK
                           </Button>
                         )}
@@ -1144,11 +1119,8 @@ function ScanCenter() {
                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.4 }}>
                       Тип: {getIncidentFileExt(incident) || '-'} · Источник: {getIncidentSourceKind(incident) || '-'}
                     </Typography>
-                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.4 }}>
-                      {resolveBranch(incident)} · {resolveUser(incident)} · IP: {resolveIp(incident)}
-                    </Typography>
                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.8 }}>
-                      {incident.short_reason || 'Совпадения по паттернам'}
+                      {String(incident?.branch || hostMetaByName[normalizeHost(incident?.hostname || selectedHost)]?.branch || '').trim() || 'Без филиала'} · {String(incident?.user_full_name || incident?.user_login || hostMetaByName[normalizeHost(incident?.hostname || selectedHost)]?.user || '').trim() || '-'} · IP: {resolveIncidentIp(incident)}
                     </Typography>
                     {renderFragments(incident)}
                   </Paper>
@@ -1163,4 +1135,3 @@ function ScanCenter() {
 }
 
 export default ScanCenter;
-

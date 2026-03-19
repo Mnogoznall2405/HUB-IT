@@ -21,9 +21,8 @@ from local_store import get_local_store
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-# Legacy token for transitional compatibility.
-LEGACY_DEFAULT_API_KEY = "itinvent_agent_secure_token_v1"
-_LEGACY_KEY_WARNED = False
+DEFAULT_AGENT_API_KEY = "gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8"
+_DEFAULT_KEY_WARNED = False
 
 INVENTORY_FILE = "agent_inventory_cache.json"
 CHANGES_FILE = "agent_inventory_changes.json"
@@ -46,7 +45,7 @@ def _api_key_fingerprint(value: Optional[str]) -> str:
 
 
 def _load_agent_api_keys() -> List[str]:
-    global _LEGACY_KEY_WARNED
+    global _DEFAULT_KEY_WARNED
     keys: List[str] = []
     ring_raw = str(os.getenv("ITINV_AGENT_API_KEYS", "") or "").strip()
     if ring_raw:
@@ -59,12 +58,12 @@ def _load_agent_api_keys() -> List[str]:
     if legacy_key and legacy_key not in keys:
         keys.append(legacy_key)
     elif not keys:
-        keys.append(LEGACY_DEFAULT_API_KEY)
-        if not _LEGACY_KEY_WARNED:
+        keys.append(DEFAULT_AGENT_API_KEY)
+        if not _DEFAULT_KEY_WARNED:
             logger.warning(
-                "Inventory API is using legacy built-in key fallback. Configure ITINV_AGENT_API_KEYS for key rotation."
+                "Inventory API is using built-in default key fallback. Configure ITINV_AGENT_API_KEYS for explicit key management."
             )
-            _LEGACY_KEY_WARNED = True
+            _DEFAULT_KEY_WARNED = True
     return keys
 
 

@@ -182,14 +182,9 @@ class ScanWorker(threading.Thread):
             pass
         self._ocr_pool = None
 
-    def _extract_from_pdf_artifact(self, artifact_path: Path) -> str:
-        pdf_bytes = artifact_path.read_bytes()
-        text_layer = _extract_pdf_text(pdf_bytes, max_pages=3)
-        if text_layer and (not self.config.ocr_only_if_no_text or not _looks_gibberish(text_layer)):
-            return text_layer
+    def _ocr_text_from_pdf_bytes(self, pdf_bytes: bytes, artifact_path: Optional[Path] = None) -> str:
         if not self.config.ocr_enabled:
             return ""
-
         pool = self._get_ocr_pool()
         if pool is None:
             return ""
@@ -212,6 +207,21 @@ class ScanWorker(threading.Thread):
             logger.warning("OCR failed for artifact=%s: %s", artifact_path, exc)
             return ""
 
+    def _collect_pdf_matches(self, artifact_path: Path) -> List[Dict[str, str]]:
+        pdf_bytes = artifact_path.read_bytes()
+        text_layer = _extract_pdf_text(pdf_bytes, max_pages=3)
+        if text_layer:
+            text_matches = scan_text(text_layer)
+            if text_matches:
+                return text_matches
+            if self.config.ocr_only_if_no_text and not _looks_gibberish(text_layer):
+                return []
+
+        ocr_text = self._ocr_text_from_pdf_bytes(pdf_bytes, artifact_path=artifact_path)
+        if not ocr_text:
+            return []
+        return scan_text(ocr_text)
+
     def _process_job(self, job: Dict[str, Any]) -> None:
         job_id = str(job.get("id") or "")
         payload = {}
@@ -229,9 +239,7 @@ class ScanWorker(threading.Thread):
                 matches.extend(scan_text(text_excerpt))
 
             if not matches and artifact_path is not None:
-                pdf_text = self._extract_from_pdf_artifact(artifact_path)
-                if pdf_text:
-                    matches.extend(scan_text(pdf_text))
+                matches.extend(self._collect_pdf_matches(artifact_path))
             matches = self._dedupe_matches(matches)
 
             if matches:

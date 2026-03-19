@@ -1,10 +1,16 @@
-import React, { useCallback, useMemo } from 'react';
+import React, { useMemo } from 'react';
 import {
   Box,
   Button,
   IconButton,
   Paper,
   Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   TextField,
   Tooltip,
   Typography,
@@ -12,88 +18,71 @@ import {
 import { useTheme } from '@mui/material/styles';
 import AddIcon from '@mui/icons-material/Add';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
-import { VariableSizeList as List } from 'react-window';
-import AutoSizer from 'react-virtualized-auto-sizer';
 import {
   buildOfficeUiTokens,
   getOfficeActionTraySx,
   getOfficeEmptyStateSx,
-  getOfficeHeaderBandSx,
   getOfficeListRowSx,
   getOfficePanelSx,
 } from '../../theme/officeUiTokens';
+import { useVirtualizedTableWindow } from './useVirtualizedTableWindow';
 
 const COL = {
-  socket: { w: 90, label: 'Розетка', grow: 0.85 },
-  asw: { w: 100, label: 'ASW', grow: 1.0 },
-  port: { w: 110, label: 'PORT', grow: 0.95 },
-  location: { w: 155, label: 'Помещение', grow: 1.1 },
-  vlan: { w: 60, label: 'VLAN', grow: 0.5 },
-  ip: { w: 145, label: 'IP', grow: 1.2 },
-  mac: { w: 165, label: 'MAC', grow: 1.3 },
-  name: { w: 175, label: 'Имя устройства', grow: 1.55 },
-  fio: { w: 200, label: 'ФИО', grow: 1.8 },
-  actions: { w: 64, label: '', grow: 0 },
+  socket: { w: 90, label: 'Розетка' },
+  asw: { w: 100, label: 'ASW' },
+  port: { w: 110, label: 'PORT' },
+  location: { w: 155, label: 'Помещение' },
+  vlan: { w: 60, label: 'VLAN' },
+  ip: { w: 145, label: 'IP' },
+  mac: { w: 165, label: 'MAC' },
+  name: { w: 175, label: 'Имя устройства' },
+  fio: { w: 200, label: 'ФИО' },
+  actions: { w: 64, label: '' },
 };
-const TOTAL_W = Object.values(COL).reduce((sum, item) => sum + item.w, 0);
 
+const TOTAL_W = Object.values(COL).reduce((sum, item) => sum + item.w, 0);
+const TABLE_VIRTUALIZE_THRESHOLD = 120;
+const TABLE_OVERSCAN_PX = 320;
 const LINE_H = 24;
 const ROW_PAD = 20;
 const MIN_ROW_H = 48;
 const CELL_PAD_X = 24;
 const MONO_CHAR_W = 7.5;
 const TEXT_CHAR_W = 8;
+const TABLE_CONTAINER_MAX_HEIGHT = {
+  xs: 'min(60vh, 520px)',
+  md: 'calc(100vh - 320px)',
+};
 
 function splitValues(raw) {
   if (!raw) return [];
-  return raw.split(/\n|(?:\s{2,})/).map((value) => value.trim()).filter(Boolean);
+  return String(raw)
+    .split(/\n|(?:\s{2,})/)
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
 function splitBySpace(raw) {
   if (!raw) return [];
-  return raw.split(/\s+/).map((value) => value.trim()).filter(Boolean);
+  return String(raw)
+    .split(/\s+/)
+    .map((value) => value.trim())
+    .filter(Boolean);
 }
 
-function estimateVisualLines(values, colW, charW) {
-  if (!values || values.length === 0) return 1;
-  const charsPerLine = Math.max(1, Math.floor((colW - CELL_PAD_X) / charW));
-  let total = 0;
-  for (const value of values) {
-    total += Math.max(1, Math.ceil(value.length / charsPerLine));
-  }
-  return total;
+function estimateVisualLines(values, colWidth, charWidth) {
+  if (!values.length) return 1;
+  const charsPerLine = Math.max(1, Math.floor((colWidth - CELL_PAD_X) / charWidth));
+  return values.reduce((total, value) => total + Math.max(1, Math.ceil(value.length / charsPerLine)), 0);
 }
 
-function rowLines(socket) {
-  const ips = splitBySpace(socket.endpoint_ip_raw);
-  const macs = splitBySpace(socket.mac_address || socket.endpoint_mac_raw);
-  const names = splitBySpace(socket.endpoint_name_raw);
-  const fios = splitValues(socket.fio);
-
-  const ipLines = estimateVisualLines(ips, COL.ip.w, MONO_CHAR_W);
-  const macLines = estimateVisualLines(macs, COL.mac.w, MONO_CHAR_W);
-  const nameLines = estimateVisualLines(names, COL.name.w, TEXT_CHAR_W);
-  const fioLines = estimateVisualLines(fios, COL.fio.w, TEXT_CHAR_W);
-  return Math.max(1, ipLines, macLines, nameLines, fioLines);
+function calcRowHeight(socket) {
+  const ipLines = estimateVisualLines(splitBySpace(socket.endpoint_ip_raw), COL.ip.w, MONO_CHAR_W);
+  const macLines = estimateVisualLines(splitBySpace(socket.mac_address || socket.endpoint_mac_raw), COL.mac.w, MONO_CHAR_W);
+  const nameLines = estimateVisualLines(splitBySpace(socket.endpoint_name_raw), COL.name.w, TEXT_CHAR_W);
+  const fioLines = estimateVisualLines(splitValues(socket.fio), COL.fio.w, TEXT_CHAR_W);
+  return Math.max(MIN_ROW_H, Math.max(ipLines, macLines, nameLines, fioLines, 1) * LINE_H + ROW_PAD);
 }
-
-function calcRowH(socket) {
-  return Math.max(MIN_ROW_H, rowLines(socket) * LINE_H + ROW_PAD);
-}
-
-const cell = (col, extra = {}) => ({
-  flexBasis: col.w,
-  minWidth: col.w,
-  flexGrow: col.grow ?? 1,
-  flexShrink: 0,
-  px: 1.5,
-  py: 0.75,
-  display: 'flex',
-  flexDirection: 'column',
-  justifyContent: 'center',
-  overflow: 'hidden',
-  ...extra,
-});
 
 function MonoLine({ value }) {
   if (!value) return null;
@@ -112,7 +101,7 @@ function MonoLine({ value }) {
   );
 }
 
-function TextLine({ value, bold, color }) {
+function TextLine({ value, bold = false, color }) {
   if (!value) return null;
   return (
     <Typography
@@ -142,111 +131,46 @@ export default function SocketsTab({
 }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  const heights = useMemo(() => filteredSockets.map(calcRowH), [filteredSockets]);
-  const getItemSize = useCallback((idx) => heights[idx] ?? MIN_ROW_H, [heights]);
+  const tableMinWidth = canEdit ? TOTAL_W : TOTAL_W - COL.actions.w;
+  const visibleColumnCount = canEdit ? Object.keys(COL).length : Object.keys(COL).length - 1;
+  const useVirtualization = filteredSockets.length >= TABLE_VIRTUALIZE_THRESHOLD;
 
-  const RenderRow = useCallback(({ index, style }) => {
-    const socket = filteredSockets[index];
-    const isDeleting = Number(deletingSocketId || 0) === Number(socket.id);
+  const rowHeights = useMemo(() => filteredSockets.map(calcRowHeight), [filteredSockets]);
+  const {
+    containerRef,
+    handleScroll,
+    startIndex,
+    endIndex,
+    topSpacerHeight,
+    bottomSpacerHeight,
+  } = useVirtualizedTableWindow({
+    itemHeights: rowHeights,
+    enabled: useVirtualization,
+    overscanPx: TABLE_OVERSCAN_PX,
+  });
 
-    const ips = splitBySpace(socket.endpoint_ip_raw);
-    const macs = splitBySpace(socket.mac_address || socket.endpoint_mac_raw);
-    const names = splitBySpace(socket.endpoint_name_raw);
+  const visibleSockets = useMemo(
+    () => (useVirtualization ? filteredSockets.slice(startIndex, endIndex) : filteredSockets),
+    [endIndex, filteredSockets, startIndex, useVirtualization],
+  );
 
-    return (
-      <Box
-        onClick={(event) => handleSocketRowClick(socket, event)}
-        sx={{
-          ...style,
-          display: 'flex',
-          alignItems: 'stretch',
-          cursor: 'pointer',
-          boxSizing: 'border-box',
-          ...getOfficeListRowSx(ui, theme),
-        }}
-      >
-        <Box sx={cell(COL.socket, { justifyContent: 'center' })}>
-          <Typography
-            variant="body2"
-            noWrap
-            sx={{ fontWeight: 700, color: 'primary.main', fontSize: '0.875rem' }}
-          >
-            {socket.socket_code || '-'}
-          </Typography>
-        </Box>
+  const baseHeadCellSx = {
+    py: 1,
+    fontWeight: 700,
+    letterSpacing: '0.05em',
+    textTransform: 'uppercase',
+    color: 'text.secondary',
+    fontSize: '0.68rem',
+    borderBottomColor: ui.borderStrong,
+    bgcolor: ui.headerBandBg,
+  };
 
-        <Box sx={cell(COL.asw, { justifyContent: 'center' })}>
-          <TextLine value={socket.device_code || '-'} />
-        </Box>
-
-        <Box sx={cell(COL.port, { justifyContent: 'center' })}>
-          <MonoLine value={socket.port_name || '-'} />
-        </Box>
-
-        <Box sx={cell(COL.location, { justifyContent: 'center' })}>
-          <TextLine value={socket.location_code || '-'} />
-        </Box>
-
-        <Box sx={cell(COL.vlan, { justifyContent: 'center' })}>
-          <Typography
-            variant="body2"
-            noWrap
-            sx={{ fontSize: '0.875rem', color: 'text.secondary', lineHeight: `${LINE_H}px` }}
-          >
-            {socket.vlan_raw || '-'}
-          </Typography>
-        </Box>
-
-        <Box sx={cell(COL.ip)}>
-          {ips.length > 0 ? ips.map((ip) => <MonoLine key={ip} value={ip} />) : <MonoLine value="-" />}
-        </Box>
-
-        <Box sx={cell(COL.mac)}>
-          {macs.length > 0 ? macs.map((mac) => <MonoLine key={mac} value={mac} />) : <MonoLine value="-" />}
-        </Box>
-
-        <Box sx={cell(COL.name)}>
-          {names.length > 0 ? names.map((name) => <TextLine key={name} value={name} />) : <TextLine value="-" />}
-        </Box>
-
-        <Box sx={cell(COL.fio, { justifyContent: 'center' })}>
-          {socket.fio ? (
-            <TextLine value={socket.fio} />
-          ) : (
-            <Typography variant="body2" sx={{ color: 'text.disabled', fontSize: '0.8rem' }}>
-              -
-            </Typography>
-          )}
-        </Box>
-
-        {canEdit ? (
-          <Box sx={cell(COL.actions, { justifyContent: 'center', alignItems: 'center', flexDirection: 'row' })}>
-            <Tooltip title="Удалить розетку">
-              <span>
-                <IconButton
-                  size="small"
-                  color="error"
-                  disabled={isDeleting}
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onDeleteSocket?.(socket, event);
-                  }}
-                >
-                  <DeleteOutlineIcon sx={{ fontSize: 16 }} />
-                </IconButton>
-              </span>
-            </Tooltip>
-          </Box>
-        ) : null}
-      </Box>
-    );
-  }, [
-    filteredSockets,
-    canEdit,
-    deletingSocketId,
-    handleSocketRowClick,
-    onDeleteSocket,
-  ]);
+  const baseBodyCellSx = {
+    px: 1.5,
+    py: 0.75,
+    verticalAlign: 'top',
+    borderBottomColor: ui.borderSoft,
+  };
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 400 }}>
@@ -271,66 +195,116 @@ export default function SocketsTab({
       </Paper>
 
       <Paper elevation={0} sx={getOfficePanelSx(ui, { flexGrow: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' })}>
-        <Box sx={{ overflowX: 'auto', flexGrow: 1, display: 'flex', flexDirection: 'column' }}>
-          <Box sx={{ width: '100%', minWidth: canEdit ? TOTAL_W : TOTAL_W - COL.actions.w, display: 'flex', flexDirection: 'column', height: '100%' }}>
-            <Box
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                ...getOfficeHeaderBandSx(ui, {
-                  borderBottomColor: ui.borderStrong,
-                }),
-              }}
-            >
-              {Object.entries(COL).map(([key, col]) => {
-                if (key === 'actions' && !canEdit) return null;
-                return (
-                  <Box key={key} sx={{ ...cell(col), py: 0.75 }}>
-                    <Typography
-                      variant="caption"
+        {filteredSockets.length === 0 ? (
+          <Box sx={{ px: 2, py: 3 }}>
+            <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 2, textAlign: 'center' }) }}>
+              <Typography variant="body2" color="text.secondary">
+                Розетки не найдены.
+              </Typography>
+            </Box>
+          </Box>
+        ) : (
+          <TableContainer
+            ref={containerRef}
+            onScroll={handleScroll}
+            sx={{
+              flexGrow: 1,
+              minHeight: 0,
+              maxHeight: TABLE_CONTAINER_MAX_HEIGHT,
+              overflowY: 'scroll',
+              overflowX: 'auto',
+              scrollbarGutter: 'stable both-edges',
+              WebkitOverflowScrolling: 'touch',
+            }}
+          >
+            <Table stickyHeader size="small" sx={{ minWidth: tableMinWidth, width: `max(100%, ${tableMinWidth}px)`, tableLayout: 'fixed' }}>
+              <TableHead>
+                <TableRow>
+                  <TableCell sx={{ ...baseHeadCellSx, width: COL.socket.w }}>Розетка</TableCell>
+                  <TableCell sx={{ ...baseHeadCellSx, width: COL.asw.w }}>ASW</TableCell>
+                  <TableCell sx={{ ...baseHeadCellSx, width: COL.port.w }}>PORT</TableCell>
+                  <TableCell sx={{ ...baseHeadCellSx, width: COL.location.w }}>Помещение</TableCell>
+                  <TableCell sx={{ ...baseHeadCellSx, width: COL.vlan.w }}>VLAN</TableCell>
+                  <TableCell sx={{ ...baseHeadCellSx, width: COL.ip.w }}>IP</TableCell>
+                  <TableCell sx={{ ...baseHeadCellSx, width: COL.mac.w }}>MAC</TableCell>
+                  <TableCell sx={{ ...baseHeadCellSx, width: COL.name.w }}>Имя устройства</TableCell>
+                  <TableCell sx={{ ...baseHeadCellSx, width: COL.fio.w }}>ФИО</TableCell>
+                  {canEdit && <TableCell sx={{ ...baseHeadCellSx, width: COL.actions.w }} />}
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {useVirtualization && topSpacerHeight > 0 && (
+                  <TableRow>
+                    <TableCell colSpan={visibleColumnCount} sx={{ p: 0, borderBottom: 'none', height: topSpacerHeight }} />
+                  </TableRow>
+                )}
+
+                {visibleSockets.map((socket) => {
+                  const isDeleting = Number(deletingSocketId || 0) === Number(socket.id);
+                  const ips = splitBySpace(socket.endpoint_ip_raw);
+                  const macs = splitBySpace(socket.mac_address || socket.endpoint_mac_raw);
+                  const names = splitBySpace(socket.endpoint_name_raw);
+                  const fios = splitValues(socket.fio);
+
+                  return (
+                    <TableRow
+                      key={socket.id}
+                      hover
+                      onClick={(event) => handleSocketRowClick(socket, event)}
                       sx={{
-                        fontWeight: 700,
-                        letterSpacing: '0.05em',
-                        textTransform: 'uppercase',
-                        color: 'text.secondary',
-                        fontSize: '0.68rem',
+                        cursor: 'pointer',
+                        ...getOfficeListRowSx(ui, theme),
                       }}
                     >
-                      {col.label}
-                    </Typography>
-                  </Box>
-                );
-              })}
-            </Box>
+                      <TableCell sx={baseBodyCellSx}><TextLine bold color="primary.main" value={socket.socket_code || '-'} /></TableCell>
+                      <TableCell sx={baseBodyCellSx}><TextLine value={socket.device_code || '-'} /></TableCell>
+                      <TableCell sx={baseBodyCellSx}><MonoLine value={socket.port_name || '-'} /></TableCell>
+                      <TableCell sx={baseBodyCellSx}><TextLine value={socket.location_code || '-'} /></TableCell>
+                      <TableCell sx={baseBodyCellSx}><TextLine color="text.secondary" value={socket.vlan_raw || '-'} /></TableCell>
+                      <TableCell sx={baseBodyCellSx}>
+                        {ips.length > 0 ? ips.map((ip) => <MonoLine key={`${socket.id}-ip-${ip}`} value={ip} />) : <MonoLine value="-" />}
+                      </TableCell>
+                      <TableCell sx={baseBodyCellSx}>
+                        {macs.length > 0 ? macs.map((mac) => <MonoLine key={`${socket.id}-mac-${mac}`} value={mac} />) : <MonoLine value="-" />}
+                      </TableCell>
+                      <TableCell sx={baseBodyCellSx}>
+                        {names.length > 0 ? names.map((name) => <TextLine key={`${socket.id}-name-${name}`} value={name} />) : <TextLine value="-" />}
+                      </TableCell>
+                      <TableCell sx={baseBodyCellSx}>
+                        {fios.length > 0 ? fios.map((fio) => <TextLine key={`${socket.id}-fio-${fio}`} value={fio} />) : <TextLine value="-" />}
+                      </TableCell>
+                      {canEdit && (
+                        <TableCell align="center" sx={{ ...baseBodyCellSx, width: COL.actions.w }}>
+                          <Tooltip title="Удалить розетку">
+                            <span>
+                              <IconButton
+                                size="small"
+                                color="error"
+                                disabled={isDeleting}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onDeleteSocket?.(socket, event);
+                                }}
+                              >
+                                <DeleteOutlineIcon sx={{ fontSize: 16 }} />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </TableCell>
+                      )}
+                    </TableRow>
+                  );
+                })}
 
-            {filteredSockets.length === 0 ? (
-              <Box sx={{ px: 2, py: 3 }}>
-                <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 2, textAlign: 'center' }) }}>
-                <Typography variant="body2" color="text.secondary">
-                  Розетки не найдены.
-                </Typography>
-                </Box>
-              </Box>
-            ) : (
-              <Box sx={{ flex: 1, minHeight: 0 }}>
-                <AutoSizer disableWidth>
-                  {({ height }) => (
-                    <List
-                      height={height}
-                      itemCount={filteredSockets.length}
-                      itemSize={getItemSize}
-                      width="100%"
-                      overscanCount={6}
-                      estimatedItemSize={MIN_ROW_H}
-                    >
-                      {RenderRow}
-                    </List>
-                  )}
-                </AutoSizer>
-              </Box>
-            )}
-          </Box>
-        </Box>
+                {useVirtualization && bottomSpacerHeight > 0 && (
+                  <TableRow>
+                    <TableCell colSpan={visibleColumnCount} sx={{ p: 0, borderBottom: 'none', height: bottomSpacerHeight }} />
+                  </TableRow>
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        )}
       </Paper>
     </Box>
   );

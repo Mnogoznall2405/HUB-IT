@@ -19,6 +19,7 @@ from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
 
 import requests
 import yaml
+from agent_version import AGENT_VERSION
 
 try:
     import fitz  # type: ignore
@@ -34,7 +35,7 @@ except Exception:
 
 
 DEFAULT_SERVER_BASE = "https://hubit.zsgp.ru/api/v1/scan"
-DEFAULT_API_KEY = "itinvent_agent_secure_token_v1"
+DEFAULT_API_KEY = "gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8"
 DEFAULT_POLL_INTERVAL = 60
 DEFAULT_HTTP_TIMEOUT = 20
 DEFAULT_MAX_FILE_SIZE_MB = 50
@@ -64,6 +65,8 @@ TEXT_EXTENSIONS = {
     ".md",
     ".rtf",
 }
+
+SUPPORTED_SCAN_EXTENSIONS = frozenset({".pdf", *TEXT_EXTENSIONS})
 
 PROGRAM_DATA = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent" / "ScanAgent"
 TEMP_DIR = Path(os.environ.get("TEMP", r"C:\Windows\Temp"))
@@ -452,6 +455,11 @@ def _read_text_file(path: Path, max_bytes: int = 2 * 1024 * 1024) -> str:
     try:
         with path.open("rb") as f:
             raw = f.read(max_bytes)
+        for encoding in ("utf-8-sig", "utf-8", "cp1251"):
+            try:
+                return raw.decode(encoding)
+            except Exception:
+                continue
         return raw.decode("utf-8", errors="ignore")
     except Exception:
         return ""
@@ -740,6 +748,9 @@ class ScanAgent:
             return False
         return old_hash in (self.state.get("hashes") or {})
 
+    def _is_supported_scan_path(self, path: Path) -> bool:
+        return path.suffix.lower() in SUPPORTED_SCAN_EXTENSIONS
+
     def _build_event_id(self, path: Path, file_hash: str, stat_result: os.stat_result) -> str:
         source = "|".join(
             [
@@ -874,6 +885,9 @@ class ScanAgent:
         if stat_result.st_size <= 0 or stat_result.st_size > self.config["max_file_bytes"]:
             result["skipped"] += 1
             return result
+        if not self._is_supported_scan_path(path):
+            result["skipped"] += 1
+            return result
 
         if self._already_scanned(path, stat_result):
             result["skipped"] += 1
@@ -882,11 +896,6 @@ class ScanAgent:
         try:
             file_hash = _sha256_file(path)
         except Exception:
-            result["skipped"] += 1
-            return result
-
-        if file_hash in (self.state.get("hashes") or {}):
-            self._register_scanned(path, file_hash, stat_result)
             result["skipped"] += 1
             return result
 
@@ -903,19 +912,17 @@ class ScanAgent:
             return result
 
         self._outbox_enqueue(payload)
-        self._outbox_prune_limits()
-        self._drain_outbox(max_items=20)
         return result
 
     def run_scan_once(self) -> Dict[str, int]:
         self.refresh_roots(force=True)
-        self._outbox_prune_limits()
         summary = {"scanned": 0, "queued": 0, "skipped": 0}
         for path in _iter_files(self._roots, self.config["max_file_bytes"]):
             stats = self._scan_path(path)
             summary["scanned"] += stats["scanned"]
             summary["queued"] += stats["queued"]
             summary["skipped"] += stats["skipped"]
+        self._outbox_prune_limits()
         drained = self._drain_outbox(max_items=200)
         if drained:
             logging.info("Outbox drained after scan_once: sent=%s", drained)
@@ -954,7 +961,7 @@ class ScanAgent:
             "hostname": _hostname(),
             "branch": self.config["branch"],
             "ip_address": _primary_ip(),
-            "version": "1.1.0",
+            "version": AGENT_VERSION,
             "status": "online",
             "queue_pending": len(self._pending_paths) + self._outbox_depth(),
             "last_seen_at": int(time.time()),
@@ -1093,6 +1100,10 @@ class ScanAgent:
                         summary["queued"],
                         summary["skipped"],
                     )
+                    self._outbox_prune_limits()
+                    drained = self._drain_outbox(max_items=100)
+                    if drained:
+                        logging.info("Outbox drained after watchdog batch: sent=%s", drained)
 
                 if self._state_dirty and int(now) % 15 == 0:
                     self._persist_state()

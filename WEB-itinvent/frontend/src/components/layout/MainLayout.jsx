@@ -43,41 +43,22 @@ import AssignmentIcon from '@mui/icons-material/Assignment';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import GroupIcon from '@mui/icons-material/Group';
 import VideocamIcon from '@mui/icons-material/Videocam';
-import CheckCircleOutlineRoundedIcon from '@mui/icons-material/CheckCircleOutlineRounded';
-import ErrorOutlineRoundedIcon from '@mui/icons-material/ErrorOutlineRounded';
-import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
-import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import apiClient, { mailAPI } from '../../api/client';
 import { getOrFetchSWR, buildCacheKey } from '../../lib/swrCache';
 import { buildOfficeUiTokens, getOfficeEmptyStateSx, getOfficePanelSx, getOfficeQuietActionSx } from '../../theme/officeUiTokens';
+import ToastHistoryList from './ToastHistoryList';
+import {
+  TOAST_ACTION_EXECUTE_EVENT,
+  createNavigateToastAction,
+  normalizeToastAction,
+} from '../feedback/toastActions';
 
 const DRAWER_WIDTH = 240;
 const KB_WIKI_URL = 'https://wiki.zsgp.ru/';
 const HUB_POLL_INTERVAL_MS = 20_000;
-const TOAST_SOURCE_LABELS = {
-  hub: 'Центр управления',
-  mail: 'Почта',
-  settings: 'Настройки',
-  database: 'IT-invent WEB',
-  networks: 'Сети',
-  tasks: 'Задачи',
-  statistics: 'Статистика',
-  mfu: 'МФУ',
-  'ad-users': 'Пользователи AD',
-  vcs: 'ВКС',
-  'database-switch': 'Переключение БД',
-};
-const TOAST_SEVERITY_META = {
-  success: { color: '#22c55e', icon: CheckCircleOutlineRoundedIcon, label: 'Успех' },
-  error: { color: '#ef4444', icon: ErrorOutlineRoundedIcon, label: 'Ошибка' },
-  warning: { color: '#f59e0b', icon: WarningAmberRoundedIcon, label: 'Предупреждение' },
-  info: { color: '#3b82f6', icon: InfoOutlinedIcon, label: 'Информация' },
-};
-
-
 const navigationItems = [
   { path: '/dashboard', label: 'Центр управления', icon: <DashboardIcon />, permission: 'dashboard.read' },
   { path: '/tasks', label: 'Задачи', icon: <TaskAltIcon />, permission: 'tasks.read' },
@@ -97,22 +78,6 @@ const navigationItems = [
 const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
 const normalizeDbId = (value) => String(value ?? '').trim();
 const SWR_STALE_TIME_MS = 30_000;
-
-const formatPanelDateTime = (value) => {
-  if (!value) return '—';
-  const parsed = new Date(value);
-  if (Number.isNaN(parsed.getTime())) return '—';
-  const now = new Date();
-  const sameDay = parsed.toDateString() === now.toDateString();
-  return sameDay
-    ? parsed.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' })
-    : parsed.toLocaleString('ru-RU', {
-      day: '2-digit',
-      month: '2-digit',
-      hour: '2-digit',
-      minute: '2-digit',
-    });
-};
 
 function MainLayout({ children }) {
   const theme = useTheme();
@@ -184,6 +149,17 @@ function MainLayout({ children }) {
   useEffect(() => {
     notifyInfoRef.current = notifyInfo;
   }, [notifyInfo]);
+
+  useEffect(() => {
+    const handleToastActionExecute = (event) => {
+      const action = normalizeToastAction(event?.detail);
+      if (!action || action.kind !== 'navigate') return;
+      navigate(action.to);
+    };
+
+    window.addEventListener(TOAST_ACTION_EXECUTE_EVENT, handleToastActionExecute);
+    return () => window.removeEventListener(TOAST_ACTION_EXECUTE_EVENT, handleToastActionExecute);
+  }, [navigate]);
 
   const toggleSidebar = () => {
     const newState = !sidebarCollapsed;
@@ -378,6 +354,7 @@ function MainLayout({ children }) {
                   title: toastTitle,
                   source: 'hub',
                   channel: 'system',
+                  action: createNavigateToastAction('/dashboard', 'Открыть центр'),
                   dedupeMode: 'recent',
                   dedupeKey: `hub:${id}`,
                   durationMs: 5200,
@@ -1075,137 +1052,7 @@ function MainLayout({ children }) {
                           Системные события
                         </Typography>
                       </Stack>
-                      <Stack spacing={0.75}>
-                        {toastHistoryItems.map((item) => {
-                          const severityMeta = TOAST_SEVERITY_META[item?.severity] || TOAST_SEVERITY_META.info;
-                          const SeverityIcon = severityMeta.icon;
-                          const sourceLabel = TOAST_SOURCE_LABELS[item?.source] || 'Система';
-                          const title = String(item?.title || '').trim() || sourceLabel;
-                          const message = String(item?.message || '').trim();
-                          const duplicated = title === message;
-
-                          return (
-                            <Box
-                              key={item.id}
-                              sx={{
-                                p: 1.2,
-                                borderRadius: '12px',
-                                border: '1px solid',
-                                borderColor: alpha(severityMeta.color, 0.18),
-                                bgcolor: alpha(severityMeta.color, 0.06),
-                              }}
-                            >
-                              <Stack direction="row" spacing={1} alignItems="flex-start">
-                                <Box
-                                  sx={{
-                                    width: 32,
-                                    height: 32,
-                                    borderRadius: '10px',
-                                    display: 'flex',
-                                    alignItems: 'center',
-                                    justifyContent: 'center',
-                                    flexShrink: 0,
-                                    bgcolor: alpha(severityMeta.color, 0.14),
-                                    color: severityMeta.color,
-                                  }}
-                                >
-                                  <SeverityIcon sx={{ fontSize: 16 }} />
-                                </Box>
-                                <Box sx={{ flex: 1, minWidth: 0 }}>
-                                  <Stack direction="row" justifyContent="space-between" spacing={1} alignItems="center">
-                                    <Typography
-                                      variant="body2"
-                                      sx={{
-                                        fontWeight: 700,
-                                        lineHeight: 1.3,
-                                        color: 'text.primary',
-                                        overflow: 'hidden',
-                                        textOverflow: 'ellipsis',
-                                        whiteSpace: 'nowrap',
-                                      }}
-                                    >
-                                      {title}
-                                    </Typography>
-                                    {Number(item?.repeatCount || 1) > 1 && (
-                                      <Chip
-                                        size="small"
-                                        label={`x${item.repeatCount}`}
-                                        sx={{
-                                          height: 20,
-                                          fontSize: '0.65rem',
-                                          fontWeight: 700,
-                                          color: severityMeta.color,
-                                          bgcolor: alpha(severityMeta.color, 0.14),
-                                        }}
-                                      />
-                                    )}
-                                  </Stack>
-                                  {!duplicated && (
-                                    <Typography
-                                      variant="caption"
-                                      sx={{
-                                        display: 'block',
-                                        mt: 0.25,
-                                        color: 'text.secondary',
-                                        fontSize: '0.72rem',
-                                        lineHeight: 1.35,
-                                      }}
-                                    >
-                                      {message}
-                                    </Typography>
-                                  )}
-                                  <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mt: 0.65 }}>
-                                    <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap">
-                                      <Chip
-                                        size="small"
-                                        label={sourceLabel}
-                                        sx={{
-                                          height: 20,
-                                          fontSize: '0.62rem',
-                                          fontWeight: 600,
-                                          bgcolor: ui.actionBg,
-                                          border: '1px solid',
-                                          borderColor: ui.borderSoft,
-                                        }}
-                                      />
-                                      {Number(item?.statusCode || 0) > 0 && (
-                                        <Chip
-                                          size="small"
-                                          label={`HTTP ${item.statusCode}`}
-                                          sx={{
-                                            height: 20,
-                                            fontSize: '0.62rem',
-                                            fontWeight: 600,
-                                            bgcolor: ui.actionBg,
-                                            border: '1px solid',
-                                            borderColor: ui.borderSoft,
-                                          }}
-                                        />
-                                      )}
-                                      {Number(item?.suppressedCount || 0) > 0 && (
-                                        <Chip
-                                          size="small"
-                                          label={`Подавлено: ${item.suppressedCount}`}
-                                          sx={{
-                                            height: 20,
-                                            fontSize: '0.62rem',
-                                            fontWeight: 600,
-                                            color: severityMeta.color,
-                                            bgcolor: alpha(severityMeta.color, 0.1),
-                                          }}
-                                        />
-                                      )}
-                                    </Stack>
-                                    <Typography variant="caption" sx={{ color: 'text.disabled', fontSize: '0.65rem' }}>
-                                      {formatPanelDateTime(item?.lastSeenAt)}
-                                    </Typography>
-                                  </Stack>
-                                </Box>
-                              </Stack>
-                            </Box>
-                          );
-                        })}
-                      </Stack>
+                      <ToastHistoryList items={toastHistoryItems} />
                     </Box>
                   </>
                 ) : null}

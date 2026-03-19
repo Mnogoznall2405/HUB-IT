@@ -1391,6 +1391,16 @@ export const scanAPI = {
     return response.data;
   },
 
+  getBranches: async () => {
+    const response = await apiClient.get('/scan/branches');
+    return response.data;
+  },
+
+  getHostsTable: async (params = {}) => {
+    const response = await apiClient.get('/scan/hosts/table', { params });
+    return response.data;
+  },
+
   getHosts: async (params = {}) => {
     if (scanHostsEndpointUnavailable) {
       return getHostsFallbackFromIncidents(params);
@@ -1422,6 +1432,16 @@ export const scanAPI = {
 
   getAgents: async () => {
     const response = await apiClient.get('/scan/agents');
+    return response.data;
+  },
+
+  getAgentsTable: async (params = {}) => {
+    const response = await apiClient.get('/scan/agents/table', { params });
+    return response.data;
+  },
+
+  getTasks: async (params = {}) => {
+    const response = await apiClient.get('/scan/tasks', { params });
     return response.data;
   },
 

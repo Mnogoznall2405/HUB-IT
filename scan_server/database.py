@@ -3,6 +3,7 @@
 import json
 import logging
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -12,8 +13,19 @@ from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
+project_root = Path(__file__).resolve().parent.parent
+web_root = project_root / "WEB-itinvent"
+if web_root.exists() and str(web_root) not in sys.path:
+    sys.path.insert(0, str(web_root))
+
 ACTIVE_TASK_STATUSES = ("queued", "delivered", "acknowledged")
 FINAL_TASK_STATUSES = ("completed", "failed", "expired")
+BRANCH_PREFIX_FALLBACKS = {
+    "TMN": "Тюмень",
+    "MSK": "Москва",
+    "SPB": "Санкт-Петербург",
+    "OBJ": "Объекты",
+}
 
 
 def _now_ts() -> int:
@@ -62,6 +74,127 @@ def _file_ext_from_values(file_name: Any, file_path: Any) -> str:
     if "." not in name_part:
         return ""
     return name_part.rsplit(".", 1)[-1].strip().lower()
+
+
+def _normalize_sort_dir(value: Any) -> str:
+    return "asc" if str(value or "").strip().lower() == "asc" else "desc"
+
+
+def _normalize_task_status_filter(value: Any) -> List[str]:
+    raw = str(value or "").strip().lower()
+    if not raw or raw == "all":
+        return []
+    if raw == "active":
+        return list(ACTIVE_TASK_STATUSES)
+    if raw == "final":
+        return list(FINAL_TASK_STATUSES)
+    return [item for item in {part.strip().lower() for part in raw.split(",")} if item]
+
+
+def _normalize_online_filter(value: Any) -> Optional[bool]:
+    raw = str(value or "").strip().lower()
+    if not raw or raw == "all":
+        return None
+    if raw in {"1", "true", "yes", "online"}:
+        return True
+    if raw in {"0", "false", "no", "offline"}:
+        return False
+    return None
+
+
+def _normalize_mac_for_lookup(value: Any) -> str:
+    return "".join(
+        ch for ch in str(value or "").upper()
+        if ch.isdigit() or ("A" <= ch <= "F")
+    )
+
+
+def _infer_branch_from_agent_identity(agent_id: Any, hostname: Any) -> str:
+    for value in (hostname, agent_id):
+        text = str(value or "").strip().upper()
+        if not text:
+            continue
+        prefix = text.split("-", 1)[0].strip()
+        if prefix in BRANCH_PREFIX_FALLBACKS:
+            return BRANCH_PREFIX_FALLBACKS[prefix]
+    return ""
+
+
+def _get_scan_context_db_ids() -> List[str]:
+    ids: List[str] = []
+    default_db = ""
+    try:
+        from backend.config import config as web_config
+
+        default_db = str(getattr(getattr(web_config, "database", None), "database", "") or "").strip()
+    except Exception:
+        default_db = ""
+
+    if default_db:
+        ids.append(default_db)
+
+    try:
+        from backend.api.v1.database import get_all_db_configs
+
+        for item in get_all_db_configs():
+            db_id = str((item or {}).get("id") or "").strip()
+            if db_id and db_id not in ids:
+                ids.append(db_id)
+    except Exception:
+        pass
+
+    return ids
+
+
+def _resolve_agent_sql_context(mac_address: Any, hostname: Any) -> Optional[Dict[str, Any]]:
+    normalized_mac = _normalize_mac_for_lookup(mac_address)
+    normalized_hostname = str(hostname or "").strip()
+    if not normalized_mac and not normalized_hostname:
+        return None
+
+    try:
+        from backend.database import queries
+    except Exception as exc:
+        logger.debug("Scan agent SQL context import skipped: %s", exc)
+        return None
+
+    for db_id in _get_scan_context_db_ids():
+        try:
+            row = queries.resolve_pc_context_by_mac_or_hostname(
+                mac_address=normalized_mac or mac_address,
+                hostname=normalized_hostname,
+                db_id=db_id,
+            )
+        except Exception as exc:
+            logger.debug("Scan agent SQL context lookup failed for %s/%s in %s: %s", normalized_hostname, normalized_mac, db_id, exc)
+            continue
+        if isinstance(row, dict) and any(str(row.get(key) or "").strip() for key in ("branch_name", "location_name", "employee_name", "inv_no")):
+            context = dict(row)
+            context["database_id"] = db_id
+            return context
+    return None
+
+
+def _severity_rank_to_label(rank: Any) -> str:
+    rank_value = int(rank or 0)
+    if rank_value >= 3:
+        return "high"
+    if rank_value == 2:
+        return "medium"
+    if rank_value == 1:
+        return "low"
+    return "none"
+
+
+def _task_priority(task: Optional[Dict[str, Any]]) -> int:
+    status_value = str((task or {}).get("status") or "").strip().lower()
+    if status_value == "acknowledged":
+        return 3
+    if status_value == "delivered":
+        return 2
+    if status_value == "queued":
+        return 1
+    return 0
 
 
 class ScanStore:
@@ -470,6 +603,154 @@ class ScanStore:
             conn.commit()
         return {"task_id": tid, "status": normalized}
 
+    def _serialize_task_row(self, row: sqlite3.Row, now_ts: Optional[int] = None) -> Dict[str, Any]:
+        current_ts = int(now_ts or _now_ts())
+        item = dict(row)
+        item["payload"] = _json_loads(item.pop("payload_json", "{}"), {})
+        item["result"] = _json_loads(item.pop("result_json", "{}"), {})
+        item["status"] = str(item.get("status") or "").strip().lower()
+        item["command"] = str(item.get("command") or "").strip().lower()
+        item["error_text"] = str(item.get("error_text") or "").strip()
+        item["attempt_count"] = int(item.get("attempt_count") or 0)
+        item["created_at"] = int(item.get("created_at") or 0)
+        item["updated_at"] = int(item.get("updated_at") or item["created_at"] or 0)
+        item["delivered_at"] = int(item.get("delivered_at") or 0)
+        item["acked_at"] = int(item.get("acked_at") or 0)
+        item["completed_at"] = int(item.get("completed_at") or 0)
+        item["ttl_at"] = int(item.get("ttl_at") or 0)
+        item["is_active"] = item["status"] in ACTIVE_TASK_STATUSES and item["ttl_at"] > current_ts
+        elapsed_end = item["completed_at"] or item["updated_at"] or current_ts
+        item["elapsed_seconds"] = max(0, elapsed_end - item["created_at"]) if item["created_at"] else 0
+        return item
+
+    def _fetch_task_summaries(
+        self,
+        conn: sqlite3.Connection,
+        agent_ids: List[str],
+        *,
+        now_ts: int,
+    ) -> tuple[Dict[str, Dict[str, Any]], Dict[str, Dict[str, Any]]]:
+        normalized_ids = [str(agent_id or "").strip() for agent_id in agent_ids if str(agent_id or "").strip()]
+        if not normalized_ids:
+            return {}, {}
+
+        placeholders = ", ".join("?" for _ in normalized_ids)
+        active_rows = conn.execute(
+            f"""
+            SELECT *
+            FROM (
+                SELECT
+                    t.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY t.agent_id
+                        ORDER BY
+                            CASE LOWER(t.status)
+                                WHEN 'acknowledged' THEN 3
+                                WHEN 'delivered' THEN 2
+                                WHEN 'queued' THEN 1
+                                ELSE 0
+                            END DESC,
+                            COALESCE(t.acked_at, t.delivered_at, t.created_at) DESC,
+                            t.created_at DESC
+                    ) AS rn
+                FROM scan_tasks t
+                WHERE t.agent_id IN ({placeholders})
+                  AND t.status IN ('queued', 'delivered', 'acknowledged')
+                  AND t.ttl_at > ?
+            )
+            WHERE rn = 1
+            """,
+            [*normalized_ids, now_ts],
+        ).fetchall()
+        last_rows = conn.execute(
+            f"""
+            SELECT *
+            FROM (
+                SELECT
+                    t.*,
+                    ROW_NUMBER() OVER (
+                        PARTITION BY t.agent_id
+                        ORDER BY
+                            COALESCE(t.updated_at, t.created_at) DESC,
+                            t.created_at DESC
+                    ) AS rn
+                FROM scan_tasks t
+                WHERE t.agent_id IN ({placeholders})
+            )
+            WHERE rn = 1
+            """,
+            normalized_ids,
+        ).fetchall()
+
+        active_map = {
+            str(row["agent_id"]): self._serialize_task_row(row, now_ts=now_ts)
+            for row in active_rows
+        }
+        last_map = {
+            str(row["agent_id"]): self._serialize_task_row(row, now_ts=now_ts)
+            for row in last_rows
+        }
+        return active_map, last_map
+
+    def list_tasks(
+        self,
+        *,
+        agent_id: Optional[str] = None,
+        status: Optional[str] = None,
+        command: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        conditions: List[str] = []
+        params: List[Any] = []
+        normalized_agent_id = str(agent_id or "").strip()
+        if normalized_agent_id:
+            conditions.append("agent_id = ?")
+            params.append(normalized_agent_id)
+
+        status_values = _normalize_task_status_filter(status)
+        if status_values:
+            placeholders = ", ".join("?" for _ in status_values)
+            conditions.append(f"LOWER(status) IN ({placeholders})")
+            params.extend(status_values)
+
+        normalized_command = str(command or "").strip().lower()
+        if normalized_command:
+            conditions.append("LOWER(command) = ?")
+            params.append(normalized_command)
+
+        where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+        safe_limit = max(1, min(200, int(limit)))
+        safe_offset = max(0, int(offset))
+        now_ts = _now_ts()
+
+        with self._lock, self._connect() as conn:
+            total = conn.execute(
+                f"SELECT COUNT(*) as cnt FROM scan_tasks {where_clause}",
+                params,
+            ).fetchone()["cnt"]
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM scan_tasks
+                {where_clause}
+                ORDER BY
+                    CASE
+                        WHEN status IN ('queued', 'delivered', 'acknowledged') THEN 0
+                        ELSE 1
+                    END ASC,
+                    COALESCE(updated_at, created_at) DESC,
+                    created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                [*params, safe_limit, safe_offset],
+            ).fetchall()
+
+        return {
+            "total": int(total),
+            "items": [self._serialize_task_row(row, now_ts=now_ts) for row in rows],
+        }
+
     def queue_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         now_ts = _now_ts()
         event_id = str(payload.get("event_id") or "").strip()
@@ -792,54 +1073,125 @@ class ScanStore:
         severity: Optional[str] = None,
         limit: int = 200,
     ) -> List[Dict[str, Any]]:
+        response = self.list_hosts_table(
+            q=q,
+            branch=branch,
+            status=status,
+            severity=severity,
+            limit=limit,
+            offset=0,
+            sort_by="incidents_new",
+            sort_dir="desc",
+        )
+        return response["items"]
+
+    def list_hosts_table(
+        self,
+        *,
+        q: Optional[str] = None,
+        branch: Optional[str] = None,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+        sort_by: Optional[str] = None,
+        sort_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
         conditions: List[str] = []
         params: List[Any] = []
 
-        if branch:
-            conditions.append("LOWER(i.branch) LIKE ?")
-            params.append(f"%{str(branch).strip().lower()}%")
         if status:
             conditions.append("LOWER(i.status) = ?")
             params.append(str(status).strip().lower())
         if severity:
             conditions.append("LOWER(i.severity) = ?")
             params.append(str(severity).strip().lower())
-        if q:
-            needle = f"%{str(q).strip().lower()}%"
-            conditions.append(
-                "("
-                "LOWER(i.hostname) LIKE ? OR LOWER(i.user_login) LIKE ? OR LOWER(i.user_full_name) LIKE ? "
-                "OR LOWER(i.file_path) LIKE ? OR LOWER(COALESCE(i.branch, '')) LIKE ?"
-                ")"
-            )
-            params.extend([needle, needle, needle, needle, needle])
 
         where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
         safe_limit = max(1, min(500, int(limit)))
+        safe_offset = max(0, int(offset))
+        normalized_sort_by = str(sort_by or "").strip().lower() or "incidents_new"
+        normalized_sort_dir = _normalize_sort_dir(sort_dir)
+        branch_needle = str(branch or "").strip().casefold()
+        q_needle = str(q or "").strip().casefold()
+        sort_map = {
+            "hostname": "LOWER(host.hostname)",
+            "branch": "LOWER(branch)",
+            "user": "LOWER(user)",
+            "ip_address": "LOWER(ip_address)",
+            "incidents_total": "host.incidents_total",
+            "incidents_new": "host.incidents_new",
+            "severity": "host.top_severity_rank",
+            "last_incident_at": "host.last_incident_at",
+        }
+        order_expr = sort_map.get(normalized_sort_by, "host.incidents_new")
+        if normalized_sort_by == "incidents_new":
+            order_clause = (
+                f"{order_expr} {normalized_sort_dir.upper()}, "
+                f"host.top_severity_rank DESC, "
+                "host.last_incident_at DESC, "
+                "LOWER(host.hostname) ASC"
+            )
+        else:
+            order_clause = f"{order_expr} {normalized_sort_dir.upper()}, LOWER(host.hostname) ASC"
 
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 f"""
                 SELECT
-                    i.hostname as hostname,
-                    COUNT(*) as incidents_total,
-                    SUM(CASE WHEN i.status='new' THEN 1 ELSE 0 END) as incidents_new,
-                    MAX(i.created_at) as last_incident_at,
-                    MAX(
-                        CASE LOWER(i.severity)
-                            WHEN 'high' THEN 3
-                            WHEN 'medium' THEN 2
-                            WHEN 'low' THEN 1
-                            ELSE 0
-                        END
-                    ) as top_severity_rank
-                FROM scan_incidents i
-                {where_clause}
-                GROUP BY i.hostname
-                ORDER BY incidents_new DESC, last_incident_at DESC
-                LIMIT ?
+                    host.hostname,
+                    host.incidents_total,
+                    host.incidents_new,
+                    host.last_incident_at,
+                    host.top_severity_rank,
+                    COALESCE((
+                        SELECT ix.branch
+                        FROM scan_incidents ix
+                        WHERE LOWER(ix.hostname) = LOWER(host.hostname)
+                          AND TRIM(COALESCE(ix.branch, '')) <> ''
+                        ORDER BY ix.created_at DESC
+                        LIMIT 1
+                    ), '') as branch,
+                    COALESCE((
+                        SELECT COALESCE(NULLIF(TRIM(ix.user_full_name), ''), NULLIF(TRIM(ix.user_login), ''), '')
+                        FROM scan_incidents ix
+                        WHERE LOWER(ix.hostname) = LOWER(host.hostname)
+                          AND (
+                            TRIM(COALESCE(ix.user_full_name, '')) <> ''
+                            OR TRIM(COALESCE(ix.user_login, '')) <> ''
+                          )
+                        ORDER BY ix.created_at DESC
+                        LIMIT 1
+                    ), '') as user,
+                    COALESCE((
+                        SELECT a.ip_address
+                        FROM scan_agents a
+                        WHERE LOWER(a.hostname) = LOWER(host.hostname)
+                          AND TRIM(COALESCE(a.ip_address, '')) <> ''
+                        ORDER BY a.last_seen_at DESC
+                        LIMIT 1
+                    ), '') as ip_address
+                FROM (
+                    SELECT
+                        i.hostname as hostname,
+                        COUNT(*) as incidents_total,
+                        SUM(CASE WHEN i.status='new' THEN 1 ELSE 0 END) as incidents_new,
+                        MAX(i.created_at) as last_incident_at,
+                        MAX(
+                            CASE LOWER(i.severity)
+                                WHEN 'high' THEN 3
+                                WHEN 'medium' THEN 2
+                                WHEN 'low' THEN 1
+                                ELSE 0
+                            END
+                        ) as top_severity_rank
+                    FROM scan_incidents i
+                    {where_clause}
+                    GROUP BY i.hostname
+                ) host
+                ORDER BY {order_clause}
                 """,
-                [*params, safe_limit],
+                params,
             ).fetchall()
 
             out: List[Dict[str, Any]] = []
@@ -866,21 +1218,10 @@ class ScanStore:
                     """,
                     (host,),
                 ).fetchall()
-
-                latest_branch = ""
-                latest_user = ""
                 ext_counts: Dict[str, int] = {}
                 source_counts: Dict[str, int] = {}
 
                 for d in detail_rows:
-                    branch_value = str(d["branch"] or "").strip()
-                    if not latest_branch and branch_value:
-                        latest_branch = branch_value
-                    full_name = str(d["user_full_name"] or "").strip()
-                    user_login = str(d["user_login"] or "").strip()
-                    if not latest_user and (full_name or user_login):
-                        latest_user = full_name or user_login
-
                     ext = _file_ext_from_values(d["file_name"], d["file_path"])
                     if ext:
                         ext_counts[ext] = int(ext_counts.get(ext, 0) + 1)
@@ -888,45 +1229,40 @@ class ScanStore:
                     if source:
                         source_counts[source] = int(source_counts.get(source, 0) + 1)
 
-                ip_row = conn.execute(
-                    """
-                    SELECT ip_address
-                    FROM scan_agents
-                    WHERE LOWER(hostname) = LOWER(?) AND ip_address <> ''
-                    ORDER BY last_seen_at DESC
-                    LIMIT 1
-                    """,
-                    (host,),
-                ).fetchone()
-
-                rank = int(row["top_severity_rank"] or 0)
-                if rank >= 3:
-                    top_severity = "high"
-                elif rank == 2:
-                    top_severity = "medium"
-                elif rank == 1:
-                    top_severity = "low"
-                else:
-                    top_severity = "none"
-
                 top_exts = [name for name, _ in sorted(ext_counts.items(), key=lambda it: (-it[1], it[0]))[:5]]
                 top_sources = [name for name, _ in sorted(source_counts.items(), key=lambda it: (-it[1], it[0]))[:5]]
 
-                out.append(
-                    {
-                        "hostname": host,
-                        "incidents_total": int(row["incidents_total"] or 0),
-                        "incidents_new": int(row["incidents_new"] or 0),
-                        "last_incident_at": int(row["last_incident_at"] or 0),
-                        "top_severity": top_severity,
-                        "branch": latest_branch,
-                        "user": latest_user,
-                        "ip_address": str((ip_row["ip_address"] if ip_row else "") or "").strip(),
-                        "top_exts": top_exts,
-                        "top_source_kinds": top_sources,
-                    }
-                )
-        return out
+                item = {
+                    "hostname": host,
+                    "incidents_total": int(row["incidents_total"] or 0),
+                    "incidents_new": int(row["incidents_new"] or 0),
+                    "last_incident_at": int(row["last_incident_at"] or 0),
+                    "top_severity": _severity_rank_to_label(row["top_severity_rank"]),
+                    "branch": str(row["branch"] or "").strip(),
+                    "user": str(row["user"] or "").strip(),
+                    "ip_address": str(row["ip_address"] or "").strip(),
+                    "top_exts": top_exts,
+                    "top_source_kinds": top_sources,
+                }
+                if branch_needle and branch_needle not in item["branch"].casefold():
+                    continue
+                if q_needle:
+                    text = " ".join(
+                        [
+                            item["hostname"],
+                            item["branch"],
+                            item["user"],
+                            item["ip_address"],
+                            " ".join(item["top_exts"]),
+                            " ".join(item["top_source_kinds"]),
+                        ]
+                    ).casefold()
+                    if q_needle not in text:
+                        continue
+                out.append(item)
+        total = len(out)
+        paged = out[safe_offset:safe_offset + safe_limit]
+        return {"total": int(total), "items": paged}
 
     def ack_incident(self, *, incident_id: str, ack_by: str) -> Optional[Dict[str, Any]]:
         iid = str(incident_id or "").strip()
@@ -1005,7 +1341,10 @@ class ScanStore:
                 """,
                 (now_ts,),
             ).fetchall()
+            agent_ids = [str(row["agent_id"] or "").strip() for row in rows if str(row["agent_id"] or "").strip()]
+            active_map, last_map = self._fetch_task_summaries(conn, agent_ids, now_ts=now_ts)
         out: List[Dict[str, Any]] = []
+        sql_context_cache: Dict[str, Optional[Dict[str, Any]]] = {}
         for row in rows:
             item = dict(row)
             item["branch"] = str(item.get("resolved_branch") or item.get("branch") or "").strip()
@@ -1017,8 +1356,143 @@ class ScanStore:
             item["is_online"] = age_sec <= 5 * 60
             item["last_heartbeat"] = _json_loads(item.get("last_heartbeat_json"), {})
             item.pop("last_heartbeat_json", None)
+            heartbeat_payload = item["last_heartbeat"] if isinstance(item["last_heartbeat"], dict) else {}
+            heartbeat_meta = heartbeat_payload.get("metadata") if isinstance(heartbeat_payload.get("metadata"), dict) else {}
+            mac_address = str(
+                heartbeat_payload.get("mac_address")
+                or heartbeat_meta.get("mac_address")
+                or ""
+            ).strip()
+            if not item["branch"]:
+                item["branch"] = _infer_branch_from_agent_identity(item.get("agent_id"), item.get("hostname"))
+            if not item["branch"]:
+                context_key = f"{_normalize_mac_for_lookup(mac_address)}|{str(item.get('hostname') or '').strip().lower()}"
+                if context_key not in sql_context_cache:
+                    sql_context_cache[context_key] = _resolve_agent_sql_context(mac_address, item.get("hostname"))
+                sql_context = sql_context_cache.get(context_key)
+                if isinstance(sql_context, dict):
+                    item["branch"] = str(sql_context.get("branch_name") or "").strip()
+            item["active_task"] = active_map.get(str(item.get("agent_id") or "").strip())
+            item["last_task"] = last_map.get(str(item.get("agent_id") or "").strip())
             out.append(item)
         return out
+
+    def list_agents_table(
+        self,
+        *,
+        q: Optional[str] = None,
+        branch: Optional[str] = None,
+        online: Optional[str] = None,
+        task_status: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+        sort_by: Optional[str] = None,
+        sort_dir: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        items = self.list_agents()
+        needle = str(q or "").strip().lower()
+        branch_needle = str(branch or "").strip().lower()
+        online_filter = _normalize_online_filter(online)
+        status_filters = _normalize_task_status_filter(task_status)
+        normalized_sort_by = str(sort_by or "").strip().lower() or "online"
+        normalized_sort_dir = _normalize_sort_dir(sort_dir)
+
+        def matches_task_status(item: Dict[str, Any]) -> bool:
+            if not status_filters:
+                return True
+            active_task = item.get("active_task") or {}
+            last_task = item.get("last_task") or {}
+            active_status = str(active_task.get("status") or "").strip().lower()
+            last_status = str(last_task.get("status") or "").strip().lower()
+            if "none" in status_filters:
+                return not active_status
+            if any(status_value in ACTIVE_TASK_STATUSES for status_value in status_filters):
+                return active_status in status_filters
+            return last_status in status_filters
+
+        filtered: List[Dict[str, Any]] = []
+        for item in items:
+            if branch_needle and branch_needle not in str(item.get("branch") or "").strip().lower():
+                continue
+            if online_filter is not None and bool(item.get("is_online")) != online_filter:
+                continue
+            if needle:
+                text = " ".join(
+                    [
+                        str(item.get("hostname") or ""),
+                        str(item.get("agent_id") or ""),
+                        str(item.get("branch") or ""),
+                        str(item.get("ip_address") or ""),
+                        str(item.get("version") or ""),
+                    ]
+                ).lower()
+                if needle not in text:
+                    continue
+            if not matches_task_status(item):
+                continue
+            filtered.append(item)
+
+        def sort_key(item: Dict[str, Any]):
+            active_task = item.get("active_task") or {}
+            last_task = item.get("last_task") or {}
+            if normalized_sort_by in {"hostname", "agent_id"}:
+                return str(item.get("hostname") or item.get("agent_id") or "").lower()
+            if normalized_sort_by == "branch":
+                return str(item.get("branch") or "").lower()
+            if normalized_sort_by == "ip_address":
+                return str(item.get("ip_address") or "").lower()
+            if normalized_sort_by in {"status", "online"}:
+                return (
+                    1 if item.get("is_online") else 0,
+                    _task_priority(active_task),
+                    int(item.get("last_seen_at") or 0),
+                )
+            if normalized_sort_by == "queue_size":
+                return (int(item.get("queue_size") or 0), int(item.get("last_seen_at") or 0))
+            if normalized_sort_by == "active_task":
+                return (_task_priority(active_task), int((active_task or {}).get("created_at") or 0))
+            if normalized_sort_by == "last_result":
+                return (
+                    int((last_task or {}).get("updated_at") or 0),
+                    int((last_task or {}).get("completed_at") or 0),
+                )
+            return int(item.get("last_seen_at") or 0)
+
+        filtered.sort(key=sort_key, reverse=normalized_sort_dir != "asc")
+        safe_limit = max(1, min(200, int(limit)))
+        safe_offset = max(0, int(offset))
+        paged = filtered[safe_offset:safe_offset + safe_limit]
+        return {"total": len(filtered), "items": paged}
+
+    def list_branches(self) -> List[str]:
+        values: Dict[str, str] = {}
+
+        for item in self.list_agents():
+            branch_name = str(item.get("branch") or "").strip()
+            if branch_name:
+                values.setdefault(branch_name.casefold(), branch_name)
+
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT TRIM(branch) AS branch_name
+                FROM (
+                    SELECT branch FROM scan_incidents
+                    UNION ALL
+                    SELECT branch FROM scan_jobs
+                    UNION ALL
+                    SELECT branch FROM scan_agents
+                ) branches
+                WHERE TRIM(COALESCE(branch, '')) <> ''
+                """
+            ).fetchall()
+
+        for row in rows:
+            branch_name = str(row["branch_name"] or "").strip()
+            if branch_name:
+                values.setdefault(branch_name.casefold(), branch_name)
+
+        return [values[key] for key in sorted(values.keys())]
 
     def dashboard(self) -> Dict[str, Any]:
         now_ts = _now_ts()

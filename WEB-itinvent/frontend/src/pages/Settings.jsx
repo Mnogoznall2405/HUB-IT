@@ -67,6 +67,7 @@ import OverflowMenu from '../components/common/OverflowMenu';
 import { useAuth } from '../contexts/AuthContext';
 import { usePreferences } from '../contexts/PreferencesContext';
 import { useNotification } from '../contexts/NotificationContext';
+import { createNavigateToastAction } from '../components/feedback/toastActions';
 import {
   buildOfficeUiTokens,
   getOfficeHeaderBandSx,
@@ -1726,7 +1727,21 @@ function Settings() {
 
   const { user, hasPermission, refreshSession } = useAuth();
   const { preferences, savePreferences } = usePreferences();
-  const { notifySuccess, notifyInfo, notifyApiError } = useNotification();
+  const {
+    notifySuccess: pushNotifySuccess,
+    notifyInfo: pushNotifyInfo,
+    notifyApiError: pushNotifyApiError,
+  } = useNotification();
+  const settingsToastAction = useMemo(() => createNavigateToastAction('/settings', 'Открыть настройки'), []);
+  const notifySuccess = useCallback((message, options = {}) => (
+    pushNotifySuccess(message, { source: 'settings', action: settingsToastAction, ...options })
+  ), [pushNotifySuccess, settingsToastAction]);
+  const notifyInfo = useCallback((message, options = {}) => (
+    pushNotifyInfo(message, { source: 'settings', action: settingsToastAction, ...options })
+  ), [pushNotifyInfo, settingsToastAction]);
+  const notifyApiError = useCallback((error, fallbackMessage, options = {}) => (
+    pushNotifyApiError(error, fallbackMessage, { source: 'settings', action: settingsToastAction, ...options })
+  ), [pushNotifyApiError, settingsToastAction]);
 
   const canManageUsers = hasPermission('settings.users.manage');
   const canManageSessions = hasPermission('settings.sessions.manage');

@@ -28,7 +28,6 @@ import {
   FormControlLabel,
   InputLabel,
   Select,
-  Snackbar,
   Chip,
   CircularProgress,
   Checkbox,
@@ -53,6 +52,8 @@ import jsonAPI from '../api/json_client';
 import { LoadingSpinner, StatusChip, ActionMenu } from '../components/common';
 import { getOrFetchSWR, buildCacheKey } from '../lib/swrCache';
 import { useAuth } from '../contexts/AuthContext';
+import { useNotification } from '../contexts/NotificationContext';
+import { createNavigateToastAction } from '../components/feedback/toastActions';
 import { buildOfficeUiTokens, getOfficePanelSx, getOfficeQuietActionSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
 
 // Debounce utility
@@ -1114,11 +1115,38 @@ const EquipmentTable = memo(function EquipmentTable({
 
 function Database() {
   const { hasPermission } = useAuth();
+  const {
+    notifySuccess: pushSuccessToast,
+    notifyInfo: pushInfoToast,
+    notifyWarning: pushWarningToast,
+    notifyError: pushErrorToast,
+  } = useNotification();
   const canDatabaseWrite = hasPermission('database.write');
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const initialLoadDoneRef = useRef(false);
+  const databaseToastAction = useMemo(() => createNavigateToastAction('/database', 'Открыть базу'), []);
+  const notifyDatabaseSuccess = useCallback((message, options = {}) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushSuccessToast(text, { source: 'database', action: databaseToastAction, ...options });
+  }, [databaseToastAction, pushSuccessToast]);
+  const notifyDatabaseInfo = useCallback((message, options = {}) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushInfoToast(text, { source: 'database', action: databaseToastAction, ...options });
+  }, [databaseToastAction, pushInfoToast]);
+  const notifyDatabaseWarning = useCallback((message, options = {}) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushWarningToast(text, { source: 'database', action: databaseToastAction, ...options });
+  }, [databaseToastAction, pushWarningToast]);
+  const notifyDatabaseError = useCallback((message, options = {}) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushErrorToast(text, { source: 'database', action: databaseToastAction, ...options });
+  }, [databaseToastAction, pushErrorToast]);
 
   const [loading, setLoading] = useState(true);
   const [equipmentTypes, setEquipmentTypes] = useState([]);
@@ -1195,13 +1223,11 @@ function Database() {
   const [addEquipmentLoading, setAddEquipmentLoading] = useState(false);
   const [addEquipmentError, setAddEquipmentError] = useState('');
   const [addEquipmentSuccess, setAddEquipmentSuccess] = useState('');
-  const [addEquipmentToast, setAddEquipmentToast] = useState({ open: false, message: '' });
   const [addConsumableModalOpen, setAddConsumableModalOpen] = useState(false);
   const [addConsumableForm, setAddConsumableForm] = useState(() => createAddConsumableInitialForm());
   const [addConsumableLoading, setAddConsumableLoading] = useState(false);
   const [addConsumableError, setAddConsumableError] = useState('');
   const [addConsumableSuccess, setAddConsumableSuccess] = useState('');
-  const [addConsumableToast, setAddConsumableToast] = useState({ open: false, message: '' });
   const [addConsumableLocations, setAddConsumableLocations] = useState([]);
   const [addConsumableLocationsLoading, setAddConsumableLocationsLoading] = useState(false);
   const [addConsumableModels, setAddConsumableModels] = useState([]);
@@ -1210,7 +1236,6 @@ function Database() {
   const [editConsumableQtyValue, setEditConsumableQtyValue] = useState('');
   const [editConsumableQtyLoading, setEditConsumableQtyLoading] = useState(false);
   const [editConsumableQtyError, setEditConsumableQtyError] = useState('');
-  const [editConsumableQtyToast, setEditConsumableQtyToast] = useState({ open: false, message: '' });
   const [addEmployeeInput, setAddEmployeeInput] = useState('');
   const [addEmployeeOptions, setAddEmployeeOptions] = useState([]);
   const [addEmployeeLoading, setAddEmployeeLoading] = useState(false);
@@ -1238,7 +1263,6 @@ function Database() {
     doc_date: '',
     equipment_inv_nos_text: '',
   });
-  const [uploadActToast, setUploadActToast] = useState({ open: false, message: '', severity: 'success' });
   const [uploadActCommitResult, setUploadActCommitResult] = useState(null);
   const [uploadActEmailSubject, setUploadActEmailSubject] = useState('');
   const [uploadActEmailBody, setUploadActEmailBody] = useState('');
@@ -2513,25 +2537,16 @@ function Database() {
         }
 
         // Show success toast
-        setAddEquipmentToast({
-          open: true,
-          message: `${response.message}. Найдено ${response.total_items_count} ед. оборудования. Связанные отмечены галочками.`,
-        });
+        notifyDatabaseSuccess(
+          `${response.message}. Найдено ${response.total_items_count} ед. оборудования. Связанные отмечены галочками.`,
+        );
       } else {
         // Did not find or failed
-        setUploadActToast({
-          open: true,
-          message: response.message || 'ПК не найден по вашему IP.',
-          severity: 'error'
-        });
+        notifyDatabaseError(response.message || 'ПК не найден по вашему IP.');
       }
     } catch (err) {
       console.error('Error identifying workspace:', err);
-      setUploadActToast({
-        open: true,
-        message: 'Ошибка при определении рабочего места: ' + (err.response?.data?.detail || err.message),
-        severity: 'error'
-      });
+      notifyDatabaseError(`Ошибка при определении рабочего места: ${err.response?.data?.detail || err.message}`);
     } finally {
       setIdentifyPCLoading(false);
     }
@@ -2878,7 +2893,7 @@ function Database() {
           : `Оборудование добавлено.${extra ? ` (${extra})` : ''}`
       );
       setAddEquipmentSuccess(successMessage);
-      setAddEquipmentToast({ open: true, message: successMessage });
+      notifyDatabaseSuccess(successMessage);
       setAddEquipmentError('');
       setAddEquipmentForm(buildAddEquipmentDefaults());
       setAddEmployeeInput('');
@@ -2892,7 +2907,7 @@ function Database() {
     } finally {
       setAddEquipmentLoading(false);
     }
-  }, [addEquipmentForm, buildAddEquipmentDefaults, canDatabaseWrite, fetchAllEquipment]);
+  }, [addEquipmentForm, buildAddEquipmentDefaults, canDatabaseWrite, fetchAllEquipment, notifyDatabaseSuccess]);
 
   const handleAddConsumableSubmit = useCallback(async () => {
     if (!canDatabaseWrite) {
@@ -2945,7 +2960,7 @@ function Database() {
         : 'Расходник добавлен.';
 
       setAddConsumableSuccess(successMessage);
-      setAddConsumableToast({ open: true, message: successMessage });
+      notifyDatabaseSuccess(successMessage);
       setAddConsumableForm(buildAddConsumableDefaults());
       setAddConsumableLocations([]);
       setAddConsumableModels([]);
@@ -2956,7 +2971,7 @@ function Database() {
     } finally {
       setAddConsumableLoading(false);
     }
-  }, [addConsumableForm, buildAddConsumableDefaults, canDatabaseWrite, fetchAllEquipment]);
+  }, [addConsumableForm, buildAddConsumableDefaults, canDatabaseWrite, fetchAllEquipment, notifyDatabaseSuccess]);
 
   const handleEditConsumableQtySubmit = useCallback(async () => {
     if (!canDatabaseWrite) {
@@ -2996,7 +3011,7 @@ function Database() {
       const message = label
         ? `Количество обновлено: ${label} -> ${targetQty}.`
         : `Количество обновлено: ${targetQty}.`;
-      setEditConsumableQtyToast({ open: true, message });
+      notifyDatabaseSuccess(message);
       closeEditConsumableQtyModal();
       await fetchAllEquipment({ force: true });
     } catch (error) {
@@ -3007,7 +3022,14 @@ function Database() {
     } finally {
       setEditConsumableQtyLoading(false);
     }
-  }, [canDatabaseWrite, editConsumableQtyModal.item, editConsumableQtyValue, fetchAllEquipment, closeEditConsumableQtyModal]);
+  }, [
+    canDatabaseWrite,
+    editConsumableQtyModal.item,
+    editConsumableQtyValue,
+    fetchAllEquipment,
+    closeEditConsumableQtyModal,
+    notifyDatabaseSuccess,
+  ]);
 
   const resetUploadActState = useCallback(() => {
     setUploadActFile(null);
@@ -3106,22 +3128,14 @@ function Database() {
       const draft = await equipmentAPI.parseUploadedAct(uploadActFile, { manualMode });
       applyUploadActDraft(draft);
       if (manualMode) {
-        setUploadActToast({
-          open: true,
-          severity: 'info',
-          message: 'Черновик создан в ручном режиме. Заполните поля акта и инвентарные номера.',
-        });
+        notifyDatabaseInfo('Черновик создан в ручном режиме. Заполните поля акта и инвентарные номера.');
       }
     } catch (error) {
       if (!manualMode && isApiUnavailableForActParse(error)) {
         try {
           const fallbackDraft = await equipmentAPI.parseUploadedAct(uploadActFile, { manualMode: true });
           applyUploadActDraft(fallbackDraft);
-          setUploadActToast({
-            open: true,
-            severity: 'warning',
-            message: 'API распознавания недоступен. Создан ручной черновик для заполнения.',
-          });
+          notifyDatabaseWarning('API распознавания недоступен. Создан ручной черновик для заполнения.');
           return;
         } catch (fallbackError) {
           const fallbackDetail = fallbackError?.response?.data?.detail;
@@ -3138,7 +3152,14 @@ function Database() {
     } finally {
       setUploadActParsing(false);
     }
-  }, [applyUploadActDraft, canDatabaseWrite, isApiUnavailableForActParse, uploadActFile]);
+  }, [
+    applyUploadActDraft,
+    canDatabaseWrite,
+    isApiUnavailableForActParse,
+    notifyDatabaseInfo,
+    notifyDatabaseWarning,
+    uploadActFile,
+  ]);
 
   const handleUploadActCommit = useCallback(async () => {
     if (!canDatabaseWrite) {
@@ -3178,11 +3199,7 @@ function Database() {
       setUploadActEmailLastRecipients([]);
       setUploadActEmailSummary({ mode: '', successCount: 0, failedCount: 0 });
 
-      setUploadActToast({
-        open: true,
-        severity: 'success',
-        message: `Акт загружен. DOC_NO: ${result?.doc_no}, FILE_NO: ${result?.file_no}.`,
-      });
+      notifyDatabaseSuccess(`Акт загружен. DOC_NO: ${result?.doc_no}, FILE_NO: ${result?.file_no}.`);
 
       const autoFrom = String(uploadActForm.from_employee || '').trim();
       const autoTo = String(uploadActForm.to_employee || '').trim();
@@ -3225,7 +3242,7 @@ function Database() {
     } finally {
       setUploadActCommitting(false);
     }
-  }, [canDatabaseWrite, uploadActDraft?.draft_id, uploadActForm, uploadActAutoEmail]);
+  }, [canDatabaseWrite, notifyDatabaseSuccess, uploadActDraft?.draft_id, uploadActForm, uploadActAutoEmail]);
 
   const handleUploadActEmailSend = useCallback(async () => {
     if (!canDatabaseWrite) {
@@ -4604,70 +4621,6 @@ function Database() {
             )}
           </Box>
         </Fade>
-
-        <Snackbar
-          open={addEquipmentToast.open}
-          autoHideDuration={4500}
-          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
-          onClose={() => setAddEquipmentToast({ open: false, message: '' })}
-        >
-          <Alert
-            severity="success"
-            variant="filled"
-            onClose={() => setAddEquipmentToast({ open: false, message: '' })}
-            sx={{ width: '100%' }}
-          >
-            {addEquipmentToast.message}
-          </Alert>
-        </Snackbar>
-
-        <Snackbar
-          open={addConsumableToast.open}
-          autoHideDuration={4500}
-          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
-          onClose={() => setAddConsumableToast({ open: false, message: '' })}
-        >
-          <Alert
-            severity="success"
-            variant="filled"
-            onClose={() => setAddConsumableToast({ open: false, message: '' })}
-            sx={{ width: '100%' }}
-          >
-            {addConsumableToast.message}
-          </Alert>
-        </Snackbar>
-
-        <Snackbar
-          open={editConsumableQtyToast.open}
-          autoHideDuration={4500}
-          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
-          onClose={() => setEditConsumableQtyToast({ open: false, message: '' })}
-        >
-          <Alert
-            severity="success"
-            variant="filled"
-            onClose={() => setEditConsumableQtyToast({ open: false, message: '' })}
-            sx={{ width: '100%' }}
-          >
-            {editConsumableQtyToast.message}
-          </Alert>
-        </Snackbar>
-
-        <Snackbar
-          open={uploadActToast.open}
-          autoHideDuration={5000}
-          anchorOrigin={{ vertical: 'top', horizontal: 'center' }}
-          onClose={() => setUploadActToast({ open: false, message: '', severity: 'success' })}
-        >
-          <Alert
-            severity={uploadActToast.severity || 'success'}
-            variant="filled"
-            onClose={() => setUploadActToast({ open: false, message: '', severity: 'success' })}
-            sx={{ width: '100%' }}
-          >
-            {uploadActToast.message}
-          </Alert>
-        </Snackbar>
 
         <Dialog
           open={uploadActModalOpen}

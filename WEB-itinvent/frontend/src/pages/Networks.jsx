@@ -23,7 +23,6 @@ import {
   MenuItem,
   Paper,
   Stack,
-  Snackbar,
   Tab,
   Tabs,
   TextField,
@@ -61,7 +60,9 @@ import { CreateBranchDialog, EditBranchDialog, DeleteBranchDialog } from '../com
 
 import { networksAPI, apiClient } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
+import { useNotification } from '../contexts/NotificationContext';
 import { buildCacheKey, getOrFetchSWR, invalidateSWRCacheByPrefix } from '../lib/swrCache';
+import { createNavigateToastAction } from '../components/feedback/toastActions';
 import {
   buildOfficeUiTokens,
   getOfficeActionTraySx,
@@ -119,6 +120,50 @@ const formatSocketPort = (pointLike) => {
   if (socket) return `Розетка ${socket}`;
   if (port) return `PORT ${port}`;
   return 'Точка';
+};
+
+const parseDownloadFilename = (contentDisposition, fallbackName = 'map-points.pdf') => {
+  const source = String(contentDisposition || '');
+  const utf8Match = source.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match?.[1]) {
+    try {
+      return decodeURIComponent(utf8Match[1]);
+    } catch {
+      // ignore malformed header
+    }
+  }
+  const simpleMatch = source.match(/filename=\"([^\"]+)\"/i) || source.match(/filename=([^;]+)/i);
+  return simpleMatch?.[1] ? String(simpleMatch[1]).trim() : String(fallbackName || 'map-points.pdf');
+};
+
+const buildMapExportFileName = (map) => {
+  const rawBase = String(map?.title || map?.file_name || 'map').replace(/\.[^.]+$/, '').trim();
+  const sanitized = rawBase
+    .replace(/[<>:"/\\|?*\u0000-\u001F]+/g, '_')
+    .replace(/\s+/g, ' ')
+    .replace(/[. ]+$/g, '')
+    .trim();
+  return `${sanitized || 'map'}-points.pdf`;
+};
+
+const downloadBlobFile = (blob, filename) => {
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = String(filename || 'file.bin');
+  document.body.appendChild(link);
+  link.click();
+  window.URL.revokeObjectURL(url);
+  document.body.removeChild(link);
+};
+
+const mapPanelSelectMenuProps = {
+  disableScrollLock: true,
+  PaperProps: {
+    sx: {
+      maxHeight: 320,
+    },
+  },
 };
 
 function Networks() {
@@ -196,6 +241,7 @@ function Networks() {
   const [pendingPortId, setPendingPortId] = useState('');
   const [pendingSocketId, setPendingSocketId] = useState('');
   const [pendingSocketInput, setPendingSocketInput] = useState('');
+  const [pendingManualOpen, setPendingManualOpen] = useState(false);
   const [createPointHint, setCreatePointHint] = useState(null);
   const [mapPointSearch, setMapPointSearch] = useState('');
   const [pointDetailsOpen, setPointDetailsOpen] = useState(false);
@@ -237,6 +283,8 @@ function Networks() {
   const [branchDbSaving, setBranchDbSaving] = useState(false);
   const [equipImportLoading, setEquipImportLoading] = useState(false);
   const equipImportRef = useRef(null);
+  const desktopMapPanelRef = useRef(null);
+  const addPointPanelRef = useRef(null);
 
   // Branch edit dialog states
   const [branchEditId, setBranchEditId] = useState(null);
@@ -303,8 +351,6 @@ function Networks() {
   const [equipmentLoading, setEquipmentLoading] = useState(false);
   const [socketsLoading, setSocketsLoading] = useState(false);
   const [mapsLoading, setMapsLoading] = useState(false);
-  const [toastQueue, setToastQueue] = useState([]);
-  const [activeToast, setActiveToast] = useState(null);
   const [editingPortId, setEditingPortId] = useState(null);
   const [portDraft, setPortDraft] = useState(null);
   const [portSaving, setPortSaving] = useState(false);
@@ -314,21 +360,20 @@ function Networks() {
   const deviceChipRefs = useRef(new Map());
   const branchContextRequestSeq = useRef(0);
   const branchPortsRequestSeq = useRef(0);
-
-  const enqueueToast = useCallback((message, severity = 'info') => {
-    const text = String(message || '').trim();
-    if (!text) return;
-    setToastQueue((prev) => [
-      ...prev,
-      { id: `${Date.now()}-${Math.random()}`, message: text, severity },
-    ]);
-  }, []);
+  const {
+    notifySuccess: pushSuccessToast,
+    notifyInfo: pushInfoToast,
+    notifyWarning: pushWarningToast,
+    notifyError: pushErrorToast,
+  } = useNotification();
+  const networksToastAction = useMemo(() => createNavigateToastAction('/networks', 'Открыть сети'), []);
 
   const clearPendingPointDraft = useCallback(() => {
     setPendingPoint(null);
     setPendingPortId('');
     setPendingSocketId('');
     setPendingSocketInput('');
+    setPendingManualOpen(false);
   }, []);
 
   const addPointDisabledReason = useMemo(() => {
@@ -350,6 +395,33 @@ function Networks() {
     setPlacingMarker(true);
   }, [addPointDisabledReason, clearPendingPointDraft, placingMarker]);
 
+  useEffect(() => {
+    if (isMobile || !(addPointPanelOpen || placingMarker)) return undefined;
+
+    const panelNode = desktopMapPanelRef.current;
+    const targetNode = addPointPanelRef.current;
+    if (!panelNode || !targetNode) return undefined;
+
+    const syncExpandedPanel = () => {
+      const panelRect = panelNode.getBoundingClientRect();
+      const targetRect = targetNode.getBoundingClientRect();
+      const overflowBottom = targetRect.bottom - panelRect.bottom;
+      const overflowTop = targetRect.top - panelRect.top;
+
+      if (overflowBottom > 0) {
+        panelNode.scrollBy({ top: overflowBottom + 16, behavior: 'smooth' });
+        return;
+      }
+
+      if (overflowTop < 0) {
+        panelNode.scrollBy({ top: overflowTop - 16, behavior: 'smooth' });
+      }
+    };
+
+    const timeoutId = window.setTimeout(syncExpandedPanel, 180);
+    return () => window.clearTimeout(timeoutId);
+  }, [addPointPanelOpen, isMobile, placingMarker]);
+
   // Helper function to extract error details from API errors
   const getErrorDetail = useCallback((error) => {
     if (!error) return 'Неизвестная ошибка';
@@ -362,24 +434,28 @@ function Networks() {
   }, []);
 
   const notifyError = useCallback((message) => {
-    enqueueToast(message, 'error');
-  }, [enqueueToast]);
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushErrorToast(text, { source: 'networks', action: networksToastAction });
+  }, [networksToastAction, pushErrorToast]);
 
   const notifySuccess = useCallback((message) => {
-    enqueueToast(message, 'success');
-  }, [enqueueToast]);
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushSuccessToast(text, { source: 'networks', action: networksToastAction });
+  }, [networksToastAction, pushSuccessToast]);
 
-  useEffect(() => {
-    if (activeToast || toastQueue.length === 0) return;
-    const [next, ...rest] = toastQueue;
-    setActiveToast(next);
-    setToastQueue(rest);
-  }, [activeToast, toastQueue]);
+  const notifyInfo = useCallback((message) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushInfoToast(text, { source: 'networks', action: networksToastAction });
+  }, [networksToastAction, pushInfoToast]);
 
-  const closeToast = useCallback((_, reason) => {
-    if (reason === 'clickaway') return;
-    setActiveToast(null);
-  }, []);
+  const notifyWarning = useCallback((message) => {
+    const text = String(message || '').trim();
+    if (!text) return;
+    pushWarningToast(text, { source: 'networks', action: networksToastAction });
+  }, [networksToastAction, pushWarningToast]);
 
   const selectedBranch = useMemo(
     () => branches.find((item) => Number(item.id) === Number(branchIdNum)) || null,
@@ -687,16 +763,6 @@ function Networks() {
       .slice(0, 500);
   }, [pendingSocketInput, sockets]);
 
-  const selectedPendingPort = useMemo(
-    () => pendingPortOptions.find((port) => Number(port.id) === Number(pendingPortId)) || null,
-    [pendingPortOptions, pendingPortId]
-  );
-
-  const selectedPendingSocket = useMemo(
-    () => pendingSocketOptions.find((socketItem) => Number(socketItem.id) === Number(pendingSocketId)) || null,
-    [pendingSocketOptions, pendingSocketId]
-  );
-
   const pendingPortValue = useMemo(() => {
     const value = String(pendingPortId || '');
     if (!value) return '';
@@ -714,6 +780,139 @@ function Networks() {
     if (!normalized) return [];
     return allPortsWithSocket.filter((port) => socketKey(port.patch_panel_port) === normalized);
   }, [allPortsWithSocket, pendingSocketInput]);
+
+  const autoMatchedPendingPort = useMemo(
+    () => (pendingSocketMatches.length === 1 ? pendingSocketMatches[0] : null),
+    [pendingSocketMatches]
+  );
+
+  const effectivePendingPortId = useMemo(
+    () => Number(pendingPortId || autoMatchedPendingPort?.id || 0) || null,
+    [autoMatchedPendingPort, pendingPortId]
+  );
+
+  const effectivePendingSocketId = useMemo(
+    () => Number(pendingSocketId || 0) || null,
+    [pendingSocketId]
+  );
+
+  const resolvedPendingPort = useMemo(() => {
+    if (!effectivePendingPortId) return null;
+    return pendingPortOptions.find((port) => Number(port.id) === Number(effectivePendingPortId))
+      || allPortsWithSocket.find((port) => Number(port.id) === Number(effectivePendingPortId))
+      || null;
+  }, [allPortsWithSocket, effectivePendingPortId, pendingPortOptions]);
+
+  const resolvedPendingSocket = useMemo(() => {
+    if (effectivePendingSocketId) {
+      return pendingSocketOptions.find((socketItem) => Number(socketItem.id) === Number(effectivePendingSocketId))
+        || sockets.find((socketItem) => Number(socketItem.id) === Number(effectivePendingSocketId))
+        || null;
+    }
+    const portSocketId = Number(resolvedPendingPort?.socket_id || 0) || null;
+    if (!portSocketId) return null;
+    return pendingSocketOptions.find((socketItem) => Number(socketItem.id) === Number(portSocketId))
+      || sockets.find((socketItem) => Number(socketItem.id) === Number(portSocketId))
+      || null;
+  }, [effectivePendingSocketId, pendingSocketOptions, resolvedPendingPort, sockets]);
+
+  const pendingLookupStatus = useMemo(() => {
+    const normalized = socketKey(pendingSocketInput);
+    const resolvedBinding = resolvedPendingPort || resolvedPendingSocket || null;
+
+    if (resolvedBinding) {
+      if (normalized && pendingSocketMatches.length === 1) {
+        return {
+          tone: 'success',
+          text: `Порт выбран автоматически: ${formatSocketPort(resolvedBinding)}`,
+        };
+      }
+      return {
+        tone: 'info',
+        text: `Привязка: ${formatSocketPort(resolvedBinding)}`,
+      };
+    }
+
+    if (!normalized) {
+      return {
+        tone: 'default',
+        text: 'Введите PORT P/P или откройте ручной выбор.',
+      };
+    }
+
+    if (pendingSocketMatches.length > 1) {
+      return {
+        tone: 'warning',
+        text: `Найдено ${pendingSocketMatches.length} портов, нужно уточнение.`,
+      };
+    }
+
+    if (pendingPortOptions.length > 0 || pendingSocketOptions.length > 0) {
+      return {
+        tone: 'warning',
+        text: 'Точного совпадения нет, нужно уточнение.',
+      };
+    }
+
+    return {
+      tone: 'error',
+      text: 'Совпадений нет.',
+    };
+  }, [
+    pendingPortOptions.length,
+    pendingSocketInput,
+    pendingSocketMatches.length,
+    pendingSocketOptions.length,
+    resolvedPendingPort,
+    resolvedPendingSocket,
+  ]);
+
+  const pendingManualMeta = useMemo(() => {
+    const socketsCount = pendingSocketInput ? pendingSocketOptions.length : Math.min(Array.isArray(sockets) ? sockets.length : 0, 500);
+    if (pendingPortOptions.length > 0) {
+      return `${socketsCount} розеток · ${pendingPortOptions.length} портов`;
+    }
+    if (socketsCount > 0) {
+      return `${socketsCount} розеток`;
+    }
+    return 'Нет вариантов';
+  }, [pendingPortOptions.length, pendingSocketInput, pendingSocketOptions.length, sockets]);
+
+  const pendingCommitDisabled = useMemo(
+    () => !pendingPoint || (!resolvedPendingPort && !resolvedPendingSocket),
+    [pendingPoint, resolvedPendingPort, resolvedPendingSocket]
+  );
+
+  const pendingStatusSx = useMemo(() => {
+    const tones = {
+      default: {
+        borderColor: ui.borderSoft,
+        bgcolor: ui.panelInset,
+        color: 'text.secondary',
+      },
+      info: {
+        borderColor: ui.selectedBorder,
+        bgcolor: ui.selectedBg,
+        color: 'primary.main',
+      },
+      success: {
+        borderColor: 'success.main',
+        bgcolor: theme.palette.mode === 'dark' ? 'rgba(76,175,80,0.16)' : 'rgba(76,175,80,0.10)',
+        color: 'success.main',
+      },
+      warning: {
+        borderColor: 'warning.main',
+        bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,152,0,0.16)' : 'rgba(255,152,0,0.10)',
+        color: 'warning.main',
+      },
+      error: {
+        borderColor: 'error.main',
+        bgcolor: theme.palette.mode === 'dark' ? 'rgba(244,67,54,0.16)' : 'rgba(244,67,54,0.10)',
+        color: 'error.main',
+      },
+    };
+    return tones[pendingLookupStatus.tone] || tones.default;
+  }, [pendingLookupStatus.tone, theme.palette.mode, ui.borderSoft, ui.panelInset, ui.selectedBg, ui.selectedBorder]);
 
   const selectedPointPortOptions = useMemo(() => {
     if (!selectedPoint) return [];
@@ -1144,6 +1343,25 @@ function Networks() {
   }, [pendingPortId, pendingSocketInput, pendingSocketMatches, placingMarker]);
 
   useEffect(() => {
+    if (!placingMarker) return;
+    const normalized = socketKey(pendingSocketInput);
+    if (!normalized) return;
+    if (pendingSocketMatches.length !== 1 && !resolvedPendingPort && !resolvedPendingSocket) {
+      setPendingManualOpen(true);
+      return;
+    }
+    if (resolvedPendingPort || resolvedPendingSocket) {
+      setPendingManualOpen(false);
+    }
+  }, [
+    pendingSocketInput,
+    pendingSocketMatches.length,
+    placingMarker,
+    resolvedPendingPort,
+    resolvedPendingSocket,
+  ]);
+
+  useEffect(() => {
     if (!pointEditMode || !selectedPoint) return;
     setSelectedPointSocketInput(String(selectedPoint.patch_panel_port || ''));
   }, [pointEditMode, selectedPointId]);
@@ -1237,6 +1455,21 @@ function Networks() {
     }
   };
 
+  const exportSelectedMapPdf = async () => {
+    if (!selectedMapId) return;
+    try {
+      const response = await networksAPI.exportMapPdf(selectedMapId);
+      const contentType = response?.headers?.['content-type'] || 'application/pdf';
+      const fallbackName = buildMapExportFileName(selectedMap);
+      const fileName = parseDownloadFilename(response?.headers?.['content-disposition'], fallbackName);
+      downloadBlobFile(new Blob([response.data], { type: contentType }), fileName);
+      notifySuccess('PDF-карта с точками экспортирована.');
+    } catch (requestError) {
+      console.error(requestError);
+      notifyError(requestError?.response?.data?.detail || 'Не удалось экспортировать PDF-карту.');
+    }
+  };
+
   const saveMap = async () => {
     if (!branchIdNum) return;
     try {
@@ -1293,7 +1526,7 @@ function Networks() {
       return;
     }
     setPendingPoint({ xRatio, yRatio });
-    enqueueToast('Позиция на карте выбрана. Выберите розетку или PORT P/P и сохраните.', 'info');
+    notifyInfo('Позиция на карте выбрана. Выберите розетку или PORT P/P и сохраните.');
   };
 
   const onMapPointDrop = useCallback(async (pointIdOrIds, newX, newY) => {
@@ -1304,11 +1537,11 @@ function Networks() {
         await networksAPI.updateMapPoint(pointIdOrIds, { x_ratio: newX, y_ratio: newY });
       }
       await refreshBranchContext();
-      enqueueToast('Позиция маркера сохранена.', 'success');
+      notifySuccess('Позиция маркера сохранена.');
     } catch (error) {
       notifyError('Ошибка перемещения маркера.');
     }
-  }, [refreshBranchContext]);
+  }, [notifyError, notifySuccess, refreshBranchContext]);
 
   const applySocketPointDraft = useCallback((socketLike) => {
     const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();
@@ -1329,26 +1562,13 @@ function Networks() {
       notifyError('Сначала выберите позицию на карте.');
       return;
     }
-    const autoMatchedPortId = pendingSocketMatches.length === 1 ? Number(pendingSocketMatches[0]?.id || 0) : 0;
-    const effectivePendingPortId = Number(pendingPortId || autoMatchedPortId || 0) || null;
-    const effectivePendingSocketId = Number(pendingSocketId || 0) || null;
-    if (!effectivePendingPortId && !effectivePendingSocketId) {
+    if (!resolvedPendingPort && !resolvedPendingSocket) {
       notifyError('Выберите розетку или порт с заполненным PORT P/P.');
       return;
     }
-    const effectivePort = effectivePendingPortId
-      ? (pendingPortOptions.find((port) => Number(port.id) === Number(effectivePendingPortId))
-        || allPortsWithSocket.find((port) => Number(port.id) === Number(effectivePendingPortId))
-        || null)
-      : null;
-    const effectiveSocket = effectivePendingSocketId
-      ? (pendingSocketOptions.find((socketItem) => Number(socketItem.id) === Number(effectivePendingSocketId))
-        || sockets.find((socketItem) => Number(socketItem.id) === Number(effectivePendingSocketId))
-        || null)
-      : null;
-    const resolvedPortId = Number(effectivePort?.id || effectiveSocket?.port_id || 0) || null;
-    const resolvedSocketId = Number(effectiveSocket?.id || effectivePort?.socket_id || 0) || null;
-    const resolvedDeviceId = Number(effectivePort?.device_id || effectiveSocket?.device_id || 0) || undefined;
+    const resolvedPortId = Number(resolvedPendingPort?.id || resolvedPendingSocket?.port_id || 0) || null;
+    const resolvedSocketId = Number(resolvedPendingSocket?.id || resolvedPendingPort?.socket_id || 0) || null;
+    const resolvedDeviceId = Number(resolvedPendingPort?.device_id || resolvedPendingSocket?.device_id || 0) || undefined;
     if (!resolvedPortId && !resolvedSocketId) {
       notifyError('Не удалось определить порт или розетку для привязки.');
       return;
@@ -1457,9 +1677,8 @@ function Networks() {
     } else {
       applySocketPointDraft(socketDraft);
     }
-    enqueueToast(
+    notifyWarning(
       `Для розетки ${socketCode || '-'} точка не найдена. Нажмите на карту, чтобы создать точку и привязать розетку.`,
-      'warning'
     );
   };
 
@@ -1558,25 +1777,25 @@ function Networks() {
 
     const resolveSilently = async () => {
       if (!normalizedDbId) {
-        enqueueToast('Для филиала не настроена БД для синхронизации по MAC. Выберите БД и сохраните.', 'warning');
+        notifyWarning('Для филиала не настроена БД для синхронизации по MAC. Выберите БД и сохраните.');
         return;
       }
       try {
         setFioResolving(true);
         const res = await networksAPI.syncSocketHostContext(normalizedBranchId);
         if (Number(res?.updated || res?.resolved || 0) > 0) {
-          enqueueToast(`Синхронизированы IP/MAC/ФИО по MAC для ${Number(res?.updated || res?.resolved || 0)} розеток/портов.`, 'success');
+          notifySuccess(`Синхронизированы IP/MAC/ФИО по MAC для ${Number(res?.updated || res?.resolved || 0)} розеток/портов.`);
           await refreshBranchContext();
         }
       } catch (err) {
         console.error('Silent MAC sync error:', err);
-        enqueueToast(err?.response?.data?.detail || 'Ошибка синхронизации по MAC.', 'warning');
+        notifyWarning(err?.response?.data?.detail || 'Ошибка синхронизации по MAC.');
       } finally {
         setFioResolving(false);
       }
     };
     resolveSilently();
-  }, [branchIdNum, branchDbId, branchDbLoading, branchDbReady, fioResolveAttemptKey, fioResolving, enqueueToast, refreshBranchContext]);
+  }, [branchIdNum, branchDbId, branchDbLoading, branchDbReady, fioResolveAttemptKey, fioResolving, notifySuccess, notifyWarning, refreshBranchContext]);
 
   const handleEquipImport = async (e) => {
     const file = e.target.files?.[0];
@@ -1589,7 +1808,7 @@ function Networks() {
       const result = await networksAPI.importEquipment(branchIdNum, form);
       const s = result?.summary || {};
       notifySuccess(
-        `мпорт завершён: устройств создано ${s.devices_created || 0}, обновлено ${s.devices_updated || 0}; портов ${s.ports_created || 0}`,
+        `Импорт завершён: устройств создано ${s.devices_created || 0}, обновлено ${s.devices_updated || 0}; портов ${s.ports_created || 0}`,
       );
       // Invalidate all caches so fresh data is loaded
       invalidateSWRCacheByPrefix('networks', 'branch-context', branchIdNum);
@@ -2097,7 +2316,18 @@ function Networks() {
   };
 
   const mapSidePanelContent = (
-    <Stack spacing={0.8}>
+    <Stack
+      spacing={0.8}
+      sx={{
+        minWidth: 0,
+        minHeight: 0,
+        ...(!isMobile && placingMarker
+          ? {
+            height: '100%',
+          }
+          : {}),
+      }}
+    >
       {isMobile && (
         <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 0.4 }}>
           <Typography variant="subtitle2">Панель карты</Typography>
@@ -2120,11 +2350,22 @@ function Networks() {
             <Button size="small" color="error" onClick={() => selectedMap && void removeMap(selectedMap)} disabled={!selectedMap}>Удалить</Button>
           </Stack>
         )}
-        {selectedMapIsPdfSource && (
-          <Button size="small" startIcon={<DownloadIcon />} onClick={() => void openOriginalMapFile()} sx={{ mt: 0.5 }}>
-            Открыть оригинал PDF
+        <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" sx={{ mt: 0.8 }}>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<DownloadIcon />}
+            onClick={() => void exportSelectedMapPdf()}
+            disabled={!selectedMap}
+          >
+            Экспорт PDF
           </Button>
-        )}
+          {selectedMapIsPdfSource && (
+            <Button size="small" startIcon={<DownloadIcon />} onClick={() => void openOriginalMapFile()}>
+              Открыть оригинал PDF
+            </Button>
+          )}
+        </Stack>
       </Paper>
 
       {/* ═══ 1. Поиск и обзор ═══ */}
@@ -2140,6 +2381,7 @@ function Networks() {
           borderRadius: '8px !important',
           '&:before': { display: 'none' },
           overflow: 'hidden',
+          flexShrink: 0,
         }}
       >
         <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 40, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
@@ -2180,12 +2422,22 @@ function Networks() {
                 Точка для розетки {createPointHint.socket_code || '-'} не найдена.
               </Alert>
             )}
-            <TableContainer sx={{ maxHeight: isMobile ? 200 : 260 }}>
-              <Table size="small" stickyHeader>
+            <TableContainer
+              sx={{
+                height: isMobile ? 200 : (placingMarker ? 140 : 260),
+                maxHeight: isMobile ? 200 : (placingMarker ? 140 : 260),
+                minHeight: isMobile ? 200 : (placingMarker ? 140 : 260),
+                overflowY: 'scroll',
+                overflowX: 'hidden',
+                scrollbarGutter: 'stable both-edges',
+                width: '100%',
+              }}
+            >
+              <Table size="small" stickyHeader sx={{ tableLayout: 'fixed' }}>
                 <TableHead>
                   <TableRow>
-                    <TableCell sx={{ py: 0.3, fontSize: '0.72rem', fontWeight: 700 }}>PORT P/P</TableCell>
-                    <TableCell sx={{ py: 0.3, fontSize: '0.72rem', fontWeight: 700 }}>PORT</TableCell>
+                    <TableCell sx={{ width: '44%', py: 0.3, fontSize: '0.72rem', fontWeight: 700 }}>PORT P/P</TableCell>
+                    <TableCell sx={{ width: '56%', py: 0.3, fontSize: '0.72rem', fontWeight: 700 }}>PORT</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -2195,7 +2447,16 @@ function Networks() {
                       hover
                       selected={Number(point.id) === Number(selectedPointId)}
                       onClick={() => onPointRowSelect(point)}
-                      sx={{ cursor: 'pointer', '& td': { py: 0.3, fontSize: '0.75rem' } }}
+                      sx={{
+                        cursor: 'pointer',
+                        '& td': {
+                          py: 0.3,
+                          fontSize: '0.75rem',
+                          whiteSpace: 'nowrap',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                        },
+                      }}
                     >
                       <TableCell>{point.patch_panel_port || '-'}</TableCell>
                       <TableCell>{point.port_name || '-'}</TableCell>
@@ -2210,6 +2471,7 @@ function Networks() {
 
       {/* ═══ 2. Добавление точки ═══ */}
       <Accordion
+        ref={addPointPanelRef}
         disableGutters
         elevation={0}
         expanded={addPointPanelOpen}
@@ -2223,6 +2485,14 @@ function Networks() {
           '&:before': { display: 'none' },
           overflow: 'hidden',
           transition: 'border-color 0.2s',
+          ...(!isMobile && placingMarker
+            ? {
+              display: 'flex',
+              flexDirection: 'column',
+              flex: 1,
+              minHeight: 0,
+            }
+            : {}),
         }}
       >
         <AccordionSummary expandIcon={<ExpandMoreIcon />} sx={{ minHeight: 40, '& .MuiAccordionSummary-content': { my: 0.5 } }}>
@@ -2249,7 +2519,22 @@ function Networks() {
             </Button>
           </Stack>
         </AccordionSummary>
-        <AccordionDetails sx={{ pt: 0, px: 1.2, pb: 1.2 }}>
+        <AccordionDetails
+          sx={{
+            pt: 0,
+            px: 1.2,
+            pb: 1.2,
+            ...(!isMobile && placingMarker
+              ? {
+                display: 'flex',
+                flexDirection: 'column',
+                flex: 1,
+                minHeight: 0,
+                overflow: 'hidden',
+              }
+              : {}),
+          }}
+        >
           <Stack spacing={1}>
             {addPointDisabledReason ? (
               <Alert severity={!canEdit ? 'warning' : 'info'}>
@@ -2258,98 +2543,135 @@ function Networks() {
             ) : null}
 
             {placingMarker && (
-              <Paper elevation={0} sx={getOfficeSubtlePanelSx(ui, { p: 1, bgcolor: ui.actionBg })}>
-                <Stack spacing={1}>
-                  <Typography variant="caption" color="text.secondary">
-                    1. Нажмите на место розетки на карте.
-                  </Typography>
-                  <Typography variant="caption" color="text.secondary">
-                    2. Выберите розетку (или порт с заполненным PORT P/P).
+              <Paper
+                elevation={0}
+                sx={getOfficeSubtlePanelSx(ui, {
+                  p: 0.9,
+                  bgcolor: ui.actionBg,
+                  flex: !isMobile ? 1 : undefined,
+                  minHeight: !isMobile ? 0 : undefined,
+                  maxHeight: isMobile ? 'none' : 'none',
+                  overflowY: isMobile ? 'visible' : 'auto',
+                  overscrollBehavior: 'contain',
+                  scrollbarGutter: 'stable both-edges',
+                })}
+              >
+                <Stack spacing={0.85} sx={{ pb: 0.2 }}>
+                  <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.25 }}>
+                    {pendingPoint
+                      ? 'Позиция выбрана. Укажите PORT P/P или откройте ручное уточнение.'
+                      : 'Кликните по карте, затем укажите PORT P/P.'}
                   </Typography>
                   {pendingPoint ? (
                     <Chip
                       size="small"
                       color="success"
                       icon={<PlaceIcon />}
-                      label={`X ${pendingPoint.xRatio.toFixed(3)} · Y ${pendingPoint.yRatio.toFixed(3)}`}
+                      label={`Координаты: X ${pendingPoint.xRatio.toFixed(3)} · Y ${pendingPoint.yRatio.toFixed(3)}`}
                     />
                   ) : (
-                    <Chip size="small" color="warning" variant="outlined" label="Координаты не выбраны" />
+                    <Chip size="small" color="warning" variant="outlined" label="Координаты: не выбраны" />
                   )}
                   <TextField
                     size="small"
                     label="PORT P/P"
                     placeholder="Напр. 6/46"
                     value={pendingSocketInput}
-                    onChange={(event) => setPendingSocketInput(event.target.value)}
-                    helperText={pendingSocketInput
-                      ? (pendingSocketMatches.length === 1
-                        ? 'Найден 1 порт, подставится автоматически'
-                        : pendingSocketMatches.length > 1
-                          ? `Найдено ${pendingSocketMatches.length} портов`
-                          : 'Совпадений не найдено')
-                      : 'Введите розетку для автопоиска'}
+                    onChange={(event) => {
+                      setPendingSocketInput(event.target.value);
+                      setPendingPortId('');
+                      setPendingSocketId('');
+                    }}
                   />
-                  <TextField
-                    select
-                    size="small"
-                    label="Розетка для привязки"
-                    value={pendingSocketValue}
-                    onChange={(event) => {
-                      const nextSocketId = String(event.target.value || '');
-                      const nextSocket = pendingSocketOptions.find((socketItem) => String(socketItem.id) === nextSocketId) || null;
-                      setPendingSocketId(nextSocketId);
-                      if (nextSocket?.socket_code) {
-                        setPendingSocketInput(String(nextSocket.socket_code));
-                      }
-                      if (nextSocket?.port_id) {
-                        setPendingPortId(String(nextSocket.port_id));
-                      }
+                  <Box
+                    sx={{
+                      px: 1,
+                      py: 0.75,
+                      borderRadius: 1.5,
+                      border: '1px solid',
+                      borderColor: pendingStatusSx.borderColor,
+                      bgcolor: pendingStatusSx.bgcolor,
                     }}
-                    helperText={pendingSocketOptions.length ? `${pendingSocketOptions.length} доступных розеток` : 'Розетки по фильтру не найдены'}
                   >
-                    {pendingSocketOptions.map((socketItem) => (
-                      <MenuItem key={socketItem.id} value={String(socketItem.id)}>
-                        {socketItem.socket_code || '-'}{socketItem.device_code ? ` · ${socketItem.device_code}` : ''}{socketItem.port_name ? ` · PORT ${socketItem.port_name}` : ''}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                  <TextField
-                    select
-                    size="small"
-                    label="PORT P/P для привязки"
-                    value={pendingPortValue}
-                    onChange={(event) => {
-                      const nextPortId = String(event.target.value || '');
-                      const nextPort = pendingPortOptions.find((port) => String(port.id) === nextPortId) || null;
-                      setPendingPortId(nextPortId);
-                      if (nextPort?.socket_id) {
-                        setPendingSocketId(String(nextPort.socket_id));
-                      }
-                      if (nextPort?.patch_panel_port) {
-                        setPendingSocketInput(String(nextPort.patch_panel_port));
-                      }
-                    }}
-                    helperText={pendingPortOptions.length ? `${pendingPortOptions.length} доступных портов` : 'По вашему PORT P/P порты не найдены'}
-                  >
-                    {pendingPortOptions.map((port) => (
-                      <MenuItem key={port.id} value={String(port.id)}>
-                        {formatSocketPort(port)}
-                      </MenuItem>
-                    ))}
-                  </TextField>
-                  {selectedPendingPort && (
-                    <Typography variant="caption" color="text.secondary">
-                      {selectedPendingPort.location_code ? `Локация: ${selectedPendingPort.location_code} · ` : ''}
-                      {selectedPendingPort.endpoint_ip_raw ? `IP: ${selectedPendingPort.endpoint_ip_raw}` : 'IP не указан'}
+                    <Typography variant="caption" sx={{ color: pendingStatusSx.color, lineHeight: 1.25, fontWeight: 600 }}>
+                      {pendingLookupStatus.text}
                     </Typography>
-                  )}
+                  </Box>
+                  <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ minWidth: 0 }}>
+                    <Button
+                      size="small"
+                      variant={pendingManualOpen ? 'outlined' : 'text'}
+                      onClick={() => setPendingManualOpen((prev) => !prev)}
+                      sx={{ flexShrink: 0 }}
+                    >
+                      {pendingManualOpen ? 'Скрыть уточнение' : 'Уточнить вручную'}
+                    </Button>
+                    <Typography variant="caption" color="text.secondary" sx={{ minWidth: 0, textAlign: 'right' }}>
+                      {pendingManualMeta}
+                    </Typography>
+                  </Stack>
+                  <Collapse in={pendingManualOpen} timeout="auto" unmountOnExit>
+                    <Stack spacing={0.85} sx={{ pt: 0.25 }}>
+                      <TextField
+                        select
+                        size="small"
+                        label="Розетка для привязки"
+                        value={pendingSocketValue}
+                        SelectProps={{ MenuProps: mapPanelSelectMenuProps }}
+                        onChange={(event) => {
+                          const nextSocketId = String(event.target.value || '');
+                          const nextSocket = pendingSocketOptions.find((socketItem) => String(socketItem.id) === nextSocketId) || null;
+                          setPendingSocketId(nextSocketId);
+                          setPendingPortId(String(nextSocket?.port_id || ''));
+                          if (nextSocket?.socket_code) {
+                            setPendingSocketInput(String(nextSocket.socket_code));
+                          }
+                        }}
+                        helperText={pendingSocketOptions.length ? `${pendingSocketOptions.length} доступных розеток` : 'Розетки по фильтру не найдены'}
+                      >
+                        {pendingSocketOptions.map((socketItem) => (
+                          <MenuItem key={socketItem.id} value={String(socketItem.id)}>
+                            {socketItem.socket_code || '-'}{socketItem.device_code ? ` · ${socketItem.device_code}` : ''}{socketItem.port_name ? ` · PORT ${socketItem.port_name}` : ''}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                      <TextField
+                        select
+                        size="small"
+                        label="PORT P/P для привязки"
+                        value={pendingPortValue}
+                        SelectProps={{ MenuProps: mapPanelSelectMenuProps }}
+                        onChange={(event) => {
+                          const nextPortId = String(event.target.value || '');
+                          const nextPort = pendingPortOptions.find((port) => String(port.id) === nextPortId) || null;
+                          setPendingPortId(nextPortId);
+                          setPendingSocketId(String(nextPort?.socket_id || ''));
+                          if (nextPort?.patch_panel_port) {
+                            setPendingSocketInput(String(nextPort.patch_panel_port));
+                          }
+                        }}
+                        helperText={pendingPortOptions.length ? `${pendingPortOptions.length} доступных портов` : 'По вашему PORT P/P порты не найдены'}
+                      >
+                        {pendingPortOptions.map((port) => (
+                          <MenuItem key={port.id} value={String(port.id)}>
+                            {formatSocketPort(port)}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                      {resolvedPendingPort && (
+                        <Typography variant="caption" color="text.secondary">
+                          {resolvedPendingPort.location_code ? `Локация: ${resolvedPendingPort.location_code} · ` : ''}
+                          {resolvedPendingPort.endpoint_ip_raw ? `IP: ${resolvedPendingPort.endpoint_ip_raw}` : 'IP не указан'}
+                        </Typography>
+                      )}
+                    </Stack>
+                  </Collapse>
                   <Button
                     variant="contained"
                     size="small"
                     startIcon={<PlaceIcon />}
                     onClick={() => void commitPendingPoint()}
-                    disabled={!pendingPoint || (!pendingPortId && !pendingSocketId)}
+                    disabled={pendingCommitDisabled}
                   >
                     Привязать розетку
                   </Button>
@@ -2442,13 +2764,14 @@ function Networks() {
                         : selectedPointSocketMatches.length > 1
                           ? `Найдено ${selectedPointSocketMatches.length} портов, выберите нужный PORT`
                           : 'Совпадений не найдено')
-                      : 'дентичность точки определяется PORT P/P'}
+                      : 'Идентичность точки определяется PORT P/P'}
                   />
                   <TextField
                     select
                     size="small"
                     label="PORT для точки"
                     value={selectedPointPortValue}
+                    SelectProps={{ MenuProps: mapPanelSelectMenuProps }}
                     onChange={(event) => {
                       const nextPortId = Number(event.target.value) || null;
                       const nextPort = selectedPointPortOptions.find((port) => Number(port.id) === Number(nextPortId)) || null;
@@ -2469,7 +2792,7 @@ function Networks() {
                         setSelectedPointSocketInput(String(nextPort.patch_panel_port));
                       }
                     }}
-                    helperText="дентичность точки задается PORT P/P выбранного порта"
+                    helperText="Идентичность точки задается PORT P/P выбранного порта"
                   >
                     {selectedPointPortOptions.map((port) => (
                       <MenuItem key={port.id} value={String(port.id)}>
@@ -2488,7 +2811,7 @@ function Networks() {
                 </>
               ) : (
                 <Stack direction="row" spacing={1}>
-                  <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>зменить</Button>
+                  <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
                   <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
                 </Stack>
               )}
@@ -2573,7 +2896,7 @@ function Networks() {
                       disabled={equipImportLoading}
                       onClick={() => setTimeout(() => equipImportRef.current?.click(), 0)}
                     >
-                      {equipImportLoading ? 'мпорт...' : 'мпорт xlsx'}
+                      {equipImportLoading ? 'Импорт...' : 'Импорт xlsx'}
                     </Button>
                   </>
                 )}
@@ -2590,7 +2913,7 @@ function Networks() {
               <Tab value="equipment" label="Оборудование" />
               <Tab value="sockets" label="Розетки" />
               <Tab value="maps" label="Карта" />
-              <Tab value="history" label="стория" />
+              <Tab value="history" label="История" />
             </Tabs>
 
             {tab === 'equipment' && (
@@ -2665,7 +2988,7 @@ function Networks() {
                       <Stack spacing={1}>
                         {mapRenderedFrom === 'pdf' && (
                           <Alert severity="info">
-                            PDF-карта автоматически конвертирована в изображение. нтерактивная разметка включена.
+                            PDF-карта автоматически конвертирована в изображение. Интерактивная разметка включена.
                           </Alert>
                         )}
                         <InteractiveMapCanvas
@@ -2696,7 +3019,21 @@ function Networks() {
 
                   {!isMobile && (
                     <Grid item xs={12} lg={3}>
-                      {mapSidePanelContent}
+                      <Box
+                        ref={desktopMapPanelRef}
+                        sx={{
+                          position: 'sticky',
+                          top: 12,
+                          maxHeight: 'calc(100dvh - 240px)',
+                          overflowY: 'auto',
+                          overflowX: 'hidden',
+                          scrollbarGutter: 'stable both-edges',
+                          scrollPaddingBottom: 16,
+                          pr: 0.25,
+                        }}
+                      >
+                        {mapSidePanelContent}
+                      </Box>
                     </Grid>
                   )}
                 </Grid>
@@ -2907,13 +3244,14 @@ function Networks() {
                           : selectedPointSocketMatches.length > 1
                             ? `Найдено ${selectedPointSocketMatches.length} портов, выберите нужный PORT`
                             : 'Совпадений не найдено')
-                        : 'дентичность точки определяется PORT P/P'}
+                        : 'Идентичность точки определяется PORT P/P'}
                     />
                     <TextField
                       select
                       size="small"
                       label="PORT для точки"
                       value={selectedPointPortValue}
+                      SelectProps={{ MenuProps: mapPanelSelectMenuProps }}
                       onChange={(event) => {
                         const nextPortId = Number(event.target.value) || null;
                         const nextPort = selectedPointPortOptions.find((port) => Number(port.id) === Number(nextPortId)) || null;
@@ -2934,7 +3272,7 @@ function Networks() {
                           setSelectedPointSocketInput(String(nextPort.patch_panel_port));
                         }
                       }}
-                      helperText="дентичность точки задается PORT P/P выбранного порта"
+                      helperText="Идентичность точки задается PORT P/P выбранного порта"
                     >
                       {selectedPointPortOptions.map((port) => (
                         <MenuItem key={port.id} value={String(port.id)}>
@@ -2953,7 +3291,7 @@ function Networks() {
                   </>
                 ) : (
                   <Stack direction="row" spacing={1}>
-                    <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>зменить</Button>
+                    <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
                     <Button size="small" color="error" startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
                   </Stack>
                 )}
@@ -3055,21 +3393,6 @@ function Networks() {
 
         {loading && <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>Загрузка...</Typography>}
 
-        <Snackbar
-          open={Boolean(activeToast)}
-          autoHideDuration={4500}
-          onClose={closeToast}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        >
-          <Alert
-            onClose={closeToast}
-            severity={activeToast?.severity || 'info'}
-            variant="filled"
-            sx={{ width: '100%' }}
-          >
-            {activeToast?.message || ''}
-          </Alert>
-        </Snackbar>
       </PageShell>
     </MainLayout>
   );

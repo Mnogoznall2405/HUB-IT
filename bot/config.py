@@ -16,7 +16,7 @@ from dotenv import load_dotenv
 # Р—Р°РіСЂСѓР·РєР° РїРµСЂРµРјРµРЅРЅС‹С… РѕРєСЂСѓР¶РµРЅРёСЏ
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 ROOT_ENV_PATH = PROJECT_ROOT / '.env'
-load_dotenv(str(ROOT_ENV_PATH))
+load_dotenv(str(ROOT_ENV_PATH), encoding='utf-8-sig')
 
 
 @dataclass
@@ -113,14 +113,14 @@ class States:
 # РўРµРєСЃС‚РѕРІС‹Рµ РєРѕРЅСЃС‚Р°РЅС‚С‹
 class Messages:
     """РўРµРєСЃС‚РѕРІС‹Рµ СЃРѕРѕР±С‰РµРЅРёСЏ Р±РѕС‚Р°"""
-    MAIN_MENU = 'Р’С‹Р±РµСЂРёС‚Рµ СЂРµР¶РёРј РїРѕРёСЃРєР°: РїРѕ СЃРµСЂРёР№РЅРѕРјСѓ РЅРѕРјРµСЂСѓ/С„РѕС‚Рѕ РёР»Рё РїРѕ СЃРѕС‚СЂСѓРґРЅРёРєСѓ.'
+    MAIN_MENU = 'Выберите режим поиска: по серийному номеру/фото или по сотруднику.'
     ACCESS_DENIED = (
-        "вќЊ Р”РѕСЃС‚СѓРї Р·Р°РїСЂРµС‰РµРЅ!\n\n"
-        "Р­С‚РѕС‚ Р±РѕС‚ РґРѕСЃС‚СѓРїРµРЅ С‚РѕР»СЊРєРѕ СѓС‡Р°СЃС‚РЅРёРєР°Рј РѕРїСЂРµРґРµР»РµРЅРЅРѕР№ РіСЂСѓРїРїС‹.\n"
-        "РћР±СЂР°С‚РёС‚РµСЃСЊ Рє Р°РґРјРёРЅРёСЃС‚СЂР°С‚РѕСЂСѓ РґР»СЏ РїРѕР»СѓС‡РµРЅРёСЏ РґРѕСЃС‚СѓРїР°."
+        "Доступ запрещен!\n\n"
+        "Этот бот доступен только участникам определенной группы.\n"
+        "Обратитесь к администратору для получения доступа."
     )
-    PROCESSING_PHOTO = "рџ› пёЏ Р¤РѕС‚Рѕ РѕР±СЂР°Р±Р°С‚С‹РІР°РµС‚СЃСЏ, РїРѕР¶Р°Р»СѓР№СЃС‚Р°, РїРѕРґРѕР¶РґРёС‚Рµ..."
-    CREATING_ACT = "рџ› пёЏ РђРєС‚ РїСЂРёРµРјР°-РїРµСЂРµРґР°С‡Рё СЃРѕР·РґР°РµС‚СЃСЏ..."
+    PROCESSING_PHOTO = "Фото обрабатывается, пожалуйста, подождите..."
+    CREATING_ACT = "Акт приема-передачи создается..."
 
 
 # РљР»СЋС‡Рё РґР»СЏ С…СЂР°РЅРµРЅРёСЏ РґР°РЅРЅС‹С…
@@ -154,7 +154,7 @@ def load_config() -> AppConfig:
     # Telegram РєРѕРЅС„РёРіСѓСЂР°С†РёСЏ
     bot_token = os.getenv("TELEGRAM_BOT_TOKEN")
     if not bot_token:
-        raise ValueError("TELEGRAM_BOT_TOKEN РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ РІ .env")
+        raise ValueError("TELEGRAM_BOT_TOKEN не установлен в .env")
     
     allowed_group_id = os.getenv("ALLOWED_GROUP_ID", "")
     allowed_users_str = os.getenv("ALLOWED_USERS", "")
@@ -169,7 +169,7 @@ def load_config() -> AppConfig:
     # API РєРѕРЅС„РёРіСѓСЂР°С†РёСЏ
     openrouter_key = os.getenv("OPENROUTER_API_KEY")
     if not openrouter_key:
-        raise ValueError("OPENROUTER_API_KEY РЅРµ СѓСЃС‚Р°РЅРѕРІР»РµРЅ РІ .env")
+        raise ValueError("OPENROUTER_API_KEY не установлен в .env")
 
     api_config = APIConfig(
         openrouter_api_key=openrouter_key,
@@ -187,7 +187,7 @@ def load_config() -> AppConfig:
     
     # Transfer РєРѕРЅС„РёРіСѓСЂР°С†РёСЏ
     transfer_config = TransferConfig(
-        template_path=os.getenv("TRANSFER_TEMPLATE_PATH", "templates/transfer_act_template.docx"),
+        template_path=os.getenv("TRANSFER_TEMPLATE_PATH", "templates/docx_transfer_act.docx"),
         acts_dir=os.getenv("TRANSFER_ACTS_DIR", "transfer_acts"),
         max_photos=int(os.getenv("MAX_TRANSFER_PHOTOS", "10"))
     )
@@ -209,6 +209,6 @@ try:
     config = load_config()
 except ValueError as e:
     import logging
-    logging.error(f"РћС€РёР±РєР° Р·Р°РіСЂСѓР·РєРё РєРѕРЅС„РёРіСѓСЂР°С†РёРё: {e}")
+    logging.error(f"Ошибка загрузки конфигурации: {e}")
     raise
 

@@ -34,6 +34,7 @@ import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { jsonAPI } from '../api/json_client';
 import { useNotification } from '../contexts/NotificationContext';
+import { createNavigateToastAction } from '../components/feedback/toastActions';
 import { buildOfficeUiTokens } from '../theme/officeUiTokens';
 
 const PERIOD_OPTIONS = [
@@ -199,7 +200,17 @@ function DistributionChips({ title, data, limit = 8 }) {
 }
 
 function Statistics() {
-  const { notifyApiError, notifySuccess } = useNotification();
+  const {
+    notifyApiError: pushNotifyApiError,
+    notifySuccess: pushNotifySuccess,
+  } = useNotification();
+  const statisticsToastAction = useMemo(() => createNavigateToastAction('/statistics', 'Открыть статистику'), []);
+  const notifySuccess = useCallback((message, options = {}) => (
+    pushNotifySuccess(message, { source: 'statistics', action: statisticsToastAction, ...options })
+  ), [pushNotifySuccess, statisticsToastAction]);
+  const notifyApiError = useCallback((error, fallbackMessage, options = {}) => (
+    pushNotifyApiError(error, fallbackMessage, { source: 'statistics', action: statisticsToastAction, ...options })
+  ), [pushNotifyApiError, statisticsToastAction]);
   const [tab, setTab] = useState('pc');
   const [periodDays, setPeriodDays] = useState(90);
   const [searchText, setSearchText] = useState('');

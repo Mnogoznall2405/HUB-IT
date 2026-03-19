@@ -2,7 +2,8 @@ param(
     [string]$ServiceName = "itinvent-scan-agent",
     [string]$ProjectRoot = "C:\Project\Image_scan",
     [string]$PythonExe = "",
-    [string]$AgentScript = "scan_agent\agent.py"
+    [string]$AgentScript = "scan_agent\agent.py",
+    [string]$EnvFilePath = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -53,6 +54,56 @@ function Resolve-NssmPath {
     return $cmd.Source
 }
 
+function Set-EnvFileValue {
+    param(
+        [string]$Path,
+        [string]$Key,
+        [string]$Value
+    )
+
+    $targetPath = Normalize-InputPath $Path
+    if (-not $targetPath) {
+        return
+    }
+
+    $parent = Split-Path -Path $targetPath -Parent
+    if ($parent) {
+        New-Item -ItemType Directory -Force -Path $parent | Out-Null
+    }
+
+    $lines = @()
+    if (Test-Path -LiteralPath $targetPath) {
+        $lines = @(Get-Content -LiteralPath $targetPath -Encoding UTF8)
+    }
+
+    $updated = $false
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match "^\s*${Key}\s*=") {
+            $lines[$i] = "${Key}=${Value}"
+            $updated = $true
+        }
+    }
+
+    if (-not $updated) {
+        $lines += "${Key}=${Value}"
+    }
+
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+    [System.IO.File]::WriteAllLines($targetPath, [string[]]$lines, $utf8NoBom)
+}
+
+function Set-ScanOnDemandDefaults {
+    param([string]$EnvPath)
+
+    [Environment]::SetEnvironmentVariable("SCAN_AGENT_SCAN_ON_START", "0", "Machine")
+    [Environment]::SetEnvironmentVariable("SCAN_AGENT_WATCHDOG_ENABLED", "0", "Machine")
+    $env:SCAN_AGENT_SCAN_ON_START = "0"
+    $env:SCAN_AGENT_WATCHDOG_ENABLED = "0"
+
+    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_SCAN_ON_START" -Value "0"
+    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_WATCHDOG_ENABLED" -Value "0"
+}
+
 $ProjectRoot = Normalize-InputPath $ProjectRoot
 $PythonExe = Normalize-InputPath $PythonExe
 $AgentScript = Normalize-InputPath $AgentScript
@@ -61,12 +112,14 @@ $pythonPath = Resolve-PythonPath -ProjectRoot $ProjectRoot -PythonExe $PythonExe
 $nssmPath = Resolve-NssmPath
 $logsDir = Join-Path $ProjectRoot "logs"
 $scriptPath = Join-Path $ProjectRoot $AgentScript
+$envPath = if ($EnvFilePath) { Normalize-InputPath $EnvFilePath } else { Join-Path $ProjectRoot ".env" }
 
 if (-not (Test-Path -LiteralPath $scriptPath)) {
     throw "Agent script not found: $scriptPath"
 }
 
 New-Item -ItemType Directory -Force $logsDir | Out-Null
+Set-ScanOnDemandDefaults -EnvPath $envPath
 
 $args = "$scriptPath"
 $commandLine = "`"$pythonPath`" `"$scriptPath`""
@@ -104,4 +157,4 @@ else {
 }
 
 Start-Service -Name $ServiceName
-Write-Host "Service started: $ServiceName"
+Write-Host "Service started: $ServiceName. Scan defaults forced to on-demand in $envPath"

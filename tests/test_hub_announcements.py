@@ -318,6 +318,15 @@ def test_reads_recipients_endpoint_and_admin_only_delete(announcement_env):
     assert reads_payload["summary"]["seen_total"] == 1
     assert reads_payload["summary"]["ack_total"] == 1
     assert reads_payload["summary"]["pending_ack_total"] == 1
+    items_by_user_id = {int(item["user_id"]): item for item in reads_payload["items"]}
+    assert items_by_user_id[2]["is_seen"] is True
+    assert items_by_user_id[2]["is_acknowledged"] is True
+    assert items_by_user_id[2]["read_at"]
+    assert items_by_user_id[2]["acknowledged_at"]
+    assert items_by_user_id[3]["is_seen"] is False
+    assert items_by_user_id[3]["is_acknowledged"] is False
+    assert items_by_user_id[3]["read_at"] == ""
+    assert items_by_user_id[3]["acknowledged_at"] == ""
 
     delete_as_author = client.delete(f"/hub/announcements/{note_id}")
     assert delete_as_author.status_code == 403

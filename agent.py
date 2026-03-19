@@ -24,6 +24,7 @@ import psutil
 import requests
 
 from agent_version import AGENT_VERSION
+import agent_installer
 
 try:
     import wmi  # type: ignore
@@ -37,7 +38,7 @@ except Exception:
 
 
 DEFAULT_SERVER_URL = "https://hubit.zsgp.ru/api/v1/inventory"
-DEFAULT_API_KEY = "itinvent_agent_secure_token_v1"
+DEFAULT_API_KEY = "gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8"
 DEFAULT_FULL_SNAPSHOT_INTERVAL = 3600
 DEFAULT_HEARTBEAT_INTERVAL = 300
 DEFAULT_HEARTBEAT_JITTER = 60
@@ -70,11 +71,9 @@ OUTLOOK_EXTRA_ROOT_SKIP_DIR_NAMES = {
 }
 OUTLOOK_STORE_SUFFIXES = {".ost", ".pst"}
 
-PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
-PROGRAM_DATA_DIR = PROGRAM_DATA_ROOT / "Logs"
-PROGRAM_DATA_SPOOL_DIR = PROGRAM_DATA_ROOT / "Spool"
 TEMP_DIR = Path(os.environ.get("TEMP", r"C:\Windows\Temp"))
 LOG_FILE_NAME = "itinvent_agent.log"
+AGENT_LOG_KEEP_TOTAL_FILES = 3
 INVENTORY_QUEUE_DIR_NAME = "inventory"
 INVENTORY_QUEUE_PENDING_DIR_NAME = "pending"
 INVENTORY_QUEUE_DEAD_DIR_NAME = "dead_letter"
@@ -82,6 +81,11 @@ REBOOT_REMINDER_STATE_FILE_NAME = "reboot_reminder_state.json"
 AGENT_STATUS_FILE_NAME = "agent_status.json"
 OUTLOOK_SCAN_STATE_FILE_NAME = "outlook_scan_state.json"
 ENV_FILE_NAME = ".env"
+PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
+PROGRAM_DATA_AGENT_ROOT = PROGRAM_DATA_ROOT / "Agent"
+PROGRAM_DATA_DIR = PROGRAM_DATA_AGENT_ROOT / "Logs"
+PROGRAM_DATA_SPOOL_DIR = PROGRAM_DATA_AGENT_ROOT / "Spool"
+PROGRAM_DATA_SCAN_AGENT_ROOT = PROGRAM_DATA_AGENT_ROOT / "ScanAgent"
 REBOOT_REMINDER_MESSAGE = (
     "Компьютер работает более 7 дней без перезагрузки. "
     "Рекомендуется перезагрузить его для стабильной работы и установки обновлений."
@@ -244,6 +248,33 @@ def _read_text_with_fallback(path: Path) -> str:
     return ""
 
 
+def _prune_agent_log_files(log_path: Path, keep_total_files: int = AGENT_LOG_KEEP_TOTAL_FILES) -> Tuple[int, List[str]]:
+    keep_rotated = max(0, int(keep_total_files) - 1)
+    if not log_path.parent.exists():
+        return 0, []
+
+    rotated: List[Tuple[int, Path]] = []
+    prefix = f"{log_path.name}."
+    for path in log_path.parent.iterdir():
+        if not path.is_file() or not path.name.startswith(prefix):
+            continue
+        suffix = path.name[len(prefix):]
+        if not suffix.isdigit():
+            continue
+        rotated.append((int(suffix), path))
+
+    rotated.sort(key=lambda item: item[0])
+    removed = 0
+    errors: List[str] = []
+    for _, path in rotated[keep_rotated:]:
+        try:
+            path.unlink()
+            removed += 1
+        except Exception as exc:
+            errors.append(f"{path.name}: {exc}")
+    return removed, errors
+
+
 def _load_env_file(path: Path) -> int:
     if not path.exists() or not path.is_file():
         return 0
@@ -277,6 +308,7 @@ def _candidate_env_paths() -> List[Path]:
     if explicit_path:
         candidates.append(Path(explicit_path))
 
+    candidates.append(PROGRAM_DATA_AGENT_ROOT / ENV_FILE_NAME)
     if getattr(sys, "frozen", False):
         candidates.append(Path(sys.executable).resolve().parent / ENV_FILE_NAME)
     else:
@@ -347,11 +379,12 @@ def setup_logging() -> Path:
         spool_dir.mkdir(parents=True, exist_ok=True)
 
     log_path = log_dir / LOG_FILE_NAME
+    removed_logs, prune_errors = _prune_agent_log_files(log_path)
     handlers: List[logging.Handler] = [
         RotatingFileHandler(
             log_path,
             maxBytes=10 * 1024 * 1024,
-            backupCount=5,
+            backupCount=AGENT_LOG_KEEP_TOTAL_FILES - 1,
             encoding="utf-8",
         )
     ]
@@ -365,6 +398,15 @@ def setup_logging() -> Path:
         datefmt="%Y-%m-%d %H:%M:%S",
         handlers=handlers,
     )
+    if removed_logs:
+        logging.info(
+            "Agent log cleanup completed: removed=%s keep_total_files=%s log_dir=%s",
+            removed_logs,
+            AGENT_LOG_KEEP_TOTAL_FILES,
+            log_dir,
+        )
+    for error in prune_errors:
+        logging.warning("Agent log cleanup delete failed: %s", error)
     queue_root = spool_dir / INVENTORY_QUEUE_DIR_NAME
     INVENTORY_QUEUE_PENDING_PATH = queue_root / INVENTORY_QUEUE_PENDING_DIR_NAME
     INVENTORY_QUEUE_DEAD_PATH = queue_root / INVENTORY_QUEUE_DEAD_DIR_NAME
@@ -1190,6 +1232,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="IT-Invent inventory agent")
     parser.add_argument("--once", action="store_true", help="Collect and send one report, then exit")
     parser.add_argument("--check", action="store_true", help="Validate config and endpoint reachability, then exit")
+    agent_installer.add_msi_args(parser)
     return parser.parse_args(argv)
 
 
@@ -1231,6 +1274,16 @@ def load_config() -> AgentConfig:
     ).strip()
     reminder_weekdays_only_raw = os.getenv("ITINV_REBOOT_REMINDER_WEEKDAYS_ONLY", "1")
     ca_bundle = str(os.getenv("ITINV_AGENT_CA_BUNDLE", "")).strip() or None
+    if ca_bundle:
+        ca_bundle_path = Path(ca_bundle).expanduser()
+        if not ca_bundle_path.exists():
+            logging.warning(
+                "Configured ITINV_AGENT_CA_BUNDLE path does not exist: %s. Falling back to default TLS verification.",
+                ca_bundle,
+            )
+            ca_bundle = None
+        else:
+            ca_bundle = str(ca_bundle_path)
     try:
         full_snapshot_interval = int(interval_raw)
     except ValueError:
@@ -2478,9 +2531,6 @@ def _inventory_queue_read(path: Path) -> Optional[Dict[str, Any]]:
         return None
     if not isinstance(data, dict):
         return None
-    payload = data.get("payload")
-    if not isinstance(payload, dict):
-        return None
     data["id"] = str(data.get("id") or path.stem)
     data["created_at"] = _to_int(data.get("created_at"), int(time.time()))
     data["attempts"] = max(0, _to_int(data.get("attempts"), 0))
@@ -2576,14 +2626,14 @@ def _inventory_queue_depth() -> int:
 
 
 def _scan_outbox_depth() -> int:
-    outbox_pending = PROGRAM_DATA_ROOT / "ScanAgent" / "outbox" / "pending"
+    outbox_pending = PROGRAM_DATA_SCAN_AGENT_ROOT / "outbox" / "pending"
     if not outbox_pending.exists():
         return 0
     return len([row for row in outbox_pending.glob("*.json") if row.is_file()])
 
 
 def _read_scan_last_ingest_ok_at() -> Optional[int]:
-    path = PROGRAM_DATA_ROOT / "ScanAgent" / "scan_agent_status.json"
+    path = PROGRAM_DATA_SCAN_AGENT_ROOT / "scan_agent_status.json"
     if not path.exists():
         return None
     try:
@@ -2825,6 +2875,11 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     LOADED_ENV_FILES = bootstrap_env_from_files()
     args = parse_args(argv)
     log_file_path = setup_logging()
+
+    if agent_installer.is_msi_mode(args):
+        if args.msi_install:
+            return agent_installer.run_msi_install(args, logging)
+        return agent_installer.run_msi_uninstall_cleanup(args, logging)
 
     config = load_config()
     RUN_CMD_TIMEOUT_SEC = config.run_cmd_timeout_sec

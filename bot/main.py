@@ -9,9 +9,11 @@
 import logging
 from logging.handlers import RotatingFileHandler
 import sys
+import warnings
 
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
+from telegram.warnings import PTBUserWarning
 
 # Импорты из модулей бота
 from bot.config import config
@@ -31,6 +33,23 @@ MAIN_MENU_BUTTONS_FILTER = (
 # Функции переключения больше не нужны - кнопки главного меню обрабатываются напрямую
 
 # Настройка логирования с ротацией
+def _configure_process_io():
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            try:
+                stream.reconfigure(encoding='utf-8', errors='replace')
+            except Exception:
+                pass
+
+
+_configure_process_io()
+warnings.filterwarnings(
+    "ignore",
+    message=r"If 'per_message=False', 'CallbackQueryHandler' will not be tracked for every message\..*",
+    category=PTBUserWarning,
+)
+
+
 def setup_logging():
     """Настраивает систему логирования с ротацией файлов"""
     # Создаем форматтер

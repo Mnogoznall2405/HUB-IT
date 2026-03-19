@@ -64,7 +64,7 @@ class ScanServerConfig:
         if legacy_key and legacy_key not in keys:
             keys.append(legacy_key)
         if not keys:
-            keys.append("itinvent_agent_secure_token_v1")
+            keys.append("gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8")
 
         return cls(
             host=str(os.getenv("SCAN_SERVER_HOST", "127.0.0.1")).strip() or "127.0.0.1",

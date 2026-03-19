@@ -2,6 +2,8 @@
 
 Scan-контур по умолчанию работает в on-demand режиме.
 
+Поддерживаемые install-скрипты дополнительно принудительно выставляют `SCAN_AGENT_SCAN_ON_START=0` и `SCAN_AGENT_WATCHDOG_ENABLED=0`, чтобы не унаследовать старые machine-scope значения `1/1`.
+
 Обязательные machine-scope переменные:
 
 - `SCAN_AGENT_SERVER_BASE=https://hubit.zsgp.ru/api/v1/scan`
@@ -20,3 +22,4 @@ Scan-контур по умолчанию работает в on-demand режи
 - `%ProgramData%\IT-Invent\ScanAgent\scan_agent.log`
 - `GET /api/v1/scan/agents`
 - `scan_now` из UI
+- task-mode settings: `ExecutionTimeLimit = PT0S`, `MultipleInstances = IgnoreNew`, repetition включён

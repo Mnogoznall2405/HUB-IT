@@ -2,6 +2,7 @@
 
 import hashlib
 import json
+import os
 import re
 import sqlite3
 import threading
@@ -2985,6 +2986,180 @@ class NetworkService:
                 raise ValueError("Не удалось конвертировать PDF в изображение. Установите PyMuPDF.")
 
         return {**row, "rendered_from": ""}
+
+    @staticmethod
+    def _export_map_point_label(point: dict[str, Any]) -> str:
+        for key in ("patch_panel_port", "port_name", "label"):
+            value = _s(point.get(key))
+            if value:
+                return value
+        point_id = int(point.get("id") or 0)
+        return f"Точка #{point_id}" if point_id > 0 else "Точка"
+
+    @staticmethod
+    def _export_map_point_color(value: Any) -> tuple[float, float, float]:
+        raw = _s(value).lstrip("#")
+        if len(raw) == 3:
+            raw = "".join(ch * 2 for ch in raw)
+        if not re.fullmatch(r"[0-9A-Fa-f]{6}", raw):
+            raw = "1976d2"
+        return (
+            int(raw[0:2], 16) / 255.0,
+            int(raw[2:4], 16) / 255.0,
+            int(raw[4:6], 16) / 255.0,
+        )
+
+    @staticmethod
+    def _export_map_file_name(map_row: dict[str, Any], map_id: int) -> str:
+        base = _s(map_row.get("title")) or Path(_s(map_row.get("file_name")) or f"map_{int(map_id)}").stem
+        safe = re.sub(r'[<>:"/\\\\|?*\x00-\x1F]+', "_", base).strip().strip(". ")
+        safe = re.sub(r"\s+", " ", safe).strip()
+        return f"{safe or f'map_{int(map_id)}'}-points.pdf"
+
+    @staticmethod
+    def _image_page_size(file_blob: bytes) -> tuple[float, float]:
+        width = 0.0
+        height = 0.0
+        try:
+            profile = fitz.image_profile(file_blob) if fitz is not None else None
+        except Exception:
+            profile = None
+        if isinstance(profile, dict):
+            try:
+                width = float(profile.get("width") or 0.0)
+                height = float(profile.get("height") or 0.0)
+            except Exception:
+                width = 0.0
+                height = 0.0
+        if width <= 0 or height <= 0:
+            width, height = 1600.0, 900.0
+        return width, height
+
+    @staticmethod
+    def _resolve_export_font(page: Any) -> str:
+        font_name = "helv"
+        fonts_dir = Path(os.environ.get("WINDIR") or "C:/Windows") / "Fonts"
+        for file_name in ("segoeui.ttf", "arial.ttf", "tahoma.ttf"):
+            font_path = fonts_dir / file_name
+            if not font_path.exists():
+                continue
+            try:
+                page.insert_font(fontname="itinvent_export_font", fontfile=str(font_path))
+                return "itinvent_export_font"
+            except Exception:
+                continue
+        return font_name
+
+    def export_map_pdf(self, map_id: int) -> dict[str, Any] | None:
+        if fitz is None:
+            raise ValueError("Экспорт PDF недоступен: PyMuPDF не установлен.")
+
+        with self._lock, self._connect() as conn:
+            map_row = self._map_row_for_api(conn, map_id=int(map_id))
+
+        if not map_row:
+            return None
+
+        file_row = self.get_map_file(int(map_id))
+        if not file_row:
+            return None
+
+        branch_id = int(map_row.get("branch_id") or 0)
+        points = self.list_map_points(branch_id=branch_id, map_id=int(map_id))
+        file_name = _s(file_row.get("file_name")) or f"map_{int(map_id)}.bin"
+        mime_type = _s(file_row.get("mime_type")) or "application/octet-stream"
+        raw_blob = file_row.get("file_blob") or b""
+        file_blob = bytes(raw_blob) if isinstance(raw_blob, (bytes, bytearray, memoryview)) else b""
+        if not file_blob:
+            raise ValueError("Файл карты пуст.")
+
+        export_doc = fitz.open()
+        source_doc = None
+        try:
+            if self._is_pdf_map(file_name, mime_type):
+                source_doc = fitz.open(stream=file_blob, filetype="pdf")
+                if source_doc.page_count < 1:
+                    raise ValueError("PDF-карта не содержит страниц.")
+                source_page = source_doc.load_page(0)
+                source_rect = source_page.rect
+                page = export_doc.new_page(width=max(float(source_rect.width), 1.0), height=max(float(source_rect.height), 1.0))
+                page.show_pdf_page(page.rect, source_doc, 0)
+            else:
+                width, height = self._image_page_size(file_blob)
+                page = export_doc.new_page(width=max(width, 1.0), height=max(height, 1.0))
+                page.insert_image(page.rect, stream=file_blob, keep_proportion=False)
+
+            page_rect = page.rect
+            marker_radius = max(5.0, min(page_rect.width, page_rect.height) * 0.009)
+            font_size = max(8.0, min(12.0, marker_radius * 1.7))
+            label_margin = max(6.0, marker_radius * 0.9)
+            outline_color = (1.0, 1.0, 1.0)
+            text_color = (0.06, 0.06, 0.06)
+            font_name = self._resolve_export_font(page)
+
+            for point in points:
+                try:
+                    x_ratio = min(max(float(point.get("x_ratio") or 0.0), 0.0), 1.0)
+                    y_ratio = min(max(float(point.get("y_ratio") or 0.0), 0.0), 1.0)
+                except Exception:
+                    continue
+
+                center_x = page_rect.width * x_ratio
+                center_y = page_rect.height * y_ratio
+                marker_rect = fitz.Rect(
+                    center_x - marker_radius,
+                    center_y - marker_radius,
+                    center_x + marker_radius,
+                    center_y + marker_radius,
+                )
+                fill_color = self._export_map_point_color(point.get("color"))
+                page.draw_oval(marker_rect, color=outline_color, fill=fill_color, width=max(1.0, marker_radius * 0.22))
+
+                text = self._export_map_point_label(point)[:96]
+                try:
+                    text_width = fitz.get_text_length(text, fontname=font_name, fontsize=font_size)
+                except Exception:
+                    text_width = max(len(text) * font_size * 0.56, font_size * 2)
+
+                label_x = center_x + marker_radius + label_margin
+                if label_x + text_width + 8 > page_rect.width:
+                    label_x = max(label_margin, center_x - marker_radius - label_margin - text_width)
+                label_top = min(
+                    max(label_margin, center_y - font_size - 2),
+                    max(label_margin, page_rect.height - font_size - 8),
+                )
+                background_rect = fitz.Rect(
+                    max(0.0, label_x - 3),
+                    max(0.0, label_top - 2),
+                    min(page_rect.width, label_x + text_width + 4),
+                    min(page_rect.height, label_top + font_size + 4),
+                )
+                page.draw_rect(background_rect, color=outline_color, fill=(1.0, 1.0, 1.0), width=0.6)
+                page.insert_text(
+                    fitz.Point(label_x, min(page_rect.height - 2, label_top + font_size)),
+                    text,
+                    fontname=font_name,
+                    fontsize=font_size,
+                    color=text_color,
+                )
+
+            pdf_bytes = export_doc.tobytes(garbage=4, deflate=True)
+            export_name = self._export_map_file_name(map_row, int(map_id))
+            return {
+                "file_name": export_name,
+                "mime_type": "application/pdf",
+                "file_blob": pdf_bytes,
+                "file_size": len(pdf_bytes),
+                "points_count": len(points),
+            }
+        except ValueError:
+            raise
+        except Exception as exc:
+            raise ValueError(f"Не удалось подготовить экспорт карты: {exc}") from exc
+        finally:
+            if source_doc is not None:
+                source_doc.close()
+            export_doc.close()
 
     def list_audit(self, *, branch_id: Optional[int], limit: int = 100) -> list[dict[str, Any]]:
         safe_limit = max(1, min(int(limit), 500))

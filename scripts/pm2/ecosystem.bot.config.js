@@ -18,6 +18,8 @@ module.exports = {
       restart_delay: 5000,
       env: {
         PYTHONUNBUFFERED: '1',
+        PYTHONIOENCODING: 'utf-8',
+        PYTHONUTF8: '1',
       },
     },
   ],

@@ -566,6 +566,25 @@ async def download_map_file(
     return StreamingResponse(BytesIO(file_blob), media_type=mime_type, headers=headers)
 
 
+@router.get("/maps/{map_id}/export-pdf")
+async def export_map_pdf(
+    map_id: int,
+    _: User = Depends(get_current_active_user),
+):
+    try:
+        data = network_service.export_map_pdf(map_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not data:
+        raise HTTPException(status_code=404, detail="Map not found")
+    file_name = str(data.get("file_name") or f"map_{map_id}-points.pdf")
+    file_blob = data.get("file_blob") or b""
+    headers = {
+        "Content-Disposition": f"attachment; filename*=UTF-8''{urllib.parse.quote(file_name)}",
+    }
+    return StreamingResponse(BytesIO(file_blob), media_type="application/pdf", headers=headers)
+
+
 @router.get("/audit")
 async def get_audit(
     branch_id: Optional[int] = Query(None),

@@ -61,6 +61,7 @@ import { useNotification } from '../contexts/NotificationContext';
 import { useLocation, useNavigate } from 'react-router-dom';
 import MarkdownRenderer from '../components/hub/MarkdownRenderer';
 import MarkdownEditor from '../components/hub/MarkdownEditor';
+import { createNavigateToastAction } from '../components/feedback/toastActions';
 import { buildOfficeUiTokens, getOfficeDialogPaperSx, getOfficeEmptyStateSx, getOfficeHeaderBandSx, getOfficeMetricBlockSx, getOfficePanelSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
 
 const DASHBOARD_ANNOUNCEMENTS_LIMIT = 120;
@@ -114,6 +115,23 @@ const initials = (name) => {
   if (!name) return '?';
   const parts = String(name).trim().split(/\s+/);
   return parts.length >= 2 ? `${parts[0][0]}${parts[1][0]}`.toUpperCase() : parts[0].slice(0, 2).toUpperCase();
+};
+
+export const normalizeAnnouncementReadsPayload = (payload) => ({
+  items: Array.isArray(payload?.items)
+    ? payload.items.map((item) => ({
+      ...item,
+      is_seen: Boolean(item?.is_seen),
+      is_acknowledged: Boolean(item?.is_acknowledged),
+    }))
+    : [],
+  summary: payload?.summary && typeof payload.summary === 'object' ? payload.summary : {},
+});
+
+export const getAnnouncementReadSecondaryText = (item, requiresAck, dateFormatter = fmtDateTime) => {
+  const baseText = item?.is_seen ? `Прочитал: ${dateFormatter(item?.read_at)}` : 'Не открывал';
+  if (!requiresAck) return baseText;
+  return `${baseText} · ${item?.is_acknowledged ? `Подтвердил: ${dateFormatter(item?.acknowledged_at)}` : 'Подтверждение не получено'}`;
 };
 
 const getTaskCommentPreview = (task) => {
@@ -190,7 +208,24 @@ function Dashboard() {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const { user, hasPermission } = useAuth();
-  const { notifyApiError, notifySuccess } = useNotification();
+  const {
+    notifyApiError: pushNotifyApiError,
+    notifySuccess: pushNotifySuccess,
+  } = useNotification();
+  const hubToastAction = useMemo(() => createNavigateToastAction('/dashboard', 'Открыть центр'), []);
+  const tasksToastAction = useMemo(() => createNavigateToastAction('/tasks', 'Открыть задачи'), []);
+  const notifyHubSuccess = useCallback((message, options = {}) => (
+    pushNotifySuccess(message, { source: 'hub', action: hubToastAction, ...options })
+  ), [hubToastAction, pushNotifySuccess]);
+  const notifyHubApiError = useCallback((error, fallbackMessage, options = {}) => (
+    pushNotifyApiError(error, fallbackMessage, { source: 'hub', action: hubToastAction, ...options })
+  ), [hubToastAction, pushNotifyApiError]);
+  const notifyTaskSuccess = useCallback((message, options = {}) => (
+    pushNotifySuccess(message, { source: 'tasks', action: tasksToastAction, ...options })
+  ), [pushNotifySuccess, tasksToastAction]);
+  const notifyTaskApiError = useCallback((error, fallbackMessage, options = {}) => (
+    pushNotifyApiError(error, fallbackMessage, { source: 'tasks', action: tasksToastAction, ...options })
+  ), [pushNotifyApiError, tasksToastAction]);
   const canWriteAnn = hasPermission('announcements.write');
   const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
   const initialFilters = readDashboardFilters(location.search);
@@ -457,32 +492,32 @@ function Dashboard() {
     try {
       const response = await hubAPI.downloadAnnouncementAttachment(announcementId, attachment.id);
       downloadBlob(response, attachment?.file_name || 'attachment');
-      notifySuccess(`Вложение ${attachment?.file_name || 'file'} скачано.`, { source: 'hub' });
+      notifyHubSuccess(`Вложение ${attachment?.file_name || 'file'} скачано.`);
     } catch (err) {
-      notifyApiError(err, 'Не удалось скачать вложение заметки.', { source: 'hub' });
+      notifyHubApiError(err, 'Не удалось скачать вложение заметки.');
     }
-  }, [downloadBlob, notifyApiError, notifySuccess]);
+  }, [downloadBlob, notifyHubApiError, notifyHubSuccess]);
 
   const downloadTaskAttachment = useCallback(async (taskId, attachment) => {
     try {
       const response = await hubAPI.downloadTaskAttachment({ taskId, attachmentId: attachment.id });
       downloadBlob(response, attachment?.file_name || 'attachment');
-      notifySuccess(`Вложение ${attachment?.file_name || 'file'} скачано.`, { source: 'tasks' });
+      notifyTaskSuccess(`Вложение ${attachment?.file_name || 'file'} скачано.`);
     } catch (err) {
-      notifyApiError(err, 'Не удалось скачать вложение задачи.', { source: 'tasks' });
+      notifyTaskApiError(err, 'Не удалось скачать вложение задачи.');
     }
-  }, [downloadBlob, notifyApiError, notifySuccess]);
+  }, [downloadBlob, notifyTaskApiError, notifyTaskSuccess]);
 
   const downloadTaskReport = useCallback(async (report) => {
     if (!report?.id || !report?.file_name) return;
     try {
       const response = await hubAPI.downloadTaskReport(report.id);
       downloadBlob(response, report.file_name);
-      notifySuccess(`Отчёт ${report.file_name} скачан.`, { source: 'tasks' });
+      notifyTaskSuccess(`Отчёт ${report.file_name} скачан.`);
     } catch (err) {
-      notifyApiError(err, 'Не удалось скачать отчёт по задаче.', { source: 'tasks' });
+      notifyTaskApiError(err, 'Не удалось скачать отчёт по задаче.');
     }
-  }, [downloadBlob, notifyApiError, notifySuccess]);
+  }, [downloadBlob, notifyTaskApiError, notifyTaskSuccess]);
 
   const closeAnnouncementDetails = useCallback(() => {
     setAnnouncementOpen(false);
@@ -556,17 +591,14 @@ function Dashboard() {
     setReadsLoading(true);
     try {
       const payload = await hubAPI.getAnnouncementReads(normalizedId);
-      setReadsPayload({
-        items: Array.isArray(payload?.items) ? payload.items : [],
-        summary: payload?.summary || {},
-      });
+      setReadsPayload(normalizeAnnouncementReadsPayload(payload));
     } catch (err) {
-      notifyApiError(err, 'Не удалось загрузить статусы ознакомления.', { source: 'hub' });
+      notifyHubApiError(err, 'Не удалось загрузить статусы ознакомления.');
       setReadsPayload({ items: [], summary: {} });
     } finally {
       setReadsLoading(false);
     }
-  }, [notifyApiError]);
+  }, [notifyHubApiError]);
 
   const handleAckAnnouncement = useCallback(async () => {
     const announcementId = String(announcementDetails?.id || '').trim();
@@ -583,11 +615,11 @@ function Dashboard() {
       });
       void loadDashboard();
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
-      notifySuccess('Ознакомление подтверждено.', { source: 'hub' });
+      notifyHubSuccess('Ознакомление подтверждено.');
     } catch (err) {
-      notifyApiError(err, 'Не удалось подтвердить ознакомление.', { source: 'hub' });
+      notifyHubApiError(err, 'Не удалось подтвердить ознакомление.');
     }
-  }, [announcementDetails, loadDashboard, notifyApiError, notifySuccess, patchAnnouncementItem]);
+  }, [announcementDetails, loadDashboard, notifyHubApiError, notifyHubSuccess, patchAnnouncementItem]);
 
   const openCreateAnnouncement = useCallback(() => {
     setCreatePayload({ ...emptyAnnouncementForm });
@@ -603,9 +635,9 @@ function Dashboard() {
       setEditPayload(normalizeAnnouncementForm(source));
       setEditOpen(true);
     } catch (err) {
-      notifyApiError(err, 'Не удалось загрузить заметку для редактирования.', { source: 'hub' });
+      notifyHubApiError(err, 'Не удалось загрузить заметку для редактирования.');
     }
-  }, [notifyApiError]);
+  }, [notifyHubApiError]);
 
   const buildAnnouncementSubmitPayload = useCallback((draft) => ({
     title: String(draft?.title || '').trim(),
@@ -633,7 +665,7 @@ function Dashboard() {
       setCreatePayload({ ...emptyAnnouncementForm });
       setCreateFiles([]);
       await loadDashboard();
-      notifySuccess(`Заметка "${title}" создана.`, { source: 'hub' });
+      notifyHubSuccess(`Заметка "${title}" создана.`);
       if (created?.id) {
         updateSearch((params) => {
           params.set('announcement', created.id);
@@ -642,11 +674,11 @@ function Dashboard() {
       }
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
-      notifyApiError(err, 'Не удалось создать заметку.', { source: 'hub' });
+      notifyHubApiError(err, 'Не удалось создать заметку.');
     } finally {
       setCreateSaving(false);
     }
-  }, [buildAnnouncementSubmitPayload, createFiles, createPayload, loadDashboard, notifyApiError, notifySuccess, updateSearch]);
+  }, [buildAnnouncementSubmitPayload, createFiles, createPayload, loadDashboard, notifyHubApiError, notifyHubSuccess, updateSearch]);
 
   const handleSaveAnnouncement = useCallback(async () => {
     const title = String(editPayload?.title || '').trim();
@@ -659,14 +691,14 @@ function Dashboard() {
       if (String(announcementDetails?.id || '') === String(editId)) {
         setAnnouncementDetails(updated || null);
       }
-      notifySuccess(`Заметка "${title}" обновлена.`, { source: 'hub' });
+      notifyHubSuccess(`Заметка "${title}" обновлена.`);
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
-      notifyApiError(err, 'Не удалось обновить заметку.', { source: 'hub' });
+      notifyHubApiError(err, 'Не удалось обновить заметку.');
     } finally {
       setEditSaving(false);
     }
-  }, [announcementDetails?.id, buildAnnouncementSubmitPayload, editId, editPayload, loadDashboard, notifyApiError, notifySuccess]);
+  }, [announcementDetails?.id, buildAnnouncementSubmitPayload, editId, editPayload, loadDashboard, notifyHubApiError, notifyHubSuccess]);
 
   const handleArchiveAnnouncement = useCallback(async (item) => {
     const announcementId = String(item?.id || '').trim();
@@ -677,12 +709,12 @@ function Dashboard() {
         closeAnnouncementDetails();
       }
       await loadDashboard();
-      notifySuccess('Заметка снята с публикации.', { source: 'hub' });
+      notifyHubSuccess('Заметка снята с публикации.');
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
-      notifyApiError(err, 'Не удалось архивировать заметку.', { source: 'hub' });
+      notifyHubApiError(err, 'Не удалось архивировать заметку.');
     }
-  }, [closeAnnouncementDetails, loadDashboard, notifyApiError, notifySuccess, selectedAnnouncementId]);
+  }, [closeAnnouncementDetails, loadDashboard, notifyHubApiError, notifyHubSuccess, selectedAnnouncementId]);
 
   const handleDeleteAnnouncement = useCallback(async (item) => {
     if (!item?.id || !window.confirm(`Удалить "${item?.title || 'заметку'}"?`)) return;
@@ -692,12 +724,12 @@ function Dashboard() {
         closeAnnouncementDetails();
       }
       await loadDashboard();
-      notifySuccess(`Заметка "${item?.title || 'без названия'}" удалена.`, { source: 'hub' });
+      notifyHubSuccess(`Заметка "${item?.title || 'без названия'}" удалена.`);
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
-      notifyApiError(err, 'Не удалось удалить заметку.', { source: 'hub' });
+      notifyHubApiError(err, 'Не удалось удалить заметку.');
     }
-  }, [closeAnnouncementDetails, loadDashboard, notifyApiError, notifySuccess, selectedAnnouncementId]);
+  }, [closeAnnouncementDetails, loadDashboard, notifyHubApiError, notifyHubSuccess, selectedAnnouncementId]);
 
   const closeTaskDetails = useCallback(() => {
     setTaskOpen(false);
@@ -851,13 +883,13 @@ function Dashboard() {
       setTaskCommentBody('');
       await loadTaskDetails(taskId);
       await loadDashboard();
-      notifySuccess('Комментарий добавлен.', { source: 'tasks' });
+      notifyTaskSuccess('Комментарий добавлен.');
     } catch (err) {
-      notifyApiError(err, 'Не удалось добавить комментарий.', { source: 'tasks' });
+      notifyTaskApiError(err, 'Не удалось добавить комментарий.');
     } finally {
       setTaskCommentSaving(false);
     }
-  }, [loadDashboard, loadTaskDetails, notifyApiError, notifySuccess, taskCommentBody, taskDetails?.id]);
+  }, [loadDashboard, loadTaskDetails, notifyTaskApiError, notifyTaskSuccess, taskCommentBody, taskDetails?.id]);
 
   const renderAnnouncementCard = useCallback((item) => {
     const priorityMeta = announcementPriorityMeta(item?.priority);
@@ -1615,7 +1647,7 @@ function Dashboard() {
                         </ListItemAvatar>
                         <ListItemText
                           primary={item.full_name || item.username}
-                          secondary={`${item.has_seen_current_version ? `Прочитал: ${fmtDateTime(item.read_at)}` : 'Не открывал'}${announcementDetails?.requires_ack ? ` · ${item.has_acknowledged_current_version ? `Подтвердил: ${fmtDateTime(item.acknowledged_at)}` : 'Подтверждение не получено'}` : ''}`}
+                          secondary={getAnnouncementReadSecondaryText(item, Boolean(announcementDetails?.requires_ack))}
                         />
                       </ListItem>
                     ))}

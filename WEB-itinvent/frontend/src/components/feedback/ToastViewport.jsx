@@ -15,6 +15,7 @@ import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import WarningAmberRoundedIcon from '@mui/icons-material/WarningAmberRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
+import { executeToastAction } from './toastActions';
 
 const severityConfig = {
   success: {
@@ -46,10 +47,14 @@ function ToastViewport({
   onClose,
   onPause,
   onResume,
+  inline = false,
+  hideClose = false,
+  footer = null,
+  sx = null,
 }) {
   const theme = useTheme();
 
-  if (!toast) {
+  if (!toast || !open) {
     return null;
   }
 
@@ -62,15 +67,172 @@ function ToastViewport({
   const title = String(toast.title || '').trim() || severity.label;
   const message = String(toast.message || '').trim();
   const role = toast.severity === 'warning' || toast.severity === 'error' ? 'alert' : 'status';
+  const actionLabel = String(toast.actionLabel || toast.action?.label || '').trim();
+  const hasAction = Boolean(actionLabel) && (typeof toast.onAction === 'function' || toast.action);
 
-  const handleActionClick = () => {
+  const handleActionClick = (event) => {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
     if (typeof toast.onAction === 'function') {
       toast.onAction();
+    } else if (toast.action) {
+      executeToastAction(toast.action);
     }
     if (typeof onClose === 'function') {
       onClose(null, 'action');
     }
   };
+
+  const content = (
+    <Box
+      role={role}
+      aria-live={role === 'alert' ? 'assertive' : 'polite'}
+      data-testid="toast-viewport"
+      onMouseEnter={onPause}
+      onMouseLeave={onResume}
+      onFocusCapture={onPause}
+      onBlurCapture={onResume}
+      sx={{
+        width: { xs: 'calc(100vw - 24px)', sm: 420 },
+        maxWidth: 'calc(100vw - 24px)',
+        borderRadius: '14px',
+        overflow: 'hidden',
+        border: '1px solid',
+        borderColor: alpha(severity.accent, isDark ? 0.42 : 0.24),
+        backgroundColor: ui.panelSolid,
+        boxShadow: ui.dialogShadow,
+        backdropFilter: 'blur(18px)',
+        ...sx,
+      }}
+    >
+      <Box
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: hideClose ? 'auto 1fr' : 'auto 1fr auto',
+          gap: 1.25,
+          alignItems: 'start',
+          px: 1.5,
+          py: 1.35,
+        }}
+      >
+        <Box
+          sx={{
+            width: 38,
+            height: 38,
+            borderRadius: '12px',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            bgcolor: alpha(severity.accent, isDark ? 0.18 : 0.12),
+            color: severity.accent,
+            mt: 0.1,
+          }}
+        >
+          <Icon fontSize="small" />
+        </Box>
+
+        <Stack spacing={0.45} sx={{ minWidth: 0 }}>
+          <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
+            <Typography
+              variant="subtitle2"
+              sx={{
+                fontWeight: 800,
+                color: 'text.primary',
+                lineHeight: 1.2,
+              }}
+            >
+              {title}
+            </Typography>
+            {repeatCount > 1 ? (
+              <Chip
+                label={`x${repeatCount}`}
+                size="small"
+                sx={{
+                  height: 20,
+                  borderRadius: '999px',
+                  fontSize: '0.7rem',
+                  fontWeight: 700,
+                  bgcolor: alpha(severity.accent, isDark ? 0.2 : 0.12),
+                  color: severity.accent,
+                }}
+              />
+            ) : null}
+          </Stack>
+
+          <Typography
+            variant="body2"
+            sx={{
+              color: alpha(theme.palette.text.primary, isDark ? 0.92 : 0.88),
+              lineHeight: 1.4,
+              wordBreak: 'break-word',
+            }}
+          >
+            {message}
+          </Typography>
+
+          {hasAction ? (
+            <Box sx={{ pt: 0.35 }}>
+              <Button
+                size="small"
+                onClick={handleActionClick}
+                sx={{
+                  px: 0,
+                  minWidth: 0,
+                  fontWeight: 700,
+                  color: severity.accent,
+                  '&:hover': {
+                    bgcolor: 'transparent',
+                    color: alpha(severity.accent, 0.82),
+                  },
+                }}
+              >
+                {actionLabel}
+              </Button>
+            </Box>
+          ) : null}
+        </Stack>
+
+        {!hideClose ? (
+          <IconButton
+            size="small"
+            onClick={(event) => onClose?.(event, 'closeButton')}
+            aria-label="Закрыть уведомление"
+            sx={{
+              color: alpha(theme.palette.text.secondary, isDark ? 0.88 : 0.72),
+              mt: -0.2,
+              mr: -0.4,
+            }}
+          >
+            <CloseRoundedIcon fontSize="small" />
+          </IconButton>
+        ) : null}
+      </Box>
+
+      {footer ? (
+        <Box sx={{ px: 1.5, pb: 1.15, pt: 0.1 }}>
+          {footer}
+        </Box>
+      ) : null}
+
+      {!isPersistent ? (
+        <LinearProgress
+          variant="determinate"
+          value={Math.max(0, Math.min(100, Number(progressValue || 0)))}
+          sx={{
+            height: 3,
+            bgcolor: alpha(severity.accent, isDark ? 0.14 : 0.08),
+            '& .MuiLinearProgress-bar': {
+              bgcolor: severity.accent,
+            },
+          }}
+        />
+      ) : null}
+    </Box>
+  );
+
+  if (inline) {
+    return content;
+  }
 
   return (
     <Snackbar
@@ -85,138 +247,7 @@ function ToastViewport({
         },
       }}
     >
-      <Box
-        role={role}
-        aria-live={role === 'alert' ? 'assertive' : 'polite'}
-        onMouseEnter={onPause}
-        onMouseLeave={onResume}
-        sx={{
-          width: { xs: 'calc(100vw - 24px)', sm: 420 },
-          maxWidth: 'calc(100vw - 24px)',
-          borderRadius: '14px',
-          overflow: 'hidden',
-          border: '1px solid',
-          borderColor: alpha(severity.accent, isDark ? 0.42 : 0.24),
-          backgroundColor: ui.panelSolid,
-          boxShadow: ui.dialogShadow,
-          backdropFilter: 'blur(18px)',
-        }}
-      >
-        <Box
-          sx={{
-            display: 'grid',
-            gridTemplateColumns: 'auto 1fr auto',
-            gap: 1.25,
-            alignItems: 'start',
-            px: 1.5,
-            py: 1.35,
-          }}
-        >
-          <Box
-            sx={{
-              width: 38,
-              height: 38,
-              borderRadius: '12px',
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              bgcolor: alpha(severity.accent, isDark ? 0.18 : 0.12),
-              color: severity.accent,
-              mt: 0.1,
-            }}
-          >
-            <Icon fontSize="small" />
-          </Box>
-
-          <Stack spacing={0.45} sx={{ minWidth: 0 }}>
-            <Stack direction="row" spacing={0.75} alignItems="center" flexWrap="wrap" useFlexGap>
-              <Typography
-                variant="subtitle2"
-                sx={{
-                  fontWeight: 800,
-                  color: 'text.primary',
-                  lineHeight: 1.2,
-                }}
-              >
-                {title}
-              </Typography>
-              {repeatCount > 1 ? (
-                <Chip
-                  label={`x${repeatCount}`}
-                  size="small"
-                  sx={{
-                    height: 20,
-                    borderRadius: '999px',
-                    fontSize: '0.7rem',
-                    fontWeight: 700,
-                    bgcolor: alpha(severity.accent, isDark ? 0.2 : 0.12),
-                    color: severity.accent,
-                  }}
-                />
-              ) : null}
-            </Stack>
-
-            <Typography
-              variant="body2"
-              sx={{
-                color: alpha(theme.palette.text.primary, isDark ? 0.92 : 0.88),
-                lineHeight: 1.4,
-                wordBreak: 'break-word',
-              }}
-            >
-              {message}
-            </Typography>
-
-            {toast.actionLabel && typeof toast.onAction === 'function' ? (
-              <Box sx={{ pt: 0.35 }}>
-                <Button
-                  size="small"
-                  onClick={handleActionClick}
-                  sx={{
-                    px: 0,
-                    minWidth: 0,
-                    fontWeight: 700,
-                    color: severity.accent,
-                    '&:hover': {
-                      bgcolor: 'transparent',
-                      color: alpha(severity.accent, 0.82),
-                    },
-                  }}
-                >
-                  {toast.actionLabel}
-                </Button>
-              </Box>
-            ) : null}
-          </Stack>
-
-          <IconButton
-            size="small"
-            onClick={(event) => onClose?.(event, 'closeButton')}
-            aria-label="Закрыть уведомление"
-            sx={{
-              color: alpha(theme.palette.text.secondary, isDark ? 0.88 : 0.72),
-              mt: -0.2,
-              mr: -0.4,
-            }}
-          >
-            <CloseRoundedIcon fontSize="small" />
-          </IconButton>
-        </Box>
-
-        {!isPersistent ? (
-          <LinearProgress
-            variant="determinate"
-            value={Math.max(0, Math.min(100, Number(progressValue || 0)))}
-            sx={{
-              height: 3,
-              bgcolor: alpha(severity.accent, isDark ? 0.14 : 0.08),
-              '& .MuiLinearProgress-bar': {
-                bgcolor: severity.accent,
-              },
-            }}
-          />
-        ) : null}
-      </Box>
+      {content}
     </Snackbar>
   );
 }

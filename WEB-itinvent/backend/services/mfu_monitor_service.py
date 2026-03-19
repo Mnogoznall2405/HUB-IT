@@ -174,19 +174,28 @@ class MfuRuntimeMonitor:
         self._last_snapshot_cleanup = time.monotonic()
 
     def _load_custom_snmp_config(self) -> List[Dict[str, Any]]:
-        try:
-            paths_to_try = [
-                Path("C:/Project/Image_scan/data/custom_snmp.json"),
-                Path(__file__).parent.parent.parent.parent / "data" / "custom_snmp.json",
-                Path(__file__).parent.parent / "custom_snmp.json"
-            ]
-            for cfg_path in paths_to_try:
-                if cfg_path.exists():
-                    with open(cfg_path, "r", encoding="utf-8") as f:
-                        data = json.load(f)
-                        return data.get("providers", [])
-        except Exception as exc:
-            logger.error("Failed to load custom_snmp.json: %s", exc)
+        paths_to_try = [
+            Path("C:/Project/Image_scan/data/custom_snmp.json"),
+            Path(__file__).parent.parent.parent.parent / "data" / "custom_snmp.json",
+            Path(__file__).parent.parent / "custom_snmp.json",
+        ]
+        for cfg_path in paths_to_try:
+            if not cfg_path.exists():
+                continue
+
+            last_error: Optional[Exception] = None
+            for encoding in ("utf-8-sig", "utf-8", "cp1251", "cp866"):
+                try:
+                    raw_text = cfg_path.read_text(encoding=encoding)
+                    data = json.loads(raw_text)
+                    providers = data.get("providers", [])
+                    if not isinstance(providers, list):
+                        raise ValueError("custom_snmp.json field 'providers' must be a list")
+                    return providers
+                except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as exc:
+                    last_error = exc
+
+            logger.warning("Skipping invalid custom_snmp.json at %s: %s", cfg_path, last_error)
         return []
 
     def _connect_runtime_db(self) -> Optional[sqlite3.Connection]:

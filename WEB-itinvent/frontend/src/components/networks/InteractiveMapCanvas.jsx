@@ -711,8 +711,8 @@ function InteractiveMapCanvas({
                           height: 'auto',
                           padding: '3px 6px',
                           borderRadius: '8px',
-                          bgcolor: ui.panelSolid,
-                          color: theme.palette.text.primary,
+                          bgcolor: '#fff',
+                          color: '#1f2328',
                           fontWeight: 'bold',
                           fontSize: mobile ? '0.6rem' : '0.68rem',
                           lineHeight: 1.15,
@@ -720,7 +720,7 @@ function InteractiveMapCanvas({
                           border: '1px solid',
                           borderColor: (isSelected || isFocused)
                             ? alpha(theme.palette.warning.main, ui.isDark ? 0.56 : 0.34)
-                            : ui.borderStrong,
+                            : alpha('#1f2328', ui.isDark ? 0.18 : 0.14),
                           transition: 'transform 0.15s ease',
                           '&:hover': { transform: 'translate(-50%, -50%) scale(1.15)', zIndex: 6 },
                           ...((isSelected || isFocused) && {

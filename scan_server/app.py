@@ -343,6 +343,37 @@ async def agents(
     return store.list_agents()
 
 
+@app.get("/api/v1/scan/branches")
+async def branches(
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> List[str]:
+    return store.list_branches()
+
+
+@app.get("/api/v1/scan/agents/table")
+async def agents_table(
+    q: Optional[str] = Query(None),
+    branch: Optional[str] = Query(None),
+    online: Optional[str] = Query(None),
+    task_status: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    sort_by: Optional[str] = Query(None),
+    sort_dir: Optional[str] = Query(None),
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    return store.list_agents_table(
+        q=q,
+        branch=branch,
+        online=online,
+        task_status=task_status,
+        limit=limit,
+        offset=offset,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+
+
 @app.get("/api/v1/scan/hosts")
 async def hosts(
     q: Optional[str] = Query(None),
@@ -358,6 +389,48 @@ async def hosts(
         status=status_value,
         severity=severity,
         limit=limit,
+    )
+
+
+@app.get("/api/v1/scan/hosts/table")
+async def hosts_table(
+    q: Optional[str] = Query(None),
+    branch: Optional[str] = Query(None),
+    status_value: Optional[str] = Query(None, alias="status"),
+    severity: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    sort_by: Optional[str] = Query(None),
+    sort_dir: Optional[str] = Query(None),
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    return store.list_hosts_table(
+        q=q,
+        branch=branch,
+        status=status_value,
+        severity=severity,
+        limit=limit,
+        offset=offset,
+        sort_by=sort_by,
+        sort_dir=sort_dir,
+    )
+
+
+@app.get("/api/v1/scan/tasks")
+async def tasks(
+    agent_id: Optional[str] = Query(None),
+    status_value: Optional[str] = Query(None, alias="status"),
+    command: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    return store.list_tasks(
+        agent_id=agent_id,
+        status=status_value,
+        command=command,
+        limit=limit,
+        offset=offset,
     )
 
 
