@@ -62,8 +62,8 @@ $logsDir = Join-Path $ProjectRoot "logs"
 
 New-Item -ItemType Directory -Force $logsDir | Out-Null
 
-$args = "-m uvicorn scan_server.app:app --host 127.0.0.1 --port $Port"
-$commandLine = "`"$pythonPath`" -m uvicorn scan_server.app:app --host 127.0.0.1 --port $Port --app-dir `"$ProjectRoot`""
+$args = "-m scan_server"
+$commandLine = "`"$pythonPath`" -m scan_server"
 
 $existing = Get-Service -Name $ServiceName -ErrorAction SilentlyContinue
 if ($nssmPath) {

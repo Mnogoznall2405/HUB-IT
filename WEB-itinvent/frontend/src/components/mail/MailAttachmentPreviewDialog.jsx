@@ -14,7 +14,14 @@
 import { useMemo } from 'react';
 import { useTheme } from '@mui/material/styles';
 import DownloadIcon from '@mui/icons-material/Download';
-import { buildMailUiTokens } from './mailUiTokens';
+import {
+  buildMailUiTokens,
+  getMailDialogActionsSx,
+  getMailDialogContentSx,
+  getMailDialogPaperSx,
+  getMailDialogTitleSx,
+} from './mailUiTokens';
+import { getMailAttachmentVisual } from './mailAttachmentVisuals';
 
 export default function MailAttachmentPreviewDialog({
   attachmentPreview,
@@ -25,6 +32,11 @@ export default function MailAttachmentPreviewDialog({
 }) {
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
+  const attachmentVisual = useMemo(
+    () => getMailAttachmentVisual({ name: attachmentPreview.filename, content_type: attachmentPreview.contentType }),
+    [attachmentPreview.contentType, attachmentPreview.filename]
+  );
+  const AttachmentIcon = attachmentVisual.Icon;
 
   return (
     <Dialog
@@ -32,12 +44,22 @@ export default function MailAttachmentPreviewDialog({
       onClose={onClose}
       maxWidth="lg"
       fullWidth
-      PaperProps={{ sx: { borderRadius: '12px' } }}
+      PaperProps={{ sx: getMailDialogPaperSx(tokens) }}
     >
-      <DialogTitle sx={{ fontWeight: 700 }}>
-        {`Предпросмотр: ${attachmentPreview.filename || 'вложение'}`}
+      <DialogTitle sx={getMailDialogTitleSx(tokens, { fontWeight: 700 })}>
+        <Stack direction="row" spacing={1} alignItems="center">
+          <AttachmentIcon sx={{ color: attachmentVisual.color }} />
+          <Box>
+            <Typography variant="inherit" sx={{ fontWeight: 700 }}>
+              {attachmentPreview.filename || 'вложение'}
+            </Typography>
+            <Typography variant="caption" color="text.secondary">
+              {attachmentVisual.label}
+            </Typography>
+          </Box>
+        </Stack>
       </DialogTitle>
-      <DialogContent dividers sx={{ minHeight: 420 }}>
+      <DialogContent dividers sx={getMailDialogContentSx(tokens, { minHeight: 420 })}>
         {attachmentPreview.loading ? (
           <Stack spacing={1}>
             <Skeleton variant="text" width="35%" />
@@ -69,7 +91,7 @@ export default function MailAttachmentPreviewDialog({
               </Typography>
             </Paper>
             <Paper variant="outlined" sx={{ p: 1.5, borderRadius: '8px', maxHeight: '65vh', overflow: 'auto' }}>
-              <Box component="pre" sx={{ m: 0, fontFamily: 'Consolas, "Courier New", monospace', fontSize: '0.8rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
+              <Box component="pre" sx={{ m: 0, fontFamily: 'var(--mail-mono-font)', fontSize: '0.8rem', whiteSpace: 'pre-wrap', wordBreak: 'break-word' }}>
                 {attachmentPreview.textContent || '(пустой файл)'}
               </Box>
             </Paper>
@@ -87,7 +109,7 @@ export default function MailAttachmentPreviewDialog({
           </Alert>
         )}
       </DialogContent>
-      <DialogActions sx={{ px: 3, pb: 2 }}>
+      <DialogActions sx={getMailDialogActionsSx(tokens)}>
         <Button onClick={onClose} sx={{ textTransform: 'none' }}>
           Закрыть
         </Button>

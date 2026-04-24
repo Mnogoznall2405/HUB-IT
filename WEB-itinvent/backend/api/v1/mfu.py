@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 import time
 from datetime import datetime, timezone
+from threading import RLock
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
@@ -24,6 +25,9 @@ SNMP_ACTIVE_TTL_SEC = max(60, int(os.getenv("MFU_SNMP_ACTIVE_TTL_SEC", "600")))
 # Simple TTL cache for the heavy events-index query (works history)
 _events_cache: Dict[str, Any] = {}  # keyed by "db_id|period_days"
 _EVENTS_CACHE_TTL_SEC = int(os.getenv("MFU_EVENTS_CACHE_TTL_SEC", "300"))  # 5 minutes
+_mfu_devices_cache: Dict[str, Any] = {}
+_mfu_devices_cache_lock = RLock()
+_MFU_DEVICES_CACHE_TTL_SEC = max(15, int(os.getenv("MFU_DEVICES_CACHE_TTL_SEC", "45")))
 MFU_FALLBACK_KEYWORDS = (
     "принтер",
     "мфу",
@@ -232,6 +236,26 @@ def _build_mfu_events_index(db_id: Optional[str], period_days: int) -> Dict[str,
     return by_identifier
 
 
+def _get_cached_mfu_devices_payload(cache_key: str) -> Optional[Dict[str, Any]]:
+    with _mfu_devices_cache_lock:
+        cached = _mfu_devices_cache.get(cache_key)
+        if not cached:
+            return None
+        if (time.monotonic() - float(cached.get("ts") or 0)) >= _MFU_DEVICES_CACHE_TTL_SEC:
+            _mfu_devices_cache.pop(cache_key, None)
+            return None
+        return cached.get("data") if isinstance(cached.get("data"), dict) else None
+
+
+def _set_cached_mfu_devices_payload(cache_key: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    with _mfu_devices_cache_lock:
+        _mfu_devices_cache[cache_key] = {
+            "ts": time.monotonic(),
+            "data": payload,
+        }
+    return payload
+
+
 def _collect_device_maintenance(
     device: Dict[str, Any],
     events_by_identifier: Dict[str, List[Dict[str, Any]]],
@@ -280,6 +304,11 @@ async def get_mfu_devices(
     """
     MFU/Printer/Plotter inventory with runtime status and maintenance history.
     """
+    cache_key = f"{db_id or ''}|{int(period_days)}|{int(recent_limit)}|{int(limit)}"
+    cached_payload = _get_cached_mfu_devices_payload(cache_key)
+    if cached_payload is not None:
+        return cached_payload
+
     rows = get_all_equipment_flat(db_id=db_id, limit=max(1, limit))
 
     normalized_devices: List[Dict[str, Any]] = []
@@ -292,7 +321,16 @@ async def get_mfu_devices(
         normalized_devices.append(device)
 
     await mfu_runtime_monitor.register_devices(
-        [{"key": device["key"], "ip": device.get("ip_address")} for device in normalized_devices]
+        [
+            {
+                "key": device["key"],
+                "ip": device.get("ip_address"),
+                "model_name": device.get("model_name"),
+                "manufacturer": device.get("manufacturer"),
+                "type_name": device.get("type_name"),
+            }
+            for device in normalized_devices
+        ]
     )
 
     events_index = _build_mfu_events_index(db_id=db_id, period_days=period_days)
@@ -382,7 +420,7 @@ async def get_mfu_devices(
         )
     )
 
-    return {
+    return _set_cached_mfu_devices_payload(cache_key, {
         "generated_at": _utc_now_iso(),
         "db_id": db_id,
         "totals": totals,
@@ -393,7 +431,7 @@ async def get_mfu_devices(
             "dropped_count": max(0, len(rows) - len(normalized_devices)),
             "snmp_slow_devices": slow_devices[:10],
         },
-    }
+    })
 
 
 @router.get("/pages/monthly")

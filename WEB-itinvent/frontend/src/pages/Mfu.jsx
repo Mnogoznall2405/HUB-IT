@@ -40,9 +40,12 @@ import PageShell from '../components/layout/PageShell';
 import { mfuAPI, equipmentAPI } from '../api/client';
 import jsonAPI from '../api/json_client';
 import { useAuth } from '../contexts/AuthContext';
+import { buildCacheKey, peekSWRCache, setSWRCache } from '../lib/swrCache';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
 const REFRESH_INTERVAL_MS = 60_000;
+const MFU_CACHE_STALE_TIME_MS = 60_000;
+const MFU_RELOAD_MIN_INTERVAL_MS = 15_000;
 const DASHBOARD_PERIOD_DAYS = 365;
 const DASHBOARD_RECENT_LIMIT = 8;
 const DASHBOARD_LIMIT = 5000;
@@ -251,6 +254,22 @@ const groupSupplies = (supplies) => {
   return groups;
 };
 
+const readSelectedDatabaseScope = () => {
+  try {
+    return String(window.localStorage.getItem('selected_database') || '').trim();
+  } catch {
+    return '';
+  }
+};
+
+const toMfuPayload = (response) => ({
+  grouped: response?.grouped || {},
+  totals: response?.totals || {},
+  db_id: response?.db_id || '',
+  generated_at: response?.generated_at || '',
+  debug: response?.debug || {},
+});
+
 const tokenizeForMatch = (value) => {
   const normalized = normalizeText(value);
   const rawLower = String(value || '').toLowerCase();
@@ -377,14 +396,27 @@ function StatCard({ title, value, helper }) {
 }
 
 function Mfu() {
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const canWrite = hasPermission('database.write');
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const getMfuCacheKey = useCallback(() => buildCacheKey(
+    'mfu-dashboard',
+    user?.id || user?.username || 'anon',
+    readSelectedDatabaseScope(),
+    DASHBOARD_PERIOD_DAYS,
+    DASHBOARD_RECENT_LIMIT,
+    DASHBOARD_LIMIT,
+  ), [user?.id, user?.username]);
+  const getCachedMfuPayload = useCallback(() => {
+    const cached = peekSWRCache(getMfuCacheKey(), { staleTimeMs: MFU_CACHE_STALE_TIME_MS });
+    return cached?.data && typeof cached.data === 'object' ? cached.data : null;
+  }, [getMfuCacheKey]);
+  const initialCachedPayload = useMemo(() => getCachedMfuPayload(), [getCachedMfuPayload]);
 
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(!initialCachedPayload);
   const [error, setError] = useState('');
-  const [payload, setPayload] = useState({ grouped: {}, totals: {}, db_id: '', generated_at: '', debug: {} });
+  const [payload, setPayload] = useState(initialCachedPayload || { grouped: {}, totals: {}, db_id: '', generated_at: '', debug: {} });
   const [search, setSearch] = useState('');
   const [branchFilter, setBranchFilter] = useState('all');
   const [snmpFilter, setSnmpFilter] = useState('all');
@@ -394,6 +426,7 @@ function Mfu() {
   const [selectedDevice, setSelectedDevice] = useState(null);
   const selectedKeyRef = useRef('');
   const inFlightRef = useRef(false);
+  const lastReloadAtRef = useRef(initialCachedPayload ? Date.now() : 0);
 
   const [workType, setWorkType] = useState('cartridge');
   const [componentType, setComponentType] = useState(PRINTER_COMPONENT_OPTIONS[0].value);
@@ -423,7 +456,25 @@ function Mfu() {
     localStorage.setItem('mfu_card_view', cardView === 'detailed' ? 'detailed' : 'compact');
   }, [cardView]);
 
-  const reload = useCallback(async ({ withLoader = false } = {}) => {
+  const applyPayload = useCallback((nextPayload) => {
+    setPayload(nextPayload);
+    setError('');
+    setSWRCache(getMfuCacheKey(), nextPayload);
+    lastReloadAtRef.current = Date.now();
+
+    if (selectedKeyRef.current) {
+      const current = flattenGroupedDevices(nextPayload.grouped).find((item) => item?.key === selectedKeyRef.current);
+      if (current) {
+        setSelectedDevice(current);
+      }
+    }
+  }, [getMfuCacheKey]);
+
+  const reload = useCallback(async ({ withLoader = false, force = false } = {}) => {
+    const now = Date.now();
+    if (!force && lastReloadAtRef.current && (now - lastReloadAtRef.current) < MFU_RELOAD_MIN_INTERVAL_MS) {
+      return;
+    }
     if (inFlightRef.current) return;
     inFlightRef.current = true;
     try {
@@ -433,22 +484,7 @@ function Mfu() {
         recent_limit: DASHBOARD_RECENT_LIMIT,
         limit: DASHBOARD_LIMIT,
       });
-      const nextPayload = {
-        grouped: response?.grouped || {},
-        totals: response?.totals || {},
-        db_id: response?.db_id || '',
-        generated_at: response?.generated_at || '',
-        debug: response?.debug || {},
-      };
-      setPayload(nextPayload);
-      setError('');
-
-      if (selectedKeyRef.current) {
-        const current = flattenGroupedDevices(nextPayload.grouped).find((item) => item?.key === selectedKeyRef.current);
-        if (current) {
-          setSelectedDevice(current);
-        }
-      }
+      applyPayload(toMfuPayload(response));
     } catch (err) {
       const detail = err?.response?.data?.detail;
       setError(typeof detail === 'string' ? detail : (err?.message || 'Ошибка загрузки страницы МФУ'));
@@ -456,7 +492,7 @@ function Mfu() {
       if (withLoader) setLoading(false);
       inFlightRef.current = false;
     }
-  }, []);
+  }, [applyPayload]);
 
   const loadMonthlyPages = useCallback(async (deviceKey, { force = false } = {}) => {
     const key = String(deviceKey || '').trim();
@@ -506,7 +542,13 @@ function Mfu() {
   }, []);
 
   useEffect(() => {
-    reload({ withLoader: true });
+    const cachedPayload = getCachedMfuPayload();
+    if (cachedPayload) {
+      applyPayload(cachedPayload);
+      setLoading(false);
+    }
+
+    reload({ withLoader: !cachedPayload, force: true });
     const timer = setInterval(() => {
       if (document.visibilityState === 'visible') {
         reload();
@@ -524,7 +566,15 @@ function Mfu() {
       setMonthlyDataByKey({});
       setMonthlyErrorByKey({});
       setMonthlyLoadingKey('');
-      reload({ withLoader: true });
+      setError('');
+      const nextCachedPayload = getCachedMfuPayload();
+      if (nextCachedPayload) {
+        applyPayload(nextCachedPayload);
+        setLoading(false);
+      } else {
+        setPayload({ grouped: {}, totals: {}, db_id: '', generated_at: '', debug: {} });
+      }
+      reload({ withLoader: !nextCachedPayload, force: true });
     };
     const onStorage = (event) => {
       if (event.key === 'selected_database') onDatabaseChanged();
@@ -539,7 +589,7 @@ function Mfu() {
       window.removeEventListener('database-changed', onDatabaseChanged);
       window.removeEventListener('storage', onStorage);
     };
-  }, [reload]);
+  }, [applyPayload, getCachedMfuPayload, reload]);
 
   useEffect(() => {
     if (drawerOpen && canWrite) {

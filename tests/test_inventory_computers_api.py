@@ -1,4 +1,3 @@
-import asyncio
 import importlib.util
 from pathlib import Path
 
@@ -203,6 +202,7 @@ def _patch_environment(monkeypatch, now_ts):
     network_links = _network_map()
     store = FakeStore(records, changes)
 
+    monkeypatch.setattr(inventory, "is_app_database_configured", lambda: False)
     monkeypatch.setattr(inventory, "get_local_store", lambda: store)
     monkeypatch.setattr(inventory.time, "time", lambda: now_ts)
     monkeypatch.setattr(inventory, "_get_database_name_map", lambda: {"DB1": "Основная БД", "DB2": "Резервная БД"})
@@ -239,7 +239,7 @@ def _get_computers(**overrides):
         "changed_only": False,
     }
     params.update(overrides)
-    return asyncio.run(inventory.get_computers(**params))
+    return inventory.get_computers(**params)
 
 
 def test_get_computers_enriches_contract_and_keeps_heartbeat_safe(monkeypatch):

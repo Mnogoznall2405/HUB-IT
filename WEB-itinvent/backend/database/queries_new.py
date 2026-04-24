@@ -58,16 +58,13 @@ QUERY_GET_ALL_BRANCHES = """
     ORDER BY b.BRANCH_NAME
 """
 
-QUERY_GET_LOCATIONS_BY_BRANCH = """
-    SELECT DISTINCT
-        i.LOC_NO as LOC_NO,
+QUERY_GET_ALL_LOCATIONS = """
+    SELECT
+        l.LOC_NO as LOC_NO,
         l.DESCR as LOC_NAME
-    FROM ITEMS i
-    LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-    WHERE i.CI_TYPE = 1
-      AND i.BRANCH_NO = ?
-      AND i.LOC_NO IS NOT NULL
-    ORDER BY l.DESCR
+    FROM LOCATIONS l
+    WHERE l.LOC_NO IS NOT NULL
+    ORDER BY l.DESCR, l.LOC_NO
 """
 
 # Get equipment grouped by branch and location

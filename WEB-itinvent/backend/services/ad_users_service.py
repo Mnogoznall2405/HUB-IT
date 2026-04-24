@@ -4,6 +4,9 @@ from datetime import datetime, timezone, timedelta
 from typing import List, Dict
 
 from ldap3 import Server, Connection, ALL, SUBTREE
+from sqlalchemy import select
+from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
+from backend.appdb.models import AppAdUserBranchOverride
 from backend.config import config
 from backend.database.connection import get_db
 from local_store import get_local_store
@@ -18,6 +21,32 @@ if not logger.handlers:
 
 # 100-nanosecond intervals from Jan 1, 1601 to Jan 1, 1970
 epoch_diff = 116444736000000000
+
+
+def _load_custom_branch_mappings() -> dict[str, int]:
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            rows = session.scalars(select(AppAdUserBranchOverride).order_by(AppAdUserBranchOverride.login.asc())).all()
+            return {
+                str(row.login or "").strip().lower(): int(row.branch_no)
+                for row in rows
+                if str(row.login or "").strip()
+            }
+    store = get_local_store()
+    data = store.load_json('ad_user_branches.json', default_content={})
+    if not isinstance(data, dict):
+        return {}
+    out: dict[str, int] = {}
+    for key, value in data.items():
+        normalized_login = str(key or "").strip().lower()
+        if not normalized_login:
+            continue
+        try:
+            out[normalized_login] = int(value)
+        except (TypeError, ValueError):
+            continue
+    return out
 
 def decode_cp1251(val):
     if not val: return None
@@ -104,12 +133,11 @@ def get_ad_users_password_status() -> List[Dict]:
     users_list = []
     now_utc = datetime.now(timezone.utc)
     
-    # Load custom branches from local store
+    # Load custom branches from internal store
     try:
-        store = get_local_store()
-        custom_branches = store.load_json('ad_user_branches.json', default_content={})
+        custom_branches = _load_custom_branch_mappings()
     except Exception as e:
-        logger.error(f"Failed to load custom branch mappings from local_store: {e}")
+        logger.error(f"Failed to load custom branch mappings from internal store: {e}")
         custom_branches = {}
 
     # Fetch all branches from DB to ensure we can map custom branches correctly
@@ -203,17 +231,31 @@ def set_ad_user_branch(login: str, branch_no: int | None) -> bool:
         return False
         
     try:
-        store = get_local_store()
-        custom_branches = store.load_json('ad_user_branches.json', default_content={})
-        
-        if branch_no is None or branch_no == 0:
-            if login_lower in custom_branches:
-                del custom_branches[login_lower]
+        if is_app_database_configured():
+            initialize_app_schema()
+            with app_session() as session:
+                row = session.get(AppAdUserBranchOverride, login_lower)
+                if branch_no is None or branch_no == 0:
+                    if row is not None:
+                        session.delete(row)
+                else:
+                    if row is None:
+                        row = AppAdUserBranchOverride(login=login_lower)
+                        session.add(row)
+                    row.branch_no = int(branch_no)
+                    row.updated_at = datetime.now(timezone.utc)
         else:
-            custom_branches[login_lower] = branch_no
-            
-        store.save_json('ad_user_branches.json', custom_branches)
-            
+            store = get_local_store()
+            custom_branches = store.load_json('ad_user_branches.json', default_content={})
+
+            if branch_no is None or branch_no == 0:
+                if login_lower in custom_branches:
+                    del custom_branches[login_lower]
+            else:
+                custom_branches[login_lower] = branch_no
+
+            store.save_json('ad_user_branches.json', custom_branches)
+
         return True
     except Exception as e:
         logger.error(f"Failed to save local branch mapping for AD user {login}: {e}")

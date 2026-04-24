@@ -1,4 +1,5 @@
 import {
+  Alert,
   Button,
   Dialog,
   DialogActions,
@@ -10,6 +11,15 @@ import {
   Switch,
   TextField,
 } from '@mui/material';
+import { useMemo } from 'react';
+import { useTheme } from '@mui/material/styles';
+import {
+  buildMailUiTokens,
+  getMailDialogActionsSx,
+  getMailDialogContentSx,
+  getMailDialogPaperSx,
+  getMailDialogTitleSx,
+} from './mailUiTokens';
 
 const READING_PANE_OPTIONS = [
   { value: 'right', label: 'Область чтения справа' },
@@ -26,15 +36,25 @@ export default function MailViewSettingsDialog({
   open,
   value,
   saving,
+  mobileHint = false,
   onClose,
   onChange,
   onSave,
 }) {
+  const theme = useTheme();
+  const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
+
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Настройки вида</DialogTitle>
-      <DialogContent dividers>
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" PaperProps={{ sx: getMailDialogPaperSx(tokens) }}>
+      <DialogTitle sx={getMailDialogTitleSx(tokens)}>Настройки вида</DialogTitle>
+      <DialogContent dividers sx={getMailDialogContentSx(tokens)}>
         <Stack spacing={1.3}>
+          <Alert severity="info" sx={{ borderRadius: '10px' }}>
+            {mobileHint
+              ? 'На телефоне почта всегда работает в одноколоночном режиме. Настройка области чтения применяется только на больших экранах.'
+              : 'На мобильных устройствах почта всегда открывается в одноколоночном режиме. Настройка области чтения влияет только на desktop.'}
+          </Alert>
+
           <TextField
             select
             fullWidth
@@ -68,16 +88,6 @@ export default function MailViewSettingsDialog({
           <FormControlLabel
             control={(
               <Switch
-                checked={Boolean(value?.mark_read_on_select)}
-                onChange={(event) => onChange('mark_read_on_select', event.target.checked)}
-              />
-            )}
-            label="Отмечать письмо прочитанным при выборе"
-          />
-
-          <FormControlLabel
-            control={(
-              <Switch
                 checked={Boolean(value?.show_preview_snippets)}
                 onChange={(event) => onChange('show_preview_snippets', event.target.checked)}
               />
@@ -96,7 +106,7 @@ export default function MailViewSettingsDialog({
           />
         </Stack>
       </DialogContent>
-      <DialogActions>
+      <DialogActions sx={getMailDialogActionsSx(tokens)}>
         <Button onClick={onClose}>Закрыть</Button>
         <Button variant="contained" onClick={onSave} disabled={saving}>
           {saving ? 'Сохранение...' : 'Сохранить'}

@@ -10,6 +10,15 @@ import {
   TextField,
   Typography,
 } from '@mui/material';
+import { useMemo } from 'react';
+import { useTheme } from '@mui/material/styles';
+import {
+  buildMailUiTokens,
+  getMailDialogActionsSx,
+  getMailDialogContentSx,
+  getMailDialogPaperSx,
+  getMailDialogTitleSx,
+} from './mailUiTokens';
 
 const IMPORTANCE_OPTIONS = [
   { value: '', label: 'Любая важность' },
@@ -33,10 +42,13 @@ export default function MailAdvancedSearchDialog({
   onReset,
   onApplyRecent,
 }) {
+  const theme = useTheme();
+  const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
+
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
-      <DialogTitle>Расширенный поиск</DialogTitle>
-      <DialogContent dividers>
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="md" PaperProps={{ sx: getMailDialogPaperSx(tokens) }}>
+      <DialogTitle sx={getMailDialogTitleSx(tokens)}>Расширенный поиск</DialogTitle>
+      <DialogContent dividers sx={getMailDialogContentSx(tokens)}>
         <Stack spacing={2}>
           <Grid container spacing={1.2}>
             <Grid item xs={12} md={6}>
@@ -136,7 +148,7 @@ export default function MailAdvancedSearchDialog({
           ) : null}
         </Stack>
       </DialogContent>
-      <DialogActions>
+      <DialogActions sx={getMailDialogActionsSx(tokens)}>
         <Button onClick={onReset}>Сбросить</Button>
         <Button onClick={onClose}>Закрыть</Button>
         <Button variant="contained" onClick={onApply}>Применить</Button>

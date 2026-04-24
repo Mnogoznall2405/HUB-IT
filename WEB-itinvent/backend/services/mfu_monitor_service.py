@@ -17,6 +17,9 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import logging
+from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
+from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.db_schema import schema_name
 from local_store import get_local_store
 
 logger = logging.getLogger(__name__)
@@ -83,7 +86,7 @@ class MfuRuntimeMonitor:
     _PAGE_SNAPSHOT_TABLE = "mfu_page_snapshots"
     _PAGE_BASELINE_TABLE = "mfu_page_baseline"
 
-    def __init__(self) -> None:
+    def __init__(self, *, database_url: str | None = None) -> None:
         self.ping_interval_sec = max(20, int(os.getenv("MFU_PING_INTERVAL_SEC", "60")))
         self.snmp_interval_sec = max(60, int(os.getenv("MFU_SNMP_INTERVAL_SEC", "300")))
         self.ping_timeout_ms = max(300, int(os.getenv("MFU_PING_TIMEOUT_MS", "900")))
@@ -103,6 +106,14 @@ class MfuRuntimeMonitor:
         self.snmp_walk_retries = max(0, int(os.getenv("MFU_SNMP_WALK_RETRIES", "0")))
         self.snmp_backoff_base_sec = max(5, int(os.getenv("MFU_SNMP_BACKOFF_BASE_SEC", "60")))
         self.snmp_backoff_max_sec = max(self.snmp_backoff_base_sec, int(os.getenv("MFU_SNMP_BACKOFF_MAX_SEC", "900")))
+        self.snmp_offline_retry_sec = max(
+            self.snmp_interval_sec,
+            int(os.getenv("MFU_SNMP_OFFLINE_RETRY_SEC", "900")),
+        )
+        self.snmp_no_data_backoff_sec = max(
+            self.snmp_interval_sec,
+            int(os.getenv("MFU_SNMP_NO_DATA_BACKOFF_SEC", "3600")),
+        )
         self.persist_runtime_state = _to_bool(os.getenv("MFU_RUNTIME_PERSIST_ENABLED", "true"), True)
         self.runtime_state_ttl_days = max(1, int(os.getenv("MFU_RUNTIME_STATE_TTL_DAYS", "30")))
         self.page_snapshot_ttl_days = max(30, int(os.getenv("MFU_PAGE_SNAPSHOT_TTL_DAYS", "400")))
@@ -122,6 +133,10 @@ class MfuRuntimeMonitor:
         self._snmp_task: Optional[asyncio.Task] = None
         self._runtime_db_path: Optional[Path] = None
         self._last_page_snapshot_cleanup_ts = 0.0
+        explicit_database_url = str(database_url or "").strip() or None
+        self._database_url = get_app_database_url(explicit_database_url) if (explicit_database_url or is_app_database_configured()) else None
+        self._use_app_db = bool(self._database_url)
+        self._system_schema = schema_name("system", self._database_url)
 
         if self.persist_runtime_state:
             self._init_runtime_persistence()
@@ -199,17 +214,34 @@ class MfuRuntimeMonitor:
         return []
 
     def _connect_runtime_db(self) -> Optional[sqlite3.Connection]:
+        if self._use_app_db and self._database_url:
+            return SqlAlchemyCompatConnection(
+                get_app_engine(self._database_url),
+                table_names=self._runtime_table_names(),
+                schema=self._system_schema,
+            )
         if not self._runtime_db_path:
             return None
         conn = sqlite3.connect(str(self._runtime_db_path), timeout=10, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
 
+    def _runtime_table_names(self) -> set[str]:
+        return {
+            self._RUNTIME_TABLE,
+            self._PAGE_SNAPSHOT_TABLE,
+            self._PAGE_BASELINE_TABLE,
+        }
+
     def _init_runtime_persistence(self) -> None:
         conn: Optional[sqlite3.Connection] = None
         try:
-            store = get_local_store()
-            self._runtime_db_path = Path(store.db_path)
+            if self._use_app_db and self._database_url:
+                initialize_app_schema(self._database_url)
+                self._runtime_db_path = None
+            else:
+                store = get_local_store()
+                self._runtime_db_path = Path(store.db_path)
             conn = self._connect_runtime_db()
             if conn is None:
                 return
@@ -400,13 +432,26 @@ class MfuRuntimeMonitor:
 
         cutoff_date = (datetime.now(timezone.utc) - timedelta(days=self.page_snapshot_ttl_days)).date().isoformat()
         try:
-            with db_conn:
+            if close_conn:
+                with db_conn:
+                    db_conn.execute(
+                        f"DELETE FROM {self._PAGE_SNAPSHOT_TABLE} WHERE snapshot_date < ?",
+                        (cutoff_date,),
+                    )
+            else:
                 db_conn.execute(
                     f"DELETE FROM {self._PAGE_SNAPSHOT_TABLE} WHERE snapshot_date < ?",
                     (cutoff_date,),
                 )
+                if hasattr(db_conn, "commit"):
+                    db_conn.commit()
             self._last_page_snapshot_cleanup_ts = now_ts
         except Exception as exc:
+            if not close_conn and hasattr(db_conn, "rollback"):
+                try:
+                    db_conn.rollback()
+                except Exception:
+                    pass
             logger.warning("MFU page snapshots cleanup failed: %s", exc)
         finally:
             if close_conn:
@@ -446,11 +491,11 @@ class MfuRuntimeMonitor:
                     VALUES (?, ?, ?, ?, ?, ?, ?)
                     ON CONFLICT(device_key, snapshot_date) DO UPDATE SET
                         page_total=CASE
-                            WHEN excluded.page_total > page_total THEN excluded.page_total
-                            ELSE page_total
+                            WHEN excluded.page_total > {self._PAGE_SNAPSHOT_TABLE}.page_total THEN excluded.page_total
+                            ELSE {self._PAGE_SNAPSHOT_TABLE}.page_total
                         END,
-                        page_oid=COALESCE(excluded.page_oid, page_oid),
-                        snmp_checked_at=COALESCE(excluded.snmp_checked_at, snmp_checked_at),
+                        page_oid=COALESCE(excluded.page_oid, {self._PAGE_SNAPSHOT_TABLE}.page_oid),
+                        snmp_checked_at=COALESCE(excluded.snmp_checked_at, {self._PAGE_SNAPSHOT_TABLE}.snmp_checked_at),
                         updated_at=excluded.updated_at
                     """,
                     (
@@ -499,7 +544,7 @@ class MfuRuntimeMonitor:
                     INSERT INTO {self._PAGE_BASELINE_TABLE}(device_key, baseline_date, created_at, updated_at)
                     VALUES (?, ?, ?, ?)
                     ON CONFLICT(device_key) DO UPDATE SET
-                        baseline_date=COALESCE(NULLIF(excluded.baseline_date, ''), baseline_date),
+                        baseline_date=COALESCE(NULLIF(excluded.baseline_date, ''), {self._PAGE_BASELINE_TABLE}.baseline_date),
                         updated_at=excluded.updated_at
                     """,
                     (normalized_key, today_iso, now_iso, now_iso),
@@ -730,6 +775,7 @@ class MfuRuntimeMonitor:
             "timeout_total": int(snmp_src.get("timeout_total") or 0),
             "timeout_streak": int(snmp_src.get("timeout_streak") or 0),
             "next_retry_at": snmp_src.get("next_retry_at"),
+            "no_data_retry_at": snmp_src.get("no_data_retry_at"),
         }
         return {"ping": ping, "snmp": snmp}
 
@@ -772,6 +818,12 @@ class MfuRuntimeMonitor:
         snmp_state["timeout_total"] = timeout_total
         snmp_state["timeout_streak"] = timeout_streak
         snmp_state["next_retry_at"] = next_retry_at
+        no_data_retry_at = str(snmp_state.get("no_data_retry_at") or "").strip() or None
+        no_data_retry_dt = self._parse_iso_utc(no_data_retry_at)
+        if no_data_retry_dt and no_data_retry_dt > datetime.now(timezone.utc):
+            device_meta["snmp_no_data_until"] = no_data_retry_at
+        else:
+            snmp_state["no_data_retry_at"] = None
         if original_next_retry_at != next_retry_at or original_timeout_streak != timeout_streak:
             self._persist_runtime_state_for_key(
                 key=key,
@@ -820,7 +872,7 @@ class MfuRuntimeMonitor:
                         timeout_total=excluded.timeout_total,
                         timeout_streak=excluded.timeout_streak,
                         next_retry_at=excluded.next_retry_at,
-                        runtime_json=COALESCE(excluded.runtime_json, runtime_json),
+                        runtime_json=COALESCE(excluded.runtime_json, {self._RUNTIME_TABLE}.runtime_json),
                         updated_at=excluded.updated_at
                     """,
                     (
@@ -874,12 +926,20 @@ class MfuRuntimeMonitor:
                 previous_ip = str(existing.get("ip") or "").strip()
                 existing["ip"] = ip_address
                 existing["updated_at"] = now
+                search_hint = " ".join(
+                    str(item.get(field) or "").strip()
+                    for field in ("model", "model_name", "manufacturer", "type_name")
+                    if str(item.get(field) or "").strip()
+                )
+                if search_hint:
+                    existing["search_model"] = search_hint
                 self._known_devices[key] = existing
                 if previous_ip and ip_address and previous_ip != ip_address:
                     self._snmp_index_cache.pop(key, None)
                     existing["snmp_timeout_total"] = 0
                     existing["snmp_timeout_streak"] = 0
                     existing["snmp_backoff_until"] = None
+                    existing["snmp_no_data_until"] = None
                     self._clear_persisted_runtime_state(key)
                 if key not in self._runtime_cache:
                     self._runtime_cache[key] = {
@@ -908,6 +968,7 @@ class MfuRuntimeMonitor:
                             "timeout_total": 0,
                             "timeout_streak": 0,
                             "next_retry_at": None,
+                            "no_data_retry_at": None,
                         },
                     }
                 self._restore_runtime_state_for_key(key, ip_address)
@@ -936,6 +997,7 @@ class MfuRuntimeMonitor:
                     "timeout_total": 0,
                     "timeout_streak": 0,
                     "next_retry_at": None,
+                    "no_data_retry_at": None,
                 },
             }
         async with self._lock:
@@ -962,6 +1024,7 @@ class MfuRuntimeMonitor:
                         "timeout_total": 0,
                         "timeout_streak": 0,
                         "next_retry_at": None,
+                        "no_data_retry_at": None,
                     },
                 }
             return copy.deepcopy(current)
@@ -1042,8 +1105,18 @@ class MfuRuntimeMonitor:
                 if not ip_address:
                     continue
                 ping_status = str(self._runtime_cache.get(key, {}).get("ping", {}).get("status") or "").lower()
-                if ping_status and ping_status != "online":
-                    continue
+                snmp_state = self._runtime_cache.get(key, {}).get("snmp", {})
+                if ping_status == "offline" and not snmp_state.get("last_success_at"):
+                    checked_dt = self._parse_iso_utc(snmp_state.get("checked_at"))
+                    if checked_dt is not None:
+                        offline_age_sec = (now_utc - checked_dt).total_seconds()
+                        if 0 <= offline_age_sec < self.snmp_offline_retry_sec:
+                            continue
+                no_data_until_raw = str(meta.get("snmp_no_data_until") or snmp_state.get("no_data_retry_at") or "").strip()
+                if no_data_until_raw:
+                    no_data_until = self._parse_iso_utc(no_data_until_raw)
+                    if no_data_until and no_data_until > now_utc:
+                        continue
 
                 backoff_until_raw = str(meta.get("snmp_backoff_until") or "").strip()
                 if backoff_until_raw:
@@ -1067,8 +1140,9 @@ class MfuRuntimeMonitor:
                     cached_snmp = self._runtime_cache.get(key, {}).get("snmp", {})
                     device_info = cached_snmp.get("device_info") or {}
                     device_model = device_info.get("device_model")
+                    inventory_search_model = str(self._known_devices.get(key, {}).get("search_model") or "")
 
-                search_model = str(device_model or "")
+                search_model = str(device_model or inventory_search_model or "")
                 if not search_model or len(search_model) < 3:
                     try:
                         info = await self._probe_device_info_async(ip_address, time.monotonic() + 4.0)
@@ -1171,6 +1245,7 @@ class MfuRuntimeMonitor:
                         "timeout_total": 0,
                         "timeout_streak": 0,
                         "next_retry_at": None,
+                        "no_data_retry_at": None,
                     },
                 },
             )
@@ -1219,6 +1294,7 @@ class MfuRuntimeMonitor:
                         "timeout_total": 0,
                         "timeout_streak": 0,
                         "next_retry_at": None,
+                        "no_data_retry_at": None,
                     },
                 },
             )
@@ -1261,6 +1337,12 @@ class MfuRuntimeMonitor:
                 snmp_state["error"] = None
                 timeout_streak = 0
                 device_meta["snmp_backoff_until"] = None
+                if status == "no_data" and not snmp_state["supplies"]:
+                    device_meta["snmp_no_data_until"] = (
+                        datetime.now(timezone.utc) + timedelta(seconds=self.snmp_no_data_backoff_sec)
+                    ).isoformat()
+                else:
+                    device_meta["snmp_no_data_until"] = None
                 if result_page_total is not None:
                     self._upsert_page_snapshot(
                         device_key=key,
@@ -1289,15 +1371,18 @@ class MfuRuntimeMonitor:
                     else:
                         timeout_streak = 0
                         device_meta["snmp_backoff_until"] = None
+                        device_meta["snmp_no_data_until"] = None
                 else:
                     timeout_streak = 0
                     device_meta["snmp_backoff_until"] = None
+                    device_meta["snmp_no_data_until"] = None
 
             device_meta["snmp_timeout_total"] = timeout_total
             device_meta["snmp_timeout_streak"] = timeout_streak
             snmp_state["timeout_total"] = timeout_total
             snmp_state["timeout_streak"] = timeout_streak
             snmp_state["next_retry_at"] = device_meta.get("snmp_backoff_until")
+            snmp_state["no_data_retry_at"] = device_meta.get("snmp_no_data_until")
             self._persist_runtime_state_for_key(
                 key=key,
                 ip_address=str(device_meta.get("ip") or "").strip(),
@@ -1380,7 +1465,7 @@ class MfuRuntimeMonitor:
         level_base = "1.3.6.1.2.1.43.11.1.1.9"
         normalized_key = str(device_key or "").strip()
         deadline = time.monotonic() + max(2.0, self.snmp_probe_timeout_sec - 1.0)
-        logger.info(
+        logger.debug(
             "SNMP probe start: ip=%s key=%s probe_timeout=%.1fs deadline_budget=%.1fs",
             ip_address, device_key, self.snmp_probe_timeout_sec, max(2.0, self.snmp_probe_timeout_sec - 1.0),
         )
@@ -1439,12 +1524,32 @@ class MfuRuntimeMonitor:
                 elif cached_ver == "v2c":
                     req_version = 1
                 else:
-                    probe_v2 = await self._snmp_get_async(ip_address, "1.3.6.1.2.1.1.1.0", deadline=time.monotonic()+1.0, snmp_version=1, timeout_override=1.0)
-                    if probe_v2 is None:
-                        probe_v1 = await self._snmp_get_async(ip_address, "1.3.6.1.2.1.1.1.0", deadline=time.monotonic()+1.0, snmp_version=0, timeout_override=1.0)
-                        if probe_v1 is not None:
-                            req_version = 0
-                            logger.info("Auto-fallback to SNMPv1 selected for %s", ip_address)
+                    version_probe_oids = (
+                        "1.3.6.1.2.1.1.1.0",
+                        "1.3.6.1.2.1.1.5.0",
+                        f"{descr_base}.1.1",
+                    )
+                    detected_version: Optional[int] = None
+                    for probe_version in (1, 0):
+                        if self._deadline_expired(deadline):
+                            break
+                        for probe_oid in version_probe_oids:
+                            probe_value = await self._snmp_get_async(
+                                ip_address,
+                                probe_oid,
+                                deadline=min(deadline, time.monotonic() + 0.7),
+                                snmp_version=probe_version,
+                                timeout_override=0.7,
+                            )
+                            if probe_value is not None:
+                                detected_version = probe_version
+                                if probe_version == 0:
+                                    logger.debug("Auto-fallback to SNMPv1 selected for %s", ip_address)
+                                break
+                        if detected_version is not None:
+                            break
+                    if detected_version is not None:
+                        req_version = detected_version
 
             if provider_override:
                 # Apply JSON Overrides directly
@@ -1673,7 +1778,7 @@ class MfuRuntimeMonitor:
         supplies: List[Dict[str, Any]] = []
         empty_streak = 0
         _scan_start = time.monotonic()
-        logger.info(
+        logger.debug(
             "Supply scan start: ip=%s marker=%s max_supplies=%s deadline_remaining=%.1fs",
             ip_address, marker_index, max_supplies,
             (deadline - time.monotonic()) if deadline else -1,
@@ -1681,7 +1786,7 @@ class MfuRuntimeMonitor:
 
         for supply_index in range(1, max(1, int(max_supplies)) + 1):
             if self._deadline_expired(deadline):
-                logger.warning(
+                logger.debug(
                     "Supply scan DEADLINE EXPIRED at index %s for %s (elapsed=%.1fs, found=%s so far)",
                     supply_index, ip_address, time.monotonic() - _scan_start, len(supplies),
                 )
@@ -1768,6 +1873,7 @@ class MfuRuntimeMonitor:
         self,
         ip_address: str,
         deadline: Optional[float] = None,
+        snmp_version: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Probe standard MIB OIDs for device identification info:
@@ -1785,7 +1891,7 @@ class MfuRuntimeMonitor:
         }
         info: Dict[str, Any] = {}
         got_any = False
-        working_version = None
+        working_version = int(snmp_version) if snmp_version is not None else None
         
         for field_name, oid in oids.items():
             if self._deadline_expired(deadline):
@@ -1834,6 +1940,14 @@ class MfuRuntimeMonitor:
         best_match_tokens = 0
 
         for prov in self._custom_providers:
+            match_ip = str(prov.get("match_ip", "")).strip().lower()
+            if match_ip and match_ip == str(ip_address).strip().lower():
+                target_prov = prov
+                break
+
+        for prov in self._custom_providers:
+            if target_prov:
+                break
             match_val = str(prov.get("match_model", "")).lower()
             if match_val and match_val != "*":
                 tokens = match_val.split()

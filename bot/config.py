@@ -33,7 +33,6 @@ class APIConfig:
     openrouter_api_key: str
     openrouter_base_url: str = "https://openrouter.ai/api/v1"
     ocr_model: str = "qwen/qwen3-vl-8b-instruct"
-    cartridge_analysis_model: str = "google/gemini-3-flash-preview"
 
 
 @dataclass
@@ -94,12 +93,7 @@ class States:
     UNFOUND_CONFIRMATION = 19
     UNFOUND_EMPLOYEE_CONFIRMATION = 39
     WORK_TYPE_SELECTION = 20
-    WORK_BRANCH_INPUT = 21
-    WORK_LOCATION_INPUT = 22
-    WORK_PRINTER_MODEL_INPUT = 23
-    WORK_CARTRIDGE_COLOR_SELECTION = 24
     WORK_COMPONENT_SELECTION = 29
-    WORK_CONFIRMATION = 27
     EMPLOYEE_EMAIL_INPUT = 28
     WORK_BATTERY_SERIAL_INPUT = 32
     WORK_BATTERY_CONFIRMATION = 33
@@ -173,8 +167,7 @@ def load_config() -> AppConfig:
 
     api_config = APIConfig(
         openrouter_api_key=openrouter_key,
-        ocr_model=os.getenv("OCR_MODEL", "qwen/qwen3-vl-8b-instruct"),
-        cartridge_analysis_model=os.getenv("CARTRIDGE_ANALYSIS_MODEL", "google/gemini-3-flash-preview")
+        ocr_model=os.getenv("OCR_MODEL", "qwen/qwen3-vl-8b-instruct")
     )
     
     # Database РєРѕРЅС„РёРіСѓСЂР°С†РёСЏ

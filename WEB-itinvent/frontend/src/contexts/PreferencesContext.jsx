@@ -5,12 +5,15 @@ import { settingsAPI } from '../api/client';
 
 const PreferencesContext = createContext(null);
 const CACHE_KEY = 'web_preferences_cache';
+export const DASHBOARD_MOBILE_SECTION_KEYS = ['urgent', 'announcements', 'tasks'];
+export const DEFAULT_DASHBOARD_MOBILE_SECTIONS = ['urgent', 'announcements', 'tasks'];
 
 const DEFAULT_PREFERENCES = {
   pinned_database: null,
   theme_mode: 'light',
   font_family: 'Segoe UI',
   font_scale: 1.0,
+  dashboard_mobile_sections: DEFAULT_DASHBOARD_MOBILE_SECTIONS,
 };
 
 const FONT_MAP = {
@@ -19,12 +22,28 @@ const FONT_MAP = {
   'Segoe UI': '"Segoe UI", "Roboto", Arial, sans-serif',
 };
 
+export function normalizeDashboardMobileSections(value) {
+  const source = Array.isArray(value) ? value : [];
+  const result = [];
+  source.forEach((item) => {
+    const token = String(item || '').trim().toLowerCase();
+    if (DASHBOARD_MOBILE_SECTION_KEYS.includes(token) && !result.includes(token)) {
+      result.push(token);
+    }
+  });
+  return result.length ? result : [...DEFAULT_DASHBOARD_MOBILE_SECTIONS];
+}
+
 function readCachedPreferences() {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return DEFAULT_PREFERENCES;
     const parsed = JSON.parse(raw);
-    return { ...DEFAULT_PREFERENCES, ...parsed };
+    return {
+      ...DEFAULT_PREFERENCES,
+      ...parsed,
+      dashboard_mobile_sections: normalizeDashboardMobileSections(parsed?.dashboard_mobile_sections),
+    };
   } catch {
     return DEFAULT_PREFERENCES;
   }
@@ -52,7 +71,11 @@ export function PreferencesProvider({ children }) {
     setLoading(true);
     try {
       const data = await settingsAPI.getMySettings({ suppressAuthRequired: true });
-      const next = { ...DEFAULT_PREFERENCES, ...data };
+      const next = {
+        ...DEFAULT_PREFERENCES,
+        ...data,
+        dashboard_mobile_sections: normalizeDashboardMobileSections(data?.dashboard_mobile_sections),
+      };
       setPreferences(next);
       cachePreferences(next);
       syncSelectedDatabase(next.pinned_database);
@@ -64,28 +87,64 @@ export function PreferencesProvider({ children }) {
   }, []);
 
   useEffect(() => {
-    refreshFromServer();
-    const authChanged = () => refreshFromServer();
+    let timeoutId = null;
+
+    const scheduleRefresh = () => {
+      const pathname = typeof window !== 'undefined'
+        ? String(window.location?.pathname || '').trim()
+        : '';
+      if (pathname.startsWith('/chat')) {
+        timeoutId = window.setTimeout(() => {
+          void refreshFromServer();
+        }, 3500);
+        return;
+      }
+      void refreshFromServer();
+    };
+
+    scheduleRefresh();
+    const authChanged = () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      scheduleRefresh();
+    };
     window.addEventListener('auth-changed', authChanged);
-    return () => window.removeEventListener('auth-changed', authChanged);
+    return () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+      }
+      window.removeEventListener('auth-changed', authChanged);
+    };
   }, [refreshFromServer]);
 
   const savePreferences = useCallback(async (patch) => {
     const previousPreferences = preferences;
-    const optimistic = { ...preferences, ...patch };
+    const normalizedPatch = {
+      ...patch,
+      ...(patch?.dashboard_mobile_sections !== undefined
+        ? { dashboard_mobile_sections: normalizeDashboardMobileSections(patch.dashboard_mobile_sections) }
+        : {}),
+    };
+    const optimistic = { ...preferences, ...normalizedPatch };
     setPreferences(optimistic);
     cachePreferences(optimistic);
 
-    if (patch.pinned_database !== undefined) {
-      syncSelectedDatabase(patch.pinned_database);
+    if (normalizedPatch.pinned_database !== undefined) {
+      syncSelectedDatabase(normalizedPatch.pinned_database);
     }
 
     try {
-      const saved = await settingsAPI.updateMySettings(patch);
-      const next = { ...DEFAULT_PREFERENCES, ...saved };
+      const saved = await settingsAPI.updateMySettings(normalizedPatch);
+      const next = {
+        ...DEFAULT_PREFERENCES,
+        ...saved,
+        dashboard_mobile_sections: normalizeDashboardMobileSections(saved?.dashboard_mobile_sections),
+      };
       setPreferences(next);
       cachePreferences(next);
-      if (patch.pinned_database !== undefined) {
+      if (normalizedPatch.pinned_database !== undefined) {
         syncSelectedDatabase(next.pinned_database);
       }
       return next;
@@ -93,7 +152,7 @@ export function PreferencesProvider({ children }) {
       console.error('Failed to save preferences:', error);
       setPreferences(previousPreferences);
       cachePreferences(previousPreferences);
-      if (patch.pinned_database !== undefined) {
+      if (normalizedPatch.pinned_database !== undefined) {
         syncSelectedDatabase(previousPreferences.pinned_database);
       }
       throw error;

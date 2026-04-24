@@ -238,15 +238,33 @@ QUERY_GET_ALL_BRANCHES = """
     ORDER BY BRANCH_NAME
 """
 
-QUERY_GET_LOCATIONS_BY_BRANCH = """
-    SELECT DISTINCT
-        i.LOC_NO as LOC_NO,
+QUERY_GET_ALL_LOCATIONS = """
+    SELECT
+        l.LOC_NO as LOC_NO,
         l.DESCR as LOC_NAME
-    FROM ITEMS i
-    LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-    WHERE i.BRANCH_NO = ?
-      AND i.LOC_NO IS NOT NULL
-    ORDER BY l.DESCR
+    FROM LOCATIONS l
+    WHERE l.LOC_NO IS NOT NULL
+    ORDER BY l.DESCR, l.LOC_NO
+"""
+
+QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY = """
+    SELECT
+        l.LOC_NO as LOC_NO,
+        l.DESCR as LOC_NAME
+    FROM LOCATIONS l
+    WHERE l.LOC_NO IS NOT NULL
+    ORDER BY
+        CASE
+            WHEN EXISTS (
+                SELECT 1
+                FROM ITEMS i
+                WHERE i.BRANCH_NO = ?
+                  AND i.LOC_NO = l.LOC_NO
+            ) THEN 0
+            ELSE 1
+        END,
+        l.DESCR,
+        l.LOC_NO
 """
 
 QUERY_GET_ALL_EQUIPMENT_TYPES = """
@@ -2326,9 +2344,24 @@ def get_all_branches(db_id: Optional[str] = None) -> List[dict]:
 
 
 def get_locations_by_branch(branch_id: Any, db_id: Optional[str] = None) -> List[dict]:
-    """Get locations for a specific branch."""
+    """
+    Legacy compatibility wrapper.
+
+    Historically locations were resolved through ITEMS for a selected branch.
+    The canonical source is now the full LOCATIONS directory, with branch_id used
+    only to prioritize locations already seen in ITEMS for that branch.
+    """
+    return get_all_locations(db_id, branch_no=branch_id)
+
+
+def get_all_locations(db_id: Optional[str] = None, branch_no: Any = None) -> List[dict]:
+    """Get the full location directory from LOCATIONS with optional branch priority."""
     db = get_db(db_id)
-    rows = db.execute_query(QUERY_GET_LOCATIONS_BY_BRANCH, (branch_id,))
+    normalized_branch = None if branch_no in (None, "", "null") else branch_no
+    if normalized_branch is None:
+        rows = db.execute_query(QUERY_GET_ALL_LOCATIONS)
+    else:
+        rows = db.execute_query(QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY, (normalized_branch,))
     return [
         {
             "loc_no": row.get("loc_no", row.get("LOC_NO")),
@@ -2723,6 +2756,119 @@ def update_equipment_fields(
     params.append(inv_no_float)
     affected = db.execute_update(query, tuple(params))
     return affected > 0
+
+
+def delete_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
+    """
+    Hard-delete one equipment card from ITEMS by INV_NO.
+
+    Deletion is blocked when the equipment already has related acts or
+    transfer history.
+    """
+    normalized_inv_no = str(inv_no or "").strip()
+    try:
+        inv_no_float = float(normalized_inv_no) if normalized_inv_no else None
+    except (ValueError, TypeError):
+        return {
+            "success": False,
+            "code": "invalid_inv_no",
+            "message": "Invalid inventory number",
+        }
+
+    def _format_inv_no(value: Any) -> str:
+        if value in (None, ""):
+            return normalized_inv_no
+        if isinstance(value, int):
+            return str(value)
+        if isinstance(value, float) and value.is_integer():
+            return str(int(value))
+        text = str(value).strip()
+        if re.fullmatch(r"-?\d+\.0", text):
+            return text[:-2]
+        return text or normalized_inv_no
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 ID, INV_NO
+            FROM ITEMS
+            WHERE CI_TYPE = 1
+              AND INV_NO = ?
+            """,
+            (inv_no_float,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {
+                "success": False,
+                "code": "not_found",
+                "message": f"Equipment with INV_NO {normalized_inv_no or inv_no} not found",
+            }
+
+        item_id = int(row[0])
+        resolved_inv_no = _format_inv_no(row[1])
+
+        cursor.execute(
+            """
+            SELECT COUNT(1)
+            FROM DOCS_LIST
+            WHERE ITEM_ID = ?
+            """,
+            (item_id,),
+        )
+        docs_count = int((cursor.fetchone() or [0])[0] or 0)
+
+        cursor.execute(
+            """
+            SELECT COUNT(1)
+            FROM CI_HISTORY
+            WHERE ITEM_ID = ?
+            """,
+            (item_id,),
+        )
+        history_count = int((cursor.fetchone() or [0])[0] or 0)
+
+        if docs_count > 0 or history_count > 0:
+            details = []
+            if docs_count > 0:
+                details.append(f"acts={docs_count}")
+            if history_count > 0:
+                details.append(f"history={history_count}")
+            suffix = f" ({', '.join(details)})" if details else ""
+            return {
+                "success": False,
+                "code": "has_dependencies",
+                "message": f"Equipment is linked to acts or history and cannot be deleted{suffix}",
+                "item_id": item_id,
+                "inv_no": resolved_inv_no,
+                "docs_count": docs_count,
+                "history_count": history_count,
+            }
+
+        cursor.execute(
+            """
+            DELETE FROM ITEMS
+            WHERE ID = ?
+              AND CI_TYPE = 1
+            """,
+            (item_id,),
+        )
+
+        if int(getattr(cursor, "rowcount", 0) or 0) <= 0:
+            return {
+                "success": False,
+                "code": "not_found",
+                "message": f"Equipment with INV_NO {resolved_inv_no} not found",
+            }
+
+        return {
+            "success": True,
+            "item_id": item_id,
+            "inv_no": resolved_inv_no,
+            "message": "Equipment deleted",
+        }
 
 
 def get_owner_no_by_name(employee_name: str, strict: bool = True, db_id: Optional[str] = None) -> Optional[int]:
@@ -3592,4 +3738,3 @@ def resolve_pc_context_by_mac_or_hostname(
                 continue
 
     return None
-

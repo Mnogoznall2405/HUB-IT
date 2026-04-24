@@ -9,6 +9,7 @@ vi.mock('../api/client', () => ({
     getDashboard: vi.fn(),
     getBranches: vi.fn(),
     getAgentsTable: vi.fn(),
+    getAgentsActivity: vi.fn(),
     getHostsTable: vi.fn(),
     getIncidents: vi.fn(),
     getTasks: vi.fn(),
@@ -87,6 +88,7 @@ describe('ScanCenter page', () => {
     scanAPI.getDashboard.mockReset();
     scanAPI.getBranches.mockReset();
     scanAPI.getAgentsTable.mockReset();
+    scanAPI.getAgentsActivity.mockReset();
     scanAPI.getHostsTable.mockReset();
     scanAPI.getIncidents.mockReset();
     scanAPI.getTasks.mockReset();
@@ -96,6 +98,7 @@ describe('ScanCenter page', () => {
     scanAPI.getDashboard.mockResolvedValue(dashboardPayload);
     scanAPI.getBranches.mockResolvedValue(['Тюмень', 'Москва']);
     scanAPI.getAgentsTable.mockResolvedValue({ total: 1, items: [agentRow] });
+    scanAPI.getAgentsActivity.mockResolvedValue({ items: [] });
     scanAPI.getHostsTable.mockResolvedValue({ total: 1, items: [hostRow] });
     scanAPI.getIncidents.mockResolvedValue({ total: 1, items: [incidentRow] });
     scanAPI.getTasks.mockResolvedValue({
@@ -120,34 +123,78 @@ describe('ScanCenter page', () => {
   });
 
   it('creates scan task without full page reload and switches to task polling', async () => {
-    scanAPI.getTasks
+    scanAPI.getAgentsActivity
       .mockResolvedValueOnce({
-        total: 1,
         items: [
           {
-            id: 'task-1',
             agent_id: 'agent-1',
-            command: 'scan_now',
-            status: 'acknowledged',
-            created_at: 1710000200,
-            updated_at: 1710000210,
-            ttl_at: 1710000500,
+            is_online: true,
+            last_seen_at: 1710000210,
+            queue_size: 1,
+            active_task: {
+              id: 'task-1',
+              agent_id: 'agent-1',
+              command: 'scan_now',
+              status: 'acknowledged',
+              created_at: 1710000200,
+              updated_at: 1710000210,
+              ttl_at: 1710000500,
+              result: {
+                phase: 'server_processing',
+                scanned: 4,
+                queued: 2,
+                skipped: 2,
+                deferred: 0,
+                jobs_total: 2,
+                jobs_pending: 1,
+                jobs_done_clean: 1,
+                jobs_done_with_incident: 0,
+                jobs_failed: 0,
+              },
+            },
+            last_task: {
+              id: 'task-1',
+              agent_id: 'agent-1',
+              command: 'scan_now',
+              status: 'acknowledged',
+              created_at: 1710000200,
+              updated_at: 1710000210,
+              ttl_at: 1710000500,
+              result: {
+                phase: 'server_processing',
+                scanned: 4,
+                queued: 2,
+                skipped: 2,
+                deferred: 0,
+                jobs_total: 2,
+                jobs_pending: 1,
+                jobs_done_clean: 1,
+                jobs_done_with_incident: 0,
+                jobs_failed: 0,
+              },
+            },
           },
         ],
       })
       .mockResolvedValue({
-        total: 1,
         items: [
           {
-            id: 'task-1',
             agent_id: 'agent-1',
-            command: 'scan_now',
-            status: 'completed',
-            created_at: 1710000200,
-            updated_at: 1710000220,
-            completed_at: 1710000220,
-            ttl_at: 1710000500,
-            result: { scanned: 4, queued: 1, skipped: 2 },
+            is_online: true,
+            last_seen_at: 1710000220,
+            queue_size: 0,
+            active_task: null,
+            last_task: {
+              id: 'task-1',
+              agent_id: 'agent-1',
+              command: 'scan_now',
+              status: 'completed',
+              created_at: 1710000200,
+              updated_at: 1710000220,
+              completed_at: 1710000220,
+              ttl_at: 1710000500,
+              result: { phase: 'completed', scanned: 4, queued: 1, skipped: 2, jobs_total: 1 },
+            },
           },
         ],
       });
@@ -164,7 +211,7 @@ describe('ScanCenter page', () => {
     scanAPI.getDashboard.mockClear();
     scanAPI.getAgentsTable.mockClear();
     scanAPI.getHostsTable.mockClear();
-    scanAPI.getTasks.mockClear();
+    scanAPI.getAgentsActivity.mockClear();
 
     const agentCell = (await screen.findAllByText('HOST-01')).find((node) => node.closest('tr'));
     const agentRowElement = agentCell.closest('tr');
@@ -181,12 +228,49 @@ describe('ScanCenter page', () => {
     });
 
     await waitFor(() => {
-      expect(scanAPI.getTasks).toHaveBeenCalledWith({ agent_id: 'agent-1', limit: 20, offset: 0 });
+      expect(scanAPI.getAgentsActivity).toHaveBeenCalledWith(['agent-1']);
     });
 
     expect(scanAPI.getDashboard).not.toHaveBeenCalled();
     expect(scanAPI.getAgentsTable).not.toHaveBeenCalled();
     expect(scanAPI.getHostsTable).not.toHaveBeenCalled();
+  });
+
+  it('renders completed scan task as finished only after OCR is done', async () => {
+    scanAPI.getAgentsTable.mockResolvedValue({
+      total: 1,
+      items: [
+        {
+          ...agentRow,
+          last_task: {
+            id: 'task-1',
+            agent_id: 'agent-1',
+            command: 'scan_now',
+            status: 'completed',
+            created_at: 1710000200,
+            updated_at: 1710000220,
+            completed_at: 1710000220,
+            ttl_at: 1710000500,
+            result: {
+              phase: 'completed',
+              scanned: 4,
+              queued: 2,
+              skipped: 2,
+              deferred: 0,
+              jobs_total: 2,
+              jobs_pending: 0,
+              jobs_done_clean: 1,
+              jobs_done_with_incident: 1,
+              jobs_failed: 0,
+            },
+          },
+        },
+      ],
+    });
+
+    render(<ScanCenter />);
+
+    await screen.findByText(/Скан: 4 · clean 1 · incidents 1/i);
   });
 
   it('loads host incidents drawer directly by hostname', async () => {

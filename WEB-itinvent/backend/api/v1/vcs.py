@@ -1,5 +1,4 @@
-import logging
-import uuid
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
@@ -7,8 +6,11 @@ from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, constr
+from sqlalchemy import select
 
 from backend.api.deps import require_permission
+from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
+from backend.appdb.models import AppGlobalSetting, AppVcsComputer
 from backend.services.authorization_service import PERM_VCS_READ, PERM_VCS_MANAGE
 from backend.services.secret_crypto_service import encrypt_secret, decrypt_secret
 from local_store import get_local_store
@@ -19,6 +21,22 @@ router = APIRouter()
 
 VCS_STORE_KEY = "vcs_computers.json"
 VCS_CONFIG_KEY = "vcs_config.json"
+VCS_CONFIG_APP_KEY = "vcs_config"
+VCS_INFO_APP_KEY = "vcs_info"
+
+
+def _to_iso_utc(value) -> str:
+    if isinstance(value, datetime):
+        dt_value = value
+    else:
+        text = str(value or "").strip()
+        if not text:
+            dt_value = datetime.now(timezone.utc)
+        else:
+            dt_value = datetime.fromisoformat(text.replace("Z", "+00:00"))
+    if dt_value.tzinfo is None:
+        dt_value = dt_value.replace(tzinfo=timezone.utc)
+    return dt_value.astimezone(timezone.utc).isoformat()
 
 class VcsComputer(BaseModel):
     id: str
@@ -51,6 +69,21 @@ class VcsInfoUpdate(BaseModel):
     content: str
 
 def _get_all_computers() -> List[dict]:
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            rows = session.scalars(select(AppVcsComputer).order_by(AppVcsComputer.created_at.asc(), AppVcsComputer.name.asc())).all()
+            return [
+                {
+                    "id": str(row.id),
+                    "name": str(row.name),
+                    "ip_address": str(row.ip_address),
+                    "location": str(row.location or ""),
+                    "created_at": _to_iso_utc(row.created_at),
+                    "updated_at": _to_iso_utc(row.updated_at),
+                }
+                for row in rows
+            ]
     store = get_local_store()
     data = store.load_json(VCS_STORE_KEY, default_content=[])
     if not isinstance(data, list):
@@ -58,10 +91,47 @@ def _get_all_computers() -> List[dict]:
     return data
 
 def _save_all_computers(data: List[dict]) -> bool:
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            existing_rows = session.scalars(select(AppVcsComputer)).all()
+            existing_by_id = {str(row.id): row for row in existing_rows}
+            incoming_ids: set[str] = set()
+            for item in data:
+                normalized_id = str((item or {}).get("id") or "").strip()
+                if not normalized_id:
+                    continue
+                incoming_ids.add(normalized_id)
+                row = existing_by_id.get(normalized_id)
+                if row is None:
+                    row = AppVcsComputer(id=normalized_id)
+                    session.add(row)
+                row.name = str((item or {}).get("name") or "").strip()
+                row.ip_address = str((item or {}).get("ip_address") or "").strip()
+                row.location = str((item or {}).get("location") or "").strip() or None
+                created_at = str((item or {}).get("created_at") or "").strip()
+                updated_at = str((item or {}).get("updated_at") or "").strip()
+                row.created_at = datetime.fromisoformat(created_at.replace("Z", "+00:00")) if created_at else datetime.now(timezone.utc)
+                row.updated_at = datetime.fromisoformat(updated_at.replace("Z", "+00:00")) if updated_at else datetime.now(timezone.utc)
+            for row_id, row in existing_by_id.items():
+                if row_id not in incoming_ids:
+                    session.delete(row)
+        return True
     store = get_local_store()
     return store.save_json(VCS_STORE_KEY, data)
 
 def _get_vcs_config() -> dict:
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            row = session.get(AppGlobalSetting, VCS_CONFIG_APP_KEY)
+            if row is None:
+                return {"password_hex_encrypted": ""}
+            try:
+                payload = json.loads(str(row.value_json or "{}"))
+            except Exception:
+                payload = {}
+            return payload if isinstance(payload, dict) else {"password_hex_encrypted": ""}
     store = get_local_store()
     data = store.load_json(VCS_CONFIG_KEY, default_content={"password_hex_encrypted": ""})
     if not isinstance(data, dict):
@@ -69,12 +139,33 @@ def _get_vcs_config() -> dict:
     return data
 
 def _save_vcs_config(data: dict) -> bool:
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            row = session.get(AppGlobalSetting, VCS_CONFIG_APP_KEY)
+            if row is None:
+                row = AppGlobalSetting(key=VCS_CONFIG_APP_KEY)
+                session.add(row)
+            row.value_json = json.dumps(data if isinstance(data, dict) else {"password_hex_encrypted": ""}, ensure_ascii=False)
+            row.updated_at = datetime.now(timezone.utc)
+        return True
     store = get_local_store()
     return store.save_json(VCS_CONFIG_KEY, data)
 
 VCS_INFO_KEY = "vcs_info.json"
 
 def _get_vcs_info() -> dict:
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            row = session.get(AppGlobalSetting, VCS_INFO_APP_KEY)
+            if row is None:
+                return {"content": ""}
+            try:
+                payload = json.loads(str(row.value_json or "{}"))
+            except Exception:
+                payload = {}
+            return payload if isinstance(payload, dict) else {"content": ""}
     store = get_local_store()
     data = store.load_json(VCS_INFO_KEY, default_content={"content": ""})
     if not isinstance(data, dict):
@@ -82,6 +173,16 @@ def _get_vcs_info() -> dict:
     return data
 
 def _save_vcs_info(data: dict) -> bool:
+    if is_app_database_configured():
+        initialize_app_schema()
+        with app_session() as session:
+            row = session.get(AppGlobalSetting, VCS_INFO_APP_KEY)
+            if row is None:
+                row = AppGlobalSetting(key=VCS_INFO_APP_KEY)
+                session.add(row)
+            row.value_json = json.dumps(data if isinstance(data, dict) else {"content": ""}, ensure_ascii=False)
+            row.updated_at = datetime.now(timezone.utc)
+        return True
     store = get_local_store()
     return store.save_json(VCS_INFO_KEY, data)
 

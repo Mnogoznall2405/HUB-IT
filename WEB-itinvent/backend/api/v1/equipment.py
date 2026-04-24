@@ -9,9 +9,10 @@ from pydantic import BaseModel, Field
 import os
 import re
 
-from backend.api.deps import get_current_active_user, get_current_database_id, require_permission
+from backend.api.deps import get_current_active_user, get_current_admin_user, get_current_database_id, require_permission
 from backend.database import queries
 from backend.database.connection import get_db
+from backend.database.equipment_db import invalidate_equipment_cache
 from backend.models.auth import User
 from backend.services.authorization_service import PERM_DATABASE_WRITE
 from backend.models.equipment import (
@@ -40,6 +41,7 @@ from backend.models.equipment import (
     UploadedActCommitResponse,
     UploadedActEmailSendRequest,
     UploadedActEmailSendResponse,
+    TransferActReminderResponse,
 )
 from backend.services.transfer_service import (
     generate_transfer_acts,
@@ -47,6 +49,7 @@ from backend.services.transfer_service import (
     send_transfer_acts_email,
     send_binary_file_email,
 )
+from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 from backend.services.act_upload_service import (
     DraftNotFoundError,
     DraftValidationError,
@@ -56,9 +59,11 @@ from backend.services.act_upload_service import (
     commit_uploaded_act_draft,
 )
 import urllib.parse
+import logging
 
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 def _to_int(value: Any) -> Optional[int]:
@@ -341,6 +346,21 @@ async def get_branches(
     return queries.get_all_branches(db_id)
 
 
+@router.get("/locations", response_model=list[Location])
+async def get_all_locations(
+    branch_no: Optional[str] = Query(None, description="Optional branch number to prioritize used locations"),
+    db_id: Optional[str] = Depends(get_current_database_id),
+    _: User = Depends(get_current_active_user)
+):
+    """
+    Get the full location directory from LOCATIONS.
+
+    Returns:
+        List of all locations
+    """
+    return queries.get_all_locations(db_id, branch_no=branch_no)
+
+
 @router.get("/locations/{branch_id}", response_model=list[Location])
 async def get_locations(
     branch_id: str,
@@ -348,15 +368,15 @@ async def get_locations(
     _: User = Depends(get_current_active_user)
 ):
     """
-    Get locations for a specific branch.
+    Deprecated compatibility endpoint.
 
     Args:
-        branch_id: Branch ID
+        branch_id: Ignored legacy branch ID
 
     Returns:
-        List of locations for the branch
+        List of all locations
     """
-    return queries.get_locations_by_branch(branch_id, db_id)
+    return queries.get_all_locations(db_id, branch_no=branch_id)
 
 
 @router.get("/types")
@@ -716,9 +736,6 @@ async def create_consumable(
     if not location_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid loc_no")
 
-    if not queries.is_location_in_branch(loc_no, branch_no, db_id):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="loc_no does not belong to selected branch_no")
-
     type_row = queries.get_type_by_no(type_no, db_id, ci_type=4)
     if not type_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid type_no for consumables")
@@ -752,6 +769,7 @@ async def create_consumable(
     )
     if not result.get("success"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("message") or "Failed to create consumable")
+    invalidate_equipment_cache(db_id)
     return ConsumableCreateResponse(**result)
 
 
@@ -779,6 +797,7 @@ async def consume_consumable(
         changed_by=changed_by,
     )
     if result.get("success"):
+        invalidate_equipment_cache(db_id)
         return ConsumableConsumeResponse(**result)
 
     message = str(result.get("message") or "Failed to consume consumable")
@@ -813,6 +832,7 @@ async def update_consumable_qty(
         changed_by=changed_by,
     )
     if result.get("success"):
+        invalidate_equipment_cache(db_id)
         return ConsumableQtyUpdateResponse(**result)
 
     message = str(result.get("message") or "Failed to update consumable quantity")
@@ -879,9 +899,6 @@ async def create_equipment(
     if not location_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid loc_no")
 
-    if not queries.is_location_in_branch(loc_no, branch_no, db_id):
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="loc_no does not belong to selected branch_no")
-
     type_row = queries.get_type_by_no(type_no, db_id)
     if not type_row:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid type_no")
@@ -926,6 +943,7 @@ async def create_equipment(
     if not result.get("success"):
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=result.get("message") or "Failed to create equipment")
 
+    invalidate_equipment_cache(db_id)
     return EquipmentCreateResponse(**result)
 
 
@@ -993,23 +1011,13 @@ async def update_equipment_by_inv(
                 detail="Invalid branch_no",
             )
 
-    # Validate location and branch-location pair
+    # Validate location
     if "loc_no" in updates and updates["loc_no"] is not None:
         location_row = queries.get_location_by_no(updates["loc_no"], db_id)
         if not location_row:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid loc_no",
-            )
-
-        target_branch = updates.get("branch_no")
-        if target_branch is None:
-            target_branch = equipment.get("branch_no")
-
-        if target_branch is not None and not queries.is_location_in_branch(updates["loc_no"], target_branch, db_id):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="loc_no does not belong to selected branch_no",
             )
 
     # Validate model and type-model pair
@@ -1044,14 +1052,6 @@ async def update_equipment_by_inv(
             if current_model_type_no is not None and current_model_type_no != target_type:
                 updates["model_no"] = None
 
-    # If branch changes and location is not explicitly set, keep data consistent
-    if "branch_no" in updates and "loc_no" not in updates:
-        current_loc_no = equipment.get("loc_no")
-        target_branch = updates.get("branch_no")
-        if current_loc_no is not None and target_branch is not None:
-            if not queries.is_location_in_branch(current_loc_no, target_branch, db_id):
-                updates["loc_no"] = None
-
     changed_by = current_user.username if current_user else "IT-WEB"
     updated = queries.update_equipment_fields(inv_no, updates, changed_by=changed_by, db_id=db_id)
     if not updated:
@@ -1067,7 +1067,31 @@ async def update_equipment_by_inv(
             detail="Equipment updated but failed to read updated data",
         )
 
+    invalidate_equipment_cache(db_id)
     return equipment_after
+
+
+@router.delete("/{inv_no}", response_model=dict)
+async def delete_equipment_by_inv(
+    inv_no: str,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(get_current_admin_user),
+):
+    """Hard-delete one equipment card from ITEMS for admin users only."""
+    result = queries.delete_equipment_by_inv(inv_no, db_id=db_id)
+    if result.get("success"):
+        invalidate_equipment_cache(db_id)
+        return result
+
+    code = str(result.get("code") or "").strip().lower()
+    message = result.get("message") or "Failed to delete equipment"
+    if code == "not_found":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    if code == "has_dependencies":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
+    if code == "invalid_inv_no":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
 
 @router.post("/transfer", response_model=TransferExecuteResponse)
@@ -1158,11 +1182,6 @@ async def transfer_equipment(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid loc_no",
             )
-        if target_branch_no is not None and not queries.is_location_in_branch(target_loc_no, target_branch_no, db_id):
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="loc_no does not belong to selected branch_no",
-            )
 
     changed_by = current_user.username if current_user else "IT-WEB"
     transferred: list[dict] = []
@@ -1204,12 +1223,50 @@ async def transfer_equipment(
             db_id=db_id,
         )
 
+    reminder_result = {
+        "created": False,
+        "warning": None,
+        "task_id": None,
+        "reminder_id": None,
+        "controller_username": None,
+        "controller_fallback_used": False,
+    }
+    if acts:
+        try:
+            reminder_result = transfer_act_reminder_service.create_transfer_reminder(
+                db_id=db_id,
+                transferred_items=transferred,
+                acts=acts,
+                new_employee_no=target_employee_no,
+                new_employee_name=target_employee_name,
+                actor_user=current_user,
+            )
+        except Exception as exc:
+            logger.exception("Failed to create transfer act upload reminder")
+            reminder_result = {
+                "created": False,
+                "warning": f"Напоминание о загрузке акта не создано: {exc}",
+                "task_id": None,
+                "reminder_id": None,
+                "controller_username": None,
+                "controller_fallback_used": False,
+            }
+
+    if transferred:
+        invalidate_equipment_cache(db_id)
+
     return TransferExecuteResponse(
         success_count=len(transferred),
         failed_count=len(failed),
         transferred=transferred,
         failed=failed,
         acts=acts,
+        upload_reminder_created=bool(reminder_result.get("created")),
+        upload_reminder_task_id=reminder_result.get("task_id"),
+        upload_reminder_id=reminder_result.get("reminder_id"),
+        upload_reminder_warning=reminder_result.get("warning"),
+        upload_reminder_controller_username=reminder_result.get("controller_username"),
+        upload_reminder_controller_fallback_used=bool(reminder_result.get("controller_fallback_used")),
     )
 
 
@@ -1244,6 +1301,17 @@ async def send_transfer_acts(
         employee_email=employee_email,
     )
     return TransferEmailResult(**result)
+
+
+@router.get("/transfer/reminders/{reminder_id}", response_model=TransferActReminderResponse)
+async def get_transfer_act_reminder(
+    reminder_id: str,
+    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    payload = transfer_act_reminder_service.get_reminder(reminder_id=reminder_id)
+    if not payload:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Reminder not found")
+    return TransferActReminderResponse(**payload)
 
 
 @router.post("/acts/upload/parse", response_model=UploadedActDraftResponse)
@@ -1347,6 +1415,18 @@ async def commit_uploaded_act(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
+    reminder_result = transfer_act_reminder_service.complete_for_uploaded_act(
+        reminder_id=payload.reminder_id,
+        source_task_id=payload.source_task_id,
+        db_id=db_id,
+        current_user=current_user,
+        from_employee=result.get("from_employee") or payload_data.get("from_employee") or "",
+        to_employee=result.get("to_employee") or payload_data.get("to_employee") or "",
+        linked_inv_nos=[str(x) for x in result.get("linked_inv_nos") or []],
+        doc_no=int(result["doc_no"]),
+        doc_number=str(result["doc_number"]),
+    )
+
     response_payload = {
         "success": True,
         "doc_no": int(result["doc_no"]),
@@ -1355,6 +1435,11 @@ async def commit_uploaded_act(
         "linked_item_ids": [int(x) for x in result.get("linked_item_ids") or []],
         "linked_inv_nos": [str(x) for x in result.get("linked_inv_nos") or []],
         "message": "Акт успешно загружен и записан в базу",
+        "reminder_status": reminder_result.get("reminder_status"),
+        "reminder_task_id": reminder_result.get("reminder_task_id"),
+        "reminder_id": reminder_result.get("reminder_id"),
+        "reminder_pending_groups": int(reminder_result.get("reminder_pending_groups") or 0),
+        "reminder_warning": reminder_result.get("warning"),
     }
     return UploadedActCommitResponse(**response_payload)
 

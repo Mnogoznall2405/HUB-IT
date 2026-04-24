@@ -10,8 +10,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
+from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.db_schema import schema_name
+
 
 TARGET_BACKEND = "backend"
+TARGET_INVENTORY_BACKEND = "inventory_backend"
 TARGET_SCAN_BACKEND = "scan_backend"
 TARGET_FRONTEND = "frontend"
 TARGET_TELEGRAM_BOT = "telegram_bot"
@@ -22,10 +27,12 @@ _SENSITIVE_MARKERS = (
     "PASSWORD",
     "TOKEN",
     "API_KEY",
+    "DATABASE_URL",
     "PRIVATE_KEY",
     "MAIL_CREDENTIALS_KEY",
 )
 _DIRECT_DESCRIPTIONS = {
+    "MAIL_NOTIFICATION_MAX_CONCURRENCY": ("Почта Exchange", "Лимит параллельных опросов mail notification poller."),
     "TELEGRAM_BOT_TOKEN": ("Telegram bot", "Токен Telegram-бота для подключения к Bot API."),
     "ALLOWED_GROUP_ID": ("Telegram bot", "ID группы Telegram, из которой бот принимает команды."),
     "ALLOWED_USERS": ("Telegram bot", "Список user_id, которым разрешён доступ к Telegram-боту."),
@@ -55,10 +62,29 @@ _DIRECT_DESCRIPTIONS = {
     "MAIL_MAX_FILE_SIZE_MB": ("Почта Exchange", "Максимальный размер одного вложения в МБ."),
     "MAIL_MAX_TOTAL_SIZE_MB": ("Почта Exchange", "Максимальный суммарный размер вложений в МБ."),
     "MAIL_CREDENTIALS_KEY": ("Почта Exchange", "Ключ для шифрования сохранённых почтовых паролей."),
+    "CHAT_MODULE_ENABLED": ("Chat", "Включает встроенный корпоративный чат backend."),
+    "APP_DATABASE_URL": ("Internal PostgreSQL", "Единый SQLAlchemy URL PostgreSQL для внутренних app-данных вместо SQLite runtime."),
+    "APP_DB_POOL_SIZE": ("Internal PostgreSQL", "Размер основного пула соединений unified internal PostgreSQL."),
+    "APP_DB_MAX_OVERFLOW": ("Internal PostgreSQL", "Максимальный overflow пула unified internal PostgreSQL."),
+    "APP_DB_ECHO": ("Internal PostgreSQL", "Включает SQL echo/debug-логирование для unified internal PostgreSQL."),
+    "CHAT_DATABASE_URL": ("Chat", "SQLAlchemy URL PostgreSQL для chat-домена."),
+    "CHAT_DB_POOL_SIZE": ("Chat", "Размер основного пула соединений PostgreSQL для chat-домена."),
+    "CHAT_DB_MAX_OVERFLOW": ("Chat", "Максимальный overflow пула соединений PostgreSQL для chat-домена."),
+    "CHAT_CONVERSATION_PAGE_SIZE": ("Chat", "Базовый размер страницы списка чатов."),
+    "CHAT_MESSAGE_PAGE_SIZE": ("Chat", "Базовый размер страницы сообщений чата."),
+    "CHAT_PUSH_OUTBOX_ENABLED": ("Chat", "Включает отдельный worker для outbox-доставки chat push."),
+    "CHAT_PUSH_OUTBOX_POLL_INTERVAL_SEC": ("Chat", "Интервал опроса chat push outbox worker в секундах."),
+    "CHAT_PUSH_OUTBOX_BATCH_SIZE": ("Chat", "Сколько push jobs chat outbox worker забирает за итерацию."),
+    "CHAT_PUSH_OUTBOX_MAX_CONCURRENCY": ("Chat", "Лимит параллельной доставки push-уведомлений в chat outbox worker."),
+    "CHAT_PUSH_OUTBOX_MAX_ATTEMPTS": ("Chat", "Максимум retry-попыток для chat push outbox job перед terminal failed."),
+    "CHAT_PUSH_OUTBOX_RETRY_BASE_SEC": ("Chat", "Базовая пауза retry/backoff для chat push outbox worker."),
+    "CHAT_PUSH_OUTBOX_PROCESSING_TIMEOUT_SEC": ("Chat", "Сколько ждать stale processing job перед возвратом в queue."),
+    "CHAT_PUSH_OUTBOX_HEARTBEAT_SEC": ("Chat", "Интервал heartbeat-логов chat push outbox worker."),
     "VITE_API_URL": ("Frontend", "Базовый адрес API, который встраивается в frontend-сборку."),
     "VITE_BACKEND_HOST": ("Frontend", "Хост backend для dev/build конфигурации frontend."),
     "VITE_BACKEND_PORT": ("Frontend", "Порт backend для dev/build конфигурации frontend."),
     "VITE_BASE_PATH": ("Frontend", "Базовый путь SPA при публикации frontend."),
+    "VITE_CHAT_ENABLED": ("Frontend", "Встраивает раздел Chat в frontend-сборку."),
     "VITE_SCAN_BACKEND_TARGET": ("Frontend", "Адрес scan backend для dev proxy frontend."),
     "BACKEND_PORT": ("Backend API", "Порт запуска основного backend API."),
     "DEBUG": ("Backend API", "Флаг debug-режима backend."),
@@ -88,6 +114,26 @@ _DIRECT_DESCRIPTIONS = {
         "Scan backend",
         "Включать realtime watchdog для отслеживания файловых изменений. По умолчанию 0; для on-demand режима оставьте выключенным.",
     ),
+    "SCAN_SERVER_WATCHDOG_ENABLED": (
+        "Scan backend",
+        "Включать локальный watchdog scan backend: если процесс жив, но перестал отвечать на собственный /health, процесс завершается для автоматического рестарта через PM2.",
+    ),
+    "SCAN_SERVER_WATCHDOG_INTERVAL_SEC": (
+        "Scan backend",
+        "Интервал в секундах между self-check запросами scan backend к собственному /health.",
+    ),
+    "SCAN_SERVER_WATCHDOG_TIMEOUT_SEC": (
+        "Scan backend",
+        "Таймаут одного self-check запроса watchdog scan backend в секундах.",
+    ),
+    "SCAN_SERVER_WATCHDOG_FAILURES": (
+        "Scan backend",
+        "Сколько подряд неудачных self-check должен увидеть watchdog scan backend перед завершением процесса.",
+    ),
+    "SCAN_SERVER_WATCHDOG_STARTUP_GRACE_SEC": (
+        "Scan backend",
+        "Стартовая пауза watchdog scan backend после запуска процесса, прежде чем начинать self-check.",
+    ),
     "ITINV_OUTLOOK_SEARCH_ROOTS": (
         "Scan backend",
         "Дополнительные корни для поиска PST/OST через ';'. По умолчанию D:\\; пустое значение отключает extra-root поиск.",
@@ -97,11 +143,13 @@ _CATEGORY_ORDER = [
     "Backend API",
     "Безопасность",
     "Сессии",
+    "Internal PostgreSQL",
     "Active Directory",
     "База данных",
     "Почта Exchange",
     "Почта и SMTP",
     "ИИ и интеграции",
+    "Inventory ingest",
     "Scan backend",
     "Telegram bot",
     "Frontend",
@@ -113,8 +161,8 @@ _TARGET_META = {
         "id": TARGET_BACKEND,
         "label": "Основной backend",
         "description": "Основной FastAPI backend на 127.0.0.1:8001.",
-        "apply_hint": "После изменения нужен перезапуск backend-процесса.",
-        "commands": ["pm2 restart itinvent-backend"],
+        "apply_hint": "После изменения нужен перезапуск backend-процесса и chat push worker.",
+        "commands": ["pm2 restart itinvent-backend", "pm2 restart itinvent-chat-push-worker", "pm2 restart itinvent-ai-chat-worker"],
     },
     TARGET_SCAN_BACKEND: {
         "id": TARGET_SCAN_BACKEND,
@@ -122,6 +170,13 @@ _TARGET_META = {
         "description": "Сервис scan/backend на 127.0.0.1:8011.",
         "apply_hint": "После изменения нужен перезапуск scan backend.",
         "commands": ["pm2 restart itinvent-scan"],
+    },
+    TARGET_INVENTORY_BACKEND: {
+        "id": TARGET_INVENTORY_BACKEND,
+        "label": "Inventory ingest",
+        "description": "РћС‚РґРµР»СЊРЅС‹Р№ inventory ingest service РЅР° 127.0.0.1:8012.",
+        "apply_hint": "РџРѕСЃР»Рµ РёР·РјРµРЅРµРЅРёСЏ РЅСѓР¶РµРЅ РїРµСЂРµР·Р°РїСѓСЃРє inventory ingest service.",
+        "commands": ["pm2 restart itinvent-inventory"],
     },
     TARGET_TELEGRAM_BOT: {
         "id": TARGET_TELEGRAM_BOT,
@@ -177,6 +232,15 @@ def _build_targets(key: str) -> tuple[list[str], bool]:
     upper_key = str(key or "").upper()
     if upper_key.startswith("VITE_"):
         return [TARGET_FRONTEND], True
+    if upper_key.startswith("INVENTORY_SERVER_"):
+        return [TARGET_INVENTORY_BACKEND], False
+    if upper_key in {
+        "ITINV_AGENT_API_KEY",
+        "ITINV_AGENT_API_KEYS",
+        "ITINV_INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS",
+        "ITINV_INVENTORY_HEARTBEAT_WRITE_INTERVAL_SECONDS",
+    }:
+        return [TARGET_BACKEND, TARGET_INVENTORY_BACKEND], False
     if upper_key.startswith("SCAN_") or upper_key.startswith("MFU_"):
         return [TARGET_SCAN_BACKEND], False
     if upper_key.startswith("TELEGRAM_") or upper_key.startswith("BOT_") or upper_key.startswith("OPENROUTER_"):
@@ -200,12 +264,21 @@ def _describe_variable(key: str) -> tuple[str, str]:
         return ("База данных", f"Параметр подключения для алиаса базы данных {normalized_key[3:]}.")
     if upper_key.startswith("SCAN_SERVER_"):
         return ("Scan backend", f"Параметр scan backend: {normalized_key}.")
+    if upper_key.startswith("INVENTORY_SERVER_"):
+        return ("Inventory ingest", f"Parameter for inventory ingest service: {normalized_key}.")
     if upper_key.startswith("SCAN_AGENT_"):
         return ("Scan backend", f"Параметр scan agent: {normalized_key}.")
     if upper_key.startswith("SCAN_"):
         return ("Scan backend", f"Параметр scan-контура: {normalized_key}.")
     if upper_key.startswith("MFU_"):
         return ("Scan backend", f"Параметр мониторинга МФУ: {normalized_key}.")
+    if upper_key in {
+        "ITINV_AGENT_API_KEY",
+        "ITINV_AGENT_API_KEYS",
+        "ITINV_INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS",
+        "ITINV_INVENTORY_HEARTBEAT_WRITE_INTERVAL_SECONDS",
+    }:
+        return ("Inventory ingest", f"Parameter for inventory ingest/runtime: {normalized_key}.")
     if upper_key.startswith("ITINV_"):
         return ("Scan backend", f"Параметр inventory/agent контура: {normalized_key}.")
     if upper_key.startswith("MAIL_"):
@@ -230,17 +303,31 @@ class EnvSettingsService:
         self,
         env_path: Optional[Path] = None,
         audit_db_path: Optional[Path] = None,
+        database_url: str | None = None,
     ):
         project_root = Path(__file__).resolve().parents[3]
         self.env_path = Path(env_path) if env_path is not None else project_root / ".env"
         self.audit_db_path = Path(audit_db_path) if audit_db_path is not None else project_root / "data" / "env_settings_audit.db"
+        explicit_database_url = str(database_url or "").strip() or None
+        self._database_url = get_app_database_url(explicit_database_url) if (explicit_database_url or is_app_database_configured()) else None
+        self._use_app_db = bool(self._database_url)
+        self._system_schema = schema_name("system", self._database_url)
         self.env_path.parent.mkdir(parents=True, exist_ok=True)
         self.audit_db_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.env_path.exists():
             self.env_path.write_text("", encoding="utf-8")
+        if self._use_app_db and self._database_url:
+            initialize_app_schema(self._database_url)
         self._ensure_audit_schema()
 
     def _connect_audit(self) -> sqlite3.Connection:
+        if self._use_app_db and self._database_url:
+            return SqlAlchemyCompatConnection(
+                get_app_engine(self._database_url),
+                table_names={"env_settings_audit"},
+                schema=self._system_schema,
+                returning_id_tables={"env_settings_audit"},
+            )
         return sqlite3.connect(self.audit_db_path)
 
     def _ensure_audit_schema(self) -> None:

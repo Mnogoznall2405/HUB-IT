@@ -10,7 +10,7 @@ module.exports = {
       name: 'itinvent-scan',
       cwd: PROJECT_ROOT,
       script: PYTHON,
-      args: '-m uvicorn scan_server.app:app --host 127.0.0.1 --port 8011 --app-dir C:\\Project\\Image_scan',
+      args: '-m scan_server',
       interpreter: 'none',
       windowsHide: true,
       autorestart: true,

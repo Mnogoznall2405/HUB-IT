@@ -1,37 +1,112 @@
-﻿import {
+import { useMemo } from 'react';
+import {
+  Box,
+  Drawer,
+  List,
+  ListItemButton,
   ListItemIcon,
   ListItemText,
   Menu,
   MenuItem,
+  Typography,
 } from '@mui/material';
-import AssignmentOutlinedIcon from '@mui/icons-material/AssignmentOutlined';
-import EmailOutlinedIcon from '@mui/icons-material/EmailOutlined';
-import KeyboardCommandKeyOutlinedIcon from '@mui/icons-material/KeyboardCommandKeyOutlined';
-import SyncAltOutlinedIcon from '@mui/icons-material/SyncAltOutlined';
-import SettingsSuggestOutlinedIcon from '@mui/icons-material/SettingsSuggestOutlined';
-import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
+import { useTheme } from '@mui/material/styles';
 import MarkEmailReadOutlinedIcon from '@mui/icons-material/MarkEmailReadOutlined';
+import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
+import {
+  buildMailUiTokens,
+  getMailBottomSheetPaperSx,
+  getMailDialogPaperSx,
+  getMailSheetHandleSx,
+} from './mailUiTokens';
+
+function SheetActionItem({ icon, label, onClick }) {
+  return (
+    <ListItemButton
+      onClick={onClick}
+      sx={{
+        minHeight: 52,
+        px: 2,
+        py: 1,
+      }}
+    >
+      <ListItemIcon sx={{ minWidth: 38 }}>
+        {icon}
+      </ListItemIcon>
+      <ListItemText
+        primary={label}
+        primaryTypographyProps={{
+          fontWeight: 600,
+          fontSize: '0.96rem',
+        }}
+      />
+    </ListItemButton>
+  );
+}
 
 export default function MailToolsMenu({
   anchorEl,
   open,
   onClose,
-  onOpenItRequest,
-  onOpenSignatureEditor,
-  canManageUsers,
-  onOpenTemplates,
-  canToggleMailProfileMode,
-  mailProfileModeLabel,
-  mailProfileToggleLabel,
-  onToggleMailProfileMode,
-  onOpenShortcuts,
   onOpenViewSettings,
   onMarkAllRead,
+  mobile = false,
 }) {
+  const theme = useTheme();
+  const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
+
+  const actionItems = [
+    {
+      id: 'mark-all-read',
+      label: 'Отметить все как прочитанные',
+      icon: <MarkEmailReadOutlinedIcon fontSize="small" />,
+      onClick: onMarkAllRead,
+    },
+    {
+      id: 'view-settings',
+      label: 'Настройки вида',
+      icon: <TuneOutlinedIcon fontSize="small" />,
+      onClick: onOpenViewSettings,
+    },
+  ];
+
   const handleAction = (callback) => () => {
-    onClose();
+    onClose?.();
     callback?.();
   };
+
+  if (mobile) {
+    return (
+      <Drawer
+        anchor="bottom"
+        open={open}
+        onClose={onClose}
+        ModalProps={{ keepMounted: true }}
+        PaperProps={{
+          sx: getMailBottomSheetPaperSx(tokens),
+        }}
+      >
+        <Box className="mail-scroll-hidden" sx={{ maxHeight: '82dvh', overflowY: 'auto' }}>
+          <Box sx={{ px: 2, pt: 1.2, pb: 0.8 }}>
+            <Box sx={getMailSheetHandleSx(tokens, { mb: 1.4 })} />
+            <Typography sx={{ fontWeight: 700, fontSize: '1rem', color: tokens.textPrimary }}>
+              Действия
+            </Typography>
+          </Box>
+          <List disablePadding>
+            {actionItems.map((item) => (
+              <SheetActionItem
+                key={item.id}
+                icon={item.icon}
+                label={item.label}
+                onClick={handleAction(item.onClick)}
+              />
+            ))}
+          </List>
+        </Box>
+      </Drawer>
+    );
+  }
 
   return (
     <Menu
@@ -40,43 +115,22 @@ export default function MailToolsMenu({
       onClose={onClose}
       anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
       transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-      PaperProps={{ sx: { borderRadius: '12px', minWidth: 220 } }}
+      PaperProps={{
+        sx: getMailDialogPaperSx(tokens, {
+          mt: 0.75,
+          minWidth: 240,
+          bgcolor: tokens.menuBg,
+        }),
+      }}
     >
-      <MenuItem onClick={handleAction(onOpenItRequest)}>
-        <ListItemIcon><AssignmentOutlinedIcon fontSize="small" /></ListItemIcon>
-        <ListItemText primary="Заявка в IT" secondary="Отправить шаблонную заявку" />
-      </MenuItem>
-      <MenuItem onClick={handleAction(onOpenSignatureEditor)}>
-        <ListItemIcon><EmailOutlinedIcon fontSize="small" /></ListItemIcon>
-        <ListItemText primary="Подпись" secondary="Изменить подпись для писем" />
-      </MenuItem>
-      {canToggleMailProfileMode ? (
-        <MenuItem onClick={handleAction(onToggleMailProfileMode)}>
-          <ListItemIcon><SyncAltOutlinedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText
-            primary={mailProfileToggleLabel || 'Переключить режим почты'}
-            secondary={mailProfileModeLabel || 'Режим почтового профиля'}
-          />
+      {actionItems.map((item) => (
+        <MenuItem key={item.id} onClick={handleAction(item.onClick)} sx={{ minHeight: 46 }}>
+          <ListItemIcon sx={{ minWidth: 34 }}>
+            {item.icon}
+          </ListItemIcon>
+          <ListItemText primary={item.label} primaryTypographyProps={{ fontWeight: 600 }} />
         </MenuItem>
-      ) : null}
-      {canManageUsers ? (
-        <MenuItem onClick={handleAction(onOpenTemplates)}>
-          <ListItemIcon><SettingsSuggestOutlinedIcon fontSize="small" /></ListItemIcon>
-          <ListItemText primary="Шаблоны" secondary="Управление IT-шаблонами" />
-        </MenuItem>
-      ) : null}
-      <MenuItem onClick={handleAction(onOpenViewSettings)}>
-        <ListItemIcon><TuneOutlinedIcon fontSize="small" /></ListItemIcon>
-        <ListItemText primary="Вид и поведение" secondary="Область чтения, плотность, автопрочтение" />
-      </MenuItem>
-      <MenuItem onClick={handleAction(onMarkAllRead)}>
-        <ListItemIcon><MarkEmailReadOutlinedIcon fontSize="small" /></ListItemIcon>
-        <ListItemText primary="Прочитать все" secondary="Отметить письма текущей выборки как прочитанные" />
-      </MenuItem>
-      <MenuItem onClick={handleAction(onOpenShortcuts)}>
-        <ListItemIcon><KeyboardCommandKeyOutlinedIcon fontSize="small" /></ListItemIcon>
-        <ListItemText primary="Горячие клавиши" secondary="Список доступных сочетаний" />
-      </MenuItem>
+      ))}
     </Menu>
   );
 }

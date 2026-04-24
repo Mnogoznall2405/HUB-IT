@@ -242,6 +242,12 @@ class TransferExecuteResponse(BaseModel):
     transferred: List[TransferItemResult] = Field(default_factory=list, description="Transferred items")
     failed: List[TransferFailedItem] = Field(default_factory=list, description="Failed items")
     acts: List[TransferActInfo] = Field(default_factory=list, description="Generated acts")
+    upload_reminder_created: bool = Field(False, description="Whether upload reminder task was created")
+    upload_reminder_task_id: Optional[str] = Field(None, description="Hub task id for upload reminder")
+    upload_reminder_id: Optional[str] = Field(None, description="Persistent reminder id")
+    upload_reminder_warning: Optional[str] = Field(None, description="Reminder creation warning")
+    upload_reminder_controller_username: Optional[str] = Field(None, description="Resolved reminder controller username")
+    upload_reminder_controller_fallback_used: bool = Field(False, description="Whether controller fallback was used")
 
 
 class TransferEmailRequest(BaseModel):
@@ -293,6 +299,8 @@ class UploadedActCommitRequest(BaseModel):
     to_employee: Optional[str] = Field(None, description="New employee")
     doc_date: Optional[str] = Field(None, description="Document date YYYY-MM-DD")
     equipment_inv_nos: Optional[List[str]] = Field(None, description="Final inventory numbers list")
+    source_task_id: Optional[str] = Field(None, description="Optional hub task id for reminder binding")
+    reminder_id: Optional[str] = Field(None, description="Optional reminder id for explicit binding")
 
 
 class UploadedActCommitResponse(BaseModel):
@@ -304,6 +312,44 @@ class UploadedActCommitResponse(BaseModel):
     linked_item_ids: List[int] = Field(default_factory=list, description="Linked ITEMS.ID list")
     linked_inv_nos: List[str] = Field(default_factory=list, description="Linked inventory numbers")
     message: str = Field(..., description="Operation message")
+    reminder_status: Optional[str] = Field(None, description="Reminder resolution status")
+    reminder_task_id: Optional[str] = Field(None, description="Bound reminder task id")
+    reminder_id: Optional[str] = Field(None, description="Bound reminder id")
+    reminder_pending_groups: int = Field(0, description="Remaining pending groups in reminder")
+    reminder_warning: Optional[str] = Field(None, description="Reminder resolution warning")
+
+
+class TransferActReminderGroupResponse(BaseModel):
+    """One pending/completed reminder group."""
+    id: str = Field(..., description="Reminder group id")
+    generated_act_id: Optional[str] = Field(None, description="Generated act id")
+    old_employee_name: str = Field(..., description="Old employee name")
+    inv_nos: List[str] = Field(default_factory=list, description="Exact INV_NO list")
+    equipment_count: int = Field(..., description="Equipment count")
+    matched_doc_no: Optional[int] = Field(None, description="Matched DOC_NO")
+    matched_doc_number: Optional[str] = Field(None, description="Matched DOC_NUMBER")
+    completed_at: Optional[str] = Field(None, description="Completion timestamp")
+
+
+class TransferActReminderResponse(BaseModel):
+    """Persistent transfer act reminder context."""
+    reminder_id: str = Field(..., description="Reminder id")
+    task_id: str = Field(..., description="Hub task id")
+    db_id: Optional[str] = Field(None, description="Database id")
+    assignee_user_id: int = Field(..., description="Assignee user id")
+    controller_user_id: int = Field(..., description="Controller user id")
+    created_by_user_id: int = Field(..., description="Creator user id")
+    new_employee_no: Optional[str] = Field(None, description="Target employee number")
+    new_employee_name: str = Field(..., description="Target employee name")
+    status: str = Field(..., description="Reminder status")
+    created_at: Optional[str] = Field(None, description="Created timestamp")
+    updated_at: Optional[str] = Field(None, description="Updated timestamp")
+    completed_at: Optional[str] = Field(None, description="Completed timestamp")
+    pending_groups_total: int = Field(0, description="Pending groups count")
+    completed_groups_total: int = Field(0, description="Completed groups count")
+    pending_groups: List[TransferActReminderGroupResponse] = Field(default_factory=list, description="Pending groups")
+    completed_groups: List[TransferActReminderGroupResponse] = Field(default_factory=list, description="Completed groups")
+    upload_url: str = Field(..., description="Deep-link to upload act UI")
 
 
 class UploadedActEmailSendRequest(BaseModel):

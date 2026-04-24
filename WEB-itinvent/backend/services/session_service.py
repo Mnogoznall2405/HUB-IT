@@ -8,6 +8,10 @@ from pathlib import Path
 from time import monotonic
 from typing import Optional
 
+from sqlalchemy import select
+
+from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
+from backend.appdb.models import AppSessionRecord
 from backend.config import config
 from local_store import SQLiteLocalStore, get_local_store
 
@@ -79,33 +83,106 @@ class SessionService:
     """Manages web auth sessions in JSON storage."""
 
     FILE_NAME = "web_sessions.json"
+    TOUCH_THROTTLE_SECONDS = 60
 
-    def __init__(self, file_path: Optional[Path] = None):
+    def __init__(self, file_path: Optional[Path] = None, database_url: Optional[str] = None):
         use_singleton_store = file_path is None
         if file_path is None:
             project_root = Path(__file__).resolve().parents[3]
             file_path = project_root / "data" / self.FILE_NAME
         self.file_path = Path(file_path)
         self.file_path.parent.mkdir(parents=True, exist_ok=True)
-        self.store = (
+        self._database_url = str(database_url or "").strip() or None
+        self._use_app_database = bool(self._database_url) or is_app_database_configured()
+        self.store = None if self._use_app_database else (
             get_local_store(data_dir=self.file_path.parent)
             if use_singleton_store
             else SQLiteLocalStore(data_dir=self.file_path.parent)
         )
+        if self._use_app_database:
+            initialize_app_schema(self._database_url)
         self._ensure_file()
         self._last_cleanup_monotonic: Optional[float] = None
 
     def _ensure_file(self) -> None:
+        if self._use_app_database:
+            return
         data = self.store.load_json(self.FILE_NAME, default_content=[])
         if not isinstance(data, list):
             self._save_sessions([])
 
     def _load_sessions(self) -> list[dict]:
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                rows = session.scalars(select(AppSessionRecord).order_by(AppSessionRecord.created_at.asc())).all()
+                return [self._row_to_session_dict(row) for row in rows]
         data = self.store.load_json(self.FILE_NAME, default_content=[])
         return data if isinstance(data, list) else []
 
     def _save_sessions(self, sessions: list[dict]) -> None:
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                existing_rows = session.scalars(select(AppSessionRecord)).all()
+                existing_by_id = {str(row.session_id): row for row in existing_rows}
+                incoming_ids: set[str] = set()
+                for payload in sessions:
+                    session_id = str(payload.get("session_id") or "").strip()
+                    if not session_id:
+                        continue
+                    incoming_ids.add(session_id)
+                    row = existing_by_id.get(session_id)
+                    if row is None:
+                        row = AppSessionRecord(session_id=session_id)
+                        session.add(row)
+                    self._apply_session_payload(row, payload)
+                for session_id, row in existing_by_id.items():
+                    if session_id not in incoming_ids:
+                        session.delete(row)
+            return
         self.store.save_json(self.FILE_NAME, sessions)
+
+    @staticmethod
+    def _row_to_session_dict(row: AppSessionRecord) -> dict:
+        return {
+            "session_id": str(row.session_id),
+            "user_id": int(row.user_id),
+            "username": str(row.username or ""),
+            "role": str(row.role or "viewer"),
+            "ip_address": str(row.ip_address or ""),
+            "user_agent": str(row.user_agent or ""),
+            "created_at": row.created_at.isoformat() if row.created_at else None,
+            "last_seen_at": row.last_seen_at.isoformat() if row.last_seen_at else None,
+            "expires_at": row.expires_at.isoformat() if row.expires_at else None,
+            "idle_expires_at": row.idle_expires_at.isoformat() if row.idle_expires_at else None,
+            "is_active": bool(row.is_active),
+            "status": str(row.status or "active"),
+            "closed_at": row.closed_at.isoformat() if row.closed_at else None,
+            "closed_reason": row.closed_reason,
+            "device_label": row.device_label,
+        }
+
+    @staticmethod
+    def _apply_session_payload(row: AppSessionRecord, payload: dict) -> None:
+        row.user_id = int(payload.get("user_id", 0) or 0)
+        row.username = str(payload.get("username") or "")
+        row.role = str(payload.get("role") or "viewer")
+        row.ip_address = str(payload.get("ip_address") or "")
+        row.user_agent = str(payload.get("user_agent") or "")
+        row.created_at = _parse_datetime(payload.get("created_at")) or _utc_now()
+        row.last_seen_at = _parse_datetime(payload.get("last_seen_at")) or row.created_at
+        row.expires_at = _parse_datetime(payload.get("expires_at")) or row.last_seen_at
+        row.idle_expires_at = _parse_datetime(payload.get("idle_expires_at"))
+        row.is_active = bool(payload.get("is_active", True))
+        row.status = str(payload.get("status") or "active")
+        row.closed_at = _parse_datetime(payload.get("closed_at"))
+        row.closed_reason = str(payload.get("closed_reason") or "").strip() or None
+        row.device_label = str(payload.get("device_label") or "").strip() or None
+
+    def _normalize_db_row(self, row: AppSessionRecord, now: Optional[datetime] = None) -> dict:
+        item = self._row_to_session_dict(row)
+        if self._normalize_session(item, now=now):
+            self._apply_session_payload(row, item)
+        return item
 
     def _idle_timeout_delta(self) -> timedelta:
         return timedelta(minutes=max(1, int(config.session.idle_timeout_minutes)))
@@ -210,6 +287,12 @@ class SessionService:
             return
         self.cleanup_sessions(force=True)
 
+    def _should_write_touch(self, session: dict, *, now: datetime) -> bool:
+        last_seen_at = _parse_datetime(session.get("last_seen_at"))
+        if last_seen_at is None:
+            return True
+        return (now - last_seen_at).total_seconds() >= self.TOUCH_THROTTLE_SECONDS
+
     def create_session(
         self,
         *,
@@ -222,7 +305,6 @@ class SessionService:
         expires_at: str,
     ) -> dict:
         self._run_maintenance()
-        sessions = self._load_sessions()
         now_iso = _utc_now_iso()
         item = {
             "session_id": session_id,
@@ -242,11 +324,35 @@ class SessionService:
             "device_label": "",
         }
         self._normalize_session(item)
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                row = AppSessionRecord(session_id=str(session_id))
+                self._apply_session_payload(row, item)
+                session.add(row)
+            return dict(item)
+        sessions = self._load_sessions()
         sessions.append(item)
         self._save_sessions(sessions)
         return dict(item)
 
     def touch_session(self, session_id: str) -> bool:
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                row = session.get(AppSessionRecord, str(session_id or "").strip())
+                if row is None:
+                    return False
+                now = _utc_now()
+                item = self._normalize_db_row(row, now=now)
+                if item.get("status") != "active" or not bool(item.get("is_active", True)):
+                    return False
+                if not self._should_write_touch(item, now=now):
+                    return True
+                now_iso = now.isoformat()
+                item["last_seen_at"] = now_iso
+                item["idle_expires_at"] = (now + self._idle_timeout_delta()).isoformat()
+                item["status"] = "active"
+                self._apply_session_payload(row, item)
+                return True
         sessions = self._load_sessions()
         changed = False
         now = _utc_now()
@@ -261,6 +367,9 @@ class SessionService:
                 if changed:
                     self._save_sessions(sessions)
                 return False
+            if not self._should_write_touch(session, now=now):
+                touched = True
+                break
             session["last_seen_at"] = now_iso
             session["idle_expires_at"] = (now + self._idle_timeout_delta()).isoformat()
             session["status"] = "active"
@@ -276,6 +385,13 @@ class SessionService:
         if not session_id:
             return True
         self._run_maintenance()
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                row = session.get(AppSessionRecord, str(session_id or "").strip())
+                if row is None:
+                    return False
+                item = self._normalize_db_row(row, now=_utc_now())
+                return item.get("status") == "active" and bool(item.get("is_active", True))
         sessions = self._load_sessions()
         changed = False
         now = _utc_now()
@@ -322,6 +438,15 @@ class SessionService:
     def close_session(self, session_id: Optional[str]) -> None:
         if not session_id:
             return
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                row = session.get(AppSessionRecord, str(session_id or "").strip())
+                if row is None:
+                    return
+                item = self._row_to_session_dict(row)
+                if self._close_session_record(item, reason="terminated"):
+                    self._apply_session_payload(row, item)
+            return
         sessions = self._load_sessions()
         changed = False
         for session in sessions:
@@ -332,6 +457,15 @@ class SessionService:
             self._save_sessions(sessions)
 
     def close_session_by_id(self, session_id: str) -> bool:
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                row = session.get(AppSessionRecord, str(session_id or "").strip())
+                if row is None:
+                    return False
+                item = self._row_to_session_dict(row)
+                if self._close_session_record(item, reason="terminated"):
+                    self._apply_session_payload(row, item)
+                return True
         sessions = self._load_sessions()
         changed = False
         closed = False
@@ -341,6 +475,32 @@ class SessionService:
             closed = True
             changed = self._close_session_record(session, reason="terminated") or changed
             break
+        if changed:
+            self._save_sessions(sessions)
+        return closed
+
+    def close_user_sessions(self, user_id: int) -> int:
+        if self._use_app_database:
+            closed = 0
+            with app_session(self._database_url) as session:
+                rows = session.scalars(
+                    select(AppSessionRecord).where(AppSessionRecord.user_id == int(user_id))
+                ).all()
+                for row in rows:
+                    item = self._row_to_session_dict(row)
+                    if self._close_session_record(item, reason="terminated"):
+                        self._apply_session_payload(row, item)
+                    closed += 1
+            return closed
+        sessions = self._load_sessions()
+        changed = False
+        closed = 0
+        for session in sessions:
+            if int(session.get("user_id", 0) or 0) != int(user_id):
+                continue
+            if self._close_session_record(session, reason="terminated"):
+                changed = True
+            closed += 1
         if changed:
             self._save_sessions(sessions)
         return closed
@@ -428,6 +588,57 @@ class SessionService:
 
         if active_only:
             normalized_sessions = [item for item in normalized_sessions if item.get("status") == "active"]
+
+        return sorted(
+            normalized_sessions,
+            key=lambda item: item.get("last_seen_at", ""),
+            reverse=True,
+        )
+
+    def list_sessions_by_user_ids(
+        self,
+        user_ids: list[int] | set[int] | tuple[int, ...],
+        *,
+        active_only: bool = False,
+    ) -> list[dict]:
+        normalized_user_ids = {
+            int(item)
+            for item in list(user_ids or [])
+            if int(item) > 0
+        }
+        if not normalized_user_ids:
+            return []
+        if self._use_app_database:
+            self._run_maintenance()
+            with app_session(self._database_url) as session:
+                rows = session.scalars(
+                    select(AppSessionRecord)
+                    .where(AppSessionRecord.user_id.in_(normalized_user_ids))
+                    .order_by(AppSessionRecord.last_seen_at.desc(), AppSessionRecord.created_at.desc())
+                ).all()
+                normalized_sessions = [self._row_to_session_dict(row) for row in rows]
+                normalized_sessions = [
+                    item
+                    for item in normalized_sessions
+                    if not active_only or item.get("status") == "active"
+                ]
+                return normalized_sessions
+        self._run_maintenance()
+        sessions = self._load_sessions()
+        now = _utc_now()
+        changed = False
+        normalized_sessions: list[dict] = []
+
+        for item in sessions:
+            changed = self._normalize_session(item, now=now) or changed
+            if int(item.get("user_id", 0) or 0) not in normalized_user_ids:
+                continue
+            if active_only and item.get("status") != "active":
+                continue
+            normalized_sessions.append(dict(item))
+
+        if changed:
+            self._save_sessions(sessions)
 
         return sorted(
             normalized_sessions,

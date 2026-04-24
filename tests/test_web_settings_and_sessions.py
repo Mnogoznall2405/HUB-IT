@@ -4,6 +4,7 @@ import importlib
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi import FastAPI
@@ -60,6 +61,7 @@ def isolated_session_service(tmp_path, monkeypatch):
     monkeypatch.setattr(session_service_module.config.session, "history_retention_days", 14)
     monkeypatch.setattr(session_service_module.config.session, "cleanup_min_interval_seconds", 0)
     monkeypatch.setattr(session_service_module.config.jwt, "access_token_expire_minutes", 480)
+    monkeypatch.setattr(session_service_module, "is_app_database_configured", lambda: False)
     return SessionService(file_path=tmp_path / "web_sessions.json")
 
 
@@ -99,6 +101,29 @@ def test_idle_expired_session_becomes_invalid_without_logout(isolated_session_se
     session = next(item for item in isolated_session_service.list_sessions(active_only=False) if item["session_id"] == "session-idle")
     assert session["status"] == "expired_idle"
     assert session["is_active"] is False
+
+
+def test_touch_session_throttles_recent_last_seen_writes(isolated_session_service):
+    isolated_session_service.create_session(
+        session_id="session-touch-throttle",
+        user_id=1,
+        username="admin",
+        role="admin",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0",
+        expires_at=_utc_now_iso(timedelta(hours=8)),
+    )
+
+    before = isolated_session_service._load_sessions()[0]["last_seen_at"]
+    assert isolated_session_service.touch_session("session-touch-throttle") is True
+    assert isolated_session_service._load_sessions()[0]["last_seen_at"] == before
+
+    sessions = isolated_session_service._load_sessions()
+    sessions[0]["last_seen_at"] = _utc_now_iso(timedelta(seconds=-90))
+    isolated_session_service._save_sessions(sessions)
+
+    assert isolated_session_service.touch_session("session-touch-throttle") is True
+    assert isolated_session_service._load_sessions()[0]["last_seen_at"] != sessions[0]["last_seen_at"]
 
 
 def test_absolute_expired_session_becomes_invalid_even_when_recently_active(isolated_session_service):
@@ -269,3 +294,70 @@ def test_non_admin_with_manage_sessions_permission_can_purge_inactive_sessions(m
 
     assert response.status_code == 200
     assert response.json() == {"deactivated": 1, "deleted": 4}
+
+
+def test_ldap_login_requires_2fa_setup_before_final_session(monkeypatch):
+    authenticated_user = {
+        "id": 15,
+        "username": "ivanov",
+        "email": "ivanov@zsgp.ru",
+        "full_name": "Ivan Ivanov",
+        "is_active": True,
+        "role": "viewer",
+        "permissions": [],
+        "use_custom_permissions": False,
+        "custom_permissions": [],
+        "auth_source": "ldap",
+        "telegram_id": None,
+        "assigned_database": None,
+        "mailbox_email": "ivanov.exchange@zsgp.ru",
+        "mailbox_login": None,
+        "mail_signature_html": None,
+        "mail_is_configured": True,
+        "is_2fa_enabled": False,
+        "created_at": None,
+        "updated_at": None,
+        "mail_updated_at": None,
+    }
+
+    monkeypatch.setattr(auth.user_service, "authenticate", lambda username, password: authenticated_user)
+    monkeypatch.setattr(auth.user_service, "get_by_id", lambda user_id: dict(authenticated_user))
+
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+
+    response = TestClient(app).post("/auth/login", json={"username": "CORP\\ivanov", "password": "secret-pass"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "2fa_setup_required"
+    assert payload["user"] is None
+    assert payload["login_challenge_id"]
+
+
+def test_logout_deletes_session_auth_context(monkeypatch):
+    deleted_session_ids: list[str] = []
+
+    monkeypatch.setattr(auth.session_service, "close_session", lambda session_id: True)
+    monkeypatch.setattr(
+        auth.session_auth_context_service,
+        "delete_session_context",
+        lambda session_id: deleted_session_ids.append(session_id),
+    )
+    monkeypatch.setattr(
+        auth,
+        "decode_access_token",
+        lambda _token, **_kwargs: SimpleNamespace(session_id="logout-session", jti=None),
+    )
+
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+    app.dependency_overrides[deps.get_current_user] = lambda: _make_user(permissions=[])
+
+    response = TestClient(app).post(
+        "/auth/logout",
+        headers={"Authorization": "Bearer fake-token"},
+    )
+
+    assert response.status_code == 200
+    assert deleted_session_ids == ["logout-session"]

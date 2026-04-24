@@ -6,13 +6,14 @@ import PrintIcon from '@mui/icons-material/Print';
 import BatteryChargingFullIcon from '@mui/icons-material/BatteryChargingFull';
 import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
 import BuildIcon from '@mui/icons-material/Build';
+import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 
 /**
  * Action menu component for table rows
  *
  * Props:
  * - onAction: Callback when action is selected (actionType, item)
- * - actions: Array of actions to show ['view', 'transfer', 'cartridge', 'battery', 'component', 'cleaning']
+ * - actions: Array of actions to show ['view', 'transfer', 'cartridge', 'battery', 'component', 'cleaning', 'delete']
  * - item: The data item (optional, passed to onAction)
  * - label: ARIA label for the button
  *
@@ -23,6 +24,7 @@ import BuildIcon from '@mui/icons-material/Build';
  * - battery: Replace battery
  * - component: Replace printer component
  * - cleaning: PC cleaning
+ * - delete: Remove equipment card
  */
 function ActionMenu({ onAction, actions = ['view'], item = null, label = 'Действия' }) {
   const [anchor, setAnchor] = useState(null);
@@ -132,6 +134,18 @@ function ActionMenu({ onAction, actions = ['view'], item = null, label = 'Дей
               <CleaningServicesIcon fontSize="small" />
             </ListItemIcon>
             <ListItemText>Чистка ПК</ListItemText>
+          </MenuItem>
+        )}
+        {actions.includes('delete') && actions.some((action) => action !== 'delete') && <Divider />}
+        {actions.includes('delete') && (
+          <MenuItem
+            onClick={() => handleAction('delete')}
+            sx={{ color: 'error.main' }}
+          >
+            <ListItemIcon sx={{ color: 'error.main' }}>
+              <DeleteOutlineIcon fontSize="small" />
+            </ListItemIcon>
+            <ListItemText>Удалить</ListItemText>
           </MenuItem>
         )}
       </Menu>

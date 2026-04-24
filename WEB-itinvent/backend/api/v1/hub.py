@@ -8,18 +8,23 @@ from pathlib import Path
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse, StreamingResponse
 
 from backend.api.deps import ensure_user_permission, get_current_active_user, require_permission
 from backend.models.auth import User
 from backend.services.authorization_service import (
     PERM_ANNOUNCEMENTS_WRITE,
+    PERM_CHAT_READ,
     PERM_DASHBOARD_READ,
+    PERM_MAIL_ACCESS,
     PERM_TASKS_READ,
     PERM_TASKS_REVIEW,
     PERM_TASKS_WRITE,
 )
 from backend.services.hub_service import hub_service
+from backend.services.task_analytics_export_service import build_task_analytics_excel
+from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 from backend.services.markdown_transform_service import (
     MarkdownTransformConfigError,
     MarkdownTransformError,
@@ -71,6 +76,23 @@ def _is_admin_user(user: User) -> bool:
     return _normalize_text(getattr(user, "role", "")).lower() == "admin"
 
 
+async def _require_notifications_access(
+    current_user: User = Depends(get_current_active_user),
+) -> User:
+    allowed_permissions = (
+        PERM_DASHBOARD_READ,
+        PERM_TASKS_READ,
+        PERM_CHAT_READ,
+        PERM_MAIL_ACCESS,
+    )
+    if any(_has_permission(current_user, permission) for permission in allowed_permissions):
+        return current_user
+    raise HTTPException(
+        status_code=403,
+        detail="Insufficient permissions: notifications.read",
+    )
+
+
 def _coerce_bool(value: object, default: bool = False) -> bool:
     if isinstance(value, bool):
         return value
@@ -91,6 +113,20 @@ def _coerce_json_list(value: object) -> list:
     except Exception:
         return []
     return parsed if isinstance(parsed, list) else []
+
+
+def _enrich_task_payload(item: Optional[dict]) -> Optional[dict]:
+    if not isinstance(item, dict):
+        return item
+    return transfer_act_reminder_service.enrich_task(item)
+
+
+def _enrich_task_collection(payload: dict) -> dict:
+    result = dict(payload or {})
+    items = result.get("items")
+    if isinstance(items, list):
+        result["items"] = transfer_act_reminder_service.enrich_tasks(items)
+    return result
 
 
 def _validate_upload(file_name: str, payload_size: int, *, max_bytes: int, context: str) -> None:
@@ -114,11 +150,15 @@ async def get_hub_dashboard(
     tasks_limit: int = Query(10, ge=1, le=200),
     current_user: User = Depends(require_permission(PERM_DASHBOARD_READ)),
 ):
-    return hub_service.get_dashboard(
+    payload = await run_in_threadpool(
+        hub_service.get_dashboard,
         user_id=int(current_user.id),
         announcements_limit=int(announcements_limit),
         tasks_limit=int(tasks_limit),
     )
+    if isinstance(payload, dict) and isinstance(payload.get("my_tasks"), dict):
+        payload["my_tasks"] = _enrich_task_collection(payload.get("my_tasks") or {})
+    return payload
 
 
 @router.get("/announcements")
@@ -391,11 +431,96 @@ async def get_controller_users(
     return {"items": hub_service.list_controllers()}
 
 
+@router.get("/task-projects")
+async def get_task_projects(
+    include_inactive: bool = Query(False),
+    _: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    return {"items": hub_service.list_task_projects(include_inactive=bool(include_inactive))}
+
+
+@router.post("/task-projects")
+async def create_task_project(
+    payload: dict = Body(...),
+    _: User = Depends(require_permission(PERM_TASKS_WRITE)),
+):
+    try:
+        return hub_service.create_task_project(
+            name=_normalize_text(payload.get("name")),
+            code=_normalize_text(payload.get("code")),
+            description=_normalize_text(payload.get("description")),
+            is_active=payload.get("is_active") is not False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/task-projects/{project_id}")
+async def patch_task_project(
+    project_id: str,
+    payload: dict = Body(...),
+    _: User = Depends(require_permission(PERM_TASKS_WRITE)),
+):
+    try:
+        updated = hub_service.update_task_project(project_id, payload or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return updated
+
+
+@router.get("/task-objects")
+async def get_task_objects(
+    project_id: list[str] = Query(default=[]),
+    include_inactive: bool = Query(False),
+    _: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    return {
+        "items": hub_service.list_task_objects(
+            project_ids=project_id,
+            include_inactive=bool(include_inactive),
+        )
+    }
+
+
+@router.post("/task-objects")
+async def create_task_object(
+    payload: dict = Body(...),
+    _: User = Depends(require_permission(PERM_TASKS_WRITE)),
+):
+    try:
+        return hub_service.create_task_object(
+            project_id=_normalize_text(payload.get("project_id")),
+            name=_normalize_text(payload.get("name")),
+            code=_normalize_text(payload.get("code")),
+            description=_normalize_text(payload.get("description")),
+            is_active=payload.get("is_active") is not False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.patch("/task-objects/{object_id}")
+async def patch_task_object(
+    object_id: str,
+    payload: dict = Body(...),
+    _: User = Depends(require_permission(PERM_TASKS_WRITE)),
+):
+    try:
+        updated = hub_service.update_task_object(object_id, payload or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Object not found")
+    return updated
+
+
 @router.get("/users/announcement-recipients")
 async def get_announcement_recipient_users(
     _: User = Depends(require_permission(PERM_ANNOUNCEMENTS_WRITE)),
 ):
-    return hub_service.list_announcement_recipients()
+    return await run_in_threadpool(hub_service.list_announcement_recipients)
 
 
 @router.post("/markdown/transform")
@@ -444,7 +569,7 @@ async def get_tasks(
     allow_all = str(getattr(current_user, "role", "") or "").lower() == "admin"
     if scope == "all" and not allow_all:
         raise HTTPException(status_code=403, detail="Insufficient permissions: tasks.all")
-    return hub_service.list_tasks(
+    payload = hub_service.list_tasks(
         user_id=int(current_user.id),
         scope=scope,
         role_scope=_normalize_text(role_scope).lower(),
@@ -458,6 +583,56 @@ async def get_tasks(
         limit=int(limit),
         offset=int(offset),
         allow_all_scope=allow_all,
+    )
+    return _enrich_task_collection(payload)
+
+
+@router.get("/tasks/analytics")
+async def get_task_analytics(
+    start_date: str = Query("", min_length=0),
+    end_date: str = Query("", min_length=0),
+    date_basis: str = Query("protocol_date", pattern="^(protocol_date|completed_at|due_at)$"),
+    project_id: list[str] = Query(default=[]),
+    object_id: list[str] = Query(default=[]),
+    participant_user_id: list[int] = Query(default=[]),
+    _: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    return hub_service.get_task_analytics(
+        start_date=_normalize_text(start_date) or None,
+        end_date=_normalize_text(end_date) or None,
+        date_basis=_normalize_text(date_basis, "protocol_date"),
+        project_ids=project_id,
+        object_ids=object_id,
+        participant_user_ids=participant_user_id,
+    )
+
+
+@router.get("/tasks/analytics/export")
+async def export_task_analytics(
+    start_date: str = Query("", min_length=0),
+    end_date: str = Query("", min_length=0),
+    date_basis: str = Query("protocol_date", pattern="^(protocol_date|completed_at|due_at)$"),
+    project_id: list[str] = Query(default=[]),
+    object_id: list[str] = Query(default=[]),
+    participant_user_id: list[int] = Query(default=[]),
+    _: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    file_bytes, filename = build_task_analytics_excel(
+        hub_service_impl=hub_service,
+        start_date=_normalize_text(start_date) or None,
+        end_date=_normalize_text(end_date) or None,
+        date_basis=_normalize_text(date_basis, "protocol_date"),
+        project_ids=project_id,
+        object_ids=object_id,
+        participant_user_ids=participant_user_id,
+    )
+    headers = {
+        "Content-Disposition": f'attachment; filename="{filename}"',
+    }
+    return StreamingResponse(
+        iter([file_bytes]),
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers=headers,
     )
 
 
@@ -497,12 +672,15 @@ async def create_task(
                     assignee_user_id=int(assignee_id),
                     controller_user_id=controller_user_id,
                     due_at=_normalize_text(payload.get("due_at")) or None,
+                    project_id=_normalize_text(payload.get("project_id")) or None,
+                    object_id=_normalize_text(payload.get("object_id")) or None,
+                    protocol_date=_normalize_text(payload.get("protocol_date")) or None,
                     priority=_normalize_text(payload.get("priority"), "normal"),
                     actor=_actor_dict(current_user),
                 )
             )
         return {
-            "items": created_items,
+            "items": transfer_act_reminder_service.enrich_tasks(created_items),
             "created": len(created_items),
         }
     except ValueError as exc:
@@ -526,7 +704,11 @@ async def get_task(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not item:
         raise HTTPException(status_code=404, detail="Task not found")
-    return item
+    hub_service.mark_task_notifications_read(
+        task_id=task_id,
+        user_id=int(current_user.id),
+    )
+    return _enrich_task_payload(item)
 
 
 @router.patch("/tasks/{task_id}")
@@ -548,7 +730,7 @@ async def patch_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
-    return updated
+    return _enrich_task_payload(updated)
 
 
 @router.delete("/tasks/{task_id}")
@@ -587,7 +769,7 @@ async def start_task(
         task_id=task_id,
         user_id=int(current_user.id),
     )
-    return updated
+    return _enrich_task_payload(updated)
 
 
 @router.post("/tasks/{task_id}/submit")
@@ -626,7 +808,7 @@ async def submit_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
-    return updated
+    return _enrich_task_payload(updated)
 
 
 @router.post("/tasks/{task_id}/attachments")
@@ -682,7 +864,7 @@ async def review_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
-    return updated
+    return _enrich_task_payload(updated)
 
 
 @router.get("/tasks/{task_id}/attachments/{attachment_id}/file")
@@ -841,18 +1023,20 @@ async def get_task_status_log(
 async def poll_notifications(
     since: str = Query("", min_length=0),
     limit: int = Query(50, ge=1, le=200),
-    current_user: User = Depends(require_permission(PERM_DASHBOARD_READ)),
+    unread_only: bool = Query(False),
+    current_user: User = Depends(_require_notifications_access),
 ):
     return hub_service.poll_notifications(
         user_id=int(current_user.id),
         since=_normalize_text(since),
         limit=int(limit),
+        unread_only=bool(unread_only),
     )
 
 
 @router.get("/notifications/unread-counts")
 async def get_notification_unread_counts(
-    current_user: User = Depends(require_permission(PERM_DASHBOARD_READ)),
+    current_user: User = Depends(_require_notifications_access),
 ):
     return hub_service.get_unread_counts(user_id=int(current_user.id))
 
@@ -860,9 +1044,17 @@ async def get_notification_unread_counts(
 @router.post("/notifications/{notification_id}/read")
 async def mark_notification_read(
     notification_id: str,
-    current_user: User = Depends(require_permission(PERM_DASHBOARD_READ)),
+    current_user: User = Depends(_require_notifications_access),
 ):
     ok = hub_service.mark_notification_read(notification_id=notification_id, user_id=int(current_user.id))
     if not ok:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"ok": True, "notification_id": notification_id}
+
+
+@router.post("/notifications/read-all")
+async def mark_all_notifications_read(
+    current_user: User = Depends(_require_notifications_access),
+):
+    changed = hub_service.mark_all_notifications_read(user_id=int(current_user.id))
+    return {"ok": True, "marked_count": int(changed)}

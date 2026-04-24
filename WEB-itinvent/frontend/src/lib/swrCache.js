@@ -6,6 +6,23 @@ const DEFAULT_STALE_TIME_MS = 30_000;
 const toCacheKey = (keyParts) =>
   Array.isArray(keyParts) ? JSON.stringify(keyParts) : String(keyParts || '');
 
+const normalizeKeyParts = (keyParts) => (
+  Array.isArray(keyParts) ? keyParts : [keyParts]
+);
+
+const isKeyPrefixMatch = (cacheKey, prefixParts) => {
+  try {
+    const parsedKey = JSON.parse(cacheKey);
+    if (!Array.isArray(parsedKey) || parsedKey.length < prefixParts.length) {
+      return false;
+    }
+    return prefixParts.every((part, index) => parsedKey[index] === part);
+  } catch {
+    const prefix = toCacheKey(prefixParts);
+    return cacheKey.startsWith(prefix);
+  }
+};
+
 export const buildCacheKey = (...keyParts) => toCacheKey(keyParts);
 
 export const clearSWRCache = () => {
@@ -14,9 +31,9 @@ export const clearSWRCache = () => {
 };
 
 export const invalidateSWRCacheByPrefix = (...prefixParts) => {
-  const prefix = toCacheKey(prefixParts);
+  const normalizedPrefixParts = normalizeKeyParts(prefixParts);
   [...cacheStore.keys()].forEach((key) => {
-    if (key.startsWith(prefix)) {
+    if (isKeyPrefixMatch(key, normalizedPrefixParts)) {
       cacheStore.delete(key);
     }
   });
@@ -29,7 +46,30 @@ const setCacheEntry = (cacheKey, data) => {
   });
 };
 
+export const setSWRCache = (keyParts, data) => {
+  const cacheKey = toCacheKey(keyParts);
+  setCacheEntry(cacheKey, data);
+  return data;
+};
+
 const getCacheEntry = (cacheKey) => cacheStore.get(cacheKey) || null;
+
+export const peekSWRCache = (
+  keyParts,
+  {
+    staleTimeMs = DEFAULT_STALE_TIME_MS,
+  } = {}
+) => {
+  const cacheKey = toCacheKey(keyParts);
+  const entry = getCacheEntry(cacheKey);
+  if (!entry) return null;
+  const age = Date.now() - Number(entry.updatedAt || 0);
+  return {
+    data: entry.data,
+    updatedAt: Number(entry.updatedAt || 0),
+    isFresh: age <= staleTimeMs,
+  };
+};
 
 const runDedupedFetch = async (cacheKey, fetcher) => {
   if (inFlightStore.has(cacheKey)) {
@@ -82,4 +122,3 @@ export const getOrFetchSWR = async (
   const data = await runDedupedFetch(cacheKey, fetcher);
   return { data, fromCache: false, isFresh: true };
 };
-

@@ -1,8 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  Badge,
   Box,
-  Button,
   Divider,
   IconButton,
   List,
@@ -11,30 +9,31 @@ import {
   ListItemText,
   Menu,
   MenuItem,
-  Paper,
   Stack,
-  Tooltip,
   Typography,
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
+import AssignmentOutlinedIcon from '@mui/icons-material/AssignmentOutlined';
 import AttachFileOutlinedIcon from '@mui/icons-material/AttachFileOutlined';
 import CreateNewFolderOutlinedIcon from '@mui/icons-material/CreateNewFolderOutlined';
 import DateRangeOutlinedIcon from '@mui/icons-material/DateRangeOutlined';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DraftsOutlinedIcon from '@mui/icons-material/DraftsOutlined';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import InboxOutlinedIcon from '@mui/icons-material/InboxOutlined';
 import MarkEmailUnreadOutlinedIcon from '@mui/icons-material/MarkEmailUnreadOutlined';
-import MoreHorizIcon from '@mui/icons-material/MoreHoriz';
+import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
+import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import ReportGmailerrorredOutlinedIcon from '@mui/icons-material/ReportGmailerrorredOutlined';
 import SendOutlinedIcon from '@mui/icons-material/SendOutlined';
-import StarBorderRoundedIcon from '@mui/icons-material/StarBorderRounded';
+import SettingsSuggestOutlinedIcon from '@mui/icons-material/SettingsSuggestOutlined';
 import StarRoundedIcon from '@mui/icons-material/StarRounded';
 import TodayOutlinedIcon from '@mui/icons-material/TodayOutlined';
 import ViewAgendaOutlinedIcon from '@mui/icons-material/ViewAgendaOutlined';
-import { buildMailUiTokens } from './mailUiTokens';
+import { buildMailUiTokens, getMailMenuPaperSx } from './mailUiTokens';
 
 const FOLDER_ICON_MAP = {
   inbox: <InboxOutlinedIcon fontSize="small" />,
@@ -48,65 +47,102 @@ const FOLDER_ICON_MAP = {
 
 const STANDARD_ORDER = ['inbox', 'sent', 'drafts', 'trash', 'junk', 'archive'];
 
-function buttonSx(tokens, active, compact) {
-  return {
-    minWidth: compact ? 42 : 0,
-    width: compact ? 42 : '100%',
-    minHeight: 36,
-    justifyContent: compact ? 'center' : 'flex-start',
-    borderRadius: '10px',
-    textTransform: 'none',
-    fontWeight: active ? 700 : 600,
-    px: compact ? 0.5 : 1.2,
-    border: '1px solid',
-    borderColor: active ? tokens.selectedBorder : tokens.actionBorder,
-    bgcolor: active ? tokens.selectedBg : tokens.actionBg,
-    color: active ? 'primary.main' : tokens.textPrimary,
-    boxShadow: 'none',
-    '&:hover': {
-      borderColor: active ? tokens.selectedBorder : tokens.surfaceBorder,
-      bgcolor: active ? tokens.selectedHover : tokens.actionHover,
-      boxShadow: 'none',
-    },
-  };
-}
-
-function iconButtonSx(tokens) {
-  return {
-    width: 28,
-    height: 28,
-    borderRadius: '8px',
-    color: tokens.iconColor,
-    border: '1px solid',
-    borderColor: 'transparent',
-    '&:hover': {
-      borderColor: tokens.surfaceBorder,
-      bgcolor: tokens.actionHover,
-    },
-  };
-}
-
-function FilterAction({ compact, active, label, icon, onClick, tooltip, tokens }) {
-  if (compact) {
-    return (
-      <Tooltip title={tooltip || label} placement="right">
-        <Button size="small" onClick={onClick} sx={buttonSx(tokens, active, true)}>
-          {icon}
-        </Button>
-      </Tooltip>
-    );
-  }
-
+function SectionTitle({ children }) {
   return (
-    <Button
-      size="small"
-      startIcon={icon}
-      onClick={onClick}
-      sx={buttonSx(tokens, active, false)}
-      fullWidth
+    <Typography
+      sx={{
+        px: 1.5,
+        pb: 0.65,
+        fontSize: '0.78rem',
+        fontWeight: 800,
+        letterSpacing: '0.04em',
+        textTransform: 'uppercase',
+        color: 'text.secondary',
+      }}
     >
-      {label}
-    </Button>
+      {children}
+    </Typography>
+  );
+}
+
+function UnreadBadge({ unread }) {
+  if (!unread) return null;
+  return (
+    <Box
+      sx={{
+        minWidth: 22,
+        height: 22,
+        px: 0.7,
+        borderRadius: '7px',
+        bgcolor: 'primary.main',
+        color: 'primary.contrastText',
+        fontWeight: 700,
+        fontSize: '0.78rem',
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
+      }}
+    >
+      {unread > 99 ? '99+' : unread}
+    </Box>
+  );
+}
+
+function RailRow({
+  icon,
+  leading = null,
+  label,
+  active = false,
+  trailing = null,
+  onClick,
+  onDragOver,
+  onDrop,
+  sx = {},
+  testId,
+  tokens = null,
+}) {
+  return (
+    <ListItemButton
+      data-testid={testId}
+      onClick={onClick}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      sx={{
+        minHeight: 46,
+        px: 1.3,
+        py: 0.5,
+        borderRadius: tokens?.radiusSm || 0,
+        color: active ? 'primary.main' : 'inherit',
+        bgcolor: active ? tokens?.selectedBg || 'action.selected' : 'transparent',
+        transition: tokens?.transition,
+        '&:hover': {
+          bgcolor: active ? tokens?.selectedHover || 'action.selected' : tokens?.surfaceHover || 'action.hover',
+        },
+        '&.Mui-focusVisible': {
+          boxShadow: tokens?.focusRing,
+        },
+        ...sx,
+      }}
+    >
+      <ListItemIcon
+        sx={{
+          minWidth: leading ? 58 : 34,
+          color: active ? 'primary.main' : 'inherit',
+        }}
+      >
+        {leading || icon}
+      </ListItemIcon>
+      <ListItemText
+        primary={label}
+        primaryTypographyProps={{
+          noWrap: true,
+          fontWeight: active ? 700 : 600,
+          fontSize: '0.94rem',
+        }}
+      />
+      {trailing}
+    </ListItemButton>
   );
 }
 
@@ -114,21 +150,54 @@ function FolderRow({
   item,
   depth,
   folder,
-  compact,
-  tokens,
   onFolderChange,
   onOpenMenu,
   onDropMessagesToFolder,
+  hasChildren = false,
+  expanded = false,
+  onToggleExpand,
+  tokens,
 }) {
   const active = folder === item.id;
+  const unread = Math.max(0, Number(item.unread || 0));
   const iconNode = FOLDER_ICON_MAP[item.icon_key] || FOLDER_ICON_MAP.folder;
-  const unread = Number(item.unread || 0);
-  const total = Number(item.total || 0);
 
   return (
-    <ListItemButton
-      selected={active}
-      onClick={() => onFolderChange(item.id)}
+    <RailRow
+      leading={(
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.25 }}>
+          {hasChildren ? (
+            <IconButton
+              size="small"
+              data-testid={`mail-folder-toggle-${String(item.id)}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                onToggleExpand?.();
+              }}
+              sx={{
+                width: 24,
+                height: 24,
+                color: active ? 'primary.main' : tokens.textSecondary,
+              }}
+            >
+              {expanded ? (
+                <ExpandMoreRoundedIcon fontSize="inherit" />
+              ) : (
+                <ChevronRightRoundedIcon fontSize="inherit" />
+              )}
+            </IconButton>
+          ) : (
+            <Box sx={{ width: 24, height: 24, flexShrink: 0 }} />
+          )}
+          <Box sx={{ display: 'flex', alignItems: 'center' }}>
+            {iconNode}
+          </Box>
+        </Box>
+      )}
+      icon={iconNode}
+      label={item.label || item.name}
+      active={active}
+      onClick={() => onFolderChange?.(item.id)}
       onDragOver={(event) => {
         event.preventDefault();
         event.dataTransfer.dropEffect = 'move';
@@ -137,79 +206,60 @@ function FolderRow({
         event.preventDefault();
         onDropMessagesToFolder?.(item.id);
       }}
+      tokens={tokens}
       sx={{
-        mb: 0.35,
-        minHeight: compact ? 42 : 46,
-        borderRadius: '12px',
-        px: compact ? 1 : 1.1,
-        pl: compact ? 1 : 1.1 + (depth * 1.4),
-        border: '1px solid',
-        borderColor: active ? tokens.selectedBorder : 'transparent',
-        bgcolor: active ? tokens.selectedBg : 'transparent',
-        '&:hover': {
-          bgcolor: active ? tokens.selectedHover : tokens.actionHover,
-        },
-        '&.Mui-selected': {
-          bgcolor: tokens.selectedBg,
-          borderColor: tokens.selectedBorder,
-          '&:hover': {
-            bgcolor: tokens.selectedHover,
-          },
-        },
+        pl: 1.3 + (depth * 1.8),
       }}
-    >
-      <ListItemIcon
-        sx={{
-          minWidth: compact ? 0 : 34,
-          justifyContent: 'center',
-          color: active ? 'primary.main' : tokens.iconColor,
-        }}
-      >
-        <Badge color="primary" badgeContent={unread || null} max={999}>
-          {iconNode}
-        </Badge>
-      </ListItemIcon>
-
-      {!compact ? (
-        <>
-          <ListItemText
-            primary={item.label || item.name}
-            secondary={total > 0 ? `${total} всего` : 'Пусто'}
-            primaryTypographyProps={{
-              fontWeight: active ? 700 : 600,
-              fontSize: '0.88rem',
-              noWrap: true,
-              color: active ? 'primary.main' : tokens.textPrimary,
+      trailing={(
+        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ ml: 1 }}>
+          {item.is_favorite ? <StarRoundedIcon sx={{ fontSize: 15, color: '#f59e0b' }} /> : null}
+          <UnreadBadge unread={unread} />
+          <IconButton
+            size="small"
+            data-testid={`mail-folder-menu-${String(item.id)}`}
+            onClick={(event) => {
+              event.stopPropagation();
+              onOpenMenu?.(event, item);
             }}
-            secondaryTypographyProps={{
-              fontSize: '0.72rem',
+            sx={{
+              width: 28,
+              height: 28,
               color: tokens.textSecondary,
             }}
-          />
+          >
+            <MoreHorizRoundedIcon fontSize="inherit" />
+          </IconButton>
+        </Stack>
+      )}
+    />
+  );
+}
 
-          <Stack direction="row" spacing={0.2} alignItems="center">
-            {item.is_favorite ? <StarRoundedIcon sx={{ fontSize: 16, color: '#f59e0b' }} /> : null}
-            {!item.well_known_key ? (
-              <IconButton
-                size="small"
-                onClick={(event) => {
-                  event.stopPropagation();
-                  onOpenMenu(event, item);
-                }}
-                sx={iconButtonSx(tokens)}
-              >
-                <MoreHorizIcon fontSize="inherit" />
-              </IconButton>
-            ) : null}
-          </Stack>
-        </>
-      ) : null}
-    </ListItemButton>
+function FilterRow({ icon, label, active, onClick, tokens }) {
+  return (
+    <RailRow
+      icon={icon}
+      label={label}
+      active={active}
+      tokens={tokens}
+      onClick={onClick}
+    />
+  );
+}
+
+function UtilityRow({ icon, label, onClick, testId, tokens }) {
+  return (
+    <RailRow
+      icon={icon}
+      label={label}
+      tokens={tokens}
+      onClick={onClick}
+      testId={testId}
+    />
   );
 }
 
 export default function MailFolderRail({
-  compact = false,
   folder,
   folderTreeItems,
   onFolderChange,
@@ -229,11 +279,13 @@ export default function MailFolderRail({
   onToggleFavorite,
   onDropMessagesToFolder,
   showFavoritesFirst = true,
+  utilityItems = [],
 }) {
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
   const [menuFolder, setMenuFolder] = useState(null);
+  const [expandedFolders, setExpandedFolders] = useState({});
 
   const items = useMemo(() => (Array.isArray(folderTreeItems) ? folderTreeItems : []), [folderTreeItems]);
 
@@ -250,6 +302,14 @@ export default function MailFolderRail({
     return map;
   }, [items]);
 
+  const parentById = useMemo(() => {
+    const map = new Map();
+    items.forEach((item) => {
+      map.set(String(item.id), _normalizeParentId(item.parent_id));
+    });
+    return map;
+  }, [items]);
+
   const standardItems = useMemo(() => {
     const all = items.filter((item) => item.well_known_key);
     return STANDARD_ORDER
@@ -260,31 +320,75 @@ export default function MailFolderRail({
   const favoriteItems = useMemo(() => items.filter((item) => item.is_favorite), [items]);
   const rootCustomMailbox = useMemo(
     () => items.filter((item) => !item.well_known_key && !item.parent_id && item.scope === 'mailbox'),
-    [items]
+    [items],
   );
   const rootCustomArchive = useMemo(
     () => items.filter((item) => !item.well_known_key && !item.parent_id && item.scope === 'archive'),
-    [items]
+    [items],
   );
+
+  const autoExpandedFolderIds = useMemo(() => {
+    const next = new Set();
+    let current = String(folder || '').trim();
+    while (current) {
+      const nested = childrenByParent.get(current) || [];
+      if (nested.length > 0) {
+        next.add(current);
+      }
+      current = parentById.get(current) || '';
+    }
+    if ((childrenByParent.get('inbox') || []).length > 0) {
+      next.add('inbox');
+    }
+    return next;
+  }, [childrenByParent, folder, parentById]);
+
+  useEffect(() => {
+    if (autoExpandedFolderIds.size === 0) return;
+    setExpandedFolders((current) => {
+      let changed = false;
+      const next = { ...current };
+      autoExpandedFolderIds.forEach((folderId) => {
+        if (next[folderId] !== true) {
+          next[folderId] = true;
+          changed = true;
+        }
+      });
+      return changed ? next : current;
+    });
+  }, [autoExpandedFolderIds]);
+
+  const toggleFolderExpanded = (folderId) => {
+    const normalizedId = String(folderId || '').trim();
+    if (!normalizedId) return;
+    setExpandedFolders((current) => ({
+      ...current,
+      [normalizedId]: current[normalizedId] !== true,
+    }));
+  };
 
   const renderTree = (list, depth = 0) => list.flatMap((item) => {
     const nested = childrenByParent.get(String(item.id)) || [];
+    const hasChildren = nested.length > 0;
+    const expanded = hasChildren && expandedFolders[String(item.id)] === true;
     return [
       <FolderRow
         key={item.id}
         item={item}
         depth={depth}
         folder={folder}
-        compact={compact}
-        tokens={tokens}
         onFolderChange={onFolderChange}
         onOpenMenu={(event, targetItem) => {
           setMenuAnchorEl(event.currentTarget);
           setMenuFolder(targetItem);
         }}
         onDropMessagesToFolder={onDropMessagesToFolder}
+        hasChildren={hasChildren}
+        expanded={expanded}
+        onToggleExpand={() => toggleFolderExpanded(item.id)}
+        tokens={tokens}
       />,
-      ...renderTree(nested, depth + 1),
+      ...(expanded ? renderTree(nested, depth + 1) : []),
     ];
   });
 
@@ -292,155 +396,121 @@ export default function MailFolderRail({
     if (!Array.isArray(list) || list.length === 0) return null;
 
     return (
-      <Stack spacing={0.35} sx={{ px: compact ? 0.7 : 1, py: 0.8 }}>
-        {!compact ? (
-          <Stack direction="row" justifyContent="space-between" alignItems="center">
-            <Typography variant="caption" sx={{ fontWeight: 700, px: 0.4, color: tokens.textSecondary }}>
-              {title}
-            </Typography>
-            {actionScope ? (
-              <Tooltip title="Новая папка">
-                <IconButton size="small" onClick={() => onCreateFolderRequest?.(actionScope)} sx={iconButtonSx(tokens)}>
-                  <CreateNewFolderOutlinedIcon fontSize="inherit" />
-                </IconButton>
-              </Tooltip>
-            ) : null}
-          </Stack>
-        ) : null}
-
-        <List dense disablePadding>
+      <Box>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ pr: 1 }}>
+          <SectionTitle>{title}</SectionTitle>
+          {actionScope ? (
+            <IconButton
+              size="small"
+              onClick={() => onCreateFolderRequest?.(actionScope)}
+          sx={{ width: 28, height: 28, color: tokens.textSecondary }}
+            >
+              <CreateNewFolderOutlinedIcon fontSize="inherit" />
+            </IconButton>
+          ) : null}
+        </Stack>
+        <List disablePadding dense>
           {renderTree(list)}
         </List>
-      </Stack>
+      </Box>
     );
   };
 
+  const normalizedUtilityItems = Array.isArray(utilityItems) ? utilityItems.filter(Boolean) : [];
+
   return (
-    <Paper
-      elevation={0}
+    <Box
+      className="mail-scroll-hidden"
       sx={{
         height: '100%',
         minHeight: 0,
+        overflowY: 'auto',
         display: 'flex',
         flexDirection: 'column',
-        borderRadius: '16px',
-        overflow: 'hidden',
-        border: '1px solid',
-        borderColor: tokens.panelBorder,
-        bgcolor: tokens.panelBg,
-        boxShadow: tokens.shadow,
+        py: 1.1,
+        bgcolor: 'transparent',
       }}
     >
-      <Box
-        sx={{
-          px: compact ? 1 : 1.5,
-          py: 1.25,
-          borderBottom: '1px solid',
-          borderColor: tokens.panelBorder,
-        }}
-      >
-        {compact ? (
-          <Typography variant="caption" sx={{ display: 'block', textAlign: 'center', fontWeight: 700, color: tokens.textSecondary }}>
-            Почта
-          </Typography>
-        ) : (
-          <>
-            <Typography variant="subtitle2" sx={{ fontWeight: 700, color: tokens.textPrimary }}>
-              Навигация
-            </Typography>
-            <Typography variant="caption" sx={{ color: tokens.textSecondary }}>
-              Системные и созданные через приложение папки
-            </Typography>
-          </>
-        )}
-      </Box>
+      {showFavoritesFirst ? renderSection('Избранное', favoriteItems) : null}
+      {renderSection('Папки', standardItems, 'mailbox')}
+      {renderSection('Мои папки', rootCustomMailbox, 'mailbox')}
+      {renderSection('Архивные папки', rootCustomArchive, 'archive')}
+      {!showFavoritesFirst ? renderSection('Избранное', favoriteItems) : null}
 
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', scrollbarGutter: 'stable' }}>
-        {showFavoritesFirst ? renderSection('Избранное', favoriteItems) : null}
-        {renderSection('Папки', standardItems, 'mailbox')}
-        {renderSection('Мои папки', rootCustomMailbox, 'mailbox')}
-        {renderSection('Архивные папки', rootCustomArchive, 'archive')}
-        {!showFavoritesFirst ? renderSection('Избранное', favoriteItems) : null}
+      <Divider sx={{ mx: 1.5, my: 1.3, borderColor: tokens.panelBorder }} />
 
-        <Divider sx={{ mx: compact ? 1 : 1.2, my: 0.4, borderColor: tokens.panelBorder }} />
+      <SectionTitle>Режим</SectionTitle>
+      <List disablePadding dense>
+        <FilterRow
+          icon={<ViewAgendaOutlinedIcon fontSize="small" />}
+          label="Письма"
+          active={viewMode === 'messages'}
+          tokens={tokens}
+          onClick={() => onViewModeChange?.('messages')}
+        />
+        <FilterRow
+          icon={<ForumOutlinedIcon fontSize="small" />}
+          label="Диалоги"
+          active={viewMode === 'conversations'}
+          tokens={tokens}
+          onClick={() => onViewModeChange?.('conversations')}
+        />
+      </List>
 
-        <Stack spacing={0.7} sx={{ px: compact ? 0.7 : 1.2, py: 1 }}>
-          {!compact ? (
-            <Typography variant="caption" sx={{ fontWeight: 700, px: 0.4, color: tokens.textSecondary }}>
-              Режим просмотра
-            </Typography>
-          ) : null}
+      <Divider sx={{ mx: 1.5, my: 1.3, borderColor: tokens.panelBorder }} />
 
-          <Stack direction={compact ? 'column' : 'row'} spacing={0.7}>
-            <Tooltip title="Письма" placement="right" disableHoverListener={!compact}>
-              <Button
-                size="small"
-                startIcon={compact ? null : <ViewAgendaOutlinedIcon fontSize="small" />}
-                onClick={() => onViewModeChange('messages')}
-                sx={buttonSx(tokens, viewMode === 'messages', compact)}
-                fullWidth={!compact}
-              >
-                {compact ? <ViewAgendaOutlinedIcon fontSize="small" /> : 'Письма'}
-              </Button>
-            </Tooltip>
+      <SectionTitle>Фильтры</SectionTitle>
+      <List disablePadding dense>
+        <FilterRow
+          icon={<MarkEmailUnreadOutlinedIcon fontSize="small" />}
+          label="Непрочитанные"
+          active={unreadOnly}
+          tokens={tokens}
+          onClick={() => onUnreadToggle?.(!unreadOnly)}
+        />
+        <FilterRow
+          icon={<AttachFileOutlinedIcon fontSize="small" />}
+          label="С вложениями"
+          active={hasAttachmentsOnly}
+          tokens={tokens}
+          onClick={onToggleHasAttachmentsOnly}
+        />
+        <FilterRow
+          icon={<TodayOutlinedIcon fontSize="small" />}
+          label="Сегодня"
+          active={Boolean(filterDateFrom && filterDateTo && filterDateFrom === filterDateTo)}
+          tokens={tokens}
+          onClick={onToggleToday}
+        />
+        <FilterRow
+          icon={<DateRangeOutlinedIcon fontSize="small" />}
+          label="Последние 7 дней"
+          active={Boolean(filterDateFrom && !filterDateTo)}
+          tokens={tokens}
+          onClick={onToggleLast7Days}
+        />
+      </List>
 
-            <Tooltip title="Диалоги" placement="right" disableHoverListener={!compact}>
-              <Button
-                size="small"
-                startIcon={compact ? null : <ForumOutlinedIcon fontSize="small" />}
-                onClick={() => onViewModeChange('conversations')}
-                sx={buttonSx(tokens, viewMode === 'conversations', compact)}
-                fullWidth={!compact}
-              >
-                {compact ? <ForumOutlinedIcon fontSize="small" /> : 'Диалоги'}
-              </Button>
-            </Tooltip>
-          </Stack>
-        </Stack>
-
-        <Divider sx={{ mx: compact ? 1 : 1.2, my: 0.5, borderColor: tokens.panelBorder }} />
-
-        <Stack spacing={0.75} sx={{ px: compact ? 0.7 : 1.2, py: 1 }}>
-          {!compact ? (
-            <Typography variant="caption" sx={{ fontWeight: 700, px: 0.4, color: tokens.textSecondary }}>
-              Быстрые фильтры
-            </Typography>
-          ) : null}
-
-          <FilterAction
-            compact={compact}
-            active={unreadOnly}
-            label="Непрочитанные"
-            icon={<MarkEmailUnreadOutlinedIcon fontSize="small" />}
-            onClick={() => onUnreadToggle(!unreadOnly)}
-            tokens={tokens}
-          />
-          <FilterAction
-            compact={compact}
-            active={hasAttachmentsOnly}
-            label="С вложениями"
-            icon={<AttachFileOutlinedIcon fontSize="small" />}
-            onClick={onToggleHasAttachmentsOnly}
-            tokens={tokens}
-          />
-          <FilterAction
-            compact={compact}
-            active={Boolean(filterDateFrom && filterDateTo && filterDateFrom === filterDateTo)}
-            label="Сегодня"
-            icon={<TodayOutlinedIcon fontSize="small" />}
-            onClick={onToggleToday}
-            tokens={tokens}
-          />
-          <FilterAction
-            compact={compact}
-            active={Boolean(filterDateFrom && !filterDateTo)}
-            label="7 дней"
-            icon={<DateRangeOutlinedIcon fontSize="small" />}
-            onClick={onToggleLast7Days}
-            tokens={tokens}
-          />
-        </Stack>
-      </Box>
+      {normalizedUtilityItems.length > 0 ? (
+        <>
+          <Divider sx={{ mx: 1.5, my: 1.3, borderColor: tokens.panelBorder }} />
+          <SectionTitle>Инструменты</SectionTitle>
+          <List disablePadding dense>
+            {normalizedUtilityItems.map((item) => (
+              <UtilityRow
+                key={String(item.id || item.label || '')}
+                icon={String(item.id || '').includes('template')
+                  ? <SettingsSuggestOutlinedIcon fontSize="small" />
+                  : <AssignmentOutlinedIcon fontSize="small" />}
+                label={String(item.label || 'Инструмент')}
+                onClick={item.onClick}
+                testId={`mail-rail-utility-${String(item.id || '').trim() || 'item'}`}
+                tokens={tokens}
+              />
+            ))}
+          </List>
+        </>
+      ) : null}
 
       <Menu
         anchorEl={menuAnchorEl}
@@ -450,58 +520,44 @@ export default function MailFolderRail({
           setMenuFolder(null);
         }}
         PaperProps={{
-          sx: {
-            mt: 0.5,
-            minWidth: 220,
-            borderRadius: '14px',
-            bgcolor: tokens.menuBg,
-            border: '1px solid',
-            borderColor: tokens.panelBorder,
-            boxShadow: tokens.shadow,
-          },
+          sx: getMailMenuPaperSx(tokens, { minWidth: 220 }),
         }}
       >
         <MenuItem
+          data-testid="mail-folder-menu-favorite"
           onClick={() => {
             onToggleFavorite?.(menuFolder);
             setMenuAnchorEl(null);
             setMenuFolder(null);
           }}
         >
-          {menuFolder?.is_favorite ? (
-            <StarRoundedIcon sx={{ mr: 1, fontSize: 18, color: '#f59e0b' }} />
-          ) : (
-            <StarBorderRoundedIcon sx={{ mr: 1, fontSize: 18 }} />
-          )}
           {menuFolder?.is_favorite ? 'Убрать из избранного' : 'В избранное'}
         </MenuItem>
-
         <MenuItem
+          data-testid="mail-folder-menu-create-child"
           onClick={() => {
             onCreateFolderRequest?.(menuFolder?.id || 'mailbox');
             setMenuAnchorEl(null);
             setMenuFolder(null);
           }}
         >
-          <CreateNewFolderOutlinedIcon sx={{ mr: 1, fontSize: 18 }} />
           Создать вложенную папку
         </MenuItem>
-
         {menuFolder?.can_rename ? (
           <MenuItem
+            data-testid="mail-folder-menu-rename"
             onClick={() => {
               onRenameFolderRequest?.(menuFolder);
               setMenuAnchorEl(null);
               setMenuFolder(null);
             }}
           >
-            <FolderOutlinedIcon sx={{ mr: 1, fontSize: 18 }} />
             Переименовать
           </MenuItem>
         ) : null}
-
         {menuFolder?.can_delete ? (
           <MenuItem
+            data-testid="mail-folder-menu-delete"
             onClick={() => {
               onDeleteFolderRequest?.(menuFolder);
               setMenuAnchorEl(null);
@@ -509,11 +565,15 @@ export default function MailFolderRail({
             }}
             sx={{ color: 'error.main' }}
           >
-            <DeleteOutlineIcon sx={{ mr: 1, fontSize: 18 }} />
             Удалить
           </MenuItem>
         ) : null}
       </Menu>
-    </Paper>
+    </Box>
   );
+}
+
+function _normalizeParentId(value) {
+  const normalized = String(value || '').trim();
+  return normalized || '';
 }

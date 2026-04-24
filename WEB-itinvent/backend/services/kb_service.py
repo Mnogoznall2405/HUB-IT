@@ -70,12 +70,75 @@ def _safe_file_name(file_name: str) -> str:
     return base.strip() or "file.bin"
 
 
+def _normalize_primary_attachment_id(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
 class KnowledgeBaseService:
     def __init__(self, data_manager: Optional[JSONDataManager] = None) -> None:
         self.data_manager = data_manager or JSONDataManager()
         self._lock = threading.RLock()
         self._attachments_root = self.data_manager.data_dir / "kb_attachments"
         self._attachments_root.mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def _normalize_article_row(row: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(row or {})
+        attachments = normalized.get("attachments")
+        if not isinstance(attachments, list):
+            attachments = []
+        normalized["attachments"] = [item for item in attachments if isinstance(item, dict)]
+        normalized["primary_attachment_id"] = _normalize_primary_attachment_id(normalized.get("primary_attachment_id"))
+        return normalized
+
+    @staticmethod
+    def _find_attachment_by_id(article: dict[str, Any], attachment_id: str | None) -> Optional[dict[str, Any]]:
+        target = _normalize_primary_attachment_id(attachment_id)
+        if not target:
+            return None
+        for attachment in list(article.get("attachments") or []):
+            if str((attachment or {}).get("id") or "").strip() == target:
+                return attachment
+        return None
+
+    def _resolve_effective_primary_attachment(self, article: dict[str, Any]) -> Optional[dict[str, Any]]:
+        normalized_article = self._normalize_article_row(article)
+        primary_attachment = self._find_attachment_by_id(
+            normalized_article,
+            normalized_article.get("primary_attachment_id"),
+        )
+        if primary_attachment is not None:
+            return primary_attachment
+        if str(normalized_article.get("article_type") or "").strip().lower() != "template":
+            return None
+        attachments = list(normalized_article.get("attachments") or [])
+        if len(attachments) == 1:
+            return attachments[0]
+        return None
+
+    def _effective_primary_attachment_id(self, article: dict[str, Any]) -> str | None:
+        attachment = self._resolve_effective_primary_attachment(article)
+        return _normalize_primary_attachment_id((attachment or {}).get("id"))
+
+    def resolve_effective_primary_attachment(self, article: dict[str, Any]) -> Optional[dict[str, Any]]:
+        return self._resolve_effective_primary_attachment(article)
+
+    def get_effective_primary_attachment_id(self, article: dict[str, Any]) -> str | None:
+        return self._effective_primary_attachment_id(article)
+
+    def _validate_primary_attachment_id(
+        self,
+        *,
+        article: dict[str, Any],
+        requested_primary_attachment_id: Any,
+    ) -> str | None:
+        normalized_id = _normalize_primary_attachment_id(requested_primary_attachment_id)
+        if normalized_id is None:
+            return None
+        if self._find_attachment_by_id(article, normalized_id) is None:
+            raise ValueError("Primary attachment must belong to the article")
+        return normalized_id
 
     def _load_articles(self) -> list[dict[str, Any]]:
         rows = self.data_manager.load_json(KB_ARTICLES_FILE, default_content=[])
@@ -197,14 +260,20 @@ class KnowledgeBaseService:
                     return False
             return True
 
-        filtered = [row for row in rows if _match(row)]
+        filtered = [self._normalize_article_row(row) for row in rows if _match(row)]
         filtered.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
 
         safe_offset = max(0, int(offset or 0))
         safe_limit = max(1, min(500, int(limit or 100)))
         page = filtered[safe_offset:safe_offset + safe_limit]
         return {
-            "items": page,
+            "items": [
+                {
+                    **row,
+                    "primary_attachment_id": self._effective_primary_attachment_id(row),
+                }
+                for row in page
+            ],
             "total": len(filtered),
             "limit": safe_limit,
             "offset": safe_offset,
@@ -216,7 +285,9 @@ class KnowledgeBaseService:
             return None
         for row in self._load_articles():
             if str(row.get("id") or "").strip() == target:
-                return row
+                normalized = self._normalize_article_row(row)
+                normalized["primary_attachment_id"] = self._effective_primary_attachment_id(normalized)
+                return normalized
         return None
 
     @staticmethod
@@ -276,6 +347,7 @@ class KnowledgeBaseService:
             "created_by": actor_username,
             "updated_by": actor_username,
             "content": self._normalize_content(payload.get("content")),
+            "primary_attachment_id": None,
             "attachments": [],
             "revisions": [
                 self._build_revision(
@@ -292,7 +364,9 @@ class KnowledgeBaseService:
             rows = self._load_articles()
             rows.append(article)
             self._save_articles(rows)
-        return article
+        normalized = self._normalize_article_row(article)
+        normalized["primary_attachment_id"] = self._effective_primary_attachment_id(normalized)
+        return normalized
 
     def update_article(
         self,
@@ -330,6 +404,11 @@ class KnowledgeBaseService:
                     row["last_reviewed_at"] = payload.get("last_reviewed_at")
                 if "content" in payload and payload.get("content") is not None:
                     row["content"] = self._normalize_content(payload.get("content"))
+                if "primary_attachment_id" in payload:
+                    row["primary_attachment_id"] = self._validate_primary_attachment_id(
+                        article=row,
+                        requested_primary_attachment_id=payload.get("primary_attachment_id"),
+                    )
 
                 row["updated_at"] = now
                 row["updated_by"] = actor_username
@@ -348,7 +427,9 @@ class KnowledgeBaseService:
                 row["revisions"] = revisions
                 rows[index] = row
                 self._save_articles(rows)
-                return row
+                normalized = self._normalize_article_row(row)
+                normalized["primary_attachment_id"] = self._effective_primary_attachment_id(normalized)
+                return normalized
 
         return None
 
@@ -399,7 +480,9 @@ class KnowledgeBaseService:
                 row["revisions"] = revisions
                 rows[index] = row
                 self._save_articles(rows)
-                return row
+                normalized = self._normalize_article_row(row)
+                normalized["primary_attachment_id"] = self._effective_primary_attachment_id(normalized)
+                return normalized
         return None
 
     def get_feed(self, *, limit: int = 50) -> list[dict[str, Any]]:
@@ -465,6 +548,12 @@ class KnowledgeBaseService:
                     attachments = []
                 attachments.append(attachment)
                 row["attachments"] = attachments
+                if (
+                    str(row.get("article_type") or "").strip().lower() == "template"
+                    and not _normalize_primary_attachment_id(row.get("primary_attachment_id"))
+                    and len(attachments) == 1
+                ):
+                    row["primary_attachment_id"] = attachment_id
                 row["updated_at"] = _utc_now_iso()
                 row["updated_by"] = actor_username
                 revisions = row.get("revisions")
@@ -500,7 +589,7 @@ class KnowledgeBaseService:
         if not article:
             return None
 
-        attachments = article.get("attachments")
+        attachments = self._normalize_article_row(article).get("attachments")
         if not isinstance(attachments, list):
             return None
         for attachment in attachments:
@@ -547,6 +636,8 @@ class KnowledgeBaseService:
                 if removed is None:
                     return False
                 row["attachments"] = keep
+                if str(row.get("primary_attachment_id") or "").strip() == target_attachment:
+                    row["primary_attachment_id"] = keep[0]["id"] if len(keep) == 1 else None
                 row["updated_at"] = _utc_now_iso()
                 row["updated_by"] = actor_username
                 revisions = row.get("revisions")

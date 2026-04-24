@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import base64
-from concurrent.futures import ProcessPoolExecutor, TimeoutError as FuturesTimeoutError
+import os
+from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures.process import BrokenProcessPool
 import json
 import logging
 import threading
@@ -20,6 +22,19 @@ try:
     import fitz  # type: ignore
 except Exception:  # pragma: no cover
     fitz = None
+
+try:
+    from PIL import Image  # type: ignore
+except Exception:  # pragma: no cover
+    Image = None
+
+
+BLANK_PDF_MAX_PAGE_BOX_PT = 96.0
+BLANK_PDF_NEAR_WHITE_THRESHOLD = 248
+# Archived icon-like PDFs (forward/help/back) are tiny vector pages and still
+# render with only ~0.63-0.84 near-white coverage, so keep this threshold loose.
+BLANK_PDF_WHITE_RATIO = 0.63
+IS_WINDOWS = os.name == "nt"
 
 
 def _safe_b64decode(value: str) -> bytes:
@@ -54,6 +69,51 @@ def _looks_gibberish(text: str) -> bool:
     return (letters / max(1, printable)) < 0.35
 
 
+def _is_blank_tiny_pdf(pdf_bytes: bytes) -> bool:
+    if not pdf_bytes or fitz is None:
+        return False
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            if len(doc) <= 0:
+                return False
+            page = doc.load_page(0)
+            rect = page.rect
+            if rect.width > BLANK_PDF_MAX_PAGE_BOX_PT or rect.height > BLANK_PDF_MAX_PAGE_BOX_PT:
+                return False
+            text_blocks = page.get_text("blocks") or []
+            if any(str(block[4] or "").strip() for block in text_blocks if len(block) > 4):
+                return False
+            if page.get_images(full=True):
+                return False
+
+            pix = page.get_pixmap(matrix=fitz.Matrix(2.0, 2.0), alpha=False)
+            if pix.width <= 0 or pix.height <= 0 or pix.n < 3:
+                return False
+            samples = memoryview(pix.samples)
+            pixel_count = pix.width * pix.height
+            near_white = 0
+            for idx in range(0, len(samples), pix.n):
+                if (
+                    samples[idx] >= BLANK_PDF_NEAR_WHITE_THRESHOLD
+                    and samples[idx + 1] >= BLANK_PDF_NEAR_WHITE_THRESHOLD
+                    and samples[idx + 2] >= BLANK_PDF_NEAR_WHITE_THRESHOLD
+                ):
+                    near_white += 1
+            return (near_white / max(1, pixel_count)) >= BLANK_PDF_WHITE_RATIO
+    except Exception as exc:
+        logger.debug("Blank/tiny PDF inspection failed: %s", exc)
+        return False
+
+
+def _init_worker_logging() -> None:
+    # This is called inside ProcessPoolExecutor workers (on Windows spawn)
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [WORKER-%(process)d] [%(levelname)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+
+
 def _ocr_pdf_job(pdf_bytes: bytes, lang: str, tesseract_cmd: str, timeout_sec: int, dpi: int) -> str:
     return ocr_pdf_bytes(
         pdf_bytes,
@@ -72,7 +132,7 @@ class ScanWorker(threading.Thread):
         self.config = config
         self.stop_event = stop_event
         self._last_cleanup_ts = 0
-        self._ocr_pool: Optional[ProcessPoolExecutor] = None
+        self._ocr_pool: Optional[ProcessPoolExecutor | ThreadPoolExecutor] = None
         self._ocr_available = False
 
     def run(self) -> None:
@@ -81,52 +141,51 @@ class ScanWorker(threading.Thread):
             available = is_tesseract_available(self.config.ocr_tesseract_cmd)
             self._ocr_available = available
             logger.info(
-                "OCR status: enabled=%s available=%s lang=%s max_processes=%s tesseract=%s",
+                "OCR status: enabled=%s available=%s lang=%s max_processes=%s mode=%s tesseract=%s fitz=%s Pillow=%s",
                 self.config.ocr_enabled,
                 available,
                 self.config.ocr_lang,
                 self.config.ocr_max_processes,
+                "thread" if IS_WINDOWS else "process",
                 self.config.ocr_tesseract_cmd,
+                fitz is not None,
+                Image is not None,
             )
         while not self.stop_event.is_set():
             try:
-                self._tick()
+                processed = self._tick()
             except Exception as exc:
                 logger.exception("Scan worker tick failed: %s", exc)
+                processed = False
+            if processed:
+                continue
             self.stop_event.wait(self.config.worker_interval_sec)
         self._shutdown_ocr_pool()
         logger.info("Scan worker stopped")
 
-    def _tick(self) -> None:
+    def _tick(self) -> bool:
         now_ts = int(time.time())
         if now_ts - self._last_cleanup_ts > 3600:
             self.store.cleanup_retention(retention_days=self.config.retention_days)
             self._last_cleanup_ts = now_ts
 
-        job = self.store.claim_next_job()
-        if not job:
-            return
-        self._process_job(job)
+        processed = False
+        while not self.stop_event.is_set():
+            job = self.store.claim_next_job()
+            if not job:
+                break
+            processed = True
+            self._process_job(job)
+        return processed
 
-    def _save_artifact_if_present(self, job_id: str, payload: Dict[str, Any]) -> Optional[Path]:
+    def _payload_pdf_bytes(self, payload: Dict[str, Any], *, job_id: str) -> bytes:
+        spool_bytes = self.store.read_job_pdf_spool(job_id=job_id)
+        if spool_bytes:
+            return spool_bytes
         raw_b64 = str(payload.get("pdf_slice_b64") or "").strip()
         if not raw_b64:
-            return None
-        data = _safe_b64decode(raw_b64)
-        if not data:
-            return None
-        now = time.gmtime()
-        day_dir = self.config.archive_dir / f"{now.tm_year:04d}" / f"{now.tm_mon:02d}" / f"{now.tm_mday:02d}"
-        day_dir.mkdir(parents=True, exist_ok=True)
-        path = day_dir / f"{job_id}.pdf"
-        path.write_bytes(data)
-        self.store.add_artifact(
-            job_id=job_id,
-            artifact_type="pdf_slice",
-            storage_path=str(path),
-            size_bytes=len(data),
-        )
-        return path
+            return b""
+        return _safe_b64decode(raw_b64)
 
     def _coerce_matches(self, raw_items: Any) -> List[Dict[str, str]]:
         items = raw_items if isinstance(raw_items, list) else []
@@ -166,11 +225,24 @@ class ScanWorker(threading.Thread):
             out.append(item)
         return out
 
-    def _get_ocr_pool(self) -> Optional[ProcessPoolExecutor]:
+    def _get_ocr_pool(self) -> Optional[ProcessPoolExecutor | ThreadPoolExecutor]:
         if not self.config.ocr_enabled or not self._ocr_available:
             return None
         if self._ocr_pool is None:
-            self._ocr_pool = ProcessPoolExecutor(max_workers=self.config.ocr_max_processes)
+            try:
+                if IS_WINDOWS:
+                    self._ocr_pool = ThreadPoolExecutor(
+                        max_workers=self.config.ocr_max_processes,
+                        thread_name_prefix="scan-ocr",
+                    )
+                else:
+                    self._ocr_pool = ProcessPoolExecutor(
+                        max_workers=self.config.ocr_max_processes,
+                        initializer=_init_worker_logging,
+                    )
+            except Exception as exc:
+                logger.warning("OCR pool init failed, falling back to inline OCR: %s", exc)
+                return None
         return self._ocr_pool
 
     def _shutdown_ocr_pool(self) -> None:
@@ -182,13 +254,57 @@ class ScanWorker(threading.Thread):
             pass
         self._ocr_pool = None
 
-    def _ocr_text_from_pdf_bytes(self, pdf_bytes: bytes, artifact_path: Optional[Path] = None) -> str:
+    def _log_pdf_outcome(
+        self,
+        outcome: str,
+        *,
+        artifact_path: Optional[Path],
+        matches_count: int = 0,
+        detail: str = "",
+    ) -> None:
+        artifact_value = str(artifact_path) if artifact_path is not None else "<memory>"
+        message = "PDF outcome=%s artifact=%s matches=%s"
+        args: List[Any] = [outcome, artifact_value, matches_count]
+        if detail:
+            message += " detail=%s"
+            args.append(detail)
+        if outcome == "ocr_error":
+            logger.warning(message, *args)
+            return
+        if outcome in {"text_layer_clean_skip", "ocr_skipped_blank_pdf", "ocr_clean_no_match"}:
+            logger.debug(message, *args)
+            return
+        logger.info(message, *args)
+
+    def _run_inline_ocr_job(self, pdf_bytes: bytes, artifact_path: Optional[Path]) -> Tuple[str, str]:
+        if not self._ocr_available:
+            return "", "ocr_error"
+        try:
+            text = str(
+                _ocr_pdf_job(
+                    pdf_bytes,
+                    self.config.ocr_lang,
+                    self.config.ocr_tesseract_cmd,
+                    self.config.ocr_timeout_sec,
+                    self.config.ocr_dpi,
+                )
+                or ""
+            ).strip()
+            if not text:
+                return "", "ocr_attempted_no_text"
+            return text, "ocr_text_ready"
+        except Exception as exc:
+            logger.warning("Inline OCR failed for artifact=%s: %s - %s", artifact_path, type(exc).__name__, exc)
+            return "", "ocr_error"
+
+    def _ocr_text_from_pdf_bytes(self, pdf_bytes: bytes, artifact_path: Optional[Path] = None) -> Tuple[str, str]:
         if not self.config.ocr_enabled:
-            return ""
+            return "", "ocr_error"
         pool = self._get_ocr_pool()
         if pool is None:
-            return ""
+            return self._run_inline_ocr_job(pdf_bytes, artifact_path)
         try:
+            logger.debug("Starting OCR for artifact=%s, pdf_bytes=%d", artifact_path, len(pdf_bytes))
             future = pool.submit(
                 _ocr_pdf_job,
                 pdf_bytes,
@@ -197,30 +313,114 @@ class ScanWorker(threading.Thread):
                 self.config.ocr_timeout_sec,
                 self.config.ocr_dpi,
             )
-            return str(
+            text = str(
                 future.result(timeout=max(5, int(self.config.ocr_timeout_sec) + 15)) or ""
             ).strip()
+            if not text:
+                return "", "ocr_attempted_no_text"
+            return text, "ocr_text_ready"
         except FuturesTimeoutError:
             logger.warning("OCR timeout for artifact=%s", artifact_path)
-            return ""
+            return "", "ocr_error"
+        except BrokenProcessPool as exc:
+            logger.warning(
+                "OCR process pool broke for artifact=%s: %s - %s; recycling pool and retrying inline OCR",
+                artifact_path,
+                type(exc).__name__,
+                exc,
+            )
+            self._shutdown_ocr_pool()
+            return self._run_inline_ocr_job(pdf_bytes, artifact_path)
         except Exception as exc:
-            logger.warning("OCR failed for artifact=%s: %s", artifact_path, exc)
-            return ""
+            logger.warning("OCR failed for artifact=%s: %s - %s", artifact_path, type(exc).__name__, exc)
+            return "", "ocr_error"
 
-    def _collect_pdf_matches(self, artifact_path: Path) -> List[Dict[str, str]]:
-        pdf_bytes = artifact_path.read_bytes()
+    def _collect_pdf_matches(self, pdf_bytes: bytes, artifact_path: Optional[Path] = None) -> Dict[str, Any]:
+        if not pdf_bytes:
+            return {"matches": [], "outcome": "", "reason": "No PDF payload"}
+
         text_layer = _extract_pdf_text(pdf_bytes, max_pages=3)
         if text_layer:
             text_matches = scan_text(text_layer)
             if text_matches:
-                return text_matches
+                self._log_pdf_outcome("text_layer_match", artifact_path=artifact_path, matches_count=len(text_matches))
+                return {
+                    "matches": text_matches,
+                    "outcome": "text_layer_match",
+                    "reason": "Text layer matched patterns",
+                }
             if self.config.ocr_only_if_no_text and not _looks_gibberish(text_layer):
-                return []
+                self._log_pdf_outcome(
+                    "text_layer_clean_skip",
+                    artifact_path=artifact_path,
+                    detail="usable text layer without pattern matches",
+                )
+                return {
+                    "matches": [],
+                    "outcome": "text_layer_clean_skip",
+                    "reason": "Skipped OCR: usable text layer without matches",
+                }
+            logger.debug("Text layer exists but no matches, proceeding to OCR")
 
-        ocr_text = self._ocr_text_from_pdf_bytes(pdf_bytes, artifact_path=artifact_path)
+        if _is_blank_tiny_pdf(pdf_bytes):
+            self._log_pdf_outcome(
+                "ocr_skipped_blank_pdf",
+                artifact_path=artifact_path,
+                detail="blank/tiny first page",
+            )
+            return {
+                "matches": [],
+                "outcome": "ocr_skipped_blank_pdf",
+                "reason": "Skipped OCR: blank/tiny PDF",
+            }
+
+        logger.debug("Starting OCR for PDF artifact=%s", artifact_path or "<memory>")
+        ocr_text, ocr_outcome = self._ocr_text_from_pdf_bytes(pdf_bytes, artifact_path=artifact_path)
         if not ocr_text:
-            return []
-        return scan_text(ocr_text)
+            detail = "OCR returned no text" if ocr_outcome == "ocr_attempted_no_text" else "OCR execution error"
+            self._log_pdf_outcome(ocr_outcome, artifact_path=artifact_path, detail=detail)
+            return {
+                "matches": [],
+                "outcome": ocr_outcome,
+                "reason": detail,
+            }
+
+        matches = scan_text(ocr_text)
+        if matches:
+            self._log_pdf_outcome("ocr_match", artifact_path=artifact_path, matches_count=len(matches))
+            return {
+                "matches": matches,
+                "outcome": "ocr_match",
+                "reason": "OCR text matched patterns",
+            }
+
+        self._log_pdf_outcome(
+            "ocr_clean_no_match",
+            artifact_path=artifact_path,
+            detail="OCR text had no pattern matches",
+        )
+        return {
+            "matches": [],
+            "outcome": "ocr_clean_no_match",
+            "reason": "OCR text had no pattern matches",
+        }
+
+    def _pdf_outcome_summary(self, outcome: str, matches_count: int) -> str:
+        if matches_count > 0:
+            if outcome:
+                return f"Matches found: {matches_count} ({outcome})"
+            return f"Matches found: {matches_count}"
+        if outcome == "text_layer_clean_skip":
+            return "No matches (text_layer_clean_skip)"
+        if outcome == "ocr_attempted_no_text":
+            return "No matches after OCR (ocr_attempted_no_text)"
+        if outcome == "ocr_skipped_blank_pdf":
+            return "Skipped OCR: blank/tiny PDF (ocr_skipped_blank_pdf)"
+        if outcome == "ocr_error":
+            return "No matches (ocr_error)"
+        if outcome == "ocr_clean_no_match":
+            return "No matches after OCR (ocr_clean_no_match)"
+        return "No matches"
 
     def _process_job(self, job: Dict[str, Any]) -> None:
         job_id = str(job.get("id") or "")
@@ -231,15 +431,24 @@ class ScanWorker(threading.Thread):
             payload = {}
 
         try:
-            artifact_path = self._save_artifact_if_present(job_id, payload)
+            pdf_bytes = self._payload_pdf_bytes(payload, job_id=job_id)
             matches = self._coerce_matches(payload.get("local_pattern_hits"))
+            pdf_outcome = ""
+            requires_pdf_payload = str(job.get("source_kind") or "").strip().lower() == "pdf_slice"
 
             text_excerpt = str(payload.get("text_excerpt") or "")
             if text_excerpt:
                 matches.extend(scan_text(text_excerpt))
 
-            if not matches and artifact_path is not None:
-                matches.extend(self._collect_pdf_matches(artifact_path))
+            if requires_pdf_payload and not pdf_bytes:
+                raise RuntimeError("Missing transient PDF payload")
+
+            if not matches and pdf_bytes:
+                file_name = str(job.get("file_name") or "unnamed")
+                logger.debug("Processing job_id=%s, file=%s", job_id, file_name)
+                pdf_result = self._collect_pdf_matches(pdf_bytes, artifact_path=None)
+                matches.extend(pdf_result.get("matches") or [])
+                pdf_outcome = str(pdf_result.get("outcome") or "")
             matches = self._dedupe_matches(matches)
 
             if matches:
@@ -256,10 +465,16 @@ class ScanWorker(threading.Thread):
                 self.store.finalize_job(
                     job_id=job_id,
                     status="done_with_incident",
-                    summary=f"Matches found: {len(matches)}",
+                    summary=self._pdf_outcome_summary(pdf_outcome, len(matches)),
                 )
             else:
-                self.store.finalize_job(job_id=job_id, status="done_clean", summary="No matches")
+                self.store.finalize_job(
+                    job_id=job_id,
+                    status="done_clean",
+                    summary=self._pdf_outcome_summary(pdf_outcome, 0),
+                )
         except Exception as exc:
             self.store.finalize_job(job_id=job_id, status="failed", error_text=str(exc))
             logger.exception("Job processing failed job_id=%s: %s", job_id, exc)
+        finally:
+            self.store.delete_job_pdf_spool(job_id=job_id)

@@ -5,6 +5,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
 
+try:
+    from dotenv import load_dotenv
+except Exception:  # pragma: no cover - optional dependency for standalone scan_server envs
+    load_dotenv = None
+
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+ROOT_ENV_PATH = PROJECT_ROOT / ".env"
+if load_dotenv is not None and ROOT_ENV_PATH.exists():
+    load_dotenv(str(ROOT_ENV_PATH))
+
 
 def _to_int(value: str, default: int) -> int:
     try:
@@ -24,6 +35,11 @@ def _to_bool(value: str, default: bool) -> bool:
 class ScanServerConfig:
     host: str
     port: int
+    watchdog_enabled: bool
+    watchdog_interval_sec: int
+    watchdog_timeout_sec: int
+    watchdog_failures: int
+    watchdog_startup_grace_sec: int
     api_keys: Tuple[str, ...]
     data_dir: Path
     db_path: Path
@@ -32,6 +48,8 @@ class ScanServerConfig:
     task_ttl_days: int
     poll_limit: int
     task_ack_timeout_sec: int
+    agent_online_timeout_sec: int
+    resolve_agent_sql_context: bool
     worker_interval_sec: int
     ocr_enabled: bool
     ocr_tesseract_cmd: str
@@ -43,7 +61,7 @@ class ScanServerConfig:
 
     @classmethod
     def from_env(cls) -> "ScanServerConfig":
-        root = Path(__file__).resolve().parent.parent
+        root = PROJECT_ROOT
         data_dir = Path(
             os.getenv("SCAN_SERVER_DATA_DIR", str(root / "data" / "scan_server"))
         )
@@ -69,6 +87,20 @@ class ScanServerConfig:
         return cls(
             host=str(os.getenv("SCAN_SERVER_HOST", "127.0.0.1")).strip() or "127.0.0.1",
             port=max(1, _to_int(os.getenv("SCAN_SERVER_PORT", "8011"), 8011)),
+            watchdog_enabled=_to_bool(os.getenv("SCAN_SERVER_WATCHDOG_ENABLED", "1"), True),
+            watchdog_interval_sec=max(
+                5, min(300, _to_int(os.getenv("SCAN_SERVER_WATCHDOG_INTERVAL_SEC", "30"), 30))
+            ),
+            watchdog_timeout_sec=max(
+                1, min(30, _to_int(os.getenv("SCAN_SERVER_WATCHDOG_TIMEOUT_SEC", "3"), 3))
+            ),
+            watchdog_failures=max(
+                1, min(10, _to_int(os.getenv("SCAN_SERVER_WATCHDOG_FAILURES", "3"), 3))
+            ),
+            watchdog_startup_grace_sec=max(
+                0,
+                min(600, _to_int(os.getenv("SCAN_SERVER_WATCHDOG_STARTUP_GRACE_SEC", "20"), 20)),
+            ),
             api_keys=tuple(keys),
             data_dir=data_dir,
             db_path=db_path,
@@ -78,6 +110,14 @@ class ScanServerConfig:
             poll_limit=max(1, min(50, _to_int(os.getenv("SCAN_POLL_LIMIT", "10"), 10))),
             task_ack_timeout_sec=max(
                 30, _to_int(os.getenv("SCAN_TASK_ACK_TIMEOUT_SEC", "300"), 300)
+            ),
+            agent_online_timeout_sec=max(
+                300,
+                _to_int(os.getenv("SCAN_SERVER_AGENT_ONLINE_TIMEOUT_SEC", "1800"), 1800),
+            ),
+            resolve_agent_sql_context=_to_bool(
+                os.getenv("SCAN_SERVER_RESOLVE_AGENT_SQL_CONTEXT", "0"),
+                False,
             ),
             worker_interval_sec=max(
                 1, _to_int(os.getenv("SCAN_WORKER_INTERVAL_SEC", "3"), 3)

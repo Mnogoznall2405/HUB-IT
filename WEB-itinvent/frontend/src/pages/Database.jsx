@@ -34,27 +34,49 @@ import {
   TableSortLabel,
   MenuItem,
   Collapse,
+  Fab,
+  Drawer,
   Switch,
   useTheme,
   useMediaQuery,
+  alpha,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 import EditIcon from '@mui/icons-material/Edit';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ExpandLessIcon from '@mui/icons-material/ExpandLess';
 import ChevronRightIcon from '@mui/icons-material/ChevronRight';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import UploadFileIcon from '@mui/icons-material/UploadFile';
 import QrCode2Icon from '@mui/icons-material/QrCode2';
+import QrCodeScannerIcon from '@mui/icons-material/QrCodeScanner';
 import MyLocationIcon from '@mui/icons-material/MyLocation';
+import MoreVertIcon from '@mui/icons-material/MoreVert';
+import StorageIcon from '@mui/icons-material/Storage';
+import PrintIcon from '@mui/icons-material/Print';
+import ComputerIcon from '@mui/icons-material/DesktopWindows';
+import LaptopIcon from '@mui/icons-material/Laptop';
+import BatteryFullIcon from '@mui/icons-material/BatteryFull';
+import MonitorIcon from '@mui/icons-material/DesktopMac';
+import SearchIcon from '@mui/icons-material/Search';
+import AddIcon from '@mui/icons-material/Add';
+import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
+import TransferIcon from '@mui/icons-material/SwapHoriz';
+import DeleteIcon from '@mui/icons-material/Delete';
+import CheckIcon from '@mui/icons-material/Check';
+import CheckBoxOutlineBlankIcon from '@mui/icons-material/CheckBoxOutlineBlank';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
-import { equipmentAPI, API_V1_BASE, apiClient } from '../api/client';
+import { equipmentAPI, API_V1_BASE, databaseAPI } from '../api/client';
 import jsonAPI from '../api/json_client';
 import { LoadingSpinner, StatusChip, ActionMenu } from '../components/common';
 import { getOrFetchSWR, buildCacheKey } from '../lib/swrCache';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
+import { useLocation, useNavigate } from 'react-router-dom';
+import QRCode from 'qrcode';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
-import { buildOfficeUiTokens, getOfficePanelSx, getOfficeQuietActionSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
+import { buildOfficeUiTokens, getOfficeActionTraySx, getOfficePanelSx, getOfficeQuietActionSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
 
 // Debounce utility
 function debounce(func, wait) {
@@ -139,12 +161,6 @@ const normalizeLocationOption = (location) => {
     loc_name: locName,
     search_blob: searchBlob,
   };
-};
-
-const sortLocationOptions = (a, b) => {
-  const byName = locationNameCollator.compare(String(a?.loc_name || ''), String(b?.loc_name || ''));
-  if (byName !== 0) return byName;
-  return locationNameCollator.compare(String(a?.loc_no || ''), String(b?.loc_no || ''));
 };
 
 const formatLocationOptionLabel = (option) => {
@@ -318,17 +334,174 @@ const validateEmployeeName = (name) => {
   return true;
 };
 
-const parseInvNosInput = (rawValue) => {
+const normalizeInvNoValue = (rawValue) => {
+  let normalized = String(rawValue ?? '').trim();
+  if (!normalized) return '';
+  normalized = normalized.replace(/\s+/g, '').replace(/№/g, '').replace(/^[.,;:|]+|[.,;:|]+$/g, '');
+  if (!normalized) return '';
+  if (/^\d+[.,]0+$/.test(normalized)) {
+    normalized = normalized.split(/[.,]/, 1)[0];
+  }
+  if (!/^\d+$/.test(normalized)) return '';
+  return String(Number.parseInt(normalized, 10));
+};
+
+export const parseInvNosInput = (rawValue) => {
   const text = String(rawValue || '');
   const chunks = text.split(/[\s,;]+/g).map((token) => token.trim()).filter(Boolean);
   const invNos = [];
   chunks.forEach((chunk) => {
-    const normalized = String(chunk).replace(/№/g, '').trim();
+    const normalized = normalizeInvNoValue(chunk);
     if (normalized && !invNos.includes(normalized)) {
       invNos.push(normalized);
     }
   });
   return invNos;
+};
+
+const uniqueInvNos = (values) => {
+  const result = [];
+  const seen = new Set();
+  (Array.isArray(values) ? values : []).forEach((value) => {
+    const normalized = normalizeInvNoValue(value);
+    const key = normalized;
+    if (!normalized || seen.has(key)) return;
+    seen.add(key);
+    result.push(normalized);
+  });
+  return result;
+};
+
+const toInvNoList = (value) => {
+  if (Array.isArray(value)) return uniqueInvNos(value);
+  return parseInvNosInput(value);
+};
+
+export const buildUploadActInvVerification = (recognizedInput, finalInput) => {
+  const recognizedInvNos = toInvNoList(recognizedInput);
+  const finalInvNos = toInvNoList(finalInput);
+  const finalKeys = new Set(finalInvNos.map((item) => item.toLowerCase()));
+  const recognizedKeys = new Set(recognizedInvNos.map((item) => item.toLowerCase()));
+  const commonInvNos = recognizedInvNos.filter((item) => finalKeys.has(item.toLowerCase()));
+  const onlyRecognizedInvNos = recognizedInvNos.filter((item) => !finalKeys.has(item.toLowerCase()));
+  const onlyFinalInvNos = finalInvNos.filter((item) => !recognizedKeys.has(item.toLowerCase()));
+  const hasRecognizedInvNos = recognizedInvNos.length > 0;
+  const hasFinalInvNos = finalInvNos.length > 0;
+  const hasDifferences = onlyRecognizedInvNos.length > 0 || onlyFinalInvNos.length > 0;
+
+  let severity = 'success';
+  let headline = 'Итоговый список совпадает с номерами, найденными API.';
+
+  if (!hasRecognizedInvNos) {
+    severity = 'warning';
+    headline = 'API не нашёл инвентарные номера. Проверьте введённый список по PDF перед записью.';
+  } else if (hasDifferences) {
+    severity = 'warning';
+    headline = 'Итоговый список отличается от распознанного API. Проверьте номера перед записью.';
+  }
+
+  return {
+    severity,
+    headline,
+    hasRecognizedInvNos,
+    hasFinalInvNos,
+    hasDifferences,
+    recognizedInvNos,
+    finalInvNos,
+    commonInvNos,
+    onlyRecognizedInvNos,
+    onlyFinalInvNos,
+  };
+};
+
+export const isUploadActCommitDisabled = ({
+  hasDraft,
+  hasFinalInvNos,
+  isParsing,
+  isCommitting,
+  isEmailLoading,
+  isInventoryVerified,
+}) => (
+  !hasDraft
+  || !hasFinalInvNos
+  || isParsing
+  || isCommitting
+  || isEmailLoading
+  || !isInventoryVerified
+);
+
+export const resolveDataModeRefreshBehavior = ({
+  hasInitializedEffect = false,
+  isLifecycleReady = false,
+}) => {
+  if (!hasInitializedEffect) {
+    return { shouldRefresh: false, nextHasInitializedEffect: true };
+  }
+
+  if (!isLifecycleReady) {
+    return { shouldRefresh: false, nextHasInitializedEffect: true };
+  }
+
+  return { shouldRefresh: true, nextHasInitializedEffect: true };
+};
+
+export const parseUploadActReminderDeepLink = (search = '') => {
+  const params = new URLSearchParams(String(search || '').replace(/^\?/, ''));
+  if (params.get('upload_act') !== '1') return null;
+
+  const reminderId = String(params.get('reminder_id') || '').trim();
+  const sourceTaskId = String(params.get('source_task_id') || '').trim();
+  const dbId = normalizeDbId(params.get('db_id') || '');
+  const signature = [reminderId, sourceTaskId, dbId].join('|');
+
+  if (!signature) return null;
+
+  return {
+    reminderId,
+    sourceTaskId,
+    dbId,
+    signature,
+  };
+};
+
+export const clearUploadActReminderSearch = (search = '') => {
+  const params = new URLSearchParams(String(search || '').replace(/^\?/, ''));
+  let changed = false;
+
+  ['upload_act', 'reminder_id', 'source_task_id', 'db_id'].forEach((key) => {
+    if (params.has(key)) {
+      params.delete(key);
+      changed = true;
+    }
+  });
+
+  if (!changed) return null;
+
+  const nextSearch = params.toString();
+  return nextSearch ? `?${nextSearch}` : '';
+};
+
+export const getUploadActReminderDeepLinkAction = ({
+  search = '',
+  currentDbId = '',
+  handledSignature = '',
+  isModalOpen = false,
+}) => {
+  const deepLink = parseUploadActReminderDeepLink(search);
+  if (!deepLink) {
+    return { action: 'idle', deepLink: null };
+  }
+
+  if (isModalOpen || handledSignature === deepLink.signature) {
+    return { action: 'idle', deepLink };
+  }
+
+  const normalizedCurrentDbId = normalizeDbId(currentDbId || '');
+  if (deepLink.dbId && normalizedCurrentDbId !== deepLink.dbId) {
+    return { action: 'sync_db', deepLink };
+  }
+
+  return { action: 'open', deepLink };
 };
 
 const readFirst = (data, keys, fallback = '') => {
@@ -359,16 +532,102 @@ const buildEquipmentQrText = (item) => {
   ].join('\n');
 };
 
-const buildEquipmentQrUrl = (payload) => {
+// Parse INV_NO from scanned QR code text
+// QR format: "INV_NO: xxx\nSERIAL_NO: yyy\nMODEL: zzz\nPART_NO: www"
+// Also supports simple INV_NO-only format
+const parseInvNoFromQrText = (qrText) => {
+  const text = String(qrText || '').trim();
+  if (!text) return null;
+
+  // Try "INV_NO: value" pattern first
+  const invNoMatch = text.match(/^INV_NO:\s*(.+)$/m);
+  if (invNoMatch) {
+    const invNo = invNoMatch[1].trim();
+    return invNo && invNo !== '-' ? invNo : null;
+  }
+
+  // Fallback: treat entire text as INV_NO
+  if (text.includes('\n')) return null;
+  return text;
+};
+
+const buildEquipmentQrDataUrl = async (payload) => {
   const text = String(payload || '').trim();
   if (!text) return '';
-  const params = new URLSearchParams({
-    size: '360x360',
-    format: 'png',
-    margin: '10',
-    data: text,
+
+  return QRCode.toDataURL(text, {
+    width: 360,
+    margin: 2,
+    errorCorrectionLevel: 'M',
+    color: {
+      dark: '#000000',
+      light: '#ffffff',
+    },
   });
-  return `https://api.qrserver.com/v1/create-qr-code/?${params.toString()}`;
+};
+
+const getQrScannerErrorMessage = (err) => {
+  const name = String(err?.name || '').trim();
+  const rawMessage = String(err?.message || err || '').trim();
+
+  if (name === 'NotAllowedError' || name === 'PermissionDeniedError') {
+    return 'Доступ к камере запрещён. Разрешите доступ к камере в браузере.';
+  }
+  if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
+    return 'Камера не найдена.';
+  }
+  if (name === 'NotReadableError' || name === 'TrackStartError') {
+    return 'Камера уже используется другим приложением или вкладкой.';
+  }
+  if (name === 'OverconstrainedError' || name === 'ConstraintNotSatisfiedError') {
+    return 'Камера не поддерживает запрошенный режим. Попробуйте другую камеру.';
+  }
+  if (rawMessage) {
+    return `Не удалось запустить камеру: ${rawMessage}`;
+  }
+  return 'Не удалось запустить камеру.';
+};
+
+const isIgnorableQrFrameError = (errorMessage = '') => {
+  const message = String(errorMessage || '');
+  return (
+    message.includes('No MultiFormat Readers')
+    || message.includes('NotFoundException')
+    || message.includes('QR code parse error')
+    || message.includes('undefined')
+  );
+};
+
+const getQrboxDimensions = (viewfinderWidth, viewfinderHeight) => {
+  const minEdge = Math.min(Number(viewfinderWidth) || 0, Number(viewfinderHeight) || 0);
+  const fallbackSize = 220;
+  const size = minEdge > 0
+    ? Math.max(140, Math.min(260, Math.floor(minEdge * 0.72)))
+    : fallbackSize;
+  return { width: size, height: size };
+};
+
+const stopQrScannerInstance = async (scanner) => {
+  if (!scanner) return;
+
+  try {
+    if (typeof scanner.stop === 'function') {
+      await scanner.stop();
+    }
+  } catch (err) {
+    const message = String(err?.message || err || '');
+    if (!/not running|not started|already stopped|Cannot stop/i.test(message)) {
+      console.warn('Ошибка при остановке сканера:', err);
+    }
+  }
+
+  try {
+    if (typeof scanner.clear === 'function') {
+      scanner.clear();
+    }
+  } catch (err) {
+    console.warn('Ошибка при очистке сканера:', err);
+  }
 };
 
 const toOwnerOption = (owner) => ({
@@ -629,6 +888,57 @@ const getComponentLabel = (kind, type) => {
 
 const EMPTY_HISTORY = { count: 0, last_date: null, time_ago_str: null };
 
+export const getEquipmentRowActions = ({
+  item,
+  dataMode = DATA_MODE_EQUIPMENT,
+  canWrite = true,
+  isAdmin = false,
+}) => {
+  if (dataMode === DATA_MODE_CONSUMABLES) {
+    return [];
+  }
+
+  const flags = getItemCapabilityFlags(item);
+  return Array.from(new Set([
+    ...(canWrite ? ['view', 'transfer'] : ['view']),
+    ...(canWrite && flags.isPrinterOrMfu ? ['cartridge', 'component'] : []),
+    ...(canWrite && flags.isUps ? ['battery'] : []),
+    ...(canWrite && flags.isPc && !flags.isPrinterOrMfu ? ['component'] : []),
+    ...(canWrite && flags.isPc ? ['cleaning'] : []),
+    ...(isAdmin ? ['delete'] : []),
+  ]));
+};
+
+const getEquipmentCardActionMeta = (action) => {
+  switch (action) {
+    case 'view':
+      return { label: 'Подробнее', icon: <OpenInNewIcon fontSize="small" /> };
+    case 'transfer':
+      return { label: 'Переместить', icon: <TransferIcon fontSize="small" /> };
+    case 'cartridge':
+      return { label: 'Картридж', icon: <PrintIcon fontSize="small" /> };
+    case 'battery':
+      return { label: 'Батарея', icon: <BatteryFullIcon fontSize="small" /> };
+    case 'component':
+      return { label: 'Компонент', icon: <StorageIcon fontSize="small" /> };
+    case 'cleaning':
+      return { label: 'Чистка ПК', icon: <ComputerIcon fontSize="small" /> };
+    case 'delete':
+      return { label: 'Удалить', icon: <DeleteIcon fontSize="small" /> };
+    default:
+      return null;
+  }
+};
+
+const getEquipmentCardActionButtons = (actions, { includeDelete = false } = {}) =>
+  (actions || [])
+    .filter((action) => typeof action === 'string' && action && (includeDelete || action !== 'delete'))
+    .map((action) => {
+      const meta = getEquipmentCardActionMeta(action);
+      return meta ? { action, ...meta } : null;
+    })
+    .filter(Boolean);
+
 const upsertItemInGrouped = (groupedData, nextItem) => {
   const targetInvNo = toInvNo(nextItem);
   const nextGrouped = {};
@@ -654,6 +964,856 @@ const upsertItemInGrouped = (groupedData, nextItem) => {
   return nextGrouped;
 };
 
+export const removeItemFromGrouped = (groupedData, targetInvNo) => {
+  const normalizedInvNo = String(targetInvNo || '').trim();
+  if (!normalizedInvNo) return groupedData || {};
+
+  const nextGrouped = {};
+  Object.entries(groupedData || {}).forEach(([branchName, locations]) => {
+    const nextLocations = {};
+    Object.entries(locations || {}).forEach(([locationName, items]) => {
+      const filteredItems = (items || []).filter((item) => toInvNo(item) !== normalizedInvNo);
+      if (filteredItems.length > 0) {
+        nextLocations[locationName] = filteredItems;
+      }
+    });
+    if (Object.keys(nextLocations).length > 0) {
+      nextGrouped[branchName] = nextLocations;
+    }
+  });
+  return nextGrouped;
+};
+
+// Mobile card view for equipment items
+// ==========================================
+// useMultiSelect Hook - управление мульти-выбором
+// ==========================================
+const useMultiSelect = () => {
+  const [selectedIds, setSelectedIds] = useState(new Set());
+  const [selectionMode, setSelectionMode] = useState(false);
+
+  const toggleSelection = useCallback((id) => {
+    console.log('[MultiSelect] toggleSelection called for:', id);
+    setSelectedIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+        console.log('[MultiSelect] Deselected:', id);
+      } else {
+        next.add(id);
+        console.log('[MultiSelect] Selected:', id);
+      }
+      // Auto-exit selection mode if no items selected
+      if (next.size === 0) {
+        console.log('[MultiSelect] Exit selection mode, count:', next.size);
+        setSelectionMode(false);
+      } else {
+        // Enter selection mode when first item is added
+        console.log('[MultiSelect] Enter selection mode, count:', next.size);
+        setSelectionMode(true);
+      }
+      return next;
+    });
+  }, []);
+
+  const selectAll = useCallback((items) => {
+    setSelectedIds(new Set(items.map(item => item.id || item)));
+    setSelectionMode(true);
+  }, []);
+
+  const clearSelection = useCallback(() => {
+    setSelectedIds(new Set());
+    setSelectionMode(false);
+  }, []);
+
+  const enterSelectionMode = useCallback(() => {
+    setSelectionMode(true);
+  }, []);
+
+  const exitSelectionMode = useCallback(() => {
+    setSelectedIds(new Set());
+    setSelectionMode(false);
+  }, []);
+
+  const value = useMemo(() => ({
+    selectedIds,
+    selectionMode,
+    toggleSelection,
+    selectAll,
+    clearSelection,
+    enterSelectionMode,
+    exitSelectionMode,
+    isSelected: (id) => selectedIds.has(id),
+    selectedCount: selectedIds.size,
+  }), [selectedIds, selectionMode]);
+
+  return value;
+};
+
+// ==========================================
+// Modern Expandable Equipment Card Component (Mobile Optimized)
+// ==========================================
+const ModernEquipmentCard = memo(function ModernEquipmentCard({
+  item,
+  theme,
+  onAction,
+  dataMode,
+  canWrite = true,
+  isAdmin = false,
+  // Selection props
+  selectionMode = false,
+  isSelected = false,
+  onToggleSelect,
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [isPressed, setIsPressed] = useState(false);
+  const longPressTimerRef = useRef(null);
+
+  const invNo = toInvNo(item);
+  const model = readFirst(item, ['MODEL_NAME', 'model_name'], '—');
+  const serial = readFirst(item, ['SERIAL_NO', 'serial_no'], '');
+  const employee = readFirst(item, ['OWNER_DISPLAY_NAME', 'employee_name', 'OWNER_FULLNAME'], '—');
+  const dept = readFirst(item, ['OWNER_DEPT', 'employee_dept'], '');
+  const status = readFirst(item, ['STATUS_DESCR', 'status_descr', 'DESCR'], '—');
+  const location = readFirst(item, ['LOCATION', 'location', 'PLACE'], '');
+  const typeName = readFirst(item, ['TYPE_NAME', 'type_name'], '');
+
+  const actionButtons = useMemo(
+    () => getEquipmentCardActionButtons(getEquipmentRowActions({ item, dataMode, canWrite, isAdmin })),
+    [item, dataMode, canWrite, isAdmin]
+  );
+
+  // Status color
+  const statusLower = String(status).toLowerCase();
+  const statusColor = statusLower.includes('в работе') || statusLower.includes('active')
+    ? 'success'
+    : statusLower.includes('списан') || statusLower.includes('annulled') || statusLower.includes('списание')
+      ? 'error'
+      : statusLower.includes('ремонт') || statusLower.includes('repair')
+        ? 'warning'
+        : 'default';
+
+  // Type-based theming
+  const typeLower = String(typeName).toLowerCase();
+  const typeConfig = (() => {
+    if (typeLower.includes('принтер') || typeLower.includes('printer') || typeLower.includes('mfp')) {
+      return {
+        icon: <PrintIcon sx={{ fontSize: 24 }} />,
+        color: '#FF6F00',
+        gradient: 'linear-gradient(135deg, rgba(255, 111, 0, 0.1), rgba(255, 111, 0, 0.03))',
+        border: 'rgba(255, 111, 0, 0.2)',
+      };
+    }
+    if (typeLower.includes('монитор') || typeLower.includes('display')) {
+      return {
+        icon: <MonitorIcon sx={{ fontSize: 24 }} />,
+        color: '#1976D2',
+        gradient: 'linear-gradient(135deg, rgba(25, 118, 210, 0.1), rgba(25, 118, 210, 0.03))',
+        border: 'rgba(25, 118, 210, 0.2)',
+      };
+    }
+    if (typeLower.includes('ноутбук') || typeLower.includes('laptop')) {
+      return {
+        icon: <LaptopIcon sx={{ fontSize: 24 }} />,
+        color: '#2E7D32',
+        gradient: 'linear-gradient(135deg, rgba(46, 125, 50, 0.1), rgba(46, 125, 50, 0.03))',
+        border: 'rgba(46, 125, 50, 0.2)',
+      };
+    }
+    if (typeLower.includes('ups') || typeLower.includes('ибп')) {
+      return {
+        icon: <BatteryFullIcon sx={{ fontSize: 24 }} />,
+        color: '#7B1FA2',
+        gradient: 'linear-gradient(135deg, rgba(123, 31, 162, 0.1), rgba(123, 31, 162, 0.03))',
+        border: 'rgba(123, 31, 162, 0.2)',
+      };
+    }
+    return {
+      icon: <StorageIcon sx={{ fontSize: 24 }} />,
+      color: '#757575',
+      gradient: 'linear-gradient(135deg, rgba(117, 117, 117, 0.1), rgba(117, 117, 117, 0.03))',
+      border: 'rgba(117, 117, 117, 0.2)',
+    };
+  })();
+
+  const handleExpandToggle = useCallback((e) => {
+    e.stopPropagation();
+    setExpanded(prev => !prev);
+  }, []);
+
+  // Long press handler для activation selection mode
+  const handleTouchStart = useCallback((e) => {
+    if (!onToggleSelect) return;
+    setIsPressed(true);
+    longPressTimerRef.current = setTimeout(() => {
+      // Haptic feedback если поддерживается
+      if (navigator.vibrate) navigator.vibrate(20);
+      onToggleSelect(invNo);
+      setIsPressed(false);
+    }, 500);
+  }, [invNo, onToggleSelect]);
+
+  const handleTouchEnd = useCallback(() => {
+    setIsPressed(false);
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  const handleTouchMove = useCallback(() => {
+    // Отменяем long press если пользователь начал скроллить
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  const handleTouchCancel = useCallback(() => {
+    setIsPressed(false);
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  }, []);
+
+  const handleClick = useCallback((e) => {
+    // Если клик был на кнопке expand или checkbox - ничего не делаем
+    if (e.target.closest('.MuiIconButton-root') || e.target.closest('.MuiCheckbox-root')) {
+      return;
+    }
+
+    if (selectionMode && onToggleSelect) {
+      // В selection mode - tap toggles selection
+      onToggleSelect(invNo);
+    } else {
+      // В normal mode - tap toggles expand/collapse
+      setExpanded(prev => !prev);
+    }
+  }, [selectionMode, invNo, onToggleSelect]);
+
+  return (
+    <Paper
+      onClick={handleClick}
+      onTouchStart={handleTouchStart}
+      onTouchEnd={handleTouchEnd}
+      onTouchMove={handleTouchMove}
+      onTouchCancel={handleTouchCancel}
+      sx={{
+        mb: 1.5,
+        borderRadius: 3,
+        cursor: 'pointer',
+        transition: 'all 0.2s cubic-bezier(0.4, 0, 0.2, 1)',
+        background: typeConfig.gradient,
+        border: isSelected ? '2px solid' : '1px solid',
+        borderColor: isSelected
+          ? theme.palette.primary.main
+          : typeConfig.border,
+        bgcolor: isSelected
+          ? alpha(theme.palette.primary.main, 0.04)
+          : typeConfig.gradient,
+        overflow: 'hidden',
+        transform: isPressed ? 'scale(0.96)' : 'scale(1)',
+        '&:active': { transform: 'scale(0.98)' },
+        '&:hover': {
+          boxShadow: '0 2px 8px rgba(0,0,0,0.08)',
+        },
+      }}
+    >
+      {/* Header section - оптимизировано для мобильных */}
+      <Box sx={{ p: 1.75, position: 'relative' }}>
+        <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
+          {onToggleSelect ? (
+            <Box
+              data-testid={`database-mobile-select-${invNo}`}
+              aria-label={isSelected ? 'Снять выбор' : 'Выбрать'}
+              role="checkbox"
+              aria-checked={isSelected}
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleSelect(invNo);
+              }}
+              sx={{
+                flexShrink: 0,
+                width: 44,
+                height: 44,
+                mt: 0.25,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                cursor: 'pointer',
+                zIndex: 10,
+                borderRadius: '50%',
+                border: '2px solid',
+                borderColor: isSelected ? theme.palette.primary.main : alpha(theme.palette.text.secondary, 0.32),
+                bgcolor: isSelected ? theme.palette.primary.main : alpha(theme.palette.background.paper, 0.86),
+                color: isSelected ? theme.palette.primary.contrastText : theme.palette.text.secondary,
+                boxShadow: isSelected
+                  ? `0 6px 16px ${alpha(theme.palette.primary.main, 0.28)}`
+                  : `0 1px 4px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.28 : 0.08)}`,
+                transition: 'transform 0.16s ease, background-color 0.16s ease, border-color 0.16s ease, box-shadow 0.16s ease',
+                '&:hover': {
+                  bgcolor: isSelected
+                    ? theme.palette.primary.dark
+                    : alpha(theme.palette.action.active, 0.08),
+                },
+                '&:active': {
+                  transform: 'scale(0.92)',
+                },
+              }}
+            >
+              {isSelected ? (
+                <CheckIcon
+                  sx={{
+                    fontSize: 28,
+                    color: 'inherit',
+                    display: 'block',
+                  }}
+                />
+              ) : (
+                <CheckBoxOutlineBlankIcon
+                  sx={{
+                    fontSize: 28,
+                    color: 'inherit',
+                    display: 'block',
+                  }}
+                />
+              )}
+            </Box>
+          ) : null}
+
+          {/* Icon with gradient background */}
+          <Box sx={{
+            flexShrink: 0,
+            width: 52,
+            height: 52,
+            borderRadius: 2.5,
+            display: 'grid',
+            placeItems: 'center',
+            bgcolor: alpha(typeConfig.color, 0.12),
+            color: typeConfig.color,
+          }}>
+            {typeConfig.icon}
+          </Box>
+
+          {/* Info section - вертикальная структура для лучшей читаемости */}
+          <Box sx={{ flex: 1, minWidth: 0 }}>
+            {/* Модель - крупный текст */}
+            <Typography variant="subtitle1" sx={{
+              fontWeight: 700,
+              lineHeight: 1.25,
+              fontSize: '0.95rem',
+              mb: 0.35,
+            }}>
+              {model}
+            </Typography>
+
+            {/* INV и серийный номер */}
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.75, flexWrap: 'wrap' }}>
+              <Typography variant="caption" sx={{
+                fontWeight: 600,
+                color: 'text.primary',
+                fontSize: '0.75rem',
+              }}>
+                INV: {invNo}
+              </Typography>
+              {serial && (
+                <>
+                  <Typography variant="caption" color="divider">·</Typography>
+                  <Typography variant="caption" sx={{
+                    color: 'text.secondary',
+                    fontSize: '0.75rem',
+                  }}>
+                    S/N: {serial}
+                  </Typography>
+                </>
+              )}
+            </Box>
+
+            {/* Сотрудник и отдел */}
+            <Typography variant="caption" color="text.secondary" sx={{
+              display: 'block',
+              mt: 0.25,
+              fontSize: '0.75rem',
+              lineHeight: 1.3,
+            }}>
+              {employee}{dept ? `, ${dept}` : ''}
+            </Typography>
+          </Box>
+
+          {/* Status badge и expand button */}
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.5, flexShrink: 0 }}>
+            <Chip
+              label={status}
+              size="small"
+              color={statusColor}
+              sx={{
+                fontSize: '0.65rem',
+                height: 22,
+                fontWeight: 600,
+                px: 0.5,
+              }}
+            />
+            <IconButton
+              size="small"
+              onClick={handleExpandToggle}
+              sx={{
+                width: 32,
+                height: 32,
+                bgcolor: alpha(typeConfig.color, 0.08),
+                color: typeConfig.color,
+                transition: 'all 0.2s ease',
+                '&:hover': {
+                  bgcolor: alpha(typeConfig.color, 0.16),
+                  transform: 'scale(1.1)',
+                },
+                '& .MuiSvgIcon-root': {
+                  fontSize: 20,
+                  transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                  transition: 'transform 0.2s ease',
+                },
+              }}
+            >
+              {expanded ? <ExpandLessIcon /> : <ExpandMoreIcon />}
+            </IconButton>
+          </Box>
+        </Box>
+      </Box>
+
+      {/* Expanded section - оптимизировано для мобильных */}
+      {expanded && (
+        <Box sx={{
+          px: 1.5,
+          pb: 2,
+          pt: 0.5,
+          animation: 'fadeInUp 0.2s ease-out',
+          '@keyframes fadeInUp': {
+            from: { opacity: 0, transform: 'translateY(-8px)' },
+            to: { opacity: 1, transform: 'translateY(0)' },
+          },
+        }}>
+          {/* Тонкий разделитель */}
+          <Box sx={{
+            height: 1,
+            background: `linear-gradient(90deg, transparent, ${alpha(typeConfig.color, 0.3)}, transparent)`,
+            mb: 1.5,
+          }} />
+
+          {/* Информация в компактной сетке */}
+          <Box sx={{
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 1,
+          }}>
+            {/* Serial Number */}
+            {serial && (
+              <Box sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.25,
+                p: 1.25,
+                borderRadius: 2,
+                bgcolor: theme.palette.mode === 'dark' ? 'rgba(33, 150, 243, 0.08)' : 'rgba(33, 150, 243, 0.04)',
+                border: '1px solid',
+                borderColor: alpha(theme.palette.info.main, 0.15),
+              }}>
+                <StorageIcon sx={{ fontSize: 18, color: theme.palette.info.main, flexShrink: 0 }} />
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{
+                    display: 'block',
+                    fontSize: '0.65rem',
+                    fontWeight: 600,
+                    color: 'text.secondary',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                  }}>
+                    Серийный номер
+                  </Typography>
+                  <Typography variant="body2" sx={{
+                    fontWeight: 600,
+                    fontSize: '0.8rem',
+                    fontFamily: 'monospace',
+                    color: 'text.primary',
+                  }}>
+                    {serial}
+                  </Typography>
+                </Box>
+              </Box>
+            )}
+
+            {/* Location */}
+            {location && (
+              <Box sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.25,
+                p: 1.25,
+                borderRadius: 2,
+                bgcolor: theme.palette.mode === 'dark' ? 'rgba(255, 152, 0, 0.08)' : 'rgba(255, 152, 0, 0.04)',
+                border: '1px solid',
+                borderColor: alpha(theme.palette.warning.main, 0.15),
+              }}>
+                <MyLocationIcon sx={{ fontSize: 18, color: theme.palette.warning.main, flexShrink: 0 }} />
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{
+                    display: 'block',
+                    fontSize: '0.65rem',
+                    fontWeight: 600,
+                    color: 'text.secondary',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                  }}>
+                    Местоположение
+                  </Typography>
+                  <Typography variant="body2" sx={{
+                    fontWeight: 600,
+                    fontSize: '0.8rem',
+                    color: 'text.primary',
+                  }}>
+                    {location}
+                  </Typography>
+                </Box>
+              </Box>
+            )}
+
+            {/* Department */}
+            {dept && (
+              <Box sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1.25,
+                p: 1.25,
+                borderRadius: 2,
+                bgcolor: theme.palette.mode === 'dark' ? 'rgba(156, 39, 176, 0.08)' : 'rgba(156, 39, 176, 0.04)',
+                border: '1px solid',
+                borderColor: alpha('#9C27B0', 0.15),
+              }}>
+                <Box sx={{ width: 18, display: 'flex', justifyContent: 'center', flexShrink: 0 }}>
+                  <Typography sx={{ fontSize: '1rem' }}>🏢</Typography>
+                </Box>
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <Typography variant="caption" sx={{
+                    display: 'block',
+                    fontSize: '0.65rem',
+                    fontWeight: 600,
+                    color: 'text.secondary',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                  }}>
+                    Отдел
+                  </Typography>
+                  <Typography variant="body2" sx={{
+                    fontWeight: 600,
+                    fontSize: '0.8rem',
+                    color: 'text.primary',
+                  }}>
+                    {dept}
+                  </Typography>
+                </Box>
+              </Box>
+            )}
+          </Box>
+
+          {actionButtons.length > 0 && (
+            <>
+              {/* Divider before actions */}
+              <Box sx={{
+                height: 1,
+                background: `linear-gradient(90deg, transparent, ${alpha(typeConfig.color, 0.2)}, transparent)`,
+                my: 1.5,
+              }} />
+
+              {/* Actions - кнопки одинакового размера */}
+              <Box sx={{
+                display: 'grid',
+                gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                gap: 0.75,
+              }}>
+                {actionButtons.map((actionConfig) => (
+                  <Button
+                    key={actionConfig.action}
+                    size="small"
+                    startIcon={actionConfig.icon}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onAction(actionConfig.action, item);
+                    }}
+                    variant="outlined"
+                    fullWidth
+                    sx={{
+                      py: 1.1,
+                      minHeight: 42,
+                      fontSize: '0.72rem',
+                      borderRadius: 1.75,
+                      textTransform: 'none',
+                      fontWeight: 600,
+                      justifyContent: 'center',
+                      px: 0.75,
+                      lineHeight: 1.15,
+                      whiteSpace: 'normal',
+                      '& .MuiButton-startIcon': {
+                        margin: 0,
+                        marginRight: 0.5,
+                        '& svg': {
+                          fontSize: '1rem',
+                        },
+                      },
+                      transition: 'all 0.15s ease',
+                      '&:hover': {
+                        transform: 'translateY(-1px)',
+                        boxShadow: '0 2px 6px rgba(0,0,0,0.1)',
+                      },
+                    }}
+                  >
+                    {actionConfig.label}
+                  </Button>
+                ))}
+              </Box>
+            </>
+          )}
+        </Box>
+      )}
+
+      {/* Bottom border when collapsed */}
+      {!expanded && (
+        <Box sx={{
+          height: 3,
+          borderTop: '2px dashed',
+          borderColor: alpha(typeConfig.color, 0.2),
+        }} />
+      )}
+    </Paper>
+  );
+});
+
+// ==========================================
+// Bottom Action Bar for Multi-Select
+// ==========================================
+const BottomActionBar = memo(function BottomActionBar({
+  selectedCount,
+  onTransfer,
+  onDelete,
+  onEdit,
+  onMore,
+  onSelectAll,
+  onClear,
+}) {
+  const theme = useTheme();
+
+  return (
+    <Fade in={selectedCount > 0}>
+      <Paper
+        sx={{
+          position: 'fixed',
+          bottom: 0,
+          left: 0,
+          right: 0,
+          zIndex: 1300,
+          p: 1.5,
+          borderTopLeftRadius: 3,
+          borderTopRightRadius: 3,
+          bgcolor: theme.palette.background.paper,
+          boxShadow: '0 -4px 20px rgba(0,0,0,0.15)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+        }}
+      >
+        {/* Counter */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Typography variant="h6" sx={{ fontWeight: 700, lineHeight: 1 }}>
+            {selectedCount}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 500 }}>
+            выбрано
+          </Typography>
+        </Box>
+
+        {/* Actions - горизонтальный скролл для маленьких экранов */}
+        <Box sx={{
+          display: 'flex',
+          gap: 0.75,
+          overflowX: 'auto',
+          flexShrink: 0,
+          maxWidth: 'calc(100% - 80px)',
+          '&::-webkit-scrollbar': { display: 'none' },
+          scrollbarWidth: 'none',
+        }}>
+          <Button
+            size="small"
+            variant="text"
+            onClick={onSelectAll}
+            sx={{
+              textTransform: 'none',
+              minWidth: 64,
+              height: 40,
+              fontWeight: 600,
+            }}
+          >
+            Все
+          </Button>
+          <Button
+            size="small"
+            variant="outlined"
+            startIcon={<TransferIcon />}
+            onClick={onTransfer}
+            sx={{
+              textTransform: 'none',
+              minHeight: 40,
+              height: 40,
+              whiteSpace: 'nowrap',
+            }}
+          >
+            Передать
+          </Button>
+          <IconButton
+            size="small"
+            color="error"
+            onClick={onDelete}
+            sx={{
+              minHeight: 40,
+              minWidth: 40,
+              width: 40,
+              height: 40,
+            }}
+          >
+            <DeleteIcon />
+          </IconButton>
+          <IconButton
+            size="small"
+            onClick={onMore}
+            sx={{
+              minHeight: 40,
+              minWidth: 40,
+              width: 40,
+              height: 40,
+            }}
+          >
+            <MoreVertIcon />
+          </IconButton>
+          <IconButton
+            size="small"
+            onClick={onClear}
+            sx={{
+              minHeight: 40,
+              minWidth: 40,
+              width: 40,
+              height: 40,
+              ml: 0.5,
+            }}
+          >
+            <CloseIcon />
+          </IconButton>
+        </Box>
+      </Paper>
+    </Fade>
+  );
+});
+
+const EquipmentCard = memo(function EquipmentCard({ item, theme, onAction, dataMode, canWrite = true, isAdmin = false }) {
+  const invNo = toInvNo(item);
+  const model = readFirst(item, ['MODEL_NAME', 'model_name'], '—');
+  const serial = readFirst(item, ['SERIAL_NO', 'serial_no'], '');
+  const employee = readFirst(item, ['OWNER_DISPLAY_NAME', 'employee_name', 'OWNER_FULLNAME'], '—');
+  const status = readFirst(item, ['STATUS_DESCR', 'status_descr', 'DESCR'], '—');
+  const location = readFirst(item, ['LOCATION', 'location', 'PLACE'], '');
+  const typeName = readFirst(item, ['TYPE_NAME', 'type_name'], '');
+
+  const actionButtons = useMemo(
+    () => getEquipmentCardActionButtons(getEquipmentRowActions({ item, dataMode, canWrite, isAdmin }))
+      .filter((actionConfig) => actionConfig.action !== 'view'),
+    [item, dataMode, canWrite, isAdmin]
+  );
+
+  // Status color
+  const statusLower = String(status).toLowerCase();
+  const statusColor = statusLower.includes('в работе') || statusLower.includes('active')
+    ? 'success'
+    : statusLower.includes('списан') || statusLower.includes('annulled') || statusLower.includes('списание')
+      ? 'error'
+      : statusLower.includes('ремонт') || statusLower.includes('repair')
+        ? 'warning'
+        : 'default';
+
+  // Icon by type
+  const typeLower = String(typeName).toLowerCase();
+  const typeIcon = typeLower.includes('принтер') || typeLower.includes('printer') || typeLower.includes('mfp')
+    ? <PrintIcon sx={{ fontSize: 20 }} />
+    : typeLower.includes('монитор') || typeLower.includes('display')
+      ? <ComputerIcon sx={{ fontSize: 20 }} />
+      : typeLower.includes('ноутбук') || typeLower.includes('laptop')
+        ? <LaptopIcon sx={{ fontSize: 20 }} />
+        : typeLower.includes('ups') || typeLower.includes('ибп')
+          ? <BatteryFullIcon sx={{ fontSize: 20 }} />
+          : <StorageIcon sx={{ fontSize: 20 }} />;
+
+  // Icon background color by type
+  const iconBg = typeLower.includes('принтер') || typeLower.includes('printer') || typeLower.includes('mfp')
+    ? alpha(theme.palette.secondary.main, 0.12)
+    : typeLower.includes('монитор') || typeLower.includes('display')
+      ? alpha(theme.palette.info.main, 0.12)
+      : alpha(theme.palette.primary.main, 0.12);
+  const iconColor = typeLower.includes('принтер') || typeLower.includes('printer') || typeLower.includes('mfp')
+    ? theme.palette.secondary.main
+    : typeLower.includes('монитор') || typeLower.includes('display')
+      ? theme.palette.info.main
+      : theme.palette.primary.main;
+
+  return (
+    <Paper
+      variant="outlined"
+      onClick={() => onAction('view', item)}
+      sx={{
+        mb: 1,
+        p: 1.5,
+        cursor: 'pointer',
+        borderRadius: 2,
+        transition: 'box-shadow 150ms ease, transform 150ms ease',
+        '&:active': { transform: 'scale(0.99)' },
+      }}
+    >
+      <Box sx={{ display: 'flex', alignItems: 'flex-start', gap: 1.5 }}>
+        {/* Left: icon */}
+        <Box sx={{ flexShrink: 0, width: 42, height: 42, borderRadius: 2, display: 'grid', placeItems: 'center', bgcolor: iconBg, color: iconColor }}>
+          {typeIcon}
+        </Box>
+        {/* Middle: info */}
+        <Box sx={{ flex: 1, minWidth: 0 }}>
+          <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.2 }}>{model}</Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+            {invNo}{serial ? ` · ${serial}` : ''}
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            {employee}
+          </Typography>
+        </Box>
+        {/* Right: status + actions */}
+        <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 0.5, flexShrink: 0 }}>
+          <Chip label={status} size="small" color={statusColor} variant="outlined" sx={{ fontSize: '0.65rem', height: 22 }} />
+          <Box sx={{ display: 'flex', gap: 0.25 }}>
+            {actionButtons.slice(0, 2).map((actionConfig) => (
+              <IconButton
+                key={actionConfig.action}
+                size="small"
+                aria-label={actionConfig.label}
+                onClick={(e) => { e.stopPropagation(); onAction(actionConfig.action, item); }}
+                sx={{ width: 32, height: 32 }}
+              >
+                {actionConfig.icon}
+              </IconButton>
+            ))}
+          </Box>
+        </Box>
+      </Box>
+      {location && (
+        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5, display: 'block' }}>
+          📍 {location}
+        </Typography>
+      )}
+    </Paper>
+  );
+});
+
 const EquipmentRow = memo(function EquipmentRow({
   item,
   isSelected,
@@ -665,6 +1825,7 @@ const EquipmentRow = memo(function EquipmentRow({
   allowSelection = true,
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
+  isAdmin = false,
 }) {
   const invNo = String(item.INV_NO || item.inv_no || '');
   const itemId = toItemId(item);
@@ -675,20 +1836,10 @@ const EquipmentRow = memo(function EquipmentRow({
   const typeName = String(item.TYPE_NAME || item.type_name || '-');
   const qtyValue = readQty(item, 1);
 
-  // Determine available actions based on equipment type
-  const getAvailableActions = () => {
-    const baseActions = canWrite ? ['view', 'transfer'] : ['view'];
-    const flags = getItemCapabilityFlags(item);
-    return [
-      ...baseActions,
-      ...(canWrite && flags.isPrinterOrMfu ? ['cartridge', 'component'] : []),
-      ...(canWrite && flags.isUps ? ['battery'] : []),
-      ...(canWrite && flags.isPc && !flags.isPrinterOrMfu ? ['component'] : []),
-      ...(canWrite && flags.isPc ? ['cleaning'] : []),
-    ];
-  };
-
-  const actions = getAvailableActions();
+  const actions = useMemo(
+    () => getEquipmentRowActions({ item, dataMode, canWrite, isAdmin }),
+    [item, dataMode, canWrite, isAdmin]
+  );
 
   if (isConsumablesMode) {
     return (
@@ -837,6 +1988,7 @@ const EquipmentTable = memo(function EquipmentTable({
   allowSelection = true,
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
+  isAdmin = false,
 }) {
   const [scrollTop, setScrollTop] = useState(0);
   const isConsumablesMode = dataMode === DATA_MODE_CONSUMABLES;
@@ -1098,6 +2250,7 @@ const EquipmentTable = memo(function EquipmentTable({
                 allowSelection={allowSelection}
                 dataMode={dataMode}
                 canWrite={canWrite}
+                isAdmin={isAdmin}
               />
             );
           })}
@@ -1113,8 +2266,115 @@ const EquipmentTable = memo(function EquipmentTable({
   );
 });
 
+// ==========================================
+// Enhanced FAB Action Button Component
+// ==========================================
+const EnhancedFabAction = memo(({
+  icon,
+  label,
+  description,
+  onClick,
+  variant = 'outlined',
+  color = 'default',
+  loading = false,
+  disabled = false,
+}) => {
+  const theme = useTheme();
+
+  const getVariantStyles = () => {
+    switch (variant) {
+      case 'contained':
+        return {
+          bgcolor: theme.palette.primary.main,
+          color: '#fff',
+          '&:hover': {
+            bgcolor: theme.palette.primary.dark,
+            transform: 'translateY(-1px)',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+          },
+        };
+      case 'gradient':
+        return {
+          background: `linear-gradient(135deg, ${theme.palette.info.main}, ${theme.palette.info.dark})`,
+          color: '#fff',
+          '&:hover': {
+            background: `linear-gradient(135deg, ${theme.palette.info.dark}, ${theme.palette.info.main})`,
+            transform: 'translateY(-1px)',
+            boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+          },
+        };
+      default:
+        return {
+          bgcolor: 'transparent',
+          color: 'text.primary',
+          border: '1px solid',
+          borderColor: 'divider',
+          '&:hover': {
+            bgcolor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)',
+            borderColor: theme.palette.primary.main,
+            transform: 'translateY(-1px)',
+          },
+        };
+    }
+  };
+
+  return (
+    <Box
+      onClick={!disabled && !loading ? onClick : undefined}
+      sx={{
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.5,
+        p: 1.5,
+        borderRadius: 2,
+        cursor: disabled || loading ? 'not-allowed' : 'pointer',
+        opacity: disabled || loading ? 0.6 : 1,
+        transition: 'all 0.2s ease-in-out',
+        ...getVariantStyles(),
+        '&:active': {
+          transform: 'scale(0.98)',
+        },
+      }}
+    >
+      {/* Icon */}
+      <Box sx={{
+        display: 'flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        width: 40,
+        height: 40,
+        borderRadius: '50%',
+        bgcolor: variant === 'outlined' ? (theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.08)' : 'rgba(0,0,0,0.04)') : 'rgba(255,255,255,0.15)',
+        color: variant === 'outlined' ? (color === 'primary' ? 'primary.main' : 'inherit') : 'inherit',
+        flexShrink: 0,
+      }}>
+        {icon}
+      </Box>
+
+      {/* Label + Description */}
+      <Box sx={{ flex: 1, minWidth: 0 }}>
+        <Typography variant="subtitle2" sx={{
+          fontWeight: 600,
+          lineHeight: 1.3,
+        }}>
+          {loading && variant === 'outlined' ? 'Загрузка...' : label}
+        </Typography>
+        {description && (
+          <Typography variant="caption" color="text.secondary" sx={{
+            display: 'block',
+            lineHeight: 1.3,
+            mt: 0.2,
+          }}>
+            {description}
+          </Typography>
+        )}
+      </Box>
+    </Box>
+  );
+});
+
 function Database() {
-  const { hasPermission } = useAuth();
+  const { user, hasPermission } = useAuth();
   const {
     notifySuccess: pushSuccessToast,
     notifyInfo: pushInfoToast,
@@ -1122,10 +2382,21 @@ function Database() {
     notifyError: pushErrorToast,
   } = useNotification();
   const canDatabaseWrite = hasPermission('database.write');
+  const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const isNarrowMobile = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
+  const isTouchMobile = useMediaQuery('(hover: none) and (pointer: coarse)', { defaultMatches: true });
+  const isMobile = isNarrowMobile || isTouchMobile;
+  const handleOpenMainDrawer = useCallback(() => {
+    window.dispatchEvent(new CustomEvent('open-sidebar'));
+  }, []);
+  const location = useLocation();
+  const navigate = useNavigate();
   const initialLoadDoneRef = useRef(false);
+  const dataModeRefreshEffectRef = useRef(false);
+  const qrScannerRef = useRef(null);
+  const qrScanProcessingRef = useRef(false);
   const databaseToastAction = useMemo(() => createNavigateToastAction('/database', 'Открыть базу'), []);
   const notifyDatabaseSuccess = useCallback((message, options = {}) => {
     const text = String(message || '').trim();
@@ -1169,6 +2440,7 @@ function Database() {
   const [expandedBranches, setExpandedBranches] = useState(() => new Set());
   const [expandedLocations, setExpandedLocations] = useState(() => new Set());
   const [selectedItems, setSelectedItems] = useState([]);
+  const [mobileSelectionMode, setMobileSelectionMode] = useState(false);
   const [detailModal, setDetailModal] = useState({ open: false, data: null, loading: false });
   const [detailEditMode, setDetailEditMode] = useState(false);
   const [detailSaving, setDetailSaving] = useState(false);
@@ -1182,6 +2454,16 @@ function Database() {
   const [detailEmployeeOptions, setDetailEmployeeOptions] = useState([]);
   const [detailEmployeeInput, setDetailEmployeeInput] = useState('');
   const [detailEmployeeLoading, setDetailEmployeeLoading] = useState(false);
+
+  // QR Scanner state
+  const [qrScannerOpen, setQrScannerOpen] = useState(false);
+  const [qrScannerResult, setQrScannerResult] = useState('');
+  const [qrScannerError, setQrScannerError] = useState('');
+  const [qrScannerLoading, setQrScannerLoading] = useState(false);
+  const [qrScannerReady, setQrScannerReady] = useState(false);
+
+  // FAB меню состояние
+  const [fabSheetOpen, setFabSheetOpen] = useState(false);
   const [detailTab, setDetailTab] = useState('general');
   const [detailActs, setDetailActs] = useState([]);
   const [detailActsLoading, setDetailActsLoading] = useState(false);
@@ -1191,6 +2473,11 @@ function Database() {
   const [detailActFieldsOpen, setDetailActFieldsOpen] = useState(false);
   const [detailActSelected, setDetailActSelected] = useState(null);
   const [detailQrOpen, setDetailQrOpen] = useState(false);
+  const [detailQrUrl, setDetailQrUrl] = useState('');
+  const [detailQrUrlLoading, setDetailQrUrlLoading] = useState(false);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteError, setDeleteError] = useState('');
   const [actionModal, setActionModal] = useState({ open: false, type: null, invNo: null, componentKind: null });
 
   // Action form state
@@ -1244,13 +2531,21 @@ function Database() {
   const [addModels, setAddModels] = useState([]);
   const [addModelsLoading, setAddModelsLoading] = useState(false);
   const [uploadActModalOpen, setUploadActModalOpen] = useState(false);
+  const [uploadActReminderBinding, setUploadActReminderBinding] = useState(null);
+  const [uploadActPendingDeepLink, setUploadActPendingDeepLink] = useState(null);
+  const [uploadActReminderLoading, setUploadActReminderLoading] = useState(false);
+  const [uploadActReminderError, setUploadActReminderError] = useState('');
   const [uploadActFile, setUploadActFile] = useState(null);
+  const [uploadActPreviewUrl, setUploadActPreviewUrl] = useState('');
+  const [uploadActPreviewError, setUploadActPreviewError] = useState('');
   const [uploadActDraft, setUploadActDraft] = useState(null);
   const [uploadActParsing, setUploadActParsing] = useState(false);
   const [uploadActCommitting, setUploadActCommitting] = useState(false);
   const [uploadActError, setUploadActError] = useState('');
+  const [uploadActInvVerified, setUploadActInvVerified] = useState(false);
   const [uploadActAutoEmail, setUploadActAutoEmail] = useState(true);
   const uploadActAutoEmailRef = useRef(true);
+  const uploadActReminderLinkRef = useRef('');
 
   // Synchronize ref with state
   useEffect(() => {
@@ -1341,8 +2636,15 @@ function Database() {
     return 0;
   }, [uploadActCommitResult?.doc_no, uploadActCommitting, uploadActDraft, uploadActFile]);
 
+  const uploadActInvVerification = useMemo(
+    () => buildUploadActInvVerification(uploadActDraft?.equipment_inv_nos, uploadActForm.equipment_inv_nos_text),
+    [uploadActDraft?.equipment_inv_nos, uploadActForm.equipment_inv_nos_text]
+  );
+
   // Get db_name from equipment or localStorage
   const [dbNameState, setDbNameState] = useState('');
+  const [databases, setDatabases] = useState([]);
+  const [currentDb, setCurrentDb] = useState(null);
 
   useEffect(() => {
     let isMounted = true;
@@ -1350,11 +2652,16 @@ function Database() {
     const loadDbName = async () => {
       let dbId = normalizeDbId(localStorage.getItem('selected_database'));
       try {
-        const response = await apiClient.get('/database/current');
-        const data = response?.data || {};
+        const data = await databaseAPI.getCurrentDatabase();
         const currentDbId = normalizeDbId(data?.id || data?.database_id || '');
         if (currentDbId) {
           dbId = currentDbId;
+          if (isMounted) {
+            setCurrentDb({
+              id: currentDbId,
+              name: data?.name || data?.database || data?.database_name || '',
+            });
+          }
         }
       } catch (e) {
         console.error('Error loading db:', e);
@@ -1369,14 +2676,54 @@ function Database() {
       }
     };
 
+    const loadDatabases = async () => {
+      try {
+        const data = await databaseAPI.getAvailableDatabases();
+        if (isMounted) {
+          setDatabases(Array.isArray(data) ? data : []);
+        }
+      } catch (e) {
+        console.error('Error loading databases:', e);
+      }
+    };
+
     loadDbName();
+    loadDatabases();
+
+    const handleDatabaseChanged = () => {
+      if (isMounted) {
+        setDbNameState(normalizeDbId(localStorage.getItem('selected_database') || ''));
+        loadDbName();
+      }
+    };
+
+    window.addEventListener('database-changed', handleDatabaseChanged);
 
     return () => {
       isMounted = false;
+      window.removeEventListener('database-changed', handleDatabaseChanged);
     };
   }, []);
 
   const db_name = dbNameState;
+  const selectedDatabaseName = useMemo(() => {
+    const selectedDbId = normalizeDbId(db_name || currentDb?.id || '');
+    const selectedDb = databases.find((db) => normalizeDbId(db.id) === selectedDbId);
+    const name = String(selectedDb?.name || currentDb?.name || '').trim();
+    return name || 'База';
+  }, [currentDb?.id, currentDb?.name, databases, db_name]);
+  const handleDatabaseSelectChange = useCallback((event) => {
+    const newDbId = normalizeDbId(event.target.value);
+    const selectedDb = databases.find((db) => normalizeDbId(db.id) === newDbId);
+
+    setDbNameState(newDbId);
+    setCurrentDb({
+      id: newDbId,
+      name: selectedDb?.name || '',
+    });
+    localStorage.setItem('selected_database', newDbId);
+    window.dispatchEvent(new CustomEvent('database-changed', { detail: { databaseId: newDbId } }));
+  }, [databases]);
   const [allEquipment, setAllEquipment] = useState({});
   const [initialLoadDone, setInitialLoadDone] = useState(false);
 
@@ -1588,7 +2935,12 @@ function Database() {
   }, [refreshCurrentDbData]);
 
   useEffect(() => {
-    if (!initialLoadDoneRef.current) return;
+    const { shouldRefresh, nextHasInitializedEffect } = resolveDataModeRefreshBehavior({
+      hasInitializedEffect: dataModeRefreshEffectRef.current,
+      isLifecycleReady: initialLoadDoneRef.current,
+    });
+    dataModeRefreshEffectRef.current = nextHasInitializedEffect;
+    if (!shouldRefresh) return;
     setTableSort(dataMode === DATA_MODE_CONSUMABLES ? CONSUMABLES_DEFAULT_TABLE_SORT : DEFAULT_TABLE_SORT);
     setSearchQuery('');
     setFilteredData(null);
@@ -1704,7 +3056,7 @@ function Database() {
 
   const getLocationsCached = useCallback(async (branchNo) => {
     const safeBranchNo = String(branchNo ?? '').trim();
-    const cacheKey = buildCacheKey('locations-by-branch', getDbCacheScope(), safeBranchNo);
+    const cacheKey = buildCacheKey('locations-priority', getDbCacheScope(), safeBranchNo);
     const { data } = await getOrFetchSWR(
       cacheKey,
       () => equipmentAPI.getLocations(branchNo),
@@ -1838,8 +3190,7 @@ function Database() {
     () =>
       (detailLocations || [])
         .map(normalizeLocationOption)
-        .filter((location) => location.loc_no !== null)
-        .sort(sortLocationOptions),
+        .filter((location) => location.loc_no !== null),
     [detailLocations]
   );
 
@@ -1847,8 +3198,7 @@ function Database() {
     () =>
       (transferLocations || [])
         .map(normalizeLocationOption)
-        .filter((location) => location.loc_no !== null)
-        .sort(sortLocationOptions),
+        .filter((location) => location.loc_no !== null),
     [transferLocations]
   );
 
@@ -1940,8 +3290,7 @@ function Database() {
     () =>
       (addLocations || [])
         .map(normalizeLocationOption)
-        .filter((location) => location.loc_no !== null)
-        .sort(sortLocationOptions),
+        .filter((location) => location.loc_no !== null),
     [addLocations]
   );
 
@@ -1960,8 +3309,7 @@ function Database() {
     () =>
       (addConsumableLocations || [])
         .map(normalizeLocationOption)
-        .filter((location) => location.loc_no !== null)
-        .sort(sortLocationOptions),
+        .filter((location) => location.loc_no !== null),
     [addConsumableLocations]
   );
 
@@ -2030,16 +3378,208 @@ function Database() {
     [detailModal?.data]
   );
 
-  const detailQrUrl = useMemo(
-    () => buildEquipmentQrUrl(detailQrText),
-    [detailQrText]
-  );
+  useEffect(() => {
+    let canceled = false;
+    const generateQr = async () => {
+      const text = String(detailQrText || '').trim();
+      setDetailQrUrl('');
+      if (!text) {
+        setDetailQrUrlLoading(false);
+        return;
+      }
+
+      setDetailQrUrlLoading(true);
+      try {
+        const dataUrl = await buildEquipmentQrDataUrl(text);
+        if (!canceled) {
+          setDetailQrUrl(dataUrl);
+        }
+      } catch (error) {
+        console.error('Error generating equipment QR:', error);
+        if (!canceled) {
+          setDetailQrUrl('');
+        }
+      } finally {
+        if (!canceled) {
+          setDetailQrUrlLoading(false);
+        }
+      }
+    };
+
+    generateQr();
+    return () => {
+      canceled = true;
+    };
+  }, [detailQrText]);
 
   const detailQrFileName = useMemo(() => {
     const invNo = String(readFirst(detailModal?.data, ['INV_NO', 'inv_no'], '') || '').trim();
     const safeInvNo = (invNo || 'equipment').replace(/[^0-9A-Za-z_-]+/g, '_');
     return `qr_${safeInvNo}.png`;
   }, [detailModal?.data]);
+
+  // QR Scanner handlers
+  const handleQrScannerOpen = useCallback(() => {
+    qrScanProcessingRef.current = false;
+    setQrScannerOpen(true);
+    setQrScannerResult('');
+    setQrScannerError('');
+    setQrScannerLoading(false);
+    setQrScannerReady(false);
+  }, []);
+
+  const handleQrScannerClose = useCallback(() => {
+    qrScanProcessingRef.current = false;
+    setQrScannerOpen(false);
+    setQrScannerResult('');
+    setQrScannerError('');
+    setQrScannerLoading(false);
+    setQrScannerReady(false);
+  }, []);
+
+  const handleQrScanSuccess = useCallback(async (decodedText) => {
+    if (qrScanProcessingRef.current) return;
+    qrScanProcessingRef.current = true;
+
+    const scannedText = String(decodedText || '').trim();
+    setQrScannerResult(scannedText);
+
+    const invNo = parseInvNoFromQrText(scannedText);
+    if (!invNo) {
+      qrScanProcessingRef.current = false;
+      setQrScannerError('Не удалось распознать инвентарный номер в QR-коде.');
+      return;
+    }
+
+    setQrScannerLoading(true);
+    setQrScannerError('');
+    try {
+      qrScannerRef.current?.pause?.(true);
+    } catch {
+      // Some browser/camera states do not allow pausing; processing ref still prevents duplicate reads.
+    }
+
+    try {
+      const found = await equipmentAPI.getByInvNo(invNo);
+      if (!found) {
+        throw new Error('not_found');
+      }
+
+      setQrScannerOpen(false);
+      setQrScannerResult('');
+      setQrScannerError('');
+      setQrScannerLoading(false);
+      setQrScannerReady(false);
+      setDetailModal({ open: true, data: found, loading: false, invNo });
+      setDetailEditMode(false);
+      setDetailError('');
+      setDetailSuccess('');
+      setDetailTab('general');
+    } catch (error) {
+      const statusCode = Number(error?.response?.status || 0);
+      const apiDetail = error?.response?.data?.detail;
+      const message = statusCode === 404
+        ? `Оборудование с инв. № "${invNo}" не найдено.`
+        : (typeof apiDetail === 'string' && apiDetail.trim()
+          ? apiDetail
+          : `Не удалось открыть оборудование с инв. № "${invNo}".`);
+      qrScanProcessingRef.current = false;
+      setQrScannerLoading(false);
+      setQrScannerError(message);
+      notifyDatabaseError(message);
+      try {
+        qrScannerRef.current?.resume?.();
+      } catch {
+        // Keep the visible error; the user can close and reopen the scanner.
+      }
+    }
+  }, [notifyDatabaseError]);
+
+  const handleQrScanError = useCallback((errorMessage) => {
+    if (!isIgnorableQrFrameError(errorMessage)) {
+      console.debug('QR Scanner frame error:', errorMessage);
+    }
+  }, []);
+
+  // Effect to initialize Html5Qrcode scanner when dialog opens
+  useEffect(() => {
+    if (!qrScannerOpen) return;
+
+    let isMounted = true;
+    let scanner = null;
+
+    const initScanner = async () => {
+      try {
+        setQrScannerLoading(true);
+        setQrScannerReady(false);
+        setQrScannerError('');
+
+        const host = typeof window !== 'undefined' ? window.location.hostname : '';
+        const isLocalhost = ['localhost', '127.0.0.1', '::1'].includes(host);
+        if (typeof window !== 'undefined' && window.isSecureContext === false && !isLocalhost) {
+          throw new Error('для доступа к камере откройте сайт по HTTPS');
+        }
+        if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
+          throw new Error('браузер не поддерживает доступ к камере');
+        }
+
+        await new Promise((resolve) => setTimeout(resolve, 120));
+        if (!isMounted) return;
+
+        const readerElement = document.getElementById('qr-reader');
+        if (!readerElement) {
+          throw new Error('DOM элемент #qr-reader не найден');
+        }
+
+        const { Html5Qrcode } = await import('html5-qrcode');
+        if (!isMounted) return;
+
+        scanner = new Html5Qrcode('qr-reader');
+        qrScannerRef.current = scanner;
+
+        await scanner.start(
+          { facingMode: 'environment' },
+          {
+            fps: 10,
+            qrbox: getQrboxDimensions,
+            disableFlip: false,
+          },
+          handleQrScanSuccess,
+          handleQrScanError
+        );
+
+        if (!isMounted) {
+          await stopQrScannerInstance(scanner);
+          return;
+        }
+
+        setQrScannerLoading(false);
+        setQrScannerReady(true);
+      } catch (err) {
+        console.error('[QR Scanner] Ошибка:', err);
+        if (isMounted) {
+          setQrScannerLoading(false);
+          setQrScannerReady(false);
+          setQrScannerError(getQrScannerErrorMessage(err));
+        }
+      }
+    };
+
+    initScanner();
+
+    return () => {
+      isMounted = false;
+      const scannerToStop = scanner || qrScannerRef.current;
+      qrScannerRef.current = null;
+      if (scannerToStop) {
+        void stopQrScannerInstance(scannerToStop).finally(() => {
+          qrScanProcessingRef.current = false;
+        });
+      } else {
+        qrScanProcessingRef.current = false;
+      }
+    };
+  }, [handleQrScanError, handleQrScanSuccess, qrScannerOpen]);
 
   const handleDetailClose = useCallback(() => {
     setDetailModal({ open: false, data: null, loading: false, invNo: null });
@@ -2065,6 +3605,39 @@ function Database() {
     setDetailActSelected(null);
     setDetailQrOpen(false);
   }, []);
+
+  const handleDeleteDialogClose = useCallback(() => {
+    if (deleteLoading) return;
+    setDeleteTarget(null);
+    setDeleteError('');
+  }, [deleteLoading]);
+
+  const handleDeleteConfirm = useCallback(async () => {
+    const invNo = String(deleteTarget?.invNo || '').trim();
+    if (!invNo || !isAdmin) return;
+
+    setDeleteLoading(true);
+    setDeleteError('');
+    try {
+      await equipmentAPI.deleteByInvNo(invNo);
+      setAllEquipment((prev) => removeItemFromGrouped(prev, invNo));
+      setFilteredData((prev) => (prev === null ? prev : removeItemFromGrouped(prev, invNo)));
+      setSelectedItems((prev) => prev.filter((value) => String(value || '').trim() !== invNo));
+      setLoadedCount((prev) => Math.max(0, Number(prev || 0) - 1));
+      setServerTotal((prev) => Math.max(0, Number(prev || 0) - 1));
+      setTotal((prev) => Math.max(0, Number(prev || 0) - 1));
+      if (String(detailModal?.invNo || '').trim() === invNo) {
+        handleDetailClose();
+      }
+      setDeleteTarget(null);
+      notifyDatabaseSuccess(`Оборудование ${invNo} удалено.`);
+    } catch (error) {
+      const apiDetail = error?.response?.data?.detail;
+      setDeleteError(typeof apiDetail === 'string' ? apiDetail : 'Не удалось удалить оборудование.');
+    } finally {
+      setDeleteLoading(false);
+    }
+  }, [deleteTarget?.invNo, detailModal?.invNo, handleDetailClose, isAdmin, notifyDatabaseSuccess]);
 
   const handleDetailCancel = useCallback(() => {
     if (detailInitialForm) {
@@ -2145,15 +3718,11 @@ function Database() {
 
   useEffect(() => {
     if (!detailModal.open || !detailEditMode) return;
-    if (!detailForm?.branch_no) {
-      setDetailLocations([]);
-      return;
-    }
 
     let canceled = false;
     const loadLocations = async () => {
       try {
-        const response = await getLocationsCached(detailForm.branch_no);
+        const response = await getLocationsCached(detailForm?.branch_no);
         if (!canceled) {
           const nextLocations = Array.isArray(response) ? response : [];
           setDetailLocations(nextLocations);
@@ -2170,7 +3739,7 @@ function Database() {
     return () => {
       canceled = true;
     };
-  }, [detailModal.open, detailEditMode, detailForm?.branch_no]);
+  }, [detailModal.open, detailEditMode, detailForm?.branch_no, getLocationsCached]);
 
   useEffect(() => {
     if (!detailModal.open || !detailEditMode) return;
@@ -2384,7 +3953,7 @@ function Database() {
             return toIdOrNull(byDefaultName?.LOC_NO ?? byDefaultName?.loc_no);
           }
 
-          return toIdOrNull(nextLocations[0]?.LOC_NO ?? nextLocations[0]?.loc_no);
+          return normalizedPrev;
         });
       } catch (error) {
         console.error('Error loading transfer locations:', error);
@@ -2408,6 +3977,7 @@ function Database() {
     actionModal.type,
     transferResult,
     transferBranchNo,
+    getLocationsCached,
     transferSourceDefaults.loc_no,
     transferSourceDefaults.location_name,
   ]);
@@ -2686,8 +4256,7 @@ function Database() {
         ) {
           return;
         }
-        const firstLocNo = toIdOrNull(nextLocations[0]?.LOC_NO ?? nextLocations[0]?.loc_no) || '';
-        setAddEquipmentForm((prev) => ({ ...prev, loc_no: firstLocNo }));
+        setAddEquipmentForm((prev) => ({ ...prev, loc_no: '' }));
       } catch (error) {
         console.error('Error loading add-equipment locations:', error);
         if (!canceled) {
@@ -2705,7 +4274,7 @@ function Database() {
     return () => {
       canceled = true;
     };
-  }, [addEquipmentModalOpen, addEquipmentForm?.branch_no, addEquipmentForm?.loc_no]);
+  }, [addEquipmentModalOpen, addEquipmentForm?.branch_no, addEquipmentForm?.loc_no, getLocationsCached]);
 
   useEffect(() => {
     if (!addEquipmentModalOpen) return;
@@ -2764,8 +4333,7 @@ function Database() {
         ) {
           return;
         }
-        const firstLocNo = toIdOrNull(nextLocations[0]?.LOC_NO ?? nextLocations[0]?.loc_no) || '';
-        setAddConsumableForm((prev) => ({ ...prev, loc_no: firstLocNo }));
+        setAddConsumableForm((prev) => ({ ...prev, loc_no: '' }));
       } catch (error) {
         console.error('Error loading add-consumable locations:', error);
         if (!canceled) {
@@ -2898,7 +4466,6 @@ function Database() {
       setAddEquipmentForm(buildAddEquipmentDefaults());
       setAddEmployeeInput('');
       setAddEmployeeOptions([]);
-      setAddLocations([]);
       setAddModels([]);
       await fetchAllEquipment({ force: true });
     } catch (error) {
@@ -2962,7 +4529,6 @@ function Database() {
       setAddConsumableSuccess(successMessage);
       notifyDatabaseSuccess(successMessage);
       setAddConsumableForm(buildAddConsumableDefaults());
-      setAddConsumableLocations([]);
       setAddConsumableModels([]);
       await fetchAllEquipment({ force: true });
     } catch (error) {
@@ -3031,12 +4597,52 @@ function Database() {
     notifyDatabaseSuccess,
   ]);
 
+  const clearUploadActReminderQuery = useCallback(() => {
+    const nextSearch = clearUploadActReminderSearch(location.search);
+    if (nextSearch === null) return;
+    navigate(
+      {
+        pathname: location.pathname,
+        search: nextSearch,
+      },
+      { replace: true }
+    );
+  }, [location.pathname, location.search, navigate]);
+
+  const loadTransferReminder = useCallback(async (reminderId, { silent = false } = {}) => {
+    const normalizedReminderId = String(reminderId || '').trim();
+    if (!normalizedReminderId) return null;
+    setUploadActReminderLoading(true);
+    setUploadActReminderError('');
+    try {
+      const payload = await equipmentAPI.getTransferReminder(normalizedReminderId);
+      setUploadActReminderBinding(payload || null);
+      return payload || null;
+    } catch (error) {
+      const apiDetail = error?.response?.data?.detail;
+      const message = typeof apiDetail === 'string' ? apiDetail : 'Не удалось загрузить напоминание по акту.';
+      setUploadActReminderError(message);
+      if (!silent) {
+        notifyDatabaseWarning(message);
+      }
+      return null;
+    } finally {
+      setUploadActReminderLoading(false);
+    }
+  }, [notifyDatabaseWarning]);
+
   const resetUploadActState = useCallback(() => {
+    setUploadActReminderBinding(null);
+    setUploadActReminderLoading(false);
+    setUploadActReminderError('');
     setUploadActFile(null);
+    setUploadActPreviewUrl('');
+    setUploadActPreviewError('');
     setUploadActDraft(null);
     setUploadActParsing(false);
     setUploadActCommitting(false);
     setUploadActError('');
+    setUploadActInvVerified(false);
     setUploadActCommitResult(null);
     setUploadActAutoEmail(true);
     setUploadActEmailSubject('');
@@ -3059,22 +4665,121 @@ function Database() {
     });
   }, []);
 
+  useEffect(() => {
+    if (!uploadActFile) {
+      setUploadActPreviewUrl('');
+      setUploadActPreviewError('');
+      return undefined;
+    }
+
+    let objectUrl = '';
+    try {
+      objectUrl = URL.createObjectURL(uploadActFile);
+      setUploadActPreviewUrl(objectUrl);
+      setUploadActPreviewError('');
+    } catch {
+      setUploadActPreviewUrl('');
+      setUploadActPreviewError('Не удалось подготовить встроенный просмотр PDF. Откройте файл отдельно.');
+    }
+
+    return () => {
+      if (objectUrl) {
+        URL.revokeObjectURL(objectUrl);
+      }
+    };
+  }, [uploadActFile]);
+
   const openUploadActModal = useCallback(() => {
     if (!canDatabaseWrite) return;
     resetUploadActState();
     setUploadActModalOpen(true);
   }, [canDatabaseWrite, resetUploadActState]);
 
+  const openUploadActModalForReminder = useCallback(async ({
+    reminderId = '',
+    sourceTaskId = '',
+  } = {}) => {
+    if (!canDatabaseWrite) return;
+    const normalizedReminderId = String(reminderId || '').trim();
+    const normalizedTaskId = String(sourceTaskId || '').trim();
+    resetUploadActState();
+    setUploadActModalOpen(true);
+    if (normalizedReminderId || normalizedTaskId) {
+      setUploadActReminderBinding({
+        reminder_id: normalizedReminderId || null,
+        task_id: normalizedTaskId || null,
+        pending_groups_total: 0,
+        completed_groups_total: 0,
+        pending_groups: [],
+        completed_groups: [],
+      });
+    }
+    if (normalizedReminderId) {
+      await loadTransferReminder(normalizedReminderId, { silent: true });
+    }
+  }, [canDatabaseWrite, loadTransferReminder, resetUploadActState]);
+
   const closeUploadActModal = useCallback(() => {
     setUploadActModalOpen(false);
+    setUploadActPendingDeepLink(null);
     resetUploadActState();
-  }, [resetUploadActState]);
+    clearUploadActReminderQuery();
+  }, [clearUploadActReminderQuery, resetUploadActState]);
+
+  useEffect(() => {
+    setUploadActPendingDeepLink(parseUploadActReminderDeepLink(location.search));
+  }, [location.search]);
+
+  useEffect(() => {
+    if (uploadActModalOpen) return;
+    if (parseUploadActReminderDeepLink(location.search)) return;
+    uploadActReminderLinkRef.current = '';
+  }, [location.search, uploadActModalOpen]);
+
+  useEffect(() => {
+    const resolvedCurrentDbId = normalizeDbId(db_name || '');
+    const { action, deepLink } = getUploadActReminderDeepLinkAction({
+      search: location.search,
+      currentDbId: resolvedCurrentDbId,
+      handledSignature: uploadActReminderLinkRef.current,
+      isModalOpen: uploadActModalOpen,
+    });
+
+    if (!deepLink) {
+      setUploadActPendingDeepLink(null);
+      return;
+    }
+
+    if (!uploadActPendingDeepLink || uploadActPendingDeepLink.signature !== deepLink.signature) {
+      setUploadActPendingDeepLink(deepLink);
+      return;
+    }
+
+    if (action === 'sync_db') {
+      if (localStorage.getItem('selected_database') !== deepLink.dbId) {
+        localStorage.setItem('selected_database', deepLink.dbId);
+      }
+      if (resolvedCurrentDbId !== deepLink.dbId) {
+        setDbNameState(deepLink.dbId);
+      }
+      return;
+    }
+
+    if (action !== 'open') return;
+
+    uploadActReminderLinkRef.current = deepLink.signature;
+    void openUploadActModalForReminder({
+      reminderId: deepLink.reminderId,
+      sourceTaskId: deepLink.sourceTaskId,
+    });
+  }, [db_name, location.search, openUploadActModalForReminder, uploadActModalOpen, uploadActPendingDeepLink]);
 
   const handleUploadActFileSelect = useCallback((event) => {
     const nextFile = event?.target?.files?.[0] || null;
     setUploadActFile(nextFile);
     setUploadActDraft(null);
     setUploadActError('');
+    setUploadActInvVerified(false);
   }, []);
 
   const applyUploadActDraft = useCallback((draft) => {
@@ -3089,6 +4794,7 @@ function Database() {
         : '',
     });
     setUploadActError('');
+    setUploadActInvVerified(false);
     setUploadActAutoEmail(true);
     uploadActAutoEmailRef.current = true;
   }, []);
@@ -3161,6 +4867,38 @@ function Database() {
     uploadActFile,
   ]);
 
+  const openUploadActPreviewInNewTab = useCallback(() => {
+    if (!uploadActPreviewUrl) return;
+    const openedWindow = window.open(uploadActPreviewUrl, '_blank', 'noopener,noreferrer');
+    if (!openedWindow) {
+      notifyDatabaseWarning('Не удалось открыть PDF в новой вкладке. Проверьте настройки браузера.');
+    }
+  }, [notifyDatabaseWarning, uploadActPreviewUrl]);
+
+  const handleUploadActInvNosChange = useCallback((event) => {
+    const nextValue = event?.target?.value ?? '';
+    setUploadActForm((prev) => ({ ...prev, equipment_inv_nos_text: nextValue }));
+    setUploadActInvVerified(false);
+  }, []);
+
+  const uploadActCommitDisabled = useMemo(() => (
+    isUploadActCommitDisabled({
+      hasDraft: Boolean(uploadActDraft),
+      hasFinalInvNos: uploadActInvVerification.hasFinalInvNos,
+      isParsing: uploadActParsing,
+      isCommitting: uploadActCommitting,
+      isEmailLoading: uploadActEmailLoading,
+      isInventoryVerified: uploadActInvVerified,
+    })
+  ), [
+    uploadActCommitting,
+    uploadActDraft,
+    uploadActEmailLoading,
+    uploadActInvVerification.hasFinalInvNos,
+    uploadActInvVerified,
+    uploadActParsing,
+  ]);
+
   const handleUploadActCommit = useCallback(async () => {
     if (!canDatabaseWrite) {
       setUploadActError('Недостаточно прав для изменения данных.');
@@ -3188,6 +4926,8 @@ function Database() {
         to_employee: String(uploadActForm.to_employee || '').trim() || undefined,
         doc_date: String(uploadActForm.doc_date || '').trim() || undefined,
         equipment_inv_nos: finalInvNos,
+        source_task_id: String(uploadActReminderBinding?.task_id || '').trim() || undefined,
+        reminder_id: String(uploadActReminderBinding?.reminder_id || '').trim() || undefined,
       });
       setUploadActCommitResult(result || null);
       setUploadActEmailSubject(`Акт №${result?.doc_no || ''}`.trim());
@@ -3200,6 +4940,25 @@ function Database() {
       setUploadActEmailSummary({ mode: '', successCount: 0, failedCount: 0 });
 
       notifyDatabaseSuccess(`Акт загружен. DOC_NO: ${result?.doc_no}, FILE_NO: ${result?.file_no}.`);
+
+      if (typeof result?.reminder_warning === 'string' && result.reminder_warning.trim()) {
+        setUploadActReminderError(result.reminder_warning.trim());
+        notifyDatabaseWarning(result.reminder_warning.trim());
+      } else {
+        setUploadActReminderError('');
+      }
+
+      if (String(result?.reminder_status || '').trim() === 'matched_partial') {
+        notifyDatabaseInfo(`Подписанный акт привязан к reminder-задаче. Осталось актов: ${Number(result?.reminder_pending_groups || 0)}.`);
+      }
+      if (String(result?.reminder_status || '').trim() === 'completed') {
+        notifyDatabaseSuccess('Все подписанные акты загружены. Reminder-задача закрыта автоматически.');
+      }
+
+      const nextReminderId = String(result?.reminder_id || uploadActReminderBinding?.reminder_id || '').trim();
+      if (nextReminderId) {
+        await loadTransferReminder(nextReminderId, { silent: true });
+      }
 
       const autoFrom = String(uploadActForm.from_employee || '').trim();
       const autoTo = String(uploadActForm.to_employee || '').trim();
@@ -3242,7 +5001,17 @@ function Database() {
     } finally {
       setUploadActCommitting(false);
     }
-  }, [canDatabaseWrite, notifyDatabaseSuccess, uploadActDraft?.draft_id, uploadActForm, uploadActAutoEmail]);
+  }, [
+    canDatabaseWrite,
+    loadTransferReminder,
+    notifyDatabaseInfo,
+    notifyDatabaseSuccess,
+    notifyDatabaseWarning,
+    uploadActDraft?.draft_id,
+    uploadActForm,
+    uploadActReminderBinding?.reminder_id,
+    uploadActReminderBinding?.task_id,
+  ]);
 
   const handleUploadActEmailSend = useCallback(async () => {
     if (!canDatabaseWrite) {
@@ -3287,6 +5056,30 @@ function Database() {
       setUploadActEmailLoading(false);
     }
   }, [canDatabaseWrite, uploadActCommitResult?.doc_no, uploadActEmailRecipients, uploadActEmailSubject, uploadActEmailBody]);
+
+  const renderUploadActInvNoChips = useCallback((values, sx = {}) => {
+    if (!Array.isArray(values) || values.length === 0) {
+      return (
+        <Typography variant="body2" color="text.secondary">
+          Не указано
+        </Typography>
+      );
+    }
+
+    return (
+      <Box sx={{ display: 'flex', gap: 0.75, flexWrap: 'wrap', ...sx }}>
+        {values.map((invNo) => (
+          <Chip
+            key={String(invNo)}
+            size="small"
+            label={String(invNo)}
+            variant="outlined"
+            sx={{ fontWeight: 600 }}
+          />
+        ))}
+      </Box>
+    );
+  }, []);
 
   const selectedEmployeeOption = useMemo(() => {
     if (!detailForm?.empl_no) return null;
@@ -3391,7 +5184,7 @@ function Database() {
     }
 
     if (payload.branch_no !== undefined && comparableCurrent.loc_no === null) {
-      setDetailError('Выберите местоположение для выбранного филиала.');
+      setDetailError('Выберите местоположение.');
       return;
     }
 
@@ -3766,6 +5559,17 @@ function Database() {
     );
   }, []);
 
+  const handleMobileCardSelect = useCallback((invNo) => {
+    setMobileSelectionMode(true);
+    handleCheckboxChange(invNo);
+  }, [handleCheckboxChange]);
+
+  useEffect(() => {
+    if (selectedItems.length === 0) {
+      setMobileSelectionMode(false);
+    }
+  }, [selectedItems.length]);
+
   const handleSelectAll = useCallback((items, event) => {
     const isChecked = event.target.checked;
     if (isChecked) {
@@ -3806,6 +5610,7 @@ function Database() {
   const handleAction = useCallback((actionType, itemOrInvNo) => {
     if (dataMode === DATA_MODE_CONSUMABLES) return;
     if (actionType !== 'view' && !canDatabaseWrite) return;
+    if (actionType === 'delete' && !isAdmin) return;
     const invNo = toInvNo(itemOrInvNo);
     if (actionType === 'view') {
       setDetailEditMode(false);
@@ -3826,6 +5631,13 @@ function Database() {
       setDetailActFieldsOpen(false);
       setDetailActSelected(null);
       setDetailModal({ open: true, data: null, loading: true, invNo });
+    } else if (actionType === 'delete') {
+      const item = (itemOrInvNo && typeof itemOrInvNo === 'object') ? itemOrInvNo : findEquipmentByInvNo(invNo);
+      setDeleteError('');
+      setDeleteTarget({
+        invNo,
+        item: item || null,
+      });
     } else {
       if (actionType === 'transfer') {
         resetTransferState();
@@ -3841,7 +5653,7 @@ function Database() {
       }
       setActionModal({ open: true, type: actionType, invNo, componentKind });
     }
-  }, [canDatabaseWrite, dataMode, findEquipmentByInvNo, resetTransferState]);
+  }, [canDatabaseWrite, dataMode, findEquipmentByInvNo, isAdmin, resetTransferState]);
 
   const handleTransferActDownload = useCallback(async (act) => {
     try {
@@ -4195,7 +6007,33 @@ function Database() {
     });
   }, [selectedItemsSet]);
 
-  const renderTable = useCallback((items) => (
+  const renderTable = useCallback((items) => {
+    // Mobile: card view with modern expandable cards
+    if (isMobile && dataMode !== DATA_MODE_CONSUMABLES) {
+      return (
+        <Box>
+          {items.map((item, idx) => {
+            const invNo = toInvNo(item);
+            return (
+              <ModernEquipmentCard
+                key={invNo + '-' + idx}
+                item={item}
+                theme={theme}
+                onAction={handleAction}
+                dataMode={dataMode}
+                canWrite={canDatabaseWrite}
+                isAdmin={isAdmin}
+                selectionMode={mobileSelectionMode || selectedItemsSet.has(invNo)}
+                isSelected={selectedItemsSet.has(invNo)}
+                onToggleSelect={canDatabaseWrite ? () => handleMobileCardSelect(invNo) : undefined}
+              />
+            );
+          })}
+        </Box>
+      );
+    }
+    // Desktop/tablet: table view
+    return (
     <EquipmentTable
       items={items}
       isMobile={isMobile}
@@ -4212,8 +6050,9 @@ function Database() {
       allowSelection={!isConsumablesMode && canDatabaseWrite}
       dataMode={dataMode}
       canWrite={canDatabaseWrite}
+      isAdmin={isAdmin}
     />
-  ), [
+  )}, [
     isMobile,
     theme,
     selectedItemsSet,
@@ -4223,11 +6062,14 @@ function Database() {
     isAllSelected,
     isSomeSelected,
     handleCheckboxChange,
+    handleMobileCardSelect,
     handleAction,
     canDatabaseWrite,
     openEditConsumableQtyModal,
     isConsumablesMode,
     dataMode,
+    isAdmin,
+    mobileSelectionMode,
   ]);
 
   const dataSections = useMemo(() => {
@@ -4308,9 +6150,6 @@ function Database() {
                         {locationName}
                       </Typography>
                     </Box>
-                    <Typography variant="body2" color="text.secondary" sx={{ fontSize: isMobile ? '0.75rem' : undefined }}>
-                      ({locationItems.length.toLocaleString()})
-                    </Typography>
                   </Box>
                   <Collapse in={isLocationExpanded} timeout="auto" unmountOnExit>
                     <Box sx={{ p: isMobile ? 0.5 : 1, borderTop: '1px solid ' + theme.palette.divider }}>
@@ -4328,7 +6167,7 @@ function Database() {
 
   if (loading && filteredData === null) {
     return (
-      <MainLayout>
+      <MainLayout headerMode={isMobile ? 'hidden' : 'default'}>
         <PageShell>
           <LoadingSpinner message="Загрузка данных..." />
         </PageShell>
@@ -4337,39 +6176,95 @@ function Database() {
   }
 
   return (
-    <MainLayout>
-      <PageShell sx={{ pb: isMobile ? 2 : 3 }}>
-        <Box sx={{
-          mb: 3,
-          display: 'flex',
-          flexDirection: isMobile ? 'column' : 'row',
-          justifyContent: 'space-between',
-          alignItems: isMobile ? 'flex-start' : 'center',
-          gap: 2,
-
-        }}>
-          <Box>
-            <Typography variant={isMobile ? 'h5' : 'h4'} component="h1">
-              {selectedBranch || 'IT-invent WEB'}
-              {filteredData === null && selectedBranch && (
-                <Typography component="span" variant="inherit" color="text.secondary">
-                  {' '}({total.toLocaleString()})
-                </Typography>
-              )}
-            </Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.25 }}>
-              Режим: {isConsumablesMode ? 'Расходники' : 'Оборудование'}
-            </Typography>
-            {filteredData === null && (
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                Загружено: {loadedCount.toLocaleString()}
-                {serverTotal > 0 ? ` из ${serverTotal.toLocaleString()}` : ''}
+    <MainLayout headerMode={isMobile ? 'hidden' : 'default'}>
+      <PageShell sx={{ pb: isMobile ? 14 : 3 }}>
+        {/* Встроенная шапка для мобильных */}
+        {isMobile && (
+          <Box sx={{ mb: 1.5 }}>
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0 }}>
+              <IconButton
+                onClick={handleOpenMainDrawer}
+                size="small"
+                sx={{ color: theme.palette.text.primary, width: 36, height: 36, flexShrink: 0 }}
+              >
+                <MenuRoundedIcon />
+              </IconButton>
+              <Typography variant="subtitle2" sx={{ fontWeight: 800, fontSize: '0.95rem', lineHeight: 1, flexShrink: 0 }}>
+                ITINVENT
               </Typography>
-            )}
-          </Box>
-        </Box>
 
-        <Paper variant="outlined" sx={{ mb: 1.5, p: 0.5 }}>
+              {databases.length > 0 && (
+                <FormControl size="small" sx={{ flex: 1, minWidth: 0, maxWidth: 220, ml: 'auto' }}>
+                  <Select
+                    value={normalizeDbId(db_name || '')}
+                    onChange={handleDatabaseSelectChange}
+                    displayEmpty
+                    renderValue={() => (
+                      <Typography
+                        component="span"
+                        noWrap
+                        sx={{ display: 'block', minWidth: 0, fontSize: '0.75rem', fontWeight: 700, lineHeight: 1.2 }}
+                      >
+                        {selectedDatabaseName}
+                      </Typography>
+                    )}
+                    MenuProps={{
+                      PaperProps: {
+                        sx: { maxHeight: 320 },
+                      },
+                    }}
+                    sx={{
+                      height: 32,
+                      borderRadius: 2,
+                      bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.10 : 0.05),
+                      '& .MuiSelect-select': {
+                        py: 0.5,
+                        pl: 1,
+                        pr: '28px !important',
+                        minHeight: '0 !important',
+                        display: 'flex',
+                        alignItems: 'center',
+                      },
+                      '& .MuiOutlinedInput-notchedOutline': {
+                        borderColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.20 : 0.14),
+                      },
+                      '&:hover .MuiOutlinedInput-notchedOutline': {
+                        borderColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.35 : 0.28),
+                      },
+                      '& .MuiSelect-icon': {
+                        right: 4,
+                        color: theme.palette.text.secondary,
+                      },
+                    }}
+                  >
+                    {databases.map((db) => (
+                      <MenuItem key={normalizeDbId(db.id)} value={normalizeDbId(db.id)} dense>
+                        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, minWidth: 0, width: '100%' }}>
+                          <Typography variant="body2" noWrap sx={{ minWidth: 0, flex: 1 }}>
+                            {db.name}
+                          </Typography>
+                          {normalizeDbId(db.id) === normalizeDbId(currentDb?.id) && (
+                            <Chip label="Текущая" size="small" color="success" sx={{ height: 18, fontSize: '0.65rem', flexShrink: 0 }} />
+                          )}
+                        </Box>
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              )}
+            </Box>
+          </Box>
+        )}
+
+        {/* Экран загрузки */}
+        {loading ? (
+          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
+            <CircularProgress />
+          </Box>
+        ) : (
+        <>
+        {/* Табы */}
+        <Paper variant="outlined" sx={{ mb: isMobile ? 1.5 : 2, p: 0.5 }}>
           <Tabs
             value={dataMode}
             onChange={(_, value) => setDataMode(value)}
@@ -4380,137 +6275,529 @@ function Database() {
           </Tabs>
         </Paper>
 
-        <Box sx={{
-          mb: 2,
-          display: 'flex',
-          flexDirection: isMobile ? 'column' : 'row',
-          gap: isMobile ? 1 : 2,
-          alignItems: 'center',
-          flexWrap: 'wrap',
-        }}>
+        {/* Поиск */}
+        <Box sx={{ mb: 2 }}>
           <TextField
             placeholder={
               isConsumablesMode
-                ? 'Поиск по ID, инв. №, серийному, типу, модели, сотруднику...'
-                : 'Поиск по ID, инв. №, серийному, IP, MAC, имени ПК...'
+                ? 'Поиск по ID, типу, модели...'
+                : 'Поиск по инв. №, модели, сотруднику...'
             }
             value={searchQuery}
             onChange={handleSearchChange}
             onKeyDown={handleSearchKeyDown}
-            sx={{
-              flexGrow: 1,
-              minWidth: isMobile ? '100%' : 250,
-              maxWidth: isMobile ? '100%' : 400,
-            }}
-            size={isMobile ? 'medium' : 'small'}
+            size="small"
+            fullWidth
             InputProps={{
-              endAdornment: (
-                <InputAdornment position="end">
-                  {searchQuery && (
-                    <IconButton size="small" onClick={clearSearch} edge="end">
-                      <CloseIcon />
-                    </IconButton>
-                  )}
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon sx={{ color: theme.palette.text.secondary }} />
                 </InputAdornment>
               ),
+              endAdornment: searchQuery ? (
+                <InputAdornment position="end">
+                  <IconButton
+                    size="small"
+                    onClick={clearSearch}
+                    sx={{
+                      bgcolor: alpha(theme.palette.text.disabled, 0.08),
+                      '&:hover': { bgcolor: alpha(theme.palette.text.disabled, 0.15) },
+                    }}
+                  >
+                    <CloseIcon fontSize="small" />
+                  </IconButton>
+                </InputAdornment>
+              ) : null,
+            }}
+            sx={{
+              '& .MuiOutlinedInput-root': {
+                borderRadius: 3,
+                bgcolor: alpha(theme.palette.text.primary, 0.04),
+                transition: theme.transitions.create(['background-color', 'box-shadow', 'border-color'], {
+                  duration: theme.transitions.duration.shorter,
+                }),
+                '& fieldset': {
+                  borderColor: 'transparent',
+                  borderWidth: 1,
+                },
+                '&:hover fieldset': {
+                  borderColor: alpha(theme.palette.primary.main, 0.25),
+                },
+                '&.Mui-focused': {
+                  bgcolor: alpha(theme.palette.primary.main, 0.06),
+                  boxShadow: `0 0 0 3px ${alpha(theme.palette.primary.main, 0.12)}`,
+                  '& fieldset': {
+                    borderColor: theme.palette.primary.main,
+                  },
+                },
+              },
+              '& .MuiOutlinedInput-input': {
+                py: 1.1,
+              },
             }}
           />
+        </Box>
 
-          {branches.length > 0 && (
-            <FormControl size="small" sx={{ minWidth: 180 }}>
-              <InputLabel>Филиал</InputLabel>
-              <Select
-                value={selectedBranch}
-                onChange={(e) => handleBranchChange(e.target.value)}
-                label="Филиал"
+        {!isMobile && (
+          <Paper
+            elevation={0}
+            sx={getOfficeActionTraySx(ui, {
+              p: 1.2,
+              mb: 2,
+              display: 'flex',
+              flexDirection: 'column',
+              gap: 1,
+            })}
+          >
+            <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+              {!isConsumablesMode && (
+                <>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<QrCodeScannerIcon />}
+                    onClick={handleQrScannerOpen}
+                    sx={getOfficeQuietActionSx(ui, theme, 'primary', { whiteSpace: 'nowrap', borderRadius: '12px' })}
+                  >
+                    QR Сканер
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<MyLocationIcon />}
+                    onClick={handleIdentifyWorkspace}
+                    disabled={identifyPCLoading}
+                    sx={getOfficeQuietActionSx(ui, theme, 'warning', { whiteSpace: 'nowrap', borderRadius: '12px' })}
+                  >
+                    {identifyPCLoading ? 'Определение...' : 'Определить ПК'}
+                  </Button>
+                </>
+              )}
+
+              {canDatabaseWrite && !isConsumablesMode && (
+                <>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<UploadFileIcon />}
+                    onClick={openUploadActModal}
+                    sx={getOfficeQuietActionSx(ui, theme, 'primary', { whiteSpace: 'nowrap', borderRadius: '12px' })}
+                  >
+                    Загрузить акт
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<AddIcon />}
+                    onClick={openAddEquipmentModal}
+                    sx={getOfficeQuietActionSx(ui, theme, 'success', { whiteSpace: 'nowrap', borderRadius: '12px' })}
+                  >
+                    Добавить оборудование
+                  </Button>
+                </>
+              )}
+
+              {canDatabaseWrite && isConsumablesMode && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  startIcon={<AddIcon />}
+                  onClick={openAddConsumableModal}
+                  sx={getOfficeQuietActionSx(ui, theme, 'success', { whiteSpace: 'nowrap', borderRadius: '12px' })}
+                >
+                  Добавить расходник
+                </Button>
+              )}
+            </Box>
+
+            {(branches.length > 0 || (filteredData === null && nextEquipmentPage) || hasExpandedVisible) && (
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 1,
+                  flexWrap: 'wrap',
+                  pt: 1,
+                  borderTop: '1px solid',
+                  borderColor: ui.borderSoft,
+                }}
               >
-                <MenuItem value="">Выберите филиал</MenuItem>
-                {branches.map((branch) => (
-                  <MenuItem key={branch.BRANCH_NO} value={branch.BRANCH_NAME}>
-                    {branch.BRANCH_NAME}
-                  </MenuItem>
-                ))}
-              </Select>
-            </FormControl>
-          )}
-          {!isConsumablesMode && (
-            <Button
-              variant="outlined"
-              color="secondary"
-              startIcon={identifyPCLoading ? <CircularProgress size={20} color="inherit" /> : <MyLocationIcon />}
-              onClick={handleIdentifyWorkspace}
-              disabled={identifyPCLoading}
-              sx={{ minWidth: isMobile ? '100%' : 210 }}
-            >
-              {identifyPCLoading ? 'Определение...' : 'Определить ПК'}
-            </Button>
-          )}
-          {!isConsumablesMode && canDatabaseWrite && (
-            <Button
-              variant="outlined"
-              startIcon={<UploadFileIcon />}
-              onClick={openUploadActModal}
-              sx={{ minWidth: isMobile ? '100%' : 250 }}
-            >
-              Загрузить подписанный акт
-            </Button>
-          )}
-          {!isConsumablesMode && canDatabaseWrite && (
-            <Button
-              variant="contained"
-              onClick={openAddEquipmentModal}
-              sx={{ minWidth: isMobile ? '100%' : 210 }}
-            >
-              Добавить оборудование
-            </Button>
-          )}
-          {isConsumablesMode && canDatabaseWrite && (
-            <Button
-              variant="contained"
-              onClick={openAddConsumableModal}
-              sx={{ minWidth: isMobile ? '100%' : 210 }}
-            >
-              Добавить расходник
-            </Button>
-          )}
-          {filteredData === null && nextEquipmentPage && (
-            <Button
-              variant="text"
-              onClick={() => loadMoreEquipmentPages({ maxPages: 1 })}
-              disabled={loadingMoreEquipment}
-              sx={{ minWidth: isMobile ? '100%' : 200 }}
-            >
-              {loadingMoreEquipment
-                ? 'Загрузка...'
-                : `Загрузить ещё (${nextEquipmentPage}/${equipmentPagesTotal})`}
-            </Button>
-          )}
-          {hasExpandedVisible && (
-            <Button
-              variant="text"
-              size="small"
-              onClick={handleCollapseAll}
-              startIcon={<ExpandMoreIcon sx={{ transform: 'rotate(180deg)', fontSize: 15 }} />}
-              sx={{
-                minWidth: isMobile ? '100%' : 'auto',
-                px: 0.9,
-                py: 0.3,
-                height: 30,
-                borderRadius: 1.25,
-                textTransform: 'none',
-                fontSize: '0.75rem',
-                fontWeight: 500,
-                color: 'text.secondary',
-                '&:hover': {
-                  backgroundColor: theme.palette.action.hover,
-                  color: 'text.primary',
+                {branches.length > 0 && (
+                  <FormControl
+                    size="small"
+                    sx={{
+                      minWidth: 220,
+                      maxWidth: 320,
+                      '& .MuiOutlinedInput-root': {
+                        borderRadius: '12px',
+                        bgcolor: ui.actionBg,
+                      },
+                    }}
+                  >
+                    <InputLabel shrink>Филиал</InputLabel>
+                    <Select
+                      value={selectedBranch}
+                      onChange={(event) => handleBranchChange(event.target.value)}
+                      label="Филиал"
+                    >
+                      <MenuItem value="">Все филиалы</MenuItem>
+                      {branches.map((branch) => (
+                        <MenuItem key={branch.BRANCH_NO} value={branch.BRANCH_NAME}>
+                          {branch.BRANCH_NAME}
+                        </MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                )}
+
+                {filteredData === null && nextEquipmentPage && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={loadingMoreEquipment ? <CircularProgress size={16} /> : undefined}
+                    onClick={() => loadMoreEquipmentPages({ maxPages: 1 })}
+                    disabled={loadingMoreEquipment}
+                    sx={getOfficeQuietActionSx(ui, theme, 'neutral', { whiteSpace: 'nowrap', borderRadius: '12px' })}
+                  >
+                    {loadingMoreEquipment ? 'Загрузка...' : `Загрузить ещё (${nextEquipmentPage}/${equipmentPagesTotal})`}
+                  </Button>
+                )}
+
+                {hasExpandedVisible && (
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<ExpandMoreIcon sx={{ transform: 'rotate(180deg)' }} />}
+                    onClick={handleCollapseAll}
+                    sx={getOfficeQuietActionSx(ui, theme, 'neutral', { whiteSpace: 'nowrap', borderRadius: '12px' })}
+                  >
+                    Свернуть разделы
+                  </Button>
+                )}
+              </Box>
+            )}
+          </Paper>
+        )}
+
+        {/* FAB кнопка для мобильных действий */}
+        {isMobile && (
+          <>
+            {/* Selection mode FAB - shows when in selection mode */}
+            {mobileSelectionMode || selectedItems.length > 0 ? (
+              <Fab
+                color="default"
+                size="small"
+                onClick={() => {
+                  setSelectedItems([]);
+                  setMobileSelectionMode(false);
+                }}
+                sx={{
+                  position: 'fixed',
+                  bottom: 80,
+                  right: 16,
+                  zIndex: 1100,
+                  boxShadow: theme.shadows[8],
+                  bgcolor: theme.palette.background.paper,
+                  color: theme.palette.text.primary,
+                  '&:hover': {
+                    boxShadow: theme.shadows[12],
+                    transform: 'scale(1.05)',
+                  },
+                  transition: 'all 0.2s ease-in-out',
+                }}
+              >
+                <CloseIcon />
+              </Fab>
+            ) : (
+              /* Regular FAB menu - shows when NOT in selection mode */
+              <Fab
+                color="primary"
+                size="small"
+                onClick={() => {
+                  // Haptic feedback если поддерживается
+                  if (navigator.vibrate) navigator.vibrate(10);
+                  setFabSheetOpen(true);
+                }}
+                sx={{
+                  position: 'fixed',
+                  bottom: 80,
+                  right: 16,
+                  zIndex: 1100,
+                  boxShadow: theme.shadows[8],
+                  background: `linear-gradient(135deg, ${theme.palette.primary.main}, ${theme.palette.primary.dark})`,
+                  '&:hover': {
+                    boxShadow: theme.shadows[12],
+                    transform: 'scale(1.05)',
+                  },
+                  transition: 'all 0.2s ease-in-out',
+                }}
+              >
+                <MoreVertIcon />
+              </Fab>
+            )}
+
+            <Drawer
+              anchor="bottom"
+              open={fabSheetOpen}
+              onClose={() => setFabSheetOpen(false)}
+              ModalProps={{
+                keepMounted: true,
+                BackdropProps: {
+                  sx: {
+                    backdropFilter: 'blur(4px)',
+                    backgroundColor: 'rgba(0, 0, 0, 0.3)',
+                  },
+                },
+              }}
+              PaperProps={{
+                sx: {
+                  borderTopLeftRadius: 24,
+                  borderTopRightRadius: 24,
+                  maxHeight: '75vh',
+                  px: 2,
+                  pb: 4,
+                  pt: 1,
+                  bgcolor: 'background.paper',
+                  backgroundImage: 'none',
+                  boxShadow: '0 -4px 20px rgba(0,0,0,0.1)',
                 },
               }}
             >
-              Свернуть разделы
-            </Button>
-          )}
-        </Box>
+              <Box sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                gap: 2,
+                animation: fabSheetOpen ? 'slideIn 0.3s ease-out' : 'none',
+                '@keyframes slideIn': {
+                  from: {
+                    opacity: 0,
+                    transform: 'translateY(20px)',
+                  },
+                  to: {
+                    opacity: 1,
+                    transform: 'translateY(0)',
+                  },
+                },
+              }}>
+                {/* Drag handle */}
+                <Box sx={{
+                  width: 40,
+                  height: 4,
+                  borderRadius: 2,
+                  backgroundColor: theme.palette.mode === 'dark' ? 'rgba(255,255,255,0.2)' : 'rgba(0,0,0,0.15)',
+                  mx: 'auto',
+                  mb: 1.5,
+                  transition: 'background-color 0.2s',
+                }} />
+
+                {/* Header с заголовком */}
+                <Box sx={{
+                  textAlign: 'center',
+                  mb: 1,
+                  animation: fabSheetOpen ? 'fadeInUp 0.3s ease-out 0.05s both' : 'none',
+                  '@keyframes fadeInUp': {
+                    from: { opacity: 0, transform: 'translateY(10px)' },
+                    to: { opacity: 1, transform: 'translateY(0)' },
+                  },
+                }}>
+                  <Typography variant="subtitle1" sx={{ fontWeight: 700, fontSize: '1.1rem' }}>
+                    Действия
+                  </Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Выберите действие из списка ниже
+                  </Typography>
+                </Box>
+
+                {/* === ГРУППА 1: СКАНИРОВАНИЕ === */}
+                {!isConsumablesMode && (
+                  <Box sx={{
+                    animation: fabSheetOpen ? 'fadeInUp 0.3s ease-out 0.1s both' : 'none',
+                  }}>
+                    <Typography variant="caption" sx={{
+                      fontWeight: 600,
+                      color: 'text.secondary',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px',
+                      display: 'block',
+                      mb: 1,
+                      ml: 1,
+                    }}>
+                      📱 Сканирование
+                    </Typography>
+                    <Box sx={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 1,
+                      p: 1.5,
+                      borderRadius: 2,
+                      bgcolor: theme.palette.mode === 'dark' ? 'rgba(25, 118, 210, 0.08)' : 'rgba(25, 118, 210, 0.04)',
+                      border: '1px solid',
+                      borderColor: theme.palette.mode === 'dark' ? 'rgba(25, 118, 210, 0.15)' : 'rgba(25, 118, 210, 0.1)',
+                    }}>
+                      <EnhancedFabAction
+                        icon={<QrCodeScannerIcon />}
+                        label="QR Сканер"
+                        description="Сканировать QR-код оборудования"
+                        onClick={() => { handleQrScannerOpen(); setFabSheetOpen(false); }}
+                        color="primary"
+                      />
+
+                      <EnhancedFabAction
+                        icon={<MyLocationIcon />}
+                        label="Определить ПК"
+                        description="Найти компьютер по сети"
+                        onClick={() => { handleIdentifyWorkspace(); setFabSheetOpen(false); }}
+                        loading={identifyPCLoading}
+                        loadingText="Определение..."
+                      />
+                    </Box>
+                  </Box>
+                )}
+
+                {/* === ГРУППА 2: ДОБАВЛЕНИЕ === */}
+                {(canDatabaseWrite) && (
+                  <Box sx={{
+                    animation: fabSheetOpen ? 'fadeInUp 0.3s ease-out 0.15s both' : 'none',
+                  }}>
+                    <Typography variant="caption" sx={{
+                      fontWeight: 600,
+                      color: 'text.secondary',
+                      textTransform: 'uppercase',
+                      letterSpacing: '0.5px',
+                      display: 'block',
+                      mb: 1,
+                      ml: 1,
+                    }}>
+                      ➕ Добавление
+                    </Typography>
+                    <Box sx={{
+                      display: 'flex',
+                      flexDirection: 'column',
+                      gap: 1,
+                      p: 1.5,
+                      borderRadius: 2,
+                      bgcolor: theme.palette.mode === 'dark' ? 'rgba(46, 125, 50, 0.08)' : 'rgba(46, 125, 50, 0.04)',
+                      border: '1px solid',
+                      borderColor: theme.palette.mode === 'dark' ? 'rgba(46, 125, 50, 0.15)' : 'rgba(46, 125, 50, 0.1)',
+                    }}>
+                      {!isConsumablesMode && (
+                        <>
+                          <EnhancedFabAction
+                            icon={<UploadFileIcon />}
+                            label="Загрузить акт"
+                            description="Импортировать акт из файла"
+                            onClick={() => { openUploadActModal(); setFabSheetOpen(false); }}
+                            variant="gradient"
+                          />
+
+                          <EnhancedFabAction
+                            icon={<AddIcon />}
+                            label="Добавить оборудование"
+                            description="Новое оборудование в базу"
+                            onClick={() => { openAddEquipmentModal(); setFabSheetOpen(false); }}
+                            variant="contained"
+                          />
+                        </>
+                      )}
+
+                      {isConsumablesMode && (
+                        <EnhancedFabAction
+                          icon={<AddIcon />}
+                          label="Добавить расходник"
+                          description="Новый картридж/расходник"
+                          onClick={() => { openAddConsumableModal(); setFabSheetOpen(false); }}
+                          variant="contained"
+                        />
+                      )}
+                    </Box>
+                  </Box>
+                )}
+
+                {/* === ГРУППА 3: УПРАВЛЕНИЕ === */}
+                <Box sx={{
+                  animation: fabSheetOpen ? 'fadeInUp 0.3s ease-out 0.2s both' : 'none',
+                }}>
+                  <Typography variant="caption" sx={{
+                    fontWeight: 600,
+                    color: 'text.secondary',
+                    textTransform: 'uppercase',
+                    letterSpacing: '0.5px',
+                    display: 'block',
+                    mb: 1,
+                    ml: 1,
+                  }}>
+                    ⚙️ Управление
+                  </Typography>
+                  <Box sx={{
+                    display: 'flex',
+                    flexDirection: 'column',
+                    gap: 1,
+                    p: 1.5,
+                    borderRadius: 2,
+                    bgcolor: theme.palette.mode === 'dark' ? 'rgba(237, 108, 2, 0.08)' : 'rgba(237, 108, 2, 0.04)',
+                    border: '1px solid',
+                    borderColor: theme.palette.mode === 'dark' ? 'rgba(237, 108, 2, 0.15)' : 'rgba(237, 108, 2, 0.1)',
+                  }}>
+                    {/* Выбор филиала */}
+                    {branches.length > 0 && (
+                      <FormControl size="small" fullWidth>
+                        <InputLabel shrink>Филиал</InputLabel>
+                        <Select
+                          value={selectedBranch}
+                          onChange={(e) => handleBranchChange(e.target.value)}
+                          label="Филиал"
+                          sx={{
+                            borderRadius: 2,
+                            '& .MuiSelect-select': {
+                              py: 1.2,
+                            }
+                          }}
+                        >
+                          <MenuItem value="">Все филиалы</MenuItem>
+                          {branches.map((branch) => (
+                            <MenuItem key={branch.BRANCH_NO} value={branch.BRANCH_NAME}>
+                              {branch.BRANCH_NAME}
+                            </MenuItem>
+                          ))}
+                        </Select>
+                      </FormControl>
+                    )}
+
+                    {/* Загрузить ещё */}
+                    {filteredData === null && nextEquipmentPage && (
+                      <EnhancedFabAction
+                        icon={<CircularProgress size={20} sx={{ display: loadingMoreEquipment ? 'block' : 'none' }} />}
+                        label="Загрузить ещё"
+                        description={loadingMoreEquipment ? 'Загрузка...' : `Стр. ${nextEquipmentPage}/${equipmentPagesTotal}`}
+                        onClick={() => { loadMoreEquipmentPages({ maxPages: 1 }); setFabSheetOpen(false); }}
+                        disabled={loadingMoreEquipment}
+                      />
+                    )}
+
+                    {/* Свернуть разделы */}
+                    {hasExpandedVisible && (
+                      <EnhancedFabAction
+                        icon={<ExpandMoreIcon sx={{ transform: 'rotate(180deg)' }} />}
+                        label="Свернуть разделы"
+                        description="Скрыть все открытые группы"
+                        onClick={() => { handleCollapseAll(); setFabSheetOpen(false); }}
+                      />
+                    )}
+
+                    {/* Режим выбора - вход в multi-select */}
+                    <EnhancedFabAction
+                      icon={<Checkbox />}
+                      label="Режим выбора"
+                      description="Выбрать несколько элементов"
+                      onClick={() => { setMobileSelectionMode(true); setFabSheetOpen(false); }}
+                      variant="outlined"
+                    />
+                  </Box>
+                </Box>
+              </Box>
+            </Drawer>
+          </>
+        )}
 
         {!isConsumablesMode && canDatabaseWrite && selectedItems.length > 0 && (
           <Paper
@@ -4589,7 +6876,10 @@ function Database() {
               {!isMobile && 'Компонент'}
             </Button>
             <IconButton
-              onClick={() => setSelectedItems([])}
+              onClick={() => {
+                setSelectedItems([]);
+                setMobileSelectionMode(false);
+              }}
               size={isMobile ? 'medium' : 'small'}
               sx={getOfficeQuietActionSx(ui, theme)}
             >
@@ -4625,9 +6915,16 @@ function Database() {
         <Dialog
           open={uploadActModalOpen}
           onClose={closeUploadActModal}
-          maxWidth="md"
           fullWidth
           fullScreen={isMobile}
+          PaperProps={{
+            sx: !isMobile
+              ? {
+                width: 'min(92vw, 1780px)',
+                maxWidth: '1780px',
+              }
+              : undefined,
+          }}
         >
           <DialogTitle>Загрузка подписанного акта</DialogTitle>
           <DialogContent sx={{ pt: 2 }}>
@@ -4669,170 +6966,331 @@ function Database() {
                 </Box>
               </Paper>
 
-              <Collapse in={!uploadActCommitResult} mountOnEnter unmountOnExit>
-                <Box sx={{ display: 'grid', gap: 2 }}>
-                  <Fade in timeout={220}>
-                    <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
-                      <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-                        1. Выбор и распознавание PDF
-                      </Typography>
-                      <Alert severity="info" variant="outlined" sx={{ mb: 1.5 }}>
-                        Загрузите подписанный PDF. Если API распознавания недоступен, используйте ручной режим без API.
-                      </Alert>
-                      <Box sx={{ display: 'grid', gap: 1.5 }}>
-                        <Button
-                          component="label"
-                          variant="outlined"
-                          startIcon={<UploadFileIcon />}
-                          disabled={uploadActParsing || uploadActCommitting}
-                          sx={{ justifyContent: 'flex-start' }}
-                        >
-                          {uploadActFile ? `Файл: ${uploadActFile.name}` : 'Выбрать PDF'}
-                          <input
-                            hidden
-                            type="file"
-                            accept="application/pdf,.pdf"
-                            onChange={handleUploadActFileSelect}
-                          />
-                        </Button>
-
-                        <Button
-                          variant="contained"
-                          onClick={() => handleUploadActParse(false)}
-                          disabled={!uploadActFile || uploadActParsing || uploadActCommitting}
-                        >
-                          {uploadActParsing ? 'Распознавание...' : 'Распознать акт'}
-                        </Button>
-                        <Button
-                          variant="outlined"
-                          onClick={() => handleUploadActParse(true)}
-                          disabled={!uploadActFile || uploadActParsing || uploadActCommitting}
-                        >
-                          {uploadActParsing ? 'Подготовка...' : 'Заполнить вручную (без API)'}
-                        </Button>
-                      </Box>
-                    </Paper>
-                  </Fade>
-
-                  {uploadActError && (
-                    <Alert severity="error" onClose={() => setUploadActError('')}>
-                      {uploadActError}
+              {(uploadActReminderBinding || uploadActReminderLoading || uploadActReminderError) && (
+                <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                    Reminder по загрузке акта
+                  </Typography>
+                  {uploadActReminderLoading && (
+                    <Typography variant="body2" color="text.secondary" sx={{ mb: 1 }}>
+                      Загрузка данных напоминания...
+                    </Typography>
+                  )}
+                  {uploadActReminderError && (
+                    <Alert severity="warning" sx={{ mb: 1 }}>
+                      {uploadActReminderError}
                     </Alert>
                   )}
-
-                  <Collapse in={Boolean(uploadActDraft)} mountOnEnter unmountOnExit>
-                    <Fade in={Boolean(uploadActDraft)} timeout={280}>
-                      <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
-                        <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
-                          2. Проверка данных акта
-                        </Typography>
-
-                        {Array.isArray(uploadActDraft?.warnings) && uploadActDraft.warnings.length > 0 && (
-                          <Alert severity="warning" sx={{ mb: 1.5 }}>
-                            {uploadActDraft.warnings.join(' | ')}
-                          </Alert>
-                        )}
-
-                        <Box sx={{ display: 'grid', gap: 1.5 }}>
-                          <TextField
-                            label="Название документа"
-                            value={uploadActForm.document_title}
-                            onChange={(e) => setUploadActForm((prev) => ({ ...prev, document_title: e.target.value }))}
-                            fullWidth
-                            size={isMobile ? 'medium' : 'small'}
-                          />
-                          <Grid container spacing={1.5}>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="От сотрудника"
-                                value={uploadActForm.from_employee}
-                                onChange={(e) => setUploadActForm((prev) => ({ ...prev, from_employee: e.target.value }))}
-                                fullWidth
-                                size={isMobile ? 'medium' : 'small'}
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={6}>
-                              <TextField
-                                label="На сотрудника"
-                                value={uploadActForm.to_employee}
-                                onChange={(e) => setUploadActForm((prev) => ({ ...prev, to_employee: e.target.value }))}
-                                fullWidth
-                                size={isMobile ? 'medium' : 'small'}
-                              />
-                            </Grid>
-                          </Grid>
-                          <Grid container spacing={1.5}>
-                            <Grid item xs={12} md={4}>
-                              <TextField
-                                label="Дата документа (YYYY-MM-DD)"
-                                value={uploadActForm.doc_date}
-                                onChange={(e) => setUploadActForm((prev) => ({ ...prev, doc_date: e.target.value }))}
-                                fullWidth
-                                size={isMobile ? 'medium' : 'small'}
-                                placeholder="2026-02-17"
-                              />
-                            </Grid>
-                            <Grid item xs={12} md={8}>
-                              <TextField
-                                label="Инв. № (через запятую)"
-                                value={uploadActForm.equipment_inv_nos_text}
-                                onChange={(e) => setUploadActForm((prev) => ({ ...prev, equipment_inv_nos_text: e.target.value }))}
-                                fullWidth
-                                size={isMobile ? 'medium' : 'small'}
-                                placeholder="100887, 100888, 100889"
-                              />
-                            </Grid>
-                          </Grid>
-
-                          <FormControlLabel
-                            control={
-                              <Switch
-                                checked={uploadActAutoEmail}
-                                onChange={(e) => setUploadActAutoEmail(e.target.checked)}
-                                color="primary"
-                              />
-                            }
-                            label="Автоматически отправить акт на email участникам (От кого / На кого)"
-                            sx={{ mt: 0.5, mb: 0.5 }}
-                          />
-
-                          <Paper variant="outlined" sx={{ p: 1.25 }}>
-                            <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
-                              Найденные позиции
+                  {uploadActReminderBinding && (
+                    <Box sx={{ display: 'grid', gap: 1 }}>
+                      <Typography variant="body2">
+                        Ожидается актов: {Number(uploadActReminderBinding.pending_groups_total || 0)}.
+                        Загружено: {Number(uploadActReminderBinding.completed_groups_total || 0)}.
+                      </Typography>
+                      {Array.isArray(uploadActReminderBinding.pending_groups) && uploadActReminderBinding.pending_groups.length > 0 && (
+                        <Box sx={{ display: 'grid', gap: 0.5 }}>
+                          {uploadActReminderBinding.pending_groups.slice(0, 4).map((group) => (
+                            <Typography key={String(group.id || group.generated_act_id || group.old_employee_name)} variant="caption" color="text.secondary">
+                              {group.old_employee_name || 'Без владельца'}: {Array.isArray(group.inv_nos) ? group.inv_nos.join(', ') : '-'}
                             </Typography>
-                            {Array.isArray(uploadActDraft?.resolved_items) && uploadActDraft.resolved_items.length > 0 ? (
-                              <Table size="small">
-                                <TableHead>
-                                  <TableRow>
-                                    <TableCell>ID</TableCell>
-                                    <TableCell>Инв. №</TableCell>
-                                    <TableCell>Серийный №</TableCell>
-                                    <TableCell>Модель</TableCell>
-                                    <TableCell>Сотрудник</TableCell>
-                                  </TableRow>
-                                </TableHead>
-                                <TableBody>
-                                  {uploadActDraft.resolved_items.map((row, idx) => (
-                                    <TableRow key={`${String(row?.item_id || 'unknown')}-${idx}`}>
-                                      <TableCell>{row?.item_id || '-'}</TableCell>
-                                      <TableCell>{row?.inv_no || '-'}</TableCell>
-                                      <TableCell>{row?.serial_no || '-'}</TableCell>
-                                      <TableCell>{row?.model_name || '-'}</TableCell>
-                                      <TableCell>{row?.employee_name || '-'}</TableCell>
-                                    </TableRow>
-                                  ))}
-                                </TableBody>
-                              </Table>
-                            ) : (
-                              <Typography variant="body2" color="text.secondary">
-                                Позиции не определены автоматически. Укажите инв. номера вручную.
-                              </Typography>
-                            )}
-                          </Paper>
+                          ))}
                         </Box>
-                      </Paper>
-                    </Fade>
-                  </Collapse>
+                      )}
+                      <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                        {uploadActReminderBinding.task_id && (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            onClick={() => navigate(`/tasks?task=${encodeURIComponent(uploadActReminderBinding.task_id)}`)}
+                          >
+                            Открыть задачу
+                          </Button>
+                        )}
+                        {uploadActReminderBinding.reminder_id && (
+                          <Button
+                            size="small"
+                            variant="text"
+                            onClick={() => void loadTransferReminder(uploadActReminderBinding.reminder_id)}
+                          >
+                            Обновить статус
+                          </Button>
+                        )}
+                      </Box>
+                    </Box>
+                  )}
+                </Paper>
+              )}
+
+              <Collapse in={!uploadActCommitResult} mountOnEnter unmountOnExit>
+                <Box sx={{ display: 'grid', gap: 2 }}>
+                  <Box
+                    sx={{
+                      display: 'grid',
+                      gridTemplateColumns: { xs: '1fr', lg: 'minmax(420px, 0.95fr) minmax(560px, 1.2fr)' },
+                      gap: 2,
+                      alignItems: 'start',
+                    }}
+                  >
+                    <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2, display: 'grid', gap: 1.25 }}>
+                      <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, alignItems: 'center', flexWrap: 'wrap' }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                          Предпросмотр PDF
+                        </Typography>
+                        {uploadActPreviewUrl && (
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            startIcon={<OpenInNewIcon />}
+                            onClick={openUploadActPreviewInNewTab}
+                          >
+                            Открыть отдельно
+                          </Button>
+                        )}
+                      </Box>
+
+                      {!uploadActFile && (
+                        <Alert severity="info" variant="outlined">
+                          Выберите PDF-файл акта, чтобы увидеть его прямо в окне загрузки.
+                        </Alert>
+                      )}
+
+                      {uploadActFile && uploadActPreviewError && (
+                        <Alert severity="warning" variant="outlined">
+                          {uploadActPreviewError}
+                        </Alert>
+                      )}
+
+                      {uploadActFile && uploadActPreviewUrl && !uploadActPreviewError && (
+                        <Box
+                          component="iframe"
+                          src={uploadActPreviewUrl}
+                          title="Предпросмотр подписанного акта"
+                          sx={{
+                            width: '100%',
+                            height: { xs: 360, md: 720 },
+                            border: '1px solid',
+                            borderColor: 'divider',
+                            borderRadius: 1.5,
+                            bgcolor: '#fff',
+                          }}
+                        />
+                      )}
+                    </Paper>
+
+                    <Box sx={{ display: 'grid', gap: 2 }}>
+                      <Fade in timeout={220}>
+                        <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                          <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                            1. Выбор и распознавание PDF
+                          </Typography>
+                          <Alert severity="info" variant="outlined" sx={{ mb: 1.5 }}>
+                            Загрузите подписанный PDF. Если API распознавания недоступен, используйте ручной режим без API.
+                          </Alert>
+                          <Box sx={{ display: 'grid', gap: 1.5 }}>
+                            <Button
+                              component="label"
+                              variant="outlined"
+                              startIcon={<UploadFileIcon />}
+                              disabled={uploadActParsing || uploadActCommitting}
+                              sx={{ justifyContent: 'flex-start' }}
+                            >
+                              {uploadActFile ? `Файл: ${uploadActFile.name}` : 'Выбрать PDF'}
+                              <input
+                                hidden
+                                type="file"
+                                accept="application/pdf,.pdf"
+                                onChange={handleUploadActFileSelect}
+                              />
+                            </Button>
+
+                            <Button
+                              variant="contained"
+                              onClick={() => handleUploadActParse(false)}
+                              disabled={!uploadActFile || uploadActParsing || uploadActCommitting}
+                            >
+                              {uploadActParsing ? 'Распознавание...' : 'Распознать акт'}
+                            </Button>
+                            <Button
+                              variant="outlined"
+                              onClick={() => handleUploadActParse(true)}
+                              disabled={!uploadActFile || uploadActParsing || uploadActCommitting}
+                            >
+                              {uploadActParsing ? 'Подготовка...' : 'Заполнить вручную (без API)'}
+                            </Button>
+                          </Box>
+                        </Paper>
+                      </Fade>
+
+                      {uploadActError && (
+                        <Alert severity="error" onClose={() => setUploadActError('')}>
+                          {uploadActError}
+                        </Alert>
+                      )}
+
+                      <Collapse in={Boolean(uploadActDraft)} mountOnEnter unmountOnExit>
+                        <Fade in={Boolean(uploadActDraft)} timeout={280}>
+                          <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
+                              2. Проверка данных акта
+                            </Typography>
+
+                            {Array.isArray(uploadActDraft?.warnings) && uploadActDraft.warnings.length > 0 && (
+                              <Alert severity="warning" sx={{ mb: 1.5 }}>
+                                {uploadActDraft.warnings.join(' | ')}
+                              </Alert>
+                            )}
+
+                            <Box sx={{ display: 'grid', gap: 1.5 }}>
+                              <TextField
+                                label="Название документа"
+                                value={uploadActForm.document_title}
+                                onChange={(e) => setUploadActForm((prev) => ({ ...prev, document_title: e.target.value }))}
+                                fullWidth
+                                size={isMobile ? 'medium' : 'small'}
+                              />
+                              <Grid container spacing={1.5}>
+                                <Grid item xs={12} md={6}>
+                                  <TextField
+                                    label="От сотрудника"
+                                    value={uploadActForm.from_employee}
+                                    onChange={(e) => setUploadActForm((prev) => ({ ...prev, from_employee: e.target.value }))}
+                                    fullWidth
+                                    size={isMobile ? 'medium' : 'small'}
+                                  />
+                                </Grid>
+                                <Grid item xs={12} md={6}>
+                                  <TextField
+                                    label="На сотрудника"
+                                    value={uploadActForm.to_employee}
+                                    onChange={(e) => setUploadActForm((prev) => ({ ...prev, to_employee: e.target.value }))}
+                                    fullWidth
+                                    size={isMobile ? 'medium' : 'small'}
+                                  />
+                                </Grid>
+                              </Grid>
+                              <Grid container spacing={1.5}>
+                                <Grid item xs={12} md={4}>
+                                  <TextField
+                                    label="Дата документа (YYYY-MM-DD)"
+                                    value={uploadActForm.doc_date}
+                                    onChange={(e) => setUploadActForm((prev) => ({ ...prev, doc_date: e.target.value }))}
+                                    fullWidth
+                                    size={isMobile ? 'medium' : 'small'}
+                                    placeholder="2026-02-17"
+                                  />
+                                </Grid>
+                                <Grid item xs={12} md={8}>
+                                  <TextField
+                                    label="Инв. № (через запятую)"
+                                    value={uploadActForm.equipment_inv_nos_text}
+                                    onChange={handleUploadActInvNosChange}
+                                    fullWidth
+                                    size={isMobile ? 'medium' : 'small'}
+                                    placeholder="100887, 100888, 100889"
+                                  />
+                                </Grid>
+                              </Grid>
+
+                              <Alert severity={uploadActInvVerification.severity} variant="outlined" sx={{ alignItems: 'flex-start' }}>
+                                <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 0.75 }}>
+                                  Проверка инвентарных номеров
+                                </Typography>
+                                <Typography variant="body2" sx={{ mb: 1 }}>
+                                  {uploadActInvVerification.headline}
+                                </Typography>
+                                <Box sx={{ display: 'grid', gap: 1.25 }}>
+                                  <Box>
+                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                                      Найдено API
+                                    </Typography>
+                                    {renderUploadActInvNoChips(uploadActInvVerification.recognizedInvNos)}
+                                  </Box>
+                                  <Box>
+                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                                      Будет записано в акт
+                                    </Typography>
+                                    {renderUploadActInvNoChips(uploadActInvVerification.finalInvNos)}
+                                  </Box>
+                                  {uploadActInvVerification.onlyRecognizedInvNos.length > 0 && (
+                                    <Box>
+                                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                                        Не попадут в запись
+                                      </Typography>
+                                      {renderUploadActInvNoChips(uploadActInvVerification.onlyRecognizedInvNos)}
+                                    </Box>
+                                  )}
+                                  {uploadActInvVerification.onlyFinalInvNos.length > 0 && (
+                                    <Box>
+                                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mb: 0.5 }}>
+                                        Добавлены или изменены вручную
+                                      </Typography>
+                                      {renderUploadActInvNoChips(uploadActInvVerification.onlyFinalInvNos)}
+                                    </Box>
+                                  )}
+                                  <FormControlLabel
+                                    sx={{ mt: 0.25 }}
+                                    control={(
+                                      <Checkbox
+                                        checked={uploadActInvVerified}
+                                        onChange={(event) => setUploadActInvVerified(Boolean(event.target.checked))}
+                                      />
+                                    )}
+                                    label="Я проверил инвентарные номера по PDF перед записью акта"
+                                  />
+                                </Box>
+                              </Alert>
+
+                              <FormControlLabel
+                                control={(
+                                  <Switch
+                                    checked={uploadActAutoEmail}
+                                    onChange={(e) => setUploadActAutoEmail(e.target.checked)}
+                                    color="primary"
+                                  />
+                                )}
+                                label="Автоматически отправить акт на email участникам (От кого / На кого)"
+                                sx={{ mt: 0.5, mb: 0.5 }}
+                              />
+
+                              <Paper variant="outlined" sx={{ p: 1.25 }}>
+                                <Typography variant="subtitle2" sx={{ mb: 1, fontWeight: 600 }}>
+                                  Позиции, найденные по распознанным INV_NO
+                                </Typography>
+                                {Array.isArray(uploadActDraft?.resolved_items) && uploadActDraft.resolved_items.length > 0 ? (
+                                  <Table size="small">
+                                    <TableHead>
+                                      <TableRow>
+                                        <TableCell>ID</TableCell>
+                                        <TableCell>Инв. №</TableCell>
+                                        <TableCell>Серийный №</TableCell>
+                                        <TableCell>Модель</TableCell>
+                                        <TableCell>Сотрудник</TableCell>
+                                      </TableRow>
+                                    </TableHead>
+                                    <TableBody>
+                                      {uploadActDraft.resolved_items.map((row, idx) => (
+                                        <TableRow key={`${String(row?.item_id || 'unknown')}-${idx}`}>
+                                          <TableCell>{row?.item_id || '-'}</TableCell>
+                                          <TableCell>{row?.inv_no || '-'}</TableCell>
+                                          <TableCell>{row?.serial_no || '-'}</TableCell>
+                                          <TableCell>{row?.model_name || '-'}</TableCell>
+                                          <TableCell>{row?.employee_name || '-'}</TableCell>
+                                        </TableRow>
+                                      ))}
+                                    </TableBody>
+                                  </Table>
+                                ) : (
+                                  <Typography variant="body2" color="text.secondary">
+                                    Позиции не определены автоматически. Укажите инв. номера вручную и проверьте их по PDF.
+                                  </Typography>
+                                )}
+                              </Paper>
+                            </Box>
+                          </Paper>
+                        </Fade>
+                      </Collapse>
+                    </Box>
+                  </Box>
                 </Box>
               </Collapse>
 
@@ -4842,6 +7300,20 @@ function Database() {
                     <Alert severity="success" variant="outlined">
                       Акт сохранён в базе: DOC_NO {uploadActCommitResult?.doc_no}, FILE_NO {uploadActCommitResult?.file_no}.
                     </Alert>
+
+                    {String(uploadActCommitResult?.reminder_status || '').trim() === 'matched_partial' && (
+                      <Alert severity="info">
+                        Акт привязан к reminder-задаче. Осталось загрузить актов: {Number(uploadActCommitResult?.reminder_pending_groups || 0)}.
+                      </Alert>
+                    )}
+                    {String(uploadActCommitResult?.reminder_status || '').trim() === 'completed' && (
+                      <Alert severity="success">
+                        Все подписанные акты загружены. Reminder-задача закрыта автоматически.
+                      </Alert>
+                    )}
+                    {String(uploadActCommitResult?.reminder_warning || '').trim() && (
+                      <Alert severity="warning">{uploadActCommitResult.reminder_warning}</Alert>
+                    )}
 
                     <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
                       <Typography variant="subtitle2" sx={{ fontWeight: 700, mb: 1 }}>
@@ -5014,12 +7486,7 @@ function Database() {
               <Button
                 onClick={handleUploadActCommit}
                 variant="contained"
-                disabled={
-                  !uploadActDraft
-                  || uploadActParsing
-                  || uploadActCommitting
-                  || uploadActEmailLoading
-                }
+                disabled={uploadActCommitDisabled}
               >
                 {uploadActCommitting ? 'Запись...' : 'Подтвердить и записать'}
               </Button>
@@ -5124,9 +7591,7 @@ function Database() {
                             setAddEquipmentForm((prev) => ({
                               ...prev,
                               branch_no: value,
-                              loc_no: '',
                             }));
-                            setAddLocations([]);
                             setAddEquipmentError('');
                           }}
                         >
@@ -5401,9 +7866,7 @@ function Database() {
                         setAddConsumableForm((prev) => ({
                           ...prev,
                           branch_no: value,
-                          loc_no: '',
                         }));
-                        setAddConsumableLocations([]);
                         setAddConsumableError('');
                       }}
                     >
@@ -5928,8 +8391,6 @@ function Database() {
                                         ...prev,
                                         branch_no: branchNo,
                                         branch_name: selectedBranchOption?.branch_name || '',
-                                        loc_no: null,
-                                        location_name: '',
                                       }));
                                     }}
                                   >
@@ -5954,7 +8415,6 @@ function Database() {
                                   label="Местоположение"
                                   value={detailForm.loc_no ?? ''}
                                   options={locationOptions}
-                                  disabled={!detailForm.branch_no}
                                   size={isMobile ? 'medium' : 'small'}
                                   onChange={(locNo) => {
                                     const selectedLocation = locationOptions.find((location) => location.loc_no === toIdOrNull(locNo));
@@ -6247,6 +8707,106 @@ function Database() {
           </DialogActions>
         </Dialog>
 
+        {/* QR Scanner Dialog */}
+        <Dialog
+          open={qrScannerOpen}
+          onClose={handleQrScannerClose}
+          maxWidth="sm"
+          fullWidth
+          fullScreen={isMobile}
+        >
+          <DialogTitle>
+            Сканер QR-кода
+            <IconButton
+              aria-label="close"
+              onClick={handleQrScannerClose}
+              sx={{ position: 'absolute', right: 8, top: 8 }}
+              size="small"
+            >
+              <CloseIcon />
+            </IconButton>
+          </DialogTitle>
+          <DialogContent sx={{ pt: 2 }}>
+            <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
+              <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center' }}>
+                Наведите камеру на QR-код оборудования
+              </Typography>
+
+              <Box
+                sx={{
+                  width: '100%',
+                  maxWidth: 400,
+                  minHeight: 250,
+                  borderRadius: 2,
+                  overflow: 'hidden',
+                  border: '2px solid',
+                  borderColor: qrScannerError
+                    ? 'error.main'
+                    : (qrScannerReady ? 'success.main' : 'action.disabled'),
+                  position: 'relative',
+                }}
+              >
+                {/* Html5Qrcode owns this node; keep React-rendered children outside it. */}
+                <Box
+                  id="qr-reader"
+                  sx={{
+                    width: '100%',
+                    minHeight: 250,
+                    '& video': {
+                      width: '100% !important',
+                      borderRadius: 1,
+                    },
+                    '& canvas': {
+                      maxWidth: '100%',
+                    },
+                  }}
+                />
+                {qrScannerLoading && (
+                  <Box
+                    sx={{
+                      position: 'absolute',
+                      inset: 0,
+                      display: 'flex',
+                      flexDirection: 'column',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      gap: 1,
+                      bgcolor: alpha(theme.palette.background.paper, 0.82),
+                      pointerEvents: 'none',
+                    }}
+                  >
+                    <CircularProgress size={40} />
+                    <Typography variant="caption" color="text.secondary" sx={{ mt: 1 }}>
+                      Инициализация камеры...
+                    </Typography>
+                  </Box>
+                )}
+              </Box>
+
+              {qrScannerReady && !qrScannerLoading && !qrScannerError && (
+                <Alert severity="info" sx={{ width: '100%' }}>
+                  Камера активна. Держите QR-код в центре рамки.
+                </Alert>
+              )}
+              {qrScannerResult && (
+                <Alert severity="success" sx={{ width: '100%' }}>
+                  Распознано: {qrScannerResult.substring(0, 100)}
+                </Alert>
+              )}
+              {qrScannerError && (
+                <Alert severity="error" sx={{ width: '100%' }}>
+                  {qrScannerError}
+                </Alert>
+              )}
+            </Box>
+          </DialogContent>
+          <DialogActions sx={{ p: 2 }}>
+            <Button onClick={handleQrScannerClose} variant="outlined" color="inherit">
+              Закрыть
+            </Button>
+          </DialogActions>
+        </Dialog>
+
         <Dialog
           open={detailQrOpen}
           onClose={() => setDetailQrOpen(false)}
@@ -6257,7 +8817,11 @@ function Database() {
           <DialogTitle>QR-code оборудования</DialogTitle>
           <DialogContent sx={{ pt: 2 }}>
             <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, alignItems: 'center' }}>
-              {detailQrUrl ? (
+              {detailQrUrlLoading ? (
+                <Box sx={{ width: isMobile ? 260 : 300, height: isMobile ? 260 : 300, display: 'grid', placeItems: 'center' }}>
+                  <CircularProgress />
+                </Box>
+              ) : detailQrUrl ? (
                 <Box
                   component="img"
                   src={detailQrUrl}
@@ -6294,13 +8858,56 @@ function Database() {
             <Button
               component="a"
               href={detailQrUrl || '#'}
-              target="_blank"
-              rel="noopener noreferrer"
               download={detailQrFileName}
               variant="contained"
-              disabled={!detailQrUrl}
+              disabled={!detailQrUrl || detailQrUrlLoading}
             >
               Скачать PNG
+            </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={Boolean(deleteTarget)}
+          onClose={handleDeleteDialogClose}
+          maxWidth="xs"
+          fullWidth
+        >
+          <DialogTitle>Удалить оборудование</DialogTitle>
+          <DialogContent dividers>
+            <Typography variant="body2">
+              Удалить карточку оборудования{' '}
+              <strong>{deleteTarget?.invNo || '-'}</strong>
+              {deleteTarget?.item
+                ? ` (${readFirst(deleteTarget.item, ['MODEL_NAME', 'model_name'], 'без модели')})`
+                : ''}
+              ?
+            </Typography>
+            {deleteTarget?.item && (
+              <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+                Сотрудник: {readFirst(deleteTarget.item, ['OWNER_DISPLAY_NAME', 'employee_name'], '-')}
+              </Typography>
+            )}
+            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
+              Это действие необратимо.
+            </Typography>
+            {deleteError && (
+              <Alert severity="error" sx={{ mt: 2 }}>
+                {deleteError}
+              </Alert>
+            )}
+          </DialogContent>
+          <DialogActions sx={{ p: 2 }}>
+            <Button onClick={handleDeleteDialogClose} disabled={deleteLoading}>
+              Отмена
+            </Button>
+            <Button
+              color="error"
+              variant="contained"
+              onClick={() => void handleDeleteConfirm()}
+              disabled={deleteLoading}
+            >
+              {deleteLoading ? 'Удаление...' : 'Удалить'}
             </Button>
           </DialogActions>
         </Dialog>
@@ -6485,8 +9092,6 @@ function Database() {
                         onChange={(e) => {
                           const value = toIdOrNull(e.target.value);
                           setTransferBranchNo(value);
-                          setTransferLocationNo(null);
-                          setTransferLocations([]);
                           setActionError('');
                         }}
                       >
@@ -6531,6 +9136,44 @@ function Database() {
                     <Alert severity={transferResult.failed_count > 0 ? 'warning' : 'success'}>
                       Перенесено: {transferResult.success_count}, ошибок: {transferResult.failed_count}
                     </Alert>
+
+                    {(transferResult.upload_reminder_created || transferResult.upload_reminder_warning) && (
+                      <Box sx={{ display: 'grid', gap: 1 }}>
+                        {transferResult.upload_reminder_created && (
+                          <Alert severity="info">
+                            Создано напоминание о загрузке подписанного акта.
+                            {transferResult.upload_reminder_controller_username
+                              ? ` Контролёр: ${transferResult.upload_reminder_controller_username}.`
+                              : ''}
+                            {transferResult.upload_reminder_controller_fallback_used ? ' Использован fallback-контролёр.' : ''}
+                          </Alert>
+                        )}
+                        {transferResult.upload_reminder_warning && (
+                          <Alert severity="warning">{transferResult.upload_reminder_warning}</Alert>
+                        )}
+                        <Box sx={{ display: 'flex', gap: 1, flexWrap: 'wrap' }}>
+                          {transferResult.upload_reminder_task_id && (
+                            <Button
+                              size="small"
+                              variant="outlined"
+                              onClick={() => navigate(`/tasks?task=${encodeURIComponent(transferResult.upload_reminder_task_id)}`)}
+                            >
+                              Открыть задачу
+                            </Button>
+                          )}
+                          <Button
+                            size="small"
+                            variant="contained"
+                            onClick={() => void openUploadActModalForReminder({
+                              reminderId: transferResult.upload_reminder_id,
+                              sourceTaskId: transferResult.upload_reminder_task_id,
+                            })}
+                          >
+                            Загрузить подписанный акт
+                          </Button>
+                        </Box>
+                      </Box>
+                    )}
 
                     {Array.isArray(transferResult.failed) && transferResult.failed.length > 0 && (
                       <Box>
@@ -7409,6 +10052,8 @@ function Database() {
             )}
           </DialogActions>
         </Dialog>
+        </>
+        )}
       </PageShell>
     </MainLayout>
   );

@@ -10,7 +10,8 @@ import logging
 from backend.api.deps import get_current_active_user
 from backend.database.connection import get_database_config, set_user_database, get_user_database
 from backend.models.auth import User
-from backend.services import settings_service, user_db_selection_service
+from backend.services.settings_service import settings_service
+from backend.services.user_db_selection_service import user_db_selection_service
 
 logger = logging.getLogger(__name__)
 

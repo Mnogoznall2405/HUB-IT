@@ -6,17 +6,49 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
 $ecosystemAll = Join-Path $projectRoot 'scripts\pm2\ecosystem.all.config.js'
-$pm2Cmd = Join-Path $projectRoot 'pm2.cmd'
-$processNames = @('itinvent-backend', 'itinvent-scan', 'itinvent-bot')
+$processNames = @('itinvent-backend', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-bot')
+
+function Resolve-Pm2Command {
+    $preferredGlobalPm2Cmd = Join-Path $env:APPDATA 'npm\pm2.cmd'
+    if (Test-Path $preferredGlobalPm2Cmd) {
+        return $preferredGlobalPm2Cmd
+    }
+
+    $globalPm2Cmd = (where.exe pm2.cmd 2>$null | Where-Object { $_ -and ($_ -notlike "$projectRoot*") } | Select-Object -First 1)
+    if ($globalPm2Cmd) {
+        return $globalPm2Cmd.Trim()
+    }
+
+    $globalPm2 = (Get-Command 'pm2' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source)
+    if ($globalPm2) {
+        return $globalPm2
+    }
+
+    $localPm2 = Join-Path $projectRoot 'pm2.cmd'
+    if (Test-Path $localPm2) {
+        & $localPm2 --version *> $null
+        if ($LASTEXITCODE -eq 0) {
+            return $localPm2
+        }
+    }
+
+    throw 'PM2 command not found.'
+}
+
+$pm2Cmd = Resolve-Pm2Command
 
 function Get-Pm2Snapshot {
-    $jlistRaw = & $pm2Cmd jlist 2>$null
+    try {
+        $jlistRaw = & $pm2Cmd jlist 2>$null
+    } catch {
+        return @()
+    }
     if ($LASTEXITCODE -ne 0 -or -not $jlistRaw) {
         return @()
     }
 
     try {
-        $rows = @($jlistRaw | ConvertFrom-Json -Depth 10)
+        $rows = @(($jlistRaw -join "`n") | ConvertFrom-Json -Depth 10)
     } catch {
         return @()
     }
@@ -47,19 +79,15 @@ function Show-Pm2Snapshot {
         Format-Table Name, Status, PID, MemoryMB, Restarts -AutoSize
 }
 
-$existingProcesses = @(Get-Pm2Snapshot | ForEach-Object { $_.Name })
-if (-not $existingProcesses) {
-    $existingProcesses = @()
+Write-Host 'PM2: resetting daemon state...' -ForegroundColor Cyan
+try {
+    & $pm2Cmd kill | Out-Null
+}
+catch {
 }
 
 Write-Host 'PM2: restarting managed processes...' -ForegroundColor Cyan
-foreach ($name in $processNames) {
-    if ($existingProcesses -contains $name) {
-        & $pm2Cmd restart $name | Out-Null
-    } else {
-        & $pm2Cmd start $ecosystemAll --only $name | Out-Null
-    }
-}
+& $pm2Cmd start $ecosystemAll | Out-Null
 
 Write-Host 'PM2: current process list:' -ForegroundColor Cyan
 Show-Pm2Snapshot

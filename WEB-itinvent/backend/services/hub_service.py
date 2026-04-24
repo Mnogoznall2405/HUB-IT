@@ -4,18 +4,26 @@ Hub service for dashboard announcements, tasks, and notifications.
 from __future__ import annotations
 
 import json
+import logging
 import re
 import shutil
 import sqlite3
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from threading import RLock
 from typing import Any, Optional
 
+from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
+from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.db_schema import schema_name
 from local_store import get_local_store
+from backend.services.app_push_service import app_push_service
 from backend.services.authorization_service import PERM_TASKS_REVIEW, authorization_service
+from backend.services.notification_preferences_service import notification_preferences_service
 from backend.services.user_service import user_service
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now_iso() -> str:
@@ -34,31 +42,78 @@ def _safe_file_name(value: str) -> str:
 
 
 class HubService:
+    _DEFAULT_TASK_PROJECT_ID = "general-tasks"
+    _DEFAULT_TASK_PROJECT_NAME = "Общие задачи"
+    _DEFAULT_TASK_PROJECT_CODE = "GENERAL"
+    _DEFAULT_TASK_PROJECT_DESCRIPTION = "Базовый проект для задач, созданных до введения проектного учёта."
+    _TRANSFER_ACT_REMINDER_PROJECT_ID = "transfer-act-reminders"
+    _TRANSFER_ACT_REMINDER_PROJECT_NAME = "Перемещение техники"
+    _TRANSFER_ACT_REMINDER_PROJECT_CODE = "TRANSFER_ACTS"
+    _TRANSFER_ACT_REMINDER_PROJECT_DESCRIPTION = "Системный проект для reminder-задач о загрузке подписанных актов перемещения техники."
     _ANN_TABLE = "hub_announcements"
     _ANN_READS_TABLE = "hub_announcement_reads"
     _ANN_ATTACH_TABLE = "hub_announcement_attachments"
     _TASKS_TABLE = "hub_tasks"
+    _TASK_PROJECTS_TABLE = "hub_task_projects"
+    _TASK_OBJECTS_TABLE = "hub_task_objects"
     _TASK_REPORTS_TABLE = "hub_task_reports"
     _TASK_ATTACH_TABLE = "hub_task_attachments"
     _TASK_COMMENT_READS_TABLE = "hub_task_comment_reads"
+    _TASK_COMMENTS_TABLE = "hub_task_comments"
+    _TASK_STATUS_LOG_TABLE = "hub_task_status_log"
     _NOTIF_TABLE = "hub_notifications"
     _NOTIF_READS_TABLE = "hub_notification_reads"
+    _TASK_STATUSES = {"new", "in_progress", "review", "done"}
+    _COMPLETED_AT_SOURCE_VALUES = {"explicit", "reviewed_at", "submitted_at", "updated_at", "backfill"}
 
-    def __init__(self) -> None:
-        self.store = get_local_store()
-        self.db_path = Path(self.store.db_path)
-        self.data_dir = Path(self.store.data_dir)
+    def __init__(self, *, database_url: str | None = None) -> None:
+        explicit_database_url = str(database_url or "").strip() or None
+        self._database_url = get_app_database_url(explicit_database_url) if (explicit_database_url or is_app_database_configured()) else None
+        self._use_app_db = bool(self._database_url)
+        self.store = None if self._use_app_db else get_local_store()
+        self.db_path = None if self.store is None else Path(self.store.db_path)
+        self.data_dir = (
+            (Path(__file__).resolve().parents[3] / "data")
+            if self.store is None
+            else Path(self.store.data_dir)
+        )
+        self._app_schema = schema_name("app", self._database_url)
         self.announcement_attachments_root = self.data_dir / "hub_announcement_attachments"
         self.task_attachments_root = self.data_dir / "hub_task_attachments"
         self.announcement_attachments_root.mkdir(parents=True, exist_ok=True)
         self.task_attachments_root.mkdir(parents=True, exist_ok=True)
         self._lock = RLock()
+        if self._use_app_db and self._database_url:
+            initialize_app_schema(self._database_url)
         self._ensure_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
+        if self._use_app_db and self._database_url:
+            return SqlAlchemyCompatConnection(
+                get_app_engine(self._database_url),
+                table_names=self._hub_table_names(),
+                schema=self._app_schema,
+            )
         conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
         return conn
+
+    def _hub_table_names(self) -> set[str]:
+        return {
+            self._ANN_TABLE,
+            self._ANN_READS_TABLE,
+            self._ANN_ATTACH_TABLE,
+            self._TASKS_TABLE,
+            self._TASK_PROJECTS_TABLE,
+            self._TASK_OBJECTS_TABLE,
+            self._TASK_REPORTS_TABLE,
+            self._TASK_ATTACH_TABLE,
+            self._TASK_COMMENT_READS_TABLE,
+            self._TASK_COMMENTS_TABLE,
+            self._TASK_STATUS_LOG_TABLE,
+            self._NOTIF_TABLE,
+            self._NOTIF_READS_TABLE,
+        }
 
     def _table_columns(self, conn: sqlite3.Connection, table_name: str) -> set[str]:
         rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
@@ -67,6 +122,8 @@ class HubService:
     def _user_can_review_tasks(self, user: dict[str, Any]) -> bool:
         if not bool(user.get("is_active", True)):
             return False
+        if str(user.get("role") or "").strip().lower() == "admin":
+            return True
         return authorization_service.has_permission(
             user.get("role"),
             PERM_TASKS_REVIEW,
@@ -97,7 +154,11 @@ class HubService:
         self._backfill_task_controllers(conn)
 
     def _backfill_task_controllers(self, conn: sqlite3.Connection) -> None:
-        users = user_service.list_users()
+        try:
+            users = user_service.list_users()
+        except Exception as exc:
+            logger.warning("Skipping task controller backfill during startup: %s", exc)
+            return
         users_by_id = {self._as_int(user.get("id")): user for user in users}
         review_candidates = [user for user in users if self._user_can_review_tasks(user)]
         default_reviewer = review_candidates[0] if review_candidates else None
@@ -150,6 +211,197 @@ class HubService:
         if "priority" not in cols:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
 
+    def _ensure_task_extended_columns(self, conn: sqlite3.Connection) -> None:
+        columns = self._table_columns(conn, self._TASKS_TABLE)
+        if "project_id" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN project_id TEXT NULL")
+        if "object_id" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN object_id TEXT NULL")
+        if "protocol_date" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN protocol_date TEXT NULL")
+        if "completed_at" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN completed_at TEXT NULL")
+        if "completed_at_source" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN completed_at_source TEXT NULL")
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_project ON {self._TASKS_TABLE}(project_id, updated_at DESC)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_object ON {self._TASKS_TABLE}(object_id, updated_at DESC)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_protocol_date ON {self._TASKS_TABLE}(protocol_date)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_completed_at ON {self._TASKS_TABLE}(completed_at)"
+        )
+        self._backfill_task_completed_tracking(conn)
+
+    def _ensure_task_projects_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {self._TASK_PROJECTS_TABLE} (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                code TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{self._TASK_PROJECTS_TABLE}_active
+                ON {self._TASK_PROJECTS_TABLE}(is_active, name)
+            """
+        )
+
+    def _ensure_default_task_project(self, conn: sqlite3.Connection) -> None:
+        row = conn.execute(
+            f"""
+            SELECT id
+            FROM {self._TASK_PROJECTS_TABLE}
+            WHERE LOWER(name) = LOWER(?)
+            ORDER BY created_at ASC, id ASC
+            LIMIT 1
+            """,
+            (self._DEFAULT_TASK_PROJECT_NAME,),
+        ).fetchone()
+        project_id = _normalize_text(row["id"] if isinstance(row, sqlite3.Row) else row[0]) if row else ""
+        now_iso = _utc_now_iso()
+
+        if not project_id:
+            row = conn.execute(
+                f"SELECT id FROM {self._TASK_PROJECTS_TABLE} WHERE id = ? LIMIT 1",
+                (self._DEFAULT_TASK_PROJECT_ID,),
+            ).fetchone()
+            project_id = _normalize_text(row["id"] if isinstance(row, sqlite3.Row) else row[0]) if row else ""
+
+        if project_id:
+            conn.execute(
+                f"""
+                UPDATE {self._TASK_PROJECTS_TABLE}
+                SET name = ?, code = ?, description = ?, is_active = 1, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    self._DEFAULT_TASK_PROJECT_NAME,
+                    self._DEFAULT_TASK_PROJECT_CODE,
+                    self._DEFAULT_TASK_PROJECT_DESCRIPTION,
+                    now_iso,
+                    project_id,
+                ),
+            )
+        else:
+            project_id = self._DEFAULT_TASK_PROJECT_ID
+            conn.execute(
+                f"""
+                INSERT INTO {self._TASK_PROJECTS_TABLE}(id, name, code, description, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, 1, ?, ?)
+                """,
+                (
+                    project_id,
+                    self._DEFAULT_TASK_PROJECT_NAME,
+                    self._DEFAULT_TASK_PROJECT_CODE,
+                    self._DEFAULT_TASK_PROJECT_DESCRIPTION,
+                    now_iso,
+                    now_iso,
+                ),
+        )
+
+        conn.execute(
+            f"""
+            UPDATE {self._TASKS_TABLE}
+            SET project_id = ?
+            WHERE project_id IS NULL OR TRIM(project_id) = ''
+            """,
+            (project_id,),
+        )
+
+    def ensure_transfer_act_reminder_task_project(self) -> dict[str, Any]:
+        now_iso = _utc_now_iso()
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                f"SELECT id FROM {self._TASK_PROJECTS_TABLE} WHERE id = ? LIMIT 1",
+                (self._TRANSFER_ACT_REMINDER_PROJECT_ID,),
+            ).fetchone()
+            project_id = _normalize_text(row["id"] if isinstance(row, sqlite3.Row) else row[0]) if row else ""
+            if not project_id:
+                row = conn.execute(
+                    f"""
+                    SELECT id
+                    FROM {self._TASK_PROJECTS_TABLE}
+                    WHERE LOWER(name) = LOWER(?)
+                    ORDER BY created_at ASC, id ASC
+                    LIMIT 1
+                    """,
+                    (self._TRANSFER_ACT_REMINDER_PROJECT_NAME,),
+                ).fetchone()
+                project_id = _normalize_text(row["id"] if isinstance(row, sqlite3.Row) else row[0]) if row else ""
+
+            if project_id:
+                conn.execute(
+                    f"""
+                    UPDATE {self._TASK_PROJECTS_TABLE}
+                    SET name = ?, code = ?, description = ?, is_active = 1, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        self._TRANSFER_ACT_REMINDER_PROJECT_NAME,
+                        self._TRANSFER_ACT_REMINDER_PROJECT_CODE,
+                        self._TRANSFER_ACT_REMINDER_PROJECT_DESCRIPTION,
+                        now_iso,
+                        project_id,
+                    ),
+                )
+            else:
+                project_id = self._TRANSFER_ACT_REMINDER_PROJECT_ID
+                conn.execute(
+                    f"""
+                    INSERT INTO {self._TASK_PROJECTS_TABLE}(id, name, code, description, is_active, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, 1, ?, ?)
+                    """,
+                    (
+                        project_id,
+                        self._TRANSFER_ACT_REMINDER_PROJECT_NAME,
+                        self._TRANSFER_ACT_REMINDER_PROJECT_CODE,
+                        self._TRANSFER_ACT_REMINDER_PROJECT_DESCRIPTION,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+
+            conn.commit()
+            row = conn.execute(
+                f"SELECT * FROM {self._TASK_PROJECTS_TABLE} WHERE id = ?",
+                (project_id,),
+            ).fetchone()
+            return dict(row) if row else {}
+
+    def _ensure_task_objects_table(self, conn: sqlite3.Connection) -> None:
+        conn.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {self._TASK_OBJECTS_TABLE} (
+                id TEXT PRIMARY KEY,
+                project_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                code TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                is_active INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL
+            )
+            """
+        )
+        conn.execute(
+            f"""
+            CREATE INDEX IF NOT EXISTS idx_{self._TASK_OBJECTS_TABLE}_project
+                ON {self._TASK_OBJECTS_TABLE}(project_id, is_active, name)
+            """
+        )
+
     def _ensure_announcement_columns(self, conn: sqlite3.Connection) -> None:
         columns = self._table_columns(conn, self._ANN_TABLE)
         if "version" not in columns:
@@ -187,8 +439,6 @@ class HubService:
         if "reviewer_full_name" not in columns:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN reviewer_full_name TEXT NOT NULL DEFAULT ''")
 
-    _TASK_COMMENTS_TABLE = "hub_task_comments"
-
     def _ensure_task_comments_table(self, conn: sqlite3.Connection) -> None:
         conn.execute(f"""
             CREATE TABLE IF NOT EXISTS {self._TASK_COMMENTS_TABLE} (
@@ -222,8 +472,8 @@ class HubService:
         """)
 
     def _ensure_task_status_log_table(self, conn: sqlite3.Connection) -> None:
-        conn.execute("""
-            CREATE TABLE IF NOT EXISTS hub_task_status_log (
+        conn.execute(f"""
+            CREATE TABLE IF NOT EXISTS {self._TASK_STATUS_LOG_TABLE} (
                 id TEXT PRIMARY KEY,
                 task_id TEXT NOT NULL,
                 old_status TEXT NOT NULL DEFAULT '',
@@ -233,16 +483,16 @@ class HubService:
                 changed_at TEXT NOT NULL
             )
         """)
-        conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_hub_task_status_log_task
-                ON hub_task_status_log(task_id, changed_at ASC)
+        conn.execute(f"""
+            CREATE INDEX IF NOT EXISTS idx_{self._TASK_STATUS_LOG_TABLE}_task
+                ON {self._TASK_STATUS_LOG_TABLE}(task_id, changed_at ASC)
         """)
 
     def _log_status_change(self, conn: sqlite3.Connection, *, task_id: str, old_status: str, new_status: str, user_id: int, username: str) -> None:
         import uuid as _uuid
         now_iso = _utc_now_iso()
         conn.execute(
-            "INSERT INTO hub_task_status_log (id, task_id, old_status, new_status, changed_by_user_id, changed_by_username, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+            f"INSERT INTO {self._TASK_STATUS_LOG_TABLE} (id, task_id, old_status, new_status, changed_by_user_id, changed_by_username, changed_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
             (str(_uuid.uuid4()), task_id, old_status, new_status, user_id, username, now_iso),
         )
 
@@ -280,23 +530,15 @@ class HubService:
             )
             conn.execute(f"UPDATE {self._TASKS_TABLE} SET updated_at = ? WHERE id = ?", (now_iso, normalized_id))
             preview = self._preview_text(body_text)
-            recipients = {
-                self._as_int(task.get("assignee_user_id")),
-                self._as_int(task.get("created_by_user_id")),
-                self._as_int(task.get("controller_user_id")),
-            }
-            for recipient_user_id in recipients:
-                if recipient_user_id <= 0 or recipient_user_id == user_id:
-                    continue
-                self._create_notification(
-                    recipient_user_id=recipient_user_id,
-                    event_type="task.comment_added",
-                    title=f"Новый комментарий: {_normalize_text(task.get('title'))}",
-                    body=preview,
-                    entity_type="task",
-                    entity_id=normalized_id,
-                    conn=conn,
-                )
+            self._create_task_notifications(
+                conn,
+                recipient_user_ids=self._task_participant_user_ids(task, include_delegates=True),
+                skip_user_ids={user_id},
+                event_type="task.comment_added",
+                title=f"Новый комментарий: {_normalize_text(task.get('title'))}",
+                body=preview,
+                task_id=normalized_id,
+            )
             conn.commit()
             created = conn.execute(f"SELECT * FROM {self._TASK_COMMENTS_TABLE} WHERE id = ?", (comment_id,)).fetchone()
             return dict(created) if created else None
@@ -352,13 +594,17 @@ class HubService:
             self._ensure_task_status_log_table(conn)
             self._task_access_or_raise(conn, task_id=normalized_id, user_id=int(user_id), is_admin=is_admin)
             rows = conn.execute(
-                "SELECT * FROM hub_task_status_log WHERE task_id = ? ORDER BY changed_at ASC",
+                f"SELECT * FROM {self._TASK_STATUS_LOG_TABLE} WHERE task_id = ? ORDER BY changed_at ASC",
                 (normalized_id,),
             ).fetchall()
         return [dict(row) for row in rows]
 
     def _ensure_schema(self) -> None:
         with self._lock, self._connect() as conn:
+            if self._use_app_db and self._database_url and self._app_schema:
+                self._ensure_task_comments_table(conn)
+                self._ensure_task_comment_reads_table(conn)
+                self._ensure_task_status_log_table(conn)
             conn.executescript(
                 f"""
                 CREATE TABLE IF NOT EXISTS {self._ANN_TABLE} (
@@ -482,6 +728,10 @@ class HubService:
             self._ensure_announcement_read_columns(conn)
             self._ensure_task_controller_columns(conn)
             self._ensure_task_priority_column(conn)
+            self._ensure_task_extended_columns(conn)
+            self._ensure_task_projects_table(conn)
+            self._ensure_default_task_project(conn)
+            self._ensure_task_objects_table(conn)
             self._ensure_task_reviewer_full_name_column(conn)
             self._ensure_task_comments_table(conn)
             self._ensure_task_comment_reads_table(conn)
@@ -515,6 +765,84 @@ class HubService:
         if parsed.tzinfo is None:
             return parsed.replace(tzinfo=timezone.utc)
         return parsed.astimezone(timezone.utc)
+
+    @staticmethod
+    def _normalize_protocol_date(value: Any) -> str | None:
+        text = _normalize_text(value)
+        if not text:
+            return None
+        for candidate in (text, text[:10]):
+            try:
+                parsed = datetime.fromisoformat(candidate.replace("Z", "+00:00"))
+            except Exception:
+                continue
+            return parsed.date().isoformat()
+        return None
+
+    @classmethod
+    def _normalize_completed_at_source(cls, value: Any) -> str | None:
+        text = _normalize_text(value).lower()
+        if not text:
+            return None
+        return text if text in cls._COMPLETED_AT_SOURCE_VALUES else None
+
+    def _derive_completed_tracking(self, item: dict[str, Any]) -> tuple[str | None, str | None]:
+        status_text = _normalize_text(item.get("status")).lower()
+        explicit_completed_at = _normalize_text(item.get("completed_at")) or None
+        explicit_source = self._normalize_completed_at_source(item.get("completed_at_source"))
+        if status_text != "done":
+            return None, None
+        if explicit_completed_at and self._parse_iso_datetime(explicit_completed_at):
+            return explicit_completed_at, explicit_source or "explicit"
+
+        for field_name, source_name in (
+            ("reviewed_at", "reviewed_at"),
+            ("submitted_at", "submitted_at"),
+            ("updated_at", "updated_at"),
+            ("created_at", "backfill"),
+        ):
+            candidate = _normalize_text(item.get(field_name)) or None
+            if candidate and self._parse_iso_datetime(candidate):
+                return candidate, source_name
+        return None, None
+
+    def _backfill_task_completed_tracking(self, conn: sqlite3.Connection) -> None:
+        rows = conn.execute(
+            f"""
+            SELECT id, status, created_at, updated_at, submitted_at, reviewed_at, completed_at, completed_at_source
+            FROM {self._TASKS_TABLE}
+            """
+        ).fetchall()
+        for row in rows:
+            item = dict(row)
+            next_completed_at, next_source = self._derive_completed_tracking(item)
+            current_completed_at = _normalize_text(item.get("completed_at")) or None
+            current_source = self._normalize_completed_at_source(item.get("completed_at_source"))
+            if current_completed_at == next_completed_at and current_source == next_source:
+                continue
+            conn.execute(
+                f"""
+                UPDATE {self._TASKS_TABLE}
+                SET completed_at = ?, completed_at_source = ?
+                WHERE id = ?
+                """,
+                (
+                    next_completed_at,
+                    next_source,
+                    _normalize_text(item.get("id")),
+                ),
+            )
+
+    def _completed_on_time(self, *, completed_at: Any, due_at: Any, status: Any) -> bool:
+        if _normalize_text(status).lower() != "done":
+            return False
+        completed_dt = self._parse_iso_datetime(completed_at)
+        if completed_dt is None:
+            return False
+        due_dt = self._parse_iso_datetime(due_at)
+        if due_dt is None:
+            return False
+        return completed_dt <= due_dt
 
     @staticmethod
     def _is_task_overdue(due_at: Any, status: Any) -> bool:
@@ -595,17 +923,70 @@ class HubService:
     def _users_by_id(self) -> dict[int, dict[str, Any]]:
         return {self._as_int(row.get("id")): row for row in self._active_users()}
 
+    def _task_delegate_user_ids(self, assignee_user_id: Any) -> list[int]:
+        return user_service.get_delegate_user_ids(self._as_int(assignee_user_id))
+
+    def _task_participant_user_ids(self, task: dict[str, Any], *, include_delegates: bool = True) -> set[int]:
+        participant_ids = {
+            self._as_int(task.get("assignee_user_id")),
+            self._as_int(task.get("created_by_user_id")),
+            self._as_int(task.get("controller_user_id")),
+        }
+        if include_delegates:
+            participant_ids.update(self._task_delegate_user_ids(task.get("assignee_user_id")))
+        return {item for item in participant_ids if item > 0}
+
+    def _get_task_project(self, conn: sqlite3.Connection, project_id: Any) -> Optional[dict[str, Any]]:
+        normalized_id = _normalize_text(project_id)
+        if not normalized_id:
+            return None
+        row = conn.execute(
+            f"SELECT * FROM {self._TASK_PROJECTS_TABLE} WHERE id = ?",
+            (normalized_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _get_task_object(self, conn: sqlite3.Connection, object_id: Any) -> Optional[dict[str, Any]]:
+        normalized_id = _normalize_text(object_id)
+        if not normalized_id:
+            return None
+        row = conn.execute(
+            f"SELECT * FROM {self._TASK_OBJECTS_TABLE} WHERE id = ?",
+            (normalized_id,),
+        ).fetchone()
+        return dict(row) if row else None
+
+    def _validate_task_project_object(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        project_id: Any,
+        object_id: Any,
+    ) -> tuple[str | None, str | None]:
+        normalized_project_id = _normalize_text(project_id) or None
+        normalized_object_id = _normalize_text(object_id) or None
+        if normalized_project_id:
+            project = self._get_task_project(conn, normalized_project_id)
+            if not project or not bool(self._as_int(project.get("is_active"), 1)):
+                raise ValueError("Project is not available")
+        if normalized_object_id:
+            task_object = self._get_task_object(conn, normalized_object_id)
+            if not task_object or not bool(self._as_int(task_object.get("is_active"), 1)):
+                raise ValueError("Task object is not available")
+            object_project_id = _normalize_text(task_object.get("project_id")) or None
+            if normalized_project_id and object_project_id != normalized_project_id:
+                raise ValueError("Task object does not belong to the selected project")
+            if not normalized_project_id:
+                normalized_project_id = object_project_id
+        return normalized_project_id, normalized_object_id
+
     def _task_user_can_view(self, task: dict[str, Any], *, user_id: int, is_admin: bool = False) -> bool:
         if is_admin:
             return True
         normalized_user_id = self._as_int(user_id)
         if normalized_user_id <= 0:
             return False
-        return normalized_user_id in {
-            self._as_int(task.get("assignee_user_id")),
-            self._as_int(task.get("created_by_user_id")),
-            self._as_int(task.get("controller_user_id")),
-        }
+        return normalized_user_id in self._task_participant_user_ids(task, include_delegates=True)
 
     def _task_access_or_raise(
         self,
@@ -722,6 +1103,26 @@ class HubService:
         item["is_overdue"] = self._is_task_overdue(item.get("due_at"), item.get("status"))
         item.update(self._get_task_comment_summary(conn, task_id=item["id"], viewer_user_id=viewer_user_id))
         item["reviewer_full_name"] = _normalize_text(item.get("reviewer_full_name"))
+        project = self._get_task_project(conn, item.get("project_id"))
+        task_object = self._get_task_object(conn, item.get("object_id"))
+        item["project_id"] = _normalize_text(item.get("project_id")) or None
+        item["project_name"] = _normalize_text(project.get("name")) if project else ""
+        item["object_id"] = _normalize_text(item.get("object_id")) or None
+        item["object_name"] = _normalize_text(task_object.get("name")) if task_object else ""
+        item["protocol_date"] = self._normalize_protocol_date(item.get("protocol_date")) or self._normalize_protocol_date(item.get("created_at"))
+        completed_at, completed_at_source = self._derive_completed_tracking(item)
+        item["completed_at"] = completed_at
+        item["completed_at_source"] = completed_at_source
+        item["completed_on_time"] = self._completed_on_time(
+            completed_at=completed_at,
+            due_at=item.get("due_at"),
+            status=item.get("status"),
+        )
+        item["done_without_due"] = (
+            _normalize_text(item.get("status")).lower() == "done"
+            and bool(completed_at)
+            and self._parse_iso_datetime(item.get("due_at")) is None
+        )
         return item
 
     def _announcement_users_for_roles(self, roles: list[str]) -> list[dict[str, Any]]:
@@ -989,7 +1390,89 @@ class HubService:
                 """,
                 row,
             )
+        normalized_entity_type = _normalize_text(entity_type).lower()
+        if int(recipient_user_id or 0) > 0 and normalized_entity_type != "chat":
+            channel = "tasks" if normalized_entity_type == "task" else ("announcements" if normalized_entity_type == "announcement" else "system")
+            if notification_preferences_service.is_enabled(user_id=int(recipient_user_id), channel=channel):
+                route = "/"
+                if channel == "tasks":
+                    route = "/tasks"
+                elif channel == "announcements":
+                    route = "/dashboard"
+                try:
+                    app_push_service.send_notification(
+                        recipient_user_id=int(recipient_user_id),
+                        title=_normalize_text(title) or "Новое уведомление",
+                        body=_normalize_text(body) or _normalize_text(title) or "Откройте приложение, чтобы посмотреть подробности.",
+                        channel=channel,
+                        route=route,
+                        tag=f"hub:{notification_id}",
+                        data={
+                            "notification_id": notification_id,
+                            "entity_type": normalized_entity_type,
+                            "entity_id": _normalize_text(entity_id),
+                        },
+                        ttl=120,
+                    )
+                except Exception:
+                    pass
         return notification_id
+
+    def _notification_exists(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        recipient_user_id: Optional[int],
+        event_type: str,
+        entity_type: str,
+        entity_id: str,
+        created_on_date: str | None = None,
+    ) -> bool:
+        where = [
+            "(recipient_user_id IS NULL OR recipient_user_id = ?)",
+            "LOWER(event_type) = ?",
+            "entity_type = ?",
+            "entity_id = ?",
+        ]
+        params: list[Any] = [
+            self._as_int(recipient_user_id),
+            _normalize_text(event_type).lower(),
+            _normalize_text(entity_type),
+            _normalize_text(entity_id),
+        ]
+        if created_on_date:
+            where.append("substr(created_at, 1, 10) = ?")
+            params.append(_normalize_text(created_on_date))
+        exists = conn.execute(
+            f"SELECT id FROM {self._NOTIF_TABLE} WHERE {' AND '.join(where)} LIMIT 1",
+            tuple(params),
+        ).fetchone()
+        return exists is not None
+
+    def _create_task_notifications(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        recipient_user_ids: set[int],
+        skip_user_ids: set[int] | None = None,
+        event_type: str,
+        title: str,
+        body: str,
+        task_id: str,
+    ) -> None:
+        skipped = {self._as_int(item) for item in (skip_user_ids or set()) if self._as_int(item) > 0}
+        for recipient_user_id in {self._as_int(item) for item in recipient_user_ids if self._as_int(item) > 0}:
+            if recipient_user_id in skipped:
+                continue
+            self._create_notification(
+                recipient_user_id=recipient_user_id,
+                event_type=event_type,
+                title=title,
+                body=body,
+                entity_type="task",
+                entity_id=task_id,
+                conn=conn,
+            )
 
     def list_assignees(self) -> list[dict[str, Any]]:
         users = user_service.list_users()
@@ -1037,6 +1520,204 @@ class HubService:
             roles.append({"value": role_value, "label": role_value.title()})
         roles.sort(key=lambda item: item["label"])
         return {"users": users, "roles": roles}
+
+    def list_task_projects(self, *, include_inactive: bool = False) -> list[dict[str, Any]]:
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {self._TASK_PROJECTS_TABLE}
+                {'' if include_inactive else 'WHERE is_active = 1'}
+                ORDER BY is_active DESC, name ASC, created_at DESC
+                """
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def create_task_project(self, *, name: str, code: str = "", description: str = "", is_active: bool = True) -> dict[str, Any]:
+        name_text = _normalize_text(name)
+        if len(name_text) < 2:
+            raise ValueError("Project name is required")
+        now_iso = _utc_now_iso()
+        project_id = str(uuid.uuid4())
+        with self._lock, self._connect() as conn:
+            duplicate = conn.execute(
+                f"SELECT id FROM {self._TASK_PROJECTS_TABLE} WHERE LOWER(name) = ?",
+                (name_text.lower(),),
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError("Project already exists")
+            conn.execute(
+                f"""
+                INSERT INTO {self._TASK_PROJECTS_TABLE}(id, name, code, description, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    project_id,
+                    name_text,
+                    _normalize_text(code),
+                    _normalize_text(description),
+                    1 if bool(is_active) else 0,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+            row = conn.execute(f"SELECT * FROM {self._TASK_PROJECTS_TABLE} WHERE id = ?", (project_id,)).fetchone()
+            return dict(row) if row else {}
+
+    def update_task_project(self, project_id: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+        normalized_id = _normalize_text(project_id)
+        if not normalized_id:
+            return None
+        updates: list[str] = []
+        params: list[Any] = []
+        if "name" in payload:
+            name_text = _normalize_text(payload.get("name"))
+            if len(name_text) < 2:
+                raise ValueError("Project name is required")
+            updates.append("name = ?")
+            params.append(name_text)
+        if "code" in payload:
+            updates.append("code = ?")
+            params.append(_normalize_text(payload.get("code")))
+        if "description" in payload:
+            updates.append("description = ?")
+            params.append(_normalize_text(payload.get("description")))
+        if "is_active" in payload:
+            updates.append("is_active = ?")
+            params.append(1 if bool(payload.get("is_active")) else 0)
+        if not updates:
+            with self._lock, self._connect() as conn:
+                row = conn.execute(f"SELECT * FROM {self._TASK_PROJECTS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+                return dict(row) if row else None
+        updates.append("updated_at = ?")
+        params.append(_utc_now_iso())
+        params.append(normalized_id)
+        with self._lock, self._connect() as conn:
+            exists = self._get_task_project(conn, normalized_id)
+            if not exists:
+                return None
+            conn.execute(f"UPDATE {self._TASK_PROJECTS_TABLE} SET {', '.join(updates)} WHERE id = ?", tuple(params))
+            conn.commit()
+            row = conn.execute(f"SELECT * FROM {self._TASK_PROJECTS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+            return dict(row) if row else None
+
+    def list_task_objects(self, *, project_ids: Optional[list[str]] = None, include_inactive: bool = False) -> list[dict[str, Any]]:
+        normalized_project_ids = [_normalize_text(item) for item in (project_ids or []) if _normalize_text(item)]
+        where_clauses: list[str] = []
+        params: list[Any] = []
+        if not include_inactive:
+            where_clauses.append("is_active = 1")
+        if normalized_project_ids:
+            placeholders = ", ".join(["?"] * len(normalized_project_ids))
+            where_clauses.append(f"project_id IN ({placeholders})")
+            params.extend(normalized_project_ids)
+        where_sql = f"WHERE {' AND '.join(where_clauses)}" if where_clauses else ""
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {self._TASK_OBJECTS_TABLE}
+                {where_sql}
+                ORDER BY is_active DESC, name ASC, created_at DESC
+                """,
+                tuple(params),
+            ).fetchall()
+            return [dict(row) for row in rows]
+
+    def create_task_object(
+        self,
+        *,
+        project_id: str,
+        name: str,
+        code: str = "",
+        description: str = "",
+        is_active: bool = True,
+    ) -> dict[str, Any]:
+        name_text = _normalize_text(name)
+        project_text = _normalize_text(project_id)
+        if not project_text:
+            raise ValueError("project_id is required")
+        if len(name_text) < 2:
+            raise ValueError("Object name is required")
+        now_iso = _utc_now_iso()
+        object_id = str(uuid.uuid4())
+        with self._lock, self._connect() as conn:
+            project = self._get_task_project(conn, project_text)
+            if not project:
+                raise ValueError("Project is not available")
+            duplicate = conn.execute(
+                f"SELECT id FROM {self._TASK_OBJECTS_TABLE} WHERE project_id = ? AND LOWER(name) = ?",
+                (project_text, name_text.lower()),
+            ).fetchone()
+            if duplicate is not None:
+                raise ValueError("Object already exists in this project")
+            conn.execute(
+                f"""
+                INSERT INTO {self._TASK_OBJECTS_TABLE}(id, project_id, name, code, description, is_active, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    object_id,
+                    project_text,
+                    name_text,
+                    _normalize_text(code),
+                    _normalize_text(description),
+                    1 if bool(is_active) else 0,
+                    now_iso,
+                    now_iso,
+                ),
+            )
+            conn.commit()
+            row = conn.execute(f"SELECT * FROM {self._TASK_OBJECTS_TABLE} WHERE id = ?", (object_id,)).fetchone()
+            return dict(row) if row else {}
+
+    def update_task_object(self, object_id: str, payload: dict[str, Any]) -> Optional[dict[str, Any]]:
+        normalized_id = _normalize_text(object_id)
+        if not normalized_id:
+            return None
+        updates: list[str] = []
+        params: list[Any] = []
+        if "project_id" in payload:
+            project_text = _normalize_text(payload.get("project_id"))
+            if not project_text:
+                raise ValueError("project_id is required")
+            updates.append("project_id = ?")
+            params.append(project_text)
+        if "name" in payload:
+            name_text = _normalize_text(payload.get("name"))
+            if len(name_text) < 2:
+                raise ValueError("Object name is required")
+            updates.append("name = ?")
+            params.append(name_text)
+        if "code" in payload:
+            updates.append("code = ?")
+            params.append(_normalize_text(payload.get("code")))
+        if "description" in payload:
+            updates.append("description = ?")
+            params.append(_normalize_text(payload.get("description")))
+        if "is_active" in payload:
+            updates.append("is_active = ?")
+            params.append(1 if bool(payload.get("is_active")) else 0)
+        if not updates:
+            with self._lock, self._connect() as conn:
+                row = conn.execute(f"SELECT * FROM {self._TASK_OBJECTS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+                return dict(row) if row else None
+        updates.append("updated_at = ?")
+        params.append(_utc_now_iso())
+        params.append(normalized_id)
+        with self._lock, self._connect() as conn:
+            exists = self._get_task_object(conn, normalized_id)
+            if not exists:
+                return None
+            if "project_id" in payload:
+                project = self._get_task_project(conn, payload.get("project_id"))
+                if not project:
+                    raise ValueError("Project is not available")
+            conn.execute(f"UPDATE {self._TASK_OBJECTS_TABLE} SET {', '.join(updates)} WHERE id = ?", tuple(params))
+            conn.commit()
+            row = conn.execute(f"SELECT * FROM {self._TASK_OBJECTS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+            return dict(row) if row else None
 
     def _normalize_announcement_payload(self, payload: Optional[dict[str, Any]]) -> dict[str, Any]:
         source = payload or {}
@@ -1751,8 +2432,12 @@ class HubService:
         assignee_user_id: int,
         controller_user_id: int,
         due_at: Optional[str],
+        project_id: Optional[str] = None,
+        object_id: Optional[str] = None,
+        protocol_date: Optional[str] = None,
         priority: Optional[str] = "normal",
         actor: dict[str, Any],
+        initial_status: str = "new",
     ) -> dict[str, Any]:
         title_text = _normalize_text(title)
         if len(title_text) < 3:
@@ -1771,21 +2456,40 @@ class HubService:
         priority_text = _normalize_text(priority, "normal").lower()
         if priority_text not in {"low", "normal", "high", "urgent"}:
             priority_text = "normal"
+        initial_status_text = _normalize_text(initial_status, "new").lower()
+        if initial_status_text not in self._TASK_STATUSES:
+            raise ValueError("Unsupported initial task status")
         with self._lock, self._connect() as conn:
+            self._ensure_task_status_log_table(conn)
+            validated_project_id, validated_object_id = self._validate_task_project_object(
+                conn,
+                project_id=project_id,
+                object_id=object_id,
+            )
+            if not validated_project_id:
+                raise ValueError("project_id is required")
+            normalized_protocol_date = self._normalize_protocol_date(protocol_date) or self._normalize_protocol_date(now_iso)
             conn.execute(
                 f"""
                 INSERT INTO {self._TASKS_TABLE}
-                (id, title, description, status, due_at, priority, assignee_user_id, assignee_username, assignee_full_name,
+                (id, title, description, status, due_at, priority, project_id, object_id, protocol_date, completed_at, completed_at_source,
+                 assignee_user_id, assignee_username, assignee_full_name,
                  controller_user_id, controller_username, controller_full_name,
                  created_by_user_id, created_by_username, created_by_full_name, created_at, updated_at)
-                VALUES (?, ?, ?, 'new', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
                     title_text,
                     _normalize_text(description),
+                    initial_status_text,
                     _normalize_text(due_at) or None,
                     priority_text,
+                    validated_project_id,
+                    validated_object_id,
+                    normalized_protocol_date,
+                    now_iso if initial_status_text == "done" else None,
+                    "explicit" if initial_status_text == "done" else None,
                     self._as_int(assignee.get("id")),
                     _normalize_text(assignee.get("username")),
                     _normalize_text(assignee.get("full_name")) or _normalize_text(assignee.get("username")),
@@ -1799,29 +2503,36 @@ class HubService:
                     now_iso,
                 ),
             )
+            self._log_status_change(
+                conn,
+                task_id=task_id,
+                old_status="",
+                new_status=initial_status_text,
+                user_id=self._as_int(actor.get("id")),
+                username=_normalize_text(actor.get("username")),
+            )
             assignee_id = self._as_int(assignee.get("id"))
             controller_id = self._as_int(controller.get("id"))
             actor_id = self._as_int(actor.get("id"))
-            if assignee_id > 0 and assignee_id != actor_id:
-                self._create_notification(
-                    recipient_user_id=assignee_id,
-                    event_type="task.assigned",
-                    title="Новая задача",
-                    body=title_text,
-                    entity_type="task",
-                    entity_id=task_id,
-                    conn=conn,
-                )
-            if controller_id > 0 and controller_id not in {actor_id, assignee_id}:
-                self._create_notification(
-                    recipient_user_id=controller_id,
-                    event_type="task.controller_assigned",
-                    title="Вы назначены контролером задачи",
-                    body=title_text,
-                    entity_type="task",
-                    entity_id=task_id,
-                    conn=conn,
-                )
+            assignee_recipients = {assignee_id, *self._task_delegate_user_ids(assignee_id)}
+            self._create_task_notifications(
+                conn,
+                recipient_user_ids=assignee_recipients,
+                skip_user_ids={actor_id},
+                event_type="task.assigned",
+                title="Новая задача",
+                body=title_text,
+                task_id=task_id,
+            )
+            self._create_task_notifications(
+                conn,
+                recipient_user_ids={controller_id},
+                skip_user_ids={actor_id, assignee_id},
+                event_type="task.controller_assigned",
+                title="Вы назначены контролером задачи",
+                body=title_text,
+                task_id=task_id,
+            )
             conn.commit()
             row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (task_id,)).fetchone()
             return self._task_with_latest_report(conn, row, viewer_user_id=self._as_int(actor.get("id"))) if row else {}
@@ -1837,91 +2548,123 @@ class HubService:
         normalized_id = _normalize_text(task_id)
         if not normalized_id:
             return None
-        updates: list[str] = []
-        params: list[Any] = []
         actor_id = self._as_int(actor_user_id)
-        for key in ("title", "description", "due_at", "priority", "assignee_user_id", "controller_user_id"):
-            if key not in payload:
-                continue
-            if key == "assignee_user_id":
-                assignee = user_service.get_by_id(int(payload.get(key)))
-                if not assignee or not bool(assignee.get("is_active", True)):
-                    raise ValueError("Assignee user is not available")
-                updates.extend(["assignee_user_id = ?", "assignee_username = ?", "assignee_full_name = ?"])
-                params.extend(
-                    [
-                        self._as_int(assignee.get("id")),
-                        _normalize_text(assignee.get("username")),
-                        _normalize_text(assignee.get("full_name")) or _normalize_text(assignee.get("username")),
-                    ]
-                )
-            elif key == "controller_user_id":
-                controller = user_service.get_by_id(int(payload.get(key)))
-                if not controller or not bool(controller.get("is_active", True)):
-                    raise ValueError("Controller user is not available")
-                if not self._user_can_review_tasks(controller):
-                    raise ValueError("Controller must have tasks.review permission")
-                updates.extend(["controller_user_id = ?", "controller_username = ?", "controller_full_name = ?"])
-                params.extend(
-                    [
-                        self._as_int(controller.get("id")),
-                        _normalize_text(controller.get("username")),
-                        _normalize_text(controller.get("full_name")) or _normalize_text(controller.get("username")),
-                    ]
-                )
-            elif key == "due_at":
-                updates.append("due_at = ?")
-                params.append(_normalize_text(payload.get(key)) or None)
-            elif key == "priority":
-                pval = _normalize_text(payload.get(key), "normal").lower()
-                if pval not in {"low", "normal", "high", "urgent"}:
-                    pval = "normal"
-                updates.append("priority = ?")
-                params.append(pval)
-            else:
-                value = _normalize_text(payload.get(key))
-                if key == "title" and len(value) < 3:
-                    raise ValueError("Task title must contain at least 3 characters")
-                updates.append(f"{key} = ?")
-                params.append(value)
-        if not updates:
-            return self.get_task(normalized_id, user_id=actor_id, is_admin=is_admin)
-        updates.append("updated_at = ?")
-        params.append(_utc_now_iso())
-        params.append(normalized_id)
         with self._lock, self._connect() as conn:
             task = self._task_access_or_raise(conn, task_id=normalized_id, user_id=actor_id, is_admin=is_admin)
             if not is_admin and self._as_int(task.get("created_by_user_id")) != actor_id:
                 raise PermissionError("Only task creator or admin can edit task")
+            updates: list[str] = []
+            params: list[Any] = []
+            effective_project_id = _normalize_text(payload.get("project_id")) if "project_id" in payload else _normalize_text(task.get("project_id"))
+            effective_object_id = _normalize_text(payload.get("object_id")) if "object_id" in payload else _normalize_text(task.get("object_id"))
+            if "project_id" in payload or "object_id" in payload:
+                validated_project_id, validated_object_id = self._validate_task_project_object(
+                    conn,
+                    project_id=effective_project_id,
+                    object_id=effective_object_id,
+                )
+                if "project_id" in payload or validated_project_id != (_normalize_text(task.get("project_id")) or None):
+                    updates.append("project_id = ?")
+                    params.append(validated_project_id)
+                if "object_id" in payload or validated_object_id != (_normalize_text(task.get("object_id")) or None):
+                    updates.append("object_id = ?")
+                    params.append(validated_object_id)
+            for key in ("title", "description", "due_at", "priority", "assignee_user_id", "controller_user_id", "protocol_date"):
+                if key not in payload:
+                    continue
+                if key == "assignee_user_id":
+                    assignee = user_service.get_by_id(int(payload.get(key)))
+                    if not assignee or not bool(assignee.get("is_active", True)):
+                        raise ValueError("Assignee user is not available")
+                    updates.extend(["assignee_user_id = ?", "assignee_username = ?", "assignee_full_name = ?"])
+                    params.extend(
+                        [
+                            self._as_int(assignee.get("id")),
+                            _normalize_text(assignee.get("username")),
+                            _normalize_text(assignee.get("full_name")) or _normalize_text(assignee.get("username")),
+                        ]
+                    )
+                elif key == "controller_user_id":
+                    controller = user_service.get_by_id(int(payload.get(key)))
+                    if not controller or not bool(controller.get("is_active", True)):
+                        raise ValueError("Controller user is not available")
+                    if not self._user_can_review_tasks(controller):
+                        raise ValueError("Controller must have tasks.review permission")
+                    updates.extend(["controller_user_id = ?", "controller_username = ?", "controller_full_name = ?"])
+                    params.extend(
+                        [
+                            self._as_int(controller.get("id")),
+                            _normalize_text(controller.get("username")),
+                            _normalize_text(controller.get("full_name")) or _normalize_text(controller.get("username")),
+                        ]
+                    )
+                elif key == "due_at":
+                    updates.append("due_at = ?")
+                    params.append(_normalize_text(payload.get(key)) or None)
+                elif key == "priority":
+                    pval = _normalize_text(payload.get(key), "normal").lower()
+                    if pval not in {"low", "normal", "high", "urgent"}:
+                        pval = "normal"
+                    updates.append("priority = ?")
+                    params.append(pval)
+                elif key == "protocol_date":
+                    normalized_protocol_date = self._normalize_protocol_date(payload.get(key))
+                    if not normalized_protocol_date:
+                        raise ValueError("protocol_date is required")
+                    updates.append("protocol_date = ?")
+                    params.append(normalized_protocol_date)
+                else:
+                    value = _normalize_text(payload.get(key))
+                    if key == "title" and len(value) < 3:
+                        raise ValueError("Task title must contain at least 3 characters")
+                    updates.append(f"{key} = ?")
+                    params.append(value)
+            if not updates:
+                return self.get_task(normalized_id, user_id=actor_id, is_admin=is_admin)
+            updates.append("updated_at = ?")
+            params.append(_utc_now_iso())
+            params.append(normalized_id)
             previous_assignee_id = self._as_int(task.get("assignee_user_id"))
             previous_controller_id = self._as_int(task.get("controller_user_id"))
+            previous_due_at = _normalize_text(task.get("due_at")) or None
             conn.execute(f"UPDATE {self._TASKS_TABLE} SET {', '.join(updates)} WHERE id = ?", tuple(params))
-            conn.commit()
             row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             if row is None:
                 return None
             updated = dict(row)
             next_assignee_id = self._as_int(updated.get("assignee_user_id"))
             next_controller_id = self._as_int(updated.get("controller_user_id"))
-            if next_assignee_id > 0 and next_assignee_id != previous_assignee_id and next_assignee_id != actor_id:
-                self._create_notification(
-                    recipient_user_id=next_assignee_id,
+            title_text = _normalize_text(updated.get("title"))
+            if next_assignee_id > 0 and next_assignee_id != previous_assignee_id:
+                self._create_task_notifications(
+                    conn,
+                    recipient_user_ids={next_assignee_id, *self._task_delegate_user_ids(next_assignee_id)},
+                    skip_user_ids={actor_id},
                     event_type="task.assigned",
                     title="Вам назначена задача",
-                    body=_normalize_text(updated.get("title")),
-                    entity_type="task",
-                    entity_id=normalized_id,
-                    conn=conn,
+                    body=title_text,
+                    task_id=normalized_id,
                 )
-            if next_controller_id > 0 and next_controller_id != previous_controller_id and next_controller_id not in {actor_id, next_assignee_id}:
-                self._create_notification(
-                    recipient_user_id=next_controller_id,
+            if next_controller_id > 0 and next_controller_id != previous_controller_id:
+                self._create_task_notifications(
+                    conn,
+                    recipient_user_ids={next_controller_id},
+                    skip_user_ids={actor_id, next_assignee_id},
                     event_type="task.controller_assigned",
                     title="Вы назначены контролером задачи",
-                    body=_normalize_text(updated.get("title")),
-                    entity_type="task",
-                    entity_id=normalized_id,
-                    conn=conn,
+                    body=title_text,
+                    task_id=normalized_id,
+                )
+            next_due_at = _normalize_text(updated.get("due_at")) or None
+            if next_due_at != previous_due_at and next_assignee_id > 0:
+                self._create_task_notifications(
+                    conn,
+                    recipient_user_ids={next_assignee_id, *self._task_delegate_user_ids(next_assignee_id)},
+                    skip_user_ids={actor_id},
+                    event_type="task.deadline_changed",
+                    title="Изменен срок задачи",
+                    body=title_text,
+                    task_id=normalized_id,
                 )
             conn.commit()
             return self._task_with_latest_report(conn, row, viewer_user_id=actor_id)
@@ -1990,13 +2733,280 @@ class HubService:
             conn.execute(f"DELETE FROM {self._TASK_REPORTS_TABLE} WHERE task_id = ?", (normalized_id,))
             conn.execute(f"DELETE FROM {self._TASK_COMMENTS_TABLE} WHERE task_id = ?", (normalized_id,))
             conn.execute(f"DELETE FROM {self._TASK_COMMENT_READS_TABLE} WHERE task_id = ?", (normalized_id,))
-            conn.execute("DELETE FROM hub_task_status_log WHERE task_id = ?", (normalized_id,))
+            conn.execute(f"DELETE FROM {self._TASK_STATUS_LOG_TABLE} WHERE task_id = ?", (normalized_id,))
             conn.execute(f"DELETE FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,))
             conn.commit()
 
         self._remove_relative_files(file_paths)
         self._remove_dir_quiet(self.task_attachments_root / normalized_id)
         return True
+
+    def get_task_analytics(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        date_basis: str = "protocol_date",
+        project_ids: Optional[list[str]] = None,
+        object_ids: Optional[list[str]] = None,
+        participant_user_ids: Optional[list[int]] = None,
+    ) -> dict[str, Any]:
+        def _basis_date(item: dict[str, Any]) -> str | None:
+            basis_value = item.get(basis)
+            if basis == "protocol_date":
+                return self._normalize_protocol_date(basis_value)
+            basis_dt = self._parse_iso_datetime(basis_value)
+            return basis_dt.date().isoformat() if basis_dt else None
+
+        def _row_bucket_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
+            metrics = {
+                "total": len(rows),
+                "new": 0,
+                "in_progress": 0,
+                "review": 0,
+                "done": 0,
+                "open": 0,
+                "done_on_time": 0,
+                "done_without_due": 0,
+                "overdue": 0,
+                "with_due_total": 0,
+            }
+            for item in rows:
+                status_key = _normalize_text(item.get("status")).lower()
+                if status_key in {"new", "in_progress", "review", "done"}:
+                    metrics[status_key] += 1
+                if status_key in {"new", "in_progress", "review"}:
+                    metrics["open"] += 1
+                if bool(item.get("completed_on_time")):
+                    metrics["done_on_time"] += 1
+                if bool(item.get("done_without_due")):
+                    metrics["done_without_due"] += 1
+                if bool(item.get("is_overdue")):
+                    metrics["overdue"] += 1
+                if self._parse_iso_datetime(item.get("due_at")) is not None:
+                    metrics["with_due_total"] += 1
+            total = metrics["total"]
+            with_due_total = metrics["with_due_total"]
+            metrics["completion_percent"] = round((metrics["done"] / total) * 100, 2) if total else 0.0
+            metrics["completion_on_time_percent"] = round((metrics["done_on_time"] / with_due_total) * 100, 2) if with_due_total else 0.0
+            return metrics
+
+        def _group_rows(
+            rows: list[dict[str, Any]],
+            *,
+            key_fn,
+            label_fn,
+            id_field: str,
+            label_field: str,
+        ) -> list[dict[str, Any]]:
+            grouped: dict[str, list[dict[str, Any]]] = {}
+            labels: dict[str, str] = {}
+            raw_ids: dict[str, Any] = {}
+            for row in rows:
+                raw_key = key_fn(row)
+                group_key = str(raw_key)
+                grouped.setdefault(group_key, []).append(row)
+                labels[group_key] = label_fn(row)
+                raw_ids[group_key] = raw_key
+            items: list[dict[str, Any]] = []
+            for group_key, group_rows in grouped.items():
+                metrics = _row_bucket_metrics(group_rows)
+                items.append(
+                    {
+                        id_field: raw_ids[group_key],
+                        label_field: labels[group_key],
+                        **metrics,
+                    }
+                )
+            items.sort(key=lambda row: (-int(row.get("total", 0)), str(row.get(label_field) or "")))
+            return items
+
+        def _bucket_start(value: date, granularity: str) -> date:
+            if granularity == "day":
+                return value
+            if granularity == "week":
+                return value - timedelta(days=value.weekday())
+            if granularity == "month":
+                return value.replace(day=1)
+            quarter_month = ((value.month - 1) // 3) * 3 + 1
+            return value.replace(month=quarter_month, day=1)
+
+        def _next_bucket_start(value: date, granularity: str) -> date:
+            if granularity == "day":
+                return value + timedelta(days=1)
+            if granularity == "week":
+                return value + timedelta(days=7)
+            if granularity == "month":
+                year = value.year + (1 if value.month == 12 else 0)
+                month = 1 if value.month == 12 else value.month + 1
+                return value.replace(year=year, month=month, day=1)
+            year = value.year + (1 if value.month >= 10 else 0)
+            month = ((value.month - 1) // 3) * 3 + 4
+            if month > 12:
+                month -= 12
+            return value.replace(year=year, month=month, day=1)
+
+        def _bucket_label(value: date, granularity: str) -> str:
+            if granularity == "day":
+                return value.strftime("%d.%m")
+            if granularity == "week":
+                return f"Нед. {value.strftime('%d.%m')}"
+            if granularity == "month":
+                return value.strftime("%m.%Y")
+            return f"Q{((value.month - 1) // 3) + 1} {value.year}"
+
+        def _trend_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
+            range_candidates: list[date] = []
+            if start_iso:
+                range_candidates.append(date.fromisoformat(start_iso))
+            if end_iso:
+                range_candidates.append(date.fromisoformat(end_iso))
+            for item in rows:
+                protocol_basis = self._normalize_protocol_date(item.get("protocol_date")) or self._normalize_protocol_date(item.get("created_at"))
+                if protocol_basis:
+                    range_candidates.append(date.fromisoformat(protocol_basis))
+                completed_dt = self._parse_iso_datetime(item.get("completed_at"))
+                if completed_dt is not None:
+                    range_candidates.append(completed_dt.date())
+                basis_date = _basis_date(item)
+                if basis_date:
+                    range_candidates.append(date.fromisoformat(basis_date))
+
+            if not range_candidates:
+                return {"granularity": "day", "items": []}
+
+            range_start = min(range_candidates)
+            range_end = max(range_candidates)
+            range_days = max(1, (range_end - range_start).days + 1)
+            if range_days <= 45:
+                granularity = "day"
+            elif range_days <= 180:
+                granularity = "week"
+            elif range_days <= 730:
+                granularity = "month"
+            else:
+                granularity = "quarter"
+
+            items_map: dict[str, dict[str, Any]] = {}
+
+            def _ensure_bucket(target_date: date) -> dict[str, Any]:
+                bucket_date = _bucket_start(target_date, granularity)
+                bucket_key = bucket_date.isoformat()
+                payload = items_map.get(bucket_key)
+                if payload is None:
+                    payload = {
+                        "bucket_key": bucket_key,
+                        "bucket_label": _bucket_label(bucket_date, granularity),
+                        "created": 0,
+                        "completed": 0,
+                        "completed_on_time": 0,
+                    }
+                    items_map[bucket_key] = payload
+                return payload
+
+            for item in rows:
+                protocol_basis = self._normalize_protocol_date(item.get("protocol_date")) or self._normalize_protocol_date(item.get("created_at"))
+                if protocol_basis:
+                    _ensure_bucket(date.fromisoformat(protocol_basis))["created"] += 1
+                completed_dt = self._parse_iso_datetime(item.get("completed_at"))
+                if completed_dt is not None:
+                    bucket = _ensure_bucket(completed_dt.date())
+                    bucket["completed"] += 1
+                    if bool(item.get("completed_on_time")):
+                        bucket["completed_on_time"] += 1
+
+            cursor = _bucket_start(range_start, granularity)
+            end_bucket = _bucket_start(range_end, granularity)
+            ordered_items: list[dict[str, Any]] = []
+            while cursor <= end_bucket:
+                ordered_items.append(_ensure_bucket(cursor))
+                cursor = _next_bucket_start(cursor, granularity)
+
+            ordered_items.sort(key=lambda item: item["bucket_key"])
+            return {"granularity": granularity, "items": ordered_items}
+
+        basis = _normalize_text(date_basis, "protocol_date").lower()
+        if basis not in {"protocol_date", "completed_at", "due_at"}:
+            basis = "protocol_date"
+        start_iso = self._normalize_protocol_date(start_date)
+        end_iso = self._normalize_protocol_date(end_date)
+        normalized_project_ids = {_normalize_text(item) for item in (project_ids or []) if _normalize_text(item)}
+        normalized_object_ids = {_normalize_text(item) for item in (object_ids or []) if _normalize_text(item)}
+        normalized_participants = {self._as_int(item) for item in (participant_user_ids or []) if self._as_int(item) > 0}
+
+        with self._lock, self._connect() as conn:
+            task_rows = conn.execute(f"SELECT * FROM {self._TASKS_TABLE}").fetchall()
+            task_items = [self._task_with_latest_report(conn, row) for row in task_rows]
+
+        filtered_items: list[dict[str, Any]] = []
+        for item in task_items:
+            participant_id = self._as_int(item.get("assignee_user_id"))
+            if normalized_project_ids and (_normalize_text(item.get("project_id")) or None) not in normalized_project_ids:
+                continue
+            if normalized_object_ids and (_normalize_text(item.get("object_id")) or None) not in normalized_object_ids:
+                continue
+            if normalized_participants and participant_id not in normalized_participants:
+                continue
+
+            basis_date = _basis_date(item)
+            if start_iso and (not basis_date or basis_date < start_iso):
+                continue
+            if end_iso and (not basis_date or basis_date > end_iso):
+                continue
+            filtered_items.append(item)
+
+        users_by_id = self._users_by_id()
+
+        by_participant = _group_rows(
+            filtered_items,
+            key_fn=lambda row: self._as_int(row.get("assignee_user_id")) or 0,
+            label_fn=lambda row: (
+                _normalize_text(users_by_id.get(self._as_int(row.get("assignee_user_id")), {}).get("full_name"))
+                or _normalize_text(row.get("assignee_full_name"))
+                or _normalize_text(row.get("assignee_username"))
+                or "Не назначен"
+            ),
+            id_field="participant_user_id",
+            label_field="participant_name",
+        )
+        by_project = _group_rows(
+            filtered_items,
+            key_fn=lambda row: _normalize_text(row.get("project_id")) or None,
+            label_fn=lambda row: _normalize_text(row.get("project_name")) or "Без проекта",
+            id_field="project_id",
+            label_field="project_name",
+        )
+        by_object = _group_rows(
+            filtered_items,
+            key_fn=lambda row: _normalize_text(row.get("object_id")) or None,
+            label_fn=lambda row: _normalize_text(row.get("object_name")) or "Без объекта",
+            id_field="object_id",
+            label_field="object_name",
+        )
+        summary = _row_bucket_metrics(filtered_items)
+        status_breakdown = [
+            {"status": "new", "label": "Новые", "value": int(summary.get("new", 0))},
+            {"status": "in_progress", "label": "В работе", "value": int(summary.get("in_progress", 0))},
+            {"status": "review", "label": "На проверке", "value": int(summary.get("review", 0))},
+            {"status": "done", "label": "Выполнено", "value": int(summary.get("done", 0))},
+        ]
+
+        return {
+            "summary": summary,
+            "by_participant": by_participant,
+            "by_project": by_project,
+            "by_object": by_object,
+            "status_breakdown": status_breakdown,
+            "trend": _trend_payload(filtered_items),
+            "filters": {
+                "start_date": start_iso,
+                "end_date": end_iso,
+                "date_basis": basis,
+                "project_ids": sorted(normalized_project_ids),
+                "object_ids": sorted(normalized_object_ids),
+                "participant_user_ids": sorted(normalized_participants),
+            },
+        }
 
     def list_tasks(
         self,
@@ -2028,10 +3038,16 @@ class HubService:
         normalized_sort_dir = "desc" if _normalize_text(sort_dir).lower() == "desc" else "asc"
         where_clauses: list[str] = []
         params: list[Any] = []
+        delegate_owner_ids = user_service.get_delegate_owner_ids(int(user_id))
         if normalized_scope == "my":
             if normalized_role_scope == "assignee":
-                where_clauses.append("assignee_user_id = ?")
-                params.append(int(user_id))
+                if delegate_owner_ids:
+                    delegate_placeholders = ", ".join(["?"] * len(delegate_owner_ids))
+                    where_clauses.append(f"(assignee_user_id = ? OR assignee_user_id IN ({delegate_placeholders}))")
+                    params.extend([int(user_id), *delegate_owner_ids])
+                else:
+                    where_clauses.append("assignee_user_id = ?")
+                    params.append(int(user_id))
             elif normalized_role_scope == "creator":
                 where_clauses.append("created_by_user_id = ?")
                 params.append(int(user_id))
@@ -2039,8 +3055,15 @@ class HubService:
                 where_clauses.append("controller_user_id = ?")
                 params.append(int(user_id))
             else:
-                where_clauses.append("(assignee_user_id = ? OR created_by_user_id = ? OR controller_user_id = ?)")
-                params.extend([int(user_id), int(user_id), int(user_id)])
+                if delegate_owner_ids:
+                    delegate_placeholders = ", ".join(["?"] * len(delegate_owner_ids))
+                    where_clauses.append(
+                        f"(assignee_user_id = ? OR assignee_user_id IN ({delegate_placeholders}) OR created_by_user_id = ? OR controller_user_id = ?)"
+                    )
+                    params.extend([int(user_id), *delegate_owner_ids, int(user_id), int(user_id)])
+                else:
+                    where_clauses.append("(assignee_user_id = ? OR created_by_user_id = ? OR controller_user_id = ?)")
+                    params.extend([int(user_id), int(user_id), int(user_id)])
         elif assignee_user_id is not None:
             where_clauses.append("assignee_user_id = ?")
             params.append(self._as_int(assignee_user_id))
@@ -2143,7 +3166,11 @@ class HubService:
                 raise ValueError("Task is already waiting for review")
             old_status = _normalize_text(task.get("status"))
             conn.execute(
-                f"UPDATE {self._TASKS_TABLE} SET status = 'in_progress', updated_at = ? WHERE id = ?",
+                f"""
+                UPDATE {self._TASKS_TABLE}
+                SET status = 'in_progress', completed_at = NULL, completed_at_source = NULL, updated_at = ?
+                WHERE id = ?
+                """,
                 (now_iso, normalized_id),
             )
             self._ensure_task_status_log_table(conn)
@@ -2227,7 +3254,7 @@ class HubService:
             conn.execute(
                 f"""
                 UPDATE {self._TASKS_TABLE}
-                SET status = 'review', submitted_at = ?, updated_at = ?
+                SET status = 'review', submitted_at = ?, completed_at = NULL, completed_at_source = NULL, updated_at = ?
                 WHERE id = ?
                 """,
                 (now_iso, now_iso, normalized_id),
@@ -2300,7 +3327,7 @@ class HubService:
             conn.execute(
                 f"""
                 UPDATE {self._TASKS_TABLE}
-                SET status = ?, reviewed_at = ?, reviewer_user_id = ?, reviewer_username = ?, reviewer_full_name = ?, review_comment = ?, updated_at = ?
+                SET status = ?, reviewed_at = ?, reviewer_user_id = ?, reviewer_username = ?, reviewer_full_name = ?, review_comment = ?, completed_at = ?, completed_at_source = ?, updated_at = ?
                 WHERE id = ?
                 """,
                 (
@@ -2310,6 +3337,8 @@ class HubService:
                     _normalize_text(reviewer.get("username")),
                     _normalize_text(reviewer.get("full_name")),
                     _normalize_text(comment),
+                    now_iso if next_status == "done" else None,
+                    "explicit" if next_status == "done" else None,
                     now_iso,
                     normalized_id,
                 ),
@@ -2326,31 +3355,110 @@ class HubService:
             review_result = "Принято" if next_status == "done" else "Возвращено"
             title_text = _normalize_text(task.get("title"))
             assignee_id = self._as_int(task.get("assignee_user_id"))
-            if assignee_id > 0 and assignee_id != reviewer_id:
-                self._create_notification(
-                    recipient_user_id=assignee_id,
-                    event_type="task.reviewed",
-                    title="Результат проверки задачи",
-                    body=f"{title_text}: {review_result}",
-                    entity_type="task",
-                    entity_id=normalized_id,
-                    conn=conn,
-                )
+            self._create_task_notifications(
+                conn,
+                recipient_user_ids={assignee_id, *self._task_delegate_user_ids(assignee_id)},
+                skip_user_ids={reviewer_id},
+                event_type="task.reviewed",
+                title="Результат проверки задачи",
+                body=f"{title_text}: {review_result}",
+                task_id=normalized_id,
+            )
             for recipient_user_id in {creator_id, controller_id}:
                 if recipient_user_id <= 0 or recipient_user_id == reviewer_id or recipient_user_id == assignee_id:
                     continue
-                self._create_notification(
-                    recipient_user_id=recipient_user_id,
+                self._create_task_notifications(
+                    conn,
+                    recipient_user_ids={recipient_user_id},
+                    skip_user_ids={reviewer_id, assignee_id},
                     event_type="task.reviewed",
                     title="Задача проверена",
                     body=f"{title_text}: {review_result}",
-                    entity_type="task",
-                    entity_id=normalized_id,
-                    conn=conn,
+                    task_id=normalized_id,
                 )
             conn.commit()
             updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             return self._task_with_latest_report(conn, updated, viewer_user_id=reviewer_id) if updated else None
+
+    def complete_task_direct(
+        self,
+        *,
+        task_id: str,
+        actor: dict[str, Any],
+        comment: str = "",
+    ) -> Optional[dict[str, Any]]:
+        normalized_id = _normalize_text(task_id)
+        if not normalized_id:
+            return None
+        actor_id = self._as_int(actor.get("id"))
+        now_iso = _utc_now_iso()
+        comment_text = _normalize_text(comment)
+        with self._lock, self._connect() as conn:
+            row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+            if row is None:
+                return None
+            task = dict(row)
+            old_status = _normalize_text(task.get("status")).lower()
+            if old_status == "done":
+                return self._task_with_latest_report(conn, row, viewer_user_id=actor_id)
+
+            conn.execute(
+                f"""
+                UPDATE {self._TASKS_TABLE}
+                SET status = 'done', reviewed_at = ?, reviewer_user_id = ?, reviewer_username = ?, reviewer_full_name = ?, review_comment = ?, completed_at = ?, completed_at_source = ?, updated_at = ?
+                WHERE id = ?
+                """,
+                (
+                    now_iso,
+                    actor_id if actor_id > 0 else None,
+                    _normalize_text(actor.get("username")) or None,
+                    _normalize_text(actor.get("full_name")) or _normalize_text(actor.get("username")) or None,
+                    comment_text or None,
+                    now_iso,
+                    "explicit",
+                    now_iso,
+                    normalized_id,
+                ),
+            )
+            self._ensure_task_status_log_table(conn)
+            self._log_status_change(
+                conn,
+                task_id=normalized_id,
+                old_status=old_status,
+                new_status="done",
+                user_id=actor_id,
+                username=_normalize_text(actor.get("username")),
+            )
+            if comment_text:
+                conn.execute(
+                    f"""
+                    INSERT INTO {self._TASK_COMMENTS_TABLE} (id, task_id, user_id, username, full_name, body, created_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(uuid.uuid4()),
+                        normalized_id,
+                        actor_id,
+                        _normalize_text(actor.get("username")),
+                        _normalize_text(actor.get("full_name")) or _normalize_text(actor.get("username")),
+                        comment_text,
+                        now_iso,
+                    ),
+                )
+
+            title_text = _normalize_text(task.get("title"))
+            self._create_task_notifications(
+                conn,
+                recipient_user_ids=self._task_participant_user_ids(task, include_delegates=True),
+                skip_user_ids={actor_id},
+                event_type="task.reviewed",
+                title="Задача закрыта автоматически",
+                body=title_text,
+                task_id=normalized_id,
+            )
+            conn.commit()
+            updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+            return self._task_with_latest_report(conn, updated, viewer_user_id=actor_id) if updated else None
 
     def get_report(self, report_id: str) -> Optional[dict[str, Any]]:
         normalized_id = _normalize_text(report_id)
@@ -2384,6 +3492,25 @@ class HubService:
             conn.commit()
         return True
 
+    def mark_all_notifications_read(self, *, user_id: int) -> int:
+        now_iso = _utc_now_iso()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                f"""
+                INSERT OR IGNORE INTO {self._NOTIF_READS_TABLE}(notification_id, user_id, read_at)
+                SELECT n.id, ?, ?
+                FROM {self._NOTIF_TABLE} n
+                LEFT JOIN {self._NOTIF_READS_TABLE} r
+                  ON r.notification_id = n.id AND r.user_id = ?
+                WHERE (n.recipient_user_id IS NULL OR n.recipient_user_id = ?)
+                  AND r.user_id IS NULL
+                """,
+                (int(user_id), now_iso, int(user_id), int(user_id)),
+            )
+            changed = self._as_int(conn.total_changes)
+            conn.commit()
+        return changed
+
     def mark_task_notifications_read(
         self,
         *,
@@ -2398,7 +3525,17 @@ class HubService:
             _normalize_text(item).lower()
             for item in (
                 event_types
-                or ["task.assigned", "task.controller_assigned", "task.reviewed", "task.review_required", "task.submitted", "task.comment_added"]
+                or [
+                    "task.assigned",
+                    "task.controller_assigned",
+                    "task.reviewed",
+                    "task.review_required",
+                    "task.submitted",
+                    "task.comment_added",
+                    "task.deadline_changed",
+                    "task.deadline_soon",
+                    "task.overdue_reminder",
+                ]
             )
             if _normalize_text(item)
         ]
@@ -2424,8 +3561,116 @@ class HubService:
             conn.commit()
         return changed
 
+    def mark_chat_notifications_read(
+        self,
+        *,
+        conversation_id: str,
+        user_id: int,
+        event_types: Optional[list[str]] = None,
+    ) -> int:
+        normalized_conversation_id = _normalize_text(conversation_id)
+        if not normalized_conversation_id:
+            return 0
+        normalized_events = [
+            _normalize_text(item).lower()
+            for item in (
+                event_types
+                or ["chat.message_received", "chat.task_shared", "chat.file_shared"]
+            )
+            if _normalize_text(item)
+        ]
+        if not normalized_events:
+            return 0
+        placeholders = ", ".join(["?"] * len(normalized_events))
+        params: list[Any] = [int(user_id), _utc_now_iso(), int(user_id), normalized_conversation_id]
+        params.extend(normalized_events)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                f"""
+                INSERT OR IGNORE INTO {self._NOTIF_READS_TABLE}(notification_id, user_id, read_at)
+                SELECT n.id, ?, ?
+                FROM {self._NOTIF_TABLE} n
+                WHERE (n.recipient_user_id IS NULL OR n.recipient_user_id = ?)
+                  AND n.entity_type = 'chat'
+                  AND n.entity_id = ?
+                  AND LOWER(n.event_type) IN ({placeholders})
+                """,
+                tuple(params),
+            )
+            changed = self._as_int(conn.total_changes)
+            conn.commit()
+        return changed
+
+    def _ensure_task_due_notifications_for_user(self, conn: sqlite3.Connection, *, user_id: int) -> None:
+        normalized_user_id = self._as_int(user_id)
+        if normalized_user_id <= 0:
+            return
+        delegate_owner_ids = user_service.get_delegate_owner_ids(normalized_user_id)
+        assignee_filters = [normalized_user_id, *delegate_owner_ids]
+        placeholders = ", ".join(["?"] * len(assignee_filters))
+        rows = conn.execute(
+            f"""
+            SELECT *
+            FROM {self._TASKS_TABLE}
+            WHERE status <> 'done'
+              AND due_at IS NOT NULL
+              AND due_at <> ''
+              AND assignee_user_id IN ({placeholders})
+            """,
+            tuple(assignee_filters),
+        ).fetchall()
+        now_utc = datetime.now(timezone.utc)
+        today_iso = now_utc.date().isoformat()
+        for row in rows:
+            item = self._task_with_latest_report(conn, row, viewer_user_id=normalized_user_id)
+            due_at = self._parse_iso_datetime(item.get("due_at"))
+            if due_at is None:
+                continue
+            title_text = _normalize_text(item.get("title"))
+            if due_at < now_utc:
+                if self._notification_exists(
+                    conn,
+                    recipient_user_id=normalized_user_id,
+                    event_type="task.overdue_reminder",
+                    entity_type="task",
+                    entity_id=_normalize_text(item.get("id")),
+                    created_on_date=today_iso,
+                ):
+                    continue
+                self._create_notification(
+                    recipient_user_id=normalized_user_id,
+                    event_type="task.overdue_reminder",
+                    title="Просроченная задача",
+                    body=title_text,
+                    entity_type="task",
+                    entity_id=_normalize_text(item.get("id")),
+                    conn=conn,
+                )
+                continue
+            hours_left = (due_at - now_utc).total_seconds() / 3600.0
+            if hours_left > 72:
+                continue
+            if self._notification_exists(
+                conn,
+                recipient_user_id=normalized_user_id,
+                event_type="task.deadline_soon",
+                entity_type="task",
+                entity_id=_normalize_text(item.get("id")),
+            ):
+                continue
+            self._create_notification(
+                recipient_user_id=normalized_user_id,
+                event_type="task.deadline_soon",
+                title="Срок задачи приближается",
+                body=title_text,
+                entity_type="task",
+                entity_id=_normalize_text(item.get("id")),
+                conn=conn,
+            )
+
     def get_unread_counts(self, *, user_id: int) -> dict[str, int]:
         with self._lock, self._connect() as conn:
+            self._ensure_task_due_notifications_for_user(conn, user_id=int(user_id))
             unread_notifications = conn.execute(
                 f"""
                 SELECT COUNT(*) AS c
@@ -2515,6 +3760,7 @@ class HubService:
         user_id: int,
         since: str = "",
         limit: int = 50,
+        unread_only: bool = False,
     ) -> dict[str, Any]:
         safe_limit = self._coerce_limit(limit, default=50, minimum=1, maximum=200)
         since_text = _normalize_text(since)
@@ -2523,7 +3769,10 @@ class HubService:
         if since_text:
             extra_where = " AND n.created_at > ?"
             params.append(since_text)
+        if unread_only:
+            extra_where += " AND r.user_id IS NULL"
         with self._lock, self._connect() as conn:
+            self._ensure_task_due_notifications_for_user(conn, user_id=int(user_id))
             rows = conn.execute(
                 f"""
                 SELECT n.*,
@@ -2542,6 +3791,7 @@ class HubService:
             "items": [dict(row) for row in rows],
             "since": since_text or None,
             "limit": safe_limit,
+            "unread_only": bool(unread_only),
             "unread_counts": counts,
             "generated_at": _utc_now_iso(),
         }

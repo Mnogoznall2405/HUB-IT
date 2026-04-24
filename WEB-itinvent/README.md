@@ -5,6 +5,7 @@ Web application for IT equipment inventory management.
 ## Stack
 
 - **Backend**: Python + FastAPI + pyodbc (SQL Server)
+- **Internal App Data**: PostgreSQL (optional unified runtime for users/sessions/chat/settings)
 - **Frontend**: React 18 + Vite + Material UI v5
 - **Auth**: JWT tokens
 
@@ -34,6 +35,7 @@ it-invent-web/
 - Python 3.10+
 - Node.js 18+
 - SQL Server with ITINVENT database
+- PostgreSQL 14+ for internal app-owned data migration (optional but recommended)
 
 ### Backend Setup
 
@@ -60,6 +62,91 @@ python -m uvicorn main:app --reload --port 8000
 Backend will be available at:
 - http://localhost:8000
 - API docs: http://localhost:8000/docs
+
+### Internal PostgreSQL Migration
+
+To enable unified internal storage for users/sessions/settings/chat, configure `APP_DATABASE_URL` in the root `.env`.
+
+To migrate current identity/settings data from the internal SQLite store:
+
+```bash
+python scripts/migrate_identity_sqlite_to_postgres.py --database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To apply schema migrations for the internal PostgreSQL database:
+
+```bash
+cd backend
+alembic -c alembic.ini upgrade head
+```
+
+To migrate built-in chat data from a legacy SQLite database into PostgreSQL:
+
+```bash
+python scripts/migrate_chat_sqlite_to_postgres.py --source-db-path data/chat.sqlite3 --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To migrate hub data from the internal SQLite database into PostgreSQL:
+
+```bash
+python scripts/migrate_hub_sqlite_to_postgres.py --source-db-path data/local_store.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To migrate network data from the internal SQLite database into PostgreSQL:
+
+```bash
+python scripts/migrate_network_sqlite_to_postgres.py --source-db-path data/local_store.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To migrate transfer act reminders from the internal SQLite database into PostgreSQL:
+
+```bash
+python scripts/migrate_reminders_sqlite_to_postgres.py --source-db-path data/local_store.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To migrate env settings audit history from the legacy SQLite audit file into PostgreSQL:
+
+```bash
+python scripts/migrate_env_audit_sqlite_to_postgres.py --source-db-path data/env_settings_audit.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To migrate mail metadata from the internal SQLite database into PostgreSQL:
+
+```bash
+python scripts/migrate_mail_sqlite_to_postgres.py --source-db-path data/local_store.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To migrate MFU runtime/page snapshot state from the internal SQLite database into PostgreSQL:
+
+```bash
+python scripts/migrate_mfu_sqlite_to_postgres.py --source-db-path data/local_store.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To migrate VCS computers/config/info from the internal SQLite database into PostgreSQL:
+
+```bash
+python scripts/migrate_vcs_sqlite_to_postgres.py --source-db-path data/local_store.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To migrate AD user branch override mappings from the internal SQLite database into PostgreSQL:
+
+```bash
+python scripts/migrate_ad_branch_overrides_sqlite_to_postgres.py --source-db-path data/local_store.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To migrate inventory snapshot/change history from the internal SQLite database into PostgreSQL:
+
+```bash
+python scripts/migrate_inventory_sqlite_to_postgres.py --source-db-path data/local_store.unified.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+To migrate `/api/v1/json/*` runtime datasets from the internal SQLite database into PostgreSQL:
+
+```bash
+python scripts/migrate_json_store_sqlite_to_postgres.py --source-db-path data/local_store.unified.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+```
+
+For a full `WEB-itinvent` SQLite runtime cutover, keep `Scan Center` out of scope and configure `APP_DATABASE_URL` in the root `.env`. Chat may continue using `CHAT_DATABASE_URL`; it is already PostgreSQL-backed and does not block removal of SQLite from `WEB-itinvent` runtime.
 
 ### Frontend Setup
 

@@ -20,6 +20,8 @@ export function buildOfficeUiTokens(theme) {
     borderSoft: admin.borderSoft || (isDark ? 'rgba(255,255,255,0.08)' : 'rgba(32,31,30,0.08)'),
     border: admin.border || theme.palette.divider,
     borderStrong: admin.borderStrong || (isDark ? 'rgba(255,255,255,0.18)' : 'rgba(32,31,30,0.16)'),
+    textPrimary: admin.textPrimary || theme.palette.text.primary,
+    textSecondary: admin.textSecondary || theme.palette.text.secondary,
     mutedText: admin.textSecondary || theme.palette.text.secondary,
     subtleText: admin.textTertiary || theme.palette.text.disabled,
     iconPrimary: admin.iconPrimary || theme.palette.text.primary,

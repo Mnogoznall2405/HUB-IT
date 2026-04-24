@@ -24,6 +24,18 @@ logger = logging.getLogger(__name__)
 equipment_manager = EquipmentDataManager()
 
 
+def _build_export_menu_keyboard() -> InlineKeyboardMarkup:
+    keyboard = [
+        [InlineKeyboardButton("📦 Экспорт ненайденного оборудования", callback_data="export_type:unfound")],
+        [InlineKeyboardButton("🔄 Экспорт перемещений", callback_data="export_type:transfers")],
+        [InlineKeyboardButton("🔋 Экспорт замены батареи ИБП", callback_data="export_type:battery")],
+        [InlineKeyboardButton("🖥️ Экспорт чистки ПК", callback_data="export_type:pc_cleaning")],
+        [InlineKeyboardButton("💾 Экспорт компонентов ПК", callback_data="export_type:pc_components")],
+        [InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_to_main")],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
 def _log_sqlite_export_source(file_path: str, rows_count: int) -> None:
     try:
         store = get_store()
@@ -49,17 +61,7 @@ async def show_export_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     Возвращает:
         int: Состояние для ConversationHandler
     """
-    keyboard = [
-        [InlineKeyboardButton("📦 Экспорт ненайденного оборудования", callback_data="export_type:unfound")],
-        [InlineKeyboardButton("🔄 Экспорт перемещений", callback_data="export_type:transfers")],
-        [InlineKeyboardButton("🔧 Экспорт замен комплектующих", callback_data="export_type:cartridges")],
-        [InlineKeyboardButton("🔋 Экспорт замены батареи ИБП", callback_data="export_type:battery")],
-        [InlineKeyboardButton("🖥️ Экспорт чистки ПК", callback_data="export_type:pc_cleaning")],
-        [InlineKeyboardButton("💾 Экспорт компонентов ПК", callback_data="export_type:pc_components")],
-        [InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_to_main")]
-    ]
-
-    reply_markup = InlineKeyboardMarkup(keyboard)
+    reply_markup = _build_export_menu_keyboard()
 
     await update.message.reply_text(
         "📊 <b>Экспорт данных</b>\n\n"
@@ -90,6 +92,13 @@ async def handle_export_type(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     if callback_data.startswith("export_type:"):
         export_type = callback_data.split(":")[1]
+
+        if export_type == "cartridges":
+            await query.edit_message_text(
+                "⚠️ Экспорт замен комплектующих МФУ больше недоступен в боте."
+            )
+            return States.DB_SELECTION_MENU
+
         context.user_data['export_type'] = export_type
         
         # Показываем выбор периода
@@ -121,8 +130,8 @@ async def show_export_period(update: Update, context: ContextTypes.DEFAULT_TYPE)
     export_type = context.user_data.get('export_type', 'unfound')
 
     # Разные клавиатуры для разных типов экспорта
-    if export_type in ('cartridges', 'battery', 'pc_cleaning', 'pc_components'):
-        # Для картриджей, батареи, чистки ПК и компонентов ПК - выбор периода без выбора базы
+    if export_type in ('battery', 'pc_cleaning', 'pc_components'):
+        # Для батареи, чистки ПК и компонентов ПК - выбор периода без выбора базы
         keyboard = [
             [InlineKeyboardButton("📅 За последний месяц", callback_data="export_period:1month")],
             [InlineKeyboardButton("📊 За последние 3 месяца", callback_data="export_period:3months")],
@@ -142,7 +151,6 @@ async def show_export_period(update: Update, context: ContextTypes.DEFAULT_TYPE)
     type_names = {
         'unfound': 'ненайденного оборудования',
         'transfers': 'перемещений',
-        'cartridges': 'замен комплектующих',
         'battery': 'замен батареи ИБП',
         'pc_cleaning': 'чистки ПК',
         'pc_components': 'компонентов ПК'
@@ -150,9 +158,7 @@ async def show_export_period(update: Update, context: ContextTypes.DEFAULT_TYPE)
     type_name = type_names.get(export_type, 'данных')
 
     period_text = "Выберите период для экспорта:"
-    if export_type == 'cartridges':
-        period_text = "Выберите период для анализа картриджей:"
-    elif export_type == 'battery':
+    if export_type == 'battery':
         period_text = "Выберите период для анализа замен батареи:"
     elif export_type == 'pc_cleaning':
         period_text = "Выберите период для анализа чисток ПК:"
@@ -191,10 +197,8 @@ async def handle_export_period(update: Update, context: ContextTypes.DEFAULT_TYP
         period = callback_data.split(":")[1]
         context.user_data['export_period'] = period
 
-        # Для картриджей, батареи, чистки ПК и компонентов ПК - прямой экспорт без выбора базы
-        if export_type == 'cartridges':
-            return await handle_cartridge_export_directly(update, context, period)
-        elif export_type == 'battery':
+        # Для батареи, чистки ПК и компонентов ПК - прямой экспорт без выбора базы
+        if export_type == 'battery':
             return await handle_battery_export_directly(update, context, period)
         elif export_type == 'pc_cleaning':
             return await handle_pc_cleaning_export_directly(update, context, period)
@@ -206,17 +210,7 @@ async def handle_export_period(update: Update, context: ContextTypes.DEFAULT_TYP
 
     elif callback_data == "back_to_export_menu":
         # Возврат к выбору типа экспорта
-        keyboard = [
-            [InlineKeyboardButton("📦 Экспорт ненайденного оборудования", callback_data="export_type:unfound")],
-            [InlineKeyboardButton("🔄 Экспорт перемещений", callback_data="export_type:transfers")],
-            [InlineKeyboardButton("🔧 Экспорт замен комплектующих", callback_data="export_type:cartridges")],
-            [InlineKeyboardButton("🔋 Экспорт замены батареи ИБП", callback_data="export_type:battery")],
-            [InlineKeyboardButton("🖥️ Экспорт чистки ПК", callback_data="export_type:pc_cleaning")],
-            [InlineKeyboardButton("💾 Экспорт компонентов ПК", callback_data="export_type:pc_components")],
-            [InlineKeyboardButton("🔙 Назад в главное меню", callback_data="back_to_main")]
-        ]
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
+        reply_markup = _build_export_menu_keyboard()
 
         await query.edit_message_text(
             "📊 <b>Экспорт данных</b>\n\n"
@@ -226,43 +220,6 @@ async def handle_export_period(update: Update, context: ContextTypes.DEFAULT_TYP
         )
 
     return States.DB_SELECTION_MENU
-
-
-@handle_errors
-async def handle_cartridge_export_directly(update: Update, context: ContextTypes.DEFAULT_TYPE, period: str) -> int:
-    """
-    Обрабатывает прямой экспорт картриджей без выбора базы данных
-
-    Параметры:
-        update: Объект обновления от Telegram API
-        context: Контекст выполнения
-        period: Выбранный период
-
-    Возвращает:
-        int: Следующее состояние
-    """
-    query = update.callback_query
-    await query.edit_message_text("⏳ Анализ данных о заменах комплектующих...")
-
-    try:
-        # Выполняем экспорт с LLM-структурированием
-        excel_file = await export_components_to_excel_structured(period=period, db_filter=None)
-
-        if excel_file and os.path.exists(excel_file):
-            context.user_data['export_file'] = excel_file
-            return await show_delivery_options(update, context, excel_file)
-        else:
-            await query.edit_message_text(
-                "❌ Нет данных для экспорта или ошибка создания файла."
-            )
-            return ConversationHandler.END
-
-    except Exception as e:
-        logger.error(f"Ошибка при экспорте картриджей: {e}")
-        await query.edit_message_text(
-            f"❌ Ошибка при экспорте: {str(e)}"
-        )
-        return ConversationHandler.END
 
 
 async def show_export_database(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -367,19 +324,6 @@ async def handle_export_database(update: Update, context: ContextTypes.DEFAULT_T
                     )
                     return ConversationHandler.END
             
-            elif export_type == 'cartridges':
-                # Экспорт замен комплектующих
-                excel_file = export_cartridges_to_excel(only_new=only_new, db_filter=db_filter)
-                
-                if excel_file and os.path.exists(excel_file):
-                    context.user_data['export_file'] = excel_file
-                    return await show_delivery_options(update, context, excel_file)
-                else:
-                    await query.edit_message_text(
-                        "❌ Нет данных для экспорта или ошибка создания файла."
-                    )
-                    return ConversationHandler.END
-
             elif export_type == 'battery':
                 # Экспорт замены батареи ИБП - показываем выбор периода
                 return await handle_battery_export_directly(update, context)
@@ -562,122 +506,6 @@ async def handle_email_input(update: Update, context: ContextTypes.DEFAULT_TYPE)
     
     return ConversationHandler.END
 
-
-
-def export_cartridges_to_excel(only_new: bool = False, db_filter: str = None) -> str:
-    """
-    Экспортирует замены комплектующих МФУ в Excel
-
-    Параметры:
-        only_new: Экспортировать только новые записи
-        db_filter: Фильтр по базе данных (None = все базы)
-
-    Возвращает:
-        str: Путь к созданному файлу
-    """
-    import json
-    import pandas as pd
-    from pathlib import Path
-    from datetime import datetime
-
-    from bot.services.excel_service import SimpleExcelExporter
-
-    try:
-        file_path = Path("data/cartridge_replacements.json")
-
-        data = load_json_data(str(file_path), default_content=[])
-        if not isinstance(data, list):
-            data = []
-        _log_sqlite_export_source(file_path.name, len(data))
-
-        if not data:
-            return None
-
-        # Фильтруем по БД если указан фильтр
-        if db_filter:
-            data = [item for item in data if item.get('db_name') == db_filter]
-
-        if not data:
-            return None
-
-        # Создаем DataFrame
-        df = pd.DataFrame(data)
-
-        # Добавляем db_name если отсутствует (для старых записей)
-        if 'db_name' not in df.columns:
-            df['db_name'] = 'ITINVENT'
-
-        # Форматируем timestamp
-        if 'timestamp' in df.columns:
-            df['timestamp'] = pd.to_datetime(df['timestamp']).dt.strftime('%Y-%m-%d %H:%M:%S')
-
-        # Создаем отображаемые имена компонентов
-        def get_component_name(component_type):
-            names = {
-                'cartridge': 'Картридж',
-                'fuser': 'Фьюзер (печка)',
-                'drum': 'Фотобарабан',  # Обратная совместимость
-                'photoconductor': 'Фотобарабан',
-                'waste_toner': 'Контейнер отраб. тонера',
-                'transfer_belt': 'Трансферный ремень'
-            }
-            return names.get(component_type, component_type)
-
-        # Если есть component_type, используем новые поля
-        if 'component_type' in df.columns:
-            # Создаем колонку с отображаемыми именами компонентов
-            df['Компонент'] = df['component_type'].apply(get_component_name)
-
-            # Переименовываем колонки
-            column_names = {
-                'branch': 'Филиал',
-                'location': 'Локация',
-                'printer_model': 'Модель принтера',
-                'component_type': 'Тип компонента',
-                'component_color': 'Цвет',
-                'db_name': 'База данных',
-                'timestamp': 'Дата и время'
-            }
-            df = df.rename(columns=column_names)
-
-            # Упорядочиваем колонки для нового формата
-            desired_order = ['Дата и время', 'База данных', 'Филиал', 'Локация', 'Модель принтера', 'Тип компонента', 'Компонент', 'Цвет']
-        else:
-            # Старый формат для обратной совместимости
-            column_names = {
-                'branch': 'Филиал',
-                'location': 'Локация',
-                'printer_model': 'Модель принтера',
-                'cartridge_color': 'Цвет картриджа',
-                'db_name': 'База данных',
-                'timestamp': 'Дата и время'
-            }
-            df = df.rename(columns=column_names)
-
-            # Упорядочиваем колонки для старого формата
-            desired_order = ['Дата и время', 'База данных', 'Филиал', 'Локация', 'Модель принтера', 'Цвет картриджа']
-
-        existing_cols = [col for col in desired_order if col in df.columns]
-        df = df[existing_cols]
-
-        # Создаем имя файла
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_file = f"exports/component_replacements_{timestamp}.xlsx"
-
-        # Создаем экспортер и экспортируем
-        exporter = SimpleExcelExporter()
-        exporter.export_dataframe(
-            df=df,
-            output_file=output_file,
-            title="Замены комплектующих МФУ"
-        )
-
-        logger.info(f"Экспорт замен комплектующих завершен: {output_file}")
-        return output_file
-
-    except Exception as e:
-        logger.error(f"Ошибка экспорта замен комплектующих: {e}")
-        return None
 
 
 @handle_errors
@@ -1043,276 +871,6 @@ def get_period_name_ru(period: str) -> str:
         'new': 'Только новые'
     }
     return period_names.get(period, period)
-
-
-async def export_components_to_excel_structured(period: str = "all", db_filter: str = None) -> str:
-    """
-    Экспорт замен комплектующих в Excel с разделением по филиалам
-
-    Параметры:
-        period: Период экспорта (1month, 3months, all)
-        db_filter: Фильтр по базе данных (None = все базы)
-
-    Возвращает:
-        str: Путь к созданному файлу
-    """
-    import json
-    import pandas as pd
-    from pathlib import Path
-    from datetime import datetime
-
-    from bot.services.excel_service import GroupedExcelExporter, filter_data_by_period, ColumnWidth
-
-    try:
-        file_path = Path("data/cartridge_replacements.json")
-
-        data = load_json_data(str(file_path), default_content=[])
-        if not isinstance(data, list):
-            data = []
-        _log_sqlite_export_source(file_path.name, len(data))
-
-        if not data:
-            return None
-
-        # Фильтруем по БД если указан фильтр
-        if db_filter:
-            data = [item for item in data if item.get('db_name') == db_filter]
-
-        if not data:
-            return None
-
-        # Фильтруем по периоду и получаем даты
-        filtered_data, start_date, end_date = filter_data_by_period(data, period)
-
-        if not filtered_data:
-            return None
-
-        # Создаем DataFrame с нужными полями
-        rows = []
-        logger.info(f"Обрабатываю {len(filtered_data)} записей")
-        for i, item in enumerate(filtered_data):
-            if i < 5:  # Логируем первые 5 записей для отладки
-                logger.info(f"Запись {i}: {item.get('printer_model')} - {item.get('component_type')}")
-            # Базовые поля
-            row = {
-                'Дата': item.get('timestamp', '').split('T')[0] if item.get('timestamp') else '',
-                'Время': item.get('timestamp', '').split('T')[1].split('.')[0] if item.get('timestamp') else '',
-                'Филиал': item.get('branch', ''),
-                'Локация': item.get('location', ''),
-                'Модель принтера': item.get('printer_model', ''),
-                'База данных': item.get('db_name', '')
-            }
-
-            # Определяем тип компонента и цвет
-            component_model = ''
-            if item.get('component_type'):
-                # Новый формат
-                component_type = item.get('component_type', '')
-                color = item.get('component_color', '')
-
-                # Русские названия
-                type_names = {
-                    'cartridge': 'Картридж',
-                    'fuser': 'Фьюзер',
-                    'photoconductor': 'Фотобарабан',
-                    'drum': 'Фотобарабан',
-                    'waste_toner': 'Контейнер',
-                    'transfer_belt': 'Ремень'
-                }
-                row['Компонент'] = type_names.get(component_type, component_type)
-
-                # Определяем модель компонента
-                # Сначала проверяем, есть ли уже сохраненная модель
-                if item_model := item.get('cartridge_model'):
-                    component_model = item_model
-                else:
-                    # Если нет модели, ищем в базе данных
-                    printer_model = item.get('printer_model', '')
-                    try:
-                        from bot.services.cartridge_database import cartridge_database
-                        # Получаем полную информацию о принтере, а не только картриджи
-                        compatibility = cartridge_database.find_printer_compatibility(printer_model)
-
-                        # Доп. проверка для отладки
-                        if component_type in ['fuser', 'photoconductor', 'drum', 'waste_toner'] and compatibility:
-                            logger.debug(f"Для {printer_model} (тип: {component_type}) найдено: fuser={len(compatibility.fuser_models or [])}, drum={len(compatibility.photoconductor_models or [])}, waste={len(compatibility.waste_toner_models or [])}")
-
-                        if compatibility:
-                            logger.info(f"Найдена совместимость для {printer_model}: {component_type}")
-                            # Ищем нужный тип компонента
-                            if component_type == 'cartridge':
-                                # Для картриджей ищем по цвету
-                                color_cartridges = []
-                                color_variants = [color]
-                                # Пробуем разные варианты названий цветов
-                                if color == 'Синий (Cyan)':
-                                    color_variants.extend(['Синий', 'Cyan', 'Blue'])
-                                elif color == 'Желтый (Yellow)':
-                                    color_variants.extend(['Желтый', 'Yellow'])
-                                elif color == 'Пурпурный (Magenta)':
-                                    color_variants.extend(['Пурпурный', 'Magenta'])
-                                elif color == 'Черный':
-                                    color_variants.extend(['Black', 'Black (K)'])
-
-                                for color_variant in color_variants:
-                                    found = [cart for cart in compatibility.compatible_models if cart.color == color_variant]
-                                    if found:
-                                        color_cartridges.extend(found)
-                                        break
-
-                                if color_cartridges:
-                                    # Берем первую совместимую модель
-                                    component_model = color_cartridges[0].model
-                                else:
-                                    # Если нет нужного цвета, берем любую модель
-                                    if compatibility.compatible_models:
-                                        component_model = compatibility.compatible_models[0].model
-                                    else:
-                                        component_model = 'Картридж'
-                            elif component_type == 'fuser':
-                                # Используем fuser_models из базы данных
-                                if compatibility.fuser_models and len(compatibility.fuser_models) > 0:
-                                    component_model = compatibility.fuser_models[0]
-                                    logger.info(f"Найден фьюзер для {printer_model}: {component_model}")
-                                else:
-                                    # Если нет в базе, используем базовые модели
-                                    logger.warning(f"Не найдены фьюзеры для {printer_model}")
-                                    if 'Xerox' in printer_model.upper():
-                                        component_model = 'RM1-6405'
-                                    elif 'HP' in printer_model.upper():
-                                        component_model = 'RM1-4353'
-                                    elif 'Kyocera' in printer_model.upper():
-                                        component_model = 'FK-580'
-                                    else:
-                                        component_model = 'Фьюзер'
-                            elif component_type in ['photoconductor', 'drum']:
-                                # Используем photoconductor_models из базы данных
-                                if compatibility.photoconductor_models and len(compatibility.photoconductor_models) > 0:
-                                    component_model = compatibility.photoconductor_models[0]
-                                    logger.info(f"Найден фотобарабан для {printer_model}: {component_model}")
-                                else:
-                                    # Если нет в базе, используем базовые модели
-                                    logger.warning(f"Не найдены фотобарабаны для {printer_model}")
-                                    if 'Xerox' in printer_model.upper():
-                                        component_model = '115R00090'
-                                    elif 'HP' in printer_model.upper():
-                                        component_model = 'CE390A'
-                                    elif 'Kyocera' in printer_model.upper():
-                                        component_model = 'DK-580'
-                                    else:
-                                        component_model = 'Фотобарабан'
-                            elif component_type == 'waste_toner':
-                                # Используем waste_toner_models из базы данных
-                                if hasattr(compatibility, 'waste_toner_models') and compatibility.waste_toner_models:
-                                    component_model = compatibility.waste_toner_models[0]
-                                else:
-                                    component_model = 'Контейнер отраб. тонера'
-                            elif component_type == 'transfer_belt':
-                                # Ищем трансферные ремни (если есть)
-                                if hasattr(compatibility, 'transfer_belt_models') and compatibility.transfer_belt_models:
-                                    component_model = compatibility.transfer_belt_models[0]
-                                else:
-                                    component_model = 'Трансферный ремень'
-                            else:
-                                # Для других типов
-                                component_model = item.get('component_type', '')
-                    except Exception as e:
-                        logger.error(f"Error getting component model: {e}")
-                        logger.error(f"Printer model: {printer_model}, Component type: {component_type}")
-                        import traceback
-                        traceback.print_exc()
-                        component_model = 'Ошибка поиска модели'
-
-            elif item.get('cartridge_color'):
-                # Старый формат (только картриджи)
-                row['Компонент'] = 'Картридж'
-                color = item.get('cartridge_color', '')
-                # Для старого формата тоже используем базу данных
-                # Сначала проверяем, есть ли сохраненная модель
-                if item_model := item.get('cartridge_model'):
-                    component_model = item_model
-                else:
-                    printer_model = item.get('printer_model', '')
-                    try:
-                        from bot.services.cartridge_database import cartridge_database
-                        # Для старого формата тоже используем полную информацию
-                        compatibility = cartridge_database.find_printer_compatibility(printer_model)
-
-                        if compatibility and compatibility.compatible_models:
-                            # Берем первую совместимую модель (обычно картридж)
-                            component_model = compatibility.compatible_models[0].model
-                        else:
-                            # Если нет в базе, пробуем определить по названию
-                            if 'Xerox Versalink' in printer_model:
-                                component_model = 'Xerox 106R02773'
-                            elif 'Kyocera' in printer_model:
-                                component_model = 'Kyocera TK-3172'
-                            else:
-                                component_model = 'Картридж'
-                    except:
-                        component_model = 'Картридж'
-            else:
-                row['Компонент'] = 'Неизвестно'
-                color = ''
-                component_model = ''
-
-            row['Цвет'] = color
-            row['Модель'] = component_model
-
-            # Добавляем строчку
-            rows.append(row)
-
-        # Создаем DataFrame
-        df = pd.DataFrame(rows)
-
-        # Порядок колонок (с филиалом для группировки)
-        df = df[['Дата', 'Время', 'Филиал', 'Локация', 'Модель принтера', 'Компонент', 'Модель', 'Цвет', 'База данных']]
-
-        # Сортируем по дате (новые сверху)
-        df = df.sort_values('Дата', ascending=False)
-
-        # Создаем экспортер
-        exporter = GroupedExcelExporter()
-
-        # Формируем диапазон дат
-        date_range = exporter.format_date_range(start_date, end_date) if (start_date and end_date) else "все_даты"
-
-        # Генерируем имя файла
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        output_file = f"exports/комплектующие_{date_range}_{timestamp}.xlsx"
-
-        # Ширина колонок (9 колонок без филиала)
-        column_widths = {
-            'A': ColumnWidth.DATE,
-            'B': ColumnWidth.TIME,
-            'C': 15,  # Локация
-            'D': 30,  # Модель принтера
-            'E': ColumnWidth.COMPONENT,
-            'F': 20,  # Модель компонента
-            'G': ColumnWidth.COLOR,
-            'H': ColumnWidth.DATABASE,
-            'I': ColumnWidth.TITLE
-        }
-
-        # Экспортируем с группировкой по филиалам
-        exporter.export_by_branches(
-            df=df,
-            output_file=output_file,
-            sheet_title_prefix="ФИЛИАЛ",
-            summary_title="СВОДНЫЙ ОТЧЕТ",
-            date_range=date_range,
-            branch_column='Филиал',
-            column_widths=column_widths
-        )
-
-        logger.info(f"Создан отчет с разделением по филиалам: {output_file}")
-        return output_file
-
-    except Exception as e:
-        logger.error(f"Ошибка экспорта замен комплектующих: {e}")
-        import traceback
-        traceback.print_exc()
-        return None
 
 
 async def export_pc_components_to_excel_structured(period: str = "all", db_filter: str = None) -> str:

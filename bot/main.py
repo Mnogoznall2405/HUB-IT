@@ -150,18 +150,8 @@ def register_handlers(application: Application) -> None:
     from bot.handlers.work import (
         start_work,
         handle_work_type,
-        work_branch_input,
-        work_location_input,
-        work_printer_model_input,
-        work_component_input,
-        handle_printer_type_selection,
-        handle_cartridge_color,
-        handle_component_selection,
         handle_work_confirmation,
         handle_work_success_action,
-        handle_work_branch_suggestion,
-        handle_work_location_suggestion,
-        handle_work_model_suggestion,
         work_battery_serial_input,
         show_battery_confirmation,
         save_battery_replacement,
@@ -463,23 +453,6 @@ def register_handlers(application: Application) -> None:
                 CallbackQueryHandler(handle_work_type, pattern="^work:"),
                 CallbackQueryHandler(handle_work_type, pattern="^back_to_main$")
             ],
-            States.WORK_BRANCH_INPUT: [
-                CallbackQueryHandler(handle_work_branch_suggestion, pattern="^work_branch:"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, work_branch_input)
-            ],
-            States.WORK_LOCATION_INPUT: [
-                CallbackQueryHandler(handle_work_location_suggestion, pattern="^work_loc:"),
-                CallbackQueryHandler(handle_work_location_suggestion, pattern="^work_location"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, work_location_input)
-            ],
-            States.WORK_PRINTER_MODEL_INPUT: [
-                CallbackQueryHandler(handle_work_model_suggestion, pattern="^work_model:"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, work_printer_model_input)
-            ],
-            States.WORK_CARTRIDGE_COLOR_SELECTION: [
-                CallbackQueryHandler(handle_printer_type_selection, pattern="^printer_type:"),
-                CallbackQueryHandler(handle_cartridge_color, pattern="^cartridge_color:")
-            ],
             States.WORK_BATTERY_SERIAL_INPUT: [
                 MessageHandler(filters.PHOTO, work_battery_serial_input),
                 MessageHandler(filters.Document.IMAGE, work_battery_serial_input),
@@ -502,19 +475,13 @@ def register_handlers(application: Application) -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, work_component_serial_input)
             ],
             States.WORK_COMPONENT_SELECTION: [
-                CallbackQueryHandler(handle_component_selection, pattern="^component:"),
-                CallbackQueryHandler(handle_component_selection, pattern="^cartridge_model:"),
-                CallbackQueryHandler(handle_pc_component_selection, pattern="^pc_component:"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, work_component_input)
+                CallbackQueryHandler(handle_pc_component_selection, pattern="^pc_component:")
             ],
             States.WORK_COMPONENT_CONFIRMATION: [
                 CallbackQueryHandler(handle_work_confirmation, pattern="^(confirm|cancel)_work$")
             ],
-            States.WORK_CONFIRMATION: [
-                CallbackQueryHandler(handle_work_confirmation, pattern="^(confirm|cancel)_work$")
-            ],
             States.WORK_SUCCESS: [
-                CallbackQueryHandler(handle_work_success_action, pattern="^work:(pc_cleaning|battery_replacement|component_replacement|cartridge)$"),
+                CallbackQueryHandler(handle_work_success_action, pattern="^work:(pc_cleaning|battery_replacement|component_replacement)$"),
                 CallbackQueryHandler(handle_work_success_action, pattern="^back_to_main$")
             ]
         },
@@ -546,7 +513,7 @@ def register_handlers(application: Application) -> None:
     from bot.handlers.work import handle_restart_work, handle_back_to_main_external
     application.add_handler(CallbackQueryHandler(
         handle_restart_work,
-        pattern="^work:(pc_cleaning|battery_replacement|component_replacement|cartridge)$"
+        pattern="^work:(pc_cleaning|battery_replacement|component_replacement)$"
     ))
 
     # Обработчик для кнопки "Главное меню" (вызывается извне ConversationHandler)

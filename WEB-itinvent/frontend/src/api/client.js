@@ -3,6 +3,7 @@
  */
 
 import axios from 'axios';
+import { buildCacheKey, getOrFetchSWR } from '../lib/swrCache';
 
 const rawBase = String(import.meta.env.BASE_URL || '/');
 const normalizedBase = rawBase === './' || rawBase === '.' ? '/' : rawBase;
@@ -16,6 +17,35 @@ const API_BASE_URL = import.meta.env.VITE_API_URL || derivedApiBase;
 export const API_V1_BASE = `${API_BASE_URL}/v1`;
 const SCAN_HOSTS_404_KEY = 'itinvent_scan_hosts_404';
 const SCAN_HOSTS_404_TTL_MS = 6 * 60 * 60 * 1000;
+const SYSTEM_GET_STALE_TIME_MS = 30_000;
+const DATABASE_META_STALE_TIME_MS = 5 * 60 * 1000;
+const PUSH_CONFIG_STALE_TIME_MS = 60_000;
+const MAIL_UNREAD_COUNT_STALE_TIME_MS = 60_000;
+
+const normalizeDbId = (value) => String(value ?? '').trim();
+
+const normalizeCacheValue = (value) => {
+  if (Array.isArray(value)) {
+    return value.map((item) => normalizeCacheValue(item));
+  }
+  if (value && typeof value === 'object') {
+    return Object.keys(value)
+      .sort()
+      .reduce((acc, key) => {
+        acc[key] = normalizeCacheValue(value[key]);
+        return acc;
+      }, {});
+  }
+  return value ?? null;
+};
+
+const getSelectedDatabaseCachePart = () => {
+  try {
+    return normalizeDbId(window.localStorage.getItem('selected_database'));
+  } catch {
+    return '';
+  }
+};
 
 const readScanHosts404Flag = () => {
   try {
@@ -29,6 +59,63 @@ const readScanHosts404Flag = () => {
 };
 
 let scanHostsEndpointUnavailable = readScanHosts404Flag();
+let refreshInFlight = null;
+let chatRequestDebugSeq = 0;
+
+const CHAT_REQUEST_DEBUG_STORAGE_KEY = 'chat:request-debug';
+
+const shouldDebugChatRequests = () => {
+  try {
+    if (typeof window === 'undefined') return false;
+    const pathname = String(window.location?.pathname || '').trim();
+    if (!pathname.startsWith('/chat')) return false;
+    return window.localStorage.getItem(CHAT_REQUEST_DEBUG_STORAGE_KEY) !== '0';
+  } catch {
+    return false;
+  }
+};
+
+const buildDebugRequestUrl = (config) => {
+  const baseUrl = String(config?.baseURL || API_V1_BASE || '').trim();
+  const rawUrl = String(config?.url || '').trim();
+  let normalizedUrl = rawUrl;
+  if (baseUrl && rawUrl.startsWith('/')) {
+    normalizedUrl = `${baseUrl}${rawUrl}`;
+  }
+  const params = config?.params;
+  if (!params || typeof params !== 'object') return normalizedUrl;
+  const search = new URLSearchParams();
+  Object.entries(params).forEach(([key, value]) => {
+    if (value === undefined || value === null || value === '') return;
+    search.set(key, String(value));
+  });
+  const query = search.toString();
+  return query ? `${normalizedUrl}?${query}` : normalizedUrl;
+};
+
+const pushChatRequestDebugEntry = (entry) => {
+  try {
+    if (typeof window === 'undefined') return;
+    const nextEntry = {
+      seq: ++chatRequestDebugSeq,
+      ...entry,
+    };
+    const current = Array.isArray(window.__chatRequestLog) ? window.__chatRequestLog : [];
+    window.__chatRequestLog = [...current.slice(-119), nextEntry];
+    const prefix = `[chat-request #${nextEntry.seq}]`;
+    if (nextEntry.phase === 'request') {
+      console.log(prefix, `${String(nextEntry.method || 'GET').toUpperCase()} ${nextEntry.url}`, nextEntry);
+      return;
+    }
+    if (nextEntry.phase === 'response') {
+      console.log(prefix, `${String(nextEntry.method || 'GET').toUpperCase()} ${nextEntry.url} -> ${nextEntry.status} (${nextEntry.durationMs}ms)`, nextEntry);
+      return;
+    }
+    console.warn(prefix, `${String(nextEntry.method || 'GET').toUpperCase()} ${nextEntry.url} -> ${nextEntry.status || 'ERR'} (${nextEntry.durationMs}ms)`, nextEntry);
+  } catch {
+    // Ignore request debug logging failures.
+  }
+};
 
 const createClientRequestId = () => {
   try {
@@ -92,6 +179,18 @@ apiClient.interceptors.request.use(
     if (!config.headers['X-Client-Request-ID']) {
       config.headers['X-Client-Request-ID'] = createClientRequestId();
     }
+    if (shouldDebugChatRequests()) {
+      config.metadata = {
+        ...(config.metadata || {}),
+        startedAt: Date.now(),
+        debugUrl: buildDebugRequestUrl(config),
+      };
+      pushChatRequestDebugEntry({
+        phase: 'request',
+        method: String(config?.method || 'get').toUpperCase(),
+        url: config.metadata.debugUrl,
+      });
+    }
     return config;
   },
   (error) => {
@@ -103,12 +202,57 @@ apiClient.interceptors.request.use(
  * Response interceptor - handle 401 errors
  */
 apiClient.interceptors.response.use(
-  (response) => response,
-  (error) => {
+  (response) => {
+    const metadata = response?.config?.metadata || {};
+    if (shouldDebugChatRequests()) {
+      pushChatRequestDebugEntry({
+        phase: 'response',
+        method: String(response?.config?.method || 'get').toUpperCase(),
+        url: String(metadata.debugUrl || buildDebugRequestUrl(response?.config || {})),
+        status: Number(response?.status || 0),
+        durationMs: Math.max(0, Date.now() - Number(metadata.startedAt || Date.now())),
+      });
+    }
+    return response;
+  },
+  async (error) => {
+    const metadata = error?.config?.metadata || {};
+    if (shouldDebugChatRequests()) {
+      pushChatRequestDebugEntry({
+        phase: 'error',
+        method: String(error?.config?.method || 'get').toUpperCase(),
+        url: String(metadata.debugUrl || buildDebugRequestUrl(error?.config || {})),
+        status: Number(error?.response?.status || 0) || 'ERR',
+        durationMs: Math.max(0, Date.now() - Number(metadata.startedAt || Date.now())),
+        message: String(error?.message || 'request failed'),
+      });
+    }
     if (error.response?.status === 401) {
       const requestUrl = String(error.config?.url || '');
       const suppressAuthRequired = Boolean(error.config?.suppressAuthRequired);
       const isLoginRequest = requestUrl.includes('/auth/login');
+      const isRefreshRequest = requestUrl.includes('/auth/refresh');
+      const isInteractiveAuthFlowRequest =
+        requestUrl.includes('/auth/verify-2fa') ||
+        requestUrl.includes('/auth/enable-2fa') ||
+        requestUrl.includes('/auth/trusted-devices/auth/') ||
+        requestUrl.includes('/auth/passkey-login/');
+      const canRetryWithRefresh = !error.config?._retry && !isLoginRequest && !isRefreshRequest && !isInteractiveAuthFlowRequest;
+
+      if (canRetryWithRefresh) {
+        try {
+          if (!refreshInFlight) {
+            refreshInFlight = apiClient.post('/auth/refresh', null, { suppressAuthRequired: true });
+          }
+          await refreshInFlight;
+          error.config._retry = true;
+          return apiClient.request(error.config);
+        } catch {
+          // Fall through to auth-required handling below.
+        } finally {
+          refreshInFlight = null;
+        }
+      }
 
       // Session expired or invalid - clear cached user and notify app state.
       localStorage.removeItem('user');
@@ -127,8 +271,113 @@ export { apiClient };
  * Auth API methods
  */
 export const authAPI = {
+  getLoginMode: async () => {
+    const response = await apiClient.get('/auth/login-mode', { suppressAuthRequired: true });
+    return response.data;
+  },
+
   login: async (username, password) => {
     const response = await apiClient.post('/auth/login', { username, password }, { suppressAuthRequired: true });
+    return response.data;
+  },
+
+  startTwoFactorSetup: async (loginChallengeId) => {
+    const response = await apiClient.post('/auth/enable-2fa', {
+      login_challenge_id: loginChallengeId,
+    }, { suppressAuthRequired: true });
+    return response.data;
+  },
+
+  verifyTwoFactorSetup: async (loginChallengeId, totpCode) => {
+    const response = await apiClient.post('/auth/verify-2fa', {
+      login_challenge_id: loginChallengeId,
+      totp_code: totpCode,
+    }, { suppressAuthRequired: true });
+    return response.data;
+  },
+
+  verifyTwoFactorLogin: async (loginChallengeId, payload = {}) => {
+    const response = await apiClient.post('/auth/verify-2fa-login', {
+      login_challenge_id: loginChallengeId,
+      totp_code: payload?.totp_code || undefined,
+      backup_code: payload?.backup_code || undefined,
+    }, { suppressAuthRequired: true });
+    return response.data;
+  },
+
+  refresh: async () => {
+    const response = await apiClient.post('/auth/refresh', null, { suppressAuthRequired: true });
+    return response.data;
+  },
+
+  regenerateBackupCodes: async () => {
+    const response = await apiClient.post('/auth/backup-codes/regenerate');
+    return response.data;
+  },
+
+  getTrustedDevices: async () => {
+    const response = await apiClient.get('/auth/trusted-devices');
+    return response.data;
+  },
+
+  revokeTrustedDevice: async (deviceId) => {
+    const response = await apiClient.delete(`/auth/trusted-devices/${encodeURIComponent(deviceId)}`);
+    return response.data;
+  },
+
+  getTrustedDeviceRegistrationOptions: async (label, options = {}) => {
+    const response = await apiClient.post('/auth/trusted-devices/register/options', {
+      label: label || undefined,
+      platform_only: Boolean(options?.platformOnly),
+    });
+    return response.data;
+  },
+
+  verifyTrustedDeviceRegistration: async (challengeId, credential, label) => {
+    const response = await apiClient.post('/auth/trusted-devices/register/verify', {
+      challenge_id: challengeId,
+      credential,
+      label: label || undefined,
+    });
+    return response.data;
+  },
+
+  getTrustedDeviceAuthOptions: async (loginChallengeId) => {
+    const response = await apiClient.post('/auth/trusted-devices/auth/options', {
+      login_challenge_id: loginChallengeId,
+    }, { suppressAuthRequired: true });
+    return response.data;
+  },
+
+  verifyTrustedDeviceAuth: async (loginChallengeId, challengeId, credential) => {
+    const response = await apiClient.post('/auth/trusted-devices/auth/verify', {
+      login_challenge_id: loginChallengeId,
+      challenge_id: challengeId,
+      credential,
+    }, { suppressAuthRequired: true });
+    return response.data;
+  },
+
+  getPasskeyLoginOptions: async () => {
+    const response = await apiClient.post('/auth/passkey-login/options', null, { suppressAuthRequired: true });
+    return response.data;
+  },
+
+  verifyPasskeyLogin: async (challengeId, credential) => {
+    const response = await apiClient.post('/auth/passkey-login/verify', {
+      challenge_id: challengeId,
+      credential,
+    }, { suppressAuthRequired: true });
+    return response.data;
+  },
+
+  adminResetTwoFactor: async (userId) => {
+    const response = await apiClient.post(`/auth/users/${encodeURIComponent(userId)}/reset-2fa`);
+    return response.data;
+  },
+
+  resetOwnTwoFactor: async () => {
+    const response = await apiClient.post('/auth/reset-2fa-self');
     return response.data;
   },
 
@@ -187,6 +436,18 @@ export const authAPI = {
     return response.data;
   },
 
+  getTaskDelegates: async (userId) => {
+    const response = await apiClient.get(`/auth/users/${userId}/task-delegates`);
+    return response.data;
+  },
+
+  updateTaskDelegates: async (userId, items = []) => {
+    const response = await apiClient.put(`/auth/users/${userId}/task-delegates`, {
+      items: Array.isArray(items) ? items : [],
+    });
+    return response.data;
+  },
+
   deleteUser: async (userId) => {
     const response = await apiClient.delete(`/auth/users/${userId}`);
     return response.data;
@@ -194,6 +455,587 @@ export const authAPI = {
 
   syncAD: async () => {
     const response = await apiClient.post('/auth/sync-ad');
+    return response.data;
+  },
+};
+
+const getCachedGet = async (
+  cacheScope,
+  url,
+  {
+    params = undefined,
+    staleTimeMs = SYSTEM_GET_STALE_TIME_MS,
+    force = false,
+    suppressAuthRequired = false,
+  } = {},
+) => {
+  const cacheKey = buildCacheKey(
+    'http-get',
+    cacheScope,
+    url,
+    getSelectedDatabaseCachePart(),
+    normalizeCacheValue(params || {}),
+  );
+  const { data } = await getOrFetchSWR(
+    cacheKey,
+    async () => (
+      await apiClient.get(url, {
+        params,
+        suppressAuthRequired,
+      })
+    ).data,
+    {
+      staleTimeMs,
+      force,
+    },
+  );
+  return data;
+};
+
+const CHAT_UPLOAD_SESSION_FALLBACK_STATUSES = new Set([404, 405, 500, 501, 502, 503, 504]);
+const CHAT_UPLOAD_SESSION_RETRY_DELAYS_MS = [1000, 3000, 7000];
+const CHAT_UPLOAD_SESSION_MAX_CONCURRENCY = 2;
+const CHAT_UPLOAD_SESSION_DEFAULT_CHUNK_BYTES = 2 * 1024 * 1024;
+
+const sleepWithSignal = async (ms, signal) => {
+  if (!Number.isFinite(ms) || ms <= 0) return;
+  await new Promise((resolve, reject) => {
+    let timeoutId = null;
+    const scope = typeof globalThis !== 'undefined' ? globalThis : window;
+    const cleanup = () => {
+      if (timeoutId !== null) scope.clearTimeout(timeoutId);
+      signal?.removeEventListener?.('abort', handleAbort);
+    };
+    const handleAbort = () => {
+      cleanup();
+      reject(new axios.CanceledError('Chat upload aborted'));
+    };
+    if (signal?.aborted) {
+      handleAbort();
+      return;
+    }
+    timeoutId = scope.setTimeout(() => {
+      cleanup();
+      resolve();
+    }, ms);
+    signal?.addEventListener?.('abort', handleAbort, { once: true });
+  });
+};
+
+const isAbortError = (error) => (
+  String(error?.code || '').trim() === 'ERR_CANCELED'
+  || String(error?.name || '').trim() === 'AbortError'
+  || String(error?.name || '').trim() === 'CanceledError'
+);
+
+const isChatUploadTransferFile = (value) => Boolean(value && typeof value.slice === 'function');
+
+const normalizeChatUploadEntry = (value) => {
+  if (!value) return null;
+
+  if (isChatUploadTransferFile(value)) {
+    const fileName = String(value?.name || '').trim() || 'file.bin';
+    const mimeType = String(value?.type || '').trim() || undefined;
+    const originalSize = Math.max(0, Number(value?.size || 0));
+    return {
+      file: value,
+      transferFile: value,
+      fileName,
+      mimeType,
+      size: originalSize,
+      originalSize,
+      transferEncoding: 'identity',
+    };
+  }
+
+  const file = isChatUploadTransferFile(value?.file) ? value.file : null;
+  const transferFile = isChatUploadTransferFile(value?.transferFile) ? value.transferFile : file;
+  if (!transferFile) {
+    return null;
+  }
+
+  const normalizedFile = file || transferFile;
+  const fileName = String(normalizedFile?.name || transferFile?.name || value?.file_name || '').trim() || 'file.bin';
+  const mimeType = String(normalizedFile?.type || transferFile?.type || value?.mime_type || '').trim() || undefined;
+  const originalSize = Math.max(0, Number(value?.preparedSize ?? normalizedFile?.size ?? transferFile?.size ?? 0));
+  const transferSize = Math.max(0, Number(value?.transferSize ?? transferFile?.size ?? originalSize));
+
+  return {
+    file: normalizedFile,
+    transferFile,
+    fileName,
+    mimeType,
+    size: transferSize,
+    originalSize,
+    transferEncoding: String(value?.transferEncoding || 'identity').trim() === 'gzip' ? 'gzip' : 'identity',
+  };
+};
+
+const canUseChatUploadSessions = (files) => (
+  typeof Blob !== 'undefined'
+  && typeof FormData !== 'undefined'
+  && Array.isArray(files)
+  && files.length > 0
+  && files.every((file) => isChatUploadTransferFile(file?.transferFile || file))
+);
+
+const shouldFallbackChatUploadSession = (error) => {
+  if (!error) return true;
+  const status = Number(error?.response?.status || 0);
+  if (!status) return true;
+  if (status >= 500) return true;
+  return CHAT_UPLOAD_SESSION_FALLBACK_STATUSES.has(status);
+};
+
+const emitChatUploadProgress = (callback, loaded, total) => {
+  if (typeof callback !== 'function') return;
+  callback({
+    loaded: Math.max(0, Number(loaded || 0)),
+    total: Math.max(0, Number(total || 0)),
+  });
+};
+
+const getChatChunkByteLength = (chunkIndex, size, chunkSizeBytes) => {
+  const safeChunkIndex = Math.max(0, Number(chunkIndex || 0));
+  const safeSize = Math.max(0, Number(size || 0));
+  const safeChunkSize = Math.max(1, Number(chunkSizeBytes || CHAT_UPLOAD_SESSION_DEFAULT_CHUNK_BYTES));
+  const start = safeChunkIndex * safeChunkSize;
+  if (start >= safeSize) return 0;
+  return Math.min(safeChunkSize, safeSize - start);
+};
+
+const uploadChatFilesMultipart = async (conversationId, files = [], options = {}) => {
+  const normalizedFiles = (Array.isArray(files) ? files : [])
+    .map((file) => normalizeChatUploadEntry(file))
+    .filter(Boolean);
+  const formData = new FormData();
+  normalizedFiles.forEach((file) => {
+    if (file?.transferFile) formData.append('files', file.transferFile);
+  });
+  if (normalizedFiles.length > 0) {
+    formData.append('files_meta_json', JSON.stringify(
+      normalizedFiles.map((file) => ({
+        original_size: Number(file?.originalSize || 0),
+        transfer_encoding: String(file?.transferEncoding || 'identity').trim() || 'identity',
+      })),
+    ));
+  }
+  const normalizedBody = String(options?.body || '').trim();
+  if (normalizedBody) {
+    formData.append('body', normalizedBody);
+  }
+  if (options?.reply_to_message_id) {
+    formData.append('reply_to_message_id', options.reply_to_message_id);
+  }
+  const response = await apiClient.post(
+    `/chat/conversations/${encodeURIComponent(conversationId)}/messages/files`,
+    formData,
+    {
+      onUploadProgress: options?.onUploadProgress,
+      signal: options?.signal,
+    },
+  );
+  return response.data;
+};
+
+export const chatAPI = {
+  getHealth: async () => {
+    const response = await apiClient.get('/chat/health');
+    return response.data;
+  },
+
+  getUnreadSummary: async () => {
+    const response = await apiClient.get('/chat/unread-summary');
+    return response.data;
+  },
+
+  getPushConfig: async () => {
+    const response = await apiClient.get('/chat/push-config');
+    return response.data;
+  },
+
+  upsertPushSubscription: async (payload) => {
+    const response = await apiClient.put('/chat/push-subscription', payload);
+    return response.data;
+  },
+
+  deletePushSubscription: async (endpoint) => {
+    const response = await apiClient.delete('/chat/push-subscription', {
+      data: { endpoint },
+    });
+    return response.data;
+  },
+
+  getUsers: async (params = {}) => {
+    const response = await apiClient.get('/chat/users', { params });
+    return response.data;
+  },
+
+  listAiBots: async () => {
+    const response = await apiClient.get('/chat/ai/bots');
+    return response.data;
+  },
+
+  openAiBotConversation: async (botId) => {
+    const response = await apiClient.post(`/chat/ai/bots/${encodeURIComponent(botId)}/open`);
+    return response.data;
+  },
+
+  getConversations: async (params = {}) => {
+    const response = await apiClient.get('/chat/conversations', { params });
+    return response.data;
+  },
+
+  getConversation: async (conversationId, options = {}) => {
+    const response = await apiClient.get(
+      `/chat/conversations/${encodeURIComponent(conversationId)}`,
+      { signal: options?.signal },
+    );
+    return response.data;
+  },
+
+  getConversationAiStatus: async (conversationId) => {
+    const response = await apiClient.get(`/chat/conversations/${encodeURIComponent(conversationId)}/ai-status`);
+    return response.data;
+  },
+
+  updateConversationSettings: async (conversationId, payload) => {
+    const response = await apiClient.patch(`/chat/conversations/${encodeURIComponent(conversationId)}/settings`, payload);
+    return response.data;
+  },
+
+  createDirectConversation: async (peerUserId) => {
+    const response = await apiClient.post('/chat/conversations/direct', {
+      peer_user_id: peerUserId,
+    });
+    return response.data;
+  },
+
+  createGroupConversation: async (payload) => {
+    const response = await apiClient.post('/chat/conversations/group', payload);
+    return response.data;
+  },
+
+  getThreadBootstrap: async (conversationId, params = {}, options = {}) => {
+    const response = await apiClient.get(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/thread-bootstrap`,
+      {
+        params,
+        signal: options?.signal,
+      },
+    );
+    return response.data;
+  },
+
+  getMessages: async (conversationId, params = {}, options = {}) => {
+    const response = await apiClient.get(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/messages`,
+      {
+        params,
+        signal: options?.signal,
+      },
+    );
+    return response.data;
+  },
+
+  searchMessages: async (conversationId, params = {}) => {
+    const response = await apiClient.get(`/chat/conversations/${encodeURIComponent(conversationId)}/messages/search`, { params });
+    return response.data;
+  },
+
+  getShareableTasks: async (conversationId, params = {}) => {
+    const response = await apiClient.get(`/chat/conversations/${encodeURIComponent(conversationId)}/shareable-tasks`, { params });
+    return response.data;
+  },
+
+  getConversationAssetsSummary: async (conversationId) => {
+    const response = await apiClient.get(`/chat/conversations/${encodeURIComponent(conversationId)}/assets-summary`);
+    return response.data;
+  },
+
+  getConversationAttachments: async (conversationId, params = {}) => {
+    const response = await apiClient.get(`/chat/conversations/${encodeURIComponent(conversationId)}/attachments`, { params });
+    return response.data;
+  },
+
+  createUploadSession: async (conversationId, payload, options = {}) => {
+    const response = await apiClient.post(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/upload-sessions`,
+      payload,
+      { signal: options?.signal },
+    );
+    return response.data;
+  },
+
+  uploadFileChunk: async (sessionId, fileId, chunkIndex, chunk, options = {}) => {
+    const response = await apiClient.put(
+      `/chat/upload-sessions/${encodeURIComponent(sessionId)}/files/${encodeURIComponent(fileId)}/chunks/${encodeURIComponent(chunkIndex)}`,
+      chunk,
+      {
+        params: {
+          offset: Math.max(0, Number(options?.offset || 0)),
+        },
+        headers: {
+          'Content-Type': 'application/octet-stream',
+        },
+        signal: options?.signal,
+      },
+    );
+    return response.data;
+  },
+
+  getUploadSession: async (sessionId, options = {}) => {
+    const response = await apiClient.get(
+      `/chat/upload-sessions/${encodeURIComponent(sessionId)}`,
+      { signal: options?.signal },
+    );
+    return response.data;
+  },
+
+  completeUploadSession: async (sessionId, options = {}) => {
+    const response = await apiClient.post(
+      `/chat/upload-sessions/${encodeURIComponent(sessionId)}/complete`,
+      null,
+      { signal: options?.signal },
+    );
+    return response.data;
+  },
+
+  cancelUploadSession: async (sessionId, options = {}) => {
+    const response = await apiClient.delete(
+      `/chat/upload-sessions/${encodeURIComponent(sessionId)}`,
+      { signal: options?.signal },
+    );
+    return response.data;
+  },
+
+  sendMessage: async (conversationId, body, options = {}) => {
+    const response = await apiClient.post(`/chat/conversations/${encodeURIComponent(conversationId)}/messages`, {
+      body,
+      body_format: options?.body_format || undefined,
+      client_message_id: options?.client_message_id || undefined,
+      reply_to_message_id: options?.reply_to_message_id || undefined,
+    });
+    return response.data;
+  },
+
+  forwardMessage: async (conversationId, sourceMessageId, options = {}) => {
+    const payload = {
+      source_message_id: sourceMessageId,
+    };
+    const body = String(options?.body || '').trim();
+    if (body) payload.body = body;
+    if (options?.body_format) payload.body_format = options.body_format;
+    if (options?.reply_to_message_id) payload.reply_to_message_id = options.reply_to_message_id;
+    const response = await apiClient.post(`/chat/conversations/${encodeURIComponent(conversationId)}/messages/forward`, payload);
+    return response.data;
+  },
+
+  shareTask: async (conversationId, taskId, options = {}) => {
+    const response = await apiClient.post(`/chat/conversations/${encodeURIComponent(conversationId)}/messages/task-share`, {
+      task_id: taskId,
+      reply_to_message_id: options?.reply_to_message_id || undefined,
+    });
+    return response.data;
+  },
+
+  sendFiles: async (conversationId, files = [], options = {}) => {
+    const normalizedFiles = (Array.isArray(files) ? files : [])
+      .map((file) => normalizeChatUploadEntry(file))
+      .filter(Boolean);
+    const totalBytes = normalizedFiles.reduce((sum, file) => sum + Number(file?.size || 0), 0);
+    if (normalizedFiles.length === 0) {
+      return uploadChatFilesMultipart(conversationId, normalizedFiles, options);
+    }
+
+    if (!canUseChatUploadSessions(normalizedFiles)) {
+      return uploadChatFilesMultipart(conversationId, normalizedFiles, options);
+    }
+
+    let session = null;
+    let sessionId = '';
+    let completed = false;
+    let loadedBytes = 0;
+    const signal = options?.signal;
+    emitChatUploadProgress(options?.onUploadProgress, 0, totalBytes);
+
+    try {
+      session = await chatAPI.createUploadSession(
+        conversationId,
+        {
+          body: String(options?.body || '').trim() || undefined,
+          reply_to_message_id: options?.reply_to_message_id || undefined,
+          files: normalizedFiles.map((file) => ({
+            file_name: String(file?.fileName || '').trim() || 'file.bin',
+            mime_type: String(file?.mimeType || '').trim() || undefined,
+            size: Number(file?.size || 0),
+            original_size: Number(file?.originalSize || 0),
+            transfer_encoding: String(file?.transferEncoding || 'identity').trim() || 'identity',
+          })),
+        },
+        { signal },
+      );
+      sessionId = String(session?.session_id || '').trim();
+      if (!sessionId || !Array.isArray(session?.files) || session.files.length !== normalizedFiles.length) {
+        throw new Error('Chat upload session response is invalid');
+      }
+    } catch (error) {
+      if (!signal?.aborted && shouldFallbackChatUploadSession(error)) {
+        return uploadChatFilesMultipart(conversationId, normalizedFiles, options);
+      }
+      throw error;
+    }
+
+    const chunkSizeBytes = Math.max(1, Number(session?.chunk_size_bytes || CHAT_UPLOAD_SESSION_DEFAULT_CHUNK_BYTES));
+    const uploadEntries = session.files.map((sessionFile, index) => ({
+      file: normalizedFiles[index]?.transferFile,
+      fileId: String(sessionFile?.file_id || '').trim(),
+      size: Number(sessionFile?.size || normalizedFiles[index]?.size || 0),
+      chunkCount: Math.max(1, Number(sessionFile?.chunk_count || Math.ceil((Number(sessionFile?.size || normalizedFiles[index]?.size || 0)) / chunkSizeBytes))),
+      acknowledgedChunks: new Set(
+        Array.isArray(sessionFile?.received_chunks)
+          ? sessionFile.received_chunks.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item >= 0)
+          : [],
+      ),
+    }));
+
+    const syncLoadedBytes = () => {
+      loadedBytes = uploadEntries.reduce((sum, entry) => (
+        sum + Array.from(entry.acknowledgedChunks).reduce(
+          (entrySum, chunkIndex) => entrySum + getChatChunkByteLength(chunkIndex, entry.size, chunkSizeBytes),
+          0,
+        )
+      ), 0);
+      emitChatUploadProgress(options?.onUploadProgress, loadedBytes, totalBytes);
+    };
+
+    const applySessionStatus = (statusPayload) => {
+      const statusFiles = Array.isArray(statusPayload?.files) ? statusPayload.files : [];
+      statusFiles.forEach((statusFile) => {
+        const entry = uploadEntries.find((item) => item.fileId === String(statusFile?.file_id || '').trim());
+        if (!entry) return;
+        const receivedChunks = Array.isArray(statusFile?.received_chunks)
+          ? statusFile.received_chunks.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item >= 0)
+          : [];
+        entry.acknowledgedChunks = new Set(receivedChunks);
+      });
+      syncLoadedBytes();
+    };
+
+    applySessionStatus(session);
+
+    const uploadEntryChunks = async (entry) => {
+      if (!entry.fileId) {
+        throw new Error('Chat upload session file id is missing');
+      }
+      while (entry.acknowledgedChunks.size < entry.chunkCount) {
+        let chunkIndex = -1;
+        for (let index = 0; index < entry.chunkCount; index += 1) {
+          if (!entry.acknowledgedChunks.has(index)) {
+            chunkIndex = index;
+            break;
+          }
+        }
+        if (chunkIndex < 0) break;
+
+        const offset = chunkIndex * chunkSizeBytes;
+        const nextOffset = Math.min(entry.size, offset + chunkSizeBytes);
+        const chunk = entry.file.slice(offset, nextOffset);
+        let uploadSucceeded = false;
+
+        for (let attempt = 0; attempt <= CHAT_UPLOAD_SESSION_RETRY_DELAYS_MS.length; attempt += 1) {
+          try {
+            const chunkResult = await chatAPI.uploadFileChunk(
+              sessionId,
+              entry.fileId,
+              chunkIndex,
+              chunk,
+              { offset, signal },
+            );
+            const receivedChunks = Array.isArray(chunkResult?.received_chunks)
+              ? chunkResult.received_chunks.map((item) => Number(item)).filter((item) => Number.isInteger(item) && item >= 0)
+              : [chunkIndex];
+            entry.acknowledgedChunks = new Set([
+              ...Array.from(entry.acknowledgedChunks),
+              ...receivedChunks,
+            ]);
+            syncLoadedBytes();
+            uploadSucceeded = true;
+            break;
+          } catch (error) {
+            if (isAbortError(error)) {
+              throw error;
+            }
+            try {
+              const statusPayload = await chatAPI.getUploadSession(sessionId, { signal });
+              applySessionStatus(statusPayload);
+              if (entry.acknowledgedChunks.has(chunkIndex)) {
+                uploadSucceeded = true;
+                break;
+              }
+            } catch (statusError) {
+              if (isAbortError(statusError)) {
+                throw statusError;
+              }
+            }
+            if (attempt >= CHAT_UPLOAD_SESSION_RETRY_DELAYS_MS.length) {
+              throw error;
+            }
+            await sleepWithSignal(CHAT_UPLOAD_SESSION_RETRY_DELAYS_MS[attempt], signal);
+          }
+        }
+
+        if (!uploadSucceeded) {
+          throw new Error('Chat upload chunk failed');
+        }
+      }
+    };
+
+    try {
+      let cursor = 0;
+      const workerCount = Math.min(CHAT_UPLOAD_SESSION_MAX_CONCURRENCY, uploadEntries.length);
+      const workers = Array.from({ length: workerCount }, async () => {
+        while (cursor < uploadEntries.length) {
+          const currentIndex = cursor;
+          cursor += 1;
+          await uploadEntryChunks(uploadEntries[currentIndex]);
+        }
+      });
+      await Promise.all(workers);
+      syncLoadedBytes();
+      const message = await chatAPI.completeUploadSession(sessionId, { signal });
+      completed = true;
+      emitChatUploadProgress(options?.onUploadProgress, totalBytes, totalBytes);
+      return message;
+    } catch (error) {
+      if (sessionId && !completed && isAbortError(error)) {
+        try {
+          await chatAPI.cancelUploadSession(sessionId);
+        } catch {
+          // Ignore session cleanup failures on the client side.
+        }
+      }
+      throw error;
+    }
+  },
+
+  downloadAttachment: async (messageId, attachmentId) => {
+    const response = await apiClient.get(
+      `/chat/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/file`,
+      { responseType: 'blob' },
+    );
+    return response;
+  },
+
+  getMessageReads: async (messageId) => {
+    const response = await apiClient.get(`/chat/messages/${encodeURIComponent(messageId)}/reads`);
+    return response.data;
+  },
+
+  markRead: async (conversationId, messageId) => {
+    const response = await apiClient.post(`/chat/conversations/${encodeURIComponent(conversationId)}/read`, {
+      message_id: messageId,
+    });
     return response.data;
   },
 };
@@ -209,6 +1051,14 @@ export const settingsAPI = {
     const response = await apiClient.patch('/settings/me', payload);
     return response.data;
   },
+  getAppSettings: async () => {
+    const response = await apiClient.get('/settings/app');
+    return response.data;
+  },
+  updateAppSettings: async (payload) => {
+    const response = await apiClient.patch('/settings/app', payload);
+    return response.data;
+  },
   getEnvSettings: async () => {
     const response = await apiClient.get('/settings/env');
     return response.data;
@@ -217,6 +1067,65 @@ export const settingsAPI = {
     const response = await apiClient.patch('/settings/env', { items });
     return response.data;
   },
+  getNotificationPushConfig: async (options = {}) => {
+    return getCachedGet(
+      'settings-notification-push-config',
+      '/settings/notifications/push-config',
+      {
+        staleTimeMs: PUSH_CONFIG_STALE_TIME_MS,
+        force: Boolean(options?.force),
+      },
+    );
+  },
+  upsertNotificationPushSubscription: async (payload) => {
+    const response = await apiClient.put('/settings/notifications/push-subscription', payload);
+    return response.data;
+  },
+  deleteNotificationPushSubscription: async (endpoint) => {
+    const response = await apiClient.delete('/settings/notifications/push-subscription', {
+      data: { endpoint },
+    });
+    return response.data;
+  },
+  getNotificationPreferences: async () => {
+    const response = await apiClient.get('/settings/notifications/preferences');
+    return response.data;
+  },
+  updateNotificationPreferences: async (payload) => {
+    const response = await apiClient.patch('/settings/notifications/preferences', payload);
+    return response.data;
+  },
+  getAiBots: async () => {
+    const response = await apiClient.get('/ai-bots');
+    return response.data;
+  },
+  createAiBot: async (payload) => {
+    const response = await apiClient.post('/ai-bots', payload);
+    return response.data;
+  },
+  updateAiBot: async (botId, payload) => {
+    const response = await apiClient.patch(`/ai-bots/${encodeURIComponent(botId)}`, payload);
+    return response.data;
+  },
+  getAiBotRuns: async (botId) => {
+    const response = await apiClient.get(`/ai-bots/${encodeURIComponent(botId)}/runs`);
+    return response.data;
+  },
+};
+
+export const databaseAPI = {
+  getAvailableDatabases: async (options = {}) => (
+    getCachedGet('database-list', '/database/list', {
+      staleTimeMs: DATABASE_META_STALE_TIME_MS,
+      force: Boolean(options?.force),
+    })
+  ),
+  getCurrentDatabase: async (options = {}) => (
+    getCachedGet('database-current', '/database/current', {
+      staleTimeMs: DATABASE_META_STALE_TIME_MS,
+      force: Boolean(options?.force),
+    })
+  ),
 };
 
 export const kbAPI = {
@@ -400,6 +1309,36 @@ export const hubAPI = {
     return response.data;
   },
 
+  getTaskProjects: async (params = {}) => {
+    const response = await apiClient.get('/hub/task-projects', { params });
+    return response.data;
+  },
+
+  createTaskProject: async (payload) => {
+    const response = await apiClient.post('/hub/task-projects', payload);
+    return response.data;
+  },
+
+  updateTaskProject: async (projectId, payload) => {
+    const response = await apiClient.patch(`/hub/task-projects/${encodeURIComponent(projectId)}`, payload);
+    return response.data;
+  },
+
+  getTaskObjects: async (params = {}) => {
+    const response = await apiClient.get('/hub/task-objects', { params });
+    return response.data;
+  },
+
+  createTaskObject: async (payload) => {
+    const response = await apiClient.post('/hub/task-objects', payload);
+    return response.data;
+  },
+
+  updateTaskObject: async (objectId, payload) => {
+    const response = await apiClient.patch(`/hub/task-objects/${encodeURIComponent(objectId)}`, payload);
+    return response.data;
+  },
+
   getAnnouncementRecipients: async () => {
     const response = await apiClient.get('/hub/users/announcement-recipients');
     return response.data;
@@ -416,6 +1355,19 @@ export const hubAPI = {
   getTasks: async (params = {}) => {
     const response = await apiClient.get('/hub/tasks', { params });
     return response.data;
+  },
+
+  getTaskAnalytics: async (params = {}) => {
+    const response = await apiClient.get('/hub/tasks/analytics', { params });
+    return response.data;
+  },
+
+  exportTaskAnalyticsExcel: async (params = {}) => {
+    const response = await apiClient.get('/hub/tasks/analytics/export', {
+      params,
+      responseType: 'blob',
+    });
+    return response;
   },
 
   getTask: async (taskId) => {
@@ -524,11 +1476,37 @@ export const hubAPI = {
     const response = await apiClient.post(`/hub/notifications/${encodeURIComponent(notificationId)}/read`);
     return response.data;
   },
+
+  markAllNotificationsRead: async () => {
+    const response = await apiClient.post('/hub/notifications/read-all');
+    return response.data;
+  },
+};
+
+const normalizeMailboxId = (value) => {
+  const normalized = String(value || '').trim();
+  return normalized || '';
+};
+
+const withMailboxQuery = (params = {}, mailboxId) => {
+  const normalizedMailboxId = normalizeMailboxId(mailboxId ?? params?.mailbox_id ?? params?.mailboxId);
+  const nextParams = { ...(params || {}) };
+  delete nextParams.mailboxId;
+  if (normalizedMailboxId) {
+    nextParams.mailbox_id = normalizedMailboxId;
+  } else {
+    delete nextParams.mailbox_id;
+  }
+  return nextParams;
 };
 
 export const mailAPI = {
+  getBootstrap: async (params = {}) => {
+    const response = await apiClient.get('/mail/bootstrap', { params: withMailboxQuery(params) });
+    return response.data;
+  },
   getMessages: async (params = {}) => {
-    const response = await apiClient.get('/mail/messages', { params });
+    const response = await apiClient.get('/mail/messages', { params: withMailboxQuery(params) });
     return response.data;
   },
 
@@ -536,13 +1514,13 @@ export const mailAPI = {
     return mailAPI.getMessages(params);
   },
 
-  getFolderSummary: async () => {
-    const response = await apiClient.get('/mail/folders/summary');
+  getFolderSummary: async (params = {}) => {
+    const response = await apiClient.get('/mail/folders/summary', { params: withMailboxQuery(params) });
     return response.data;
   },
 
-  getFolderTree: async () => {
-    const response = await apiClient.get('/mail/folders/tree');
+  getFolderTree: async (params = {}) => {
+    const response = await apiClient.get('/mail/folders/tree', { params: withMailboxQuery(params) });
     return response.data;
   },
 
@@ -551,40 +1529,64 @@ export const mailAPI = {
     return response.data;
   },
 
-  renameFolder: async (folderId, payload) => {
-    const response = await apiClient.patch(`/mail/folders/${encodeURIComponent(folderId)}`, payload);
+  renameFolder: async (folderId, payload = {}, mailboxId = '') => {
+    const body = { ...(payload || {}) };
+    const resolvedMailboxId = normalizeMailboxId(mailboxId || body?.mailbox_id);
+    delete body.mailbox_id;
+    const response = await apiClient.patch(
+      `/mail/folders/${encodeURIComponent(folderId)}`,
+      body,
+      { params: withMailboxQuery({}, resolvedMailboxId) },
+    );
     return response.data;
   },
 
-  deleteFolder: async (folderId) => {
-    const response = await apiClient.delete(`/mail/folders/${encodeURIComponent(folderId)}`);
+  deleteFolder: async (folderId, mailboxId = '') => {
+    const response = await apiClient.delete(
+      `/mail/folders/${encodeURIComponent(folderId)}`,
+      { params: withMailboxQuery({}, mailboxId) },
+    );
     return response.data;
   },
 
-  setFolderFavorite: async (folderId, favorite) => {
-    const response = await apiClient.post(`/mail/folders/${encodeURIComponent(folderId)}/favorite`, { favorite });
+  setFolderFavorite: async (folderId, favorite, mailboxId = '') => {
+    const response = await apiClient.post(`/mail/folders/${encodeURIComponent(folderId)}/favorite`, {
+      favorite,
+      mailbox_id: normalizeMailboxId(mailboxId) || undefined,
+    });
     return response.data;
   },
 
-  searchContacts: async (q) => {
-    const response = await apiClient.get('/mail/contacts', { params: { q } });
+  searchContacts: async (q, options = {}) => {
+    const response = await apiClient.get('/mail/contacts', {
+      params: withMailboxQuery({ q }, options?.mailboxId),
+    });
     return response.data?.items || [];
   },
 
   getMessage: async (messageId, options = {}) => {
     const response = await apiClient.get(`/mail/messages/${encodeURIComponent(messageId)}`, {
+      params: withMailboxQuery({}, options?.mailboxId),
       signal: options?.signal,
     });
     return response.data;
   },
 
-  markAsRead: async (messageId) => {
-    const response = await apiClient.post(`/mail/messages/${encodeURIComponent(messageId)}/read`);
+  markAsRead: async (messageId, mailboxId = '') => {
+    const response = await apiClient.post(
+      `/mail/messages/${encodeURIComponent(messageId)}/read`,
+      null,
+      { params: withMailboxQuery({}, mailboxId) },
+    );
     return response.data;
   },
 
-  markAsUnread: async (messageId) => {
-    const response = await apiClient.post(`/mail/messages/${encodeURIComponent(messageId)}/unread`);
+  markAsUnread: async (messageId, mailboxId = '') => {
+    const response = await apiClient.post(
+      `/mail/messages/${encodeURIComponent(messageId)}/unread`,
+      null,
+      { params: withMailboxQuery({}, mailboxId) },
+    );
     return response.data;
   },
 
@@ -614,6 +1616,7 @@ export const mailAPI = {
   },
 
   saveDraftMultipart: async ({
+    fromMailboxId,
     draftId,
     composeMode,
     to,
@@ -630,6 +1633,7 @@ export const mailAPI = {
     signal,
   }) => {
     const formData = new FormData();
+    formData.append('from_mailbox_id', normalizeMailboxId(fromMailboxId));
     formData.append('draft_id', draftId || '');
     formData.append('compose_mode', composeMode || 'draft');
     formData.append('to', (to || []).join(';'));
@@ -656,26 +1660,67 @@ export const mailAPI = {
     return response.data;
   },
 
-  deleteDraft: async (draftId) => {
-    const response = await apiClient.delete(`/mail/drafts/${encodeURIComponent(draftId)}`);
+  deleteDraft: async (draftId, options = {}) => {
+    const response = await apiClient.delete(
+      `/mail/drafts/${encodeURIComponent(draftId)}`,
+      { params: withMailboxQuery({}, options?.mailboxId) },
+    );
     return response.data;
   },
 
   getConversations: async (params = {}) => {
-    const response = await apiClient.get('/mail/conversations', { params });
+    const response = await apiClient.get('/mail/conversations', { params: withMailboxQuery(params) });
     return response.data;
   },
 
   getConversation: async (conversationId, params = {}, options = {}) => {
     const response = await apiClient.get(`/mail/conversations/${encodeURIComponent(conversationId)}`, {
-      params,
+      params: withMailboxQuery(params),
       signal: options?.signal,
     });
     return response.data;
   },
 
-  getUnreadCount: async () => {
-    const response = await apiClient.get('/mail/unread-count');
+  markConversationAsRead: async (conversationId, payload = {}) => {
+    const response = await apiClient.post(
+      `/mail/conversations/${encodeURIComponent(conversationId)}/read`,
+      payload,
+    );
+    return response.data;
+  },
+
+  markConversationAsUnread: async (conversationId, payload = {}) => {
+    const response = await apiClient.post(
+      `/mail/conversations/${encodeURIComponent(conversationId)}/unread`,
+      payload,
+    );
+    return response.data;
+  },
+
+  getUnreadCount: async ({
+    force = false,
+    staleTimeMs = MAIL_UNREAD_COUNT_STALE_TIME_MS,
+    mailboxId = '',
+  } = {}) => {
+    const normalizedMailboxId = normalizeMailboxId(mailboxId);
+    if (normalizedMailboxId) {
+      const response = await apiClient.get('/mail/unread-count', {
+        params: { mailbox_id: normalizedMailboxId },
+      });
+      return response.data;
+    }
+    return getCachedGet(
+      'mail-unread-count',
+      '/mail/unread-count',
+      {
+        staleTimeMs,
+        force,
+      },
+    );
+  },
+
+  getNotificationFeed: async (params = {}) => {
+    const response = await apiClient.get('/mail/notifications/feed', { params });
     return response.data;
   },
 
@@ -695,6 +1740,7 @@ export const mailAPI = {
   },
 
   sendMessageMultipart: async ({
+    fromMailboxId,
     to,
     cc,
     bcc,
@@ -709,6 +1755,7 @@ export const mailAPI = {
     signal,
   }) => {
     const formData = new FormData();
+    formData.append('from_mailbox_id', normalizeMailboxId(fromMailboxId));
     formData.append('to', to.join(';'));
     formData.append('cc', (cc || []).join(';'));
     formData.append('bcc', (bcc || []).join(';'));
@@ -733,21 +1780,27 @@ export const mailAPI = {
     return response.data;
   },
 
-  downloadAttachment: async (messageId, attachmentRef) => {
+  downloadAttachment: async (messageId, attachmentRef, options = {}) => {
     const response = await apiClient.get(
       `/mail/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentRef)}`,
-      { responseType: 'blob' }
+      {
+        params: withMailboxQuery({}, options?.mailboxId),
+        responseType: 'blob',
+      }
     );
     return response;
   },
 
-  getMessageHeaders: async (messageId) => {
-    const response = await apiClient.get(`/mail/messages/${encodeURIComponent(messageId)}/headers`);
+  getMessageHeaders: async (messageId, options = {}) => {
+    const response = await apiClient.get(`/mail/messages/${encodeURIComponent(messageId)}/headers`, {
+      params: withMailboxQuery({}, options?.mailboxId),
+    });
     return response.data;
   },
 
-  downloadMessageSource: async (messageId) => {
+  downloadMessageSource: async (messageId, options = {}) => {
     const response = await apiClient.get(`/mail/messages/${encodeURIComponent(messageId)}/eml`, {
+      params: withMailboxQuery({}, options?.mailboxId),
       responseType: 'blob',
     });
     return response;
@@ -805,13 +1858,18 @@ export const mailAPI = {
     return response.data;
   },
 
-  getMyConfig: async () => {
-    const response = await apiClient.get('/mail/config/me');
+  getMyConfig: async (params = {}) => {
+    const response = await apiClient.get('/mail/config/me', { params: withMailboxQuery(params) });
     return response.data;
   },
 
   updateMyConfig: async (payload) => {
     const response = await apiClient.patch('/mail/config/me', payload);
+    return response.data;
+  },
+
+  saveMyCredentials: async (payload) => {
+    const response = await apiClient.post('/mail/config/me/credentials', payload);
     return response.data;
   },
 
@@ -822,6 +1880,30 @@ export const mailAPI = {
 
   testConnection: async (payload = {}) => {
     const response = await apiClient.post('/mail/test-connection', payload);
+    return response.data;
+  },
+
+  listMailboxes: async (options = {}) => {
+    const params = {};
+    if (typeof options?.includeUnread === 'boolean') {
+      params.include_unread = options.includeUnread;
+    }
+    const response = await apiClient.get('/mail/mailboxes', { params });
+    return response.data;
+  },
+
+  createMailbox: async (payload) => {
+    const response = await apiClient.post('/mail/mailboxes', payload);
+    return response.data;
+  },
+
+  updateMailbox: async (mailboxId, payload) => {
+    const response = await apiClient.patch(`/mail/mailboxes/${encodeURIComponent(mailboxId)}`, payload);
+    return response.data;
+  },
+
+  deleteMailbox: async (mailboxId) => {
+    const response = await apiClient.delete(`/mail/mailboxes/${encodeURIComponent(mailboxId)}`);
     return response.data;
   },
 };
@@ -1101,7 +2183,7 @@ export const equipmentAPI = {
   },
 
   getByInvNo: async (invNo) => {
-    const response = await apiClient.get(`/equipment/${invNo}`);
+    const response = await apiClient.get(`/equipment/${encodeURIComponent(String(invNo ?? ''))}`);
     return response.data;
   },
 
@@ -1133,6 +2215,11 @@ export const equipmentAPI = {
 
   getUploadedActDraft: async (draftId) => {
     const response = await apiClient.get(`/equipment/acts/upload/draft/${encodeURIComponent(draftId)}`);
+    return response.data;
+  },
+
+  getTransferReminder: async (reminderId) => {
+    const response = await apiClient.get(`/equipment/transfer/reminders/${encodeURIComponent(reminderId)}`);
     return response.data;
   },
 
@@ -1189,8 +2276,13 @@ export const equipmentAPI = {
     return response.data;
   },
 
-  getLocations: async (branchId) => {
-    const response = await apiClient.get(`/equipment/locations/${branchId}`);
+  getLocations: async (branchNo) => {
+    const normalizedBranchNo = branchNo === undefined || branchNo === null || String(branchNo).trim() === ''
+      ? undefined
+      : branchNo;
+    const response = await apiClient.get('/equipment/locations', {
+      params: normalizedBranchNo !== undefined ? { branch_no: normalizedBranchNo } : {},
+    });
     return response.data;
   },
 
@@ -1227,6 +2319,11 @@ export const equipmentAPI = {
 
   updateByInvNo: async (invNo, payload) => {
     const response = await apiClient.patch(`/equipment/${invNo}`, payload);
+    return response.data;
+  },
+
+  deleteByInvNo: async (invNo) => {
+    const response = await apiClient.delete(`/equipment/${invNo}`);
     return response.data;
   },
 
@@ -1437,6 +2534,19 @@ export const scanAPI = {
 
   getAgentsTable: async (params = {}) => {
     const response = await apiClient.get('/scan/agents/table', { params });
+    return response.data;
+  },
+
+  getAgentsActivity: async (agentIds = []) => {
+    const query = new URLSearchParams();
+    (Array.isArray(agentIds) ? agentIds : []).forEach((agentId) => {
+      const normalized = String(agentId || '').trim();
+      if (normalized) query.append('agent_id', normalized);
+    });
+    const suffix = query.toString();
+    const response = await apiClient.get(
+      suffix ? `/scan/agents/activity?${suffix}` : '/scan/agents/activity',
+    );
     return response.data;
   },
 

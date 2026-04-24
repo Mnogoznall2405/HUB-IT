@@ -88,6 +88,7 @@ Image_scan/
 ├── WEB-itinvent/          # Web backend + frontend
 ├── bot/                   # Telegram-бот
 ├── agent/                 # MSI, docs и packaging агента
+├── inventory_server/      # Очередь и ingest-сервис inventory на отдельном порту
 ├── scan_agent/            # Scan sidecar
 ├── scan_server/           # Сервер задач и инцидентов scan
 ├── documentation/         # Общая документация проекта
@@ -163,6 +164,13 @@ cd C:\Project\Image_scan
 python -m scan_server.app
 ```
 
+Inventory ingest server:
+
+```powershell
+cd C:\Project\Image_scan
+python -m inventory_server
+```
+
 Локальный запуск inventory-agent:
 
 ```powershell
@@ -183,6 +191,7 @@ python agent.py --once
 По текущей конфигурации под PM2 обычно живут:
 
 - `itinvent-backend`
+- `itinvent-inventory`
 - `itinvent-scan`
 - `itinvent-bot`
 
@@ -250,7 +259,7 @@ MSI helper:
 
 PM2 и runtime серверных процессов:
 
-- через PM2 и логи запущенных сервисов `itinvent-backend`, `itinvent-scan`, `itinvent-bot`
+- через PM2 и логи запущенных сервисов `itinvent-backend`, `itinvent-inventory`, `itinvent-scan`, `itinvent-bot`
 
 ## Для чего этот README
 

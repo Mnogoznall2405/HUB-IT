@@ -1,15 +1,20 @@
 from __future__ import annotations
 
+import asyncio
+import os
 import logging
 import hashlib
+import socket
 import sys
 import threading
 import time
 from contextlib import asynccontextmanager
+from functools import lru_cache
+from importlib import import_module
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, status
+from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
@@ -23,15 +28,6 @@ web_root = project_root / "WEB-itinvent"
 if web_root.exists() and str(web_root) not in sys.path:
     sys.path.insert(0, str(web_root))
 
-from backend.config import config as web_config
-from backend.services import authorization_service, session_service, user_service
-from backend.services.authorization_service import (
-    PERM_SCAN_ACK,
-    PERM_SCAN_READ,
-    PERM_SCAN_TASKS,
-)
-from backend.utils.security import decode_access_token
-
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -39,6 +35,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger("scan-server")
 security_optional = HTTPBearer(auto_error=False)
+AUTH_COOKIE_NAME = str(os.getenv("AUTH_COOKIE_NAME", "itinvent_access_token")).strip() or "itinvent_access_token"
+PERM_SCAN_READ = "scan.read"
+PERM_SCAN_ACK = "scan.ack"
+PERM_SCAN_TASKS = "scan.tasks"
+
+if sys.platform.startswith("win") and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+    # Proactor loop on Windows can leave uvicorn alive but no longer accepting
+    # new connections after transient socket errors such as WinError 64.
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
 
 
 def _now_ts() -> int:
@@ -57,6 +62,7 @@ class IngestPayload(BaseModel):
     file_size: Optional[int] = 0
     source_kind: Optional[str] = "unknown"
     event_id: Optional[str] = ""
+    scan_task_id: Optional[str] = ""
     text_excerpt: Optional[str] = ""
     pdf_slice_b64: Optional[str] = ""
     local_pattern_hits: Optional[List[Dict[str, Any]]] = None
@@ -97,9 +103,13 @@ store = ScanStore(
     db_path=config.db_path,
     archive_dir=config.archive_dir,
     task_ack_timeout_sec=config.task_ack_timeout_sec,
+    agent_online_timeout_sec=config.agent_online_timeout_sec,
+    resolve_agent_sql_context=config.resolve_agent_sql_context,
 )
 stop_event = threading.Event()
+watchdog_stop_event = threading.Event()
 worker = ScanWorker(store=store, config=config, stop_event=stop_event)
+watchdog_thread: Optional[threading.Thread] = None
 
 
 def _key_fingerprint(value: Optional[str]) -> str:
@@ -145,11 +155,37 @@ def _forbidden_exception(permission: str) -> HTTPException:
     )
 
 
+@lru_cache(maxsize=1)
+def _load_web_auth_runtime() -> Dict[str, Any]:
+    """Import WEB-itinvent auth services only when a protected UI route is hit."""
+    services_module = import_module("backend.services")
+    security_module = import_module("backend.utils.security")
+    return {
+        "authorization_service": getattr(services_module, "authorization_service"),
+        "session_service": getattr(services_module, "session_service"),
+        "user_service": getattr(services_module, "user_service"),
+        "decode_access_token": getattr(security_module, "decode_access_token"),
+    }
+
+
 def require_web_permission(permission: str):
     async def _dependency(
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
-        access_token_cookie: Optional[str] = Cookie(None, alias=web_config.app.auth_cookie_name),
+        access_token_cookie: Optional[str] = Cookie(None, alias=AUTH_COOKIE_NAME),
     ) -> Dict[str, Any]:
+        try:
+            auth_runtime = _load_web_auth_runtime()
+        except Exception as exc:
+            logger.exception("Failed to load WEB-itinvent auth runtime for scan permission checks: %s", exc)
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Web auth runtime unavailable",
+            ) from exc
+
+        decode_access_token = auth_runtime["decode_access_token"]
+        session_service = auth_runtime["session_service"]
+        user_service = auth_runtime["user_service"]
+        authorization_service = auth_runtime["authorization_service"]
         token = _resolve_access_token(credentials, access_token_cookie)
         if not token:
             raise _credentials_exception()
@@ -195,13 +231,146 @@ def _model_dump(model: BaseModel) -> Dict[str, Any]:
     return model.dict()
 
 
+def _request_ip(request: Optional[Request]) -> str:
+    client = getattr(request, "client", None)
+    host = getattr(client, "host", "")
+    return str(host or "").strip()
+
+
+def _loop_descriptor() -> str:
+    try:
+        loop = asyncio.get_running_loop()
+        return f"{type(loop).__module__}.{type(loop).__name__}"
+    except RuntimeError:
+        return "unavailable"
+
+
+def _policy_descriptor() -> str:
+    policy = asyncio.get_event_loop_policy()
+    return f"{type(policy).__module__}.{type(policy).__name__}"
+
+
+def _watchdog_probe_host(host: str) -> str:
+    normalized = str(host or "").strip().lower()
+    if normalized in {"", "0.0.0.0", "::", "[::]", "localhost"}:
+        return "127.0.0.1"
+    return str(host or "").strip()
+
+
+def _probe_local_health(host: str, port: int, timeout_sec: int) -> bool:
+    probe_host = _watchdog_probe_host(host)
+    request = (
+        f"GET /health HTTP/1.1\r\n"
+        f"Host: {probe_host}:{port}\r\n"
+        "Connection: close\r\n"
+        "User-Agent: scan-listener-watchdog\r\n\r\n"
+    ).encode("ascii", errors="ignore")
+    try:
+        with socket.create_connection((probe_host, port), timeout=timeout_sec) as conn:
+            conn.settimeout(timeout_sec)
+            conn.sendall(request)
+            head = conn.recv(128)
+        return head.startswith(b"HTTP/1.1 200") or head.startswith(b"HTTP/1.0 200")
+    except Exception as exc:
+        logger.debug(
+            "Scan listener watchdog probe failed for %s:%s: %s",
+            probe_host,
+            port,
+            exc,
+        )
+        return False
+
+
+def _listener_watchdog(stop_signal: threading.Event) -> None:
+    probe_host = _watchdog_probe_host(config.host)
+    interval_sec = max(1, int(config.watchdog_interval_sec))
+    timeout_sec = max(1, int(config.watchdog_timeout_sec))
+    failure_limit = max(1, int(config.watchdog_failures))
+    startup_grace_sec = max(0, int(config.watchdog_startup_grace_sec))
+
+    if startup_grace_sec and stop_signal.wait(startup_grace_sec):
+        return
+
+    failures = 0
+    logger.info(
+        "Scan listener watchdog started: target=%s:%s interval=%ss timeout=%ss failures=%s",
+        probe_host,
+        config.port,
+        interval_sec,
+        timeout_sec,
+        failure_limit,
+    )
+    while not stop_signal.wait(interval_sec):
+        if _probe_local_health(config.host, config.port, timeout_sec):
+            if failures:
+                logger.warning(
+                    "Scan listener watchdog recovered after %s failed probe(s)",
+                    failures,
+                )
+            failures = 0
+            continue
+
+        failures += 1
+        logger.error(
+            "Scan listener watchdog probe failed %s/%s for %s:%s",
+            failures,
+            failure_limit,
+            probe_host,
+            config.port,
+        )
+        if failures < failure_limit:
+            continue
+
+        logger.critical(
+            "Scan listener watchdog detected dead HTTP listener on %s:%s; terminating process for PM2 restart",
+            probe_host,
+            config.port,
+        )
+        os._exit(70)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     stop_event.clear()
+    watchdog_stop_event.clear()
+    purge_result = store.purge_all_artifacts()
+    if any(int(purge_result.get(key) or 0) > 0 for key in ("artifact_rows", "artifact_files", "artifact_dirs")):
+        logger.info(
+            "Scan artifact purge completed: rows=%s files=%s dirs=%s",
+            int(purge_result.get("artifact_rows") or 0),
+            int(purge_result.get("artifact_files") or 0),
+            int(purge_result.get("artifact_dirs") or 0),
+        )
+    spool_result = store.reconcile_job_pdf_spool()
+    if any(int(spool_result.get(key) or 0) > 0 for key in ("removed_orphan_files", "removed_final_files", "failed_jobs")):
+        logger.info(
+            "Transient PDF spool reconcile completed: orphan=%s final=%s failed_jobs=%s",
+            int(spool_result.get("removed_orphan_files") or 0),
+            int(spool_result.get("removed_final_files") or 0),
+            int(spool_result.get("failed_jobs") or 0),
+        )
     if not worker.is_alive():
         worker.start()
+    global watchdog_thread
+    watchdog_thread = None
+    if config.watchdog_enabled:
+        watchdog_thread = threading.Thread(
+            target=_listener_watchdog,
+            args=(watchdog_stop_event,),
+            daemon=True,
+            name="scan-listener-watchdog",
+        )
+        watchdog_thread.start()
+    logger.info(
+        "Scan asyncio runtime: policy=%s loop=%s",
+        _policy_descriptor(),
+        _loop_descriptor(),
+    )
     logger.info("Scan server started on %s:%s", config.host, config.port)
     yield
+    watchdog_stop_event.set()
+    if watchdog_thread is not None and watchdog_thread.is_alive():
+        watchdog_thread.join(timeout=5)
     stop_event.set()
     if worker.is_alive():
         worker.join(timeout=5)
@@ -221,38 +390,72 @@ async def health() -> Dict[str, Any]:
 
 
 @app.post("/api/v1/scan/heartbeat")
-async def heartbeat(payload: HeartbeatPayload, x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
+async def heartbeat(
+    payload: HeartbeatPayload,
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+) -> Dict[str, Any]:
     _check_agent_key(x_api_key)
     data = _model_dump(payload)
+    if not str(data.get("ip_address") or "").strip():
+        data["ip_address"] = _request_ip(request)
     data["last_seen_at"] = int(data.get("last_seen_at") or _now_ts())
     row = store.upsert_agent_heartbeat(data)
     return {"success": True, "agent_id": row["agent_id"], "last_seen_at": row["last_seen_at"]}
 
 
 @app.post("/api/v1/scan/ingest")
-async def ingest(payload: IngestPayload, x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
+async def ingest(
+    payload: IngestPayload,
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+) -> Dict[str, Any]:
     _check_agent_key(x_api_key)
-    queued = store.queue_job(_model_dump(payload))
+    data = _model_dump(payload)
+    store.touch_agent_presence(
+        agent_id=str(data.get("agent_id") or "").strip(),
+        hostname=str(data.get("hostname") or "").strip(),
+        branch=str(data.get("branch") or "").strip(),
+        ip_address=_request_ip(request),
+        metadata={"last_source": "ingest"},
+    )
+    queued = store.queue_job(data)
     return {"success": True, **queued}
 
 
 @app.get("/api/v1/scan/tasks/poll")
 async def poll_tasks(
+    request: Request,
     agent_id: str = Query(..., min_length=1),
     limit: int = Query(10, ge=1, le=50),
     x_api_key: Optional[str] = Header(None),
 ) -> Dict[str, Any]:
     _check_agent_key(x_api_key)
+    store.touch_agent_presence(
+        agent_id=agent_id,
+        ip_address=_request_ip(request),
+        metadata={"last_source": "poll_tasks"},
+    )
     tasks = store.poll_tasks(agent_id=agent_id, limit=min(limit, config.poll_limit))
     return {"agent_id": agent_id, "tasks": tasks}
 
 
 @app.post("/api/v1/scan/tasks/{task_id}/result")
-async def task_result(task_id: str, payload: TaskResultPayload, x_api_key: Optional[str] = Header(None)) -> Dict[str, Any]:
+async def task_result(
+    task_id: str,
+    payload: TaskResultPayload,
+    request: Request,
+    x_api_key: Optional[str] = Header(None),
+) -> Dict[str, Any]:
     _check_agent_key(x_api_key)
     status_value = str(payload.status or "").strip().lower()
     if status_value not in {"acknowledged", "completed", "failed"}:
         raise HTTPException(status_code=400, detail="Unsupported status")
+    store.touch_agent_presence(
+        agent_id=payload.agent_id,
+        ip_address=_request_ip(request),
+        metadata={"last_source": "task_result", "task_status": status_value},
+    )
     result = store.report_task_result(
         agent_id=payload.agent_id,
         task_id=task_id,
@@ -341,6 +544,14 @@ async def agents(
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> List[Dict[str, Any]]:
     return store.list_agents()
+
+
+@app.get("/api/v1/scan/agents/activity")
+async def agents_activity(
+    agent_id: List[str] = Query([]),
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    return store.list_agents_activity(agent_ids=agent_id)
 
 
 @app.get("/api/v1/scan/branches")
@@ -438,8 +649,9 @@ if __name__ == "__main__":
     import uvicorn
 
     uvicorn.run(
-        "scan_server.app:app",
+        app,
         host=config.host,
         port=config.port,
         reload=False,
+        loop="scan_server.uvicorn_loops:windows_selector_loop_factory",
     )

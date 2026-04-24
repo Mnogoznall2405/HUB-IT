@@ -1,0 +1,6 @@
+filenames:
+  - C:\inetpub\logs\LogFiles\W3SVC*\u_ex*.log
+labels:
+  type: iis
+
+# Optional: if logs are mirrored elsewhere, add them as additional filenames.

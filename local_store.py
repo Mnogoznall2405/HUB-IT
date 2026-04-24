@@ -69,6 +69,7 @@ FILE_KIND_MAP: Dict[str, str] = {
     "printer_color_cache.json": "dict",
     "user_db_selection.json": "dict",
     "web_user_settings.json": "dict",
+    "web_app_settings.json": "dict",
     "export_state.json": "dict",
 }
 

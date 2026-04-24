@@ -3,10 +3,53 @@ Equipment database functions using correct schema with dynamic database switchin
 """
 from typing import List, Dict, Any, Optional
 import logging
+import os
+import time
+from threading import RLock
 
 from backend.database.connection import get_db
 
 logger = logging.getLogger(__name__)
+_equipment_payload_cache: Dict[str, Dict[str, Any]] = {}
+_equipment_payload_cache_lock = RLock()
+_EQUIPMENT_PAYLOAD_CACHE_TTL_SEC = max(10, int(os.getenv("EQUIPMENT_PAYLOAD_CACHE_TTL_SEC", "30")))
+
+
+def _build_equipment_cache_key(kind: str, db_id: Optional[str], *parts: Any) -> str:
+    normalized_parts = [kind, str(db_id or "").strip()]
+    normalized_parts.extend(str(part) for part in parts)
+    return "|".join(normalized_parts)
+
+
+def _get_cached_equipment_payload(cache_key: str) -> Optional[Any]:
+    with _equipment_payload_cache_lock:
+        cached = _equipment_payload_cache.get(cache_key)
+        if not cached:
+            return None
+        if (time.monotonic() - float(cached.get("ts") or 0)) >= _EQUIPMENT_PAYLOAD_CACHE_TTL_SEC:
+            _equipment_payload_cache.pop(cache_key, None)
+            return None
+        return cached.get("data")
+
+
+def _set_cached_equipment_payload(cache_key: str, payload: Any) -> Any:
+    with _equipment_payload_cache_lock:
+        _equipment_payload_cache[cache_key] = {
+            "ts": time.monotonic(),
+            "data": payload,
+        }
+    return payload
+
+
+def invalidate_equipment_cache(db_id: Optional[str] = None) -> None:
+    prefix = f"|{str(db_id or '').strip()}|"
+    with _equipment_payload_cache_lock:
+        if db_id is None:
+            _equipment_payload_cache.clear()
+            return
+        for cache_key in list(_equipment_payload_cache.keys()):
+            if prefix in cache_key:
+                _equipment_payload_cache.pop(cache_key, None)
 
 
 def _group_rows_by_branch_location(rows: List[Dict[str, Any]]) -> Dict[str, Dict[str, List[Dict[str, Any]]]]:
@@ -92,10 +135,9 @@ def get_all_branches(db_id: Optional[str] = None) -> List[Dict[str, Any]]:
 
 
 def get_locations_by_branch(branch_no: int, db_id: Optional[str] = None) -> List[Dict[str, Any]]:
-    """Get locations for a branch."""
-    db = get_db(db_id)
-    from backend.database.queries_new import QUERY_GET_LOCATIONS_BY_BRANCH
-    return db.execute_query(QUERY_GET_LOCATIONS_BY_BRANCH, (branch_no,))
+    """Legacy compatibility wrapper that preserves global LOCATIONS with branch priority."""
+    from backend.database import queries
+    return queries.get_all_locations(db_id=db_id, branch_no=branch_no)
 
 
 def get_all_equipment_types(db_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -107,6 +149,11 @@ def get_all_equipment_types(db_id: Optional[str] = None) -> List[Dict[str, Any]]
 
 def get_equipment_grouped(page: int = 1, limit: int = 100, db_id: Optional[str] = None) -> Dict[str, Any]:
     """Get equipment grouped by branch and location (simplified fields)."""
+    cache_key = _build_equipment_cache_key("equipment_grouped", db_id, page, limit)
+    cached_payload = _get_cached_equipment_payload(cache_key)
+    if cached_payload is not None:
+        return cached_payload
+
     db = get_db(db_id)
     offset = (page - 1) * limit
 
@@ -122,13 +169,13 @@ def get_equipment_grouped(page: int = 1, limit: int = 100, db_id: Optional[str] 
 
     grouped = _group_rows_by_branch_location(equipment)
 
-    return {
+    return _set_cached_equipment_payload(cache_key, {
         'grouped': grouped,
         'total': total,
         'page': page,
         'limit': limit,
         'pages': (total + limit - 1) // limit
-    }
+    })
 
 
 def get_all_equipment_flat(db_id: Optional[str] = None, limit: int = 10000) -> List[Dict[str, Any]]:
@@ -137,14 +184,24 @@ def get_all_equipment_flat(db_id: Optional[str] = None, limit: int = 10000) -> L
     Returns flat list of rows (not grouped). Use this instead of paginated
     get_equipment_grouped when you need the full dataset in one round-trip.
     """
+    cache_key = _build_equipment_cache_key("equipment_flat", db_id, limit)
+    cached_payload = _get_cached_equipment_payload(cache_key)
+    if cached_payload is not None:
+        return cached_payload
+
     db = get_db(db_id)
     from backend.database.queries_new import QUERY_GET_EQUIPMENT_GROUPED_ALL
     rows = db.execute_query(QUERY_GET_EQUIPMENT_GROUPED_ALL, ())
-    return (rows or [])[:limit]
+    return _set_cached_equipment_payload(cache_key, (rows or [])[:limit])
 
 
 def get_consumables_grouped(page: int = 1, limit: int = 100, db_id: Optional[str] = None) -> Dict[str, Any]:
     """Get consumables (CI_TYPE=4) grouped by branch and location."""
+    cache_key = _build_equipment_cache_key("consumables_grouped", db_id, page, limit)
+    cached_payload = _get_cached_equipment_payload(cache_key)
+    if cached_payload is not None:
+        return cached_payload
+
     db = get_db(db_id)
     offset = (page - 1) * limit
 
@@ -160,10 +217,10 @@ def get_consumables_grouped(page: int = 1, limit: int = 100, db_id: Optional[str
 
     grouped = _group_rows_by_branch_location(consumables)
 
-    return {
+    return _set_cached_equipment_payload(cache_key, {
         'grouped': grouped,
         'total': total,
         'page': page,
         'limit': limit,
         'pages': (total + limit - 1) // limit
-    }
+    })

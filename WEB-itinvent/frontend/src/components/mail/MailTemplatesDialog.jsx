@@ -29,7 +29,7 @@ import AddIcon from '@mui/icons-material/Add';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import DeleteIcon from '@mui/icons-material/Delete';
-import { buildMailUiTokens } from './mailUiTokens';
+import { buildMailUiTokens, getMailUiFontScopeSx } from './mailUiTokens';
 
 export default function MailTemplatesDialog({
   open,
@@ -68,7 +68,7 @@ export default function MailTemplatesDialog({
   const canDelete = Boolean(templateEditId);
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth PaperProps={{ sx: { borderRadius: '14px' } }}>
+    <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth PaperProps={{ sx: { ...getMailUiFontScopeSx(), borderRadius: '14px' } }}>
       <DialogTitle sx={{ fontWeight: 700 }}>Шаблоны IT-заявок</DialogTitle>
       <DialogContent dividers>
         <Grid container spacing={1.5}>

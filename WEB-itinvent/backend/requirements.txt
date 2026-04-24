@@ -14,3 +14,12 @@ PyMuPDF
 pysnmp
 cryptography
 exchangelib
+sqlalchemy
+alembic
+psycopg[binary]
+pywebpush
+pyotp
+qrcode
+redis
+slowapi
+webauthn

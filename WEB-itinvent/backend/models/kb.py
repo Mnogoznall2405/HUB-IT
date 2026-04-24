@@ -39,6 +39,7 @@ class KbArticleCreateRequest(BaseModel):
     owner_name: str = Field(default="", max_length=200)
     content: KbContentBlock = Field(default_factory=KbContentBlock)
     last_reviewed_at: Optional[str] = None
+    primary_attachment_id: Optional[str] = Field(default=None, max_length=128)
     change_note: str = Field(default="", max_length=300)
 
 
@@ -52,6 +53,7 @@ class KbArticleUpdateRequest(BaseModel):
     owner_name: Optional[str] = Field(default=None, max_length=200)
     content: Optional[KbContentBlock] = None
     last_reviewed_at: Optional[str] = None
+    primary_attachment_id: Optional[str] = Field(default=None, max_length=128)
     change_note: str = Field(default="", max_length=300)
 
 
@@ -96,6 +98,7 @@ class KbArticleResponse(BaseModel):
     created_by: str
     updated_by: str
     content: KbContentBlock = Field(default_factory=KbContentBlock)
+    primary_attachment_id: Optional[str] = None
     attachments: list[KbAttachmentResponse] = Field(default_factory=list)
     revisions: list[KbRevisionResponse] = Field(default_factory=list)
 

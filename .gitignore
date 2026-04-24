@@ -76,16 +76,28 @@ yarn-error.log*
 *.bak
 *.backup
 *.old
+*.restored
 temp/
 tmp/
 .tmp/
+.tmp*/
 .tmp_pytest/
 .pytest_cache/
 .pytest_basetemp/
 .pytest_runtime/
 .pytest_tmp/
+.pytest*/
+.pt_*/
 tests/pytest_tmp_run/
 tmp_pytest_*/
+pytest-of-*/
+codex_tmp_*/
+_codex_*/
+WEB-itinvent/.tmp_*/
+WEB-itinvent/backend/.tmp_test_chat_uploads/
+WEB-itinvent/frontend/*_output.txt
+WEB-itinvent/frontend/vitest-*.txt
+C*CHAT_IMAGE_FIX.md
 
 # Documentation build
 docs/_build/

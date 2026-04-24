@@ -12,14 +12,27 @@ from pydantic import BaseModel, Field
 
 from backend.api.deps import ensure_user_permission, get_current_database_id, require_permission
 from backend.api.v1.database import get_all_db_configs
+from backend.appdb.db import ensure_app_schema_initialized, get_app_database_url, get_app_engine, is_app_database_configured
+from backend.appdb.inventory_store import AppInventoryStore
+from backend.appdb.sql_compat import SqlAlchemyCompatConnection
 from backend.config import config
+from backend.db_schema import schema_name
+from backend import inventory_runtime
 from backend.models.auth import User
-from backend.services import user_db_selection_service
+from backend.services.user_db_selection_service import user_db_selection_service
 from backend.services.authorization_service import PERM_COMPUTERS_READ, PERM_COMPUTERS_READ_ALL
 from local_store import get_local_store
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _env_positive_int(name: str, default: int, minimum: int) -> int:
+    raw = str(os.getenv(name, str(default)) or "").strip()
+    try:
+        return max(int(raw), int(minimum))
+    except Exception:
+        return max(int(default), int(minimum))
 
 DEFAULT_AGENT_API_KEY = "gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8"
 _DEFAULT_KEY_WARNED = False
@@ -34,6 +47,150 @@ STALE_MAX_AGE_SECONDS = 60 * 60
 OUTLOOK_ALLOWED_STATUS = {"ok", "warning", "critical", "unknown"}
 OUTLOOK_ALLOWED_CONFIDENCE = {"high", "medium", "low"}
 OUTLOOK_ALLOWED_SOURCE = {"user_helper_com", "system_scan", "none"}
+INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS = _env_positive_int(
+    "ITINV_INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS",
+    default=_env_positive_int(
+        "ITINV_INVENTORY_HEARTBEAT_WRITE_INTERVAL_SECONDS",
+        default=600,
+        minimum=15,
+    ),
+    minimum=15,
+)
+_NETWORK_LOOKUP_TABLES = {
+    "network_branches",
+    "network_sites",
+    "network_devices",
+    "network_ports",
+    "network_sockets",
+}
+
+
+def _inventory_database_url() -> Optional[str]:
+    if not is_app_database_configured():
+        return None
+    database_url = get_app_database_url()
+    if not database_url:
+        return None
+    return ensure_app_schema_initialized(database_url)
+
+
+def _get_inventory_app_store() -> Optional[AppInventoryStore]:
+    database_url = _inventory_database_url()
+    if not database_url:
+        return None
+    return AppInventoryStore(database_url=database_url)
+def _inventory_record_key(record: Dict[str, Any]) -> str:
+    mac_address = _normalize_text(record.get("mac_address"))
+    if mac_address:
+        return mac_address
+    return _normalize_text(record.get("hostname")).lower()
+
+
+def _load_inventory_snapshot() -> Dict[str, Dict[str, Any]]:
+    app_store = _get_inventory_app_store()
+    if app_store is not None:
+        snapshot: Dict[str, Dict[str, Any]] = {}
+        for row in app_store.list_hosts():
+            if isinstance(row, dict):
+                snapshot[_inventory_record_key(row)] = row
+        return snapshot
+
+    store = get_local_store()
+    payload = store.load_json(INVENTORY_FILE, default_content={})
+    return payload if isinstance(payload, dict) else {}
+
+
+def _get_inventory_host(mac_address: str) -> Optional[Dict[str, Any]]:
+    app_store = _get_inventory_app_store()
+    if app_store is not None:
+        return app_store.get_host(mac_address)
+
+    store = get_local_store()
+    payload = store.load_json(INVENTORY_FILE, default_content={})
+    if not isinstance(payload, dict):
+        return None
+    return payload.get(_normalize_text(mac_address))
+
+
+def _save_inventory_host(record: Dict[str, Any], current_data: Optional[Dict[str, Dict[str, Any]]] = None) -> bool:
+    app_store = _get_inventory_app_store()
+    if app_store is not None:
+        app_store.upsert_host(record)
+        return True
+
+    store = get_local_store()
+    payload = current_data if isinstance(current_data, dict) else store.load_json(INVENTORY_FILE, default_content={})
+    if not isinstance(payload, dict):
+        payload = {}
+    payload[_normalize_text(record.get("mac_address"))] = record
+    return bool(store.save_json(INVENTORY_FILE, payload))
+
+
+def _touch_inventory_host_presence(
+    *,
+    mac_address: str,
+    last_seen_at: int,
+    report_type: str,
+    hostname: str = "",
+    user_login: str = "",
+    user_full_name: str = "",
+    ip_primary: str = "",
+) -> bool:
+    app_store = _get_inventory_app_store()
+    if app_store is None:
+        return False
+    return bool(
+        app_store.touch_host_presence(
+            mac_address,
+            last_seen_at=int(last_seen_at),
+            report_type=str(report_type or "heartbeat").strip() or "heartbeat",
+            hostname=_normalize_text(hostname),
+            user_login=_normalize_text(user_login),
+            user_full_name=_normalize_text(user_full_name),
+            ip_primary=_normalize_text(ip_primary),
+        )
+    )
+
+
+def _save_change_events(changes: List[Dict[str, Any]]) -> bool:
+    app_store = _get_inventory_app_store()
+    if app_store is not None:
+        cutoff = int(time.time()) - HISTORY_RETENTION_DAYS * 24 * 60 * 60
+        app_store.prune_change_events(cutoff)
+        for event in sorted(changes, key=lambda item: _to_int(item.get("detected_at"), 0)):
+            if isinstance(event, dict):
+                app_store.append_change_event(event)
+        return True
+
+    store = get_local_store()
+    return bool(store.save_json(CHANGES_FILE, changes))
+
+
+def _append_change_events(changes: List[Dict[str, Any]]) -> bool:
+    app_store = _get_inventory_app_store()
+    if app_store is None:
+        return False
+    cutoff = int(time.time()) - HISTORY_RETENTION_DAYS * 24 * 60 * 60
+    app_store.prune_change_events(cutoff)
+    for event in sorted(changes, key=lambda item: _to_int(item.get("detected_at"), 0)):
+        if isinstance(event, dict):
+            app_store.append_change_event(event)
+    return True
+
+
+def _open_network_lookup_connection():
+    database_url = _inventory_database_url()
+    if database_url:
+        return SqlAlchemyCompatConnection(
+            get_app_engine(database_url),
+            table_names=_NETWORK_LOOKUP_TABLES,
+            schema=schema_name("app", database_url),
+        )
+
+    store = get_local_store()
+    conn = sqlite3.connect(str(store.db_path), timeout=5)
+    conn.row_factory = sqlite3.Row
+    return conn
 
 
 def _api_key_fingerprint(value: Optional[str]) -> str:
@@ -527,7 +684,14 @@ def _build_signature_diff(before_sig: Dict[str, Any], after_sig: Dict[str, Any])
     return diff
 
 
-def _load_changes(store: Any) -> List[Dict[str, Any]]:
+def _load_changes(store: Any = None) -> List[Dict[str, Any]]:
+    app_store = _get_inventory_app_store() if store is None else None
+    if app_store is not None:
+        payload = app_store.list_change_events()
+        return [row for row in payload if isinstance(row, dict)]
+
+    if store is None:
+        store = get_local_store()
     payload = store.load_json(CHANGES_FILE, default_content=[])
     if not isinstance(payload, list):
         return []
@@ -586,6 +750,8 @@ def _add_hardware_change_event(
         "hostname": hostname,
         "change_types": change_types,
         "diff": diff,
+        "before_signature": previous_sig,
+        "after_signature": current_sig,
         "report_type": _normalize_text(merged_record.get("report_type")) or "full_snapshot",
     }
     changes.append(event)
@@ -819,7 +985,7 @@ def _apply_search_filter(records: List[Dict[str, Any]], query_text: str) -> List
 
 
 @router.post("")
-async def receive_inventory(
+def receive_inventory(
     payload: InventoryPayload,
     x_api_key: Optional[str] = Header(None),
 ):
@@ -833,62 +999,33 @@ async def receive_inventory(
             detail="Invalid API Key",
         )
 
-    store = get_local_store()
-    current_data = store.load_json(INVENTORY_FILE, default_content={})
-    if not isinstance(current_data, dict):
-        current_data = {}
-
-    incoming_payload = _model_dump(payload)
-    _ensure_identity_fields(incoming_payload)
-
-    report_type = _normalize_report_type(incoming_payload.get("report_type"))
-    current_ts = _to_int(incoming_payload.get("timestamp") or time.time(), default=int(time.time()))
-    last_seen_at = _to_int(incoming_payload.get("last_seen_at") or current_ts, default=current_ts)
-
-    mac_key = _normalize_text(incoming_payload.get("mac_address"))
-    if not mac_key:
+    inventory_runtime.configure_runtime_hooks(
+        is_app_database_configured=is_app_database_configured,
+        get_app_database_url=get_app_database_url,
+        ensure_app_schema_initialized=ensure_app_schema_initialized,
+        AppInventoryStore=AppInventoryStore,
+        get_local_store=get_local_store,
+    )
+    try:
+        return inventory_runtime.process_inventory_payload(_model_dump(payload))
+    except ValueError as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="mac_address is required",
-        )
-
-    previous_record = current_data.get(mac_key)
-    merged = _merge_payload(previous_record, incoming_payload)
-    merged["report_type"] = report_type
-    merged["timestamp"] = current_ts
-    merged["last_seen_at"] = last_seen_at
-
-    changes = _load_changes(store)
-    changes = _prune_old_changes(changes, current_ts)
-
-    if report_type == "full_snapshot":
-        merged["last_full_snapshot_at"] = current_ts
-        _add_hardware_change_event(changes, previous_record, merged, current_ts)
-    elif not merged.get("last_full_snapshot_at"):
-        merged["last_full_snapshot_at"] = current_ts
-
-    current_data[mac_key] = merged
-
-    if not store.save_json(INVENTORY_FILE, current_data):
-        logger.error("Failed to save inventory to local store")
+            detail=str(exc),
+        ) from exc
+    except RuntimeError as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to save data",
-        )
-
-    if not store.save_json(CHANGES_FILE, changes):
-        logger.warning("Failed to save inventory change history")
-
-    return {"success": True, "message": "Inventory updated successfully"}
+            detail=str(exc),
+        ) from exc
 
 
 @router.get("/changes")
-async def get_inventory_changes(
+def get_inventory_changes(
     limit: int = Query(50, ge=1, le=200),
 ):
-    store = get_local_store()
     now_ts = int(time.time())
-    changes = _prune_old_changes(_load_changes(store), now_ts)
+    changes = _prune_old_changes(_load_changes(), now_ts)
     sorted_changes = sorted(changes, key=lambda item: _to_int(item.get("detected_at"), 0), reverse=True)
 
     def _unique_hosts_since(seconds_back: int) -> int:
@@ -929,7 +1066,7 @@ async def get_inventory_changes(
 
 
 @router.get("/computers")
-async def get_computers(
+def get_computers(
     current_user: User = Depends(require_permission(PERM_COMPUTERS_READ)),
     db_id_selected: Optional[str] = Depends(get_current_database_id),
     scope: str = Query("selected"),
@@ -942,15 +1079,14 @@ async def get_computers(
     changed_only: bool = Query(False),
 ):
     """
-    Return all collected computers from local store.
+    Return all collected computers from the active inventory store.
     """
-    store = get_local_store()
-    current_data = store.load_json(INVENTORY_FILE, default_content={})
+    current_data = _load_inventory_snapshot()
     if not isinstance(current_data, dict):
         return []
 
     now_ts = int(time.time())
-    changes = _prune_old_changes(_load_changes(store), now_ts)
+    changes = _prune_old_changes(_load_changes(), now_ts)
     changes_index = _build_changes_index(changes, now_ts)
 
     requested_scope = _normalize_scope(scope)
@@ -973,10 +1109,9 @@ async def get_computers(
 
     sql_cache: Dict[str, Optional[Dict[str, Any]]] = {}
     network_cache: Dict[str, Optional[Dict[str, Any]]] = {}
-    network_conn: Optional[sqlite3.Connection] = None
+    network_conn: Optional[Any] = None
     try:
-        network_conn = sqlite3.connect(str(store.db_path), timeout=5)
-        network_conn.row_factory = sqlite3.Row
+        network_conn = _open_network_lookup_connection()
     except Exception:
         network_conn = None
 

@@ -40,7 +40,7 @@ import { scanAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 
 const AUTO_REFRESH_MS = 30_000;
-const TASK_POLL_MS = 2_500;
+const TASK_POLL_MS = 3_000;
 const DEFAULT_ROWS_PER_PAGE = 25;
 const ROWS_PER_PAGE_OPTIONS = [25, 50, 100];
 const ACTIVE_TASK_STATUSES = new Set(['queued', 'delivered', 'acknowledged']);
@@ -204,6 +204,62 @@ function sortToggle(currentBy, currentDir, nextBy) {
   return 'desc';
 }
 
+function renderTaskStatusLabel(task) {
+  if (!task) return '-';
+  const normalized = String(task.status || '').trim().toLowerCase();
+  const command = String(task.command || '').trim().toLowerCase();
+  const result = task.result && typeof task.result === 'object' ? task.result : {};
+  const phase = String(result.phase || '').trim().toLowerCase();
+  if (normalized === 'acknowledged' && command === 'scan_now') {
+    if (phase === 'local_scan') return 'Локальное сканирование';
+    if (phase === 'server_processing') return 'OCR/обработка';
+  }
+  if (normalized === 'completed' && command === 'scan_now') {
+    return 'Завершено после OCR';
+  }
+  return taskStatusLabel(task.status);
+}
+
+function renderTaskSummary(task) {
+  if (!task) return '-';
+  const command = String(task.command || '').trim().toLowerCase();
+  if (command !== 'scan_now') return summarizeTaskResult(task);
+
+  const status = String(task.status || '').trim().toLowerCase();
+  const result = task.result && typeof task.result === 'object' ? task.result : {};
+  const phase = String(result.phase || '').trim().toLowerCase();
+  const scanned = Number(result.scanned || 0);
+  const queued = Number(result.queued || 0);
+  const skipped = Number(result.skipped || 0);
+  const deferred = Number(result.deferred || 0);
+  const jobsPending = Number(result.jobs_pending || 0);
+  const jobsDoneClean = Number(result.jobs_done_clean || 0);
+  const jobsDoneWithIncident = Number(result.jobs_done_with_incident || 0);
+  const jobsFailed = Number(result.jobs_failed || 0);
+
+  if (status === 'acknowledged' && phase === 'local_scan') {
+    return `Скан: ${scanned} · отправлено: ${queued} · пропущено: ${skipped}`;
+  }
+  if (status === 'acknowledged' && phase === 'server_processing') {
+    return `OCR: осталось ${jobsPending} · clean ${jobsDoneClean} · incidents ${jobsDoneWithIncident} · errors ${jobsFailed}`;
+  }
+  if (status === 'failed') {
+    if (deferred > 0) {
+      return `Скан: ${scanned} · отправлено: ${queued} · outbox: ${deferred}`;
+    }
+    if (jobsFailed > 0) {
+      return `OCR: ошибок ${jobsFailed} · clean ${jobsDoneClean} · incidents ${jobsDoneWithIncident}`;
+    }
+  }
+  if (status === 'completed') {
+    if (Number(result.jobs_total || 0) > 0) {
+      return `Скан: ${scanned} · clean ${jobsDoneClean} · incidents ${jobsDoneWithIncident}`;
+    }
+    return `Скан: ${scanned} · отправлено: ${queued} · пропущено: ${skipped}`;
+  }
+  return summarizeTaskResult(task);
+}
+
 function ScanCenter() {
   const { hasPermission } = useAuth();
   const canScanAck = hasPermission('scan.ack');
@@ -351,8 +407,10 @@ function ScanCenter() {
     } catch (error) {
       console.error('Scan agents load failed', error);
       if (requestId === agentsRequestIdRef.current) {
-        setAgentRows([]);
-        setAgentTotal(0);
+        if (!silent) {
+          setAgentRows([]);
+          setAgentTotal(0);
+        }
       }
     } finally {
       if (requestId === agentsRequestIdRef.current && !silent) {
@@ -382,8 +440,10 @@ function ScanCenter() {
     } catch (error) {
       console.error('Scan hosts load failed', error);
       if (requestId === hostsRequestIdRef.current) {
-        setHostRows([]);
-        setHostTotal(0);
+        if (!silent) {
+          setHostRows([]);
+          setHostTotal(0);
+        }
       }
     } finally {
       if (requestId === hostsRequestIdRef.current && !silent) {
@@ -418,8 +478,10 @@ function ScanCenter() {
     } catch (error) {
       console.error('Host incidents load failed', error);
       if (requestId === hostIncidentRequestIdRef.current) {
-        setHostIncidents([]);
-        setHostIncidentsTotal(0);
+        if (!silent) {
+          setHostIncidents([]);
+          setHostIncidentsTotal(0);
+        }
       }
     } finally {
       if (requestId === hostIncidentRequestIdRef.current && !silent) {
@@ -505,32 +567,33 @@ function ScanCenter() {
 
     const tick = async () => {
       try {
-        const responses = await Promise.all(
-          monitoredAgentIds.map(async (agentId) => {
-            const data = await scanAPI.getTasks({ agent_id: agentId, limit: 20, offset: 0 });
-            return [agentId, Array.isArray(data?.items) ? data.items : []];
-          }),
-        );
+        const data = await scanAPI.getAgentsActivity(monitoredAgentIds);
         if (cancelled) return;
-        const tasksByAgent = new Map(responses);
+        const activityByAgent = new Map(
+          (Array.isArray(data?.items) ? data.items : []).map((item) => [String(item?.agent_id || '').trim(), item]),
+        );
+        const nowTs = Math.floor(Date.now() / 1000);
         setAgentRows((prev) => prev.map((row) => {
-          const tasks = tasksByAgent.get(String(row.agent_id || '').trim());
-          if (!tasks) return row;
-          const activeTask = tasks.find((item) => isActiveTask(item)) || null;
+          const activity = activityByAgent.get(String(row.agent_id || '').trim());
+          if (!activity) return row;
+          const lastSeenAt = Number(activity.last_seen_at || row.last_seen_at || 0);
           return {
             ...row,
-            active_task: activeTask,
-            last_task: tasks[0] || row.last_task || null,
-            queue_size: tasks.filter((item) => isActiveTask(item)).length,
+            is_online: Boolean(activity.is_online),
+            last_seen_at: lastSeenAt,
+            age_seconds: lastSeenAt > 0 ? Math.max(0, nowTs - lastSeenAt) : row.age_seconds,
+            active_task: activity.active_task || null,
+            last_task: activity.last_task || row.last_task || null,
+            queue_size: Number(activity.queue_size || 0),
           };
         }));
         setTrackedTaskAgentIds((prev) => prev.filter((agentId) => {
-          const tasks = tasksByAgent.get(agentId) || [];
-          return tasks.some((item) => isActiveTask(item));
+          const activity = activityByAgent.get(agentId);
+          return Boolean(activity && isActiveTask(activity.active_task));
         }));
       } catch (error) {
         if (!cancelled) {
-          console.error('Scan task polling failed', error);
+          console.error('Scan activity polling failed', error);
         }
       }
     };
@@ -851,7 +914,7 @@ function ScanCenter() {
                               variant="outlined"
                               label={String(agent.active_task.command || '').toLowerCase() === 'scan_now' ? 'Сканирование' : 'Проверка связи'}
                             />
-                            <Chip size="small" color={taskStatusColor(agent.active_task.status)} label={taskStatusLabel(agent.active_task.status)} />
+                            <Chip size="small" color={taskStatusColor(agent.active_task.status)} label={renderTaskStatusLabel(agent.active_task)} />
                           </Stack>
                         ) : '-'}
                       </TableCell>
@@ -859,7 +922,7 @@ function ScanCenter() {
                       <TableCell>
                         {agent.last_task ? (
                           <>
-                            <Typography variant="body2">{summarizeTaskResult(agent.last_task)}</Typography>
+                            <Typography variant="body2">{renderTaskSummary(agent.last_task)}</Typography>
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                               {`${commandLabel(agent.last_task.command)} · ${taskStatusLabel(agent.last_task.status)}`}
                             </Typography>

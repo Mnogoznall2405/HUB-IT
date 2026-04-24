@@ -58,7 +58,7 @@ import MapDialog from '../components/networks/MapDialog';
 
 import { CreateBranchDialog, EditBranchDialog, DeleteBranchDialog } from '../components/networks/BranchDialogs';
 
-import { networksAPI, apiClient } from '../api/client';
+import { networksAPI, databaseAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { buildCacheKey, getOrFetchSWR, invalidateSWRCacheByPrefix } from '../lib/swrCache';
@@ -1136,8 +1136,8 @@ function Networks() {
   useEffect(() => {
     const fetchDatabases = async () => {
       try {
-        const response = await apiClient.get('/database/list');
-        setAvailableDatabases(Array.isArray(response.data) ? response.data : []);
+        const data = await databaseAPI.getAvailableDatabases();
+        setAvailableDatabases(Array.isArray(data) ? data : []);
       } catch (err) {
         console.error('Failed to fetch databases:', err);
         setAvailableDatabases([]);

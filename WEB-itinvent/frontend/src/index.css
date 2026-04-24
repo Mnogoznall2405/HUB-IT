@@ -1,3 +1,5 @@
+@import "tailwindcss";
+
 /**
  * Global Styles for IT-invent Web
  *
@@ -128,6 +130,111 @@ select {
   border-radius: 8px;
   border: 1px solid var(--app-border-soft, rgba(32, 31, 30, 0.08));
   box-shadow: var(--app-shadow-soft, 0 10px 28px rgba(32, 31, 30, 0.06));
+}
+
+@layer utilities {
+  .chat-safe-top {
+    padding-top: max(env(safe-area-inset-top, 0px), 12px);
+  }
+
+  .chat-safe-bottom {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 12px);
+  }
+
+  .chat-native-shell {
+    font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+
+  .chat-scroll-hidden {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .chat-scroll-hidden::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
+  .chat-no-select {
+    user-select: none;
+    -webkit-user-select: none;
+  }
+
+  .chat-no-select .chat-selectable,
+  .chat-no-select input,
+  .chat-no-select textarea {
+    user-select: text;
+    -webkit-user-select: text;
+  }
+
+  .mail-safe-top {
+    padding-top: calc(12px + env(safe-area-inset-top, 0px));
+  }
+
+  .mail-safe-bottom {
+    padding-bottom: calc(12px + env(safe-area-inset-bottom, 0px));
+  }
+
+  .mail-scroll-hidden {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+
+  .mail-scroll-hidden::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+    display: none;
+  }
+
+  .mail-edge-shell {
+    min-height: 0;
+    overflow: hidden;
+    background:
+      radial-gradient(circle at top left, rgba(59, 130, 246, 0.08), transparent 38%),
+      radial-gradient(circle at bottom right, rgba(14, 165, 233, 0.06), transparent 32%),
+      var(--mail-shell-bg, transparent);
+  }
+
+  .mail-glass-header {
+    backdrop-filter: blur(18px);
+    -webkit-backdrop-filter: blur(18px);
+    background: color-mix(in srgb, var(--mail-panel-solid, rgba(255, 255, 255, 0.82)) 88%, transparent);
+  }
+
+  .mail-divider-inset {
+    margin-left: 4rem;
+    border-color: var(--mail-divider, rgba(15, 23, 42, 0.08));
+  }
+
+  .mail-line-clamp-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
+  .mail-quote-collapsed blockquote,
+  .mail-quote-collapsed .gmail_quote,
+  .mail-quote-collapsed .protonmail_quote,
+  .mail-quote-collapsed .yahoo_quoted,
+  .mail-quote-collapsed .moz-cite-prefix {
+    display: none !important;
+  }
+
+  .mail-composer-quote-collapsed .ql-editor blockquote {
+    max-height: 3.2em;
+    overflow: hidden;
+    position: relative;
+  }
+
+  .mail-composer-quote-collapsed .ql-editor blockquote::after {
+    content: "";
+    position: absolute;
+    inset: auto 0 0 0;
+    height: 2.6em;
+    background: linear-gradient(180deg, transparent, var(--mail-panel-bg, #fff));
+  }
 }
 
 @keyframes shimmer {

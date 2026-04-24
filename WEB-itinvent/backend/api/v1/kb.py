@@ -173,7 +173,10 @@ async def create_article(
     current_user: User = Depends(require_permission(PERM_KB_WRITE)),
 ):
     actor = str(current_user.username or "").strip() or "system"
-    return kb_service.create_article(payload=payload.model_dump(), actor_username=actor)
+    try:
+        return kb_service.create_article(payload=payload.model_dump(), actor_username=actor)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.patch("/articles/{article_id}", response_model=KbArticleResponse)
@@ -183,11 +186,14 @@ async def update_article(
     current_user: User = Depends(require_permission(PERM_KB_WRITE)),
 ):
     actor = str(current_user.username or "").strip() or "system"
-    item = kb_service.update_article(
-        article_id=article_id,
-        payload=payload.model_dump(exclude_unset=True),
-        actor_username=actor,
-    )
+    try:
+        item = kb_service.update_article(
+            article_id=article_id,
+            payload=payload.model_dump(exclude_unset=True),
+            actor_username=actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not item:
         raise HTTPException(status_code=404, detail="Article not found")
     return item

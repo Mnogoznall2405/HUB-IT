@@ -53,10 +53,21 @@ def test_read_env_defaults_to_on_demand(monkeypatch):
     assert config["watchdog_enabled"] is False
 
 
-def test_poll_tasks_scan_now_runs_scan_once(monkeypatch):
+def test_poll_tasks_scan_now_keeps_task_acknowledged_until_server_processing_finishes(monkeypatch):
     agent = scan_agent.ScanAgent(_make_config())
     sent_payloads = []
-    run_stats = {"scanned": 1, "queued": 0, "skipped": 0}
+    run_stats = {
+        "phase": "server_processing",
+        "scanned": 2,
+        "queued": 2,
+        "skipped": 1,
+        "deferred": 0,
+        "jobs_total": 2,
+        "jobs_pending": 2,
+        "jobs_done_clean": 0,
+        "jobs_done_with_incident": 0,
+        "jobs_failed": 0,
+    }
 
     def fake_send(method, url, **kwargs):
         if url.endswith("/tasks/poll"):
@@ -67,12 +78,85 @@ def test_poll_tasks_scan_now_runs_scan_once(monkeypatch):
         return _DummyResponse()
 
     monkeypatch.setattr(agent, "_send", fake_send)
-    monkeypatch.setattr(agent, "run_scan_once", lambda: run_stats)
+    monkeypatch.setattr(agent, "run_scan_once", lambda scan_task_id=None: run_stats)
 
     agent.poll_tasks()
 
-    assert any(payload and payload.get("status") == "acknowledged" for _, _, payload in sent_payloads)
+    acknowledged_payloads = [payload for _, _, payload in sent_payloads if payload and payload.get("status") == "acknowledged"]
+    assert len(acknowledged_payloads) == 2
+    assert acknowledged_payloads[0]["result"]["phase"] == "local_scan"
+    assert acknowledged_payloads[1]["result"] == run_stats
+    assert not any(payload and payload.get("status") == "completed" for _, _, payload in sent_payloads)
+
+
+def test_poll_tasks_scan_now_completes_immediately_when_server_has_no_jobs(monkeypatch):
+    agent = scan_agent.ScanAgent(_make_config())
+    sent_payloads = []
+    run_stats = {
+        "phase": "completed",
+        "scanned": 1,
+        "queued": 0,
+        "skipped": 3,
+        "deferred": 0,
+        "jobs_total": 0,
+        "jobs_pending": 0,
+        "jobs_done_clean": 0,
+        "jobs_done_with_incident": 0,
+        "jobs_failed": 0,
+    }
+
+    def fake_send(method, url, **kwargs):
+        if url.endswith("/tasks/poll"):
+            return _DummyResponse(
+                data={"tasks": [{"task_id": "task-1", "command": "scan_now"}]}
+            )
+        sent_payloads.append((method, url, kwargs.get("json")))
+        return _DummyResponse()
+
+    monkeypatch.setattr(agent, "_send", fake_send)
+    monkeypatch.setattr(agent, "run_scan_once", lambda scan_task_id=None: run_stats)
+
+    agent.poll_tasks()
+
     assert any(payload and payload.get("status") == "completed" and payload.get("result") == run_stats for _, _, payload in sent_payloads)
+
+
+def test_poll_tasks_scan_now_fails_when_files_are_deferred_to_outbox(monkeypatch):
+    agent = scan_agent.ScanAgent(_make_config())
+    sent_payloads = []
+    run_stats = {
+        "phase": "failed",
+        "scanned": 2,
+        "queued": 1,
+        "skipped": 0,
+        "deferred": 1,
+        "jobs_total": 1,
+        "jobs_pending": 1,
+        "jobs_done_clean": 0,
+        "jobs_done_with_incident": 0,
+        "jobs_failed": 0,
+    }
+
+    def fake_send(method, url, **kwargs):
+        if url.endswith("/tasks/poll"):
+            return _DummyResponse(
+                data={"tasks": [{"task_id": "task-1", "command": "scan_now"}]}
+            )
+        sent_payloads.append((method, url, kwargs.get("json")))
+        return _DummyResponse()
+
+    monkeypatch.setattr(agent, "_send", fake_send)
+    monkeypatch.setattr(agent, "run_scan_once", lambda scan_task_id=None: run_stats)
+
+    agent.poll_tasks()
+
+    assert any(
+        payload
+        and payload.get("status") == "failed"
+        and payload.get("result") == run_stats
+        and payload.get("error_text") == "Deferred to outbox: 1"
+        for _, _, payload in sent_payloads
+    )
 
 
 def test_run_forever_does_not_scan_on_start_by_default(monkeypatch):
@@ -84,7 +168,7 @@ def test_run_forever_does_not_scan_on_start_by_default(monkeypatch):
 
     monkeypatch.setattr(agent, "refresh_roots", lambda force=False: None)
     monkeypatch.setattr(agent, "_start_watchdog", lambda: None)
-    monkeypatch.setattr(agent, "run_scan_once", lambda: started.append("scan"))
+    monkeypatch.setattr(agent, "run_scan_once", lambda scan_task_id=None: started.append("scan"))
     monkeypatch.setattr(agent, "heartbeat", lambda: None)
     monkeypatch.setattr(agent, "poll_tasks", lambda: (_ for _ in ()).throw(_StopLoop()))
     monkeypatch.setattr(agent, "_outbox_prune_limits", lambda: None)
@@ -195,7 +279,7 @@ def test_unsupported_file_skips_hashing(monkeypatch, temp_dir):
 
     result = agent._scan_path(image_path)
 
-    assert result == {"scanned": 0, "queued": 0, "skipped": 1}
+    assert result == {"scanned": 0, "queued": 0, "skipped": 1, "deferred": 0}
 
 
 def test_cp1251_text_file_detects_patterns(monkeypatch, temp_dir):
@@ -260,6 +344,9 @@ def test_run_scan_once_drains_outbox_once_after_failed_ingest(monkeypatch, temp_
     summary = agent.run_scan_once()
 
     assert summary["scanned"] == 2
+    assert summary["deferred"] == 2
+    assert summary["phase"] == "failed"
+    assert summary["jobs_total"] == 0
     assert len(outbox_payloads) == 2
     assert prune_calls == ["prune"]
     assert drain_calls == [200]

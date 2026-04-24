@@ -1,6 +1,13 @@
-﻿import importlib.util
+import importlib.util
 from pathlib import Path
+import sys
 import time
+
+import pytest
+
+BACKEND_ROOT = Path(__file__).resolve().parents[1] / "WEB-itinvent"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
 
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "WEB-itinvent" / "backend" / "api" / "v1" / "inventory.py"
@@ -118,3 +125,17 @@ def test_heartbeat_does_not_overwrite_full_snapshot_fields():
     assert merged["logical_disks"] == previous["logical_disks"]
     assert merged["monitors"] == previous["monitors"]
     assert merged["storage"] == previous["storage"]
+
+
+def test_receive_inventory_rejects_invalid_api_key():
+    payload = inventory.InventoryPayload(
+        hostname="PC-09",
+        mac_address="AA-BB-CC-DD-EE-09",
+        timestamp=1_700_000_000,
+        report_type="heartbeat",
+    )
+
+    with pytest.raises(inventory.HTTPException) as exc_info:
+        inventory.receive_inventory(payload, x_api_key="bad-key")
+
+    assert exc_info.value.status_code == 401

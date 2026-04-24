@@ -311,7 +311,7 @@ def _normalize_item_ids_legacy(raw_ids: Any) -> list[int]:
     return result
 
 
-def _normalize_inv_no_token(raw: Any) -> Optional[str]:
+def _cleanup_inv_no_candidate(raw: Any) -> Optional[str]:
     text = str(raw or "").strip()
     if not text:
         return None
@@ -322,21 +322,39 @@ def _normalize_inv_no_token(raw: Any) -> Optional[str]:
         return None
     if re.fullmatch(r"\d+[.,]0+", text):
         text = re.split(r"[.,]", text, maxsplit=1)[0]
-    if re.fullmatch(r"\d+", text):
-        text = str(int(text))
-    return text
+    return text or None
 
 
-def _normalize_inv_nos(raw_values: Any) -> list[str]:
+def _normalize_inv_no_token(raw: Any) -> Optional[str]:
+    text = _cleanup_inv_no_candidate(raw)
+    if not text or not re.fullmatch(r"\d+", text):
+        return None
+    return str(int(text))
+
+
+def _collect_inv_nos(raw_values: Any) -> tuple[list[str], list[str]]:
     source = raw_values if isinstance(raw_values, list) else [raw_values]
-    result: list[str] = []
+    accepted: list[str] = []
+    rejected: list[str] = []
     for raw in source:
         if raw in (None, "", "null"):
             continue
-        token = _normalize_inv_no_token(raw)
-        if token and token not in result:
-            result.append(token)
-    return result
+        cleaned = _cleanup_inv_no_candidate(raw)
+        if not cleaned:
+            continue
+        token = _normalize_inv_no_token(cleaned)
+        if token:
+            if token not in accepted:
+                accepted.append(token)
+            continue
+        if cleaned not in rejected:
+            rejected.append(cleaned)
+    return accepted, rejected
+
+
+def _normalize_inv_nos(raw_values: Any) -> list[str]:
+    accepted, _ = _collect_inv_nos(raw_values)
+    return accepted
 
 
 def _normalized_inv_key(raw: Any) -> Optional[str]:
@@ -349,16 +367,38 @@ def _parse_inv_nos_from_text(pdf_text: str) -> list[str]:
     if not pdf_text:
         return result
 
-    patterns = [
-        r"(?iu)\binv(?:_?no|\.?\s*no|#)?\s*[:=#-]?\s*([\w\-/\.]{2,32})",
-        r"(?iu)\bинв(?:ентарный)?\.?\s*№?\s*[:=#-]?\s*([\w\-/\.]{2,32})",
+    explicit_patterns = [
+        r"(?iu)\binv(?:_?no|\.?\s*no|entory\s*number|#)?\s*[:=#-]?\s*№?\s*(\d{4,}(?:[.,]0+)?)",
+        r"(?iu)\bинв(?:\.|ентарн(?:ый|ая|ое|ые|ы\s*й)?(?:\s*номер)?)?\s*[:=#-]?\s*№?\s*(\d{4,}(?:[.,]0+)?)",
     ]
-    for pattern in patterns:
+    numeric_candidate_pattern = re.compile(r"(?<![\d./-])\d{4,}(?:[.,]0+)?(?![\d./-])")
+    context_markers = [
+        re.compile(r"(?iu)\binv(?:_?no|\.?\s*no|entory\s*number)\b"),
+        re.compile(r"(?iu)\bинв(?:\.|ентарн(?:ый|ая|ое|ые|ы\s*й)?(?:\s*номер)?)\b"),
+    ]
+
+    for pattern in explicit_patterns:
         for match in re.findall(pattern, pdf_text, flags=re.IGNORECASE):
             token = _normalize_inv_no_token(match)
             if token and token not in result:
                 result.append(token)
+
+    for marker in context_markers:
+        for match in marker.finditer(pdf_text):
+            context = pdf_text[match.end() : match.end() + 400]
+            for candidate in numeric_candidate_pattern.findall(context):
+                token = _normalize_inv_no_token(candidate)
+                if token and token not in result:
+                    result.append(token)
     return result
+
+
+def _format_warning_tokens(values: list[str], limit: int = 8) -> str:
+    if not values:
+        return ""
+    if len(values) <= limit:
+        return ", ".join(values)
+    return f"{', '.join(values[:limit])} и ещё {len(values) - limit}"
 
 
 def _derive_title_from_filename(file_name: str) -> str:
@@ -683,7 +723,10 @@ def _call_openrouter_act_parser(
         '  "equipment_inv_nos": ["100887", "100888"]\n'
         "}\n"
         "Rules:\n"
-        "- equipment_inv_nos must contain inventory numbers (INV_NO), not internal IDs.\n"
+        "- equipment_inv_nos must contain ONLY inventory numbers from the 'Инвентарный номер' / 'INV_NO' field or column.\n"
+        "- every equipment_inv_nos value must be digits only, with no letters, spaces, slashes, page markers or comments.\n"
+        "- never return act number, document number, row number, page number, date, serial number, party number, internal item ID or any other numeric field.\n"
+        "- if the inventory number is ambiguous or not clearly visible, return an empty array instead of guessing.\n"
         "- doc_date must be extracted from the act date in the document text and normalized to YYYY-MM-DD.\n"
         "- if data is not found, return empty string or empty array.\n\n"
         f"File name: {file_name}\n\n"
@@ -732,13 +775,14 @@ def _call_openrouter_act_parser(
                         )
                         completion = client.chat.completions.create(
                             model=model,
-                            temperature=0.1,
+                            temperature=0,
                             response_format={"type": "json_object"},
                             messages=[
                                 {
                                     "role": "system",
                                     "content": (
-                                        "Extract structured data from signed transfer act and return strict JSON."
+                                        "Extract structured data from a signed transfer act and return strict JSON. "
+                                        "Be conservative: return only exact inventory numbers and never guess."
                                     ),
                                 },
                                 {
@@ -905,23 +949,29 @@ def create_uploaded_act_draft(
     to_employee = ""
     parsed_doc_date: Optional[datetime] = None
     inv_nos: list[str] = []
+    legacy_inv_nos: list[str] = []
 
     if isinstance(parsed_payload, dict):
         title = str(parsed_payload.get("document_title") or "").strip() or title
         from_employee = str(parsed_payload.get("from_employee") or "").strip()
         to_employee = str(parsed_payload.get("to_employee") or "").strip()
         parsed_doc_date = _extract_doc_date_from_payload(parsed_payload)
-        inv_nos = _normalize_inv_nos(parsed_payload.get("equipment_inv_nos"))
+        inv_nos, rejected_inv_nos = _collect_inv_nos(parsed_payload.get("equipment_inv_nos"))
+        if rejected_inv_nos:
+            warnings.append(
+                "Из ответа модели отброшены нечисловые кандидаты INV_NO: "
+                f"{_format_warning_tokens(rejected_inv_nos)}"
+            )
 
-        if not inv_nos:
-            legacy_item_ids = _normalize_item_ids_legacy(parsed_payload.get("equipment_item_ids"))
-            if legacy_item_ids:
-                legacy_rows = queries.get_equipment_items_by_ids(legacy_item_ids, db_id)
-                inv_nos = _normalize_inv_nos(
-                    [row.get("inv_no") or row.get("INV_NO") for row in legacy_rows]
-                )
-                if inv_nos:
-                    warnings.append("Модель вернула ITEMS.ID, выполнена конвертация в INV_NO.")
+        legacy_item_ids = _normalize_item_ids_legacy(parsed_payload.get("equipment_item_ids"))
+        if legacy_item_ids:
+            legacy_rows = queries.get_equipment_items_by_ids(legacy_item_ids, db_id)
+            legacy_inv_nos = _normalize_inv_nos(
+                [row.get("inv_no") or row.get("INV_NO") for row in legacy_rows]
+            )
+            if legacy_inv_nos and not inv_nos:
+                inv_nos = legacy_inv_nos
+                warnings.append("Модель вернула ITEMS.ID, выполнена конвертация в INV_NO.")
 
     if parsed_doc_date is None:
         parsed_doc_date = _extract_doc_date_from_text(pdf_text)
@@ -941,6 +991,23 @@ def create_uploaded_act_draft(
             warnings.append("Не удалось автоматически определить инвентарные номера. Укажите их вручную.")
 
     ordered_rows, missing_inv_nos, duplicate_matches = _resolve_rows_for_inv_nos(inv_nos, db_id)
+    if not ordered_rows and inv_nos and legacy_inv_nos and legacy_inv_nos != inv_nos:
+        legacy_rows, legacy_missing_inv_nos, legacy_duplicate_matches = _resolve_rows_for_inv_nos(
+            legacy_inv_nos,
+            db_id,
+        )
+        if legacy_rows:
+            inv_nos = legacy_inv_nos
+            ordered_rows = legacy_rows
+            missing_inv_nos = legacy_missing_inv_nos
+            duplicate_matches = legacy_duplicate_matches
+            warnings.append(
+                "Использованы INV_NO, полученные через legacy-конвертацию equipment_item_ids."
+            )
+
+    confirmed_inv_nos = _normalize_inv_nos(
+        [row.get("inv_no") or row.get("INV_NO") for row in ordered_rows]
+    )
     if missing_inv_nos:
         warnings.append(f"В текущей БД не найдены INV_NO: {', '.join(missing_inv_nos)}")
     if duplicate_matches:
@@ -949,6 +1016,10 @@ def create_uploaded_act_draft(
             for inv_no, item_ids in duplicate_matches.items()
         )
         warnings.append(f"Найдено несколько ITEMS.ID для одного INV_NO: {details}")
+    if confirmed_inv_nos:
+        if confirmed_inv_nos != inv_nos:
+            warnings.append("В черновике оставлены только INV_NO, подтвержденные в текущей БД.")
+        inv_nos = confirmed_inv_nos
 
     resolved_items = _build_resolved_items(ordered_rows)
 
@@ -1128,7 +1199,8 @@ def commit_uploaded_act_draft(
             logger.warning("ANNULLED stamp update failed for doc_no=%s: %s", old_doc_no, exc)
 
     result["linked_inv_nos"] = linked_inv_nos
+    result["from_employee"] = final_from_employee
+    result["to_employee"] = final_to_employee
 
     _ACT_DRAFTS.pop(key, None)
     return result
-

@@ -12,6 +12,9 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
+from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.db_schema import schema_name
 from local_store import get_local_store
 
 try:
@@ -295,16 +298,48 @@ class ImportSummary:
 
 
 class NetworkService:
-    def __init__(self) -> None:
-        self.db_path = Path(get_local_store().db_path)
+    def __init__(self, *, database_url: str | None = None) -> None:
+        explicit_database_url = str(database_url or "").strip() or None
+        self._database_url = get_app_database_url(explicit_database_url) if (explicit_database_url or is_app_database_configured()) else None
+        self._use_app_db = bool(self._database_url)
+        self.db_path = None if self._use_app_db else Path(get_local_store().db_path)
+        self._app_schema = schema_name("app", self._database_url)
         self._lock = threading.RLock()
+        if self._use_app_db and self._database_url:
+            initialize_app_schema(self._database_url)
         self._ensure_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _connect(self):
+        if self._use_app_db and self._database_url:
+            return SqlAlchemyCompatConnection(
+                get_app_engine(self._database_url),
+                table_names=self._network_table_names(),
+                schema=self._app_schema,
+                returning_id_tables=self._network_autoincrement_tables(),
+            )
         c = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
         c.row_factory = sqlite3.Row
         c.execute("PRAGMA foreign_keys=ON;")
         return c
+
+    def _network_table_names(self) -> set[str]:
+        return {
+            "network_branches",
+            "network_sites",
+            "network_devices",
+            "network_ports",
+            "network_socket_profiles",
+            "network_panels",
+            "network_sockets",
+            "network_branch_db_map",
+            "network_maps",
+            "network_map_points",
+            "network_import_jobs",
+            "network_audit_log",
+        }
+
+    def _network_autoincrement_tables(self) -> set[str]:
+        return set(self._network_table_names())
 
     @staticmethod
     def _has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
@@ -1274,7 +1309,7 @@ class NetworkService:
                 LEFT JOIN network_ports p ON p.id=s.port_id
                 LEFT JOIN network_map_points mp ON mp.socket_id=s.id
                 WHERE {' AND '.join(where)}
-                ORDER BY s.panel_no, s.port_no, s.socket_code COLLATE NOCASE
+                ORDER BY s.panel_no, s.port_no, LOWER(s.socket_code)
                 LIMIT ?
                 """,
                 params,
@@ -2225,7 +2260,7 @@ class NetworkService:
                 FROM network_branches b
                 LEFT JOIN network_branch_db_map m ON b.id = m.branch_id
                 WHERE b.city_code=? AND b.is_active=1
-                ORDER BY b.name COLLATE NOCASE
+                ORDER BY LOWER(b.name)
                 """,
                 (_s(city_code),),
             ).fetchall()
@@ -2248,7 +2283,7 @@ class NetworkService:
                     FROM network_branches b
                     LEFT JOIN network_branch_db_map m ON b.id = m.branch_id
                     WHERE b.city_code=? AND b.is_active=1
-                    ORDER BY b.name COLLATE NOCASE
+                    ORDER BY LOWER(b.name)
                     """,
                     (_s(city_code),),
                 ).fetchall()
@@ -2263,7 +2298,7 @@ class NetworkService:
             FROM network_branches b
             LEFT JOIN network_branch_db_map m ON b.id = m.branch_id
             WHERE b.is_active=1
-            ORDER BY b.city_code, b.name COLLATE NOCASE
+            ORDER BY LOWER(b.city_code), LOWER(b.name)
             """
         ).fetchall()
         return [self._d(r) for r in rows]
@@ -2322,7 +2357,7 @@ class NetworkService:
                     (SELECT COUNT(*) FROM network_ports p JOIN network_devices d ON d.id=p.device_id WHERE d.site_id=s.id) ports_count
                 FROM network_sites s
                 WHERE s.branch_id=?
-                ORDER BY s.sort_order, s.name COLLATE NOCASE
+                ORDER BY s.sort_order, LOWER(s.name)
                 """,
                 (int(branch_id),),
             ).fetchall()
@@ -2338,7 +2373,7 @@ class NetworkService:
                 FROM network_devices d
                 LEFT JOIN network_sites s ON s.id=d.site_id
                 WHERE d.branch_id=?
-                ORDER BY COALESCE(s.sort_order,9999), d.device_code COLLATE NOCASE
+                ORDER BY COALESCE(s.sort_order,9999), LOWER(d.device_code)
                 """,
                 (int(branch_id),),
             ).fetchall()
@@ -2379,7 +2414,7 @@ class NetworkService:
             FROM network_ports p
             LEFT JOIN network_sockets s ON s.port_id=p.id
             WHERE {' AND '.join(where)}
-            ORDER BY p.port_name COLLATE NOCASE
+            ORDER BY LOWER(p.port_name)
         """
         with self._lock, self._connect() as conn:
             rows = conn.execute(q, params).fetchall()
@@ -2441,7 +2476,7 @@ class NetworkService:
             LEFT JOIN network_sites s ON s.id=d.site_id
             LEFT JOIN network_sockets ns ON ns.port_id=p.id
             WHERE {' AND '.join(where)}
-            ORDER BY d.device_code COLLATE NOCASE, p.port_name COLLATE NOCASE
+            ORDER BY LOWER(d.device_code), LOWER(p.port_name)
             LIMIT ?
         """
         params.append(int(limit))
@@ -2457,7 +2492,7 @@ class NetworkService:
                 FROM network_maps m
                 LEFT JOIN network_sites s ON s.id=m.site_id
                 WHERE m.branch_id=?
-                ORDER BY COALESCE(s.sort_order,9999), COALESCE(m.floor_label,''), m.file_name COLLATE NOCASE
+                ORDER BY COALESCE(s.sort_order,9999), LOWER(COALESCE(m.floor_label,'')), LOWER(m.file_name)
                 """,
                 (int(branch_id),),
             ).fetchall()
@@ -3569,7 +3604,7 @@ class NetworkService:
                         _s(floor_label) or None,
                         _s(file_name),
                         _s(mime_type) or "application/octet-stream",
-                        sqlite3.Binary(file_bytes),
+                        bytes(file_bytes),
                         len(file_bytes),
                         checksum,
                         _s(source_path) or None,
@@ -3592,7 +3627,7 @@ class NetworkService:
                         _s(title) or existing["title"],
                         _s(floor_label) or existing["floor_label"],
                         _s(mime_type) or existing["mime_type"],
-                        sqlite3.Binary(file_bytes),
+                        bytes(file_bytes),
                         len(file_bytes),
                         checksum,
                         _s(source_path) or existing["source_path"],

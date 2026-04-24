@@ -13,7 +13,8 @@ import { useMemo } from 'react';
 import { useTheme } from '@mui/material/styles';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
-import { buildMailUiTokens } from './mailUiTokens';
+import { buildMailUiTokens, getMailUiFontScopeSx } from './mailUiTokens';
+import { buildSignaturePreviewHtml } from './mailOutgoingPreview';
 
 export default function MailSignatureDialog({
   open,
@@ -26,14 +27,18 @@ export default function MailSignatureDialog({
 }) {
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
+  const signaturePreviewHtml = useMemo(
+    () => buildSignaturePreviewHtml(signatureHtml),
+    [signatureHtml],
+  );
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { borderRadius: '12px' } }}>
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { ...getMailUiFontScopeSx(), borderRadius: '12px' } }}>
       <DialogTitle sx={{ fontWeight: 700 }}>Подпись</DialogTitle>
       <DialogContent dividers>
         <Stack spacing={1.2} sx={{ mt: 0.5 }}>
           <Typography variant="caption" color="text.secondary">
-            Подпись автоматически добавляется в конце каждого отправленного письма.
+            Подпись отправляется в стандартном письме с белым фоном. В ответах и пересылках она ставится перед историей переписки.
           </Typography>
           <Box
             sx={{
@@ -53,7 +58,7 @@ export default function MailSignatureDialog({
                 borderBottomRightRadius: '8px',
                 color: 'text.primary',
                 bgcolor: tokens.panelSolid,
-                fontFamily: 'inherit',
+                fontFamily: 'var(--mail-message-font)',
                 fontSize: '0.95rem',
               },
               '& .ql-editor': { minHeight: '220px' },
@@ -69,20 +74,33 @@ export default function MailSignatureDialog({
 
           <Paper variant="outlined" sx={{ p: 1.5, borderRadius: '10px', bgcolor: tokens.surfaceBg, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
             <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-              Предпросмотр подписи:
+              Как это будет выглядеть в письме:
             </Typography>
             <Box
+              data-testid="mail-signature-final-preview"
               sx={{
                 mt: 0.8,
                 fontSize: '0.9rem',
                 lineHeight: 1.45,
+                fontFamily: 'var(--mail-message-font)',
+                borderRadius: '10px',
+                border: '1px solid #dbe2ea',
+                bgcolor: '#ffffff',
+                px: 1.6,
+                py: 1.35,
                 '& img': { maxWidth: '100%' },
                 '& p, & div': { margin: 0 },
-                '& p + p, & p + div, & div + p, & div + div': { marginTop: '0.3em' },
+                '& p + p, & p + div, & div + p, & div + div': { marginTop: '0.4em' },
                 '& ul, & ol': { margin: '0.35em 0 0.35em 1.2em', padding: 0 },
                 '& li': { margin: 0 },
+                '& blockquote': {
+                  margin: '0.8em 0 0',
+                  padding: '0 0 0 12px',
+                  borderLeft: '3px solid #cbd5e1',
+                  color: '#475569',
+                },
               }}
-              dangerouslySetInnerHTML={{ __html: signatureHtml || '<span style="color:#999">Подпись не задана</span>' }}
+              dangerouslySetInnerHTML={{ __html: signaturePreviewHtml }}
             />
           </Paper>
         </Stack>

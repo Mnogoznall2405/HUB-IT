@@ -37,25 +37,16 @@ _transfer_location_pagination_handler = PaginationHandler(
 )
 
 # Обработчик для пагинации локаций в work
-_work_location_pagination_handler = PaginationHandler(
-    page_key='work_location_page',
-    items_key='work_location_suggestions',
-    items_per_page=8,
-    callback_prefix='work_location'
-)
-
 # Словарь обработчиков пагинации по режимам
 _PAGINATION_HANDLERS = {
     'unfound': _unfound_location_pagination_handler,
     'transfer': _transfer_location_pagination_handler,
-    'work': _work_location_pagination_handler,
 }
 
 # Словарь состояний для возврата после навигации
 _NAVIGATION_RETURN_STATES = {
     'unfound': States.UNFOUND_LOCATION_INPUT,
     'transfer': States.TRANSFER_NEW_LOCATION,
-    'work': States.WORK_LOCATION_INPUT,
 }
 
 
@@ -164,8 +155,6 @@ async def show_location_buttons(message, context, mode='unfound', branch='', que
             _unfound_location_pagination_handler.set_items(context, locations)
         elif mode == 'transfer':
             _transfer_location_pagination_handler.set_items(context, locations)
-        elif mode == 'work':
-            _work_location_pagination_handler.set_items(context, locations)
         else:
             # Для других modes используем старый метод
             context.user_data[f'{mode}_location_suggestions'] = locations
@@ -180,9 +169,6 @@ async def show_location_buttons(message, context, mode='unfound', branch='', que
         elif mode == 'transfer':
             page_locations, current_page, total_pages, has_prev, has_next = _transfer_location_pagination_handler.get_page_data(context)
             start_idx = current_page * _transfer_location_pagination_handler.items_per_page
-        elif mode == 'work':
-            page_locations, current_page, total_pages, has_prev, has_next = _work_location_pagination_handler.get_page_data(context)
-            start_idx = current_page * _work_location_pagination_handler.items_per_page
         else:
             # Старый метод для других modes
             current_page = context.user_data.get(f'{mode}_location_page', 0)
@@ -218,7 +204,7 @@ async def show_location_buttons(message, context, mode='unfound', branch='', que
             keyboard.append(nav_buttons)
 
         # Для transfer и work используем "Ввести вручную", для остальных "Пропустить"
-        if mode in ('transfer', 'work'):
+        if mode == 'transfer':
             keyboard.append([InlineKeyboardButton(
                 "⌨️ Ввести вручную",
                 callback_data=f"{mode}_location:manual"
@@ -248,7 +234,6 @@ __all__ = [
     'PaginationHandler',
     '_unfound_location_pagination_handler',
     '_transfer_location_pagination_handler',
-    '_work_location_pagination_handler',
     'handle_location_navigation_universal',
     'show_location_buttons',
 ]

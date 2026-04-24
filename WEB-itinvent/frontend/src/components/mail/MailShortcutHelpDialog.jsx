@@ -6,6 +6,14 @@ import {
   Stack,
   Typography,
 } from '@mui/material';
+import { useMemo } from 'react';
+import { useTheme } from '@mui/material/styles';
+import {
+  buildMailUiTokens,
+  getMailDialogContentSx,
+  getMailDialogPaperSx,
+  getMailDialogTitleSx,
+} from './mailUiTokens';
 
 const SHORTCUTS = [
   { keys: 'C', description: 'Новое письмо' },
@@ -18,10 +26,13 @@ const SHORTCUTS = [
 ];
 
 export default function MailShortcutHelpDialog({ open, onClose }) {
+  const theme = useTheme();
+  const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
+
   return (
-    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm">
-      <DialogTitle>Горячие клавиши</DialogTitle>
-      <DialogContent dividers>
+    <Dialog open={open} onClose={onClose} fullWidth maxWidth="sm" PaperProps={{ sx: getMailDialogPaperSx(tokens) }}>
+      <DialogTitle sx={getMailDialogTitleSx(tokens)}>Горячие клавиши</DialogTitle>
+      <DialogContent dividers sx={getMailDialogContentSx(tokens)}>
         <Stack spacing={1}>
           {SHORTCUTS.map((item, index) => (
             <Stack key={item.keys} spacing={1}>

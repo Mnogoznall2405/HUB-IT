@@ -751,7 +751,14 @@ class ScanAgent:
     def _is_supported_scan_path(self, path: Path) -> bool:
         return path.suffix.lower() in SUPPORTED_SCAN_EXTENSIONS
 
-    def _build_event_id(self, path: Path, file_hash: str, stat_result: os.stat_result) -> str:
+    def _build_event_id(
+        self,
+        path: Path,
+        file_hash: str,
+        stat_result: os.stat_result,
+        *,
+        scan_task_id: str = "",
+    ) -> str:
         source = "|".join(
             [
                 self.agent_id,
@@ -759,6 +766,7 @@ class ScanAgent:
                 str(file_hash or "").strip().lower(),
                 str(int(stat_result.st_mtime)),
                 str(int(stat_result.st_size)),
+                str(scan_task_id or "").strip().lower(),
             ]
         )
         return hashlib.sha256(source.encode("utf-8", errors="ignore")).hexdigest()
@@ -872,8 +880,8 @@ class ScanAgent:
                 return
             self._pending_paths.add(normalized)
 
-    def _scan_path(self, path: Path) -> Dict[str, int]:
-        result = {"scanned": 0, "queued": 0, "skipped": 0}
+    def _scan_path(self, path: Path, scan_task_id: Optional[str] = None) -> Dict[str, int]:
+        result = {"scanned": 0, "queued": 0, "skipped": 0, "deferred": 0}
         try:
             stat_result = path.stat()
         except Exception:
@@ -905,30 +913,61 @@ class ScanAgent:
             result["skipped"] += 1
             return result
 
-        payload["event_id"] = self._build_event_id(path, file_hash, stat_result)
+        normalized_task_id = str(scan_task_id or "").strip()
+        if normalized_task_id:
+            payload["scan_task_id"] = normalized_task_id
+        payload["event_id"] = self._build_event_id(path, file_hash, stat_result, scan_task_id=normalized_task_id)
         if self._send_ingest(payload):
             self._register_scanned(path, file_hash, stat_result)
             result["queued"] += 1
             return result
 
         self._outbox_enqueue(payload)
+        result["deferred"] += 1
         return result
 
-    def run_scan_once(self) -> Dict[str, int]:
+    def run_scan_once(self, scan_task_id: Optional[str] = None) -> Dict[str, Any]:
         self.refresh_roots(force=True)
-        summary = {"scanned": 0, "queued": 0, "skipped": 0}
+        summary = {"scanned": 0, "queued": 0, "skipped": 0, "deferred": 0}
         for path in _iter_files(self._roots, self.config["max_file_bytes"]):
-            stats = self._scan_path(path)
+            stats = self._scan_path(path, scan_task_id=scan_task_id)
             summary["scanned"] += stats["scanned"]
             summary["queued"] += stats["queued"]
             summary["skipped"] += stats["skipped"]
+            summary["deferred"] += stats["deferred"]
         self._outbox_prune_limits()
         drained = self._drain_outbox(max_items=200)
         if drained:
             logging.info("Outbox drained after scan_once: sent=%s", drained)
+        if summary["deferred"] > 0:
+            phase = "failed"
+            jobs_pending = summary["queued"]
+        elif summary["queued"] > 0:
+            phase = "server_processing"
+            jobs_pending = summary["queued"]
+        else:
+            phase = "completed"
+            jobs_pending = 0
+        summary.update(
+            {
+                "phase": phase,
+                "jobs_total": summary["queued"],
+                "jobs_pending": jobs_pending,
+                "jobs_done_clean": 0,
+                "jobs_done_with_incident": 0,
+                "jobs_failed": 0,
+            }
+        )
         self._persist_state()
         self._write_status(force=True)
-        logging.info("Scan completed: scanned=%s queued=%s skipped=%s", summary["scanned"], summary["queued"], summary["skipped"])
+        logging.info(
+            "Scan completed: scanned=%s queued=%s skipped=%s deferred=%s phase=%s",
+            summary["scanned"],
+            summary["queued"],
+            summary["skipped"],
+            summary["deferred"],
+            summary["phase"],
+        )
         return summary
 
     def process_watchdog_queue(self, max_items: int) -> Dict[str, int]:
@@ -937,12 +976,13 @@ class ScanAgent:
             while self._pending_paths and len(batch) < max_items:
                 batch.append(self._pending_paths.pop())
 
-        summary = {"scanned": 0, "queued": 0, "skipped": 0}
+        summary = {"scanned": 0, "queued": 0, "skipped": 0, "deferred": 0}
         for raw in batch:
             stats = self._scan_path(Path(raw))
             summary["scanned"] += stats["scanned"]
             summary["queued"] += stats["queued"]
             summary["skipped"] += stats["skipped"]
+            summary["deferred"] += stats["deferred"]
 
         if batch:
             self._persist_state()
@@ -1009,13 +1049,40 @@ class ScanAgent:
             command = str(task.get("command") or "").strip().lower()
             if not task_id:
                 continue
-            self._task_result(task_id, "acknowledged", result={"received": True})
+            self._task_result(
+                task_id,
+                "acknowledged",
+                result={
+                    "phase": "local_scan",
+                    "scanned": 0,
+                    "queued": 0,
+                    "skipped": 0,
+                    "deferred": 0,
+                    "jobs_total": 0,
+                    "jobs_pending": 0,
+                    "jobs_done_clean": 0,
+                    "jobs_done_with_incident": 0,
+                    "jobs_failed": 0,
+                },
+            )
             try:
                 if command == "ping":
                     self._task_result(task_id, "completed", result={"pong": int(time.time())})
                 elif command == "scan_now":
-                    stats = self.run_scan_once()
-                    self._task_result(task_id, "completed", result=stats)
+                    stats = self.run_scan_once(scan_task_id=task_id)
+                    phase = str(stats.get("phase") or "").strip().lower()
+                    if phase == "failed":
+                        deferred = int(stats.get("deferred") or 0)
+                        self._task_result(
+                            task_id,
+                            "failed",
+                            result=stats,
+                            error_text=f"Deferred to outbox: {deferred}",
+                        )
+                    elif phase == "completed":
+                        self._task_result(task_id, "completed", result=stats)
+                    else:
+                        self._task_result(task_id, "acknowledged", result=stats)
                 else:
                     self._task_result(task_id, "failed", error_text=f"Unsupported command: {command}")
             except Exception as exc:
@@ -1093,12 +1160,13 @@ class ScanAgent:
                     next_roots_refresh_ts = now + self.config["roots_refresh_sec"]
 
                 summary = self.process_watchdog_queue(max_items=self.config["watchdog_batch_size"])
-                if summary["scanned"] or summary["queued"]:
+                if summary["scanned"] or summary["queued"] or summary["deferred"]:
                     logging.info(
-                        "Watchdog batch: scanned=%s queued=%s skipped=%s",
+                        "Watchdog batch: scanned=%s queued=%s skipped=%s deferred=%s",
                         summary["scanned"],
                         summary["queued"],
                         summary["skipped"],
+                        summary["deferred"],
                     )
                     self._outbox_prune_limits()
                     drained = self._drain_outbox(max_items=100)
