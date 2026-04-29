@@ -80,7 +80,8 @@ powershell -File scripts\pm2\health-check.ps1
 
 Notes for AI runtime:
 
-- keep exactly one `itinvent-ai-chat-worker` instance per environment;
+- `itinvent-ai-chat-worker` now claims runs atomically, so accidental duplicate workers must not process the same run twice;
+- recommended starting point is one `itinvent-ai-chat-worker` process with `AI_CHAT_WORKER_CONCURRENCY=2`;
 - restart `itinvent-ai-chat-worker` after OpenRouter or AI-bot config changes;
 - `health-check.ps1` includes the worker in the PM2 snapshot and should stay green together with `itinvent-backend`;
 - `itinvent-ai-chat-worker` is not a websocket owner; browser realtime is published only by `itinvent-backend` through `chat_event_outbox`.

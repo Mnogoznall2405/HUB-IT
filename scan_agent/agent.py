@@ -36,12 +36,14 @@ except Exception:
 
 DEFAULT_SERVER_BASE = "https://hubit.zsgp.ru/api/v1/scan"
 DEFAULT_API_KEY = "gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8"
-DEFAULT_POLL_INTERVAL = 60
+DEFAULT_POLL_INTERVAL = 600
+DEFAULT_POLL_JITTER = 120
 DEFAULT_HTTP_TIMEOUT = 20
 DEFAULT_MAX_FILE_SIZE_MB = 50
 DEFAULT_OUTBOX_MAX_ITEMS = 5000
 DEFAULT_OUTBOX_MAX_AGE_DAYS = 14
 DEFAULT_OUTBOX_MAX_TOTAL_MB = 512
+DEFAULT_OUTBOX_DRAIN_BATCH = 10
 STATE_RETENTION_DAYS = 90
 MAX_HASH_ENTRIES = 120_000
 
@@ -196,6 +198,10 @@ def _atomic_write_text(path: Path, content: str, encoding: str = "utf-8") -> Non
 
 def _read_env() -> Dict[str, Any]:
     poll = max(30, _to_int(os.getenv("SCAN_AGENT_POLL_INTERVAL_SEC", str(DEFAULT_POLL_INTERVAL)), DEFAULT_POLL_INTERVAL))
+    poll_jitter = max(
+        0,
+        min(300, _to_int(os.getenv("SCAN_AGENT_POLL_JITTER_SEC", str(DEFAULT_POLL_JITTER)), DEFAULT_POLL_JITTER)),
+    )
     max_size_mb = max(1, _to_int(os.getenv("SCAN_AGENT_MAX_FILE_MB", str(DEFAULT_MAX_FILE_SIZE_MB)), DEFAULT_MAX_FILE_SIZE_MB))
     allow_default_key = _to_bool(os.getenv("ITINV_AGENT_ALLOW_DEFAULT_KEY", "1"), default=True)
     api_key = str(os.getenv("SCAN_AGENT_API_KEY", "")).strip()
@@ -210,6 +216,7 @@ def _read_env() -> Dict[str, Any]:
         "server_base": str(os.getenv("SCAN_AGENT_SERVER_BASE", DEFAULT_SERVER_BASE)).strip().rstrip("/"),
         "api_key": api_key,
         "poll_interval": poll,
+        "poll_jitter_sec": poll_jitter,
         "timeout": max(5, _to_int(os.getenv("SCAN_AGENT_HTTP_TIMEOUT_SEC", str(DEFAULT_HTTP_TIMEOUT)), DEFAULT_HTTP_TIMEOUT)),
         "max_file_bytes": max_size_mb * 1024 * 1024,
         "run_scan_on_start": str(os.getenv("SCAN_AGENT_SCAN_ON_START", "0")).strip() not in {"0", "false", "False"},
@@ -221,6 +228,7 @@ def _read_env() -> Dict[str, Any]:
         "outbox_max_items": max(100, _to_int(os.getenv("SCAN_AGENT_OUTBOX_MAX_ITEMS", str(DEFAULT_OUTBOX_MAX_ITEMS)), DEFAULT_OUTBOX_MAX_ITEMS)),
         "outbox_max_age_days": max(1, _to_int(os.getenv("SCAN_AGENT_OUTBOX_MAX_AGE_DAYS", str(DEFAULT_OUTBOX_MAX_AGE_DAYS)), DEFAULT_OUTBOX_MAX_AGE_DAYS)),
         "outbox_max_total_mb": max(32, _to_int(os.getenv("SCAN_AGENT_OUTBOX_MAX_TOTAL_MB", str(DEFAULT_OUTBOX_MAX_TOTAL_MB)), DEFAULT_OUTBOX_MAX_TOTAL_MB)),
+        "outbox_drain_batch": max(1, min(100, _to_int(os.getenv("SCAN_AGENT_OUTBOX_DRAIN_BATCH", str(DEFAULT_OUTBOX_DRAIN_BATCH)), DEFAULT_OUTBOX_DRAIN_BATCH))),
     }
 
 
@@ -702,16 +710,29 @@ class ScanAgent:
             self._outbox_move_to_dead(path, item, "OUTBOX_FULL_SIZE")
             total_size -= max(0, size_bytes)
 
-    def _register_scanned(self, path: Path, file_hash: str, stat_result: os.stat_result) -> None:
+    def _register_scanned(
+        self,
+        path: Path,
+        file_hash: str,
+        stat_result: os.stat_result,
+        *,
+        event_id: str = "",
+        source_kind: str = "",
+    ) -> None:
         now_ts = int(time.time())
         files = self.state.setdefault("files", {})
         hashes = self.state.setdefault("hashes", {})
-        files[_norm_path(path)] = {
+        record = {
             "hash": file_hash,
             "mtime": int(stat_result.st_mtime),
             "size": int(stat_result.st_size),
             "ts": now_ts,
         }
+        if event_id:
+            record["event_id"] = str(event_id).strip()
+        if source_kind:
+            record["source_kind"] = str(source_kind).strip()
+        files[_norm_path(path)] = record
         hashes[file_hash] = now_ts
         self._state_dirty = True
 
@@ -726,12 +747,19 @@ class ScanAgent:
         now_ts = int(time.time())
         files = self.state.setdefault("files", {})
         hashes = self.state.setdefault("hashes", {})
-        files[_norm_path(Path(file_path))] = {
+        event_id = str(payload.get("event_id") or "").strip()
+        source_kind = str(payload.get("source_kind") or "").strip()
+        record = {
             "hash": file_hash,
             "mtime": mtime,
             "size": size_value,
             "ts": now_ts,
         }
+        if event_id:
+            record["event_id"] = event_id
+        if source_kind:
+            record["source_kind"] = source_kind
+        files[_norm_path(Path(file_path))] = record
         hashes[file_hash] = now_ts
         self._state_dirty = True
 
@@ -766,7 +794,6 @@ class ScanAgent:
                 str(file_hash or "").strip().lower(),
                 str(int(stat_result.st_mtime)),
                 str(int(stat_result.st_size)),
-                str(scan_task_id or "").strip().lower(),
             ]
         )
         return hashlib.sha256(source.encode("utf-8", errors="ignore")).hexdigest()
@@ -817,22 +844,33 @@ class ScanAgent:
             },
         }
 
-    def _send_ingest(self, payload: Dict[str, Any]) -> bool:
+    def _send_ingest(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         try:
             response = self._send("POST", self._url("ingest"), json=payload)
             if response.status_code >= 300:
                 logging.warning("Ingest failed status=%s body=%s", response.status_code, response.text[:300])
                 self._last_error = f"INGEST_HTTP_{response.status_code}"
-                return False
+                return {"success": False, "deduped": False}
             self._last_ingest_ok_at = int(time.time())
             self._last_error = ""
-            return True
+            data = response.json() if response.content else {}
+            if not isinstance(data, dict):
+                data = {}
+            return {"success": True, "deduped": bool(data.get("deduped"))}
         except Exception as exc:
             logging.warning("Ingest request error: %s", exc)
             self._last_error = f"INGEST_ERR:{type(exc).__name__}"
-            return False
+            return {"success": False, "deduped": False}
 
-    def _drain_outbox(self, max_items: int = 100) -> int:
+    def _normalize_ingest_result(self, result: Any) -> Dict[str, bool]:
+        if isinstance(result, dict):
+            return {
+                "success": bool(result.get("success")),
+                "deduped": bool(result.get("deduped")),
+            }
+        return {"success": bool(result), "deduped": False}
+
+    def _drain_outbox(self, max_items: int = DEFAULT_OUTBOX_DRAIN_BATCH) -> int:
         now_ts = int(time.time())
         sent_count = 0
         for path in self._outbox_paths()[: max(1, max_items)]:
@@ -846,7 +884,8 @@ class ScanAgent:
             if not isinstance(payload, dict):
                 self._outbox_move_to_dead(path, item, "OUTBOX_INVALID_PAYLOAD")
                 continue
-            if self._send_ingest(payload):
+            ingest_result = self._normalize_ingest_result(self._send_ingest(payload))
+            if ingest_result["success"]:
                 self._register_scanned_from_payload(payload)
                 try:
                     path.unlink(missing_ok=True)
@@ -880,63 +919,173 @@ class ScanAgent:
                 return
             self._pending_paths.add(normalized)
 
-    def _scan_path(self, path: Path, scan_task_id: Optional[str] = None) -> Dict[str, int]:
-        result = {"scanned": 0, "queued": 0, "skipped": 0, "deferred": 0}
+    def _scan_path(
+        self,
+        path: Path,
+        scan_task_id: Optional[str] = None,
+        *,
+        force_rescan: bool = False,
+        include_reasons: bool = False,
+    ) -> Dict[str, Any]:
+        result = {"scanned": 0, "queued": 0, "skipped": 0, "deferred": 0, "deduped": 0}
+        if include_reasons:
+            result["files_seen"] = 1
+            result["skipped_reasons"] = {}
+
+        def skip(reason: str) -> Dict[str, Any]:
+            result["skipped"] += 1
+            if include_reasons:
+                reasons = result.setdefault("skipped_reasons", {})
+                if isinstance(reasons, dict):
+                    reasons[reason] = int(reasons.get(reason) or 0) + 1
+            return result
+
+        previous_record = (self.state.get("files") or {}).get(_norm_path(path))
+        if not isinstance(previous_record, dict):
+            previous_record = {}
+
         try:
             stat_result = path.stat()
         except Exception:
-            result["skipped"] += 1
-            return result
+            return skip("stat_error")
         if not path.is_file():
-            result["skipped"] += 1
-            return result
+            return skip("not_file")
         if stat_result.st_size <= 0 or stat_result.st_size > self.config["max_file_bytes"]:
-            result["skipped"] += 1
-            return result
+            return skip("size_limit")
         if not self._is_supported_scan_path(path):
-            result["skipped"] += 1
-            return result
+            return skip("unsupported_extension")
 
-        if self._already_scanned(path, stat_result):
-            result["skipped"] += 1
-            return result
+        if not force_rescan and self._already_scanned(path, stat_result):
+            return skip("already_scanned")
 
         try:
             file_hash = _sha256_file(path)
         except Exception:
-            result["skipped"] += 1
-            return result
+            return skip("hash_error")
 
         result["scanned"] += 1
         payload = self._analyze_file(path, file_hash, stat_result)
         if not payload:
-            result["skipped"] += 1
-            return result
+            previous_event_id = str(previous_record.get("event_id") or "").strip()
+            previous_hash = str(previous_record.get("hash") or "").strip()
+            if force_rescan and previous_event_id:
+                result["cleaned_events"] = [
+                    {
+                        "file_path": str(path),
+                        "file_hash": previous_hash or file_hash,
+                        "current_file_hash": file_hash,
+                        "event_id": previous_event_id,
+                        "source_kind": str(previous_record.get("source_kind") or "").strip(),
+                    }
+                ]
+            return skip("no_match")
 
         normalized_task_id = str(scan_task_id or "").strip()
         if normalized_task_id:
             payload["scan_task_id"] = normalized_task_id
         payload["event_id"] = self._build_event_id(path, file_hash, stat_result, scan_task_id=normalized_task_id)
-        if self._send_ingest(payload):
-            self._register_scanned(path, file_hash, stat_result)
-            result["queued"] += 1
+        ingest_result = self._normalize_ingest_result(self._send_ingest(payload))
+        if ingest_result["success"]:
+            self._register_scanned(
+                path,
+                file_hash,
+                stat_result,
+                event_id=str(payload.get("event_id") or "").strip(),
+                source_kind=str(payload.get("source_kind") or "").strip(),
+            )
+            if ingest_result["deduped"]:
+                result["deduped"] += 1
+            else:
+                result["queued"] += 1
             return result
 
         self._outbox_enqueue(payload)
         result["deferred"] += 1
         return result
 
-    def run_scan_once(self, scan_task_id: Optional[str] = None) -> Dict[str, Any]:
+    def _prune_deleted_state_files(self) -> List[Dict[str, Any]]:
+        files = self.state.setdefault("files", {})
+        hashes = self.state.setdefault("hashes", {})
+        if not isinstance(files, dict) or not isinstance(hashes, dict):
+            self.state["files"] = {}
+            self.state["hashes"] = {}
+            self._state_dirty = True
+            return []
+
+        removed_events: List[Dict[str, Any]] = []
+        removed_count = 0
+        for raw_path in list(files.keys()):
+            try:
+                exists = Path(str(raw_path)).exists()
+            except Exception:
+                exists = True
+            if exists:
+                continue
+            meta = files.get(raw_path)
+            if isinstance(meta, dict):
+                removed_events.append(
+                    {
+                        "file_path": str(raw_path),
+                        "file_hash": str(meta.get("hash") or "").strip(),
+                        "event_id": str(meta.get("event_id") or "").strip(),
+                        "source_kind": str(meta.get("source_kind") or "").strip(),
+                    }
+                )
+            files.pop(raw_path, None)
+            removed_count += 1
+
+        if removed_count:
+            live_hashes = {
+                str(meta.get("hash") or "").strip()
+                for meta in files.values()
+                if isinstance(meta, dict) and str(meta.get("hash") or "").strip()
+            }
+            for file_hash in list(hashes.keys()):
+                if str(file_hash or "").strip() not in live_hashes:
+                    hashes.pop(file_hash, None)
+            self._state_dirty = True
+        return removed_events
+
+    def run_scan_once(self, scan_task_id: Optional[str] = None, *, force_rescan: bool = False) -> Dict[str, Any]:
         self.refresh_roots(force=True)
-        summary = {"scanned": 0, "queued": 0, "skipped": 0, "deferred": 0}
+        deleted_file_events = self._prune_deleted_state_files() if force_rescan else []
+        summary = {
+            "scanned": 0,
+            "queued": 0,
+            "skipped": 0,
+            "deferred": 0,
+            "deduped": 0,
+            "deleted_from_state": len(deleted_file_events),
+            "force_rescan": bool(force_rescan),
+            "files_seen": 0,
+            "skipped_reasons": {},
+            "deleted_file_events": deleted_file_events,
+            "cleaned_file_events": [],
+        }
         for path in _iter_files(self._roots, self.config["max_file_bytes"]):
-            stats = self._scan_path(path, scan_task_id=scan_task_id)
+            stats = self._scan_path(
+                path,
+                scan_task_id=scan_task_id,
+                force_rescan=force_rescan,
+                include_reasons=True,
+            )
             summary["scanned"] += stats["scanned"]
             summary["queued"] += stats["queued"]
             summary["skipped"] += stats["skipped"]
             summary["deferred"] += stats["deferred"]
+            summary["deduped"] += stats["deduped"]
+            summary["files_seen"] += int(stats.get("files_seen") or 0)
+            cleaned_events = stats.get("cleaned_events")
+            if isinstance(cleaned_events, list):
+                summary["cleaned_file_events"].extend(
+                    item for item in cleaned_events if isinstance(item, dict)
+                )
+            reasons = stats.get("skipped_reasons")
+            if isinstance(reasons, dict):
+                for reason, count in reasons.items():
+                    summary["skipped_reasons"][str(reason)] = int(summary["skipped_reasons"].get(str(reason)) or 0) + int(count or 0)
         self._outbox_prune_limits()
-        drained = self._drain_outbox(max_items=200)
+        drained = self._drain_outbox(max_items=int(self.config.get("outbox_drain_batch", DEFAULT_OUTBOX_DRAIN_BATCH)))
         if drained:
             logging.info("Outbox drained after scan_once: sent=%s", drained)
         if summary["deferred"] > 0:
@@ -961,11 +1110,13 @@ class ScanAgent:
         self._persist_state()
         self._write_status(force=True)
         logging.info(
-            "Scan completed: scanned=%s queued=%s skipped=%s deferred=%s phase=%s",
+            "Scan completed: scanned=%s queued=%s skipped=%s deferred=%s deduped=%s force_rescan=%s phase=%s",
             summary["scanned"],
             summary["queued"],
             summary["skipped"],
             summary["deferred"],
+            summary["deduped"],
+            summary["force_rescan"],
             summary["phase"],
         )
         return summary
@@ -976,13 +1127,14 @@ class ScanAgent:
             while self._pending_paths and len(batch) < max_items:
                 batch.append(self._pending_paths.pop())
 
-        summary = {"scanned": 0, "queued": 0, "skipped": 0, "deferred": 0}
+        summary = {"scanned": 0, "queued": 0, "skipped": 0, "deferred": 0, "deduped": 0}
         for raw in batch:
             stats = self._scan_path(Path(raw))
             summary["scanned"] += stats["scanned"]
             summary["queued"] += stats["queued"]
             summary["skipped"] += stats["skipped"]
             summary["deferred"] += stats["deferred"]
+            summary["deduped"] += stats["deduped"]
 
         if batch:
             self._persist_state()
@@ -1047,6 +1199,8 @@ class ScanAgent:
         for task in tasks:
             task_id = str(task.get("task_id") or "").strip()
             command = str(task.get("command") or "").strip().lower()
+            payload = task.get("payload") if isinstance(task.get("payload"), dict) else {}
+            force_rescan = _to_bool(payload.get("force_rescan"), default=False)
             if not task_id:
                 continue
             self._task_result(
@@ -1058,6 +1212,9 @@ class ScanAgent:
                     "queued": 0,
                     "skipped": 0,
                     "deferred": 0,
+                    "deduped": 0,
+                    "deleted_from_state": 0,
+                    "force_rescan": force_rescan,
                     "jobs_total": 0,
                     "jobs_pending": 0,
                     "jobs_done_clean": 0,
@@ -1069,7 +1226,7 @@ class ScanAgent:
                 if command == "ping":
                     self._task_result(task_id, "completed", result={"pong": int(time.time())})
                 elif command == "scan_now":
-                    stats = self.run_scan_once(scan_task_id=task_id)
+                    stats = self.run_scan_once(scan_task_id=task_id, force_rescan=force_rescan)
                     phase = str(stats.get("phase") or "").strip().lower()
                     if phase == "failed":
                         deferred = int(stats.get("deferred") or 0)
@@ -1150,10 +1307,11 @@ class ScanAgent:
                     self.heartbeat()
                     self.poll_tasks()
                     self._outbox_prune_limits()
-                    drained = self._drain_outbox(max_items=200)
+                    drained = self._drain_outbox(max_items=int(self.config.get("outbox_drain_batch", DEFAULT_OUTBOX_DRAIN_BATCH)))
                     if drained:
                         logging.info("Outbox drained on heartbeat cycle: sent=%s", drained)
-                    next_poll_ts = now + self.config["poll_interval"]
+                    poll_jitter = random.randint(0, int(self.config.get("poll_jitter_sec", 0) or 0))
+                    next_poll_ts = now + self.config["poll_interval"] + poll_jitter
 
                 if now >= next_roots_refresh_ts:
                     self.refresh_roots(force=False)
@@ -1169,7 +1327,7 @@ class ScanAgent:
                         summary["deferred"],
                     )
                     self._outbox_prune_limits()
-                    drained = self._drain_outbox(max_items=100)
+                    drained = self._drain_outbox(max_items=int(self.config.get("outbox_drain_batch", DEFAULT_OUTBOX_DRAIN_BATCH)))
                     if drained:
                         logging.info("Outbox drained after watchdog batch: sent=%s", drained)
 

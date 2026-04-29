@@ -116,3 +116,10 @@ def test_agents_activity_returns_batched_runtime_state(temp_dir, monkeypatch):
     assert result["items"][0]["agent_id"] == "agent-1"
     assert result["items"][0]["queue_size"] >= 1
     assert result["items"][0]["active_task"]["command"] == "scan_now"
+
+
+def test_patterns_endpoint_returns_yaml_patterns():
+    result = asyncio.run(scan_app.patterns(_={}))
+
+    assert result["total"] >= 1
+    assert any(item["id"] == "loan_keyword" for item in result["items"])

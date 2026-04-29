@@ -44,6 +44,7 @@ def test_chat_service_health_includes_realtime_mode_and_outbox_age(monkeypatch):
                 "failed": 1,
                 "oldest_queued_age_sec": 9.5,
                 "dispatcher_active": 1,
+                "avg_job_ms": 12.5,
             }
 
     fake_realtime_metrics = {
@@ -55,6 +56,8 @@ def test_chat_service_health_includes_realtime_mode_and_outbox_age(monkeypatch):
         "slow_consumer_disconnects": 1,
         "presence_watch_count": 6,
         "local_connection_count": 3,
+        "ws_rate_limited_count": 5,
+        "ws_rate_limited_connections": 2,
     }
 
     monkeypatch.setitem(sys.modules, "backend.chat.push_outbox_service", type("_PushOutboxModule", (), {
@@ -66,6 +69,15 @@ def test_chat_service_health_includes_realtime_mode_and_outbox_age(monkeypatch):
     monkeypatch.setitem(sys.modules, "backend.chat.realtime", type("_RealtimeModule", (), {
         "get_chat_realtime_metrics": staticmethod(lambda: fake_realtime_metrics),
     })())
+    monkeypatch.setitem(sys.modules, "backend.ai_chat.retrieval_interface", type("_RetrievalModule", (), {
+        "ai_kb_retrieval": type("_Retrieval", (), {
+            "get_metrics": staticmethod(lambda: {"index_age_sec": 21.5}),
+        })(),
+    })())
+    monkeypatch.setitem(sys.modules, "backend.ai_chat.service", type("_AiChatModule", (), {
+        "get_ai_chat_runtime_metrics": staticmethod(lambda: {"last_run_duration_ms": 3456.7}),
+    })())
+    monkeypatch.setenv("AI_CHAT_WORKER_CONCURRENCY", "3")
 
     payload = chat_service_module.chat_service.get_health()
 
@@ -80,6 +92,12 @@ def test_chat_service_health_includes_realtime_mode_and_outbox_age(monkeypatch):
     assert payload["event_outbox_failed"] == 1
     assert payload["event_outbox_oldest_queued_age_sec"] == 9.5
     assert payload["event_dispatcher_active"] is True
+    assert payload["event_outbox_avg_job_ms"] == 12.5
+    assert payload["ws_rate_limited_count"] == 5
+    assert payload["ws_rate_limited_connections"] == 2
+    assert payload["ai_worker_concurrency"] == 3
+    assert payload["ai_kb_index_age_sec"] == 21.5
+    assert payload["ai_last_run_duration_ms"] == 3456.7
 
 
 def test_main_health_check_includes_chat_snapshot_when_enabled(monkeypatch):

@@ -63,7 +63,7 @@ if ($null -ne $outlookTask) {
 if ($SkipProcessStop) {
     Write-Host "[INFO] Process stop skipped because SkipProcessStop was set."
 } else {
-    $processNames = @($ProcessName, "ITInventOutlookProbe")
+    $processNames = @($ProcessName, "ITInventScanAgent", "ITInventOutlookProbe")
     foreach ($name in $processNames) {
         $process = Get-Process -Name $name -ErrorAction SilentlyContinue
         if ($null -ne $process) {

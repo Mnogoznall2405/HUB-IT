@@ -1,23 +1,34 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
+  Accordion,
+  AccordionDetails,
+  AccordionSummary,
   Autocomplete,
   Box,
   Button,
   Card,
   CardContent,
+  Checkbox,
   Chip,
   CircularProgress,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  Divider,
   Drawer,
   FormControl,
   FormControlLabel,
   Grid,
+  LinearProgress,
   InputLabel,
   MenuItem,
   Paper,
   Select,
   Stack,
   Switch,
+  Tab,
   Table,
   TableBody,
   TableCell,
@@ -26,24 +37,78 @@ import {
   TablePagination,
   TableRow,
   TableSortLabel,
+  Tabs,
   TextField,
   Typography,
 } from '@mui/material';
+import { useTheme } from '@mui/material/styles';
 import {
+  ExpandMore as ExpandMoreIcon,
   PlayArrow as PlayArrowIcon,
   Refresh as RefreshIcon,
   WarningAmber as WarningAmberIcon,
 } from '@mui/icons-material';
+import { FixedSizeList as VirtualList } from 'react-window';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { scanAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
+import { useScanIncidentInbox, INCIDENT_BATCH_SIZE } from '../hooks/useScanIncidentInbox';
+import { buildOfficeUiTokens, getOfficeMetricBlockSx, getOfficePanelSx, getOfficeQuietActionSx } from '../theme/officeUiTokens';
+import {
+  flattenIncidentGroups,
+  getIncidentFileExt as getInboxIncidentFileExt,
+  getIncidentSourceKind as getInboxIncidentSourceKind,
+  groupIncidentsByHostFile,
+} from '../lib/scanIncidentInbox';
 
 const AUTO_REFRESH_MS = 30_000;
 const TASK_POLL_MS = 3_000;
 const DEFAULT_ROWS_PER_PAGE = 25;
 const ROWS_PER_PAGE_OPTIONS = [25, 50, 100];
 const ACTIVE_TASK_STATUSES = new Set(['queued', 'delivered', 'acknowledged']);
+
+function normalizePatternRows(value) {
+  const items = Array.isArray(value?.items) ? value.items : Array.isArray(value) ? value : [];
+  return items
+    .map((item) => ({
+      id: String(item?.id || '').trim(),
+      name: String(item?.name || item?.id || '').trim(),
+      category: String(item?.category || 'Общие').trim() || 'Общие',
+      weight: Number(item?.weight || 0),
+      enabled_by_default: item?.enabled_by_default !== false,
+    }))
+    .filter((item) => item.id);
+}
+
+function selectedPatternIdsFromRows(rows) {
+  return normalizePatternRows(rows)
+    .filter((item) => item.enabled_by_default)
+    .map((item) => item.id);
+}
+
+function groupPatternsByCategory(rows, query) {
+  const normalizedQuery = String(query || '').trim().toLowerCase();
+  const groups = new Map();
+  normalizePatternRows(rows).forEach((item) => {
+    const haystack = `${item.id} ${item.name} ${item.category}`.toLowerCase();
+    if (normalizedQuery && !haystack.includes(normalizedQuery)) return;
+    const key = item.category || 'Общие';
+    if (!groups.has(key)) groups.set(key, []);
+    groups.get(key).push(item);
+  });
+  return Array.from(groups.entries()).map(([category, items]) => ({
+    category,
+    items: items.sort((a, b) => a.name.localeCompare(b.name, 'ru')),
+  }));
+}
+
+function patternPayloadSummary(payload, patterns) {
+  const selected = Array.isArray(payload?.server_pdf_pattern_ids) ? payload.server_pdf_pattern_ids.length : 0;
+  const total = Array.isArray(patterns) ? patterns.length : 0;
+  if (!total) return '';
+  return `PDF паттерны: ${selected} из ${total}`;
+}
 
 function useDebouncedValue(value, delayMs = 300) {
   const [debounced, setDebounced] = useState(value);
@@ -153,9 +218,16 @@ function isActiveTask(task) {
   return Boolean(task) && ACTIVE_TASK_STATUSES.has(String(task.status || '').trim().toLowerCase());
 }
 
-function commandLabel(command) {
+function isForceScanTask(task) {
+  if (!task || typeof task !== 'object') return false;
+  const result = task.result && typeof task.result === 'object' ? task.result : {};
+  const payload = task.payload && typeof task.payload === 'object' ? task.payload : {};
+  return Boolean(result.force_rescan || payload.force_rescan);
+}
+
+function commandLabel(command, task = null) {
   const normalized = String(command || '').trim().toLowerCase();
-  if (normalized === 'scan_now') return 'Скан';
+  if (normalized === 'scan_now') return isForceScanTask(task) ? 'Скан с 0' : 'Скан';
   if (normalized === 'ping') return 'Проверка связи';
   return normalized || '-';
 }
@@ -220,6 +292,62 @@ function renderTaskStatusLabel(task) {
   return taskStatusLabel(task.status);
 }
 
+const SCAN_SKIP_REASON_LABELS = {
+  unsupported_extension: 'неподдерживаемые типы',
+  no_match: 'без совпадений',
+  already_scanned: 'уже учтены',
+  size_limit: 'размер/пустые',
+  stat_error: 'нет доступа',
+  hash_error: 'ошибка чтения',
+  not_file: 'не файлы',
+};
+
+function formatSkippedReasons(reasons) {
+  if (!reasons || typeof reasons !== 'object') return '';
+  return Object.entries(reasons)
+    .map(([reason, count]) => ({
+      label: SCAN_SKIP_REASON_LABELS[reason] || reason,
+      count: Number(count || 0),
+    }))
+    .filter((item) => item.count > 0)
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3)
+    .map((item) => `${item.label}: ${item.count}`)
+    .join(' · ');
+}
+
+const OBSERVATION_LABELS = {
+  found_new: 'Найдено впервые',
+  found_duplicate: 'Найдено повторно',
+  deleted: 'Файл удалён',
+  cleaned: 'Файл очищен',
+  moved: 'Файл перемещён',
+};
+
+const RESOLVED_STATUS_LABELS = {
+  resolved_deleted: 'Удалён',
+  resolved_clean: 'Очищен',
+  resolved_moved: 'Перемещён',
+};
+
+function fileStatusLabel(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  return RESOLVED_STATUS_LABELS[normalized] || (normalized === 'new' ? 'Актуален' : (normalized === 'ack' ? 'ACK' : normalized || '-'));
+}
+
+function fileStatusColor(status) {
+  const normalized = String(status || '').trim().toLowerCase();
+  if (normalized === 'new') return 'warning';
+  if (normalized === 'ack') return 'info';
+  if (normalized.startsWith('resolved_')) return 'success';
+  return 'default';
+}
+
+function observationLabel(type) {
+  const normalized = String(type || '').trim().toLowerCase();
+  return OBSERVATION_LABELS[normalized] || normalized || '-';
+}
+
 function renderTaskSummary(task) {
   if (!task) return '-';
   const command = String(task.command || '').trim().toLowerCase();
@@ -232,39 +360,55 @@ function renderTaskSummary(task) {
   const queued = Number(result.queued || 0);
   const skipped = Number(result.skipped || 0);
   const deferred = Number(result.deferred || 0);
+  const deduped = Number(result.deduped || 0);
+  const deletedFromState = Number(result.deleted_from_state || 0);
+  const filesSeen = Number(result.files_seen || 0);
+  const skippedReasonsText = formatSkippedReasons(result.skipped_reasons);
+  const scanLabel = isForceScanTask(task) ? 'Скан с 0' : 'Скан';
+  const extra = [
+    filesSeen > 0 ? `файлов всего: ${filesSeen}` : '',
+    skippedReasonsText ? `пропуски: ${skippedReasonsText}` : '',
+    deduped > 0 ? `дубли: ${deduped}` : '',
+    deletedFromState > 0 ? `удалено из учета: ${deletedFromState}` : '',
+  ].filter(Boolean);
+  const extraText = extra.length > 0 ? ` · ${extra.join(' · ')}` : '';
   const jobsPending = Number(result.jobs_pending || 0);
   const jobsDoneClean = Number(result.jobs_done_clean || 0);
   const jobsDoneWithIncident = Number(result.jobs_done_with_incident || 0);
   const jobsFailed = Number(result.jobs_failed || 0);
 
   if (status === 'acknowledged' && phase === 'local_scan') {
-    return `Скан: ${scanned} · отправлено: ${queued} · пропущено: ${skipped}`;
+    return `${scanLabel}: проверено ${scanned} · отправлено: ${queued} · пропущено: ${skipped}${extraText}`;
   }
   if (status === 'acknowledged' && phase === 'server_processing') {
-    return `OCR: осталось ${jobsPending} · clean ${jobsDoneClean} · incidents ${jobsDoneWithIncident} · errors ${jobsFailed}`;
+    return `OCR: осталось ${jobsPending} · без инцидентов ${jobsDoneClean} · с инцидентами ${jobsDoneWithIncident} · ошибок ${jobsFailed}${extraText}`;
   }
   if (status === 'failed') {
     if (deferred > 0) {
-      return `Скан: ${scanned} · отправлено: ${queued} · outbox: ${deferred}`;
+      return `${scanLabel}: проверено ${scanned} · отправлено: ${queued} · в локальной очереди: ${deferred}${extraText}`;
     }
     if (jobsFailed > 0) {
-      return `OCR: ошибок ${jobsFailed} · clean ${jobsDoneClean} · incidents ${jobsDoneWithIncident}`;
+      return `OCR: ошибок ${jobsFailed} · без инцидентов ${jobsDoneClean} · с инцидентами ${jobsDoneWithIncident}${extraText}`;
     }
   }
   if (status === 'completed') {
     if (Number(result.jobs_total || 0) > 0) {
-      return `Скан: ${scanned} · clean ${jobsDoneClean} · incidents ${jobsDoneWithIncident}`;
+      return `${scanLabel}: проверено ${scanned} · без инцидентов ${jobsDoneClean} · с инцидентами ${jobsDoneWithIncident}${extraText}`;
     }
-    return `Скан: ${scanned} · отправлено: ${queued} · пропущено: ${skipped}`;
+    return `${scanLabel}: проверено ${scanned} · отправлено: ${queued} · пропущено: ${skipped}${extraText}`;
   }
   return summarizeTaskResult(task);
 }
 
 function ScanCenter() {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const incidentWorkAreaHeight = 'calc(100dvh - var(--app-shell-header-offset) - 360px)';
   const { hasPermission } = useAuth();
   const canScanAck = hasPermission('scan.ack');
   const canScanTasks = hasPermission('scan.tasks');
 
+  const [activeSection, setActiveSection] = useState('incidents');
   const [dashboard, setDashboard] = useState({ totals: {}, daily: [], by_severity: [], by_branch: [], new_hosts: [] });
   const [dashboardLoading, setDashboardLoading] = useState(true);
 
@@ -274,6 +418,15 @@ function ScanCenter() {
   const [autoRefreshPaused, setAutoRefreshPaused] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [taskNotice, setTaskNotice] = useState(null);
+  const [scanPatterns, setScanPatterns] = useState([]);
+  const [scanPatternsLoading, setScanPatternsLoading] = useState(true);
+  const [scanLaunchDialog, setScanLaunchDialog] = useState({
+    open: false,
+    agentId: '',
+    forceRescan: false,
+  });
+  const [scanPatternQuery, setScanPatternQuery] = useState('');
+  const [selectedScanPatternIds, setSelectedScanPatternIds] = useState([]);
 
   const [agentRows, setAgentRows] = useState([]);
   const [agentTotal, setAgentTotal] = useState(0);
@@ -304,6 +457,12 @@ function ScanCenter() {
   const [hostIncidents, setHostIncidents] = useState([]);
   const [hostIncidentsTotal, setHostIncidentsTotal] = useState(0);
   const [hostLoading, setHostLoading] = useState(false);
+  const [hostScanRuns, setHostScanRuns] = useState([]);
+  const [hostScanRunsTotal, setHostScanRunsTotal] = useState(0);
+  const [hostScanRunsLoading, setHostScanRunsLoading] = useState(false);
+  const [expandedScanRunId, setExpandedScanRunId] = useState('');
+  const [scanRunObservations, setScanRunObservations] = useState({});
+  const [scanRunObservationsLoading, setScanRunObservationsLoading] = useState('');
   const [incidentQ, setIncidentQ] = useState('');
   const [incidentStatus, setIncidentStatus] = useState('all');
   const [incidentSeverity, setIncidentSeverity] = useState('all');
@@ -314,10 +473,14 @@ function ScanCenter() {
   const [incidentHasFragment, setIncidentHasFragment] = useState(false);
   const [busyIncident, setBusyIncident] = useState('');
   const [busyAckAllHost, setBusyAckAllHost] = useState(false);
+  const [busyAckInbox, setBusyAckInbox] = useState(false);
+  const [selectedInboxIncidentId, setSelectedInboxIncidentId] = useState('');
+  const [expandedIncidentRows, setExpandedIncidentRows] = useState({});
 
   const agentsRequestIdRef = useRef(0);
   const hostsRequestIdRef = useRef(0);
   const hostIncidentRequestIdRef = useRef(0);
+  const hostScanRunsRequestIdRef = useRef(0);
   const skipInitialAgentsEffectRef = useRef(true);
   const skipInitialHostsEffectRef = useRef(true);
 
@@ -327,6 +490,51 @@ function ScanCenter() {
   const debouncedIncidentQ = useDebouncedValue(incidentQ);
 
   const totals = dashboard.totals || {};
+  const selectedScanPatternSet = useMemo(() => new Set(selectedScanPatternIds), [selectedScanPatternIds]);
+  const groupedScanPatterns = useMemo(
+    () => groupPatternsByCategory(scanPatterns, scanPatternQuery),
+    [scanPatterns, scanPatternQuery],
+  );
+
+  const incidentInboxFilters = useMemo(() => ({
+    branch: debouncedBranch || undefined,
+    q: debouncedIncidentQ || undefined,
+    status: incidentStatus === 'all' ? undefined : incidentStatus,
+    severity: incidentSeverity === 'all' ? undefined : incidentSeverity,
+    source_kind: incidentSourceKind === 'all' ? undefined : incidentSourceKind,
+    file_ext: incidentFileExt || undefined,
+    date_from: incidentDateFrom || undefined,
+    date_to: incidentDateTo || undefined,
+    has_fragment: incidentHasFragment ? true : undefined,
+  }), [
+    debouncedBranch,
+    debouncedIncidentQ,
+    incidentStatus,
+    incidentSeverity,
+    incidentSourceKind,
+    incidentFileExt,
+    incidentDateFrom,
+    incidentDateTo,
+    incidentHasFragment,
+  ]);
+
+  const incidentInbox = useScanIncidentInbox(incidentInboxFilters, { batchSize: INCIDENT_BATCH_SIZE });
+  const incidentGroups = useMemo(() => groupIncidentsByHostFile(incidentInbox.items), [incidentInbox.items]);
+  const incidentRows = useMemo(
+    () => flattenIncidentGroups(incidentGroups, expandedIncidentRows),
+    [expandedIncidentRows, incidentGroups],
+  );
+  const selectedInboxIncident = useMemo(() => (
+    incidentInbox.items.find((item) => String(item?.id || '') === String(selectedInboxIncidentId || ''))
+    || incidentInbox.items[0]
+    || null
+  ), [incidentInbox.items, selectedInboxIncidentId]);
+
+  useEffect(() => {
+    if (!selectedInboxIncidentId && incidentInbox.items[0]?.id) {
+      setSelectedInboxIncidentId(String(incidentInbox.items[0].id));
+    }
+  }, [incidentInbox.items, selectedInboxIncidentId]);
 
   const hostMetaByName = useMemo(() => {
     const map = {};
@@ -349,12 +557,12 @@ function ScanCenter() {
 
   const incidentSourceOptions = useMemo(() => {
     const set = new Set();
-    hostIncidents.forEach((item) => {
+    [...hostIncidents, ...incidentInbox.items].forEach((item) => {
       const source = getIncidentSourceKind(item);
       if (source) set.add(source);
     });
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'ru'));
-  }, [hostIncidents]);
+  }, [hostIncidents, incidentInbox.items]);
 
   const hostNewCount = useMemo(
     () => hostIncidents.filter((item) => String(item.status || '').toLowerCase() === 'new').length,
@@ -490,6 +698,76 @@ function ScanCenter() {
     }
   };
 
+  const loadScanPatterns = async () => {
+    setScanPatternsLoading(true);
+    try {
+      const data = await scanAPI.getPatterns();
+      const rows = normalizePatternRows(data);
+      setScanPatterns(rows);
+      setSelectedScanPatternIds((prev) => {
+        const allowed = new Set(rows.map((item) => item.id));
+        const next = (Array.isArray(prev) ? prev : []).filter((item) => allowed.has(item));
+        return next.length > 0 ? next : selectedPatternIdsFromRows(rows);
+      });
+    } catch (error) {
+      console.error('Scan patterns load failed', error);
+      setScanPatterns([]);
+      setSelectedScanPatternIds([]);
+    } finally {
+      setScanPatternsLoading(false);
+    }
+  };
+
+  const loadHostScanRuns = async ({ silent = false } = {}) => {
+    const host = String(selectedHost || '').trim();
+    if (!host) return;
+    const requestId = hostScanRunsRequestIdRef.current + 1;
+    hostScanRunsRequestIdRef.current = requestId;
+    if (!silent) setHostScanRunsLoading(true);
+    try {
+      const response = await scanAPI.getHostScanRuns(host, { limit: 30, offset: 0 });
+      if (requestId !== hostScanRunsRequestIdRef.current) return;
+      const items = Array.isArray(response?.items) ? response.items : [];
+      setHostScanRuns(items);
+      setHostScanRunsTotal(Number(response?.total || 0));
+      setExpandedScanRunId((prev) => prev || String(items[0]?.id || ''));
+    } catch (error) {
+      console.error('Host scan runs load failed', error);
+      if (requestId === hostScanRunsRequestIdRef.current && !silent) {
+        setHostScanRuns([]);
+        setHostScanRunsTotal(0);
+      }
+    } finally {
+      if (requestId === hostScanRunsRequestIdRef.current && !silent) {
+        setHostScanRunsLoading(false);
+      }
+    }
+  };
+
+  const loadScanRunObservations = async (taskId) => {
+    const normalizedTaskId = String(taskId || '').trim();
+    if (!normalizedTaskId || scanRunObservations[normalizedTaskId]) return;
+    setScanRunObservationsLoading(normalizedTaskId);
+    try {
+      const response = await scanAPI.getTaskObservations(normalizedTaskId, { limit: 500, offset: 0 });
+      setScanRunObservations((prev) => ({
+        ...prev,
+        [normalizedTaskId]: {
+          total: Number(response?.total || 0),
+          items: Array.isArray(response?.items) ? response.items : [],
+        },
+      }));
+    } catch (error) {
+      console.error('Scan run observations load failed', error);
+      setScanRunObservations((prev) => ({
+        ...prev,
+        [normalizedTaskId]: { total: 0, items: [] },
+      }));
+    } finally {
+      setScanRunObservationsLoading((prev) => (prev === normalizedTaskId ? '' : prev));
+    }
+  };
+
   const refreshAll = async ({ silent = true } = {}) => {
     if (!silent) setRefreshing(true);
     try {
@@ -497,7 +775,9 @@ function ScanCenter() {
         loadDashboard({ silent }),
         loadAgents({ silent }),
         loadHosts({ silent }),
+        incidentInbox.loaded > 0 ? incidentInbox.refreshFirstPage({ silent: true }) : Promise.resolve(),
         hostDrawerOpen && selectedHost ? loadHostIncidents({ silent }) : Promise.resolve(),
+        hostDrawerOpen && selectedHost ? loadHostScanRuns({ silent }) : Promise.resolve(),
       ]);
     } finally {
       if (!silent) setRefreshing(false);
@@ -506,6 +786,7 @@ function ScanCenter() {
 
   useEffect(() => {
     loadBranchOptions();
+    loadScanPatterns();
     refreshAll({ silent: false });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -544,6 +825,18 @@ function ScanCenter() {
     incidentDateTo,
     incidentHasFragment,
   ]);
+
+  useEffect(() => {
+    if (!hostDrawerOpen || !selectedHost) return;
+    loadHostScanRuns({ silent: hostScanRuns.length > 0 || hostScanRunsTotal > 0 });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hostDrawerOpen, selectedHost]);
+
+  useEffect(() => {
+    if (!expandedScanRunId) return;
+    loadScanRunObservations(expandedScanRunId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expandedScanRunId]);
 
   useEffect(() => {
     if (autoRefreshPaused) return undefined;
@@ -634,6 +927,7 @@ function ScanCenter() {
         patchHostNewCount(selectedHost, -1);
       }
       await loadHostIncidents({ silent: true });
+      await incidentInbox.refreshFirstPage({ silent: true });
     } catch (error) {
       console.error('Ack incident failed', error);
     } finally {
@@ -641,26 +935,89 @@ function ScanCenter() {
     }
   };
 
+  const buildIncidentFilters = (overrides = {}) => ({
+    branch: debouncedBranch || undefined,
+    hostname: overrides.hostname,
+    q: debouncedIncidentQ || undefined,
+    status: incidentStatus === 'all' ? undefined : incidentStatus,
+    severity: incidentSeverity === 'all' ? undefined : incidentSeverity,
+    source_kind: incidentSourceKind === 'all' ? undefined : incidentSourceKind,
+    file_ext: incidentFileExt || undefined,
+    date_from: incidentDateFrom || undefined,
+    date_to: incidentDateTo || undefined,
+    has_fragment: incidentHasFragment ? true : undefined,
+    ...overrides,
+  });
+
   const handleAckAllHostIncidents = async () => {
     if (!canScanAck) return;
-    const pendingIds = hostIncidents
-      .filter((item) => String(item.status || '').toLowerCase() === 'new')
-      .map((item) => String(item.id || '').trim())
-      .filter(Boolean);
-    if (pendingIds.length === 0) return;
+    if (hostNewCount === 0) return;
     setBusyAckAllHost(true);
     try {
-      const results = await Promise.allSettled(
-        pendingIds.map((incidentId) => scanAPI.ackIncident(incidentId, 'web-user')),
-      );
-      const acked = results.filter((item) => item.status === 'fulfilled').length;
+      const response = await scanAPI.ackIncidentsBatch({
+        filters: buildIncidentFilters({ hostname: selectedHost }),
+        ack_by: 'web-user',
+      });
+      const acked = Number(response?.acked_count || 0);
       if (acked > 0) patchHostNewCount(selectedHost, -acked);
       await loadHostIncidents({ silent: true });
+      await incidentInbox.reload({ silent: true });
     } catch (error) {
       console.error('Ack all host incidents failed', error);
     } finally {
       setBusyAckAllHost(false);
     }
+  };
+
+  const handleAckInboxFiltered = async () => {
+    if (!canScanAck) return;
+    const pending = incidentInbox.items.filter((item) => String(item?.status || '').toLowerCase() === 'new').length;
+    if (pending <= 0) return;
+    setBusyAckInbox(true);
+    try {
+      const response = await scanAPI.ackIncidentsBatch({
+        filters: buildIncidentFilters(),
+        ack_by: 'web-user',
+      });
+      const acked = Number(response?.acked_count || 0);
+      if (acked > 0) patchHostNewCount('', -acked);
+      await Promise.all([
+        incidentInbox.reload({ silent: true }),
+        loadHosts({ silent: true }),
+        loadDashboard({ silent: true }),
+        hostDrawerOpen && selectedHost ? loadHostIncidents({ silent: true }) : Promise.resolve(),
+      ]);
+    } catch (error) {
+      console.error('Ack inbox incidents failed', error);
+    } finally {
+      setBusyAckInbox(false);
+    }
+  };
+
+  const resetIncidentFilters = () => {
+    setIncidentQ('');
+    setIncidentStatus('all');
+    setIncidentSeverity('all');
+    setIncidentSourceKind('all');
+    setIncidentFileExt('');
+    setIncidentDateFrom('');
+    setIncidentDateTo('');
+    setIncidentHasFragment(false);
+  };
+
+  const expandAllIncidentRows = () => {
+    const next = {};
+    incidentGroups.forEach((host) => {
+      next[host.id] = true;
+      (Array.isArray(host.files) ? host.files : []).forEach((file) => {
+        next[file.id] = true;
+      });
+    });
+    setExpandedIncidentRows(next);
+  };
+
+  const collapseAllIncidentRows = () => {
+    setExpandedIncidentRows({});
   };
 
   const openHostDetails = (hostname) => {
@@ -675,19 +1032,26 @@ function ScanCenter() {
     setIncidentDateFrom('');
     setIncidentDateTo('');
     setIncidentHasFragment(false);
+    setHostScanRuns([]);
+    setHostScanRunsTotal(0);
+    setExpandedScanRunId('');
+    setScanRunObservations({});
     setHostDrawerOpen(true);
   };
 
-  const enqueueTask = async (agentId, command) => {
+  const enqueueTask = async (agentId, command, options = {}) => {
     if (!canScanTasks) return;
     const normalizedAgentId = String(agentId || '').trim();
     if (!normalizedAgentId) return;
+    const payload = options.payload && typeof options.payload === 'object' ? options.payload : undefined;
+    const dedupeKey = String(options.dedupeKey || `${command}:${normalizedAgentId}`).trim();
     try {
       setBusyTaskAgent(normalizedAgentId);
       const response = await scanAPI.createTask({
         agent_id: normalizedAgentId,
         command,
-        dedupe_key: `${command}:${normalizedAgentId}`,
+        ...(payload ? { payload } : {}),
+        dedupe_key: dedupeKey,
       });
       const task = response?.task && typeof response.task === 'object' ? response.task : null;
       if (task) {
@@ -703,19 +1067,90 @@ function ScanCenter() {
         )));
         setTrackedTaskAgentIds((prev) => Array.from(new Set([...prev, normalizedAgentId])));
       }
+      const label = commandLabel(command, { payload });
       setTaskNotice({
         severity: 'info',
-        text: `${commandLabel(command)} отправлена для ${normalizedAgentId}`,
+        text: `${label} отправлена для ${normalizedAgentId}`,
       });
     } catch (error) {
       console.error('Create task failed', error);
+      const label = commandLabel(command, { payload }).toLowerCase();
       setTaskNotice({
         severity: 'error',
-        text: `Не удалось отправить ${commandLabel(command).toLowerCase()} для ${normalizedAgentId}`,
+        text: `Не удалось отправить ${label} для ${normalizedAgentId}`,
       });
     } finally {
       setBusyTaskAgent('');
     }
+  };
+
+  const enqueueForceScanTask = (agentId) => {
+    const normalizedAgentId = String(agentId || '').trim();
+    if (!normalizedAgentId) return;
+    if (!window.confirm(`Запустить скан с 0 для ${normalizedAgentId}?`)) {
+      return;
+    }
+    enqueueTask(normalizedAgentId, 'scan_now', {
+      payload: { force_rescan: true },
+      dedupeKey: `scan_now_force:${normalizedAgentId}`,
+    });
+  };
+
+  const openScanLaunchDialog = (agentId, forceRescan = false) => {
+    const normalizedAgentId = String(agentId || '').trim();
+    if (!normalizedAgentId) return;
+    const defaultSelected = selectedPatternIdsFromRows(scanPatterns);
+    setSelectedScanPatternIds((prev) => {
+      const allowed = new Set(scanPatterns.map((item) => item.id));
+      const next = (Array.isArray(prev) ? prev : []).filter((item) => allowed.has(item));
+      return next.length > 0 ? next : defaultSelected;
+    });
+    setScanPatternQuery('');
+    setScanLaunchDialog({ open: true, agentId: normalizedAgentId, forceRescan: Boolean(forceRescan) });
+  };
+
+  const closeScanLaunchDialog = () => {
+    setScanLaunchDialog((prev) => ({ ...prev, open: false }));
+  };
+
+  const toggleScanPattern = (patternId) => {
+    const normalized = String(patternId || '').trim();
+    if (!normalized) return;
+    setSelectedScanPatternIds((prev) => {
+      const set = new Set(Array.isArray(prev) ? prev : []);
+      if (set.has(normalized)) set.delete(normalized);
+      else set.add(normalized);
+      return Array.from(set);
+    });
+  };
+
+  const selectAllScanPatterns = () => {
+    setSelectedScanPatternIds(scanPatterns.map((item) => item.id));
+  };
+
+  const clearScanPatterns = () => {
+    setSelectedScanPatternIds([]);
+  };
+
+  const selectLoanScanPatterns = () => {
+    const loanIds = scanPatterns
+      .filter((item) => item.id === 'loan_keyword' || item.name.toLowerCase().includes('займ'))
+      .map((item) => item.id);
+    if (loanIds.length > 0) setSelectedScanPatternIds(loanIds);
+  };
+
+  const submitScanLaunch = () => {
+    const agentId = String(scanLaunchDialog.agentId || '').trim();
+    if (!agentId || selectedScanPatternIds.length === 0) return;
+    const payload = {
+      ...(scanLaunchDialog.forceRescan ? { force_rescan: true } : {}),
+      server_pdf_pattern_ids: selectedScanPatternIds,
+    };
+    closeScanLaunchDialog();
+    enqueueTask(agentId, 'scan_now', {
+      payload,
+      dedupeKey: scanLaunchDialog.forceRescan ? `scan_now_force:${agentId}` : `scan_now:${agentId}`,
+    });
   };
 
   const resolveIncidentIp = (incident) => {
@@ -723,8 +1158,232 @@ function ScanCenter() {
     return String(incident?.ip_address || meta.ip || '').trim() || '-';
   };
 
+  const renderScanRunObservations = (runId) => {
+    const bucket = scanRunObservations[runId];
+    const items = Array.isArray(bucket?.items) ? bucket.items : [];
+    if (scanRunObservationsLoading === runId && items.length === 0) {
+      return <Box sx={{ py: 2, display: 'flex', justifyContent: 'center' }}><CircularProgress size={22} /></Box>;
+    }
+    if (items.length === 0) {
+      return <Typography variant="body2" color="text.secondary">Значимые изменения в этом запуске не найдены.</Typography>;
+    }
+    return (
+      <Stack spacing={0.8}>
+        {items.map((item) => (
+          <Paper key={item.id} variant="outlined" sx={{ p: 1, borderRadius: 1.2 }}>
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="body2" sx={{ fontWeight: 700, wordBreak: 'break-all' }}>
+                  {item.file_path || '-'}
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                  {item.source_kind || '-'} · {item.file_hash ? `hash ${String(item.file_hash).slice(0, 10)}` : 'hash -'}
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={0.8} alignItems="center" sx={{ flexShrink: 0 }}>
+                <Chip size="small" label={observationLabel(item.observation_type)} />
+                {!!item.incident_status && (
+                  <Chip size="small" color={fileStatusColor(item.incident_status)} label={fileStatusLabel(item.incident_status)} />
+                )}
+              </Stack>
+            </Stack>
+          </Paper>
+        ))}
+      </Stack>
+    );
+  };
+
+  const renderHostScanRuns = () => {
+    if (hostScanRunsLoading && hostScanRuns.length === 0) {
+      return <Box sx={{ py: 2, display: 'flex', justifyContent: 'center' }}><CircularProgress size={24} /></Box>;
+    }
+    if (hostScanRuns.length === 0) {
+      return <Typography color="text.secondary">Запусков скана по этому компьютеру пока нет.</Typography>;
+    }
+    return (
+      <Stack spacing={1}>
+        {hostScanRuns.map((run) => {
+          const runId = String(run.id || '');
+          const counts = run.observation_counts || {};
+          const isForce = isForceScanTask(run);
+          const checked = Number(run.result?.scanned || 0);
+          const skipped = Number(run.result?.skipped || 0);
+          return (
+            <Accordion
+              key={runId}
+              expanded={expandedScanRunId === runId}
+              onChange={(_, expanded) => setExpandedScanRunId(expanded ? runId : '')}
+              disableGutters
+              variant="outlined"
+              sx={{ borderRadius: 1.5, '&:before': { display: 'none' } }}
+            >
+              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                <Box sx={{ width: '100%' }}>
+                  <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                    <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                      {isForce ? 'Скан с 0' : 'Скан'} · {formatTaskTimestamp(run)}
+                    </Typography>
+                    <Chip size="small" color={taskStatusColor(run.status)} label={taskStatusLabel(run.status)} />
+                  </Stack>
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.3 }}>
+                    проверено {checked} · пропущено {skipped} · наблюдений {Number(counts.total || 0)}
+                  </Typography>
+                  {!!patternPayloadSummary(run.payload, scanPatterns) && (
+                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.2 }}>
+                      {patternPayloadSummary(run.payload, scanPatterns)}
+                    </Typography>
+                  )}
+                  <Stack direction="row" spacing={0.8} sx={{ mt: 0.8, flexWrap: 'wrap', rowGap: 0.6 }}>
+                    <Chip size="small" label={`новые ${Number(counts.found_new || 0)}`} />
+                    <Chip size="small" label={`повторно ${Number(counts.found_duplicate || 0)}`} />
+                    <Chip size="small" color="success" label={`удалены ${Number(counts.deleted || 0)}`} />
+                    <Chip size="small" color="success" label={`очищены ${Number(counts.cleaned || 0)}`} />
+                    <Chip size="small" color="success" label={`перемещены ${Number(counts.moved || 0)}`} />
+                  </Stack>
+                </Box>
+              </AccordionSummary>
+              <AccordionDetails>
+                {renderScanRunObservations(runId)}
+              </AccordionDetails>
+            </Accordion>
+          );
+        })}
+      </Stack>
+    );
+  };
+
+  const toggleIncidentRow = (rowId, defaultExpanded = false) => {
+    setExpandedIncidentRows((prev) => {
+      const current = Object.prototype.hasOwnProperty.call(prev, rowId) ? Boolean(prev[rowId]) : Boolean(defaultExpanded);
+      return { ...prev, [rowId]: !current };
+    });
+  };
+
+  const renderInboxFragments = (incident) => {
+    const matches = Array.isArray(incident?.matched_patterns) ? incident.matched_patterns : [];
+    if (matches.length === 0) return <Typography variant="body2" color="text.secondary">Фрагменты не найдены</Typography>;
+    return (
+      <Stack spacing={1}>
+        {matches.slice(0, 8).map((item, idx) => (
+          <Paper key={`${incident.id || 'inc'}-${idx}`} variant="outlined" sx={{ p: 1, borderRadius: 1.2 }}>
+            <Typography variant="body2" sx={{ fontWeight: 700 }}>
+              {item.pattern_name || item.pattern || 'pattern'}
+            </Typography>
+            {!!String(item.value || '').trim() && (
+              <Typography variant="body2">Значение: {String(item.value)}</Typography>
+            )}
+            {!!String(item.snippet || '').trim() && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.4 }}>
+                {String(item.snippet)}
+              </Typography>
+            )}
+          </Paper>
+        ))}
+      </Stack>
+    );
+  };
+
+  const renderIncidentVirtualRow = ({ index, style }) => {
+    const row = incidentRows[index];
+    if (!row) return null;
+    if (row.type === 'host') {
+      const host = row.host;
+      const expanded = expandedIncidentRows[host.id] === true;
+      return (
+        <Box style={style} sx={{ px: 1, py: 0.5 }}>
+          <Paper
+            variant="outlined"
+            onClick={() => toggleIncidentRow(host.id, false)}
+            sx={{
+              p: 1,
+              borderRadius: 1.5,
+              cursor: 'pointer',
+              bgcolor: ui.panelBg,
+              borderColor: ui.borderSoft,
+            }}
+          >
+            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>{expanded ? '▾' : '▸'} {host.hostname}</Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                  {host.branch || 'Без филиала'} · {host.user || '-'} · {host.ip_address || '-'}
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={0.8}>
+                <Chip size="small" color={Number(host.incidents_new || 0) > 0 ? 'warning' : 'default'} label={`NEW ${Number(host.incidents_new || 0)}`} />
+                <Chip size="small" label={`Всего ${Number(host.incidents_total || 0)}`} />
+                <Chip size="small" color={severityColor(host.top_severity)} label={host.top_severity} />
+              </Stack>
+            </Stack>
+          </Paper>
+        </Box>
+      );
+    }
+    if (row.type === 'file') {
+      const file = row.file;
+      const selected = file.incidents.some((incident) => String(incident?.id || '') === String(selectedInboxIncident?.id || ''));
+      return (
+        <Box style={style} sx={{ pl: 3, pr: 1, py: 0.45 }}>
+          <Paper
+            variant="outlined"
+            onClick={() => {
+              setSelectedInboxIncidentId(String(file.incidents[0]?.id || ''));
+              toggleIncidentRow(file.id, false);
+            }}
+            sx={{
+              p: 1,
+              borderRadius: 1.2,
+              cursor: 'pointer',
+              borderColor: selected ? 'primary.main' : ui.borderSoft,
+              bgcolor: selected ? ui.selectedBg : ui.panelSolid,
+            }}
+          >
+            <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="body2" sx={{ fontWeight: 750, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {expandedIncidentRows[file.id] ? '▾' : '▸'} {file.file_path}
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {file.file_ext || '-'} · {file.source_kind || '-'} · {formatTs(file.last_incident_at)}
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={0.7} sx={{ flexShrink: 0 }}>
+                <Chip size="small" color={Number(file.incidents_new || 0) > 0 ? 'warning' : 'default'} label={Number(file.incidents_new || 0)} />
+                <Chip size="small" color={severityColor(file.top_severity)} label={file.top_severity} />
+              </Stack>
+            </Stack>
+          </Paper>
+        </Box>
+      );
+    }
+    const incident = row.incident;
+    const selected = String(incident?.id || '') === String(selectedInboxIncident?.id || '');
+    return (
+      <Box style={style} sx={{ pl: 5, pr: 1, py: 0.35 }}>
+        <Paper
+          variant="outlined"
+          onClick={() => setSelectedInboxIncidentId(String(incident?.id || ''))}
+          sx={{
+            p: 0.8,
+            borderRadius: 1,
+            cursor: 'pointer',
+            borderColor: selected ? 'primary.main' : ui.borderSoft,
+            bgcolor: selected ? ui.selectedBg : 'transparent',
+          }}
+        >
+          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+            <Typography variant="caption" sx={{ fontWeight: 700 }}>
+              {incident?.severity || '-'} · {formatTs(incident?.created_at)}
+            </Typography>
+            <Chip size="small" color={fileStatusColor(incident?.status)} label={fileStatusLabel(incident?.status)} />
+          </Stack>
+        </Paper>
+      </Box>
+    );
+  };
+
   const renderSummaryCard = (title, value, helper, color = 'text.primary') => (
-    <Card variant="outlined" sx={{ height: '100%' }}>
+    <Card variant="outlined" sx={{ ...getOfficeMetricBlockSx(ui, color === 'text.primary' ? theme.palette.primary.main : theme.palette[color?.split?.('.')?.[0]]?.main || theme.palette.primary.main, { height: '100%' }) }}>
       <CardContent>
         <Typography variant="body2" color="text.secondary">{title}</Typography>
         <Typography variant="h4" sx={{ fontWeight: 700, color }}>{value}</Typography>
@@ -735,7 +1394,7 @@ function ScanCenter() {
 
   return (
     <MainLayout>
-      <PageShell sx={{ width: '100%', pb: 2 }}>
+      <PageShell sx={{ width: '100%', pb: 2, minHeight: 'calc(100dvh - var(--app-shell-header-offset) - 32px)' }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 2, flexWrap: 'wrap' }}>
           <Box>
             <Typography variant="h5" sx={{ fontWeight: 700 }}>Центр сканирования</Typography>
@@ -809,7 +1468,238 @@ function ScanCenter() {
           />
         </Paper>
 
-        <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>
+        <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui, { p: 0, mb: 2, overflow: 'hidden' }) }}>
+          <Tabs
+            value={activeSection}
+            onChange={(_, nextValue) => setActiveSection(nextValue)}
+            variant="scrollable"
+            scrollButtons="auto"
+            sx={{ px: 1, borderBottom: '1px solid', borderColor: ui.borderSoft }}
+          >
+            <Tab value="incidents" label={`Инциденты (${Number(incidentInbox.total || 0)})`} />
+            <Tab value="agents" label={`Агенты (${agentTotal})`} />
+            <Tab value="hosts" label={`Хосты (${hostTotal})`} />
+          </Tabs>
+
+          {activeSection === 'incidents' && (
+            <Box sx={{ p: 2 }}>
+              <Stack spacing={1.5}>
+                <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 1.5, flexWrap: 'wrap' }}>
+                  <Box>
+                    <Typography variant="h6" sx={{ fontWeight: 800 }}>Инциденты</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Загружено {Number(incidentInbox.loaded || 0)} из {Number(incidentInbox.total || 0)} · пачка {INCIDENT_BATCH_SIZE}
+                    </Typography>
+                  </Box>
+                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
+                    <Button
+                      type="button"
+                      size="small"
+                      variant="outlined"
+                      startIcon={incidentInbox.loadingInitial ? <CircularProgress size={16} /> : <RefreshIcon />}
+                      onClick={() => incidentInbox.reload({ silent: false })}
+                      disabled={incidentInbox.loadingInitial || incidentInbox.loadingMore}
+                      sx={getOfficeQuietActionSx(ui, theme, 'neutral')}
+                    >
+                      Обновить список
+                    </Button>
+                    <Button type="button" size="small" variant="outlined" onClick={resetIncidentFilters} sx={getOfficeQuietActionSx(ui, theme, 'neutral')}>
+                      Сбросить фильтры
+                    </Button>
+                    <Button type="button" size="small" variant="outlined" onClick={expandAllIncidentRows} sx={getOfficeQuietActionSx(ui, theme, 'primary')}>
+                      Показать все
+                    </Button>
+                    <Button type="button" size="small" variant="outlined" onClick={collapseAllIncidentRows} sx={getOfficeQuietActionSx(ui, theme, 'neutral')}>
+                      Скрыть
+                    </Button>
+                    <Button
+                      type="button"
+                      size="small"
+                      variant="contained"
+                      onClick={handleAckInboxFiltered}
+                      disabled={!canScanAck || busyAckInbox || incidentInbox.loadingInitial || incidentInbox.items.every((item) => String(item?.status || '').toLowerCase() !== 'new')}
+                    >
+                      Просмотрено по фильтру
+                    </Button>
+                  </Stack>
+                </Box>
+
+                {(incidentInbox.loadingInitial || incidentInbox.loadingMore) && (
+                  <Box>
+                    <LinearProgress
+                      variant={incidentInbox.total > 0 ? 'determinate' : 'indeterminate'}
+                      value={incidentInbox.total > 0 ? Math.min(100, (incidentInbox.loaded / incidentInbox.total) * 100) : 0}
+                    />
+                    <Typography variant="caption" color="text.secondary">
+                      {incidentInbox.loadingInitial ? 'Загрузка первой пачки' : 'Догружаются остальные инциденты'}
+                    </Typography>
+                  </Box>
+                )}
+
+                {incidentInbox.error && (
+                  <Alert severity="error">Не удалось загрузить инциденты. Проверьте scan server и повторите обновление.</Alert>
+                )}
+
+                <Grid container spacing={1.2}>
+                  <Grid item xs={12} md={4}>
+                    <TextField
+                      size="small"
+                      fullWidth
+                      label="Поиск по инцидентам"
+                      value={incidentQ}
+                      onChange={(event) => setIncidentQ(event.target.value)}
+                      placeholder="Путь, фрагмент, паттерн, пользователь"
+                    />
+                  </Grid>
+                  <Grid item xs={6} md={2}>
+                    <FormControl size="small" fullWidth>
+                      <InputLabel>Статус</InputLabel>
+                      <Select value={incidentStatus} label="Статус" onChange={(event) => setIncidentStatus(event.target.value)}>
+                        <MenuItem value="all">Все</MenuItem>
+                        <MenuItem value="new">NEW</MenuItem>
+                        <MenuItem value="ack">ACK</MenuItem>
+                        <MenuItem value="resolved_deleted">Удалён</MenuItem>
+                        <MenuItem value="resolved_clean">Очищен</MenuItem>
+                        <MenuItem value="resolved_moved">Перемещён</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={6} md={2}>
+                    <FormControl size="small" fullWidth>
+                      <InputLabel>Severity</InputLabel>
+                      <Select value={incidentSeverity} label="Severity" onChange={(event) => setIncidentSeverity(event.target.value)}>
+                        <MenuItem value="all">Все</MenuItem>
+                        <MenuItem value="high">High</MenuItem>
+                        <MenuItem value="medium">Medium</MenuItem>
+                        <MenuItem value="low">Low</MenuItem>
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={6} md={2}>
+                    <FormControl size="small" fullWidth>
+                      <InputLabel>Источник</InputLabel>
+                      <Select value={incidentSourceKind} label="Источник" onChange={(event) => setIncidentSourceKind(event.target.value)}>
+                        <MenuItem value="all">Все</MenuItem>
+                        {incidentSourceOptions.map((option) => <MenuItem key={option} value={option}>{option}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={6} md={2}>
+                    <TextField size="small" fullWidth label="Расширение" value={incidentFileExt} onChange={(event) => setIncidentFileExt(event.target.value)} placeholder="pdf/txt" />
+                  </Grid>
+                  <Grid item xs={6} md={2}>
+                    <TextField size="small" fullWidth type="date" label="Дата с" value={incidentDateFrom} onChange={(event) => setIncidentDateFrom(event.target.value)} InputLabelProps={{ shrink: true }} />
+                  </Grid>
+                  <Grid item xs={6} md={2}>
+                    <TextField size="small" fullWidth type="date" label="Дата по" value={incidentDateTo} onChange={(event) => setIncidentDateTo(event.target.value)} InputLabelProps={{ shrink: true }} />
+                  </Grid>
+                  <Grid item xs={12} md={3}>
+                    <Button
+                      type="button"
+                      fullWidth
+                      size="small"
+                      variant={incidentHasFragment ? 'contained' : 'outlined'}
+                      onClick={() => setIncidentHasFragment((prev) => !prev)}
+                      sx={{ minHeight: 40 }}
+                    >
+                      Только с фрагментами
+                    </Button>
+                  </Grid>
+                </Grid>
+
+                <Grid container spacing={1.5}>
+                  <Grid item xs={12} lg={7}>
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        height: incidentWorkAreaHeight,
+                        minHeight: { xs: 520, lg: 640 },
+                        overflow: 'hidden',
+                        borderColor: ui.borderSoft,
+                      }}
+                    >
+                      {incidentRows.length === 0 && !incidentInbox.loadingInitial ? (
+                        <Box sx={{ p: 3 }}>
+                          <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>Инциденты не найдены</Typography>
+                          <Typography variant="body2" color="text.secondary">Измените фильтры или запустите новый скан агента.</Typography>
+                        </Box>
+                      ) : (
+                        <VirtualList
+                          height={typeof window !== 'undefined'
+                            ? Math.max(640, window.innerHeight - 360)
+                            : 640}
+                          width="100%"
+                          itemCount={incidentRows.length}
+                          itemSize={74}
+                        >
+                          {renderIncidentVirtualRow}
+                        </VirtualList>
+                      )}
+                    </Paper>
+                  </Grid>
+                  <Grid item xs={12} lg={5}>
+                    <Paper
+                      variant="outlined"
+                      sx={{
+                        ...getOfficePanelSx(ui, {
+                          p: 2,
+                          height: incidentWorkAreaHeight,
+                          minHeight: { xs: 520, lg: 640 },
+                          overflow: 'auto',
+                          boxShadow: 'none',
+                        }),
+                      }}
+                    >
+                      {selectedInboxIncident ? (
+                        <Stack spacing={1.2}>
+                          <Stack direction="row" justifyContent="space-between" spacing={1} alignItems="flex-start">
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>{selectedInboxIncident.hostname || 'HOST'}</Typography>
+                              <Typography variant="body2" color="text.secondary">
+                                {String(selectedInboxIncident.branch || '').trim() || 'Без филиала'} · {String(selectedInboxIncident.user_full_name || selectedInboxIncident.user_login || '').trim() || '-'}
+                              </Typography>
+                            </Box>
+                            <Stack direction="row" spacing={0.8}>
+                              <Chip size="small" color={severityColor(selectedInboxIncident.severity)} label={selectedInboxIncident.severity || '-'} />
+                              <Chip size="small" color={fileStatusColor(selectedInboxIncident.status)} label={fileStatusLabel(selectedInboxIncident.status)} />
+                            </Stack>
+                          </Stack>
+                          <Box>
+                            <Typography variant="caption" color="text.secondary">Файл</Typography>
+                            <Typography variant="body2" sx={{ fontWeight: 700, overflowWrap: 'anywhere' }}>{selectedInboxIncident.file_path || '-'}</Typography>
+                          </Box>
+                          <Typography variant="caption" color="text.secondary">
+                            Тип: {getInboxIncidentFileExt(selectedInboxIncident) || '-'} · Источник: {getInboxIncidentSourceKind(selectedInboxIncident) || '-'} · {formatTs(selectedInboxIncident.created_at)}
+                          </Typography>
+                          {String(selectedInboxIncident.status || '').toLowerCase() === 'new' && (
+                            <Button
+                              type="button"
+                              size="small"
+                              variant="outlined"
+                              disabled={!canScanAck || busyIncident === selectedInboxIncident.id}
+                              onClick={() => handleAckIncident(selectedInboxIncident)}
+                              sx={getOfficeQuietActionSx(ui, theme, 'warning', { alignSelf: 'flex-start' })}
+                            >
+                              ACK
+                            </Button>
+                          )}
+                          <Box>
+                            <Typography variant="subtitle2" sx={{ fontWeight: 800, mb: 0.8 }}>Совпадения</Typography>
+                            {renderInboxFragments(selectedInboxIncident)}
+                          </Box>
+                        </Stack>
+                      ) : (
+                        <Typography color="text.secondary">Выберите инцидент слева.</Typography>
+                      )}
+                    </Paper>
+                  </Grid>
+                </Grid>
+              </Stack>
+            </Box>
+          )}
+        </Paper>
+
+        <Paper variant="outlined" sx={{ p: 2, mb: 2, display: activeSection === 'agents' ? 'block' : 'none' }}>
           <Stack spacing={1.5}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
               <Typography variant="h6" sx={{ fontWeight: 700 }}>Агенты и очередь</Typography>
@@ -912,7 +1802,7 @@ function ScanCenter() {
                             <Chip
                               size="small"
                               variant="outlined"
-                              label={String(agent.active_task.command || '').toLowerCase() === 'scan_now' ? 'Сканирование' : 'Проверка связи'}
+                              label={String(agent.active_task.command || '').toLowerCase() === 'scan_now' ? commandLabel(agent.active_task.command, agent.active_task) : 'Проверка связи'}
                             />
                             <Chip size="small" color={taskStatusColor(agent.active_task.status)} label={renderTaskStatusLabel(agent.active_task)} />
                           </Stack>
@@ -924,7 +1814,7 @@ function ScanCenter() {
                           <>
                             <Typography variant="body2">{renderTaskSummary(agent.last_task)}</Typography>
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-                              {`${commandLabel(agent.last_task.command)} · ${taskStatusLabel(agent.last_task.status)}`}
+                              {`${commandLabel(agent.last_task.command, agent.last_task)} · ${taskStatusLabel(agent.last_task.status)}`}
                             </Typography>
                             <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
                               {`${taskTimestampLabel(agent.last_task)}: ${formatTaskTimestamp(agent.last_task)}`}
@@ -939,8 +1829,8 @@ function ScanCenter() {
                             size="small"
                             variant="outlined"
                             startIcon={<PlayArrowIcon />}
-                            disabled={!canScanTasks || busyTaskAgent === agent.agent_id}
-                            onClick={() => enqueueTask(agent.agent_id, 'scan_now')}
+                            disabled={!canScanTasks || busyTaskAgent === agent.agent_id || isActiveTask(agent.active_task)}
+                            onClick={() => openScanLaunchDialog(agent.agent_id, false)}
                           >
                             Сканировать
                           </Button>
@@ -948,7 +1838,16 @@ function ScanCenter() {
                             type="button"
                             size="small"
                             variant="outlined"
-                            disabled={!canScanTasks || busyTaskAgent === agent.agent_id}
+                            disabled={!canScanTasks || busyTaskAgent === agent.agent_id || isActiveTask(agent.active_task)}
+                            onClick={() => openScanLaunchDialog(agent.agent_id, true)}
+                          >
+                            Скан с 0
+                          </Button>
+                          <Button
+                            type="button"
+                            size="small"
+                            variant="outlined"
+                            disabled={!canScanTasks || busyTaskAgent === agent.agent_id || isActiveTask(agent.active_task)}
                             onClick={() => enqueueTask(agent.agent_id, 'ping')}
                           >
                             Проверить связь
@@ -979,7 +1878,7 @@ function ScanCenter() {
           </Stack>
         </Paper>
 
-        <Paper variant="outlined" sx={{ p: 2 }}>
+        <Paper variant="outlined" sx={{ p: 2, display: activeSection === 'hosts' ? 'block' : 'none' }}>
           <Stack spacing={1.5}>
             <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 1 }}>
               <Typography variant="h6" sx={{ fontWeight: 700 }}>Компьютеры с находками</Typography>
@@ -1006,6 +1905,9 @@ function ScanCenter() {
                     <MenuItem value="all">Все</MenuItem>
                     <MenuItem value="new">NEW</MenuItem>
                     <MenuItem value="ack">ACK</MenuItem>
+                    <MenuItem value="resolved_deleted">Удалён</MenuItem>
+                    <MenuItem value="resolved_clean">Очищен</MenuItem>
+                    <MenuItem value="resolved_moved">Перемещён</MenuItem>
                   </Select>
                 </FormControl>
               </Grid>
@@ -1113,6 +2015,20 @@ function ScanCenter() {
                 Только с фрагментами
               </Button>
             </Box>
+            <Paper variant="outlined" sx={{ p: 1.2, mb: 1.2, borderRadius: 1.5 }}>
+              <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
+                <Box>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Запуски скана</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Показано {hostScanRuns.length} из {hostScanRunsTotal}
+                  </Typography>
+                </Box>
+                <Button type="button" size="small" variant="outlined" onClick={() => loadHostScanRuns({ silent: false })} disabled={hostScanRunsLoading}>
+                  Обновить
+                </Button>
+              </Stack>
+              {renderHostScanRuns()}
+            </Paper>
             <Grid container spacing={1.2} sx={{ mb: 1 }}>
               <Grid item xs={12}>
                 <TextField size="small" fullWidth label="Поиск по пути/фрагменту/паттерну" value={incidentQ} onChange={(event) => setIncidentQ(event.target.value)} />
@@ -1170,7 +2086,7 @@ function ScanCenter() {
                         {incident.severity || '-'} · {formatTs(incident.created_at)}
                       </Typography>
                       <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
-                        <Chip size="small" color={String(incident.status || '').toLowerCase() === 'new' ? 'warning' : 'default'} label={incident.status || '-'} />
+                        <Chip size="small" color={fileStatusColor(incident.status)} label={fileStatusLabel(incident.status)} />
                         {String(incident.status || '').toLowerCase() === 'new' && (
                           <Button type="button" size="small" variant="outlined" disabled={!canScanAck || busyIncident === incident.id} onClick={() => handleAckIncident(incident)}>
                             ACK
@@ -1192,6 +2108,128 @@ function ScanCenter() {
             )}
           </Box>
         </Drawer>
+
+        <Dialog
+          open={scanLaunchDialog.open}
+          onClose={closeScanLaunchDialog}
+          fullWidth
+          maxWidth="md"
+        >
+          <DialogTitle sx={{ pb: 1 }}>
+            {scanLaunchDialog.forceRescan ? 'Скан с 0' : 'Сканировать'}
+          </DialogTitle>
+          <DialogContent dividers>
+            <Stack spacing={2}>
+              <Box>
+                <Typography variant="body2" color="text.secondary">Агент</Typography>
+                <Typography variant="subtitle1" sx={{ fontWeight: 800 }}>
+                  {scanLaunchDialog.agentId || '-'}
+                </Typography>
+              </Box>
+
+              <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1.5 }}>
+                <Stack spacing={1.3}>
+                  <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, flexWrap: 'wrap' }}>
+                    <Box>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                        Паттерны PDF на сервере
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        Выбрано {selectedScanPatternIds.length} из {scanPatterns.length}. Настройка действует только для этого запуска.
+                      </Typography>
+                    </Box>
+                    <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap">
+                      <Button type="button" size="small" variant="outlined" onClick={selectAllScanPatterns}>
+                        Выбрать все
+                      </Button>
+                      <Button type="button" size="small" variant="outlined" onClick={clearScanPatterns}>
+                        Снять все
+                      </Button>
+                      {scanPatterns.some((item) => item.id === 'loan_keyword') && (
+                        <Button type="button" size="small" variant="outlined" onClick={selectLoanScanPatterns}>
+                          Только займы
+                        </Button>
+                      )}
+                    </Stack>
+                  </Box>
+
+                  <TextField
+                    size="small"
+                    fullWidth
+                    label="Поиск паттерна"
+                    value={scanPatternQuery}
+                    onChange={(event) => setScanPatternQuery(event.target.value)}
+                    placeholder="Название, id или категория"
+                  />
+
+                  {scanPatternsLoading ? (
+                    <Box sx={{ py: 3, display: 'flex', justifyContent: 'center' }}>
+                      <CircularProgress size={24} />
+                    </Box>
+                  ) : scanPatterns.length === 0 ? (
+                    <Alert severity="warning">
+                      Сервер не вернул список паттернов. Запуск скана с выбором паттернов пока недоступен.
+                    </Alert>
+                  ) : selectedScanPatternIds.length === 0 ? (
+                    <Alert severity="warning">
+                      Выберите хотя бы один PDF-паттерн. Пустой список на сервере считается старым режимом “искать всё”.
+                    </Alert>
+                  ) : null}
+
+                  <Box sx={{ maxHeight: 360, overflow: 'auto', pr: 0.5 }}>
+                    <Stack spacing={1.2}>
+                      {groupedScanPatterns.map((group) => (
+                        <Box key={group.category}>
+                          <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800, textTransform: 'uppercase' }}>
+                            {group.category}
+                          </Typography>
+                          <Stack spacing={0.4} sx={{ mt: 0.5 }}>
+                            {group.items.map((pattern) => (
+                              <Paper key={pattern.id} variant="outlined" sx={{ px: 1, py: 0.6, borderRadius: 1 }}>
+                                <FormControlLabel
+                                  sx={{ m: 0, width: '100%', alignItems: 'flex-start' }}
+                                  control={(
+                                    <Checkbox
+                                      size="small"
+                                      checked={selectedScanPatternSet.has(pattern.id)}
+                                      onChange={() => toggleScanPattern(pattern.id)}
+                                    />
+                                  )}
+                                  label={(
+                                    <Box sx={{ minWidth: 0 }}>
+                                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                                        {pattern.name || pattern.id}
+                                      </Typography>
+                                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', wordBreak: 'break-all' }}>
+                                        {pattern.id} · weight {pattern.weight || 0}
+                                      </Typography>
+                                    </Box>
+                                  )}
+                                />
+                              </Paper>
+                            ))}
+                          </Stack>
+                          <Divider sx={{ mt: 1.2 }} />
+                        </Box>
+                      ))}
+                    </Stack>
+                  </Box>
+                </Stack>
+              </Paper>
+            </Stack>
+          </DialogContent>
+          <DialogActions>
+            <Button type="button" onClick={closeScanLaunchDialog}>Отмена</Button>
+            <Button
+              type="button"
+              variant="contained"
+              onClick={submitScanLaunch}
+              disabled={!canScanTasks || scanPatternsLoading || scanPatterns.length === 0 || selectedScanPatternIds.length === 0}
+            >
+              Запустить
+            </Button>
+          </DialogActions>
+        </Dialog>
       </PageShell>
     </MainLayout>
   );

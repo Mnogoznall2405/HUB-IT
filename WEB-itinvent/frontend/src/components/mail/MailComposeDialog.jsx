@@ -28,7 +28,12 @@ import TextFieldsRoundedIcon from '@mui/icons-material/TextFieldsRounded';
 import { AnimatePresence, motion } from 'framer-motion';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
-import { buildMailUiTokens } from './mailUiTokens';
+import {
+  buildMailUiTokens,
+  getMailIconButtonSx,
+  getMailMetaTextSx,
+  getMailTextFieldSx,
+} from './mailUiTokens';
 import { buildComposeMailPreviewHtml } from './mailOutgoingPreview';
 import { hasQuotedHistoryMarkup } from './mailQuotedHistory';
 
@@ -49,19 +54,19 @@ const getDraftStatusLabel = (state) => {
   return 'Новый черновик';
 };
 
-function ToolbarIcon({ label, icon, onClick, active = false }) {
+function ToolbarIcon({ label, icon, onClick, active = false, tokens }) {
   return (
     <IconButton
       aria-label={label}
       size="small"
       onClick={onClick}
-      sx={{
+      sx={getMailIconButtonSx(tokens || {}, {
         width: 36,
         height: 36,
-        borderRadius: '999px',
+        border: 'none',
         color: active ? 'primary.main' : 'inherit',
         bgcolor: active ? 'rgba(59, 130, 246, 0.12)' : 'transparent',
-      }}
+      })}
     >
       {icon}
     </IconButton>
@@ -210,26 +215,12 @@ function ComposerContent({
     return () => window.clearTimeout(timeoutId);
   }, [open]);
 
-  const fieldSx = {
-    '& .MuiOutlinedInput-root': {
-      borderRadius: '10px',
-      bgcolor: tokens.surfaceBg,
-      '& fieldset': {
-        borderColor: tokens.surfaceBorder,
-      },
-      '&:hover fieldset': {
-        borderColor: tokens.panelBorder,
-      },
-      '&.Mui-focused fieldset': {
-        borderColor: theme.palette.primary.main,
-      },
-    },
-  };
+  const fieldSx = getMailTextFieldSx(tokens);
 
   const inlineLabelSx = {
     width: { xs: 56, md: 72 },
     color: tokens.textSecondary,
-    fontSize: '0.82rem',
+    fontSize: tokens.fontSizeLabel,
     fontWeight: 700,
     flexShrink: 0,
   };
@@ -248,7 +239,7 @@ function ComposerContent({
     },
     '& .MuiChip-root': {
       maxWidth: '100%',
-      borderRadius: '999px',
+      borderRadius: tokens.chipRadius,
     },
     '& .MuiChip-label': {
       overflow: 'hidden',
@@ -397,7 +388,7 @@ function ComposerContent({
               <Typography noWrap sx={{ fontWeight: 800, fontSize: '0.96rem', textAlign: 'right' }}>
                 {composeSubject || dialogTitle}
               </Typography>
-              <Typography noWrap sx={{ color: tokens.textSecondary, fontSize: '0.76rem', mt: 0.1, textAlign: 'right' }}>
+              <Typography noWrap sx={getMailMetaTextSx(tokens, { mt: 0.1, textAlign: 'right' })}>
                 {draftStatusLabel}
                 {draftSavedAt ? ` • ${formatFullDate(draftSavedAt)}` : ''}
               </Typography>
@@ -421,7 +412,7 @@ function ComposerContent({
             <Typography noWrap sx={{ fontWeight: 800, fontSize: '0.96rem' }}>
               {composeSubject || dialogTitle}
             </Typography>
-            <Typography noWrap sx={{ color: tokens.textSecondary, fontSize: '0.76rem', mt: 0.1 }}>
+            <Typography noWrap sx={getMailMetaTextSx(tokens, { mt: 0.1 })}>
               {draftStatusLabel}
               {draftSavedAt ? ` • ${formatFullDate(draftSavedAt)}` : ''}
             </Typography>
@@ -434,7 +425,7 @@ function ComposerContent({
             sx={{
               width: 40,
               height: 40,
-              borderRadius: '999px',
+              borderRadius: tokens.iconButtonRadius,
               color: 'primary.contrastText',
               bgcolor: theme.palette.primary.main,
               '&:hover': {
@@ -564,7 +555,7 @@ function ComposerContent({
                           value={composeFromMailboxId || ''}
                           onChange={(event) => onComposeFromMailboxIdChange?.(String(event.target.value || ''))}
                           sx={{
-                            borderRadius: '12px',
+                            borderRadius: tokens.inputRadius,
                             bgcolor: tokens.surfaceBg,
                             '& .MuiOutlinedInput-notchedOutline': {
                               borderColor: tokens.surfaceBorder,
@@ -582,7 +573,7 @@ function ComposerContent({
                   ) : <Box />}
                   <Stack direction="row" spacing={1} alignItems="center">
                     {composeMode !== 'new' ? (
-                      <Typography sx={{ color: tokens.textSecondary, fontSize: '0.76rem' }}>
+                      <Typography sx={getMailMetaTextSx(tokens)}>
                         {dialogTitle}
                       </Typography>
                     ) : null}
@@ -608,7 +599,7 @@ function ComposerContent({
           <>
           <Box sx={{ borderBottom: '1px solid', borderColor: tokens.panelBorder, pb: 0.8 }}>
             <Stack direction="row" spacing={1} alignItems="center">
-              <Typography sx={{ width: 36, color: tokens.textSecondary, fontSize: '0.82rem', fontWeight: 700 }}>
+              <Typography sx={{ width: 36, color: tokens.textSecondary, fontSize: tokens.fontSizeLabel, fontWeight: 700 }}>
                 Кому
               </Typography>
               <Box sx={{ minWidth: 0, flex: 1 }}>
@@ -637,7 +628,7 @@ function ComposerContent({
               <Typography sx={{ fontWeight: 700, fontSize: '0.86rem' }}>
                 Тема и детали
               </Typography>
-              <Typography className="mail-line-clamp-2" sx={{ color: tokens.textSecondary, fontSize: '0.76rem', textAlign: 'left' }}>
+              <Typography className="mail-line-clamp-2" sx={getMailMetaTextSx(tokens, { textAlign: 'left' })}>
                 {metaSummary}
               </Typography>
             </Stack>
@@ -659,7 +650,7 @@ function ComposerContent({
                 transition={{ duration: 0.18 }}
                 sx={{
                   overflow: 'hidden',
-                  borderRadius: '12px',
+                  borderRadius: tokens.radiusLg,
                   bgcolor: tokens.surfaceBg,
                   border: '1px solid',
                   borderColor: tokens.surfaceBorder,
@@ -723,7 +714,7 @@ function ComposerContent({
                   })}
 
                   {composeMode !== 'new' ? (
-                    <Typography sx={{ color: tokens.textSecondary, fontSize: '0.76rem' }}>
+                    <Typography sx={getMailMetaTextSx(tokens)}>
                       {dialogTitle}
                     </Typography>
                   ) : null}
@@ -782,7 +773,7 @@ function ComposerContent({
           ) : null}
 
           {attachmentCount > 0 ? (
-            <Typography sx={{ color: tokens.textSecondary, fontSize: '0.76rem' }}>
+            <Typography sx={getMailMetaTextSx(tokens)}>
               {`${attachmentCount} вложений • ${attachmentSize}`}
             </Typography>
           ) : null}
@@ -792,7 +783,7 @@ function ComposerContent({
             data-mail-message-font={tokens.messageFontFamily}
             sx={{
               minHeight: mobile ? 320 : (desktopInline ? 360 : 420),
-              borderRadius: desktopInline ? '12px' : '14px',
+              borderRadius: tokens.radiusLg,
               border: '1px solid',
               borderColor: composeDragActive || editorFocused ? theme.palette.primary.main : tokens.surfaceBorder,
               bgcolor: tokens.panelBg,
@@ -914,7 +905,7 @@ function ComposerContent({
             <Box
               data-testid="mail-compose-final-preview"
               sx={{
-                borderRadius: '12px',
+                borderRadius: tokens.radiusLg,
                 border: '1px solid',
                 borderColor: tokens.surfaceBorder,
                 bgcolor: tokens.surfaceBg,
@@ -922,7 +913,7 @@ function ComposerContent({
               }}
             >
               <Stack spacing={0.8} sx={{ p: 1.1 }}>
-                <Typography sx={{ color: tokens.textSecondary, fontSize: '0.76rem', fontWeight: 700 }}>
+                <Typography sx={getMailMetaTextSx(tokens, { fontWeight: 700 })}>
                   Итоговый вид
                 </Typography>
                 <Box
@@ -931,7 +922,7 @@ function ComposerContent({
                   sx={{
                     maxHeight: mobile ? 220 : 260,
                     overflowY: 'auto',
-                    borderRadius: '8px',
+                    borderRadius: tokens.radiusSm,
                     border: '1px solid',
                     borderColor: tokens.surfaceBorder,
                     bgcolor: 'transparent',
@@ -992,16 +983,19 @@ function ComposerContent({
                       label="Жирный"
                       icon={<FormatBoldRoundedIcon fontSize="small" />}
                       onClick={() => applyQuillFormat(quillRef, 'bold')}
+                      tokens={tokens}
                     />
                     <ToolbarIcon
                       label="Курсив"
                       icon={<FormatItalicRoundedIcon fontSize="small" />}
                       onClick={() => applyQuillFormat(quillRef, 'italic')}
+                      tokens={tokens}
                     />
                     <ToolbarIcon
                       label="Подчеркивание"
                       icon={<FormatUnderlinedRoundedIcon fontSize="small" />}
                       onClick={() => applyQuillFormat(quillRef, 'underline')}
+                      tokens={tokens}
                     />
                   </Stack>
                 </Box>
@@ -1015,16 +1009,19 @@ function ComposerContent({
                   icon={<TextFieldsRoundedIcon fontSize="small" />}
                   onClick={() => setShowFormatting((prev) => !prev)}
                   active={showFormatting}
+                  tokens={tokens}
                 />
                 <ToolbarIcon
                   label="Прикрепить файл"
                   icon={<AttachFileRoundedIcon fontSize="small" />}
                   onClick={() => attachmentInputRef.current?.click()}
+                  tokens={tokens}
                 />
                 <ToolbarIcon
                   label="Добавить фото"
                   icon={<ImageRoundedIcon fontSize="small" />}
                   onClick={() => photoInputRef.current?.click()}
+                  tokens={tokens}
                 />
               </Stack>
 
@@ -1054,6 +1051,8 @@ function ComposerContent({
 }
 
 export default function MailComposeDialog(props) {
+  const theme = useTheme();
+  const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const mobile = props.layoutMode === 'mobile';
   const desktopInline = props.layoutMode === 'desktop-inline';
   const content = <ComposerContent {...props} mobile={mobile} desktopInline={desktopInline} />;
@@ -1064,7 +1063,15 @@ export default function MailComposeDialog(props) {
         open={props.open}
         onClose={props.onClose}
         fullScreen
-        PaperProps={{ 'data-testid': 'mail-compose-mobile-paper' }}
+        PaperProps={{
+          'data-testid': 'mail-compose-mobile-paper',
+          sx: {
+            ...tokens.typographyVars,
+            bgcolor: tokens.panelBg,
+            color: tokens.textPrimary,
+            backgroundImage: 'none',
+          },
+        }}
       >
         {content}
       </Dialog>
@@ -1099,6 +1106,12 @@ export default function MailComposeDialog(props) {
         sx: {
           width: { xs: '100vw', sm: 640, lg: 720, xl: 780 },
           maxWidth: '100vw',
+          ...tokens.typographyVars,
+          bgcolor: tokens.panelBg,
+          color: tokens.textPrimary,
+          backgroundImage: 'none',
+          borderLeft: '1px solid',
+          borderColor: tokens.panelBorder,
         },
       }}
       ModalProps={{ keepMounted: true }}

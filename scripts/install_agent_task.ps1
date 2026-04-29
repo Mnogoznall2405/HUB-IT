@@ -58,6 +58,42 @@ function Set-ScanOnDemandDefaults {
 
     Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_SCAN_ON_START" -Value "0"
     Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_WATCHDOG_ENABLED" -Value "0"
+    Set-EnvFileValue -Path $EnvPath -Key "ITINV_AGENT_HEARTBEAT_SEC" -Value "600"
+    Set-EnvFileValue -Path $EnvPath -Key "ITINV_AGENT_HEARTBEAT_JITTER_SEC" -Value "120"
+    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_POLL_INTERVAL_SEC" -Value "600"
+    Set-EnvFileValue -Path $EnvPath -Key "SCAN_AGENT_POLL_JITTER_SEC" -Value "120"
+}
+
+function Stop-ExistingAgentRuntime {
+    param([string]$TaskName)
+
+    $existingTask = Get-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue
+    if ($null -ne $existingTask) {
+        try {
+            Stop-ScheduledTask -TaskName $TaskName -ErrorAction SilentlyContinue | Out-Null
+            Start-Sleep -Seconds 1
+            Write-Host "[OK] Existing task '$TaskName' stopped before registration."
+        }
+        catch {
+            Write-Warning "Failed to stop existing task '$TaskName': $($_.Exception.Message)"
+        }
+    }
+
+    foreach ($name in @("ITInventAgent", "ITInventScanAgent", "ITInventOutlookProbe")) {
+        $processes = @(Get-Process -Name $name -ErrorAction SilentlyContinue)
+        if ($processes.Count -eq 0) {
+            continue
+        }
+        foreach ($process in $processes) {
+            try {
+                Stop-Process -Id $process.Id -Force -ErrorAction Stop
+                Write-Host "[OK] Process '$name' pid=$($process.Id) stopped before registration."
+            }
+            catch {
+                Write-Warning "Failed to stop process '$name' pid=$($process.Id): $($_.Exception.Message)"
+            }
+        }
+    }
 }
 
 if (-not (Test-Path -Path $ExecutablePath)) {
@@ -72,6 +108,7 @@ $workDir = Split-Path -Path $ExecutablePath -Parent
 $envPath = if ($EnvFilePath) { $EnvFilePath } else { Join-Path $defaultRuntimeRoot ".env" }
 
 Set-ScanOnDemandDefaults -EnvPath $envPath
+Stop-ExistingAgentRuntime -TaskName $TaskName
 
 $action = New-ScheduledTaskAction -Execute $ExecutablePath -WorkingDirectory $workDir
 $trigger = New-ScheduledTaskTrigger -AtStartup

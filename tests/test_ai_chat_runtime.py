@@ -4,9 +4,11 @@ import io
 import importlib
 import json
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
 from fastapi import FastAPI
 from fastapi import UploadFile
 from fastapi.testclient import TestClient
@@ -477,6 +479,964 @@ def test_itinvent_consumables_search_tool_serializes_qty_and_location(monkeypatc
     assert item["location"] == "Склад"
 
 
+def test_itinvent_list_tools_return_more_than_five_and_mark_truncation(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+    context = _make_tool_execution_context(enabled_tools=["itinvent.equipment.search"])
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.search_equipment_by_serial",
+        lambda search_term, db_id=None: [{"INV_NO": str(index), "MODEL_NAME": f"Device {index}"} for index in range(6)],
+    )
+
+    result = tools_module.EquipmentSearchTool().execute(
+        context=context,
+        args=tools_module.EquipmentSearchArgs(query="Device"),
+    ).to_payload()["data"]
+
+    assert result["count"] == 6
+    assert result["returned_count"] == 6
+    assert result["total"] == 6
+    assert result["limit"] == 250
+    assert result["truncated"] is False
+    assert len(result["items"]) == 6
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.search_equipment_by_serial",
+        lambda search_term, db_id=None: [{"INV_NO": str(index), "MODEL_NAME": f"Device {index}"} for index in range(251)],
+    )
+
+    truncated = tools_module.EquipmentSearchTool().execute(
+        context=context,
+        args=tools_module.EquipmentSearchArgs(query="Device"),
+    ).to_payload()["data"]
+
+    assert truncated["count"] == 250
+    assert truncated["returned_count"] == 250
+    assert truncated["total"] == 251
+    assert truncated["limit"] == 250
+    assert truncated["truncated"] is True
+    assert len(truncated["items"]) == 250
+
+
+def test_itinvent_analytics_summary_groups_equipment_and_consumable_qty(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+    context = _make_tool_execution_context(enabled_tools=["itinvent.analytics.summary"])
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.equipment_db.get_all_equipment_flat",
+        lambda db_id=None, limit=10000: [
+            {"INV_NO": "1", "BRANCH_NAME": "Tyumen", "TYPE_NAME": "Notebook", "STATUS_NAME": "Active"},
+            {"INV_NO": "2", "BRANCH_NAME": "Tyumen", "TYPE_NAME": "Monitor", "STATUS_NAME": "Active"},
+            {"INV_NO": "3", "BRANCH_NAME": "Moscow", "TYPE_NAME": "Notebook", "STATUS_NAME": "Repair"},
+        ],
+    )
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.get_all_equipment",
+        lambda page=1, limit=1, db_id=None: {"total": 3},
+    )
+
+    equipment = tools_module.AnalyticsSummaryTool().execute(
+        context=context,
+        args=tools_module.AnalyticsSummaryArgs(scope="equipment", group_by="branch"),
+    ).to_payload()["data"]
+
+    assert equipment["scope"] == "equipment"
+    assert equipment["group_by"] == "branch"
+    assert equipment["source_rows"] == 3
+    assert equipment["rows"] == [
+        {"key": "Tyumen", "count": 2},
+        {"key": "Moscow", "count": 1},
+    ]
+
+    monkeypatch.setattr(
+        "backend.ai_chat.tools.itinvent.queries.get_consumables_lookup",
+        lambda **kwargs: [
+            {"BRANCH_NAME": "Tyumen", "MODEL_NAME": "HP 85A", "QTY": 3},
+            {"BRANCH_NAME": "Tyumen", "MODEL_NAME": "HP 85A", "QTY": 5},
+            {"BRANCH_NAME": "Moscow", "MODEL_NAME": "Canon 725", "QTY": 2},
+        ],
+    )
+
+    consumables = tools_module.AnalyticsSummaryTool().execute(
+        context=context,
+        args=tools_module.AnalyticsSummaryArgs(scope="consumables", group_by="model"),
+    ).to_payload()["data"]
+
+    assert consumables["scope"] == "consumables"
+    assert consumables["group_by"] == "model"
+    assert consumables["rows"] == [
+        {"key": "HP 85A", "count": 2, "qty_total": 8},
+        {"key": "Canon 725", "count": 1, "qty_total": 2},
+    ]
+
+
+def test_itinvent_transfer_draft_creates_pending_action_without_writing(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_draft.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+
+    appdb_db.initialize_app_schema(database_url)
+    context = _make_tool_execution_context(enabled_tools=["itinvent.action.transfer_draft"])
+
+    monkeypatch.setattr(
+        "backend.ai_chat.action_cards.queries.get_equipment_by_inv",
+        lambda inv_no, db_id=None: {"INV_NO": inv_no, "MODEL_NAME": "Dell Latitude", "FIO": "Old Owner"},
+    )
+    monkeypatch.setattr(
+        "backend.ai_chat.action_cards.queries.get_owner_by_no",
+        lambda owner_no, db_id=None: {"OWNER_NO": owner_no, "OWNER_DISPLAY_NAME": "New Owner", "OWNER_DEPT": "IT"},
+    )
+
+    def fail_if_write_called(**kwargs):
+        raise AssertionError("draft tool must not write to ITinvent")
+
+    monkeypatch.setattr(
+        "backend.ai_chat.action_cards.queries.transfer_equipment_by_inv_with_history",
+        fail_if_write_called,
+    )
+
+    result = tools_module.TransferDraftTool().execute(
+        context=context,
+        args=tools_module.TransferDraftArgs(
+            inv_nos=["101"],
+            new_employee="New Owner",
+            new_employee_no=501,
+        ),
+    ).to_payload()
+
+    assert result["ok"] is True
+    action_card = result["data"]["action_card"]
+    assert action_card["status"] == "pending"
+    assert action_card["preview"]["summary"] == "Передать 1 поз. сотруднику New Owner"
+    assert action_card["preview"]["effects"] == ["перемещение оборудования", "запись в историю", "генерация акта"]
+
+    with appdb_db.app_session(database_url) as session:
+        row = session.get(app_models.AppAiPendingAction, action_card["id"])
+        assert row is not None
+        assert row.status == "pending"
+        assert row.message_id is None
+
+
+def test_ai_tool_admin_can_target_specific_database(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+
+    calls: list[str] = []
+
+    def fake_search(query, db_id=None):
+        calls.append(db_id)
+        return [{
+            "inv_no": "101",
+            "MODEL_NAME": "Dell Latitude",
+            "OWNER_DISPLAY_NAME": "Owner",
+        }]
+
+    monkeypatch.setattr(tools_module.queries, "search_equipment_by_serial", fake_search)
+
+    context = tools_context_module.AiToolExecutionContext(
+        bot_id="bot-test",
+        bot_title="AI Assistant",
+        conversation_id="conv-1",
+        run_id="run-1",
+        user_id=1,
+        user_payload={"id": 1, "role": "admin", "username": "admin"},
+        effective_database_id="ITINVENT",
+        enabled_tools=["itinvent.equipment.search"],
+        tool_settings={
+            "multi_db_mode": "admin_multi_db",
+            "allowed_databases": ["OBJ-ITINVENT"],
+        },
+    )
+
+    result = tools_module.EquipmentSearchTool().execute(
+        context=context,
+        args=tools_module.EquipmentSearchArgs(query="101", database_id="OBJ-ITINVENT"),
+    ).to_payload()
+
+    assert result["ok"] is True
+    assert result["database_id"] == "OBJ-ITINVENT"
+    assert calls == ["OBJ-ITINVENT"]
+
+
+def test_ai_tool_non_admin_cannot_override_database(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+
+    context = _make_tool_execution_context(enabled_tools=["itinvent.equipment.search"], database_id="ITINVENT")
+    result = tools_module.EquipmentSearchTool().execute(
+        context=context,
+        args=tools_module.EquipmentSearchArgs(query="101", database_id="OBJ-ITINVENT"),
+    ).to_payload()
+
+    assert result["ok"] is False
+    assert "not available" in result["error"]
+
+
+def test_ai_admin_multi_db_empty_allowed_means_all_databases(monkeypatch):
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+
+    monkeypatch.setattr(
+        tools_context_module,
+        "get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "Main"},
+            {"id": "OBJ-ITINVENT", "name": "Objects"},
+        ],
+    )
+    context = tools_context_module.AiToolExecutionContext(
+        bot_id="bot-test",
+        bot_title="AI Assistant",
+        conversation_id="conv-1",
+        run_id="run-1",
+        user_id=1,
+        user_payload={"id": 1, "role": "admin", "username": "admin"},
+        effective_database_id="ITINVENT",
+        enabled_tools=["itinvent.equipment.search_multi_db"],
+        tool_settings={"multi_db_mode": "admin_multi_db", "allowed_databases": []},
+    )
+
+    assert "ITINVENT" in context.resolve_multi_db_targets()
+    assert "OBJ-ITINVENT" in context.resolve_multi_db_targets()
+    assert context.resolve_tool_database_id("OBJ-ITINVENT") == "OBJ-ITINVENT"
+
+
+def test_ai_database_current_reports_admin_multi_db_targets(monkeypatch):
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+    tools_context_module = importlib.import_module("backend.ai_chat.tools.context")
+
+    monkeypatch.setattr(
+        tools_context_module,
+        "get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "Main"},
+            {"id": "OBJ-ITINVENT", "name": "Objects"},
+        ],
+    )
+    monkeypatch.setattr(tools_context_module.config.database, "database", "ITINVENT", raising=False)
+    monkeypatch.setattr(tools_module, "get_available_database_options", tools_context_module.get_available_database_options)
+
+    context = tools_context_module.AiToolExecutionContext(
+        bot_id="bot-test",
+        bot_title="AI Assistant",
+        conversation_id="conv-1",
+        run_id="run-1",
+        user_id=1,
+        user_payload={"id": 1, "role": "admin", "username": "admin"},
+        effective_database_id="ITINVENT",
+        enabled_tools=["itinvent.database.current"],
+        tool_settings={"multi_db_mode": "admin_multi_db", "allowed_databases": []},
+    )
+
+    result = tools_module.DatabaseCurrentTool().execute(
+        context=context,
+        args=tools_module.DatabaseCurrentArgs(),
+    ).to_payload()
+
+    assert result["ok"] is True
+    assert result["data"]["database_id"] == "ITINVENT"
+    assert result["data"]["multi_db_mode"] == "admin_multi_db"
+    assert result["data"]["multi_db_targets"] == ["ITINVENT", "OBJ-ITINVENT"]
+    assert result["data"]["available_databases"] == [
+        {"id": "ITINVENT", "name": "Main"},
+        {"id": "OBJ-ITINVENT", "name": "Objects"},
+    ]
+
+
+def test_ai_routing_prompt_requires_database_current_for_database_questions():
+    service_module = importlib.import_module("backend.ai_chat.service")
+
+    routing_guide = service_module.AI_ITINVENT_TOOL_ROUTING_GUIDE
+    assert "available databases" in routing_guide
+    assert "use database current" in routing_guide
+
+
+@pytest.mark.asyncio
+async def test_database_dependency_ignores_unknown_database_header(monkeypatch):
+    deps = importlib.import_module("backend.api.deps")
+
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "Main"},
+            {"id": "OBJ-ITINVENT", "name": "Objects"},
+        ],
+    )
+
+    result = await deps.get_current_database_id(
+        x_database_id="UNKNOWN-DB",
+        selected_database="OBJ-ITINVENT",
+        current_user=_make_user(permissions=["database.read"], role="admin"),
+    )
+
+    assert result == "OBJ-ITINVENT"
+
+
+def test_itinvent_transfer_draft_requires_exact_existing_owner(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_exact_owner.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    tools_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+
+    appdb_db.initialize_app_schema(database_url)
+    context = _make_tool_execution_context(enabled_tools=["itinvent.action.transfer_draft"])
+
+    monkeypatch.setattr(
+        "backend.ai_chat.action_cards.queries.get_equipment_by_inv",
+        lambda inv_no, db_id=None: {"INV_NO": inv_no, "MODEL_NAME": "Dell Latitude", "FIO": "Old Owner"},
+    )
+    monkeypatch.setattr(
+        "backend.ai_chat.action_cards.queries.get_owner_no_by_name",
+        lambda employee_name, strict=True, db_id=None: None,
+    )
+
+    def fail_create_owner(*args, **kwargs):
+        raise AssertionError("AI draft must not create an owner")
+
+    monkeypatch.setattr("backend.ai_chat.action_cards.queries.create_owner", fail_create_owner, raising=False)
+
+    result = tools_module.TransferDraftTool().execute(
+        context=context,
+        args=tools_module.TransferDraftArgs(
+            inv_nos=["101"],
+            new_employee="Unknown Owner",
+        ),
+    ).to_payload()
+
+    assert result["ok"] is False
+    assert "not resolved exactly" in result["error"]
+
+
+def test_equipment_transfer_execution_service_matches_route_process(monkeypatch):
+    service = importlib.import_module("backend.services.equipment_transfer_execution_service")
+
+    captured: dict[str, object] = {}
+    invalidated: list[str] = []
+
+    monkeypatch.setattr(
+        service.queries,
+        "get_owner_by_no",
+        lambda owner_no, db_id=None: {
+            "OWNER_NO": owner_no,
+            "OWNER_DISPLAY_NAME": "New Owner",
+            "OWNER_DEPT": "IT",
+        },
+    )
+
+    def fake_owner_email(owner_no, db_id=None):
+        if int(owner_no) == 1:
+            return "old@example.test"
+        return "new@example.test"
+
+    monkeypatch.setattr(service.queries, "get_owner_email_by_no", fake_owner_email)
+    monkeypatch.setattr(service.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})
+    monkeypatch.setattr(service.queries, "get_location_by_no", lambda loc_no, db_id=None: {"LOC_NO": loc_no})
+
+    def fake_transfer(**kwargs):
+        captured["transfer_kwargs"] = kwargs
+        return {
+            "success": True,
+            "inv_no": kwargs["inv_no"],
+            "old_employee_no": 1,
+            "old_employee_name": "Old Owner",
+            "new_employee_no": kwargs["new_employee_no"],
+            "new_employee_name": kwargs["new_employee_name"],
+            "hist_id": 77,
+        }
+
+    def fake_generate(**kwargs):
+        captured["generate_kwargs"] = kwargs
+        return [{"act_id": "act-1", "old_employee": "Old Owner", "equipment_count": 1, "file_name": "act.pdf", "file_type": "pdf"}]
+
+    def fake_reminder(**kwargs):
+        captured["reminder_kwargs"] = kwargs
+        return {
+            "created": True,
+            "task_id": "task-1",
+            "reminder_id": "rem-1",
+            "warning": None,
+            "controller_username": "controller",
+            "controller_fallback_used": False,
+        }
+
+    monkeypatch.setattr(service.queries, "transfer_equipment_by_inv_with_history", fake_transfer)
+    monkeypatch.setattr(service, "generate_transfer_acts", fake_generate)
+    monkeypatch.setattr(service.transfer_act_reminder_service, "create_transfer_reminder", fake_reminder)
+    monkeypatch.setattr(service, "invalidate_equipment_cache", lambda db_id=None: invalidated.append(db_id))
+
+    result = service.execute_equipment_transfer(
+        payload={"inv_nos": ["101"], "new_employee": "New Owner", "new_employee_no": 55, "branch_no": 2, "loc_no": 9},
+        db_id="ITINVENT",
+        current_user=SimpleNamespace(username="operator"),
+        allow_create_owner=True,
+    )
+
+    assert result["success_count"] == 1
+    assert result["acts"][0]["act_id"] == "act-1"
+    assert result["upload_reminder_created"] is True
+    assert result["upload_reminder_task_id"] == "task-1"
+    assert captured["transfer_kwargs"]["changed_by"] == "operator"
+    assert captured["transfer_kwargs"]["new_branch_no"] == 2
+    assert captured["generate_kwargs"]["transferred_items"][0]["old_employee_email"] == "old@example.test"
+    assert captured["reminder_kwargs"]["new_employee_no"] == 55
+    assert invalidated == ["ITINVENT"]
+
+
+def test_ai_transfer_confirm_uses_shared_service_without_owner_creation(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_confirm_service.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_TRANSFER,
+        conversation_id="conv-1",
+        run_id="run-1",
+        requester_user_id=5,
+        database_id="ITINVENT",
+        payload={"inv_nos": ["101"], "new_employee": "New Owner", "new_employee_no": 55},
+        preview={"title": "Передача оборудования", "summary": "Передать 1 поз."},
+    )
+
+    calls: list[dict[str, object]] = []
+
+    def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success_count": 1,
+            "failed_count": 0,
+            "transferred": [{"inv_no": "101", "hist_id": 77}],
+            "failed": [],
+            "acts": [{"act_id": "act-1"}],
+            "upload_reminder_created": True,
+            "upload_reminder_task_id": "task-1",
+            "upload_reminder_id": "rem-1",
+            "upload_reminder_warning": None,
+            "upload_reminder_controller_username": "controller",
+            "upload_reminder_controller_fallback_used": False,
+        }
+
+    monkeypatch.setattr(action_cards, "execute_equipment_transfer", fake_execute)
+
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["upload_reminder_created"] is True
+    assert confirmed["result"]["upload_reminder_task_id"] == "task-1"
+    assert repeated["status"] == "confirmed"
+    assert len(calls) == 1
+    assert calls[0]["allow_create_owner"] is False
+    assert calls[0]["payload"]["new_employee_no"] == 55
+
+
+def test_ai_transfer_confirm_sends_generated_act_to_chat(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_transfer_confirm_sends_act.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_TRANSFER,
+        conversation_id="conv-1",
+        run_id="run-1",
+        requester_user_id=5,
+        database_id="ITINVENT",
+        payload={"inv_nos": ["101"], "new_employee": "New Owner", "new_employee_no": 55},
+        preview={"title": "Передача оборудования", "summary": "Передать 1 поз."},
+    )
+    act_path = tmp_path / "act-101.pdf"
+    act_path.write_bytes(b"%PDF-1.4\nact")
+
+    monkeypatch.setattr(
+        action_cards,
+        "execute_equipment_transfer",
+        lambda **kwargs: {
+            "success_count": 1,
+            "failed_count": 0,
+            "transferred": [{"inv_no": "101", "hist_id": 77}],
+            "failed": [],
+            "acts": [{"act_id": "act-1", "file_name": "act-101.pdf"}],
+            "upload_reminder_created": True,
+            "upload_reminder_task_id": "task-1",
+            "upload_reminder_id": "rem-1",
+            "upload_reminder_warning": None,
+            "upload_reminder_controller_username": "controller",
+            "upload_reminder_controller_fallback_used": False,
+        },
+    )
+    monkeypatch.setattr(
+        action_cards,
+        "get_act_record",
+        lambda act_id: {"file_path": str(act_path), "file_name": "act-101.pdf"},
+    )
+
+    sent_files: list[dict[str, object]] = []
+
+    class FakeChatService:
+        def send_files(self, **kwargs):
+            sent_files.append(kwargs)
+            upload = kwargs["uploads"][0]
+            assert upload.filename == "act-101.pdf"
+            assert upload.file.read() == b"%PDF-1.4\nact"
+            return {
+                "id": "msg-file-1",
+                "attachments": [{"id": "att-1", "file_name": "act-101.pdf"}],
+            }
+
+    monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
+    monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
+
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=_make_user(permissions=["database.write"]))
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["chat_act_delivery"]["sent_count"] == 1
+    assert confirmed["result"]["chat_act_delivery"]["messages"][0]["message_id"] == "msg-file-1"
+    assert repeated["status"] == "confirmed"
+    assert len(sent_files) == 1
+    assert sent_files[0]["conversation_id"] == "conv-1"
+    assert sent_files[0]["body"] == "Акт перемещения техники"
+
+
+def test_ai_action_confirm_is_idempotent_and_expiry_blocks_execution(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_confirm.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_CONSUMABLE_QTY,
+        conversation_id="conv-1",
+        run_id="run-1",
+        requester_user_id=5,
+        database_id="ITINVENT",
+        payload={"item_id": 10, "inv_no": "C-10", "qty": 7},
+        preview={"title": "Изменение остатка", "summary": "Установить 7"},
+    )
+    calls: list[dict[str, object]] = []
+
+    def fake_set_qty(**kwargs):
+        calls.append(kwargs)
+        return {"success": True, "item_id": kwargs.get("item_id"), "qty_new": kwargs.get("qty")}
+
+    monkeypatch.setattr("backend.ai_chat.action_cards.queries.set_consumable_stock_qty", fake_set_qty)
+    monkeypatch.setattr("backend.ai_chat.action_cards.invalidate_equipment_cache", lambda db_id=None: None)
+
+    user = _make_user(permissions=["database.write"])
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=user)
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=user)
+
+    assert confirmed["status"] == "confirmed"
+    assert repeated["status"] == "confirmed"
+    assert len(calls) == 1
+
+    expired = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_CONSUMABLE_QTY,
+        conversation_id="conv-1",
+        run_id="run-2",
+        requester_user_id=5,
+        database_id="ITINVENT",
+        payload={"item_id": 11, "qty": 3},
+        preview={"title": "Изменение остатка", "summary": "Установить 3"},
+    )
+    with appdb_db.app_session(database_url) as session:
+        row = session.get(app_models.AppAiPendingAction, expired["id"])
+        row.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    blocked = action_cards.confirm_action(action_id=expired["id"], current_user=user)
+    assert blocked["status"] == "expired"
+    assert len(calls) == 1
+
+
+def test_chat_message_serialization_includes_ai_action_card(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_message_card.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+    chat_service_module = importlib.import_module("backend.chat.service")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.create_pending_action(
+        action_type=action_cards.ACTION_CONSUMABLE_CONSUME,
+        conversation_id="conv-1",
+        run_id="run-1",
+        requester_user_id=5,
+        database_id="ITINVENT",
+        payload={"item_id": 10, "qty": 1},
+        preview={"title": "Списание расходника", "summary": "Списать 1 шт."},
+    )
+    action_cards.attach_run_actions_to_message(run_id="run-1", message_id="msg-action-1")
+
+    message = SimpleNamespace(
+        id="msg-action-1",
+        conversation_id="conv-1",
+        sender_user_id=77,
+        kind="text",
+        body_format="markdown",
+        client_message_id=None,
+        body="Подготовил действие.",
+        created_at=datetime.now(timezone.utc),
+        edited_at=None,
+        reply_to_message_id=None,
+        forward_from_message_id=None,
+        task_preview_json=None,
+    )
+    serialized = chat_service_module.chat_service._serialize_message(
+        conversation_kind="ai",
+        message=message,
+        current_user_id=5,
+        users_by_id={77: {"id": 77, "username": "bot", "full_name": "Bot", "role": "viewer", "is_active": True}},
+        attachments=[],
+    )
+
+    assert serialized["action_card"]["id"] == card["id"]
+    assert serialized["action_card"]["status"] == "pending"
+    assert serialized["action_card"]["preview"]["summary"] == "Списать 1 шт."
+
+
+def test_chat_ai_action_confirm_requires_chat_ai_use_permission(tmp_path, monkeypatch):
+    _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_action_route_permission.db")
+    deps = importlib.import_module("backend.api.deps")
+    chat_api = importlib.import_module("backend.api.v1.chat")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    app = FastAPI()
+    app.include_router(chat_api.router, prefix="/chat")
+    monkeypatch.setattr(action_cards, "confirm_action", lambda **kwargs: {"id": "action-1", "status": "confirmed"})
+
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.read"])
+    forbidden = TestClient(app).post("/chat/ai/actions/action-1/confirm")
+    assert forbidden.status_code == 403
+
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["chat.ai.use"])
+    allowed = TestClient(app).post("/chat/ai/actions/action-1/confirm")
+    assert allowed.status_code == 200
+    assert allowed.json()["status"] == "confirmed"
+
+
+def test_office_mail_draft_sends_only_after_confirm_and_is_idempotent(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_office_mail_action.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_office_mail_draft(
+        action_type=action_cards.ACTION_OFFICE_MAIL_SEND,
+        conversation_id="conv-office-1",
+        run_id="run-office-1",
+        requester_user_id=99,
+        payload={
+            "to": ["ivanov@example.com"],
+            "subject": "Test subject",
+            "body": "Test body",
+            "is_html": False,
+        },
+    )
+
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send_message(**kwargs):
+        send_calls.append(kwargs)
+        return {"ok": True, "message_id": "mail-1", "subject": kwargs["subject"], "recipients": kwargs["to"]}
+
+    monkeypatch.setattr(action_cards.mail_service, "send_message", fake_send_message)
+
+    assert card["status"] == "pending"
+    assert send_calls == []
+
+    user = _make_user(permissions=["chat.ai.use", "mail.access"])
+    confirmed = action_cards.confirm_action(action_id=card["id"], current_user=user)
+    repeated = action_cards.confirm_action(action_id=card["id"], current_user=user)
+
+    assert confirmed["status"] == "confirmed"
+    assert repeated["status"] == "confirmed"
+    assert len(send_calls) == 1
+    assert send_calls[0]["to"] == ["ivanov@example.com"]
+
+
+def test_office_contacts_resolve_falls_back_to_itinvent_users_when_gal_fails(monkeypatch):
+    mail_service_module = importlib.import_module("backend.services.mail_service")
+    service = mail_service_module.MailService()
+
+    monkeypatch.setattr(
+        service,
+        "_resolve_mail_profile",
+        lambda **kwargs: (_ for _ in ()).throw(RuntimeError("GAL unavailable")),
+    )
+    monkeypatch.setattr(
+        mail_service_module.user_service,
+        "list_users",
+        lambda: [
+            {
+                "id": 10,
+                "username": "a.sandu",
+                "full_name": "Андрей Олегович Санду",
+                "email": "andrey.sandu@example.com",
+                "mailbox_email": None,
+                "mailbox_login": None,
+            }
+        ],
+    )
+
+    rows = service.search_contacts(user_id=99, q="Санду")
+
+    assert rows == [
+        {
+            "name": "Андрей Олегович Санду",
+            "email": "andrey.sandu@example.com",
+            "source": "itinvent_users",
+        }
+    ]
+
+
+def test_office_mail_confirm_accepts_overrides_and_chat_attachments(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_office_mail_action_overrides.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    chat_db.initialize_chat_schema(database_url)
+    card = action_cards.build_office_mail_draft(
+        action_type=action_cards.ACTION_OFFICE_MAIL_SEND,
+        conversation_id="conv-office-attachments",
+        run_id="run-office-attachments",
+        requester_user_id=99,
+        payload={
+            "to": ["old@example.com"],
+            "subject": "Old subject",
+            "body": "Old body",
+            "is_html": True,
+        },
+    )
+    with chat_db.chat_session(database_url) as session:
+        session.add(
+            chat_models.ChatConversation(
+                id="conv-office-attachments",
+                kind="ai",
+                title="AI",
+                created_by_user_id=99,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            chat_models.ChatMember(
+                conversation_id="conv-office-attachments",
+                user_id=99,
+                member_role="member",
+                joined_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            chat_models.ChatMessage(
+                id="msg-file-office",
+                conversation_id="conv-office-attachments",
+                sender_user_id=99,
+                kind="file",
+                body="report",
+                body_format="plain",
+                conversation_seq=1,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            chat_models.ChatMessageAttachment(
+                id="att-office",
+                message_id="msg-file-office",
+                conversation_id="conv-office-attachments",
+                storage_name="att-office_report.txt",
+                file_name="report.txt",
+                mime_type="text/plain",
+                file_size=6,
+                uploaded_by_user_id=99,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+
+    attachment_path = tmp_path / "report.txt"
+    attachment_path.write_bytes(b"report")
+    monkeypatch.setattr(
+        "backend.chat.service.chat_service.get_attachment_for_download",
+        lambda **kwargs: {"path": str(attachment_path), "file_name": "report.txt", "mime_type": "text/plain"},
+    )
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send_message(**kwargs):
+        send_calls.append(kwargs)
+        return {"ok": True, "message_id": "mail-override-1", "subject": kwargs["subject"], "recipients": kwargs["to"]}
+
+    monkeypatch.setattr(action_cards.mail_service, "send_message", fake_send_message)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use", "mail.access"]),
+        payload_overrides={
+            "to": ["new@example.com"],
+            "cc": ["copy@example.com"],
+            "subject": "New subject",
+            "body": "New body",
+            "attachment_refs": [{"message_id": "msg-file-office", "attachment_id": "att-office"}],
+        },
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["preview"]["mail"]["subject"] == "New subject"
+    assert confirmed["preview"]["mail"]["signature_auto"] is True
+    assert send_calls[0]["to"] == ["new@example.com"]
+    assert send_calls[0]["cc"] == ["copy@example.com"]
+    assert send_calls[0]["body"] == "New body"
+    assert send_calls[0]["attachments"][0] == ("report.txt", b"report")
+
+
+def test_office_mail_confirm_attaches_generated_file_specs(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_office_mail_generated_attachments.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_office_mail_draft(
+        action_type=action_cards.ACTION_OFFICE_MAIL_SEND,
+        conversation_id="conv-office-generated",
+        run_id="run-office-generated",
+        requester_user_id=99,
+        payload={
+            "to": ["sandu@example.com"],
+            "subject": "Analytics report",
+            "body": "Sending the generated report.",
+            "generated_file_specs": [
+                {
+                    "format": "xlsx",
+                    "file_name": "analytics_report.xlsx",
+                    "sheets": [
+                        {
+                            "title": "Report",
+                            "rows": [["Metric", "Value"], ["gen55", "12"]],
+                        }
+                    ],
+                }
+            ],
+        },
+    )
+    send_calls: list[dict[str, object]] = []
+
+    def fake_send_message(**kwargs):
+        send_calls.append(kwargs)
+        return {"ok": True, "message_id": "mail-generated-1"}
+
+    monkeypatch.setattr(action_cards.mail_service, "send_message", fake_send_message)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use", "mail.access"]),
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["preview"]["mail"]["generated_file_count"] == 1
+    assert confirmed["preview"]["mail"]["attachment_count"] == 1
+    assert len(send_calls) == 1
+    assert send_calls[0]["attachments"][0][0] == "analytics_report.xlsx"
+    assert send_calls[0]["attachments"][0][1].startswith(b"PK")
+
+
+def test_office_mail_confirm_rejects_attachment_from_other_chat(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_office_mail_action_bad_attachment.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    chat_db.initialize_chat_schema(database_url)
+    card = action_cards.build_office_mail_draft(
+        action_type=action_cards.ACTION_OFFICE_MAIL_SEND,
+        conversation_id="conv-office-good",
+        run_id="run-office-bad-attachment",
+        requester_user_id=99,
+        payload={"to": ["ivanov@example.com"], "subject": "Subject", "body": "Body"},
+    )
+    with chat_db.chat_session(database_url) as session:
+        session.add(
+            chat_models.ChatMessage(
+                id="msg-other",
+                conversation_id="conv-office-other",
+                sender_user_id=99,
+                kind="file",
+                body="other",
+                body_format="plain",
+                conversation_seq=1,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+        session.add(
+            chat_models.ChatMessageAttachment(
+                id="att-other",
+                message_id="msg-other",
+                conversation_id="conv-office-other",
+                storage_name="att-other.txt",
+                file_name="other.txt",
+                mime_type="text/plain",
+                file_size=5,
+                uploaded_by_user_id=99,
+                created_at=datetime.now(timezone.utc),
+            )
+        )
+    monkeypatch.setattr(action_cards.mail_service, "send_message", lambda **kwargs: pytest.fail("mail must not be sent"))
+
+    blocked = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use", "mail.access"]),
+        payload_overrides={"attachment_refs": [{"message_id": "msg-other", "attachment_id": "att-other"}]},
+    )
+
+    assert blocked["status"] == "failed"
+    assert "another chat conversation" in blocked["error_text"]
+
+
+def test_office_task_create_draft_uses_hub_service_after_confirm(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_office_task_action.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_office_task_draft(
+        action_type=action_cards.ACTION_OFFICE_TASK_CREATE,
+        conversation_id="conv-office-2",
+        run_id="run-office-2",
+        requester_user_id=99,
+        payload={
+            "title": "Prepare report",
+            "description": "Prepare weekly report",
+            "assignee_user_id": 15,
+            "controller_user_id": 99,
+            "project_id": "project-1",
+            "priority": "high",
+        },
+    )
+    create_calls: list[dict[str, object]] = []
+
+    def fake_create_task(**kwargs):
+        create_calls.append(kwargs)
+        return {"id": "task-1", "title": kwargs["title"], "status": "new"}
+
+    monkeypatch.setattr(action_cards.hub_service, "create_task", fake_create_task)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use", "tasks.write", "tasks.read"]),
+    )
+    repeated = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use", "tasks.write", "tasks.read"]),
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert repeated["status"] == "confirmed"
+    assert len(create_calls) == 1
+    assert create_calls[0]["assignee_user_id"] == 15
+    assert create_calls[0]["project_id"] == "project-1"
+
+
 def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_users(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_service.db")
 
@@ -669,6 +1629,149 @@ def test_ai_chat_service_opens_one_dialog_queues_run_and_filters_hidden_bot_user
     assert any(str(item["username"]) == "operator" for item in public_users)
 
 
+def test_ai_files_create_tool_sends_generated_attachment_from_runtime(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_runtime_files.db")
+
+    ai_chat_module = importlib.import_module("backend.ai_chat.service")
+    chat_service_module = importlib.import_module("backend.chat.service")
+    chat_db = importlib.import_module("backend.chat.db")
+    chat_models = importlib.import_module("backend.chat.models")
+    app_models = importlib.import_module("backend.appdb.models")
+    user_service_module = importlib.import_module("backend.services.user_service")
+
+    monkeypatch.setattr(chat_service_module.hub_service, "data_dir", tmp_path, raising=False)
+
+    temp_user_service = user_service_module.UserService(database_url=database_url)
+    temp_chat_service = chat_service_module.ChatService()
+    temp_chat_service._attachments_root = tmp_path / "chat_message_attachments"
+    temp_chat_service._attachments_root.mkdir(parents=True, exist_ok=True)
+    temp_chat_service._upload_sessions_root = tmp_path / "chat_upload_sessions"
+    temp_chat_service._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+    temp_ai_service = ai_chat_module.AiChatService()
+
+    monkeypatch.setattr(ai_chat_module, "user_service", temp_user_service)
+    monkeypatch.setattr(chat_service_module, "user_service", temp_user_service)
+    monkeypatch.setattr(ai_chat_module, "chat_service", temp_chat_service)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
+    monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
+    monkeypatch.setattr(
+        chat_service_module.chat_push_service,
+        "send_chat_message_notification",
+        lambda *args, **kwargs: None,
+        raising=False,
+    )
+
+    completion_calls: list[dict[str, object]] = []
+
+    def fake_complete_json(**kwargs):
+        completion_calls.append(kwargs)
+        if len(completion_calls) == 1:
+            return {
+                "answer_markdown": "",
+                "artifacts": [],
+                "kb_attachment_send": None,
+                "tool_calls": [
+                    {
+                        "tool_id": "ai.files.create",
+                        "args": {
+                            "files": [
+                                {
+                                    "format": "txt",
+                                    "file_name": "summary.txt",
+                                    "content": "Файл создан из контекста чата.",
+                                }
+                            ]
+                        },
+                    }
+                ],
+            }, {"output_tokens": 12}
+        return {
+            "answer_markdown": "Готово, файл приложен к чату.",
+            "artifacts": [],
+            "kb_attachment_send": None,
+            "tool_calls": [],
+        }, {"output_tokens": 8}
+
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "complete_json", fake_complete_json)
+    monkeypatch.setattr(ai_chat_module.openrouter_client, "get_status", lambda: {"configured": True, "default_model": "openai/gpt-4o-mini"})
+
+    chat_db.initialize_chat_schema(database_url)
+
+    actor = temp_user_service.create_user(
+        username="operator_files",
+        password="secret-pass",
+        role="viewer",
+        auth_source="local",
+        full_name="Operator Files",
+        is_active=True,
+        use_custom_permissions=True,
+        custom_permissions=["chat.read", "chat.write", "chat.ai.use"],
+    )
+
+    bot = temp_ai_service.ensure_default_bot()
+    updated_bot = temp_ai_service.update_bot(bot["id"], {
+        "enabled_tools": ["ai.files.create"],
+        "allow_generated_artifacts": True,
+    })
+    assert updated_bot["live_data_enabled"] is False
+    opened = temp_ai_service.open_bot_conversation(bot_id=bot["id"], current_user_id=int(actor["id"]))
+
+    with chat_db.chat_session(database_url) as session:
+        conversation = session.get(chat_models.ChatConversation, opened["id"])
+        user_message = chat_models.ChatMessage(
+            id="msg-human-files-1",
+            conversation_id=opened["id"],
+            sender_user_id=int(actor["id"]),
+            body="Создай txt файл с кратким итогом",
+            body_format="plain",
+            conversation_seq=1,
+            created_at=datetime.now(timezone.utc),
+        )
+        conversation.last_message_id = user_message.id
+        conversation.last_message_seq = 1
+        conversation.last_message_at = user_message.created_at
+        conversation.updated_at = user_message.created_at
+        session.add(user_message)
+
+    queued = temp_ai_service.queue_run_for_message(
+        conversation_id=opened["id"],
+        trigger_message_id="msg-human-files-1",
+        current_user_id=int(actor["id"]),
+    )
+
+    assert queued is not None
+    assert temp_ai_service.process_next_run() is True
+
+    with chat_db.chat_session(database_url) as session:
+        messages = list(
+            session.execute(
+                select(chat_models.ChatMessage)
+                .where(chat_models.ChatMessage.conversation_id == opened["id"])
+                .order_by(chat_models.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        attachments = list(session.execute(select(chat_models.ChatMessageAttachment)).scalars())
+        runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
+
+    assert [message.kind for message in messages] == ["text", "text", "file"]
+    assert messages[1].body == "Готово, файл приложен к чату."
+    assert len(attachments) == 1
+    assert attachments[0].file_name == "summary.txt"
+    result_payload = json.loads(str(runs[0].result_json or "{}"))
+    assert result_payload["generated_files_count"] == 1
+    assert result_payload["generated_files"][0]["file_name"] == "summary.txt"
+    first_system_prompt = str(completion_calls[0].get("system_prompt") or "")
+    first_user_prompt = str(completion_calls[0].get("user_prompt") or "")
+    assert "ITinvent live-data lookups/actions or file generation" in first_system_prompt
+    assert "ITinvent live-data tools are disabled for this bot." in first_user_prompt
+    assert "Enabled file tools:" in first_user_prompt
+    assert "ai.files.create" in first_user_prompt
+    assert "Use artifacts only as a legacy fallback" in first_user_prompt
+    assert "User request understanding and query coaching" in first_system_prompt
+    assert "ready-to-copy example requests" in first_system_prompt
+    assert "Live ITinvent tools enabled" not in first_user_prompt
+
+
 def test_ai_run_prompt_keeps_attachment_metadata_when_extraction_is_empty(tmp_path, monkeypatch):
     database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_chat_prompt_attachment_metadata.db")
 
@@ -857,12 +1960,14 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
     monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
 
-    completion_calls: list[dict[str, str]] = []
+    completion_calls: list[dict[str, object]] = []
 
     def fake_complete_json(**kwargs):
         completion_calls.append({
             "system_prompt": str(kwargs.get("system_prompt") or ""),
             "user_prompt": str(kwargs.get("user_prompt") or ""),
+            "schema_name": str(kwargs.get("schema_name") or ""),
+            "response_schema": kwargs.get("response_schema"),
         })
         if len(completion_calls) == 1:
             return {
@@ -877,8 +1982,10 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
                 "model": "openai/gpt-4o-mini",
                 "prompt_tokens": 12,
                 "completion_tokens": 6,
-                "total_tokens": 18,
-            }
+            "total_tokens": 18,
+        }
+        if len(completion_calls) > 1:
+            raise ai_chat_module.OpenRouterClientError("LLM returned invalid JSON payload.")
         return {
             "answer_markdown": "Найдено устройство.\n\nИсточник: ITinvent / OBJ-ITINVENT",
             "artifacts": [],
@@ -962,6 +2069,10 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     assert len(completion_calls) == 2
     assert "itinvent.equipment.search" in completion_calls[0]["user_prompt"]
     assert "Accumulated tool results JSON" in completion_calls[1]["user_prompt"]
+    assert "matching the provided schema" in completion_calls[0]["system_prompt"]
+    assert completion_calls[0]["schema_name"] == "ai_chat_response_with_tools"
+    assert completion_calls[1]["schema_name"] == "ai_chat_response_with_tools"
+    assert "tool_calls" in completion_calls[0]["response_schema"]["properties"]
 
     with chat_db.chat_session(database_url) as session:
         runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
@@ -982,6 +2093,7 @@ def test_ai_chat_tools_use_effective_database_context(tmp_path, monkeypatch):
     assert serialized_runs[0]["effective_database_id"] == "OBJ-ITINVENT"
     assert serialized_runs[0]["tool_traces_count"] == 1
     assert serialized_runs[0]["tool_trace_errors_count"] == 0
+    assert "`itinvent.equipment.search`" in messages[-1].body
     assert messages[-1].body.endswith("Источник: ITinvent / OBJ-ITINVENT")
 
 
@@ -1010,12 +2122,14 @@ def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, mon
     monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "ensure_index_fresh", lambda **kwargs: None)
     monkeypatch.setattr(ai_chat_module.ai_kb_retrieval_service, "retrieve", lambda **kwargs: [])
 
-    completion_calls: list[dict[str, str]] = []
+    completion_calls: list[dict[str, object]] = []
 
     def fake_complete_json(**kwargs):
         completion_calls.append({
             "system_prompt": str(kwargs.get("system_prompt") or ""),
             "user_prompt": str(kwargs.get("user_prompt") or ""),
+            "schema_name": str(kwargs.get("schema_name") or ""),
+            "response_schema": kwargs.get("response_schema"),
         })
         if len(completion_calls) == 1:
             return {
@@ -1175,17 +2289,21 @@ def test_ai_chat_tools_chain_employee_search_into_equipment_lookup(tmp_path, mon
         {
             "search_term": "Козловский Максим",
             "page": 1,
-            "limit": 5,
+            "limit": 250,
             "db_id": "ITINVENT",
         }
     ]
-    assert employee_equipment_calls == [{"owner_no": 501, "db_id": "ITINVENT"}]
+    assert employee_equipment_calls == [
+        {"owner_no": 501, "db_id": "ITINVENT"},
+    ]
     assert len(completion_calls) == 3
     assert "structured detailed markdown answer in Russian" in completion_calls[0]["user_prompt"]
     assert "Accumulated tool results JSON" in completion_calls[1]["user_prompt"]
     assert '"owner_no": 501' in completion_calls[1]["user_prompt"]
     assert "Accumulated tool results JSON" in completion_calls[2]["user_prompt"]
     assert '"tool_id": "itinvent.employee.list_equipment"' in completion_calls[2]["user_prompt"]
+    assert completion_calls[0]["schema_name"] == "ai_chat_response_with_tools"
+    assert completion_calls[2]["schema_name"] == "ai_chat_response_with_tools"
 
     with chat_db.chat_session(database_url) as session:
         runs = list(session.execute(select(app_models.AppAiBotRun)).scalars())
@@ -1374,7 +2492,7 @@ def test_ai_chat_tools_route_broad_equipment_queries_through_universal_search(tm
     assert universal_search_calls == [{
         "search_term": "мониторы",
         "page": 1,
-        "limit": 5,
+        "limit": 250,
         "db_id": "ITINVENT",
     }]
     assert "Broad equipment questions about categories" in completion_calls[0]["user_prompt"]
@@ -1397,6 +2515,86 @@ def test_ai_chat_tools_route_broad_equipment_queries_through_universal_search(tm
     assert "## Найдено" in messages[-1].body
     assert "LG 24MK430H-B" in messages[-1].body
     assert messages[-1].body.endswith("Источник: ITinvent / ITINVENT")
+
+
+def test_itinvent_universal_search_handles_type_plus_location_phrase(monkeypatch):
+    it_module = importlib.import_module("backend.ai_chat.tools.itinvent")
+    context_module = importlib.import_module("backend.ai_chat.tools.context")
+
+    calls: list[str] = []
+
+    def fake_search_equipment_universal(search_term, page=1, limit=50, db_id=None):
+        calls.append(str(search_term))
+        if search_term == "монитор":
+            return {
+                "equipment": [
+                    {
+                        "inv_no": "1001",
+                        "serial_no": "SN-1001",
+                        "type_name": "Монитор",
+                        "model_name": "Dell P2422H",
+                        "branch_name": "Грибоедова, 64",
+                        "location_name": "Кабинет 201",
+                    },
+                    {
+                        "inv_no": "1002",
+                        "serial_no": "SN-1002",
+                        "type_name": "Монитор",
+                        "model_name": "LG 24MK430H-B",
+                        "branch_name": "Ленина 1",
+                        "location_name": "Кабинет 101",
+                    },
+                ],
+                "total": 2,
+            }
+        if search_term == "грибоедова 64":
+            return {
+                "equipment": [
+                    {
+                        "inv_no": "1001",
+                        "serial_no": "SN-1001",
+                        "type_name": "Монитор",
+                        "model_name": "Dell P2422H",
+                        "branch_name": "Грибоедова, 64",
+                        "location_name": "Кабинет 201",
+                    },
+                    {
+                        "inv_no": "1003",
+                        "serial_no": "SN-1003",
+                        "type_name": "Принтер",
+                        "model_name": "HP LaserJet",
+                        "branch_name": "Грибоедова, 64",
+                        "location_name": "Кабинет 201",
+                    },
+                ],
+                "total": 2,
+            }
+        return {"equipment": [], "total": 0}
+
+    monkeypatch.setattr(it_module.queries, "search_equipment_universal", fake_search_equipment_universal)
+
+    context = context_module.AiToolExecutionContext(
+        bot_id="bot-1",
+        bot_title="Bot",
+        conversation_id="conv-1",
+        run_id="run-1",
+        user_id=1,
+        user_payload={"role": "viewer"},
+        effective_database_id="ITINVENT",
+        enabled_tools=["itinvent.equipment.search_universal"],
+        tool_settings={},
+    )
+    tool = it_module.EquipmentSearchUniversalTool()
+    args = tool.validate_args({"query": "найди мне все мониторы на грибоедова 64"})
+
+    payload = tool.execute(context=context, args=args).to_payload()
+
+    assert calls == ["найди мне все мониторы на грибоедова 64", "монитор", "грибоедова 64"]
+    assert payload["ok"] is True
+    assert payload["data"]["query_hints"] == {"type": "монитор", "place": "грибоедова 64"}
+    assert payload["data"]["returned_count"] == 1
+    assert payload["data"]["items"][0]["inv_no"] == "1001"
+    assert payload["data"]["items"][0]["serial_no"] == "SN-1001"
 
 
 def test_ai_chat_tools_route_consumables_queries_through_consumables_search(tmp_path, monkeypatch):
@@ -1551,7 +2749,7 @@ def test_ai_chat_tools_route_consumables_queries_through_consumables_search(tmp_
         "model_name": None,
         "branch_no": None,
         "only_positive_qty": True,
-        "limit": 100,
+        "limit": 1000,
     }]
 
     with chat_db.chat_session(database_url) as session:
@@ -1732,7 +2930,7 @@ def test_ai_chat_tools_route_branch_queries_through_branch_inventory_tool(tmp_pa
     assert branch_calls == [{
         "branch_name": "Тюмень",
         "page": 1,
-        "limit": 5,
+        "limit": 250,
         "db_id": "ITINVENT",
     }]
 

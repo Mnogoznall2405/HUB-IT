@@ -6,6 +6,7 @@ import {
   buildAiLiveDataNotice,
   buildAiSidebarRows,
   buildAiStatusDisplayModel,
+  getChatBottomInstantSettleFrames,
   buildConversationFilterCounts,
   canUseAiChatPermission,
   filterSidebarConversations,
@@ -15,12 +16,19 @@ import {
   normalizeForwardMessageQueue,
   resolveActiveAiBotRecord,
   resolveActiveThreadTransportState,
+  shouldDeferChatUrlSyncForRequestedConversation,
+  shouldSkipActiveThreadRevalidate,
   shouldPollActiveThreadIncrementally,
   shouldPollActiveAiThread,
   shouldRequestConversationAiStatus,
 } from './Chat';
 
 describe('Chat page AI helpers', () => {
+  it('settles user-initiated instant bottom scroll for outgoing messages', () => {
+    expect(getChatBottomInstantSettleFrames({ userInitiated: true })).toBe(2);
+    expect(getChatBottomInstantSettleFrames({ userInitiated: false })).toBe(1);
+  });
+
   it('builds lightweight active-thread poll requests from the latest loaded message', () => {
     expect(buildActiveThreadPollLoadOptions('msg-42')).toEqual({
       silent: true,
@@ -33,6 +41,53 @@ describe('Chat page AI helpers', () => {
       reason: 'poll:active-thread:bootstrap',
       force: true,
     });
+  });
+
+  it('defers desktop URL sync while a notification deep-link conversation is being applied', () => {
+    expect(shouldDeferChatUrlSyncForRequestedConversation({
+      applyingRequestedConversationId: 'conv-b',
+      activeConversationId: 'conv-a',
+    })).toBe(true);
+
+    expect(shouldDeferChatUrlSyncForRequestedConversation({
+      applyingRequestedConversationId: 'conv-b',
+      activeConversationId: 'conv-b',
+    })).toBe(false);
+
+    expect(shouldDeferChatUrlSyncForRequestedConversation({
+      applyingRequestedConversationId: '',
+      activeConversationId: 'conv-a',
+    })).toBe(false);
+  });
+
+  it('skips active-thread revalidation when a fresh socket message is already rendered', () => {
+    const now = Date.now();
+    expect(shouldSkipActiveThreadRevalidate({
+      activeConversationId: 'conv-1',
+      conversationId: 'conv-1',
+      reason: 'message_created',
+      messages: [{ id: 'msg-2', isOptimistic: false }],
+      latestSocketMessage: { conversationId: 'conv-1', messageId: 'msg-2', at: now - 250 },
+      now,
+    })).toBe(true);
+
+    expect(shouldSkipActiveThreadRevalidate({
+      activeConversationId: 'conv-1',
+      conversationId: 'conv-1',
+      reason: 'message_created',
+      messages: [{ id: 'msg-2', isOptimistic: false }],
+      latestSocketMessage: { conversationId: 'conv-1', messageId: 'msg-2', at: now - 10_000 },
+      now,
+    })).toBe(false);
+
+    expect(shouldSkipActiveThreadRevalidate({
+      activeConversationId: 'conv-1',
+      conversationId: 'conv-2',
+      reason: 'message_created',
+      messages: [{ id: 'msg-2', isOptimistic: false }],
+      latestSocketMessage: { conversationId: 'conv-1', messageId: 'msg-2', at: now },
+      now,
+    })).toBe(false);
   });
 
   it('ignores optimistic placeholders when choosing the active-thread poll cursor', () => {
@@ -343,7 +398,7 @@ describe('Chat page AI helpers', () => {
     }));
   });
 
-  it('surfaces a warning when the active AI bot has live ITinvent access disabled', () => {
+  it('does not show a live ITinvent access warning in active AI chats', () => {
     const aiBots = [
       {
         id: 'bot-1',
@@ -373,10 +428,7 @@ describe('Chat page AI helpers', () => {
       activeConversationId: 'ai-conv-1',
       aiStatus: { bot_id: 'bot-1', bot_title: 'Corp Assistant' },
       aiBots,
-    })).toEqual(expect.objectContaining({
-      severity: 'warning',
-      text: expect.stringContaining('without live ITinvent data'),
-    }));
+    })).toBeNull();
 
     expect(buildAiLiveDataNotice({
       activeConversationKind: 'ai',

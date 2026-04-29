@@ -65,9 +65,12 @@ import {
   createHubSystemNotification,
   createMailSystemNotification,
   getMailNotificationDisplay,
+  getMailSystemNotificationId,
   getHubNotificationActionLabel,
   getHubNotificationNavigateTo,
   getWindowsNotificationState,
+  hasShownMailSystemNotification,
+  markMailSystemNotificationShown,
   requestBrowserNotificationPermission,
   setWindowsNotificationsEnabled,
   WINDOWS_NOTIFICATIONS_CHANGED_EVENT,
@@ -222,6 +225,7 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
     conversations_unread: 0,
   });
   const mailUnreadFetchedAtRef = useRef(0);
+  const mailUnreadBaselineReadyRef = useRef(false);
   const seenChatSocketMessageIdsRef = useRef(new Set());
   const hasDashboardPermission = hasPermission('dashboard.read');
   const hasTasksPermission = hasPermission('tasks.read');
@@ -498,8 +502,10 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
     const currentChatNotificationState = getChatNotificationState();
     items.slice().reverse().forEach((item) => {
       const messageId = String(item?.id || '').trim();
-      if (!messageId) return;
-      if (!rememberRecentMailNotification(messageId)) return;
+      const notificationId = getMailSystemNotificationId(item);
+      if (!messageId || !notificationId) return;
+      if (hasShownMailSystemNotification(notificationId)) return;
+      if (!rememberRecentMailNotification(notificationId)) return;
       const { title, body } = getMailNotificationDisplay(item);
       const routeParts = [
         `folder=${encodeURIComponent(String(item?.folder || 'inbox'))}`,
@@ -509,18 +515,22 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
       if (mailboxId) routeParts.push(`mailbox_id=${encodeURIComponent(mailboxId)}`);
       const route = `/mail?${routeParts.join('&')}`;
       if (isVisible) {
+        markMailSystemNotificationShown(notificationId);
         notifyInfoRef.current?.(body, {
           title,
           source: 'mail',
           channel: 'mail',
           action: createNavigateToastAction(route, 'Открыть письмо'),
           dedupeMode: 'recent',
-          dedupeKey: `mail:${messageId}`,
+          dedupeKey: `mail:${notificationId}`,
           durationMs: 5200,
         });
         return;
       }
-      if (currentChatNotificationState?.pushSubscribed) return;
+      if (currentChatNotificationState?.pushSubscribed) {
+        markMailSystemNotificationShown(notificationId);
+        return;
+      }
       if (currentWindowsNotificationState.enabled && currentWindowsNotificationState.permission === 'granted') {
         createMailSystemNotification(
           { ...item, folder: String(item?.folder || 'inbox') },
@@ -854,6 +864,7 @@ useEffect(() => {
         let chatMessagesUnreadTotal = Number(chatUnreadSummaryRef.current?.messages_unread_total || 0);
         let chatConversationsUnread = Number(chatUnreadSummaryRef.current?.conversations_unread || 0);
         let mailUnread = 0;
+        let mailUnreadResolved = !hasMailPermission;
 
         const applyHubCounts = (data) => {
           const counts = data || {};
@@ -895,11 +906,13 @@ useEffect(() => {
 
           if (shouldReuseMailUnread) {
             mailUnread = Number(previousCounts.mail_unread || 0);
+            mailUnreadResolved = true;
           } else {
             promises.push(mailAPI.getUnreadCount({
               force: forceMailUnread,
             }).then((data) => {
               mailUnread = Number(data?.unread_count || 0);
+              mailUnreadResolved = true;
               mailUnreadFetchedAtRef.current = Date.now();
             }));
           }
@@ -932,10 +945,15 @@ useEffect(() => {
           mail_unread: mailUnread,
         };
         unreadCountsRef.current = nextCounts;
-        if (mailUnread > Number(previousCounts.mail_unread || 0)) {
+        const previousMailUnread = Number(previousCounts.mail_unread || 0);
+        const hadMailUnreadBaseline = mailUnreadBaselineReadyRef.current;
+        if (hasMailPermission && mailUnreadResolved && !hadMailUnreadBaseline) {
+          mailUnreadBaselineReadyRef.current = true;
+        }
+        if (mailUnreadResolved && hadMailUnreadBaseline && mailUnread > previousMailUnread) {
           window.dispatchEvent(new CustomEvent('mail-needs-refresh'));
           await showMailArrivalNotifications({
-            previousUnread: Number(previousCounts.mail_unread || 0),
+            previousUnread: previousMailUnread,
             nextUnread: mailUnread,
           });
         }

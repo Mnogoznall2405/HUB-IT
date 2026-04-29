@@ -37,13 +37,35 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 
 async def main() -> None:
     ai_chat_service.initialize_runtime()
-    logger.info("AI chat worker started")
     idle_delay_sec = _env_float("AI_CHAT_WORKER_IDLE_DELAY_SEC", 0.5, 0.05, 30.0)
     busy_delay_sec = _env_float("AI_CHAT_WORKER_BUSY_DELAY_SEC", 0.1, 0.01, 10.0)
     batch_size = _env_int("AI_CHAT_WORKER_BATCH_SIZE", 4, 1, 32)
+    concurrency = _env_int("AI_CHAT_WORKER_CONCURRENCY", 2, 1, 16)
+    logger.info("AI chat worker started: batch_size=%s concurrency=%s", batch_size, concurrency)
     while True:
         try:
-            processed = await asyncio.to_thread(ai_chat_service.process_next_runs, limit=batch_size)
+            processed = 0
+            remaining = batch_size
+            while remaining > 0:
+                wave_size = min(concurrency, remaining)
+                results = await asyncio.gather(
+                    *[
+                        asyncio.to_thread(ai_chat_service.process_next_run)
+                        for _ in range(wave_size)
+                    ],
+                    return_exceptions=True,
+                )
+                wave_processed = 0
+                for result in results:
+                    if isinstance(result, Exception):
+                        logger.error("AI chat worker run failed", exc_info=(type(result), result, result.__traceback__))
+                        continue
+                    if bool(result):
+                        wave_processed += 1
+                processed += wave_processed
+                remaining -= wave_size
+                if wave_processed == 0:
+                    break
         except Exception:
             logger.exception("AI chat worker cycle failed")
             await asyncio.sleep(3.0)

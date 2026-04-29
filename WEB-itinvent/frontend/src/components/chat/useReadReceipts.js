@@ -1,9 +1,37 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { resolveLatestMessageIdInOrder } from './chatHelpers';
-
 const READ_RECEIPTS_DEBOUNCE_MS = 500;
 const READ_RECEIPTS_THRESHOLD = 0.5;
+
+const buildMessageOrderState = (messages) => {
+  const list = Array.isArray(messages) ? messages : [];
+  const messageById = new Map();
+  const indexById = new Map();
+  list.forEach((message, index) => {
+    const messageId = String(message?.id || '').trim();
+    if (!messageId) return;
+    messageById.set(messageId, message);
+    indexById.set(messageId, index);
+  });
+  return { list, messageById, indexById };
+};
+
+const resolveLatestMessageIdFromState = (state, ...messageIds) => {
+  const normalizedIds = messageIds
+    .flat()
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  let latestIndex = -1;
+  let latestMessageId = '';
+  normalizedIds.forEach((candidateId) => {
+    const candidateIndex = Number(state?.indexById?.get(candidateId));
+    if (Number.isFinite(candidateIndex) && candidateIndex > latestIndex) {
+      latestIndex = candidateIndex;
+      latestMessageId = candidateId;
+    }
+  });
+  return latestMessageId || normalizedIds[0] || '';
+};
 
 export default function useReadReceipts({
   conversationId,
@@ -17,6 +45,9 @@ export default function useReadReceipts({
 }) {
   const normalizedConversationId = String(conversationId || '').trim();
   const [optimisticLastReadMessageId, setOptimisticLastReadMessageId] = useState('');
+  const messageOrderState = useMemo(() => buildMessageOrderState(messages), [messages]);
+  const messageOrderStateRef = useRef(messageOrderState);
+  messageOrderStateRef.current = messageOrderState;
   const observerRef = useRef(null);
   const pendingReadIdsRef = useRef(new Set());
   const optimisticReadIdsRef = useRef(new Set());
@@ -26,11 +57,19 @@ export default function useReadReceipts({
   const lastSentMessageIdRef = useRef('');
   const inFlightMessageIdRef = useRef('');
   const flushPendingReadsRef = useRef(async () => {});
+  const markReadRef = useRef(markRead);
+  const onReadSyncErrorRef = useRef(onReadSyncError);
+  const effectiveLastReadMessageIdRef = useRef('');
+  const markMessageSeenOptimisticallyRef = useRef(() => {});
+  const shouldTrackMessageRef = useRef(() => false);
+  markReadRef.current = markRead;
+  onReadSyncErrorRef.current = onReadSyncError;
 
   const effectiveLastReadMessageId = useMemo(
-    () => resolveLatestMessageIdInOrder(messages, viewerLastReadMessageId, optimisticLastReadMessageId),
-    [messages, optimisticLastReadMessageId, viewerLastReadMessageId],
+    () => resolveLatestMessageIdFromState(messageOrderState, viewerLastReadMessageId, optimisticLastReadMessageId),
+    [messageOrderState, optimisticLastReadMessageId, viewerLastReadMessageId],
   );
+  effectiveLastReadMessageIdRef.current = effectiveLastReadMessageId;
 
   const clearPendingTimer = useCallback(() => {
     if (debounceTimerRef.current) {
@@ -60,33 +99,34 @@ export default function useReadReceipts({
   }, [clearPendingTimer]);
 
   useEffect(() => {
-    lastSentMessageIdRef.current = resolveLatestMessageIdInOrder(
-      messages,
+    lastSentMessageIdRef.current = resolveLatestMessageIdFromState(
+      messageOrderStateRef.current,
       lastSentMessageIdRef.current,
       viewerLastReadMessageId,
     );
-  }, [messages, viewerLastReadMessageId]);
+  }, [messageOrderState, viewerLastReadMessageId]);
 
   const flushPendingReads = useCallback(async () => {
     const currentConversationId = String(normalizedConversationId || '').trim();
-    if (!currentConversationId || typeof markRead !== 'function') return;
+    if (!currentConversationId || typeof markReadRef.current !== 'function') return;
     if (inFlightMessageIdRef.current) return;
     const pendingIds = [...pendingReadIdsRef.current];
     if (pendingIds.length === 0) return;
 
     pendingReadIdsRef.current.clear();
-    const nextMessageId = resolveLatestMessageIdInOrder(messages, pendingIds);
+    const orderState = messageOrderStateRef.current;
+    const nextMessageId = resolveLatestMessageIdFromState(orderState, pendingIds);
     if (!nextMessageId) return;
 
-    const latestCompletedMessageId = resolveLatestMessageIdInOrder(
-      messages,
+    const latestCompletedMessageId = resolveLatestMessageIdFromState(
+      orderState,
       lastSentMessageIdRef.current,
       nextMessageId,
     );
     if (latestCompletedMessageId && latestCompletedMessageId === lastSentMessageIdRef.current) return;
 
-    const latestInflightMessageId = resolveLatestMessageIdInOrder(
-      messages,
+    const latestInflightMessageId = resolveLatestMessageIdFromState(
+      orderState,
       inFlightMessageIdRef.current,
       nextMessageId,
     );
@@ -94,10 +134,10 @@ export default function useReadReceipts({
 
     inFlightMessageIdRef.current = nextMessageId;
     try {
-      await markRead(currentConversationId, nextMessageId);
+      await markReadRef.current(currentConversationId, nextMessageId);
       lastSentMessageIdRef.current = nextMessageId;
     } catch (error) {
-      onReadSyncError?.(error);
+      onReadSyncErrorRef.current?.(error);
     } finally {
       if (inFlightMessageIdRef.current === nextMessageId) {
         inFlightMessageIdRef.current = '';
@@ -106,7 +146,7 @@ export default function useReadReceipts({
         void flushPendingReadsRef.current();
       }
     }
-  }, [markRead, messages, normalizedConversationId, onReadSyncError]);
+  }, [normalizedConversationId]);
 
   flushPendingReadsRef.current = flushPendingReads;
 
@@ -122,28 +162,32 @@ export default function useReadReceipts({
     const normalizedMessageId = String(messageId || '').trim();
     if (!normalizedMessageId) return;
     optimisticReadIdsRef.current.add(normalizedMessageId);
-    const nextMarker = resolveLatestMessageIdInOrder(messages, [...optimisticReadIdsRef.current]);
+    const orderState = messageOrderStateRef.current;
+    const nextMarker = resolveLatestMessageIdFromState(orderState, [...optimisticReadIdsRef.current]);
     if (!nextMarker) return;
     setOptimisticLastReadMessageId((current) => {
-      const resolved = resolveLatestMessageIdInOrder(messages, current, nextMarker);
+      const resolved = resolveLatestMessageIdFromState(orderState, current, nextMarker);
       return resolved === current ? current : resolved;
     });
     onOptimisticRead?.(nextMarker);
-  }, [messages, onOptimisticRead]);
+  }, [onOptimisticRead]);
+  markMessageSeenOptimisticallyRef.current = markMessageSeenOptimistically;
 
   const shouldTrackMessage = useCallback((messageId) => {
     const normalizedMessageId = String(messageId || '').trim();
     if (!normalizedMessageId) return false;
-    const message = (Array.isArray(messages) ? messages : []).find((item) => String(item?.id || '').trim() === normalizedMessageId);
+    const orderState = messageOrderStateRef.current;
+    const message = orderState.messageById.get(normalizedMessageId);
     if (!message || message?.is_own) return false;
-    const latestReadId = resolveLatestMessageIdInOrder(
-      messages,
-      effectiveLastReadMessageId,
+    const latestReadId = resolveLatestMessageIdFromState(
+      orderState,
+      effectiveLastReadMessageIdRef.current,
       lastSentMessageIdRef.current,
     );
-    const nextLatest = resolveLatestMessageIdInOrder(messages, latestReadId, normalizedMessageId);
+    const nextLatest = resolveLatestMessageIdFromState(orderState, latestReadId, normalizedMessageId);
     return nextLatest === normalizedMessageId;
-  }, [effectiveLastReadMessageId, messages]);
+  }, []);
+  shouldTrackMessageRef.current = shouldTrackMessage;
 
   useEffect(() => {
     if (
@@ -161,9 +205,9 @@ export default function useReadReceipts({
       entries.forEach((entry) => {
         if (!entry.isIntersecting || entry.intersectionRatio < READ_RECEIPTS_THRESHOLD) return;
         const messageId = String(entry.target?.getAttribute?.('data-chat-message-id') || '').trim();
-        if (!shouldTrackMessage(messageId)) return;
+        if (!shouldTrackMessageRef.current(messageId)) return;
         pendingReadIdsRef.current.add(messageId);
-        markMessageSeenOptimistically(messageId);
+        markMessageSeenOptimisticallyRef.current(messageId);
       });
       if (pendingReadIdsRef.current.size > 0) scheduleFlush();
     }, {
@@ -173,7 +217,7 @@ export default function useReadReceipts({
 
     observerRef.current = observer;
     observedNodesRef.current.forEach((node, messageId) => {
-      if (node && shouldTrackMessage(messageId)) observer.observe(node);
+      if (node && shouldTrackMessageRef.current(messageId)) observer.observe(node);
     });
 
     return () => {
@@ -182,12 +226,23 @@ export default function useReadReceipts({
     };
   }, [
     enabled,
-    markMessageSeenOptimistically,
     normalizedConversationId,
     scheduleFlush,
     scrollRootRef,
-    shouldTrackMessage,
   ]);
+
+  useEffect(() => {
+    const observer = observerRef.current;
+    if (!observer) return;
+    observedNodesRef.current.forEach((node, messageId) => {
+      if (!node) return;
+      if (shouldTrackMessageRef.current(messageId)) {
+        observer.observe(node);
+      } else {
+        observer.unobserve(node);
+      }
+    });
+  }, [effectiveLastReadMessageId, messageOrderState]);
 
   const getReadTargetRef = useCallback((messageId) => {
     const normalizedMessageId = String(messageId || '').trim();
@@ -204,13 +259,13 @@ export default function useReadReceipts({
           return;
         }
         observedNodesRef.current.set(normalizedMessageId, node);
-        if (observerRef.current && shouldTrackMessage(normalizedMessageId)) {
+        if (observerRef.current && shouldTrackMessageRef.current(normalizedMessageId)) {
           observerRef.current.observe(node);
         }
       });
     }
     return callbackRefsRef.current.get(normalizedMessageId);
-  }, [shouldTrackMessage]);
+  }, []);
 
   return {
     effectiveLastReadMessageId,

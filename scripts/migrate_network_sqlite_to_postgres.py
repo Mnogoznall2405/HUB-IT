@@ -97,6 +97,7 @@ def main() -> int:
                 placeholders = ", ".join(["?"] * len(columns))
                 sql = f"INSERT INTO {table_name} ({', '.join(columns)}) VALUES ({placeholders})"
                 target.execute(sql, tuple(payload[column] for column in columns))
+        target.sync_identity_sequences()
         target.commit()
     finally:
         source.close()

@@ -18,7 +18,13 @@ def _schema(name: str) -> str | None:
     return None
 
 
+def _scope() -> str:
+    return str(op.get_context().config.attributes.get("itinvent_scope", "all") or "all").strip().lower()
+
+
 def upgrade() -> None:
+    if _scope() == "app":
+        return
     chat_schema = _schema("chat")
 
     op.add_column(
@@ -116,6 +122,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _scope() == "app":
+        return
     chat_schema = _schema("chat")
 
     op.drop_index("ix_chat_push_outbox_updated_at", table_name="chat_push_outbox", schema=chat_schema)

@@ -1,8 +1,13 @@
 import importlib.util
+import sys
 from pathlib import Path
 
 
-MODULE_PATH = Path(__file__).resolve().parents[1] / "WEB-itinvent" / "backend" / "api" / "v1" / "inventory.py"
+BACKEND_ROOT = Path(__file__).resolve().parents[1] / "WEB-itinvent"
+if str(BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(BACKEND_ROOT))
+
+MODULE_PATH = BACKEND_ROOT / "backend" / "api" / "v1" / "inventory.py"
 SPEC = importlib.util.spec_from_file_location("inventory_computers_module", MODULE_PATH)
 inventory = importlib.util.module_from_spec(SPEC)
 assert SPEC is not None and SPEC.loader is not None
@@ -312,3 +317,57 @@ def test_get_computers_applies_scope_filters_search_and_sort(monkeypatch):
 
     sorted_rows = _get_computers(scope="all", sort_by="outlook_total_size_bytes", sort_dir="desc")
     assert [row["hostname"] for row in sorted_rows] == ["PC-01", "PC-03", "PC-02"]
+
+
+def test_computer_search_defers_network_lookup_until_page_items(monkeypatch):
+    now_ts = 1_710_000_000
+    _patch_environment(monkeypatch, now_ts)
+    network_links = _network_map()
+    network_calls = []
+
+    def fake_network_link(conn, mac_address, ip_list):
+        network_calls.append(inventory._normalize_mac(mac_address))
+        return network_links.get(inventory._normalize_mac(mac_address))
+
+    monkeypatch.setattr(inventory, "_resolve_network_link", fake_network_link)
+
+    by_user = inventory.search_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="all",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q="CORP\\sidorov_bb",
+        search_fields="user",
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+        limit=1,
+        offset=0,
+        include_summary=True,
+    )
+
+    assert [row["hostname"] for row in by_user["items"]] == ["PC-02"]
+    assert network_calls == ["AABBCCDDEE02"]
+
+    network_calls.clear()
+    by_network = inventory.search_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="all",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q="SG-05",
+        search_fields="network",
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+        limit=1,
+        offset=0,
+        include_summary=True,
+    )
+
+    assert [row["hostname"] for row in by_network["items"]] == ["PC-03"]
+    assert network_calls == ["AABBCCDDEE01", "AABBCCDDEE02", "AABBCCDDEE03"]

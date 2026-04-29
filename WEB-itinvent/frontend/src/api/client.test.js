@@ -59,6 +59,50 @@ describe('equipmentAPI.getAgentComputers', () => {
   });
 });
 
+describe('equipmentAPI.searchAgentComputers', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.get.mockResolvedValue({ data: { items: [], total: 0 } });
+    window.localStorage.clear();
+  });
+
+  it('maps fielded search and pagination options to backend query params', async () => {
+    const { equipmentAPI } = await import('./client');
+
+    await equipmentAPI.searchAgentComputers({
+      scope: 'all',
+      branch: 'Tyumen',
+      status: 'online',
+      outlookStatus: 'warning',
+      q: 'archive.pst',
+      searchFields: ['profiles', 'outlook'],
+      changedOnly: true,
+      sortBy: 'hostname',
+      sortDir: 'desc',
+      limit: 50,
+      offset: 100,
+      includeSummary: true,
+    });
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/inventory/computers/search', {
+      params: {
+        scope: 'all',
+        branch: 'Tyumen',
+        status: 'online',
+        outlook_status: 'warning',
+        q: 'archive.pst',
+        search_fields: 'profiles,outlook',
+        changed_only: true,
+        sort_by: 'hostname',
+        sort_dir: 'desc',
+        limit: 50,
+        offset: 100,
+        include_summary: true,
+      },
+    });
+  });
+});
+
 describe('equipmentAPI.getLocations', () => {
   beforeEach(() => {
     apiClientMock.get.mockReset();
@@ -112,6 +156,63 @@ describe('equipmentAPI.getTransferReminder', () => {
     await equipmentAPI.getTransferReminder('rem-1');
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/equipment/transfer/reminders/rem-1');
+  });
+});
+
+describe('equipmentAPI.createTransferActOnly', () => {
+  beforeEach(() => {
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { acts: [] } });
+  });
+
+  it('calls backend act-only endpoint without moving equipment', async () => {
+    const { equipmentAPI } = await import('./client');
+    const payload = { inv_nos: ['1001'], issuer_employee: 'Без владельца' };
+
+    await equipmentAPI.createTransferActOnly(payload);
+
+    expect(apiClientMock.post).toHaveBeenCalledWith('/equipment/transfer/act-only', payload);
+  });
+});
+
+describe('equipmentAPI.parseUploadedAct', () => {
+  beforeEach(() => {
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { draft_id: 'draft-1' } });
+  });
+
+  it('uses a longer timeout for uploaded act recognition', async () => {
+    const { equipmentAPI, UPLOADED_ACT_PARSE_TIMEOUT_MS } = await import('./client');
+    const file = new File(['pdf'], 'act.pdf', { type: 'application/pdf' });
+
+    await equipmentAPI.parseUploadedAct(file);
+
+    expect(apiClientMock.post).toHaveBeenCalledWith(
+      '/equipment/acts/upload/parse',
+      expect.any(FormData),
+      {
+        params: undefined,
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: UPLOADED_ACT_PARSE_TIMEOUT_MS,
+      },
+    );
+    expect(UPLOADED_ACT_PARSE_TIMEOUT_MS).toBe(180000);
+  });
+
+  it('passes manual_mode with the same uploaded act timeout', async () => {
+    const { equipmentAPI, UPLOADED_ACT_PARSE_TIMEOUT_MS } = await import('./client');
+    const file = new File(['pdf'], 'act.pdf', { type: 'application/pdf' });
+
+    await equipmentAPI.parseUploadedAct(file, { manualMode: true });
+
+    expect(apiClientMock.post).toHaveBeenCalledWith(
+      '/equipment/acts/upload/parse',
+      expect.any(FormData),
+      expect.objectContaining({
+        params: { manual_mode: true },
+        timeout: UPLOADED_ACT_PARSE_TIMEOUT_MS,
+      }),
+    );
   });
 });
 
@@ -644,6 +745,14 @@ describe('scanAPI table endpoints', () => {
     await scanAPI.getBranches();
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/scan/branches');
+  });
+
+  it('loads scan pattern options for task launch dialog', async () => {
+    const { scanAPI } = await import('./client');
+
+    await scanAPI.getPatterns();
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/patterns');
   });
 
   it('requests paginated host and task data without client-side fallbacks', async () => {

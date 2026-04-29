@@ -163,6 +163,7 @@ describe('MailMessageList', () => {
     renderWithTheme(<MailMessageList {...props} />);
 
     expect(screen.getByTestId('mail-row-selected-check-msg-1')).toBeTruthy();
+    expect(screen.queryByText('Выбрано')).toBeNull();
 
     const rowBody = screen.getByTestId('mail-row-msg-1');
     fireEvent.pointerDown(rowBody.parentElement, { pointerType: 'touch' });

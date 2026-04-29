@@ -18,13 +18,21 @@ depends_on = None
 
 def _index_names(schema: str, table_name: str) -> set[str]:
     inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table(table_name, schema=schema):
+        return set()
     return {
         str(item.get("name") or "").strip().lower()
         for item in inspector.get_indexes(table_name, schema=schema)
     }
 
 
+def _scope() -> str:
+    return str(op.get_context().config.attributes.get("itinvent_scope", "all") or "all").strip().lower()
+
+
 def upgrade() -> None:
+    if _scope() == "app":
+        return
     chat_message_indexes = _index_names("chat", "chat_messages")
     if "ix_chat_messages_conversation_id_created_at_id" not in chat_message_indexes:
         op.create_index(
@@ -55,6 +63,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _scope() == "app":
+        return
     chat_message_indexes = _index_names("chat", "chat_messages")
     if "ix_chat_messages_conversation_id_created_at_id" in chat_message_indexes:
         op.drop_index(

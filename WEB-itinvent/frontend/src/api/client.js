@@ -15,6 +15,7 @@ const basePrefix = normalizedBase.endsWith('/') && normalizedBase.length > 1
 const derivedApiBase = basePrefix === '/' ? '/api' : `${basePrefix}/api`;
 const API_BASE_URL = import.meta.env.VITE_API_URL || derivedApiBase;
 export const API_V1_BASE = `${API_BASE_URL}/v1`;
+export const UPLOADED_ACT_PARSE_TIMEOUT_MS = 180_000;
 const SCAN_HOSTS_404_KEY = 'itinvent_scan_hosts_404';
 const SCAN_HOSTS_404_TTL_MS = 6 * 60 * 60 * 1000;
 const SYSTEM_GET_STALE_TIME_MS = 30_000;
@@ -696,6 +697,16 @@ export const chatAPI = {
 
   getConversationAiStatus: async (conversationId) => {
     const response = await apiClient.get(`/chat/conversations/${encodeURIComponent(conversationId)}/ai-status`);
+    return response.data;
+  },
+
+  confirmAiAction: async (actionId, payload = undefined) => {
+    const response = await apiClient.post(`/chat/ai/actions/${encodeURIComponent(actionId)}/confirm`, payload || {});
+    return response.data;
+  },
+
+  cancelAiAction: async (actionId) => {
+    const response = await apiClient.post(`/chat/ai/actions/${encodeURIComponent(actionId)}/cancel`);
     return response.data;
   },
 
@@ -2149,6 +2160,56 @@ export const equipmentAPI = {
     return response.data;
   },
 
+  searchAgentComputers: async (options = {}) => {
+    const scope = String(options?.scope || 'selected').toLowerCase() === 'all' ? 'all' : 'selected';
+    const branch = String(options?.branch || '').trim();
+    const status = String(options?.status || '').trim().toLowerCase();
+    const outlookStatus = String(options?.outlookStatus || '').trim().toLowerCase();
+    const searchQuery = String(options?.q || '').trim();
+    const searchFields = Array.isArray(options?.searchFields)
+      ? options.searchFields.map((item) => String(item || '').trim()).filter(Boolean).join(',')
+      : String(options?.searchFields || '').trim();
+    const sortBy = String(options?.sortBy || '').trim();
+    const sortDir = String(options?.sortDir || '').trim().toLowerCase();
+    const changedOnly = Boolean(options?.changedOnly);
+    const limit = Number(options?.limit || 50);
+    const offset = Number(options?.offset || 0);
+    const params = {
+      scope,
+      limit: Number.isFinite(limit) ? Math.max(1, Math.min(500, Math.trunc(limit))) : 50,
+      offset: Number.isFinite(offset) ? Math.max(0, Math.trunc(offset)) : 0,
+      include_summary: options?.includeSummary !== false,
+    };
+    if (branch) {
+      params.branch = branch;
+    }
+    if (['online', 'stale', 'offline', 'unknown'].includes(status)) {
+      params.status = status;
+    }
+    if (['ok', 'warning', 'critical', 'unknown'].includes(outlookStatus)) {
+      params.outlook_status = outlookStatus;
+    }
+    if (searchQuery) {
+      params.q = searchQuery;
+    }
+    if (searchFields) {
+      params.search_fields = searchFields;
+    }
+    if (changedOnly) {
+      params.changed_only = true;
+    }
+    if (sortBy) {
+      params.sort_by = sortBy;
+    }
+    if (['asc', 'desc'].includes(sortDir)) {
+      params.sort_dir = sortDir;
+    }
+    const response = await apiClient.get('/inventory/computers/search', {
+      params,
+    });
+    return response.data;
+  },
+
   getAgentComputerChanges: async (limit = 50) => {
     const response = await apiClient.get('/inventory/changes', {
       params: { limit },
@@ -2192,6 +2253,11 @@ export const equipmentAPI = {
     return response.data;
   },
 
+  getEquipmentHistory: async (invNo) => {
+    const response = await apiClient.get(`/equipment/${encodeURIComponent(String(invNo ?? ''))}/history`);
+    return response.data;
+  },
+
   downloadEquipmentActFile: async (docNo, params = {}) => {
     const response = await apiClient.get(`/equipment/acts/${docNo}/file`, {
       params,
@@ -2209,6 +2275,7 @@ export const equipmentAPI = {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
+      timeout: UPLOADED_ACT_PARSE_TIMEOUT_MS,
     });
     return response.data;
   },
@@ -2354,6 +2421,11 @@ export const equipmentAPI = {
 
   transfer: async (payload) => {
     const response = await apiClient.post('/equipment/transfer', payload);
+    return response.data;
+  },
+
+  createTransferActOnly: async (payload) => {
+    const response = await apiClient.post('/equipment/transfer/act-only', payload);
     return response.data;
   },
 
@@ -2515,8 +2587,23 @@ export const scanAPI = {
     }
   },
 
-  getIncidents: async (params = {}) => {
-    const response = await apiClient.get('/scan/incidents', { params });
+  getIncidents: async (params = {}, options = {}) => {
+    const response = await apiClient.get('/scan/incidents', { params, signal: options?.signal });
+    return response.data;
+  },
+
+  getHostScanRuns: async (hostname, params = {}) => {
+    const response = await apiClient.get(`/scan/hosts/${encodeURIComponent(hostname)}/scan-runs`, { params });
+    return response.data;
+  },
+
+  getTaskObservations: async (taskId, params = {}) => {
+    const response = await apiClient.get(`/scan/tasks/${encodeURIComponent(taskId)}/observations`, { params });
+    return response.data;
+  },
+
+  getPatterns: async () => {
+    const response = await apiClient.get('/scan/patterns');
     return response.data;
   },
 
@@ -2524,6 +2611,11 @@ export const scanAPI = {
     const response = await apiClient.post(`/scan/incidents/${encodeURIComponent(incidentId)}/ack`, {
       ack_by: ackBy,
     });
+    return response.data;
+  },
+
+  ackIncidentsBatch: async (payload = {}) => {
+    const response = await apiClient.post('/scan/incidents/bulk-ack', payload);
     return response.data;
   },
 

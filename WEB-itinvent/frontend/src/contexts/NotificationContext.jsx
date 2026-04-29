@@ -9,6 +9,10 @@ import {
 } from 'react';
 import ToastViewport from '../components/feedback/ToastViewport';
 import { normalizeToastAction } from '../components/feedback/toastActions';
+import {
+  normalizeNotificationItem,
+  normalizeNotificationText,
+} from '../lib/notificationUtils';
 
 const NotificationContext = createContext(null);
 
@@ -31,7 +35,8 @@ function safeParseArray(raw) {
 
 function loadToastHistory() {
   if (typeof window === 'undefined') return [];
-  return safeParseArray(window.localStorage.getItem(TOAST_HISTORY_KEY));
+  return safeParseArray(window.localStorage.getItem(TOAST_HISTORY_KEY))
+    .map(normalizeNotificationItem);
 }
 
 function loadSeenHubIds() {
@@ -80,8 +85,8 @@ function extractApiDetail(error) {
 
 function buildToastPayload(severity, message, options = {}) {
   const nowIso = new Date().toISOString();
-  const normalizedMessage = String(message || '').trim() || 'Событие';
-  const normalizedTitle = String(options.title || '').trim();
+  const normalizedMessage = normalizeNotificationText(message).trim() || 'Событие';
+  const normalizedTitle = normalizeNotificationText(options.title).trim();
   const source = String(options.source || 'system').trim() || 'system';
   const statusCode = Number(options.statusCode || 0) || undefined;
   const durationMs = Math.max(1, Number(options.durationMs || 5000) || 5000);
@@ -106,7 +111,7 @@ function buildToastPayload(severity, message, options = {}) {
     remainingMs: durationMs,
     paused: false,
     persist: Boolean(options.persist),
-    actionLabel: String(options.actionLabel || '').trim(),
+    actionLabel: normalizeNotificationText(options.actionLabel).trim(),
     onAction: typeof options.onAction === 'function' ? options.onAction : undefined,
     action,
     dedupeMode: options.dedupeMode === 'recent' ? 'recent' : 'none',

@@ -25,7 +25,7 @@ function LoadingRailBlock({ ui, animation = 'wave' }) {
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
-        borderRadius: '14px',
+        borderRadius: ui.radiusLg || '12px',
         overflow: 'hidden',
         bgcolor: ui.panelBg,
         borderColor: ui.borderSoft,
@@ -61,7 +61,7 @@ function LoadingListBlock({ ui, mobile = false, animation = 'wave' }) {
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
-        borderRadius: '14px',
+        borderRadius: ui.radiusLg || '12px',
         overflow: 'hidden',
         bgcolor: ui.panelBg,
         borderColor: ui.borderSoft,
@@ -70,11 +70,11 @@ function LoadingListBlock({ ui, mobile = false, animation = 'wave' }) {
       <Box sx={{ px: { xs: 1.1, md: 1.45 }, py: { xs: 0.95, md: 1.05 }, borderBottom: '1px solid', borderColor: ui.borderSoft }}>
         <Stack direction="row" spacing={0.8} alignItems="center">
           <Skeleton animation={animation} variant="text" width={mobile ? '48%' : '36%'} height={26} />
-          <Skeleton animation={animation} variant="rounded" width={38} height={24} sx={{ borderRadius: '999px' }} />
+          <Skeleton animation={animation} variant="rounded" width={38} height={24} sx={{ borderRadius: ui.chipRadius || '6px' }} />
         </Stack>
         <Stack direction="row" spacing={0.6} sx={{ mt: 0.45 }}>
-          <Skeleton animation={animation} variant="rounded" width={84} height={22} sx={{ borderRadius: '999px' }} />
-          {!mobile ? <Skeleton animation={animation} variant="rounded" width={118} height={22} sx={{ borderRadius: '999px' }} /> : null}
+          <Skeleton animation={animation} variant="rounded" width={84} height={22} sx={{ borderRadius: ui.chipRadius || '6px' }} />
+          {!mobile ? <Skeleton animation={animation} variant="rounded" width={118} height={22} sx={{ borderRadius: ui.chipRadius || '6px' }} /> : null}
         </Stack>
       </Box>
       <Stack spacing={0} sx={{ flex: 1, minHeight: 0 }}>
@@ -105,7 +105,7 @@ function LoadingListBlock({ ui, mobile = false, animation = 'wave' }) {
                 <Skeleton animation={animation} variant="text" width={index % 2 === 0 ? '74%' : '62%'} height={24} />
                 <Skeleton animation={animation} variant="text" width={index % 2 === 0 ? '88%' : '78%'} height={18} />
                 {index % 2 === 0 ? (
-                  <Skeleton animation={animation} variant="rounded" width={78} height={20} sx={{ mt: 0.65, borderRadius: '999px' }} />
+                  <Skeleton animation={animation} variant="rounded" width={78} height={20} sx={{ mt: 0.65, borderRadius: ui.chipRadius || '6px' }} />
                 ) : null}
               </Box>
             </Stack>
@@ -124,7 +124,7 @@ function LoadingPreviewBlock({ ui, animation = 'wave' }) {
         minHeight: 0,
         display: 'flex',
         flexDirection: 'column',
-        borderRadius: '14px',
+        borderRadius: ui.radiusLg || '12px',
         overflow: 'hidden',
         bgcolor: ui.panelBg,
         borderColor: ui.borderSoft,
@@ -138,11 +138,11 @@ function LoadingPreviewBlock({ ui, animation = 'wave' }) {
         </Stack>
       </Box>
       <Box sx={{ p: { xs: 1.5, md: 2 }, flex: 1, minHeight: 0 }}>
-        <Skeleton animation={animation} variant="rounded" height={120} sx={{ borderRadius: '16px', mb: 1.2 }} />
+        <Skeleton animation={animation} variant="rounded" height={120} sx={{ borderRadius: ui.radiusLg || '12px', mb: 1.2 }} />
         <Skeleton animation={animation} variant="text" width="86%" height={22} />
         <Skeleton animation={animation} variant="text" width="92%" height={22} />
         <Skeleton animation={animation} variant="text" width="72%" height={22} />
-        <Skeleton animation={animation} variant="rounded" height={180} sx={{ mt: 1.1, borderRadius: '14px' }} />
+        <Skeleton animation={animation} variant="rounded" height={180} sx={{ mt: 1.1, borderRadius: ui.radiusLg || '12px' }} />
       </Box>
     </Paper>
   );
@@ -171,7 +171,7 @@ export default function MailInitialLoadingState({ ui }) {
         sx={{
           position: 'relative',
           overflow: 'hidden',
-          borderRadius: '16px',
+          borderRadius: ui.radiusLg || '12px',
           borderColor: ui.borderSoft,
           bgcolor: ui.panelBg,
           px: { xs: 1.4, md: 1.8 },

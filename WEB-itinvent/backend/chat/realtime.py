@@ -34,6 +34,7 @@ _PRESENCE_MAX_WATCH_USERS = max(1, int(str(os.getenv("CHAT_PRESENCE_WATCH_LIMIT"
 _OUTBOUND_QUEUE_SIZE = max(32, int(str(os.getenv("CHAT_WS_OUTBOUND_QUEUE_SIZE", "256") or "256").strip() or "256"))
 _TYPING_STARTED_THROTTLE_SEC = max(1.0, float(str(os.getenv("CHAT_TYPING_STARTED_THROTTLE_SEC", "2") or "2").strip() or "2"))
 _TYPING_STATE_TTL_SEC = max(2.0, float(str(os.getenv("CHAT_TYPING_STATE_TTL_SEC", "5") or "5").strip() or "5"))
+_PRESENCE_TOUCH_THROTTLE_SEC = max(1.0, float(str(os.getenv("CHAT_PRESENCE_TOUCH_THROTTLE_SEC", "15") or "15").strip() or "15"))
 
 
 def _utc_now() -> datetime:
@@ -74,6 +75,7 @@ class ChatRealtimeConnection:
     outbound_queue: asyncio.Queue = field(default_factory=lambda: asyncio.Queue(maxsize=_OUTBOUND_QUEUE_SIZE))
     pending_volatile_keys: set[str] = field(default_factory=set)
     sender_task: asyncio.Task | None = None
+    last_presence_touch_at: float = 0.0
 
 
 class ChatRealtimeRedisBus:
@@ -286,6 +288,8 @@ class ChatRealtimeManager:
         self._user_connection_ids: dict[int, set[str]] = {}
         self._last_seen_by_user_id: dict[int, datetime] = {}
         self._slow_consumer_disconnects = 0
+        self._ws_rate_limited_count = 0
+        self._ws_rate_limited_connection_ids: set[str] = set()
         self._typing_started_sent_at: dict[tuple[int, str], float] = {}
         self._redis_bus = ChatRealtimeRedisBus(self)
 
@@ -328,6 +332,7 @@ class ChatRealtimeManager:
             id=connection_id,
             user_id=normalized_user_id,
             websocket=websocket,
+            last_presence_touch_at=_ts_now(),
         )
         connection.sender_task = asyncio.create_task(
             self._run_connection_sender(connection),
@@ -384,11 +389,16 @@ class ChatRealtimeManager:
             "last_connection": last_connection,
         }
 
-    def touch_presence(self, connection_id: str) -> None:
+    def touch_presence(self, connection_id: str) -> bool:
+        now_ts = _ts_now()
         with self._lock:
             connection = self._connections.get(str(connection_id or "").strip())
+            if connection is not None and (now_ts - float(connection.last_presence_touch_at or 0.0)) < _PRESENCE_TOUCH_THROTTLE_SEC:
+                return False
+            if connection is not None:
+                connection.last_presence_touch_at = now_ts
         if connection is None:
-            return
+            return False
         asyncio.create_task(
             asyncio.to_thread(
                 self._redis_bus.record_presence_sync,
@@ -397,6 +407,7 @@ class ChatRealtimeManager:
             ),
             name=f"chat-presence-touch:{connection.id}",
         )
+        return True
 
     def allow_typing_started(self, *, user_id: int, conversation_id: str) -> bool:
         normalized_conversation_id = _normalize_text(conversation_id)
@@ -893,6 +904,8 @@ class ChatRealtimeManager:
             )
             presence_watch_count = sum(len(connection.presence_watch_user_ids) for connection in self._connections.values())
             local_connection_count = len(self._connections)
+            ws_rate_limited_count = int(self._ws_rate_limited_count)
+            ws_rate_limited_connections = len(self._ws_rate_limited_connection_ids)
         return {
             "realtime_node_id": self.node_id,
             "redis_available": bool(self._redis_bus.redis_available),
@@ -902,7 +915,16 @@ class ChatRealtimeManager:
             "presence_watch_count": int(presence_watch_count),
             "slow_consumer_disconnects": int(self._slow_consumer_disconnects),
             "local_connection_count": int(local_connection_count),
+            "ws_rate_limited_count": int(ws_rate_limited_count),
+            "ws_rate_limited_connections": int(ws_rate_limited_connections),
         }
+
+    def record_rate_limited(self, connection_id: str) -> None:
+        normalized_connection_id = _normalize_text(connection_id)
+        with self._lock:
+            self._ws_rate_limited_count += 1
+            if normalized_connection_id:
+                self._ws_rate_limited_connection_ids.add(normalized_connection_id)
 
 
 chat_realtime = ChatRealtimeManager()

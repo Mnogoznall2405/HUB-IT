@@ -820,6 +820,84 @@ def get_equipment_acts_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
     return {"item_id": item_id, "acts": acts}
 
 
+def get_equipment_history_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
+    """
+    Get transfer/change history for one equipment item by inventory number.
+
+    CI_HISTORY is exposed through a normalized row shape so callers do not need
+    to know legacy column names.
+    """
+    equipment = get_equipment_by_inv(inv_no, db_id)
+    if not equipment:
+        return {"item_id": None, "history": []}
+
+    item_id_raw = equipment.get("id") or equipment.get("ID")
+    try:
+        item_id = int(item_id_raw) if item_id_raw is not None else None
+    except (TypeError, ValueError):
+        item_id = None
+
+    if item_id is None:
+        return {"item_id": None, "history": []}
+
+    query = """
+        SELECT
+            h.HIST_ID AS hist_id,
+            h.ITEM_ID AS item_id,
+            h.CH_DATE AS ch_date,
+            h.CH_USER AS ch_user,
+            h.CH_COMMENT AS ch_comment,
+            h.EMPL_NO_OLD AS old_employee_no,
+            old_owner.OWNER_DISPLAY_NAME AS old_employee_name,
+            h.EMPL_NO_NEW AS new_employee_no,
+            new_owner.OWNER_DISPLAY_NAME AS new_employee_name,
+            h.BRANCH_NO_OLD AS old_branch_no,
+            old_branch.BRANCH_NAME AS old_branch_name,
+            h.BRANCH_NO_NEW AS new_branch_no,
+            new_branch.BRANCH_NAME AS new_branch_name,
+            h.LOC_NO_OLD AS old_loc_no,
+            old_location.DESCR AS old_location_name,
+            h.LOC_NO_NEW AS new_loc_no,
+            new_location.DESCR AS new_location_name,
+            h.STATUS_NO_OLD AS old_status_no,
+            old_status.DESCR AS old_status_name,
+            h.STATUS_NO_NEW AS new_status_no,
+            new_status.DESCR AS new_status_name,
+            h.SERIAL_NO_OLD AS old_serial_no,
+            h.SERIAL_NO_NEW AS new_serial_no,
+            h.INV_NO_OLD AS old_inv_no,
+            h.INV_NO_NEW AS new_inv_no,
+            h.TYPE_NO_OLD AS old_type_no,
+            old_type.TYPE_NAME AS old_type_name,
+            h.TYPE_NO_NEW AS new_type_no,
+            new_type.TYPE_NAME AS new_type_name,
+            h.MODEL_NO_OLD AS old_model_no,
+            old_model.MODEL_NAME AS old_model_name,
+            h.MODEL_NO_NEW AS new_model_no,
+            new_model.MODEL_NAME AS new_model_name
+        FROM CI_HISTORY h
+        LEFT JOIN OWNERS old_owner ON old_owner.OWNER_NO = h.EMPL_NO_OLD
+        LEFT JOIN OWNERS new_owner ON new_owner.OWNER_NO = h.EMPL_NO_NEW
+        LEFT JOIN BRANCHES old_branch ON old_branch.BRANCH_NO = h.BRANCH_NO_OLD
+        LEFT JOIN BRANCHES new_branch ON new_branch.BRANCH_NO = h.BRANCH_NO_NEW
+        LEFT JOIN LOCATIONS old_location ON old_location.LOC_NO = h.LOC_NO_OLD
+        LEFT JOIN LOCATIONS new_location ON new_location.LOC_NO = h.LOC_NO_NEW
+        LEFT JOIN STATUS old_status ON old_status.STATUS_NO = h.STATUS_NO_OLD
+        LEFT JOIN STATUS new_status ON new_status.STATUS_NO = h.STATUS_NO_NEW
+        LEFT JOIN CI_TYPES old_type ON old_type.CI_TYPE = 1 AND old_type.TYPE_NO = h.TYPE_NO_OLD
+        LEFT JOIN CI_TYPES new_type ON new_type.CI_TYPE = 1 AND new_type.TYPE_NO = h.TYPE_NO_NEW
+        LEFT JOIN CI_MODELS old_model ON old_model.CI_TYPE = 1 AND old_model.MODEL_NO = h.MODEL_NO_OLD
+        LEFT JOIN CI_MODELS new_model ON new_model.CI_TYPE = 1 AND new_model.MODEL_NO = h.MODEL_NO_NEW
+        WHERE h.ITEM_ID = ?
+        ORDER BY
+            CASE WHEN h.CH_DATE IS NULL THEN 1 ELSE 0 END,
+            h.CH_DATE DESC,
+            h.HIST_ID DESC
+    """
+    db = get_db(db_id)
+    return {"item_id": item_id, "history": db.execute_query(query, (item_id,))}
+
+
 def get_equipment_items_by_ids(item_ids: List[int], db_id: Optional[str] = None) -> List[dict]:
     """
     Resolve equipment records by ITEMS.ID.

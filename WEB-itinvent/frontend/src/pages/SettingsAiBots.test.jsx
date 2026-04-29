@@ -85,9 +85,9 @@ describe('AiBotsAdminSection', () => {
 
     expect(screen.getByText(/OpenRouter:/i)).toBeInTheDocument();
     expect(screen.getByText(/PM2:/i)).toBeInTheDocument();
-    expect(screen.getByText(/AI bots not created yet/i)).toBeInTheDocument();
-    expect(screen.getByLabelText(/ITinvent live data/i)).toBeInTheDocument();
-    expect(screen.getByText(/Live data \/ ITinvent tools/i)).toBeInTheDocument();
+    expect(screen.getByText(/AI-боты ещё не созданы/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/Инструменты ITinvent/i)).toBeInTheDocument();
+    expect(screen.getByText(/Данные ITinvent/i)).toBeInTheDocument();
   });
 
   it('warns when an enabled bot has no live tools and saves the default tool set', () => {
@@ -136,9 +136,9 @@ describe('AiBotsAdminSection', () => {
     );
 
     fireEvent.click(screen.getByText('Corp Assistant'));
-    expect(screen.getByText(/Persisted config is enabled but has no saved live ITinvent tools/i)).toBeInTheDocument();
+    expect(screen.getAllByText(/пока инструменты не будут включены/i).length).toBeGreaterThan(0);
 
-    fireEvent.click(screen.getAllByLabelText(/ITinvent live data/i).slice(-1)[0]);
+    fireEvent.click(screen.getAllByLabelText(/Инструменты ITinvent/i).slice(-1)[0]);
     fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);
 
     expect(onSave).toHaveBeenCalledWith('bot-1', expect.objectContaining({
@@ -151,9 +151,12 @@ describe('AiBotsAdminSection', () => {
         'itinvent.consumables.search',
         'itinvent.directory.equipment_types',
         'itinvent.directory.statuses',
+        'itinvent.analytics.summary',
       ]),
       multi_db_mode: 'single',
     }));
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('ai.files.create');
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('ai.files.report');
 
     const persistedBot = {
       ...bot,
@@ -178,7 +181,190 @@ describe('AiBotsAdminSection', () => {
     );
 
     fireEvent.click(screen.getByText('Corp Assistant'));
-    expect(screen.queryByText(/Persisted config is enabled but has no saved live ITinvent tools/i)).not.toBeInTheDocument();
-    expect(screen.getAllByLabelText(/ITinvent live data/i).slice(-1)[0]).toBeChecked();
+    expect(screen.queryByText(/пока инструменты не будут включены/i)).not.toBeInTheDocument();
+    expect(screen.getAllByLabelText(/Инструменты ITinvent/i).slice(-1)[0]).toBeChecked();
+  });
+
+  it('keeps admin multi-DB mode and the multi-DB tool in sync when saving', () => {
+    const onSave = vi.fn();
+    const bot = {
+      id: 'bot-2',
+      slug: 'admin-assistant',
+      title: 'Admin Assistant',
+      description: 'Admin bot',
+      model: 'openai/gpt-4o-mini',
+      allow_file_input: true,
+      allow_generated_artifacts: true,
+      allow_kb_document_delivery: false,
+      is_enabled: true,
+      configured: true,
+      live_data_enabled: true,
+      bot_user_id: 88,
+      system_prompt: 'Prompt',
+      temperature: 0.2,
+      max_tokens: 2000,
+      allowed_kb_scope: [],
+      enabled_tools: ['itinvent.database.current'],
+      tool_settings: {
+        multi_db_mode: 'single',
+        allowed_databases: [],
+      },
+      updated_at: '2026-04-22T20:32:00Z',
+      latest_run_status: 'completed',
+      latest_run_error: null,
+    };
+
+    render(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[bot]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={onSave}
+          openrouterConfigured
+          dbOptions={[
+            { id: 'ITINVENT', name: 'ITINVENT' },
+            { id: 'OBJ-ITINVENT', name: 'OBJ-ITINVENT' },
+          ]}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByText('Admin Assistant'));
+    fireEvent.mouseDown(screen.getByLabelText(/Режим базы данных/i));
+    fireEvent.click(screen.getByRole('option', { name: /Админ: несколько баз/i }));
+    fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);
+
+    expect(onSave).toHaveBeenCalledWith('bot-2', expect.objectContaining({
+      enabled_tools: expect.arrayContaining(['itinvent.equipment.search_multi_db']),
+      multi_db_mode: 'admin_multi_db',
+      allowed_databases: [],
+    }));
+  });
+
+  it('shows and saves the generated files tool only when explicitly enabled', () => {
+    const onSave = vi.fn();
+    const bot = {
+      id: 'bot-3',
+      slug: 'files-assistant',
+      title: 'Files Assistant',
+      description: 'Files bot',
+      model: 'openai/gpt-4o-mini',
+      allow_file_input: true,
+      allow_generated_artifacts: true,
+      allow_kb_document_delivery: false,
+      is_enabled: true,
+      configured: true,
+      live_data_enabled: true,
+      bot_user_id: 89,
+      system_prompt: 'Prompt',
+      temperature: 0.2,
+      max_tokens: 2000,
+      allowed_kb_scope: [],
+      enabled_tools: ['itinvent.database.current'],
+      tool_settings: {
+        multi_db_mode: 'single',
+        allowed_databases: [],
+      },
+      updated_at: '2026-04-22T20:32:00Z',
+      latest_run_status: 'completed',
+      latest_run_error: null,
+    };
+
+    render(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[bot]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={onSave}
+          openrouterConfigured
+          dbOptions={[{ id: 'ITINVENT', name: 'ITINVENT' }]}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByText('Files Assistant'));
+    expect(screen.getAllByLabelText(/Инструменты файлов/i).slice(-1)[0]).not.toBeChecked();
+
+    fireEvent.click(screen.getAllByLabelText(/Инструменты файлов/i).slice(-1)[0]);
+    expect(screen.getByLabelText(/Создание файлов/i)).toBeChecked();
+    expect(screen.getByLabelText(/Красивые отчёты/i)).toBeChecked();
+    fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);
+
+    expect(onSave).toHaveBeenCalledWith('bot-3', expect.objectContaining({
+      enabled_tools: expect.arrayContaining(['ai.files.create', 'ai.files.report']),
+    }));
+  });
+
+  it('shows and saves office tools separately from ITinvent and file tools', () => {
+    const onSave = vi.fn();
+    const bot = {
+      id: 'bot-4',
+      slug: 'office-assistant',
+      title: 'Office Assistant',
+      description: 'Office bot',
+      model: 'openai/gpt-4o-mini',
+      allow_file_input: true,
+      allow_generated_artifacts: false,
+      allow_kb_document_delivery: false,
+      is_enabled: true,
+      configured: true,
+      live_data_enabled: false,
+      bot_user_id: 90,
+      system_prompt: 'Prompt',
+      temperature: 0.2,
+      max_tokens: 2000,
+      allowed_kb_scope: [],
+      enabled_tools: [],
+      tool_settings: {
+        multi_db_mode: 'single',
+        allowed_databases: [],
+      },
+      updated_at: '2026-04-22T20:32:00Z',
+      latest_run_status: 'completed',
+      latest_run_error: null,
+    };
+
+    render(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[bot]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={onSave}
+          openrouterConfigured
+          dbOptions={[{ id: 'ITINVENT', name: 'ITINVENT' }]}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByText('Office Assistant'));
+    expect(screen.getAllByLabelText(/Офисные инструменты/i).slice(-1)[0]).not.toBeChecked();
+
+    fireEvent.click(screen.getAllByLabelText(/Офисные инструменты/i).slice(-1)[0]);
+    expect(screen.getByLabelText(/Поиск писем/i)).toBeChecked();
+    expect(screen.getByLabelText(/Черновик смены статуса задачи/i)).toBeChecked();
+    fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);
+
+    expect(onSave).toHaveBeenCalledWith('bot-4', expect.objectContaining({
+      enabled_tools: expect.arrayContaining([
+        'office.mail.search',
+        'office.tasks.search',
+        'office.action.mail_send_draft',
+        'office.action.task_create_draft',
+      ]),
+    }));
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('itinvent.database.current');
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('ai.files.create');
   });
 });

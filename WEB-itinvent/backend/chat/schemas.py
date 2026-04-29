@@ -1,7 +1,7 @@
 """Pydantic models for chat API."""
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -56,6 +56,7 @@ class ChatMessageResponse(BaseModel):
     forward_preview: Optional["ChatForwardPreview"] = None
     task_preview: Optional["ChatTaskPreview"] = None
     attachments: list["ChatAttachmentResponse"] = Field(default_factory=list)
+    action_card: Optional[dict[str, Any]] = None
 
 
 class ChatConversationSummary(BaseModel):
@@ -130,6 +131,12 @@ class ChatHealthResponse(BaseModel):
     event_outbox_failed: int = 0
     event_outbox_oldest_queued_age_sec: float = 0.0
     event_dispatcher_active: bool = False
+    event_outbox_avg_job_ms: float = 0.0
+    ws_rate_limited_count: int = 0
+    ws_rate_limited_connections: int = 0
+    ai_worker_concurrency: int = 0
+    ai_kb_index_age_sec: float = 0.0
+    ai_last_run_duration_ms: float = 0.0
 
 
 class DirectConversationRequest(BaseModel):

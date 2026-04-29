@@ -495,7 +495,7 @@ function MessageRow({
             px: { xs: 1.15, md: compact ? 1.3 : 1.6 },
             py: compact ? 1 : 1.15,
             minHeight: compact ? tokens.rowCompactMinHeight : tokens.rowMinHeight,
-            borderLeft: '2px solid',
+            borderLeft: selected ? '2px solid' : rowIsSelectedInBulk ? '1px solid' : '2px solid',
             borderLeftColor: selected
               ? tokens.selectedBorder
               : rowIsSelectedInBulk
@@ -809,7 +809,7 @@ function MessageRow({
                     }}
                   />
                 ) : null}
-                {rowIsSelectedInBulk ? (
+                {rowIsSelectedInBulk && !isMobile ? (
                   <Chip
                     size="small"
                     label="Выбрано"
@@ -990,6 +990,7 @@ export default function MailMessageList({
   onPrintMessage,
   moveTargets = [],
   onPullToRefresh,
+  bottomInset = 0,
 }) {
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
@@ -1282,6 +1283,10 @@ export default function MailMessageList({
                   Автодогрузка включена
                 </Typography>
               </Box>
+            ) : null}
+
+            {bottomInset ? (
+              <Box aria-hidden data-testid="mail-list-bottom-inset" sx={{ height: bottomInset, flexShrink: 0 }} />
             ) : null}
           </>
         )}

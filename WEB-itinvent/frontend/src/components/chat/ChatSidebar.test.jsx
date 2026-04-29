@@ -3,7 +3,7 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
-import ChatSidebar from './ChatSidebar';
+import ChatSidebar, { CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION } from './ChatSidebar';
 
 const theme = createTheme();
 const ui = {
@@ -81,6 +81,10 @@ const buildProps = (overrides = {}) => ({
 });
 
 describe('ChatSidebar', () => {
+  it('keeps conversation row reorders off framer-motion layout animation', () => {
+    expect(CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION).toBe(false);
+  });
+
   it('shows draft preview for conversations', () => {
     renderWithTheme(buildProps());
 

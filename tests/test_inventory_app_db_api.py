@@ -212,6 +212,160 @@ def test_inventory_heartbeat_after_defer_window_persists_full_write(temp_dir, mo
     assert host["ip_primary"] == "10.10.1.44"
 
 
+def test_inventory_app_db_indexes_profiles_and_outlook_files_for_fielded_search(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+
+    monkeypatch.setattr(inventory, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory, "get_app_database_url", lambda: database_url)
+    monkeypatch.setattr(inventory, "get_local_store", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local_store should not be used")))
+    monkeypatch.setattr(inventory.time, "time", lambda: 1_710_000_500)
+    monkeypatch.setattr(inventory, "ensure_user_permission", lambda *args, **kwargs: None)
+    monkeypatch.setattr(inventory, "_get_database_name_map", lambda: {"DB1": "Main DB"})
+    monkeypatch.setattr(inventory, "_get_accessible_db_ids", lambda current_user: ["DB1"])
+    monkeypatch.setattr(
+        inventory,
+        "_resolve_sql_context",
+        lambda mac_address, hostname, db_id: {
+            "branch_no": "101",
+            "branch_name": "Tyumen",
+            "location_name": "Office 12",
+            "employee_name": "Petrov A.A.",
+            "ip_address": "10.10.1.11",
+        },
+    )
+    monkeypatch.setattr(inventory, "_resolve_network_link", lambda conn, mac_address, ip_list: None)
+
+    full_payload = inventory.InventoryPayload(
+        hostname="PC-PROFILE-01",
+        system_serial="SYS-P1",
+        mac_address="AA-BB-CC-DD-EE-71",
+        current_user="CORP\\active_user",
+        user_login="CORP\\active_user",
+        user_full_name="Active User",
+        ip_primary="10.10.1.71",
+        ip_list=["10.10.1.71"],
+        report_type="full_snapshot",
+        timestamp=1_710_000_000,
+        user_profile_sizes={
+            "profiles": [
+                {
+                    "user_name": "old.account",
+                    "profile_path": r"C:\Users\old.account",
+                    "total_size_bytes": 1234,
+                    "files_count": 12,
+                    "dirs_count": 3,
+                    "partial": True,
+                }
+            ]
+        },
+        outlook={
+            "source": "system_scan",
+            "confidence": "high",
+            "active_store": {
+                "path": r"C:\Users\active_user\AppData\Local\Microsoft\Outlook\active.ost",
+                "type": "ost",
+                "size_bytes": 2048,
+                "last_modified_at": 1_710_000_010,
+            },
+            "archives": [
+                {
+                    "path": r"D:\Mail\archive-2023.pst",
+                    "type": "pst",
+                    "size_bytes": 4096,
+                    "last_modified_at": 1_710_000_020,
+                }
+            ],
+            "total_outlook_size_bytes": 6144,
+        },
+    )
+    heartbeat_payload = inventory.InventoryPayload(
+        hostname="PC-PROFILE-01",
+        system_serial="SYS-P1",
+        mac_address="AA-BB-CC-DD-EE-71",
+        current_user="CORP\\active_user",
+        user_login="CORP\\active_user",
+        user_full_name="Active User",
+        ip_primary="10.10.1.71",
+        ip_list=["10.10.1.71"],
+        report_type="heartbeat",
+        timestamp=1_710_000_200,
+    )
+
+    assert inventory.receive_inventory(full_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)["success"] is True
+    assert inventory.receive_inventory(heartbeat_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)["success"] is True
+
+    by_profile = inventory.search_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="selected",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q="old.account",
+        search_fields="profiles",
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+        limit=50,
+        offset=0,
+        include_summary=True,
+    )
+    by_outlook = inventory.search_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="selected",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q="archive-2023.pst",
+        search_fields="outlook",
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+        limit=50,
+        offset=0,
+        include_summary=True,
+    )
+    profile_does_not_match_identity = inventory.search_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="selected",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q="old.account",
+        search_fields="identity",
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+        limit=50,
+        offset=0,
+        include_summary=True,
+    )
+    hostname_does_not_match_profiles = inventory.search_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="selected",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q="PC-PROFILE-01",
+        search_fields="profiles",
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+        limit=50,
+        offset=0,
+        include_summary=True,
+    )
+
+    assert [row["hostname"] for row in by_profile["items"]] == ["PC-PROFILE-01"]
+    assert by_profile["items"][0]["user_profile_sizes"]["profiles"][0]["user_name"] == "old.account"
+    assert [row["hostname"] for row in by_outlook["items"]] == ["PC-PROFILE-01"]
+    assert profile_does_not_match_identity["items"] == []
+    assert hostname_does_not_match_profiles["items"] == []
+
+
 def test_inventory_computers_uses_overlay_last_seen_after_deferred_heartbeat(temp_dir, monkeypatch):
     database_url = _sqlite_url(temp_dir)
 

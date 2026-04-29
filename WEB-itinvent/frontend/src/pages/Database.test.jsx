@@ -12,6 +12,9 @@ const mockApi = vi.hoisted(() => ({
     getBranchesList: vi.fn(),
     getAllEquipmentGrouped: vi.fn(),
     getAllConsumablesGrouped: vi.fn(),
+    getByInvNos: vi.fn(),
+    getEquipmentHistory: vi.fn(),
+    getEquipmentActs: vi.fn(),
     identifyWorkspace: vi.fn(),
   },
   databaseAPI: {
@@ -24,6 +27,7 @@ vi.mock('../api/client', () => ({
   equipmentAPI: mockApi.equipmentAPI,
   databaseAPI: mockApi.databaseAPI,
   API_V1_BASE: '/api/v1',
+  UPLOADED_ACT_PARSE_TIMEOUT_MS: 180000,
 }));
 
 vi.mock('../api/json_client', () => ({
@@ -61,7 +65,11 @@ vi.mock('../components/layout/PageShell', () => ({
 vi.mock('../components/common', () => ({
   LoadingSpinner: ({ message }) => <div>{message || 'loading'}</div>,
   StatusChip: ({ children, label }) => <span>{label || children || 'status'}</span>,
-  ActionMenu: () => <button type="button">actions</button>,
+  ActionMenu: ({ onAction, item }) => (
+    <button type="button" onClick={() => onAction?.('view', item)}>
+      actions
+    </button>
+  ),
 }));
 
 function installMatchMedia({ mobile = false } = {}) {
@@ -81,15 +89,20 @@ function installMatchMedia({ mobile = false } = {}) {
 
 import {
   buildUploadActInvVerification,
+  buildUploadActParseErrorMessage,
   clearUploadActReminderSearch,
   default as Database,
   getUploadActReminderDeepLinkAction,
   getEquipmentRowActions,
+  isApiUnavailableForActParseError,
+  isUploadActProxyUnavailableError,
   isUploadActCommitDisabled,
+  validateUploadActPdfFile,
   parseInvNosInput,
   parseUploadActReminderDeepLink,
   resolveDataModeRefreshBehavior,
   removeItemFromGrouped,
+  UPLOAD_ACT_MAX_SIZE_MB,
 } from './Database';
 
 function renderDatabase() {
@@ -98,6 +111,17 @@ function renderDatabase() {
       <Database />
     </MemoryRouter>,
   );
+}
+
+async function openFirstEquipmentDetail() {
+  renderDatabase();
+
+  fireEvent.click(await screen.findByText('HQ'));
+  fireEvent.click(await screen.findByText('Office'));
+  const actionButtons = await screen.findAllByRole('button', { name: 'actions' });
+  fireEvent.click(actionButtons[0]);
+
+  return screen.findByRole('tab', { name: 'История перемещений' });
 }
 
 beforeEach(() => {
@@ -119,6 +143,43 @@ beforeEach(() => {
     { BRANCH_NO: 1, BRANCH_NAME: 'HQ' },
     { BRANCH_NO: 2, BRANCH_NAME: 'Remote' },
   ]);
+  mockApi.equipmentAPI.getByInvNos.mockResolvedValue({
+    equipment: [
+      {
+        id: 1,
+        inv_no: '1001',
+        serial_no: 'SN-1001',
+        type_name: 'PC',
+        model_name: 'OptiPlex',
+        employee_name: 'Current Holder',
+        branch_name: 'HQ',
+        location: 'Office',
+        status: 'Active',
+      },
+    ],
+    not_found: [],
+    requested: 1,
+  });
+  mockApi.equipmentAPI.getEquipmentActs.mockResolvedValue({ acts: [], total: 0 });
+  mockApi.equipmentAPI.getEquipmentHistory.mockResolvedValue({
+    inv_no: '1001',
+    item_id: 1,
+    total: 1,
+    history: [
+      {
+        hist_id: 3,
+        ch_date: '2026-04-27T09:15:00',
+        ch_user: 'web',
+        ch_comment: 'handover',
+        old_employee_name: 'Old Holder',
+        new_employee_name: 'New Holder',
+        old_branch_name: 'Old Branch',
+        new_branch_name: 'HQ',
+        old_location_name: 'Stock',
+        new_location_name: 'Office',
+      },
+    ],
+  });
   mockApi.equipmentAPI.identifyWorkspace.mockResolvedValue({
     success: false,
     message: 'not found',
@@ -249,6 +310,35 @@ describe('Database equipment row helpers', () => {
     expect(screen.queryByRole('button', { name: 'Загрузить акт' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Добавить оборудование' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'QR Сканер' })).not.toBeInTheDocument();
+  });
+
+  it('lazy-loads equipment movement history from the detail tab', async () => {
+    const historyTab = await openFirstEquipmentDetail();
+
+    expect(mockApi.equipmentAPI.getEquipmentHistory).not.toHaveBeenCalled();
+
+    fireEvent.click(historyTab);
+
+    await waitFor(() => {
+      expect(mockApi.equipmentAPI.getEquipmentHistory).toHaveBeenCalledWith('1001');
+    });
+    expect(await screen.findByText('Old Holder -> New Holder')).toBeInTheDocument();
+    expect(screen.getByText('Old Branch -> HQ')).toBeInTheDocument();
+    expect(screen.getByText('Stock -> Office')).toBeInTheDocument();
+  });
+
+  it('shows an empty movement history state in the detail tab', async () => {
+    mockApi.equipmentAPI.getEquipmentHistory.mockResolvedValueOnce({
+      inv_no: '1001',
+      item_id: 1,
+      total: 0,
+      history: [],
+    });
+
+    const historyTab = await openFirstEquipmentDetail();
+    fireEvent.click(historyTab);
+
+    expect(await screen.findByText('История перемещений для этого оборудования пока пустая.')).toBeInTheDocument();
   });
 
   it('adds delete action only for admins in equipment mode', () => {
@@ -406,6 +496,68 @@ describe('Database equipment row helpers', () => {
       isEmailLoading: false,
       isInventoryVerified: true,
     })).toBe(true);
+  });
+
+  it('blocks oversized uploaded act PDF before sending it to the API', () => {
+    const file = new File(['x'], 'signed-act.pdf', { type: 'application/pdf' });
+    Object.defineProperty(file, 'size', {
+      configurable: true,
+      value: (UPLOAD_ACT_MAX_SIZE_MB * 1024 * 1024) + 1,
+    });
+
+    expect(validateUploadActPdfFile(file)).toContain(`Максимальный размер для акта: ${UPLOAD_ACT_MAX_SIZE_MB} МБ`);
+  });
+
+  it('classifies timeout and network failures as not reaching the recognition API', () => {
+    const error = {
+      code: 'ECONNABORTED',
+      message: 'timeout of 30000ms exceeded',
+    };
+    const file = new File(['pdf'], 'act.pdf', { type: 'application/pdf' });
+
+    expect(isApiUnavailableForActParseError(error)).toBe(false);
+    expect(buildUploadActParseErrorMessage({ error, file, manualMode: false })).toContain(
+      'Запрос не дошёл до API распознавания'
+    );
+    expect(buildUploadActParseErrorMessage({ error, file, manualMode: false })).toContain('axios=ECONNABORTED');
+  });
+
+  it('allows manual fallback only for backend OpenRouter/API failures', () => {
+    expect(isApiUnavailableForActParseError({
+      response: {
+        status: 400,
+        data: { detail: 'Ошибка OpenRouter: provider unavailable' },
+      },
+    })).toBe(true);
+
+    expect(buildUploadActParseErrorMessage({
+      error: {
+        response: {
+          status: 400,
+          data: { detail: 'Размер файла превышает лимит 15 МБ' },
+        },
+      },
+      file: new File(['pdf'], 'act.pdf', { type: 'application/pdf' }),
+      manualMode: true,
+    })).toContain('Backend вернул ошибку: Размер файла превышает лимит 15 МБ');
+  });
+
+  it('classifies bare 502 proxy failures without OpenRouter fallback', () => {
+    const error = {
+      code: 'ERR_BAD_RESPONSE',
+      response: {
+        status: 502,
+        data: '',
+      },
+    };
+
+    expect(isUploadActProxyUnavailableError(error)).toBe(true);
+    expect(isApiUnavailableForActParseError(error)).toBe(false);
+    expect(buildUploadActParseErrorMessage({
+      error,
+      file: new File(['pdf'], 'act.pdf', { type: 'application/pdf' }),
+      manualMode: true,
+    })).toContain('Backend или IIS/ARR proxy не вернул ответ');
   });
 
   it('skips the first data-mode effect run and refreshes only after lifecycle is initialized', () => {

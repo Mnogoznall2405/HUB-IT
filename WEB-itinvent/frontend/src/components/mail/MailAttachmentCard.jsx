@@ -2,7 +2,7 @@ import { Box, ButtonBase, IconButton, Menu, MenuItem, Stack, Typography } from '
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import { alpha, useTheme } from '@mui/material/styles';
 import { useMemo, useState } from 'react';
-import { buildMailUiTokens } from './mailUiTokens';
+import { buildMailUiTokens, getMailMenuPaperSx } from './mailUiTokens';
 import { getMailAttachmentVisual } from './mailAttachmentVisuals';
 
 const normalizeText = (value, fallback = '') => {
@@ -68,7 +68,7 @@ export default function MailAttachmentCard({
           width: '100%',
           display: 'flex',
           alignItems: 'stretch',
-          borderRadius: 1.1,
+          borderRadius: tokens.radiusSm,
           bgcolor: cardBg,
           border: '1px solid',
           borderColor: cardBorder,
@@ -101,7 +101,7 @@ export default function MailAttachmentCard({
               width: 34,
               height: 34,
               flexShrink: 0,
-              borderRadius: 0.7,
+              borderRadius: tokens.radiusXs,
               display: 'flex',
               alignItems: 'center',
               justifyContent: 'center',
@@ -128,7 +128,7 @@ export default function MailAttachmentCard({
             <Typography
               sx={{
                 mt: 0.22,
-                fontSize: '0.76rem',
+                fontSize: tokens.fontSizeFine,
                 lineHeight: 1.2,
                 color: mine ? alpha(theme.palette.common.white, 0.74) : tokens.textSecondary,
               }}
@@ -183,15 +183,7 @@ export default function MailAttachmentCard({
         anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
         transformOrigin={{ vertical: 'top', horizontal: 'right' }}
         PaperProps={{
-          sx: {
-            mt: 0.5,
-            borderRadius: 1.1,
-            minWidth: 180,
-            bgcolor: tokens.panelBg,
-            border: '1px solid',
-            borderColor: tokens.borderSoft,
-            boxShadow: tokens.shadow,
-          },
+          sx: getMailMenuPaperSx(tokens, { minWidth: 180 }),
         }}
       >
         <MenuItem onClick={handleOpenAction}>Открыть</MenuItem>

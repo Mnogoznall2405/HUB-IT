@@ -46,6 +46,7 @@ from backend.services.session_service import session_service
 from backend.services.session_auth_context_service import session_auth_context_service
 from backend.services.settings_service import settings_service
 from backend.services.user_db_selection_service import user_db_selection_service
+from backend.services.mail_service import mail_service
 from backend.services.user_service import user_service
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.auth_security_service import AuthSecurityError, auth_security_service
@@ -317,6 +318,25 @@ def _apply_default_database(user: dict) -> None:
         set_user_database(user_id, pinned, username)
 
 
+def _sync_ad_primary_mailbox_after_password_login(user: dict, *, request_username: str, password: str) -> None:
+    if str((user or {}).get("auth_source") or "").strip().lower() != "ldap":
+        return
+    if not str(password or "").strip():
+        return
+    try:
+        mail_service.ensure_primary_ad_mailbox_credentials(
+            user=user,
+            exchange_login=normalize_exchange_login(request_username),
+            mailbox_password=password,
+        )
+    except Exception:
+        logger.warning(
+            "Failed to sync AD primary mailbox credentials after login: user_id=%s",
+            int((user or {}).get("id") or 0),
+            exc_info=True,
+        )
+
+
 def _auth_cookie_samesite() -> str:
     return str(config.app.auth_cookie_samesite or "strict")
 
@@ -499,6 +519,12 @@ async def login(payload: LoginRequest, request: Request, response: Response):
                 refresh_ttl_seconds=int(login_result.get("refresh_ttl_seconds") or 0),
             )
             await run_in_threadpool(_apply_default_database, login_result["user"])
+            await run_in_threadpool(
+                _sync_ad_primary_mailbox_after_password_login,
+                login_result["user"],
+                request_username=payload.username,
+                password=payload.password,
+            )
         logger.info(
             "Auth login decision username=%s client_ip=%s remote_host=%s xff=%s zone=%s trusted_proxy=%s via_xff=%s https=%s xfp=%s policy=%s status=%s challenge=%s cookies_set=%s",
             str(payload.username or "").strip(),

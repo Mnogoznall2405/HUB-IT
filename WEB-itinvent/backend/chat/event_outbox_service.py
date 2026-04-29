@@ -74,6 +74,7 @@ class ChatEventOutboxService:
         self._task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
         self._last_heartbeat_at: float = 0.0
+        self._last_avg_job_ms: float = 0.0
 
     @property
     def enabled(self) -> bool:
@@ -98,6 +99,10 @@ class ChatEventOutboxService:
     @property
     def heartbeat_sec(self) -> int:
         return _clamp_env_int("CHAT_EVENT_OUTBOX_HEARTBEAT_SEC", 60, 10, 3600)
+
+    @property
+    def max_concurrency(self) -> int:
+        return _clamp_env_int("CHAT_OUTBOX_CONCURRENCY", 4, 1, 32)
 
     @property
     def dispatcher_active(self) -> bool:
@@ -378,28 +383,54 @@ class ChatEventOutboxService:
             }
         recovered = self.recover_stale_jobs()
         jobs = self.claim_jobs()
+        batch_started_at = time.perf_counter()
         delivered = 0
         queued = 0
         failed = 0
-        for job in jobs:
-            outcome = await self.process_job(job)
+        semaphore = asyncio.Semaphore(self.max_concurrency)
+
+        async def _process_bounded(job: ChatEventOutboxJob) -> str:
+            async with semaphore:
+                return await self.process_job(job)
+
+        outcomes = await asyncio.gather(
+            *[_process_bounded(job) for job in jobs],
+            return_exceptions=True,
+        )
+        for outcome in outcomes:
+            if isinstance(outcome, Exception):
+                logger.error(
+                    "chat.event_outbox.job task failed unexpectedly",
+                    exc_info=(type(outcome), outcome, outcome.__traceback__),
+                )
+                failed += 1
+                continue
             if outcome == EVENT_OUTBOX_STATUS_DELIVERED:
                 delivered += 1
             elif outcome == EVENT_OUTBOX_STATUS_QUEUED:
                 queued += 1
             else:
                 failed += 1
+        batch_duration_ms = (time.perf_counter() - batch_started_at) * 1000.0
+        if jobs:
+            self._last_avg_job_ms = batch_duration_ms / max(1, len(jobs))
         now = time.time()
         if (now - self._last_heartbeat_at) >= float(self.heartbeat_sec):
             self._last_heartbeat_at = now
+            backlog = self.get_backlog_snapshot()
             logger.info(
-                "chat.event_outbox.heartbeat enabled=%s claimed=%s delivered=%s queued=%s failed=%s recovered=%s",
+                "chat.event_outbox.heartbeat enabled=%s claimed=%s delivered=%s queued=%s failed=%s recovered=%s backlog_queued=%s backlog_failed=%s avg_job_ms=%.1f batch_ms=%.1f concurrency=%s",
                 int(self.enabled),
                 len(jobs),
                 delivered,
                 queued,
                 failed,
                 recovered,
+                int(backlog.get("queued") or 0),
+                int(backlog.get("failed") or 0),
+                batch_duration_ms / max(1, len(jobs)),
+                batch_duration_ms,
+                int(self.max_concurrency),
             )
         return {
             "enabled": 1,
@@ -440,6 +471,7 @@ class ChatEventOutboxService:
             "failed": terminal_failed,
             "oldest_queued_age_sec": round(oldest_queued_age_sec, 1),
             "dispatcher_active": int(self.dispatcher_active),
+            "avg_job_ms": round(float(self._last_avg_job_ms or 0.0), 1),
         }
 
 

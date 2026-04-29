@@ -655,6 +655,26 @@ describe('MainLayout hub Windows notifications', () => {
     expect(notificationInstances).toHaveLength(0);
   });
 
+  it('uses the first mail unread count as a baseline without replaying existing unread messages', async () => {
+    visibilityState = 'visible';
+    mockHasPermission.mockImplementation((permission) => permission === 'mail.access');
+    mockGetUnreadCount.mockResolvedValue({ unread_count: 1 });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockNotifyInfo).not.toHaveBeenCalled();
+    expect(notificationInstances).toHaveLength(0);
+  });
+
   it('does not create a local browser mail notification when push subscription is active in the background', async () => {
     visibilityState = 'hidden';
     mockHasPermission.mockImplementation((permission) => permission === 'mail.access');

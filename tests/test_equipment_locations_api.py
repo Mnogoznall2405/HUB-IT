@@ -24,6 +24,45 @@ def _forbid_branch_location_check(*args, **kwargs):
 
 
 @pytest.mark.asyncio
+async def test_transfer_endpoint_uses_shared_execution_service(monkeypatch):
+    calls = []
+
+    def fake_execute(**kwargs):
+        calls.append(kwargs)
+        return {
+            "success_count": 1,
+            "failed_count": 0,
+            "transferred": [{
+                "inv_no": "1001",
+                "new_employee_no": 55,
+                "new_employee_name": "New Owner",
+            }],
+            "failed": [],
+            "acts": [],
+            "upload_reminder_created": False,
+            "upload_reminder_task_id": None,
+            "upload_reminder_id": None,
+            "upload_reminder_warning": None,
+            "upload_reminder_controller_username": None,
+            "upload_reminder_controller_fallback_used": False,
+        }
+
+    monkeypatch.setattr(equipment_api, "execute_equipment_transfer", fake_execute)
+
+    payload = equipment_api.TransferExecuteRequest(
+        inv_nos=["1001"],
+        new_employee="New Owner",
+        new_employee_no=55,
+    )
+    result = await equipment_api.transfer_equipment(payload, db_id="main", current_user=_user())
+
+    assert result.success_count == 1
+    assert calls[0]["payload"] is payload
+    assert calls[0]["db_id"] == "main"
+    assert calls[0]["allow_create_owner"] is True
+
+
+@pytest.mark.asyncio
 async def test_locations_endpoints_use_global_directory(monkeypatch):
     sample_locations = [
         {"loc_no": 10, "loc_name": "Кабинет 10"},
@@ -223,7 +262,11 @@ async def test_transfer_accepts_existing_location_without_branch_mapping(monkeyp
             "loc_no": kwargs["new_loc_no"],
         },
     )
-    monkeypatch.setattr(equipment_api, "generate_transfer_acts", lambda **kwargs: [])
+    transfer_execution_service = __import__(
+        "backend.services.equipment_transfer_execution_service",
+        fromlist=["generate_transfer_acts"],
+    )
+    monkeypatch.setattr(transfer_execution_service, "generate_transfer_acts", lambda **kwargs: [])
 
     payload = equipment_api.TransferExecuteRequest(
         inv_nos=["1001"],
@@ -237,3 +280,68 @@ async def test_transfer_accepts_existing_location_without_branch_mapping(monkeyp
 
     assert result.success_count == 1
     assert result.failed_count == 0
+
+
+@pytest.mark.asyncio
+async def test_transfer_act_only_uses_current_owner_without_updating_inventory(monkeypatch):
+    captured = {}
+
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "get_owner_by_no",
+        lambda owner_no, db_id=None: {
+            "OWNER_NO": owner_no,
+            "OWNER_DISPLAY_NAME": "Issuer User",
+            "OWNER_DEPT": "IT",
+        },
+    )
+    monkeypatch.setattr(equipment_api.queries, "get_owner_email_by_no", lambda owner_no, db_id=None: "issuer@example.test")
+    monkeypatch.setattr(
+        equipment_api.queries,
+        "get_equipment_by_inv",
+        lambda inv_no, db_id=None: {
+            "inv_no": inv_no,
+            "serial_no": "SN-1",
+            "part_no": "PN-1",
+            "type_name": "Notebook",
+            "model_name": "ThinkPad",
+            "employee_name": "Current Holder",
+            "employee_dept": "Finance",
+            "employee_email": "holder@example.test",
+        },
+    )
+
+    def fail_transfer(**kwargs):
+        raise AssertionError("act-only endpoint must not transfer equipment")
+
+    def fake_generate_without_move(**kwargs):
+        captured.update(kwargs)
+        return [
+            {
+                "act_id": "act-1",
+                "old_employee": kwargs["issuer_name"],
+                "new_employee": "Current Holder",
+                "equipment_count": 1,
+                "file_name": "act.docx",
+                "file_type": "docx",
+            }
+        ]
+
+    monkeypatch.setattr(equipment_api.queries, "transfer_equipment_by_inv_with_history", fail_transfer)
+    monkeypatch.setattr(equipment_api, "generate_transfer_acts_without_move", fake_generate_without_move)
+
+    payload = equipment_api.TransferActOnlyRequest(
+        inv_nos=["1001"],
+        issuer_employee="manual fallback",
+        issuer_owner_no=77,
+    )
+
+    result = await equipment_api.create_transfer_act_without_move(payload, db_id="main", _=_user())
+
+    assert result.success_count == 1
+    assert result.failed_count == 0
+    assert result.acts[0].old_employee == "Issuer User"
+    assert result.acts[0].new_employee == "Current Holder"
+    assert captured["issuer_name"] == "Issuer User"
+    assert captured["issuer_email"] == "issuer@example.test"
+    assert captured["items"][0]["employee_name"] == "Current Holder"

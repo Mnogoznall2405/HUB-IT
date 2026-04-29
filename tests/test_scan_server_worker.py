@@ -80,6 +80,157 @@ def test_collect_pdf_matches_uses_short_text_layer_before_ocr(monkeypatch, temp_
     assert result["outcome"] == "text_layer_match"
 
 
+def test_collect_pdf_matches_uses_shared_loan_pattern_for_pdf_text_layer(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    pdf_bytes = _make_pdf_bytes("text layer")
+
+    monkeypatch.setattr(scan_worker, "_extract_pdf_text", lambda pdf_bytes, max_pages=3: "Договор займа подписан")
+    monkeypatch.setattr(
+        worker,
+        "_ocr_text_from_pdf_bytes",
+        lambda pdf_bytes, artifact_path=None: (_ for _ in ()).throw(
+            AssertionError("OCR should not run when text layer already matches")
+        ),
+    )
+
+    result = worker._collect_pdf_matches(pdf_bytes)
+
+    assert result["outcome"] == "text_layer_match"
+    assert any(row.get("pattern") == "loan_keyword" for row in result["matches"])
+
+
+def test_collect_pdf_matches_uses_shared_loan_pattern_for_pdf_ocr(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    pdf_bytes = _make_pdf_bytes("x y z")
+
+    monkeypatch.setattr(
+        worker,
+        "_ocr_text_from_pdf_bytes",
+        lambda pdf_bytes, artifact_path=None: ("Сумма заёма указана", "ocr_text_ready"),
+    )
+
+    result = worker._collect_pdf_matches(pdf_bytes)
+
+    assert result["outcome"] == "ocr_match"
+    assert any(row.get("pattern") == "loan_keyword" for row in result["matches"])
+
+
+def test_collect_pdf_matches_respects_allowed_pattern_filter_for_ocr(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    pdf_bytes = _make_pdf_bytes("x y z")
+
+    monkeypatch.setattr(
+        worker,
+        "_ocr_text_from_pdf_bytes",
+        lambda pdf_bytes, artifact_path=None: ("Password: secret-token-123\nСумма заёма указана", "ocr_text_ready"),
+    )
+
+    result = worker._collect_pdf_matches(pdf_bytes, allowed_pattern_ids_filter={"loan_keyword"})
+
+    assert result["outcome"] == "ocr_match"
+    assert [row.get("pattern") for row in result["matches"]] == ["loan_keyword"]
+
+
+def test_collect_pdf_matches_returns_clean_when_filter_allows_no_patterns(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    pdf_bytes = _make_pdf_bytes("x y z")
+
+    monkeypatch.setattr(
+        worker,
+        "_ocr_text_from_pdf_bytes",
+        lambda pdf_bytes, artifact_path=None: ("Password: secret-token-123\nСумма заёма указана", "ocr_text_ready"),
+    )
+
+    result = worker._collect_pdf_matches(pdf_bytes, allowed_pattern_ids_filter=set())
+
+    assert result["outcome"] == "ocr_clean_no_match"
+    assert result["matches"] == []
+
+
+def test_process_pdf_job_filters_local_hits_from_task_payload(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    calls: dict[str, object] = {}
+
+    class _Store:
+        def read_job_pdf_spool(self, *, job_id):
+            return b""
+
+        def delete_job_pdf_spool(self, *, job_id):
+            return True
+
+        def get_task_payload(self, task_id):
+            assert task_id == "task-1"
+            return {"server_pdf_pattern_ids": ["loan_keyword"]}
+
+        def create_finding_and_incident(self, **kwargs):
+            calls["incident"] = kwargs
+            return {"finding_id": "f1", "incident_id": "i1"}
+
+        def finalize_job(self, **kwargs):
+            calls["finalize"] = kwargs
+
+    worker.store = _Store()
+    payload = {
+        "text_excerpt": "",
+        "local_pattern_hits": [
+            {"pattern": "password_strict", "pattern_name": "Пароль", "value": "Password: secret-token-123"},
+            {"pattern": "loan_keyword", "pattern_name": "Займ", "value": "займ"},
+        ],
+    }
+    job = {
+        "id": "job-1",
+        "scan_task_id": "task-1",
+        "source_kind": "pdf",
+        "payload_json": json.dumps(payload),
+    }
+
+    worker._process_job(job)
+
+    assert [row["pattern"] for row in calls["incident"]["matched_patterns"]] == ["loan_keyword"]
+    assert calls["finalize"]["status"] == "done_with_incident"
+
+
+def test_process_pdf_job_uses_all_patterns_when_task_filter_is_empty(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    calls: dict[str, object] = {}
+
+    class _Store:
+        def read_job_pdf_spool(self, *, job_id):
+            return b""
+
+        def delete_job_pdf_spool(self, *, job_id):
+            return True
+
+        def get_task_payload(self, task_id):
+            return {"server_pdf_pattern_ids": []}
+
+        def create_finding_and_incident(self, **kwargs):
+            calls["incident"] = kwargs
+            return {"finding_id": "f1", "incident_id": "i1"}
+
+        def finalize_job(self, **kwargs):
+            calls["finalize"] = kwargs
+
+    worker.store = _Store()
+    payload = {
+        "text_excerpt": "",
+        "local_pattern_hits": [
+            {"pattern": "password_strict", "pattern_name": "Пароль", "value": "Password: secret-token-123"},
+        ],
+    }
+    job = {
+        "id": "job-1",
+        "scan_task_id": "task-1",
+        "source_kind": "pdf",
+        "payload_json": json.dumps(payload),
+    }
+
+    worker._process_job(job)
+
+    assert [row["pattern"] for row in calls["incident"]["matched_patterns"]] == ["password_strict"]
+    assert calls["finalize"]["status"] == "done_with_incident"
+
+
 def test_collect_pdf_matches_falls_back_to_ocr_for_gibberish_text_layer(monkeypatch, temp_dir):
     worker = _make_worker(temp_dir)
     pdf_bytes = _make_pdf_bytes("x y z")

@@ -63,6 +63,7 @@ _CHAT_ATTACHMENT_VARIANT_MAX_DIMENSIONS = {
     "thumb": 320,
     "preview": 1280,
 }
+_CHAT_MENTION_PATTERN = re.compile(r"(?<![\w@])@([0-9A-Za-zА-Яа-яЁё_.-]{1,64})", re.UNICODE)
 
 
 def _utc_now() -> datetime:
@@ -77,6 +78,14 @@ def _normalize_text(value: object, default: str = "") -> str:
 def _normalize_body_format(value: object, default: str = "plain") -> str:
     normalized = _normalize_text(value).lower() or default
     return normalized if normalized in {"plain", "markdown"} else "plain"
+
+
+def _normalize_mention_handle(value: object) -> str:
+    return _normalize_text(value).lstrip("@").lower()
+
+
+def _mention_handle_from_person_name(value: object) -> str:
+    return re.sub(r"[^0-9A-Za-zА-Яа-яЁё_.-]+", "", _normalize_text(value).replace(" ", "_")).lower()
 
 
 _MARKDOWN_TABLE_SEPARATOR_RE = re.compile(r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$")
@@ -523,9 +532,24 @@ class ChatService:
             realtime_metrics = dict(get_chat_realtime_metrics() or {})
         except Exception:
             realtime_metrics = {}
+        try:
+            from backend.ai_chat.retrieval_interface import ai_kb_retrieval
+            ai_kb_metrics = dict(ai_kb_retrieval.get_metrics() or {})
+        except Exception:
+            ai_kb_metrics = {}
+        try:
+            from backend.ai_chat.service import get_ai_chat_runtime_metrics
+            ai_runtime_metrics = dict(get_ai_chat_runtime_metrics() or {})
+        except Exception:
+            ai_runtime_metrics = {}
         redis_available = bool(realtime_metrics.get("redis_available"))
         redis_configured = bool(realtime_metrics.get("redis_configured"))
         pubsub_subscribed = bool(realtime_metrics.get("pubsub_subscribed"))
+        ai_worker_concurrency = 0
+        try:
+            ai_worker_concurrency = int(os.getenv("AI_CHAT_WORKER_CONCURRENCY", "2") or "2")
+        except Exception:
+            ai_worker_concurrency = 2
         realtime_mode = "redis" if (redis_available and pubsub_subscribed) else ("local_fallback" if redis_configured else "local")
         return {
             "enabled": bool(status.enabled),
@@ -551,6 +575,12 @@ class ChatService:
             "event_outbox_failed": int(event_outbox_snapshot.get("failed", 0) or 0),
             "event_outbox_oldest_queued_age_sec": float(event_outbox_snapshot.get("oldest_queued_age_sec", 0.0) or 0.0),
             "event_dispatcher_active": bool(event_outbox_snapshot.get("dispatcher_active", 0)),
+            "event_outbox_avg_job_ms": float(event_outbox_snapshot.get("avg_job_ms", 0.0) or 0.0),
+            "ws_rate_limited_count": int(realtime_metrics.get("ws_rate_limited_count", 0) or 0),
+            "ws_rate_limited_connections": int(realtime_metrics.get("ws_rate_limited_connections", 0) or 0),
+            "ai_worker_concurrency": max(1, min(16, ai_worker_concurrency)),
+            "ai_kb_index_age_sec": float(ai_kb_metrics.get("index_age_sec", 0.0) or 0.0),
+            "ai_last_run_duration_ms": float(ai_runtime_metrics.get("last_run_duration_ms", 0.0) or 0.0),
         }
 
     def _get_upload_session_lock(self, session_id: str) -> RLock:
@@ -1202,6 +1232,48 @@ class ChatService:
             return []
         with chat_session() as session:
             return self._conversation_member_ids(session, normalized_conversation_id)
+
+    def _extract_mention_handles(self, body: object) -> set[str]:
+        text = _normalize_text(body)
+        if "@" not in text:
+            return set()
+        return {
+            _normalize_mention_handle(match.group(1))
+            for match in _CHAT_MENTION_PATTERN.finditer(text)
+            if _normalize_mention_handle(match.group(1))
+        }
+
+    def _resolve_mentioned_member_user_ids(
+        self,
+        *,
+        member_user_ids: list[int] | set[int] | tuple[int, ...],
+        sender_user_id: int,
+        body: object,
+    ) -> set[int]:
+        handles = self._extract_mention_handles(body)
+        if not handles:
+            return set()
+        candidate_user_ids = sorted({
+            int(item)
+            for item in list(member_user_ids or [])
+            if int(item) > 0 and int(item) != int(sender_user_id)
+        })
+        if not candidate_user_ids:
+            return set()
+        try:
+            users_by_id = user_service.get_users_map_by_ids(candidate_user_ids)
+        except Exception:
+            users_by_id = {}
+        result: set[int] = set()
+        for user_id in candidate_user_ids:
+            user = users_by_id.get(int(user_id)) or {}
+            candidate_handles = {
+                _normalize_mention_handle(user.get("username")),
+                _mention_handle_from_person_name(user.get("full_name")),
+            }
+            if handles.intersection({item for item in candidate_handles if item}):
+                result.add(int(user_id))
+        return result
 
     def get_conversation(
         self,
@@ -2560,6 +2632,11 @@ class ChatService:
             conversation_id=_normalize_text(payload.get("conversation_id")),
             user_ids=member_user_ids,
         )
+        mentioned_user_ids = self._resolve_mentioned_member_user_ids(
+            member_user_ids=member_user_ids,
+            sender_user_id=int(current_user_id),
+            body=body,
+        )
         notification_stats = self._create_chat_notifications(
             sender_user_id=int(current_user_id),
             conversation_id=_normalize_text(payload.get("conversation_id")),
@@ -2568,6 +2645,7 @@ class ChatService:
             title="Files were sent to chat",
             body=notification_body,
             defer_push_notifications=defer_push_notifications,
+            mentioned_user_ids=mentioned_user_ids,
         )
 
     def create_upload_session(
@@ -3225,6 +3303,11 @@ class ChatService:
 
         if not dedup_hit:
             stage_started_at = time.perf_counter()
+            mentioned_user_ids = self._resolve_mentioned_member_user_ids(
+                member_user_ids=member_user_ids,
+                sender_user_id=int(current_user_id),
+                body=normalized_body,
+            )
             notification_stats = self._create_chat_notifications(
                 sender_user_id=int(current_user_id),
                 conversation_id=_normalize_text(payload.get("conversation_id")),
@@ -3233,6 +3316,7 @@ class ChatService:
                 title="Новое сообщение в чате",
                 body=_truncate_text(normalized_body),
                 defer_push_notifications=defer_push_notifications,
+                mentioned_user_ids=mentioned_user_ids,
             )
             stage_metrics["notifications_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
         else:
@@ -3879,7 +3963,16 @@ class ChatService:
             "forward_preview": dict((forward_previews or {}).get(_normalize_text(getattr(message, "forward_from_message_id", None))) or {}) or None,
             "task_preview": self._deserialize_task_preview(getattr(message, "task_preview_json", None)),
             "attachments": attachment_payload,
+            "action_card": self._get_message_action_card(message_id=message.id),
         }
+
+    def _get_message_action_card(self, *, message_id: str) -> dict | None:
+        try:
+            from backend.ai_chat.action_cards import get_action_card_for_message
+
+            return get_action_card_for_message(message_id)
+        except Exception:
+            return None
 
     def _build_conversation_message_preview(
         self,
@@ -4987,6 +5080,7 @@ class ChatService:
         title: str,
         body: str,
         defer_push_notifications: bool = False,
+        mentioned_user_ids: Optional[list[int] | set[int] | tuple[int, ...]] = None,
     ) -> dict[str, Any]:
         started_at = time.perf_counter()
         normalized_conversation_id = _normalize_text(conversation_id)
@@ -5004,6 +5098,11 @@ class ChatService:
         }
         if not normalized_conversation_id or not normalized_message_id:
             return stats
+        mentioned_user_id_set = {
+            int(item)
+            for item in list(mentioned_user_ids or [])
+            if int(item) > 0 and int(item) != int(sender_user_id)
+        }
 
         member_ids: list[int] = []
         try:
@@ -5052,12 +5151,20 @@ class ChatService:
                     for member_id in member_ids:
                         if int(member_id) <= 0 or int(member_id) == int(sender_user_id):
                             continue
+                        is_mentioned = int(member_id) in mentioned_user_id_set
                         state = states_by_user_id.get(int(member_id))
-                        if bool(getattr(state, "is_muted", False)) or bool(getattr(state, "is_archived", False)):
+                        if (
+                            not is_mentioned
+                            and (
+                                bool(getattr(state, "is_muted", False))
+                                or bool(getattr(state, "is_archived", False))
+                            )
+                        ):
                             continue
                         stats["recipient_count"] += 1
 
                         current_body = base_body
+                        current_event_type = _normalize_text(event_type)
                         if conversation.kind == "direct":
                             current_title = sender_name
                             if base_title and base_title != "Новое сообщение в чате":
@@ -5068,11 +5175,21 @@ class ChatService:
                             prefix = f"[{base_title}] " if base_title and base_title != "Новое сообщение в чате" else ""
                             current_body = f"{prefix}{sender_name}: {base_body}"
 
+                        if is_mentioned:
+                            current_event_type = "chat.mention"
+                            mention_prefix = "Р’Р°СЃ СѓРїРѕРјСЏРЅСѓР»Рё"
+                            if conversation.kind == "direct":
+                                current_title = sender_name
+                                current_body = f"[{mention_prefix}] {base_body}"
+                            else:
+                                current_title = f"{mention_prefix}: {current_title}"
+                                current_body = f"{sender_name}: {base_body}"
+
                         try:
                             notification_started_at = time.perf_counter()
                             hub_service._create_notification(
                                 recipient_user_id=int(member_id),
-                                event_type=_normalize_text(event_type),
+                                event_type=current_event_type,
                                 title=current_title,
                                 body=current_body,
                                 entity_type="chat",

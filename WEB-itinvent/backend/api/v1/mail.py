@@ -270,8 +270,9 @@ class FolderFavoritePayload(BaseModel):
 class MailboxCreatePayload(BaseModel):
     label: str = Field(default="")
     mailbox_email: str = Field(..., min_length=1)
-    mailbox_login: str = Field(..., min_length=1)
-    mailbox_password: str = Field(..., min_length=1, max_length=256)
+    mailbox_login: str = Field(default="")
+    mailbox_password: str = Field(default="", max_length=256)
+    auth_mode: str = Field(default="stored_credentials")
     is_primary: bool = Field(default=False)
     is_active: bool = Field(default=True)
 
@@ -281,6 +282,7 @@ class MailboxUpdatePayload(BaseModel):
     mailbox_email: Optional[str] = None
     mailbox_login: Optional[str] = None
     mailbox_password: Optional[str] = None
+    auth_mode: Optional[str] = None
     is_primary: Optional[bool] = None
     is_active: Optional[bool] = None
     selected: Optional[bool] = None
@@ -609,6 +611,7 @@ async def connect_user_mailbox(
             mailbox_email=_normalize_text(payload.mailbox_email),
             mailbox_login=_normalize_text(payload.mailbox_login),
             mailbox_password=_normalize_text(payload.mailbox_password),
+            auth_mode=_normalize_text(payload.auth_mode, "stored_credentials"),
             is_primary=bool(payload.is_primary),
             is_active=bool(payload.is_active),
         )

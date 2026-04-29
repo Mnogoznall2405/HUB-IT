@@ -18,6 +18,8 @@ depends_on = None
 
 def _column_names(schema: str, table_name: str) -> set[str]:
     inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table(table_name, schema=schema):
+        return set()
     return {
         str(item.get("name") or "").strip().lower()
         for item in inspector.get_columns(table_name, schema=schema)
@@ -26,13 +28,21 @@ def _column_names(schema: str, table_name: str) -> set[str]:
 
 def _index_names(schema: str, table_name: str) -> set[str]:
     inspector = sa.inspect(op.get_bind())
+    if not inspector.has_table(table_name, schema=schema):
+        return set()
     return {
         str(item.get("name") or "").strip().lower()
         for item in inspector.get_indexes(table_name, schema=schema)
     }
 
 
+def _scope() -> str:
+    return str(op.get_context().config.attributes.get("itinvent_scope", "all") or "all").strip().lower()
+
+
 def upgrade() -> None:
+    if _scope() == "app":
+        return
     columns = _column_names("chat", "chat_messages")
     indexes = _index_names("chat", "chat_messages")
     if "forward_from_message_id" not in columns:
@@ -52,6 +62,8 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _scope() == "app":
+        return
     indexes = _index_names("chat", "chat_messages")
     columns = _column_names("chat", "chat_messages")
     if "ix_chat_messages_forward_from_message_id" in indexes:

@@ -34,6 +34,7 @@ from backend.services.user_service import build_default_ldap_mailbox_email, user
 
 logger = logging.getLogger(__name__)
 _UNSET = object()
+_MAILBOX_AUTH_MODES = {"stored_credentials", "primary_session", "primary_credentials"}
 _MAIL_REQUEST_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("mail_request_context", default=None)
 _MAIL_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar("mail_request_metrics", default=None)
 
@@ -1231,6 +1232,13 @@ class MailService:
         return base64.urlsafe_b64encode(os.urandom(12)).decode("utf-8").rstrip("=")
 
     @staticmethod
+    def _normalize_mailbox_auth_mode(value: Any, default: str = "stored_credentials") -> str:
+        mode = _normalize_text(value, default).lower()
+        if mode in _MAILBOX_AUTH_MODES:
+            return mode
+        return default
+
+    @staticmethod
     def _legacy_user_mail_auth_mode(user: dict[str, Any] | None) -> str:
         if _normalize_text((user or {}).get("mailbox_password_enc")):
             return "stored_credentials"
@@ -1442,6 +1450,213 @@ class MailService:
         if not updated:
             logger.warning("Failed to sync primary mailbox to legacy user storage: user_id=%s", int(user_id))
 
+    def ensure_primary_ad_mailbox_credentials(
+        self,
+        *,
+        user: dict[str, Any] | None = None,
+        user_id: int | None = None,
+        exchange_login: str = "",
+        mailbox_password: str = "",
+    ) -> dict[str, Any] | None:
+        resolved_user = user or (user_service.get_by_id(int(user_id or 0)) if user_id else None)
+        if not resolved_user:
+            raise MailServiceError("User not found")
+        normalized_user_id = int(resolved_user.get("id") or 0)
+        if normalized_user_id <= 0:
+            raise MailServiceError("User not found")
+        if _normalize_text(resolved_user.get("auth_source")).lower() != "ldap":
+            return None
+        password = _normalize_text(mailbox_password)
+        if not password:
+            return None
+        login_source = _normalize_text(exchange_login or resolved_user.get("username")).lower()
+        normalized_login = normalize_exchange_login(login_source) if login_source else ""
+        normalized_email = self._build_effective_mailbox_email(resolved_user)
+        if not normalized_email:
+            logger.warning("Cannot sync AD primary mailbox without email: user_id=%s", normalized_user_id)
+            return None
+        if not normalized_login:
+            normalized_login = normalized_email
+
+        encrypted_password = encrypt_secret(password)
+        now_iso = _utc_now_iso()
+        self._ensure_user_mailboxes_seeded(user_id=normalized_user_id)
+        rows = self._list_user_mailboxes_rows(user_id=normalized_user_id, include_inactive=True)
+        primary_row = next((row for row in rows if _to_bool(row.get("is_primary"), default=False)), None)
+        email_row = next(
+            (
+                row
+                for row in rows
+                if _normalize_text(row.get("mailbox_email")).lower() == _normalize_text(normalized_email).lower()
+            ),
+            None,
+        )
+        target_row = primary_row or email_row
+        target_id = _normalize_text((target_row or {}).get("id")) or self._generate_mailbox_id()
+        next_sort_order = int((target_row or {}).get("sort_order") or 0)
+        if target_row is None:
+            next_sort_order = max([int(item.get("sort_order") or 0) for item in rows] or [0]) + 1
+
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                f"UPDATE {self._USER_MAILBOXES_TABLE} SET is_primary = ?, updated_at = ? WHERE user_id = ? AND id <> ?",
+                (False, now_iso, normalized_user_id, target_id),
+            )
+            if target_row is None:
+                conn.execute(
+                    f"""
+                    INSERT INTO {self._USER_MAILBOXES_TABLE}
+                    (
+                        id,
+                        user_id,
+                        label,
+                        mailbox_email,
+                        mailbox_login,
+                        mailbox_password_enc,
+                        auth_mode,
+                        is_primary,
+                        is_active,
+                        sort_order,
+                        last_selected_at,
+                        created_at,
+                        updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        target_id,
+                        normalized_user_id,
+                        _normalize_text(resolved_user.get("full_name") or resolved_user.get("email") or normalized_email) or normalized_email,
+                        normalized_email,
+                        normalized_login,
+                        encrypted_password,
+                        "stored_credentials",
+                        True,
+                        True,
+                        next_sort_order,
+                        now_iso,
+                        now_iso,
+                        now_iso,
+                    ),
+                )
+            else:
+                conn.execute(
+                    f"""
+                    UPDATE {self._USER_MAILBOXES_TABLE}
+                    SET
+                        label = CASE WHEN label IS NULL OR label = '' THEN ? ELSE label END,
+                        mailbox_email = ?,
+                        mailbox_login = ?,
+                        mailbox_password_enc = ?,
+                        auth_mode = ?,
+                        is_primary = ?,
+                        is_active = ?,
+                        last_selected_at = COALESCE(last_selected_at, ?),
+                        updated_at = ?
+                    WHERE user_id = ? AND id = ?
+                    """,
+                    (
+                        normalized_email,
+                        normalized_email,
+                        normalized_login,
+                        encrypted_password,
+                        "stored_credentials",
+                        True,
+                        True,
+                        now_iso,
+                        now_iso,
+                        normalized_user_id,
+                        target_id,
+                    ),
+                )
+            conn.commit()
+
+        user_service.update_user(
+            normalized_user_id,
+            mailbox_email=normalized_email,
+            mailbox_login=normalized_login,
+            mailbox_password=password,
+        )
+        self.invalidate_user_cache(user_id=normalized_user_id)
+        updated_user = user_service.get_by_id(normalized_user_id) or resolved_user
+        row = self._resolve_mailbox_row(user_id=normalized_user_id, mailbox_id=target_id, allow_inactive=True)
+        return self._serialize_mailbox_entry(user=updated_user, mailbox_row=row, unread_count=0, selected=True)
+
+    def _resolve_primary_mailbox_credentials(
+        self,
+        *,
+        user: dict[str, Any],
+        current_mailbox_id: str = "",
+        require_password: bool,
+    ) -> dict[str, Any]:
+        user_id = int(user.get("id") or 0)
+        primary_row = self._resolve_primary_mailbox_row(user_id=user_id, allow_inactive=True)
+        if not primary_row:
+            raise MailServiceError(
+                "Primary mailbox credentials are not configured",
+                code="MAIL_PASSWORD_REQUIRED",
+                status_code=409,
+            )
+        if current_mailbox_id and _normalize_text(primary_row.get("id")) == _normalize_text(current_mailbox_id):
+            raise MailServiceError("Shared mailbox cannot use itself as primary credentials", status_code=409)
+
+        primary_auth_mode = self._normalize_mailbox_auth_mode(primary_row.get("auth_mode"))
+        primary_email = _normalize_text(primary_row.get("mailbox_email")).lower()
+        primary_login = _normalize_text(primary_row.get("mailbox_login")).lower()
+        if not primary_login:
+            username = _normalize_text(user.get("username")).lower()
+            primary_login = normalize_exchange_login(username) if username else primary_email
+
+        password = ""
+        requires_password = False
+        requires_relogin = False
+        if primary_auth_mode == "primary_session":
+            session_id = get_request_session_id()
+            session_context = session_auth_context_service.get_session_context(session_id, user_id=user_id)
+            session_login = _normalize_text((session_context or {}).get("exchange_login")).lower()
+            if session_login:
+                primary_login = session_login
+            if require_password:
+                password = session_auth_context_service.resolve_session_password(session_id, user_id=user_id)
+                if not password:
+                    raise MailServiceError(
+                        "Mail access requires re-login",
+                        code="MAIL_RELOGIN_REQUIRED",
+                        status_code=409,
+                    )
+            else:
+                requires_relogin = not bool(
+                    session_context and session_auth_context_service.resolve_session_password(session_id, user_id=user_id)
+                )
+        else:
+            password_enc = _normalize_text(primary_row.get("mailbox_password_enc"))
+            if require_password:
+                if not password_enc:
+                    raise MailServiceError(
+                        "Primary mailbox password is not configured",
+                        code="MAIL_PASSWORD_REQUIRED",
+                        status_code=409,
+                    )
+                try:
+                    password = decrypt_secret(password_enc)
+                except SecretCryptoError as exc:
+                    raise MailServiceError(str(exc)) from exc
+                if not password:
+                    raise MailServiceError(
+                        "Primary mailbox password is empty",
+                        code="MAIL_PASSWORD_REQUIRED",
+                        status_code=409,
+                    )
+            else:
+                requires_password = not bool(password_enc)
+
+        return {
+            "login": primary_login,
+            "password": password,
+            "requires_password": requires_password,
+            "requires_relogin": requires_relogin,
+        }
+
     def _build_mailbox_profile(
         self,
         *,
@@ -1449,13 +1664,20 @@ class MailService:
         mailbox_row: dict[str, Any],
         require_password: bool,
     ) -> dict[str, Any]:
-        auth_mode = _normalize_text(mailbox_row.get("auth_mode"), "stored_credentials").lower()
+        auth_mode = self._normalize_mailbox_auth_mode(mailbox_row.get("auth_mode"))
         email = _normalize_text(mailbox_row.get("mailbox_email")).lower()
         login = _normalize_text(mailbox_row.get("mailbox_login")).lower()
         signature = _normalize_signature_html(user.get("mail_signature_html"))
         if not email:
             raise MailServiceError("Mailbox email is not configured")
-        if auth_mode == "primary_session":
+        if auth_mode == "primary_credentials":
+            primary_credentials = self._resolve_primary_mailbox_credentials(
+                user=user,
+                current_mailbox_id=_normalize_text(mailbox_row.get("id")),
+                require_password=require_password,
+            )
+            login = _normalize_text(primary_credentials.get("login")).lower()
+        elif auth_mode == "primary_session":
             session_id = get_request_session_id()
             session_context = session_auth_context_service.get_session_context(
                 session_id,
@@ -1476,7 +1698,9 @@ class MailService:
         mail_requires_password = False
         mail_requires_relogin = False
         if require_password:
-            if auth_mode == "primary_session":
+            if auth_mode == "primary_credentials":
+                password = _normalize_text(primary_credentials.get("password"))
+            elif auth_mode == "primary_session":
                 session_id = get_request_session_id()
                 session_context = session_auth_context_service.get_session_context(
                     session_id,
@@ -1514,7 +1738,10 @@ class MailService:
                         status_code=409,
                     )
         else:
-            if auth_mode == "primary_session":
+            if auth_mode == "primary_credentials":
+                mail_requires_password = bool(primary_credentials.get("requires_password"))
+                mail_requires_relogin = bool(primary_credentials.get("requires_relogin"))
+            elif auth_mode == "primary_session":
                 session_id = get_request_session_id()
                 session_context = session_auth_context_service.get_session_context(
                     session_id,
@@ -1529,7 +1756,13 @@ class MailService:
             else:
                 mail_requires_password = not bool(_normalize_text(mailbox_row.get("mailbox_password_enc")))
 
-        mail_auth_mode = "ad_auto" if auth_mode == "primary_session" else "manual"
+        mail_auth_mode = (
+            "ad_auto"
+            if auth_mode == "primary_session"
+            else "primary_credentials"
+            if auth_mode == "primary_credentials"
+            else "manual"
+        )
         return {
             "user": user,
             "mailbox_id": _normalize_text(mailbox_row.get("id")),
@@ -1689,28 +1922,69 @@ class MailService:
         user_id: int,
         label: str,
         mailbox_email: str,
-        mailbox_login: str,
-        mailbox_password: str,
+        mailbox_login: str = "",
+        mailbox_password: str = "",
+        auth_mode: str = "stored_credentials",
         is_primary: bool = False,
         is_active: bool = True,
     ) -> dict[str, Any]:
         user = user_service.get_by_id(int(user_id))
         if not user:
             raise MailServiceError("User not found")
+        normalized_auth_mode = self._normalize_mailbox_auth_mode(auth_mode)
+        if normalized_auth_mode == "primary_credentials" and bool(is_primary):
+            raise MailServiceError("Shared mailbox cannot be primary", status_code=409)
+        normalized_email = _normalize_text(mailbox_email).lower()
+        normalized_login = _normalize_text(mailbox_login).lower()
+        password_for_verify = _normalize_text(mailbox_password)
+        encrypted_password = ""
+        if normalized_auth_mode == "primary_credentials":
+            primary_credentials = self._resolve_primary_mailbox_credentials(
+                user=user,
+                current_mailbox_id="",
+                require_password=True,
+            )
+            normalized_login = _normalize_text(primary_credentials.get("login")).lower()
+            password_for_verify = _normalize_text(primary_credentials.get("password"))
+        elif normalized_auth_mode == "primary_session":
+            session_id = get_request_session_id()
+            session_context = session_auth_context_service.get_session_context(
+                session_id,
+                user_id=int(user_id),
+            )
+            session_login = _normalize_text((session_context or {}).get("exchange_login")).lower()
+            if session_login:
+                normalized_login = session_login
+            elif not normalized_login:
+                username = _normalize_text((user or {}).get("username")).lower()
+                normalized_login = normalize_exchange_login(username) if username else ""
+            password_for_verify = session_auth_context_service.resolve_session_password(session_id, user_id=int(user_id))
+            if not password_for_verify:
+                raise MailServiceError(
+                    "Mail access requires re-login",
+                    code="MAIL_RELOGIN_REQUIRED",
+                    status_code=409,
+                )
+        elif not normalized_login:
+            normalized_login = normalized_email
         verified = self.verify_mailbox_credentials(
-            mailbox_email=mailbox_email,
-            mailbox_login=mailbox_login,
-            mailbox_password=mailbox_password,
+            mailbox_email=normalized_email,
+            mailbox_login=normalized_login,
+            mailbox_password=password_for_verify,
         )
         existing_rows = self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=True)
         normalized_email = _normalize_text(verified["mailbox_email"]).lower()
+        normalized_login = _normalize_text(verified["effective_mailbox_login"]).lower()
         if any(_normalize_text(item.get("mailbox_email")).lower() == normalized_email for item in existing_rows):
             raise MailServiceError("Mailbox is already connected", status_code=409)
         row_id = self._generate_mailbox_id()
         now_iso = _utc_now_iso()
         next_is_primary = bool(is_primary) or len(existing_rows) == 0
+        if normalized_auth_mode == "primary_credentials" and next_is_primary:
+            raise MailServiceError("Shared mailbox cannot be primary", status_code=409)
         next_sort_order = max([int(item.get("sort_order") or 0) for item in existing_rows] or [0]) + 1
-        encrypted_password = encrypt_secret(_normalize_text(mailbox_password))
+        if normalized_auth_mode == "stored_credentials":
+            encrypted_password = encrypt_secret(password_for_verify)
         with self._lock, self._connect() as conn:
             if next_is_primary:
                 conn.execute(
@@ -1742,9 +2016,9 @@ class MailService:
                     int(user_id),
                     _normalize_text(label) or normalized_email,
                     normalized_email,
-                    _normalize_text(mailbox_login).lower(),
+                    normalized_login if normalized_auth_mode == "stored_credentials" else "",
                     encrypted_password,
-                    "stored_credentials",
+                    normalized_auth_mode,
                     bool(next_is_primary),
                     bool(is_active),
                     next_sort_order,
@@ -1778,11 +2052,9 @@ class MailService:
         if not user:
             raise MailServiceError("User not found")
         current = self._resolve_mailbox_row(user_id=int(user_id), mailbox_id=mailbox_id, allow_inactive=True)
-        next_auth_mode = _normalize_text(current.get("auth_mode"), "stored_credentials").lower()
+        next_auth_mode = self._normalize_mailbox_auth_mode(current.get("auth_mode"))
         if auth_mode is not _UNSET:
-            candidate_auth_mode = _normalize_text(auth_mode, next_auth_mode).lower()
-            if candidate_auth_mode in {"stored_credentials", "primary_session"}:
-                next_auth_mode = candidate_auth_mode
+            next_auth_mode = self._normalize_mailbox_auth_mode(auth_mode, next_auth_mode)
         next_email = _normalize_text(current.get("mailbox_email")).lower()
         next_login = _normalize_text(current.get("mailbox_login")).lower()
         next_password_enc = _normalize_text(current.get("mailbox_password_enc"))
@@ -1792,23 +2064,55 @@ class MailService:
             next_label = _normalize_text(label) or next_label
         if mailbox_email is not _UNSET:
             next_email = _normalize_text(mailbox_email).lower()
-        if mailbox_login is not _UNSET and next_auth_mode != "primary_session":
+        if mailbox_login is not _UNSET and next_auth_mode == "stored_credentials":
             next_login = _normalize_text(mailbox_login).lower()
         next_password_raw = None
-        if mailbox_password is not _UNSET and next_auth_mode != "primary_session":
+        if mailbox_password is not _UNSET and next_auth_mode == "stored_credentials":
             candidate = _normalize_text(mailbox_password)
             if candidate:
                 next_password_raw = candidate
         if is_active is not _UNSET:
             next_is_active = bool(is_active)
-        if next_auth_mode != "primary_session":
+        next_is_primary = _to_bool(current.get("is_primary"), default=False)
+        if is_primary is not _UNSET and bool(is_primary):
+            next_is_primary = True
+        if next_auth_mode == "primary_credentials" and next_is_primary:
+            raise MailServiceError("Shared mailbox cannot be primary", status_code=409)
+
+        if next_auth_mode == "primary_credentials":
+            next_login = ""
+            next_password_enc = ""
+            if next_is_active and (mailbox_email is not _UNSET or auth_mode is not _UNSET):
+                primary_credentials = self._resolve_primary_mailbox_credentials(
+                    user=user,
+                    current_mailbox_id=_normalize_text(mailbox_id),
+                    require_password=True,
+                )
+                self.verify_mailbox_credentials(
+                    mailbox_email=next_email,
+                    mailbox_login=_normalize_text(primary_credentials.get("login")).lower(),
+                    mailbox_password=_normalize_text(primary_credentials.get("password")),
+                )
+        elif next_auth_mode == "primary_session":
+            next_login = ""
+            next_password_enc = ""
+        elif next_auth_mode == "stored_credentials":
             verify_password = next_password_raw
-            if verify_password is None and (mailbox_email is not _UNSET or mailbox_login is not _UNSET):
+            if verify_password is None and (
+                mailbox_email is not _UNSET
+                or mailbox_login is not _UNSET
+                or auth_mode is not _UNSET
+            ):
                 try:
                     verify_password = decrypt_secret(next_password_enc)
                 except Exception:
                     verify_password = ""
-            if mailbox_email is not _UNSET or mailbox_login is not _UNSET or next_password_raw is not None:
+            if (
+                mailbox_email is not _UNSET
+                or mailbox_login is not _UNSET
+                or auth_mode is not _UNSET
+                or next_password_raw is not None
+            ):
                 self.verify_mailbox_credentials(
                     mailbox_email=next_email,
                     mailbox_login=next_login or next_email,
@@ -1825,9 +2129,6 @@ class MailService:
         ):
             raise MailServiceError("Mailbox is already connected", status_code=409)
 
-        next_is_primary = _to_bool(current.get("is_primary"), default=False)
-        if is_primary is not _UNSET and bool(is_primary):
-            next_is_primary = True
         if not next_is_active and next_is_primary:
             raise MailServiceError("Primary mailbox cannot be inactive", status_code=409)
 
@@ -4787,6 +5088,7 @@ class MailService:
                 items.append(
                     {
                         "id": item.get("id"),
+                        "internet_message_id": item.get("internet_message_id"),
                         "subject": item.get("subject"),
                         "sender": item.get("sender"),
                         "received_at": item.get("received_at"),
@@ -5968,11 +6270,43 @@ class MailService:
             max_total_size=self.max_mail_total_size,
         )
 
+    def _search_local_user_contacts(self, query: str) -> list[dict[str, str]]:
+        normalized_query = _normalize_text(query).lower()
+        if len(normalized_query) < 2:
+            return []
+        terms = [item for item in re.split(r"\s+", normalized_query) if item]
+        contacts: list[dict[str, str]] = []
+        seen: set[str] = set()
+        for user in user_service.list_users():
+            email = _normalize_text(user.get("mailbox_email") or user.get("email")).lower()
+            if not email:
+                continue
+            name = _normalize_text(user.get("full_name") or user.get("username") or email)
+            haystack = " ".join(
+                [
+                    name,
+                    _normalize_text(user.get("username")),
+                    email,
+                    _normalize_text(user.get("mailbox_login")),
+                ]
+            ).lower()
+            if terms and not all(term in haystack for term in terms):
+                continue
+            if email in seen:
+                continue
+            seen.add(email)
+            contacts.append({"name": name, "email": email, "source": "itinvent_users"})
+            if len(contacts) >= 25:
+                break
+        return contacts
+
     def search_contacts(self, user_id: int, q: str, mailbox_id: str | None = None) -> list[dict[str, str]]:
         query = _normalize_text(q)
         if len(query) < 2:
             return []
-        
+
+        contacts: list[dict[str, str]] = []
+        seen: set[str] = set()
         try:
             profile = self._resolve_mail_profile(user_id=int(user_id), mailbox_id=mailbox_id, require_password=True)
             account = self._create_account(
@@ -5986,16 +6320,23 @@ class MailService:
                 search_scope='ActiveDirectory', 
                 return_full_contact_data=False
             )
-            contacts = []
             for item in results:
                 name = _normalize_text(item.name)
-                email = _normalize_text(item.email_address)
-                if email and {'name': name, 'email': email} not in contacts:
-                    contacts.append({"name": name, "email": email})
-            return contacts
+                email = _normalize_text(item.email_address).lower()
+                if email and email not in seen:
+                    seen.add(email)
+                    contacts.append({"name": name or email, "email": email, "source": "exchange_gal"})
+            if contacts:
+                return contacts
         except Exception as exc:
             logger.warning("Error searching contacts in GAL (user_id=%s, q=%s): %s", user_id, query, exc)
-            raise MailServiceError(f"Failed to search contacts: {exc}") from exc
+
+        for item in self._search_local_user_contacts(query):
+            email = _normalize_text(item.get("email")).lower()
+            if email and email not in seen:
+                seen.add(email)
+                contacts.append(item)
+        return contacts
 
     def list_templates(self, *, active_only: bool = True) -> list[dict[str, Any]]:
         where_sql = "WHERE is_active = 1" if active_only else ""

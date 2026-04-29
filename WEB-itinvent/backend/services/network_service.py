@@ -549,6 +549,8 @@ class NetworkService:
             self._ensure_column(conn, "network_branches", "default_site_code", "TEXT")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_network_map_points_socket ON network_map_points(socket_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_network_panels_branch ON network_panels(branch_id)")
+            if hasattr(conn, "sync_identity_sequences"):
+                conn.sync_identity_sequences()
             # Bootstrap migration: enforce one socket (PORT P/P) -> one point per map.
             self._repair_map_point_socket_conflicts_in_conn(
                 conn,

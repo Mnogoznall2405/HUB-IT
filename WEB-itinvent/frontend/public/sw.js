@@ -1,6 +1,6 @@
-const SW_VERSION = '2026-04-17T11:20:00+05:00';
-const APP_SHELL_CACHE = 'hubit-app-shell-v2026-04-17-11';
-const APP_ASSET_CACHE = 'hubit-app-assets-v2026-04-17-11';
+const SW_VERSION = '2026-04-26T23:10:00+05:00';
+const APP_SHELL_CACHE = 'hubit-app-shell-v2026-04-26-23';
+const APP_ASSET_CACHE = 'hubit-app-assets-v2026-04-26-23';
 const CHAT_MEDIA_CACHE = 'hubit-chat-media-v2026-04-17-1';
 const PUSH_RUNTIME_CACHE = 'itinvent-push-runtime-v1';
 const PUSH_PENDING_SYNC_URL = `${self.location.origin}/__push/pending-sync`;
@@ -261,25 +261,19 @@ async function cacheBuildAssetsFromShell(response) {
 
 async function handleNavigationRequest(request, event) {
   const cache = await caches.open(APP_SHELL_CACHE);
-  const cachedResponse = (
+  const cachedResponse = async () => (
     await cache.match(request, { ignoreSearch: true })
     || await cache.match(SHELL_ENTRY_URL, { ignoreSearch: true })
     || await cache.match('/', { ignoreSearch: true })
   );
-  const networkPromise = fetch(new Request(request, { cache: 'reload' }))
+  const networkResponse = await fetch(new Request(request, { cache: 'reload' }))
     .then(async (response) => {
       await cacheShellResponse(response.clone());
       return response;
     })
     .catch(() => null);
 
-  if (cachedResponse) {
-    event.waitUntil(networkPromise);
-    return cachedResponse;
-  }
-
-  const networkResponse = await networkPromise;
-  return networkResponse || buildOfflineShellResponse();
+  return networkResponse || await cachedResponse() || buildOfflineShellResponse();
 }
 
 async function handleStaticAssetRequest(request) {
@@ -572,6 +566,7 @@ async function broadcastRuntimeState(reason = 'snapshot') {
 self.addEventListener('install', (event) => {
   event.waitUntil((async () => {
     await cacheShellAssets();
+    await self.skipWaiting();
   })());
 });
 

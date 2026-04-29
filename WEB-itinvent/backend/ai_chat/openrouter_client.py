@@ -21,6 +21,18 @@ ROOT_ENV_PATH = PROJECT_ROOT / ".env"
 ROOT_ENV = dotenv_values(str(ROOT_ENV_PATH)) if ROOT_ENV_PATH.exists() else {}
 DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_AI_MODEL = "openai/gpt-4o-mini"
+JSON_RETRYABLE_ERROR_MARKERS = (
+    "response_format",
+    "json_schema",
+    "schema",
+    "structured",
+    "plugin",
+    "response-healing",
+    "unsupported",
+    "not supported",
+    "invalid parameter",
+    "bad request",
+)
 
 
 class OpenRouterClientError(RuntimeError):
@@ -93,7 +105,39 @@ def _extract_json_payload(text: str) -> dict[str, Any]:
         payload = json.loads(normalized)
         return payload if isinstance(payload, dict) else {}
     except Exception as exc:
+        start = normalized.find("{")
+        end = normalized.rfind("}")
+        if 0 <= start < end:
+            try:
+                payload = json.loads(normalized[start : end + 1])
+                return payload if isinstance(payload, dict) else {}
+            except Exception:
+                pass
         raise OpenRouterClientError("LLM returned invalid JSON payload.") from exc
+
+
+def _is_json_mode_retryable_error(exc: Exception) -> bool:
+    text = str(exc or "").lower()
+    return any(marker in text for marker in JSON_RETRYABLE_ERROR_MARKERS)
+
+
+def _build_response_format(
+    *,
+    response_schema: dict[str, Any] | None,
+    schema_name: str,
+    strict_json_schema: bool,
+) -> dict[str, Any]:
+    schema = response_schema if isinstance(response_schema, dict) and response_schema else None
+    if not schema:
+        return {"type": "json_object"}
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": str(schema_name or "ai_chat_response").strip() or "ai_chat_response",
+            "strict": bool(strict_json_schema),
+            "schema": schema,
+        },
+    }
 
 
 class OpenRouterClient:
@@ -145,22 +189,56 @@ class OpenRouterClient:
         model: str = "",
         temperature: float = 0.2,
         max_tokens: int = 2000,
+        response_schema: dict[str, Any] | None = None,
+        schema_name: str = "ai_chat_response",
+        strict_json_schema: bool = True,
+        response_healing: bool = True,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         client = self._build_client()
         resolved_model = str(model or "").strip() or self._resolve_default_model()
-        try:
-            completion = client.chat.completions.create(
-                model=resolved_model,
-                temperature=float(temperature),
-                max_tokens=int(max_tokens),
-                messages=[
+
+        def _request(*, use_schema: bool, use_response_healing: bool):
+            request_kwargs: dict[str, Any] = {
+                "model": resolved_model,
+                "temperature": float(temperature),
+                "max_tokens": int(max_tokens),
+                "response_format": _build_response_format(
+                    response_schema=response_schema if use_schema else None,
+                    schema_name=schema_name,
+                    strict_json_schema=strict_json_schema,
+                ),
+                "messages": [
                     {"role": "system", "content": str(system_prompt or "").strip()},
                     {"role": "user", "content": str(user_prompt or "").strip()},
                 ],
+            }
+            if use_response_healing:
+                request_kwargs["extra_body"] = {"plugins": [{"id": "response-healing"}]}
+            return client.chat.completions.create(**request_kwargs)
+
+        try:
+            completion = _request(
+                use_schema=bool(response_schema),
+                use_response_healing=bool(response_healing),
             )
         except Exception as exc:
-            logger.warning("AI chat completion failed: model=%s error=%s", resolved_model, exc)
-            raise OpenRouterClientError("Failed to call OpenRouter.") from exc
+            if (bool(response_schema) or bool(response_healing)) and _is_json_mode_retryable_error(exc):
+                logger.warning(
+                    "AI chat strict JSON mode failed; retrying with json_object: model=%s error=%s",
+                    resolved_model,
+                    exc,
+                )
+                try:
+                    completion = _request(use_schema=False, use_response_healing=False)
+                except Exception as fallback_exc:
+                    logger.warning("AI chat completion failed: model=%s error=%s", resolved_model, fallback_exc)
+                    raise OpenRouterClientError("Failed to call OpenRouter.") from fallback_exc
+            else:
+                logger.warning("AI chat completion failed: model=%s error=%s", resolved_model, exc)
+                raise OpenRouterClientError("Failed to call OpenRouter.") from exc
+        if completion is None:
+            logger.warning("AI chat completion returned no response: model=%s", resolved_model)
+            raise OpenRouterClientError("Failed to call OpenRouter.")
         payload = _extract_json_payload(_extract_completion_text(completion))
         usage = getattr(completion, "usage", None)
         return payload, {

@@ -38,6 +38,9 @@ class InventoryServerConfig:
     batch_size: int
     max_attempts: int
     backoff_cap_sec: int
+    done_retention_days: int = 7
+    dead_retention_days: int = 30
+    cleanup_interval_sec: int = 3600
 
     @classmethod
     def from_env(cls) -> "InventoryServerConfig":
@@ -81,6 +84,9 @@ class InventoryServerConfig:
             batch_size=max(1, min(50, _to_int(os.getenv("INVENTORY_SERVER_BATCH_SIZE", "10"), 10))),
             max_attempts=max(1, _to_int(os.getenv("INVENTORY_SERVER_MAX_ATTEMPTS", "20"), 20)),
             backoff_cap_sec=max(5, _to_int(os.getenv("INVENTORY_SERVER_BACKOFF_CAP_SEC", "300"), 300)),
+            done_retention_days=max(1, _to_int(os.getenv("INVENTORY_SERVER_DONE_RETENTION_DAYS", "7"), 7)),
+            dead_retention_days=max(1, _to_int(os.getenv("INVENTORY_SERVER_DEAD_RETENTION_DAYS", "30"), 30)),
+            cleanup_interval_sec=max(60, _to_int(os.getenv("INVENTORY_SERVER_CLEANUP_INTERVAL_SEC", "3600"), 3600)),
         )
 
 

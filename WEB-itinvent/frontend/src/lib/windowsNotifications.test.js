@@ -1,10 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   createHubSystemNotification,
+  createMailSystemNotification,
   getBrowserNotificationPermission,
   getHubNotificationActionLabel,
   getHubNotificationNavigateTo,
+  getMailSystemNotificationId,
   hasShownHubSystemNotification,
+  hasShownMailSystemNotification,
   isWindowsNotificationsEnabled,
   requestBrowserNotificationPermission,
   setWindowsNotificationsEnabled,
@@ -89,6 +92,35 @@ describe('windowsNotifications helper', () => {
     notificationInstances[0].onclick?.();
     expect(window.focus).toHaveBeenCalled();
     expect(onNavigate).toHaveBeenCalledWith('/tasks?task=task-77&task_tab=comments', payload);
+    expect(notificationInstances[0].close).toHaveBeenCalled();
+  });
+
+  it('creates a browser mail notification once per stable message id and navigates on click', () => {
+    notificationPermission = 'granted';
+    const onNavigate = vi.fn();
+    const payload = {
+      id: 'encoded-message-1',
+      internet_message_id: '<stable-message@example.com>',
+      mailbox_id: 'mailbox-1',
+      folder: 'inbox',
+      subject: 'Mail subject',
+      sender: 'sender@example.com',
+    };
+    const notificationId = getMailSystemNotificationId(payload);
+
+    const created = createMailSystemNotification(payload, { onNavigate });
+    expect(created).toBeTruthy();
+    expect(notificationInstances).toHaveLength(1);
+    expect(notificationInstances[0].options.tag).toBe(`mail:${notificationId}`);
+    expect(hasShownMailSystemNotification(notificationId)).toBe(true);
+
+    const duplicated = createMailSystemNotification({ ...payload, id: 'encoded-message-2' }, { onNavigate });
+    expect(duplicated).toBeNull();
+    expect(notificationInstances).toHaveLength(1);
+
+    notificationInstances[0].onclick?.();
+    expect(window.focus).toHaveBeenCalled();
+    expect(onNavigate).toHaveBeenCalledWith('/mail?folder=inbox&message=encoded-message-1&mailbox_id=mailbox-1', payload);
     expect(notificationInstances[0].close).toHaveBeenCalled();
   });
 });

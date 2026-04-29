@@ -10,6 +10,7 @@ import platform
 import random
 import re
 import socket
+import stat as stat_module
 import subprocess
 import sys
 import threading
@@ -40,11 +41,11 @@ except Exception:
 DEFAULT_SERVER_URL = "https://hubit.zsgp.ru/api/v1/inventory"
 DEFAULT_API_KEY = "gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8"
 DEFAULT_FULL_SNAPSHOT_INTERVAL = 3600
-DEFAULT_HEARTBEAT_INTERVAL = 300
-DEFAULT_HEARTBEAT_JITTER = 60
+DEFAULT_HEARTBEAT_INTERVAL = 600
+DEFAULT_HEARTBEAT_JITTER = 120
 DEFAULT_OUTLOOK_REFRESH_SEC = 300
 DEFAULT_RUN_CMD_TIMEOUT_SEC = 20
-DEFAULT_INVENTORY_QUEUE_BATCH = 50
+DEFAULT_INVENTORY_QUEUE_BATCH = 5
 DEFAULT_INVENTORY_QUEUE_MAX_ITEMS = 1000
 DEFAULT_INVENTORY_QUEUE_MAX_AGE_DAYS = 14
 DEFAULT_INVENTORY_QUEUE_MAX_TOTAL_MB = 256
@@ -54,6 +55,12 @@ DEFAULT_REBOOT_REMINDER_TIMEOUT_SEC = 120
 DEFAULT_REBOOT_REMINDER_WORK_START_HOUR = 9
 DEFAULT_REBOOT_REMINDER_WORK_END_HOUR = 18
 DEFAULT_OUTLOOK_SCAN_STATE_MAX_AGE_SEC = 30 * 24 * 60 * 60
+USER_PROFILE_SIZES_CACHE_TTL_SEC = 24 * 60 * 60
+USER_PROFILE_SIZES_CACHE_SCHEMA_VERSION = 2
+USER_PROFILE_SIZE_PROFILE_BUDGET_SEC = 45
+USER_PROFILE_SIZE_TOTAL_BUDGET_SEC = 180
+USER_PROFILE_SIZE_MAX_ENTRIES_PER_PROFILE = 500_000
+USER_PROFILE_SIZE_MAX_PROFILES = 50
 OUTLOOK_WARNING_THRESHOLD_BYTES = 45 * (1024 ** 3)
 OUTLOOK_CRITICAL_THRESHOLD_BYTES = 49 * (1024 ** 3)
 TIMEOUT = 10
@@ -80,6 +87,7 @@ INVENTORY_QUEUE_DEAD_DIR_NAME = "dead_letter"
 REBOOT_REMINDER_STATE_FILE_NAME = "reboot_reminder_state.json"
 AGENT_STATUS_FILE_NAME = "agent_status.json"
 OUTLOOK_SCAN_STATE_FILE_NAME = "outlook_scan_state.json"
+USER_PROFILE_SIZES_CACHE_FILE_NAME = "user_profile_sizes_cache.json"
 ENV_FILE_NAME = ".env"
 PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
 PROGRAM_DATA_AGENT_ROOT = PROGRAM_DATA_ROOT / "Agent"
@@ -101,6 +109,29 @@ SERVICE_USERS = {
     "network service",
     "nt authority\\network service",
 }
+
+USER_PROFILE_SIZE_IGNORED_PROFILE_DIRS = {
+    "all users",
+    "default",
+    "default user",
+    "defaultappspool",
+    "public",
+}
+
+USER_PROFILE_SIZE_SKIP_DIR_NAMES = {
+    "$recycle.bin",
+    ".cache",
+    ".git",
+    ".svn",
+    "cache",
+    "caches",
+    "crashdumps",
+    "logs",
+    "node_modules",
+    "temp",
+    "tmp",
+}
+USER_PROFILE_SIZE_PARTIAL_REASONS = {"timeout", "entry_limit", "total_timeout"}
 
 ACTIVE_SESSION_MARKERS = {"active", "активно"}
 WINDOWS_SID_RE = re.compile(r"^S-\d-\d+(?:-\d+)+$")
@@ -187,6 +218,7 @@ INVENTORY_QUEUE_DEAD_PATH: Optional[Path] = None
 REBOOT_REMINDER_STATE_PATH: Optional[Path] = None
 AGENT_STATUS_PATH: Optional[Path] = None
 OUTLOOK_SCAN_STATE_PATH: Optional[Path] = None
+USER_PROFILE_SIZES_CACHE_PATH: Optional[Path] = None
 LOADED_ENV_FILES: List[str] = []
 RUN_CMD_TIMEOUT_SEC = DEFAULT_RUN_CMD_TIMEOUT_SEC
 OUTLOOK_SCAN_CACHE_TTL_SEC = DEFAULT_OUTLOOK_REFRESH_SEC
@@ -366,7 +398,7 @@ def _run_scan_sidecar(run_once: bool = False) -> None:
 
 def setup_logging() -> Path:
     """Configure file logging in ProgramData with fallback to TEMP."""
-    global INVENTORY_QUEUE_PENDING_PATH, INVENTORY_QUEUE_DEAD_PATH, REBOOT_REMINDER_STATE_PATH, AGENT_STATUS_PATH, OUTLOOK_SCAN_STATE_PATH
+    global INVENTORY_QUEUE_PENDING_PATH, INVENTORY_QUEUE_DEAD_PATH, REBOOT_REMINDER_STATE_PATH, AGENT_STATUS_PATH, OUTLOOK_SCAN_STATE_PATH, USER_PROFILE_SIZES_CACHE_PATH
     log_dir = PROGRAM_DATA_DIR
     spool_dir = PROGRAM_DATA_SPOOL_DIR
     try:
@@ -415,6 +447,7 @@ def setup_logging() -> Path:
     REBOOT_REMINDER_STATE_PATH = log_dir / REBOOT_REMINDER_STATE_FILE_NAME
     AGENT_STATUS_PATH = log_dir / AGENT_STATUS_FILE_NAME
     OUTLOOK_SCAN_STATE_PATH = log_dir / OUTLOOK_SCAN_STATE_FILE_NAME
+    USER_PROFILE_SIZES_CACHE_PATH = log_dir / USER_PROFILE_SIZES_CACHE_FILE_NAME
     return log_path
 
 
@@ -446,6 +479,12 @@ def get_outlook_scan_state_path() -> Path:
     if OUTLOOK_SCAN_STATE_PATH is not None:
         return OUTLOOK_SCAN_STATE_PATH
     return TEMP_DIR / OUTLOOK_SCAN_STATE_FILE_NAME
+
+
+def get_user_profile_sizes_cache_path() -> Path:
+    if USER_PROFILE_SIZES_CACHE_PATH is not None:
+        return USER_PROFILE_SIZES_CACHE_PATH
+    return TEMP_DIR / USER_PROFILE_SIZES_CACHE_FILE_NAME
 
 
 def _empty_outlook_payload() -> Dict[str, Any]:
@@ -2197,6 +2236,352 @@ def get_logical_disks() -> List[Dict[str, Any]]:
     return sorted(selected_by_device.values(), key=lambda item: sanitize_text(item.get("mountpoint")))
 
 
+def _empty_user_profile_sizes_payload(collected_at: int = 0) -> Dict[str, Any]:
+    return {
+        "cache_version": USER_PROFILE_SIZES_CACHE_SCHEMA_VERSION,
+        "collected_at": max(0, _to_int(collected_at, 0)),
+        "profiles_count": 0,
+        "total_size_bytes": 0,
+        "profiles": [],
+        "partial": False,
+        "partial_reasons": [],
+        "limits": _get_user_profile_size_limits(),
+    }
+
+
+def _env_int(name: str, default: int, *, minimum: int = 1) -> int:
+    raw = str(os.getenv(name, default)).strip()
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return max(minimum, int(default))
+    return max(minimum, value)
+
+
+def _get_user_profile_size_limits() -> Dict[str, int]:
+    return {
+        "profile_budget_sec": _env_int(
+            "ITINV_USER_PROFILE_SIZE_PROFILE_BUDGET_SEC",
+            USER_PROFILE_SIZE_PROFILE_BUDGET_SEC,
+        ),
+        "total_budget_sec": _env_int(
+            "ITINV_USER_PROFILE_SIZE_TOTAL_BUDGET_SEC",
+            USER_PROFILE_SIZE_TOTAL_BUDGET_SEC,
+        ),
+        "max_entries_per_profile": _env_int(
+            "ITINV_USER_PROFILE_SIZE_MAX_ENTRIES_PER_PROFILE",
+            USER_PROFILE_SIZE_MAX_ENTRIES_PER_PROFILE,
+        ),
+        "max_profiles": max(1, int(USER_PROFILE_SIZE_MAX_PROFILES)),
+    }
+
+
+def _profile_size_cache_matches(payload: Dict[str, Any], limits: Dict[str, int]) -> bool:
+    return (
+        _to_int(payload.get("cache_version"), 0) == USER_PROFILE_SIZES_CACHE_SCHEMA_VERSION
+        and isinstance(payload.get("limits"), dict)
+        and {
+            "profile_budget_sec": _to_int(payload["limits"].get("profile_budget_sec"), 0),
+            "total_budget_sec": _to_int(payload["limits"].get("total_budget_sec"), 0),
+            "max_entries_per_profile": _to_int(payload["limits"].get("max_entries_per_profile"), 0),
+            "max_profiles": _to_int(payload["limits"].get("max_profiles"), 0),
+        }
+        == limits
+    )
+
+
+def _add_profile_partial_reason(reasons: List[str], reason: str) -> None:
+    value = sanitize_text(reason).lower()
+    if value in USER_PROFILE_SIZE_PARTIAL_REASONS and value not in reasons:
+        reasons.append(value)
+
+
+def _normalize_profile_partial_reasons(raw: Any) -> List[str]:
+    values = raw if isinstance(raw, list) else [raw]
+    reasons: List[str] = []
+    for value in values:
+        _add_profile_partial_reason(reasons, str(value or ""))
+    return reasons
+
+
+def _load_user_profile_sizes_cache() -> Dict[str, Any]:
+    path = get_user_profile_sizes_cache_path()
+    if not path.exists():
+        return _empty_user_profile_sizes_payload()
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return _empty_user_profile_sizes_payload()
+    if not isinstance(payload, dict):
+        return _empty_user_profile_sizes_payload()
+    return payload
+
+
+def _save_user_profile_sizes_cache(payload: Dict[str, Any]) -> None:
+    try:
+        _atomic_write_text(get_user_profile_sizes_cache_path(), json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception as exc:
+        logging.warning("User profile sizes cache write failed: %s", exc)
+
+
+def _is_reparse_point(stat_result: Any) -> bool:
+    attr = int(getattr(stat_result, "st_file_attributes", 0) or 0)
+    marker = int(getattr(stat_module, "FILE_ATTRIBUTE_REPARSE_POINT", 0) or 0)
+    return bool(marker and attr & marker)
+
+
+def _should_skip_user_profile_dir(path: Path, stat_result: Any) -> bool:
+    if path.is_symlink() or _is_reparse_point(stat_result):
+        return True
+    return path.name.strip().lower() in USER_PROFILE_SIZE_SKIP_DIR_NAMES
+
+
+def _iter_user_profile_dirs(users_root: Optional[Path] = None, *, max_profiles: Optional[int] = None) -> List[Path]:
+    root = users_root or Path(r"C:\Users")
+    if not root.exists() or not root.is_dir():
+        return []
+    limit = max(1, int(max_profiles or USER_PROFILE_SIZE_MAX_PROFILES))
+    profiles: List[Path] = []
+    try:
+        for entry in sorted(root.iterdir(), key=lambda item: item.name.lower()):
+            try:
+                stat_result = entry.lstat()
+            except Exception:
+                continue
+            if not stat_module.S_ISDIR(stat_result.st_mode):
+                continue
+            if entry.name.strip().lower() in USER_PROFILE_SIZE_IGNORED_PROFILE_DIRS:
+                continue
+            if entry.is_symlink() or _is_reparse_point(stat_result):
+                continue
+            profiles.append(entry)
+            if len(profiles) >= limit:
+                break
+    except Exception as exc:
+        logging.warning("User profile root scan failed (%s): %s", root, exc)
+    return profiles
+
+
+def _collect_tree_size(path: Path, *, deadline: float, max_entries: int) -> Dict[str, Any]:
+    result = {
+        "size_bytes": 0,
+        "files_count": 0,
+        "dirs_count": 0,
+        "errors_count": 0,
+        "entries_count": 0,
+        "partial": False,
+        "partial_reason": "",
+        "partial_reasons": [],
+    }
+    stack: List[Path] = [path]
+    while stack:
+        if time.monotonic() >= deadline:
+            result["partial"] = True
+            result["partial_reason"] = "timeout"
+            _add_profile_partial_reason(result["partial_reasons"], "timeout")
+            break
+        if result["entries_count"] >= max_entries:
+            result["partial"] = True
+            result["partial_reason"] = "entry_limit"
+            _add_profile_partial_reason(result["partial_reasons"], "entry_limit")
+            break
+        current = stack.pop()
+        try:
+            stat_result = current.lstat()
+        except Exception:
+            result["errors_count"] += 1
+            continue
+        if current.is_symlink() or _is_reparse_point(stat_result):
+            continue
+        mode = stat_result.st_mode
+        if stat_module.S_ISREG(mode):
+            result["size_bytes"] += max(0, int(stat_result.st_size))
+            result["files_count"] += 1
+            result["entries_count"] += 1
+            continue
+        if not stat_module.S_ISDIR(mode):
+            continue
+
+        result["dirs_count"] += 1
+        result["entries_count"] += 1
+        try:
+            with os.scandir(current) as iterator:
+                for entry in iterator:
+                    if time.monotonic() >= deadline:
+                        result["partial"] = True
+                        result["partial_reason"] = "timeout"
+                        _add_profile_partial_reason(result["partial_reasons"], "timeout")
+                        break
+                    if result["entries_count"] >= max_entries:
+                        result["partial"] = True
+                        result["partial_reason"] = "entry_limit"
+                        _add_profile_partial_reason(result["partial_reasons"], "entry_limit")
+                        break
+                    try:
+                        child_stat = entry.stat(follow_symlinks=False)
+                    except Exception:
+                        result["errors_count"] += 1
+                        continue
+                    child_path = Path(entry.path)
+                    if stat_module.S_ISDIR(child_stat.st_mode):
+                        if _should_skip_user_profile_dir(child_path, child_stat):
+                            continue
+                        stack.append(child_path)
+                    elif stat_module.S_ISREG(child_stat.st_mode):
+                        result["size_bytes"] += max(0, int(child_stat.st_size))
+                        result["files_count"] += 1
+                        result["entries_count"] += 1
+        except Exception:
+            result["errors_count"] += 1
+    return result
+
+
+def _collect_user_profile_size(profile_path: Path, *, total_deadline: float, limits: Dict[str, int]) -> Dict[str, Any]:
+    started = time.monotonic()
+    profile_deadline = min(total_deadline, started + int(limits["profile_budget_sec"]))
+    entries_seen = 0
+    total_size = 0
+    files_count = 0
+    dirs_count = 0
+    errors_count = 0
+    partial = False
+    partial_reasons: List[str] = []
+    top_level_folders: List[Dict[str, Any]] = []
+
+    try:
+        children = sorted(profile_path.iterdir(), key=lambda item: item.name.lower())
+    except Exception:
+        children = []
+        errors_count += 1
+
+    for child in children:
+        if time.monotonic() >= profile_deadline:
+            partial = True
+            _add_profile_partial_reason(partial_reasons, "timeout")
+            break
+        if entries_seen >= int(limits["max_entries_per_profile"]):
+            partial = True
+            _add_profile_partial_reason(partial_reasons, "entry_limit")
+            break
+        try:
+            stat_result = child.lstat()
+        except Exception:
+            errors_count += 1
+            continue
+        if child.is_symlink() or _is_reparse_point(stat_result):
+            continue
+
+        if stat_module.S_ISREG(stat_result.st_mode):
+            total_size += max(0, int(stat_result.st_size))
+            files_count += 1
+            entries_seen += 1
+            continue
+
+        if not stat_module.S_ISDIR(stat_result.st_mode):
+            continue
+        if _should_skip_user_profile_dir(child, stat_result):
+            continue
+
+        remaining_entries = max(1, int(limits["max_entries_per_profile"]) - entries_seen)
+        folder_stats = _collect_tree_size(child, deadline=profile_deadline, max_entries=remaining_entries)
+        entries_seen += int(folder_stats.get("entries_count") or 0)
+        total_size += int(folder_stats.get("size_bytes") or 0)
+        files_count += int(folder_stats.get("files_count") or 0)
+        dirs_count += int(folder_stats.get("dirs_count") or 0)
+        errors_count += int(folder_stats.get("errors_count") or 0)
+        partial = partial or bool(folder_stats.get("partial"))
+        for reason in _normalize_profile_partial_reasons(folder_stats.get("partial_reasons")):
+            _add_profile_partial_reason(partial_reasons, reason)
+        top_level_folders.append(
+            {
+                "name": child.name,
+                "path": str(child),
+                "size_bytes": int(folder_stats.get("size_bytes") or 0),
+                "files_count": int(folder_stats.get("files_count") or 0),
+                "dirs_count": int(folder_stats.get("dirs_count") or 0),
+                "errors_count": int(folder_stats.get("errors_count") or 0),
+                "partial": bool(folder_stats.get("partial")),
+                "partial_reason": sanitize_text(folder_stats.get("partial_reason")),
+                "partial_reasons": _normalize_profile_partial_reasons(folder_stats.get("partial_reasons")),
+            }
+        )
+
+    top_level_folders.sort(key=lambda item: int(item.get("size_bytes") or 0), reverse=True)
+    return {
+        "user_name": profile_path.name,
+        "profile_path": str(profile_path),
+        "total_size_bytes": total_size,
+        "top_level_folders": top_level_folders,
+        "files_count": files_count,
+        "dirs_count": dirs_count,
+        "errors_count": errors_count,
+        "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
+        "partial": bool(partial),
+        "partial_reason": partial_reasons[0] if partial_reasons else "",
+        "partial_reasons": partial_reasons,
+    }
+
+
+def collect_user_profile_sizes(
+    *,
+    users_root: Optional[Path] = None,
+    allow_scan: bool = True,
+    force_refresh: bool = False,
+) -> Dict[str, Any]:
+    now_ts = int(time.time())
+    limits = _get_user_profile_size_limits()
+    cached = _load_user_profile_sizes_cache()
+    cached_at = _to_int(cached.get("collected_at"), 0) if isinstance(cached, dict) else 0
+    if (
+        cached_at > 0
+        and not force_refresh
+        and now_ts - cached_at < USER_PROFILE_SIZES_CACHE_TTL_SEC
+        and _profile_size_cache_matches(cached, limits)
+    ):
+        return cached
+    if not allow_scan:
+        return cached if cached_at > 0 else _empty_user_profile_sizes_payload()
+
+    started = time.monotonic()
+    total_deadline = started + int(limits["total_budget_sec"])
+    profiles: List[Dict[str, Any]] = []
+    partial = False
+    partial_reasons: List[str] = []
+    for profile_path in _iter_user_profile_dirs(users_root=users_root, max_profiles=limits["max_profiles"]):
+        if time.monotonic() >= total_deadline:
+            partial = True
+            _add_profile_partial_reason(partial_reasons, "total_timeout")
+            break
+        item = _collect_user_profile_size(profile_path, total_deadline=total_deadline, limits=limits)
+        profiles.append(item)
+        partial = partial or bool(item.get("partial"))
+        for reason in _normalize_profile_partial_reasons(item.get("partial_reasons")):
+            _add_profile_partial_reason(partial_reasons, reason)
+        if time.monotonic() >= total_deadline and bool(item.get("partial")):
+            _add_profile_partial_reason(partial_reasons, "total_timeout")
+
+    total_size = sum(int(item.get("total_size_bytes") or 0) for item in profiles)
+    payload = {
+        "cache_version": USER_PROFILE_SIZES_CACHE_SCHEMA_VERSION,
+        "collected_at": now_ts,
+        "profiles_count": len(profiles),
+        "total_size_bytes": total_size,
+        "profiles": profiles,
+        "partial": bool(partial),
+        "partial_reasons": partial_reasons,
+        "duration_ms": max(0, int((time.monotonic() - started) * 1000)),
+        "limits": limits,
+    }
+    _save_user_profile_sizes_cache(payload)
+    logging.info(
+        "User profile sizes collected: profiles=%s total_bytes=%s partial=%s",
+        payload["profiles_count"],
+        payload["total_size_bytes"],
+        payload["partial"],
+    )
+    return payload
+
+
 def get_system_serial() -> str:
     if wmi is None:
         return "Unknown"
@@ -2434,6 +2819,7 @@ def collect_inventory(report_type: str = "full_snapshot", include_full_snapshot:
     user_login = get_active_console_user()
     health_info = get_health_info()
     outlook_info = collect_outlook_info(user_login, force_refresh=include_full_snapshot)
+    user_profile_sizes = collect_user_profile_sizes(allow_scan=include_full_snapshot)
     network_info: Optional[Dict[str, Any]] = get_network_info() if include_full_snapshot else None
     if isinstance(network_info, dict):
         ip_list = _dedupe_preserve_order([sanitize_text(item) for item in network_info.get("active_ipv4", [])])
@@ -2455,6 +2841,7 @@ def collect_inventory(report_type: str = "full_snapshot", include_full_snapshot:
         "last_seen_at": now_ts,
         "health": health_info,
         "outlook": outlook_info,
+        "user_profile_sizes": user_profile_sizes,
         "uptime_seconds": health_info.get("uptime_seconds"),
         "cpu_load_percent": health_info.get("cpu_load_percent"),
         "ram_used_percent": health_info.get("ram_used_percent"),
@@ -2661,8 +3048,17 @@ def send_data(payload: Dict[str, Any], config: AgentConfig) -> bool:
     _inventory_queue_prune_limits(config)
     now_ts = int(time.time())
     sent_this_payload = False
+    queue_paths = _inventory_queue_paths()
+    ordered_paths: List[Path] = [enqueued_path]
+    backlog_limit = max(0, int(config.inventory_queue_batch))
+    for path in queue_paths:
+        if path == enqueued_path:
+            continue
+        if len(ordered_paths) >= backlog_limit + 1:
+            break
+        ordered_paths.append(path)
 
-    for path in _inventory_queue_paths()[: config.inventory_queue_batch]:
+    for path in ordered_paths:
         item = _inventory_queue_read(path)
         if item is None:
             _inventory_queue_move_to_dead(path, None, "QUEUE_CORRUPT")
@@ -2694,6 +3090,8 @@ def send_data(payload: Dict[str, Any], config: AgentConfig) -> bool:
             _inventory_queue_write(path, item)
         except Exception as exc:
             logging.warning("Inventory queue rewrite failed (%s): %s", path, exc)
+        if path == enqueued_path:
+            break
 
     return sent_this_payload
 
@@ -2879,6 +3277,8 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     if agent_installer.is_msi_mode(args):
         if args.msi_install:
             return agent_installer.run_msi_install(args, logging)
+        if args.msi_full_uninstall_cleanup:
+            return agent_installer.run_msi_full_uninstall_cleanup(args, logging)
         return agent_installer.run_msi_uninstall_cleanup(args, logging)
 
     config = load_config()

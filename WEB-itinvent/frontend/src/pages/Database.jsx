@@ -67,7 +67,7 @@ import CheckIcon from '@mui/icons-material/Check';
 import CheckBoxOutlineBlankIcon from '@mui/icons-material/CheckBoxOutlineBlank';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
-import { equipmentAPI, API_V1_BASE, databaseAPI } from '../api/client';
+import { equipmentAPI, API_V1_BASE, databaseAPI, UPLOADED_ACT_PARSE_TIMEOUT_MS } from '../api/client';
 import jsonAPI from '../api/json_client';
 import { LoadingSpinner, StatusChip, ActionMenu } from '../components/common';
 import { getOrFetchSWR, buildCacheKey } from '../lib/swrCache';
@@ -109,6 +109,10 @@ const TABLE_VIRTUALIZE_THRESHOLD = 120;
 const TABLE_MAX_HEIGHT = 520;
 const DATA_MODE_EQUIPMENT = 'equipment';
 const DATA_MODE_CONSUMABLES = 'consumables';
+const TRANSFER_OPERATION_MOVE = 'move';
+const TRANSFER_OPERATION_ACT_ONLY = 'act_only';
+export const UPLOAD_ACT_MAX_SIZE_MB = 15;
+export const UPLOAD_ACT_MAX_SIZE_BYTES = UPLOAD_ACT_MAX_SIZE_MB * 1024 * 1024;
 const TABLE_WIDTHS = {
   consumables: { inv: 140, type: 140, model: 200, qty: 120, actions: 56 },
   equipment: { select: 56, inv: 120, serial: 110, type: 120, model: 170, employee: 220, status: 110, actions: 56 },
@@ -412,6 +416,99 @@ export const buildUploadActInvVerification = (recognizedInput, finalInput) => {
     onlyRecognizedInvNos,
     onlyFinalInvNos,
   };
+};
+
+const formatUploadActFileSize = (bytes) => {
+  const size = Number(bytes || 0);
+  if (!Number.isFinite(size) || size <= 0) return '0 МБ';
+  return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
+};
+
+export const validateUploadActPdfFile = (file) => {
+  if (!file) {
+    return 'Выберите PDF-файл акта.';
+  }
+
+  const fileName = String(file.name || '').toLowerCase();
+  if (!fileName.endsWith('.pdf')) {
+    return 'Поддерживается только PDF.';
+  }
+
+  const size = Number(file.size || 0);
+  if (size > UPLOAD_ACT_MAX_SIZE_BYTES) {
+    return (
+      `PDF слишком большой: ${formatUploadActFileSize(size)}. `
+      + `Максимальный размер для акта: ${UPLOAD_ACT_MAX_SIZE_MB} МБ.`
+    );
+  }
+
+  return '';
+};
+
+export const isUploadActParseNetworkError = (error) => !error?.response;
+
+export const isUploadActProxyUnavailableError = (error) => {
+  const statusCode = Number(error?.response?.status || 0);
+  return [502, 503, 504].includes(statusCode);
+};
+
+export const isApiUnavailableForActParseError = (error) => {
+  const statusCode = Number(error?.response?.status || 0);
+  if (!error?.response) return false;
+  const detail = String(error?.response?.data?.detail || error?.message || '').toLowerCase();
+  if (isUploadActProxyUnavailableError(error) && !detail) return false;
+  return (
+    detail.includes('openrouter')
+    || detail.includes('api распознавания')
+    || detail.includes('распознавание через модель')
+    || detail.includes('act_parse_model')
+    || detail.includes('ocr_model')
+    || detail.includes('timeout')
+    || detail.includes('timed out')
+  );
+};
+
+export const buildUploadActParseErrorMessage = ({
+  error,
+  file,
+  manualMode = false,
+  timeoutMs = UPLOADED_ACT_PARSE_TIMEOUT_MS,
+} = {}) => {
+  const statusCode = Number(error?.response?.status || 0);
+  const apiDetail = error?.response?.data?.detail;
+  const code = String(error?.code || '').trim();
+  const fileSize = formatUploadActFileSize(file?.size || 0);
+  const timeoutSec = Math.round(Number(timeoutMs || 0) / 1000);
+  const mode = manualMode ? 'manual' : 'auto';
+  const technicalDetails = [
+    statusCode ? `status=${statusCode}` : 'status=no-response',
+    code ? `axios=${code}` : '',
+    `timeout=${timeoutSec}s`,
+    `file=${fileSize}`,
+    `mode=${mode}`,
+  ].filter(Boolean).join('; ');
+
+  if (typeof apiDetail === 'string' && apiDetail.trim()) {
+    return `Backend вернул ошибку: ${apiDetail.trim()} Технические детали: ${technicalDetails}.`;
+  }
+
+  if (isUploadActParseNetworkError(error)) {
+    return (
+      'Запрос не дошёл до API распознавания или соединение было оборвано. '
+      + 'Проверьте размер PDF, сеть и повторите попытку. '
+      + `Технические детали: ${technicalDetails}.`
+    );
+  }
+
+  if (isUploadActProxyUnavailableError(error)) {
+    return (
+      'Backend или IIS/ARR proxy не вернул ответ для распознавания акта. '
+      + 'Обычно это происходит при перезапуске backend или разрыве соединения между IIS и FastAPI. '
+      + `Технические детали: ${technicalDetails}.`
+    );
+  }
+
+  return `Не удалось распознать акт. Технические детали: ${technicalDetails}.`;
 };
 
 export const isUploadActCommitDisabled = ({
@@ -2469,6 +2566,10 @@ function Database() {
   const [detailActsLoading, setDetailActsLoading] = useState(false);
   const [detailActsError, setDetailActsError] = useState('');
   const [detailActsLoadedInvNo, setDetailActsLoadedInvNo] = useState('');
+  const [detailHistory, setDetailHistory] = useState([]);
+  const [detailHistoryLoading, setDetailHistoryLoading] = useState(false);
+  const [detailHistoryError, setDetailHistoryError] = useState('');
+  const [detailHistoryLoadedInvNo, setDetailHistoryLoadedInvNo] = useState('');
   const [detailActOpeningDocNo, setDetailActOpeningDocNo] = useState('');
   const [detailActFieldsOpen, setDetailActFieldsOpen] = useState(false);
   const [detailActSelected, setDetailActSelected] = useState(null);
@@ -2483,6 +2584,7 @@ function Database() {
   // Action form state
   const [actionLoading, setActionLoading] = useState(false);
   const [actionError, setActionError] = useState('');
+  const [transferOperationMode, setTransferOperationMode] = useState(TRANSFER_OPERATION_MOVE);
   const [newEmployee, setNewEmployee] = useState('');
   const [newEmployeeNo, setNewEmployeeNo] = useState(null);
   const [transferDepartment, setTransferDepartment] = useState('');
@@ -2627,6 +2729,18 @@ function Database() {
       addInfo: String(addInfo || '').trim(),
     };
   }, [detailActSelected]);
+
+  const formatHistoryValue = useCallback((row, keys) => {
+    const value = readFirst(row, keys, '');
+    const text = String(value ?? '').trim();
+    return text || '-';
+  }, []);
+
+  const formatHistoryTransition = useCallback((row, oldKeys, newKeys) => {
+    const oldValue = formatHistoryValue(row, oldKeys);
+    const newValue = formatHistoryValue(row, newKeys);
+    return `${oldValue} -> ${newValue}`;
+  }, [formatHistoryValue]);
 
   const uploadActStep = useMemo(() => {
     if (uploadActCommitResult?.doc_no) return 4;
@@ -3600,6 +3714,10 @@ function Database() {
     setDetailActsLoading(false);
     setDetailActsError('');
     setDetailActsLoadedInvNo('');
+    setDetailHistory([]);
+    setDetailHistoryLoading(false);
+    setDetailHistoryError('');
+    setDetailHistoryLoadedInvNo('');
     setDetailActOpeningDocNo('');
     setDetailActFieldsOpen(false);
     setDetailActSelected(null);
@@ -3715,6 +3833,40 @@ function Database() {
       canceled = true;
     };
   }, [detailModal.open, detailModal.invNo, detailTab, detailActsLoadedInvNo]);
+
+  useEffect(() => {
+    if (!detailModal.open || detailTab !== 'history' || !detailModal.invNo) return;
+    if (detailHistoryLoadedInvNo === detailModal.invNo) return;
+
+    let canceled = false;
+    setDetailHistoryLoading(true);
+    setDetailHistoryError('');
+
+    const loadHistory = async () => {
+      try {
+        const response = await equipmentAPI.getEquipmentHistory(detailModal.invNo);
+        if (canceled) return;
+        const nextHistory = Array.isArray(response?.history) ? response.history : [];
+        setDetailHistory(nextHistory);
+        setDetailHistoryLoadedInvNo(detailModal.invNo);
+      } catch (error) {
+        console.error('Error loading equipment history:', error);
+        if (canceled) return;
+        const apiDetail = error?.response?.data?.detail;
+        setDetailHistory([]);
+        setDetailHistoryError(typeof apiDetail === 'string' ? apiDetail : 'Не удалось загрузить историю перемещений.');
+      } finally {
+        if (!canceled) {
+          setDetailHistoryLoading(false);
+        }
+      }
+    };
+
+    loadHistory();
+    return () => {
+      canceled = true;
+    };
+  }, [detailModal.open, detailModal.invNo, detailTab, detailHistoryLoadedInvNo]);
 
   useEffect(() => {
     if (!detailModal.open || !detailEditMode) return;
@@ -3858,6 +4010,7 @@ function Database() {
 
   useEffect(() => {
     if (!actionModal.open || actionModal.type !== 'transfer' || transferResult) return;
+    if (transferOperationMode !== TRANSFER_OPERATION_MOVE) return;
 
     let canceled = false;
     setTransferDepartmentLoading(true);
@@ -3897,6 +4050,7 @@ function Database() {
   }, [
     actionModal.open,
     actionModal.type,
+    transferOperationMode,
     transferResult,
     transferBranchNo,
     transferLocationNo,
@@ -3906,6 +4060,7 @@ function Database() {
 
   useEffect(() => {
     if (!actionModal.open || actionModal.type !== 'transfer' || transferResult) return;
+    if (transferOperationMode !== TRANSFER_OPERATION_MOVE) return;
     if (!transferBranchNo) {
       setTransferLocations([]);
       setTransferLocationsLoading(false);
@@ -3975,6 +4130,7 @@ function Database() {
   }, [
     actionModal.open,
     actionModal.type,
+    transferOperationMode,
     transferResult,
     transferBranchNo,
     getLocationsCached,
@@ -4799,32 +4955,14 @@ function Database() {
     uploadActAutoEmailRef.current = true;
   }, []);
 
-  const isApiUnavailableForActParse = useCallback((error) => {
-    const statusCode = Number(error?.response?.status || 0);
-    if (!error?.response) return true;
-    if (statusCode >= 500) return true;
-    const detail = String(error?.response?.data?.detail || error?.message || '').toLowerCase();
-    return (
-      detail.includes('openrouter')
-      || detail.includes('api')
-      || detail.includes('timeout')
-      || detail.includes('timed out')
-    );
-  }, []);
-
   const handleUploadActParse = useCallback(async (manualMode = false) => {
     if (!canDatabaseWrite) {
       setUploadActError('Недостаточно прав для изменения данных.');
       return;
     }
-    if (!uploadActFile) {
-      setUploadActError('Выберите PDF-файл акта.');
-      return;
-    }
-
-    const fileName = String(uploadActFile.name || '').toLowerCase();
-    if (!fileName.endsWith('.pdf')) {
-      setUploadActError('Поддерживается только PDF.');
+    const fileValidationError = validateUploadActPdfFile(uploadActFile);
+    if (fileValidationError) {
+      setUploadActError(fileValidationError);
       return;
     }
 
@@ -4837,31 +4975,32 @@ function Database() {
         notifyDatabaseInfo('Черновик создан в ручном режиме. Заполните поля акта и инвентарные номера.');
       }
     } catch (error) {
-      if (!manualMode && isApiUnavailableForActParse(error)) {
+      if (!manualMode && isApiUnavailableForActParseError(error)) {
         try {
           const fallbackDraft = await equipmentAPI.parseUploadedAct(uploadActFile, { manualMode: true });
           applyUploadActDraft(fallbackDraft);
-          notifyDatabaseWarning('API распознавания недоступен. Создан ручной черновик для заполнения.');
+          notifyDatabaseWarning('OpenRouter недоступен. Создан ручной черновик для заполнения.');
           return;
         } catch (fallbackError) {
-          const fallbackDetail = fallbackError?.response?.data?.detail;
-          setUploadActError(
-            typeof fallbackDetail === 'string'
-              ? fallbackDetail
-              : 'Не удалось создать ручной черновик акта.'
-          );
+          setUploadActError(buildUploadActParseErrorMessage({
+            error: fallbackError,
+            file: uploadActFile,
+            manualMode: true,
+          }));
           return;
         }
       }
-      const apiDetail = error?.response?.data?.detail;
-      setUploadActError(typeof apiDetail === 'string' ? apiDetail : 'Не удалось распознать акт.');
+      setUploadActError(buildUploadActParseErrorMessage({
+        error,
+        file: uploadActFile,
+        manualMode,
+      }));
     } finally {
       setUploadActParsing(false);
     }
   }, [
     applyUploadActDraft,
     canDatabaseWrite,
-    isApiUnavailableForActParse,
     notifyDatabaseInfo,
     notifyDatabaseWarning,
     uploadActFile,
@@ -5121,12 +5260,14 @@ function Database() {
   }, [transferEmployeeInputTrimmed, transferEmployeeOptions]);
 
   const canAddTransferEmployee = useMemo(() => {
+    if (transferOperationMode !== TRANSFER_OPERATION_MOVE) return false;
     if (transferResult) return false;
     if (newEmployeeNo) return false;
     if (transferEmployeeInputTrimmed.length < 2) return false;
     if (transferEmployeeHasExactMatch) return false;
     return normalizeText(newEmployee) !== normalizeText(transferEmployeeInputTrimmed);
   }, [
+    transferOperationMode,
     transferResult,
     newEmployeeNo,
     transferEmployeeInputTrimmed,
@@ -5583,6 +5724,7 @@ function Database() {
   }, []);
 
   const resetTransferState = useCallback(() => {
+    setTransferOperationMode(TRANSFER_OPERATION_MOVE);
     setNewEmployee('');
     setNewEmployeeNo(null);
     setTransferDepartment('');
@@ -5627,6 +5769,10 @@ function Database() {
       setDetailActsLoading(false);
       setDetailActsError('');
       setDetailActsLoadedInvNo('');
+      setDetailHistory([]);
+      setDetailHistoryLoading(false);
+      setDetailHistoryError('');
+      setDetailHistoryLoadedInvNo('');
       setDetailActOpeningDocNo('');
       setDetailActFieldsOpen(false);
       setDetailActSelected(null);
@@ -6840,6 +6986,21 @@ function Database() {
               }}
             >
               Переместить
+            </Button>
+            <Button
+              size={isMobile ? 'medium' : 'small'}
+              variant={isMobile ? 'text' : 'outlined'}
+              color="primary"
+              sx={!isMobile ? getOfficeQuietActionSx(ui, theme, 'primary') : undefined}
+              onClick={() => {
+                resetTransferState();
+                setTransferOperationMode(TRANSFER_OPERATION_ACT_ONLY);
+                setNewEmployee('Без владельца');
+                setTransferEmployeeInput('Без владельца');
+                setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
+              }}
+            >
+              Акт
             </Button>
             <Button
               size={isMobile ? 'medium' : 'small'}
@@ -8133,14 +8294,15 @@ function Database() {
                 )}
 
                 <Paper variant="outlined" sx={{ p: 0.5 }}>
-                  <Tabs
-                    value={detailTab}
-                    onChange={(_, value) => setDetailTab(value)}
-                    variant="fullWidth"
-                  >
-                    <Tab label="Общее" value="general" />
-                    <Tab label="Текущий акт" value="acts" disabled={detailEditMode} />
-                  </Tabs>
+                    <Tabs
+                      value={detailTab}
+                      onChange={(_, value) => setDetailTab(value)}
+                      variant="fullWidth"
+                    >
+                      <Tab label="Общее" value="general" />
+                      <Tab label="Текущий акт" value="acts" disabled={detailEditMode} />
+                      <Tab label="История перемещений" value="history" disabled={detailEditMode} />
+                    </Tabs>
                 </Paper>
 
                 {detailTab === 'general' ? (
@@ -8468,7 +8630,7 @@ function Database() {
                       </Grid>
                     </Grid>
                   </>
-                ) : (
+                ) : detailTab === 'acts' ? (
                   <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
                     {detailActsError && (
                       <Alert severity="error" onClose={() => setDetailActsError('')}>
@@ -8556,6 +8718,129 @@ function Database() {
                           </Table>
                         </TableContainer>
                       </>
+                    )}
+                  </Box>
+                ) : (
+                  <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.5 }}>
+                    {detailHistoryError && (
+                      <Alert severity="error" onClose={() => setDetailHistoryError('')}>
+                        {detailHistoryError}
+                      </Alert>
+                    )}
+                    {detailHistoryLoading ? (
+                      <LoadingSpinner message="Загрузка истории..." />
+                    ) : detailHistory.length === 0 ? (
+                      <Paper variant="outlined" sx={{ p: 2 }}>
+                        <Typography variant="body2" color="text.secondary">
+                          История перемещений для этого оборудования пока пустая.
+                        </Typography>
+                      </Paper>
+                    ) : isMobile ? (
+                      <Box sx={{ display: 'grid', gap: 1 }}>
+                        {detailHistory.map((entry, index) => (
+                          <Paper
+                            key={`${readFirst(entry, ['hist_id', 'HIST_ID'], index)}-${index}`}
+                            variant="outlined"
+                            sx={{ p: 1.5, borderRadius: 1.5 }}
+                          >
+                            <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 1, mb: 1 }}>
+                              <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>
+                                {formatDate(readFirst(entry, ['ch_date', 'CH_DATE'], ''))}
+                              </Typography>
+                              <Chip
+                                size="small"
+                                variant="outlined"
+                                label={`#${formatHistoryValue(entry, ['hist_id', 'HIST_ID'])}`}
+                              />
+                            </Box>
+                            <Typography variant="body2" sx={{ fontWeight: 600 }}>
+                              {formatHistoryTransition(
+                                entry,
+                                ['old_employee_name', 'OLD_EMPLOYEE_NAME', 'old_employee_no', 'OLD_EMPLOYEE_NO'],
+                                ['new_employee_name', 'NEW_EMPLOYEE_NAME', 'new_employee_no', 'NEW_EMPLOYEE_NO']
+                              )}
+                            </Typography>
+                            <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                              {formatHistoryTransition(
+                                entry,
+                                ['old_branch_name', 'OLD_BRANCH_NAME', 'old_branch_no', 'OLD_BRANCH_NO'],
+                                ['new_branch_name', 'NEW_BRANCH_NAME', 'new_branch_no', 'NEW_BRANCH_NO']
+                              )}
+                              {' / '}
+                              {formatHistoryTransition(
+                                entry,
+                                ['old_location_name', 'OLD_LOCATION_NAME', 'old_loc_no', 'OLD_LOC_NO'],
+                                ['new_location_name', 'NEW_LOCATION_NAME', 'new_loc_no', 'NEW_LOC_NO']
+                              )}
+                            </Typography>
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+                              Пользователь: {formatHistoryValue(entry, ['ch_user', 'CH_USER'])}
+                            </Typography>
+                            {String(readFirst(entry, ['ch_comment', 'CH_COMMENT'], '') || '').trim() && (
+                              <Typography variant="body2" sx={{ mt: 1, whiteSpace: 'pre-wrap' }}>
+                                {String(readFirst(entry, ['ch_comment', 'CH_COMMENT'], '') || '').trim()}
+                              </Typography>
+                            )}
+                          </Paper>
+                        ))}
+                      </Box>
+                    ) : (
+                      <TableContainer component={Paper} variant="outlined">
+                        <Table size="small">
+                          <TableHead>
+                            <TableRow>
+                              <TableCell>Дата</TableCell>
+                              <TableCell>Сотрудник</TableCell>
+                              <TableCell>Филиал / Локация</TableCell>
+                              <TableCell>Пользователь</TableCell>
+                              <TableCell>Комментарий</TableCell>
+                            </TableRow>
+                          </TableHead>
+                          <TableBody>
+                            {detailHistory.map((entry, index) => (
+                              <TableRow key={`${readFirst(entry, ['hist_id', 'HIST_ID'], index)}-${index}`} hover>
+                                <TableCell>
+                                  <Typography variant="body2" sx={{ fontVariantNumeric: 'tabular-nums' }}>
+                                    {formatDate(readFirst(entry, ['ch_date', 'CH_DATE'], ''))}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    #{formatHistoryValue(entry, ['hist_id', 'HIST_ID'])}
+                                  </Typography>
+                                </TableCell>
+                                <TableCell>
+                                  {formatHistoryTransition(
+                                    entry,
+                                    ['old_employee_name', 'OLD_EMPLOYEE_NAME', 'old_employee_no', 'OLD_EMPLOYEE_NO'],
+                                    ['new_employee_name', 'NEW_EMPLOYEE_NAME', 'new_employee_no', 'NEW_EMPLOYEE_NO']
+                                  )}
+                                </TableCell>
+                                <TableCell>
+                                  <Typography variant="body2">
+                                    {formatHistoryTransition(
+                                      entry,
+                                      ['old_branch_name', 'OLD_BRANCH_NAME', 'old_branch_no', 'OLD_BRANCH_NO'],
+                                      ['new_branch_name', 'NEW_BRANCH_NAME', 'new_branch_no', 'NEW_BRANCH_NO']
+                                    )}
+                                  </Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    {formatHistoryTransition(
+                                      entry,
+                                      ['old_location_name', 'OLD_LOCATION_NAME', 'old_loc_no', 'OLD_LOC_NO'],
+                                      ['new_location_name', 'NEW_LOCATION_NAME', 'new_loc_no', 'NEW_LOC_NO']
+                                    )}
+                                  </Typography>
+                                </TableCell>
+                                <TableCell>{formatHistoryValue(entry, ['ch_user', 'CH_USER'])}</TableCell>
+                                <TableCell sx={{ maxWidth: 260 }}>
+                                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                                    {formatHistoryValue(entry, ['ch_comment', 'CH_COMMENT'])}
+                                  </Typography>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </TableContainer>
                     )}
                   </Box>
                 )}
@@ -8933,7 +9218,11 @@ function Database() {
           fullScreen={isMobile}
         >
           <DialogTitle>
-            {actionModal.type === 'transfer' && 'Перемещение оборудования'}
+            {actionModal.type === 'transfer' && (
+              transferOperationMode === TRANSFER_OPERATION_ACT_ONLY
+                ? 'Акт без перемещения'
+                : 'Перемещение оборудования'
+            )}
             {actionModal.type === 'cartridge' && 'Замена картриджа'}
             {actionModal.type === 'battery' && 'Замена батареи'}
             {actionModal.type === 'component' && (actionModal.componentKind === 'pc' ? 'Замена компонента ПК' : 'Замена компонента')}
@@ -8952,10 +9241,33 @@ function Database() {
               <Box sx={{ display: 'grid', gap: 2 }}>
                 {!transferResult && (
                   <>
+                    <FormControl size={isMobile ? 'medium' : 'small'} fullWidth>
+                      <InputLabel>Действие</InputLabel>
+                      <Select
+                        label="Действие"
+                        value={transferOperationMode}
+                        onChange={(e) => {
+                          const nextMode = e.target.value;
+                          setTransferOperationMode(nextMode);
+                          setActionError('');
+                          setTransferResult(null);
+                          setNewEmployee(nextMode === TRANSFER_OPERATION_ACT_ONLY ? 'Без владельца' : '');
+                          setNewEmployeeNo(null);
+                          setTransferDepartment('');
+                          setTransferEmployeeInput(nextMode === TRANSFER_OPERATION_ACT_ONLY ? 'Без владельца' : '');
+                          setTransferEmployeeOptions([]);
+                        }}
+                      >
+                        <MenuItem value={TRANSFER_OPERATION_MOVE}>Переместить в базе и создать акт</MenuItem>
+                        <MenuItem value={TRANSFER_OPERATION_ACT_ONLY}>Только создать акт без перемещения</MenuItem>
+                      </Select>
+                    </FormControl>
                     <Typography variant="caption" color="text.secondary">
-                      Текущие значения по умолчанию: {transferSourceDefaults.branch_name || '-'} / {transferSourceDefaults.location_name || '-'}
+                      {transferOperationMode === TRANSFER_OPERATION_ACT_ONLY
+                        ? 'Получатель в акте будет взят из текущего владельца выбранной техники.'
+                        : `Текущие значения по умолчанию: ${transferSourceDefaults.branch_name || '-'} / ${transferSourceDefaults.location_name || '-'}`}
                     </Typography>
-                    {(transferSourceDefaults.mixed_branch || transferSourceDefaults.mixed_location) && (
+                    {transferOperationMode === TRANSFER_OPERATION_MOVE && (transferSourceDefaults.mixed_branch || transferSourceDefaults.mixed_location) && (
                       <Alert severity="info">
                         Выбраны позиции из разных филиалов или локаций. Указанные ниже значения будут применены ко всем выбранным позициям.
                       </Alert>
@@ -8975,7 +9287,11 @@ function Database() {
                         setActionError('');
                         const normalizedNext = normalizeText(nextValue);
                         const normalizedCurrent = normalizeText(newEmployee);
-                        if (newEmployeeNo || (newEmployee && normalizedNext !== normalizedCurrent)) {
+                        if (transferOperationMode === TRANSFER_OPERATION_ACT_ONLY) {
+                          setNewEmployee(nextValue);
+                          setNewEmployeeNo(null);
+                          setTransferDepartment('');
+                        } else if (newEmployeeNo || (newEmployee && normalizedNext !== normalizedCurrent)) {
                           setNewEmployee('');
                           setNewEmployeeNo(null);
                           setTransferDepartment('');
@@ -8991,6 +9307,7 @@ function Database() {
                           setNewEmployee('');
                           setNewEmployeeNo(null);
                           setTransferDepartment('');
+                          setTransferEmployeeInput('');
                           setActionError('');
                           return;
                         }
@@ -9039,24 +9356,32 @@ function Database() {
                         toNumberOrNull(option?.OWNER_NO ?? option?.owner_no) ===
                         toNumberOrNull(value?.OWNER_NO ?? value?.owner_no)
                       }
-                      noOptionsText="Сотрудники не найдены"
+                      noOptionsText={
+                        transferOperationMode === TRANSFER_OPERATION_ACT_ONLY
+                          ? 'Можно ввести вручную'
+                          : 'Сотрудники не найдены'
+                      }
                       renderInput={(params) => (
                         <TextField
                           {...params}
                           autoFocus
-                          label="Новый сотрудник"
+                          label={transferOperationMode === TRANSFER_OPERATION_ACT_ONLY ? 'Кто выдал' : 'Новый сотрудник'}
                           placeholder="Начните вводить ФИО"
                           size={isMobile ? 'medium' : 'small'}
-                          helperText="Введите минимум 2 символа для поиска"
+                          helperText={
+                            transferOperationMode === TRANSFER_OPERATION_ACT_ONLY
+                              ? 'Можно выбрать из списка или ввести вручную, например: Без владельца'
+                              : 'Введите минимум 2 символа для поиска'
+                          }
                         />
                       )}
                     />
-                    {transferUsesManualEmployee && (
+                    {transferOperationMode === TRANSFER_OPERATION_MOVE && transferUsesManualEmployee && (
                       <Alert severity="info">
                         Сотрудник {newEmployee} будет создан автоматически при перемещении, если его нет в базе.
                       </Alert>
                     )}
-                    {transferUsesManualEmployee && (
+                    {transferOperationMode === TRANSFER_OPERATION_MOVE && transferUsesManualEmployee && (
                       <FormControl
                         size={isMobile ? 'medium' : 'small'}
                         fullWidth
@@ -9084,49 +9409,53 @@ function Database() {
                         </Select>
                       </FormControl>
                     )}
-                    <FormControl size={isMobile ? 'medium' : 'small'} fullWidth>
-                      <InputLabel>Филиал назначения</InputLabel>
-                      <Select
-                        label="Филиал назначения"
-                        value={transferBranchNo ?? ''}
-                        onChange={(e) => {
-                          const value = toIdOrNull(e.target.value);
-                          setTransferBranchNo(value);
-                          setActionError('');
-                        }}
-                      >
-                        <MenuItem value="">
-                          <em>Выберите филиал</em>
-                        </MenuItem>
-                        {branchOptions.map((branch) => (
-                          <MenuItem key={branch.branch_no} value={branch.branch_no}>
-                            {branch.branch_name}
-                          </MenuItem>
-                        ))}
-                      </Select>
-                    </FormControl>
-                    <FormControl
-                      size={isMobile ? 'medium' : 'small'}
-                      fullWidth
-                      disabled={!transferBranchNo || transferLocationsLoading}
-                    >
-                      <LocationAutocompleteField
-                        label="Местоположение назначения"
-                        value={transferLocationNo ?? ''}
-                        options={transferLocationOptions}
-                        disabled={!transferBranchNo || transferLocationsLoading}
-                        loading={transferLocationsLoading}
-                        size={isMobile ? 'medium' : 'small'}
-                        onChange={(locNo) => {
-                          setTransferLocationNo(toIdOrNull(locNo));
-                          setActionError('');
-                        }}
-                      />
-                    </FormControl>
-                    {transferLocationsLoading && (
-                      <Typography variant="caption" color="text.secondary">
-                        Загрузка списка местоположений...
-                      </Typography>
+                    {transferOperationMode === TRANSFER_OPERATION_MOVE && (
+                      <>
+                        <FormControl size={isMobile ? 'medium' : 'small'} fullWidth>
+                          <InputLabel>Филиал назначения</InputLabel>
+                          <Select
+                            label="Филиал назначения"
+                            value={transferBranchNo ?? ''}
+                            onChange={(e) => {
+                              const value = toIdOrNull(e.target.value);
+                              setTransferBranchNo(value);
+                              setActionError('');
+                            }}
+                          >
+                            <MenuItem value="">
+                              <em>Выберите филиал</em>
+                            </MenuItem>
+                            {branchOptions.map((branch) => (
+                              <MenuItem key={branch.branch_no} value={branch.branch_no}>
+                                {branch.branch_name}
+                              </MenuItem>
+                            ))}
+                          </Select>
+                        </FormControl>
+                        <FormControl
+                          size={isMobile ? 'medium' : 'small'}
+                          fullWidth
+                          disabled={!transferBranchNo || transferLocationsLoading}
+                        >
+                          <LocationAutocompleteField
+                            label="Местоположение назначения"
+                            value={transferLocationNo ?? ''}
+                            options={transferLocationOptions}
+                            disabled={!transferBranchNo || transferLocationsLoading}
+                            loading={transferLocationsLoading}
+                            size={isMobile ? 'medium' : 'small'}
+                            onChange={(locNo) => {
+                              setTransferLocationNo(toIdOrNull(locNo));
+                              setActionError('');
+                            }}
+                          />
+                        </FormControl>
+                        {transferLocationsLoading && (
+                          <Typography variant="caption" color="text.secondary">
+                            Загрузка списка местоположений...
+                          </Typography>
+                        )}
+                      </>
                     )}
                   </>
                 )}
@@ -9134,7 +9463,7 @@ function Database() {
                 {transferResult && (
                   <Box sx={{ display: 'grid', gap: 1.5 }}>
                     <Alert severity={transferResult.failed_count > 0 ? 'warning' : 'success'}>
-                      Перенесено: {transferResult.success_count}, ошибок: {transferResult.failed_count}
+                      {transferOperationMode === TRANSFER_OPERATION_ACT_ONLY ? 'Подготовлено позиций' : 'Перенесено'}: {transferResult.success_count}, ошибок: {transferResult.failed_count}
                     </Alert>
 
                     {(transferResult.upload_reminder_created || transferResult.upload_reminder_warning) && (
@@ -9204,7 +9533,9 @@ function Database() {
                             })}
                           >
                             <Typography variant="body2">
-                              {act.old_employee} ({act.equipment_count})
+                              {transferOperationMode === TRANSFER_OPERATION_ACT_ONLY && act.new_employee
+                                ? `${act.old_employee} → ${act.new_employee} (${act.equipment_count})`
+                                : `${act.old_employee} (${act.equipment_count})`}
                             </Typography>
                             <Button
                               size="small"
@@ -9231,8 +9562,12 @@ function Database() {
                         value={transferEmailMode}
                         onChange={(e) => setTransferEmailMode(e.target.value)}
                       >
-                        <MenuItem value="old">Старому сотруднику</MenuItem>
-                        <MenuItem value="new">Новому сотруднику</MenuItem>
+                        <MenuItem value="old">
+                          {transferOperationMode === TRANSFER_OPERATION_ACT_ONLY ? 'Выдавшему' : 'Старому сотруднику'}
+                        </MenuItem>
+                        <MenuItem value="new">
+                          {transferOperationMode === TRANSFER_OPERATION_ACT_ONLY ? 'Получателю' : 'Новому сотруднику'}
+                        </MenuItem>
                         <MenuItem value="employee">Выбрать сотрудника</MenuItem>
                         <MenuItem value="manual">Ввести email вручную</MenuItem>
                       </Select>
@@ -9665,7 +10000,36 @@ function Database() {
                     if (actionModal.type === 'transfer') {
                       const targetInvNos = normalizeActionTargets(selectedItems, actionModal.invNo);
                       if (targetInvNos.length === 0) {
-                        setActionError('Не выбрано оборудование для перемещения');
+                        setActionError(
+                          transferOperationMode === TRANSFER_OPERATION_ACT_ONLY
+                            ? 'Не выбрано оборудование для акта'
+                            : 'Не выбрано оборудование для перемещения'
+                        );
+                        return;
+                      }
+
+                      if (transferOperationMode === TRANSFER_OPERATION_ACT_ONLY) {
+                        const issuerName = String(newEmployee || transferEmployeeInput || '').trim();
+                        if (!issuerName) {
+                          setActionError('Укажите, кто выдал технику.');
+                          return;
+                        }
+
+                        const response = await equipmentAPI.createTransferActOnly({
+                          inv_nos: targetInvNos,
+                          issuer_employee: issuerName,
+                          issuer_owner_no: newEmployeeNo || undefined,
+                        });
+                        setTransferResult(response);
+                        setTransferEmailStatus('');
+                        setTransferEmailError('');
+                        setSelectedItems([]);
+
+                        if (Number(response?.failed_count || 0) > 0) {
+                          setActionError(`Подготовлено ${response.success_count}, ошибок ${response.failed_count}`);
+                        } else {
+                          setActionError('');
+                        }
                         return;
                       }
 
@@ -9703,6 +10067,13 @@ function Database() {
                       setTransferEmailStatus('');
                       setTransferEmailError('');
                       setSelectedItems([]);
+                      if (
+                        Number(response?.success_count || 0) > 0 &&
+                        targetInvNos.includes(String(detailModal?.invNo || '').trim())
+                      ) {
+                        setDetailHistory([]);
+                        setDetailHistoryLoadedInvNo('');
+                      }
                       await fetchAllEquipment({ force: true });
 
                       if (Number(response?.failed_count || 0) > 0) {
@@ -10046,7 +10417,7 @@ function Database() {
                 {actionLoading
                   ? 'Выполнение...'
                   : actionModal.type === 'transfer'
-                    ? 'Выполнить перемещение'
+                    ? (transferOperationMode === TRANSFER_OPERATION_ACT_ONLY ? 'Создать акт' : 'Выполнить перемещение')
                     : 'Подтвердить'}
               </Button>
             )}

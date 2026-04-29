@@ -16,7 +16,7 @@ import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import {
   buildMailUiTokens,
   getMailBottomSheetPaperSx,
-  getMailDialogPaperSx,
+  getMailMenuPaperSx,
   getMailSheetHandleSx,
 } from './mailUiTokens';
 
@@ -116,10 +116,9 @@ export default function MailToolsMenu({
       anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
       transformOrigin={{ vertical: 'top', horizontal: 'right' }}
       PaperProps={{
-        sx: getMailDialogPaperSx(tokens, {
+        sx: getMailMenuPaperSx(tokens, {
           mt: 0.75,
           minWidth: 240,
-          bgcolor: tokens.menuBg,
         }),
       }}
     >

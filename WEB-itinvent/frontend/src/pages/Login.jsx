@@ -1018,7 +1018,7 @@ function Login() {
   const secondaryButtonClassName = 'flex min-h-12 w-full items-center justify-center rounded-[16px] border border-white/10 bg-white/[0.045] px-5 text-sm font-semibold text-white/78 transition hover:bg-white/[0.08]';
 
   const renderStatusRail = () => (
-    <aside className="hidden min-h-[620px] flex-col justify-between rounded-[32px] border border-white/10 bg-white/[0.045] p-8 shadow-[0_28px_90px_rgba(2,6,23,0.38)] backdrop-blur-2xl md:flex">
+    <aside className="hidden min-h-[620px] flex-col rounded-[32px] border border-white/10 bg-white/[0.045] p-8 shadow-[0_28px_90px_rgba(2,6,23,0.38)] backdrop-blur-2xl md:flex">
       <div className="space-y-8">
         <div className="flex items-center justify-between gap-4">
           <div className="text-sm font-semibold tracking-[0.08em] text-white/76">HUB-IT</div>
@@ -1049,13 +1049,15 @@ function Login() {
             </div>
           ))}
         </div>
-      </div>
 
-      <div className="rounded-[24px] border border-cyan-200/14 bg-cyan-200/[0.06] p-5">
-        <div className="text-sm font-semibold text-cyan-50">Внешний вход</div>
-        <p className="mt-2 text-sm leading-6 text-white/56">
-          Снаружи система сначала пробует доверенное устройство. Если его нет, вход завершится паролем и кодом.
-        </p>
+        {!loginModeLoading && networkZone === 'external' ? (
+          <div className="rounded-[24px] border border-cyan-200/14 bg-cyan-200/[0.06] p-5">
+            <div className="text-sm font-semibold text-cyan-50">Внешний вход</div>
+            <p className="mt-2 text-sm leading-6 text-white/56">
+              Снаружи система сначала пробует доверенное устройство. Если его нет, вход завершится паролем и кодом.
+            </p>
+          </div>
+        ) : null}
       </div>
     </aside>
   );

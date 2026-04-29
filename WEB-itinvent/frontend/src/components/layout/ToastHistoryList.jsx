@@ -7,6 +7,7 @@ import {
   resolveToastHistoryAction,
 } from '../feedback/toastActions';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
+import { normalizeNotificationText } from '../../lib/notificationUtils';
 
 const TOAST_SOURCE_LABELS = {
   hub: 'Центр управления',
@@ -55,8 +56,8 @@ function ToastHistoryList({ items }) {
       {(Array.isArray(items) ? items : []).map((item) => {
         const severityMeta = TOAST_SEVERITY_META[item?.severity] || TOAST_SEVERITY_META.info;
         const sourceLabel = TOAST_SOURCE_LABELS[item?.source] || 'Система';
-        const title = String(item?.title || '').trim() || sourceLabel;
-        const message = String(item?.message || '').trim();
+        const title = normalizeNotificationText(item?.title).trim() || sourceLabel;
+        const message = normalizeNotificationText(item?.message).trim();
         const duplicated = title === message;
         const displayTitle = duplicated ? sourceLabel : title;
         const resolvedAction = resolveToastHistoryAction(item);

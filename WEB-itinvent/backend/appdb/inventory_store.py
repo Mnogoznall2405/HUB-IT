@@ -5,10 +5,16 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, or_, select
 
 from backend.appdb.db import app_session, ensure_app_schema_initialized
-from backend.appdb.models import AppInventoryChangeEvent, AppInventoryHost
+from backend.appdb.models import (
+    AppInventoryChangeEvent,
+    AppInventoryHost,
+    AppInventoryHostSqlContext,
+    AppInventoryOutlookFile,
+    AppInventoryUserProfile,
+)
 
 
 def _utcnow() -> datetime:
@@ -24,6 +30,89 @@ def _payload_host_key(payload: dict[str, Any]) -> str:
     if normalized_mac:
         return normalized_mac
     return str(payload.get("hostname") or "").strip().lower()
+
+
+def _normalize_text(value: Any) -> str:
+    return str(value or "").replace("\x00", "").strip()
+
+
+def _to_int(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except Exception:
+        return default
+
+
+def _first_value(raw: dict[str, Any], *keys: str) -> Any:
+    for key in keys:
+        if key in raw:
+            return raw.get(key)
+    return None
+
+
+def _normalize_profile_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_sizes = payload.get("user_profile_sizes") if isinstance(payload.get("user_profile_sizes"), dict) else {}
+    raw_profiles = raw_sizes.get("profiles") if isinstance(raw_sizes.get("profiles"), list) else []
+    rows: list[dict[str, Any]] = []
+    for raw in raw_profiles:
+        if not isinstance(raw, dict):
+            continue
+        user_name = _normalize_text(_first_value(raw, "user_name", "userName"))
+        profile_path = _normalize_text(_first_value(raw, "profile_path", "profilePath"))
+        if not user_name and not profile_path:
+            continue
+        rows.append(
+            {
+                "user_name": user_name or None,
+                "profile_path": profile_path or None,
+                "total_size_bytes": max(0, _to_int(_first_value(raw, "total_size_bytes", "totalSizeBytes"), 0)),
+                "files_count": max(0, _to_int(_first_value(raw, "files_count", "filesCount"), 0)),
+                "dirs_count": max(0, _to_int(_first_value(raw, "dirs_count", "dirsCount"), 0)),
+                "errors_count": max(0, _to_int(_first_value(raw, "errors_count", "errorsCount"), 0)),
+                "partial": bool(raw.get("partial")),
+            }
+        )
+    return rows
+
+
+def _normalize_outlook_file_rows(payload: dict[str, Any]) -> list[dict[str, Any]]:
+    outlook = payload.get("outlook") if isinstance(payload.get("outlook"), dict) else {}
+    candidates: list[tuple[str, dict[str, Any]]] = []
+    active_store = outlook.get("active_store") if isinstance(outlook.get("active_store"), dict) else None
+    if active_store:
+        candidates.append(("active", active_store))
+    active_stores = outlook.get("active_stores") if isinstance(outlook.get("active_stores"), list) else []
+    for raw in active_stores:
+        if isinstance(raw, dict):
+            candidates.append(("active", raw))
+    active_candidate = outlook.get("active_candidate") if isinstance(outlook.get("active_candidate"), dict) else None
+    if active_candidate:
+        candidates.append(("candidate", active_candidate))
+    archives = outlook.get("archives") if isinstance(outlook.get("archives"), list) else []
+    for raw in archives:
+        if isinstance(raw, dict):
+            candidates.append(("archive", raw))
+
+    rows: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for kind, raw in candidates:
+        path = _normalize_text(raw.get("path"))
+        if not path:
+            continue
+        key = (kind, path.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(
+            {
+                "kind": kind,
+                "file_path": path,
+                "file_type": _normalize_text(raw.get("type")).lower() or None,
+                "size_bytes": max(0, _to_int(raw.get("size_bytes"), 0)),
+                "last_modified_at": _to_int(raw.get("last_modified_at"), 0) or None,
+            }
+        )
+    return rows
 
 
 class AppInventoryStore:
@@ -73,10 +162,148 @@ class AppInventoryStore:
                 return None
             return self._row_payload(row)
 
-    def list_hosts(self) -> list[dict[str, Any]]:
+    def list_hosts(self, host_keys: set[str] | list[str] | None = None) -> list[dict[str, Any]]:
         with app_session(self._database_url) as session:
-            rows = session.scalars(select(AppInventoryHost).order_by(AppInventoryHost.mac_address.asc())).all()
+            stmt = select(AppInventoryHost).order_by(AppInventoryHost.mac_address.asc())
+            if host_keys is not None:
+                normalized_keys = [_normalize_mac(item) or str(item or "").strip().lower() for item in host_keys]
+                normalized_keys = [item for item in normalized_keys if item]
+                if not normalized_keys:
+                    return []
+                stmt = stmt.where(AppInventoryHost.mac_address.in_(normalized_keys))
+            rows = session.scalars(stmt).all()
             return [self._row_payload(row) for row in rows]
+
+    def search_host_keys(self, query: str, search_fields: set[str]) -> set[str] | None:
+        needle = _normalize_text(query).lower()
+        if not needle:
+            return None
+        fields = set(search_fields or set())
+        if "network" in fields:
+            return None
+        pattern = f"%{needle}%"
+        keys: set[str] = set()
+        with app_session(self._database_url) as session:
+            if "identity" in fields or "user" in fields:
+                host_conditions = []
+                if "identity" in fields:
+                    host_conditions.extend(
+                        [
+                            func.lower(AppInventoryHost.hostname).like(pattern),
+                            func.lower(AppInventoryHost.mac_address).like(pattern),
+                            func.lower(AppInventoryHost.ip_primary).like(pattern),
+                        ]
+                    )
+                if "user" in fields:
+                    host_conditions.extend(
+                        [
+                            func.lower(AppInventoryHost.user_login).like(pattern),
+                            func.lower(AppInventoryHost.user_full_name).like(pattern),
+                        ]
+                    )
+                if host_conditions:
+                    keys.update(
+                        str(item or "")
+                        for item in session.scalars(
+                            select(AppInventoryHost.mac_address).where(or_(*host_conditions))
+                        ).all()
+                    )
+            if "profiles" in fields:
+                keys.update(
+                    str(item or "")
+                    for item in session.scalars(
+                        select(AppInventoryUserProfile.mac_address).where(
+                            or_(
+                                func.lower(AppInventoryUserProfile.user_name).like(pattern),
+                                func.lower(AppInventoryUserProfile.profile_path).like(pattern),
+                            )
+                        )
+                    ).all()
+                )
+            if "outlook" in fields:
+                keys.update(
+                    str(item or "")
+                    for item in session.scalars(
+                        select(AppInventoryOutlookFile.mac_address).where(
+                            or_(
+                                func.lower(AppInventoryOutlookFile.file_path).like(pattern),
+                                func.lower(AppInventoryOutlookFile.file_type).like(pattern),
+                                func.lower(AppInventoryOutlookFile.kind).like(pattern),
+                            )
+                        )
+                    ).all()
+                )
+            if "location" in fields or "database" in fields:
+                context_conditions = []
+                if "location" in fields:
+                    context_conditions.extend(
+                        [
+                            func.lower(AppInventoryHostSqlContext.branch_name).like(pattern),
+                            func.lower(AppInventoryHostSqlContext.location_name).like(pattern),
+                        ]
+                    )
+                if "database" in fields:
+                    context_conditions.append(func.lower(AppInventoryHostSqlContext.db_id).like(pattern))
+                if context_conditions:
+                    keys.update(
+                        str(item or "")
+                        for item in session.scalars(
+                            select(AppInventoryHostSqlContext.mac_address).where(or_(*context_conditions))
+                        ).all()
+                    )
+        return {item for item in keys if item}
+
+    def get_sql_context(self, *, mac_address: str, hostname: str, db_id: str) -> Optional[dict[str, Any]]:
+        normalized_mac = _normalize_mac(mac_address)
+        normalized_hostname = _normalize_text(hostname).lower()
+        normalized_db_id = _normalize_text(db_id)
+        if not normalized_db_id or (not normalized_mac and not normalized_hostname):
+            return None
+        with app_session(self._database_url) as session:
+            stmt = select(AppInventoryHostSqlContext).where(AppInventoryHostSqlContext.db_id == normalized_db_id)
+            if normalized_mac:
+                stmt = stmt.where(AppInventoryHostSqlContext.mac_address == normalized_mac)
+            else:
+                stmt = stmt.where(AppInventoryHostSqlContext.hostname == normalized_hostname)
+            row = session.scalars(stmt.order_by(AppInventoryHostSqlContext.updated_at.desc())).first()
+            if row is None:
+                return None
+            return {
+                "branch_no": row.branch_no,
+                "branch_name": row.branch_name,
+                "location_name": row.location_name,
+                "employee_name": row.employee_name,
+                "ip_address": row.ip_address,
+            }
+
+    def upsert_sql_context(self, *, mac_address: str, hostname: str, db_id: str, context: dict[str, Any]) -> None:
+        normalized_mac = _normalize_mac(mac_address)
+        normalized_hostname = _normalize_text(hostname).lower()
+        normalized_db_id = _normalize_text(db_id)
+        if not normalized_db_id or (not normalized_mac and not normalized_hostname) or not isinstance(context, dict):
+            return
+        now = _utcnow()
+        with app_session(self._database_url) as session:
+            row = session.scalars(
+                select(AppInventoryHostSqlContext).where(
+                    AppInventoryHostSqlContext.mac_address == normalized_mac,
+                    AppInventoryHostSqlContext.hostname == normalized_hostname,
+                    AppInventoryHostSqlContext.db_id == normalized_db_id,
+                )
+            ).first()
+            if row is None:
+                row = AppInventoryHostSqlContext(
+                    mac_address=normalized_mac,
+                    hostname=normalized_hostname,
+                    db_id=normalized_db_id,
+                )
+                session.add(row)
+            row.branch_no = _normalize_text(context.get("branch_no")) or None
+            row.branch_name = _normalize_text(context.get("branch_name")) or None
+            row.location_name = _normalize_text(context.get("location_name")) or None
+            row.employee_name = _normalize_text(context.get("employee_name")) or None
+            row.ip_address = _normalize_text(context.get("ip_address")) or None
+            row.updated_at = now
 
     def upsert_host(self, payload: dict[str, Any]) -> None:
         host_key = _payload_host_key(payload)
@@ -99,6 +326,8 @@ class AppInventoryStore:
             )
             row.payload_json = json.dumps(payload, ensure_ascii=False)
             row.updated_at = now
+            if row.report_type != "heartbeat":
+                self._replace_search_indexes(session, host_key, payload, now)
 
     def touch_host_presence(
         self,
@@ -194,6 +423,9 @@ class AppInventoryStore:
         with app_session(self._database_url) as session:
             session.execute(delete(AppInventoryHost))
             session.execute(delete(AppInventoryChangeEvent))
+            session.execute(delete(AppInventoryUserProfile))
+            session.execute(delete(AppInventoryOutlookFile))
+            session.execute(delete(AppInventoryHostSqlContext))
 
             now = _utcnow()
             for item in snapshot.values():
@@ -216,6 +448,7 @@ class AppInventoryStore:
                         updated_at=now,
                     )
                 )
+                self._replace_search_indexes(session, host_key, item, now)
 
             for event in changes:
                 event_id = str((event or {}).get("event_id") or "").strip()
@@ -235,3 +468,33 @@ class AppInventoryStore:
                         created_at=now,
                     )
                 )
+
+    def _replace_search_indexes(self, session, host_key: str, payload: dict[str, Any], now: datetime) -> None:
+        session.execute(delete(AppInventoryUserProfile).where(AppInventoryUserProfile.mac_address == host_key))
+        session.execute(delete(AppInventoryOutlookFile).where(AppInventoryOutlookFile.mac_address == host_key))
+        for row in _normalize_profile_rows(payload):
+            session.add(
+                AppInventoryUserProfile(
+                    mac_address=host_key,
+                    user_name=row["user_name"],
+                    profile_path=row["profile_path"],
+                    total_size_bytes=row["total_size_bytes"],
+                    files_count=row["files_count"],
+                    dirs_count=row["dirs_count"],
+                    errors_count=row["errors_count"],
+                    partial=row["partial"],
+                    updated_at=now,
+                )
+            )
+        for row in _normalize_outlook_file_rows(payload):
+            session.add(
+                AppInventoryOutlookFile(
+                    mac_address=host_key,
+                    kind=row["kind"],
+                    file_path=row["file_path"],
+                    file_type=row["file_type"],
+                    size_bytes=row["size_bytes"],
+                    last_modified_at=row["last_modified_at"],
+                    updated_at=now,
+                )
+            )

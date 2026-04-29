@@ -20,6 +20,7 @@ import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import DeleteForeverRoundedIcon from '@mui/icons-material/DeleteForeverRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import DraftsRoundedIcon from '@mui/icons-material/DraftsRounded';
+import DriveFileMoveRoundedIcon from '@mui/icons-material/DriveFileMoveRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
@@ -34,7 +35,6 @@ import SubjectRoundedIcon from '@mui/icons-material/SubjectRounded';
 import {
   buildMailUiTokens,
   getMailBottomSheetPaperSx,
-  getMailDialogPaperSx,
   getMailIconButtonSx,
   getMailMenuPaperSx,
   getMailMetaTextSx,
@@ -59,9 +59,9 @@ const buildParticipantsLabel = (participants) => {
   return `${items.slice(0, 3).join(', ')} +${items.length - 3}`;
 };
 
-function SheetActionItem({ icon, label, onClick, danger = false, disabled = false }) {
+function SheetActionItem({ icon, label, onClick, danger = false, disabled = false, testId }) {
   return (
-    <ListItemButton onClick={onClick} disabled={disabled}>
+    <ListItemButton data-testid={testId} onClick={onClick} disabled={disabled}>
       <ListItemIcon sx={{ minWidth: 38, color: danger ? 'error.main' : 'inherit' }}>
         {icon}
       </ListItemIcon>
@@ -122,6 +122,7 @@ export default function MailPreviewHeader({
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  const [mobileMoveSheetOpen, setMobileMoveSheetOpen] = useState(false);
   const [recipientsExpanded, setRecipientsExpanded] = useState(false);
 
   if (!selectedMessage) return null;
@@ -182,14 +183,22 @@ export default function MailPreviewHeader({
   const handleAction = (callback) => () => {
     setMenuAnchorEl(null);
     setMobileSheetOpen(false);
+    setMobileMoveSheetOpen(false);
     callback?.();
   };
 
   const handleMoveAction = (value) => () => {
     setMenuAnchorEl(null);
     setMobileSheetOpen(false);
+    setMobileMoveSheetOpen(false);
     onMoveTargetChange?.(value);
     onMoveSelectedMessage?.(value);
+  };
+
+  const handleOpenMobileMoveSheet = () => {
+    if (!availableMoveTargets.length || messageActionLoading) return;
+    setMobileSheetOpen(false);
+    setMobileMoveSheetOpen(true);
   };
 
   const primaryActionLabel = folder === 'drafts' ? 'Открыть черновик' : 'Ответить';
@@ -329,6 +338,21 @@ export default function MailPreviewHeader({
             >
               {primaryActionIcon}
             </IconButton>
+
+            {folder !== 'drafts' ? (
+              <IconButton
+                aria-label={'\u041f\u0435\u0440\u0435\u0441\u043b\u0430\u0442\u044c'}
+                data-testid="mail-preview-forward"
+                onClick={() => onOpenComposeFromMessage?.('forward')}
+                disabled={messageActionLoading}
+                sx={getMailIconButtonSx(tokens, {
+                  width: 38,
+                  height: 38,
+                })}
+              >
+                <ForwardRoundedIcon fontSize="small" />
+              </IconButton>
+            ) : null}
 
             <IconButton
               size="small"
@@ -482,7 +506,15 @@ export default function MailPreviewHeader({
       >
         <Box sx={{ pt: 1 }}>
           <Box sx={getMailSheetHandleSx(tokens, { mb: 1 })} />
-          <List disablePadding>
+          <List
+            disablePadding
+            sx={{
+              maxHeight: 'min(72dvh, 520px)',
+              overflowY: 'auto',
+              overscrollBehavior: 'contain',
+              WebkitOverflowScrolling: 'touch',
+            }}
+          >
             {actionItems.map((item) => (
               <SheetActionItem
                 key={item.id}
@@ -494,15 +526,15 @@ export default function MailPreviewHeader({
               />
             ))}
             {availableMoveTargets.length > 0 ? <Divider /> : null}
-            {availableMoveTargets.map((option) => (
+            {availableMoveTargets.length > 0 ? (
               <SheetActionItem
-                key={option.value}
-                icon={null}
-                label={`Переместить в ${option.label}`}
+                icon={<DriveFileMoveRoundedIcon fontSize="small" />}
+                label={'\u041f\u0435\u0440\u0435\u043c\u0435\u0441\u0442\u0438\u0442\u044c'}
+                testId="mail-preview-mobile-open-move-sheet"
                 disabled={messageActionLoading}
-                onClick={handleMoveAction(option.value)}
+                onClick={handleOpenMobileMoveSheet}
               />
-            ))}
+            ) : null}
             <Divider />
             <SheetActionItem
               icon={<SubjectRoundedIcon fontSize="small" />}
@@ -519,6 +551,69 @@ export default function MailPreviewHeader({
               label="Печать"
               onClick={handleAction(onPrintSelectedMessage)}
             />
+          </List>
+        </Box>
+      </Drawer>
+
+      <Drawer
+        anchor="bottom"
+        open={mobileMoveSheetOpen}
+        onClose={() => setMobileMoveSheetOpen(false)}
+        ModalProps={{ keepMounted: true, sx: { zIndex: theme.zIndex.drawer + 5 } }}
+        PaperProps={{
+          'data-testid': 'mail-preview-mobile-move-sheet',
+          sx: getMailBottomSheetPaperSx(tokens, {
+            maxHeight: '82dvh',
+          }),
+        }}
+      >
+        <Box sx={{ pt: 1 }}>
+          <Box sx={getMailSheetHandleSx(tokens, { mb: 1 })} />
+          <Box sx={{ px: 2, pb: 1 }}>
+            <Typography sx={{ fontWeight: 800, fontSize: '1rem', color: tokens.textPrimary }}>
+              {'\u041f\u0435\u0440\u0435\u043c\u0435\u0441\u0442\u0438\u0442\u044c \u0432 \u043f\u0430\u043f\u043a\u0443'}
+            </Typography>
+            <Typography sx={getMailMetaTextSx(tokens, { mt: 0.25 })}>
+              {'\u041f\u0430\u043f\u043a\u0438 \u043c\u043e\u0436\u043d\u043e \u043f\u0440\u043e\u043a\u0440\u0443\u0447\u0438\u0432\u0430\u0442\u044c.'}
+            </Typography>
+          </Box>
+          <Divider />
+          <List
+            disablePadding
+            sx={{
+              maxHeight: 'min(58dvh, 420px)',
+              overflowY: 'auto',
+              overscrollBehavior: 'contain',
+              WebkitOverflowScrolling: 'touch',
+              py: 0.4,
+            }}
+          >
+            {availableMoveTargets.map((option) => (
+              <ListItemButton
+                key={option.value}
+                data-testid={`mail-preview-mobile-move-option-${option.value}`}
+                disabled={messageActionLoading}
+                onClick={handleMoveAction(option.value)}
+                sx={{
+                  minHeight: 48,
+                  px: 2,
+                  '&.Mui-focusVisible': {
+                    bgcolor: tokens.surfaceHover,
+                  },
+                }}
+              >
+                <ListItemIcon sx={{ minWidth: 38, color: tokens.textSecondary }}>
+                  <DriveFileMoveRoundedIcon fontSize="small" />
+                </ListItemIcon>
+                <ListItemText
+                  primary={option.label}
+                  primaryTypographyProps={{
+                    fontWeight: 700,
+                    noWrap: true,
+                  }}
+                />
+              </ListItemButton>
+            ))}
           </List>
         </Box>
       </Drawer>

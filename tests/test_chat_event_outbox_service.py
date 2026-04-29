@@ -165,3 +165,36 @@ def test_chat_event_outbox_dispatcher_retries_and_marks_failed_jobs(chat_event_e
     assert result["failed"] == 1
     assert str(row.status) == "failed"
     assert int(row.attempt_count or 0) == 1
+
+
+def test_chat_event_outbox_dispatcher_processes_batch_with_bounded_concurrency(chat_event_env, monkeypatch):
+    conversation = chat_event_env["conversation"]
+    worker = chat_event_env["worker"]
+    monkeypatch.setenv("CHAT_OUTBOX_CONCURRENCY", "2")
+
+    for index in range(5):
+        worker.enqueue_event(
+            event_type="chat.ai.run.updated",
+            target_scope="inbox",
+            target_user_id=1,
+            conversation_id=conversation["id"],
+            payload={"conversation_id": conversation["id"], "status": "queued", "index": index},
+        )
+
+    active = 0
+    max_active = 0
+
+    async def _slow_publish(**kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+
+    monkeypatch.setattr(chat_realtime_side_effects_module.chat_realtime, "publish_inbox_event", _slow_publish)
+
+    result = asyncio.run(worker.poll_once())
+
+    assert result["claimed"] == 5
+    assert result["delivered"] == 5
+    assert max_active == 2

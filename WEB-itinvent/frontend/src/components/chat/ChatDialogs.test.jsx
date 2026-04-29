@@ -62,6 +62,7 @@ const buildProps = (overrides = {}) => ({
   fileSummary: null,
   onSendFiles: vi.fn(),
   onRemoveSelectedFile: vi.fn(),
+  onClearSelectedFiles: vi.fn(),
   groupOpen: false,
   onCloseGroup: vi.fn(),
   groupTitle: '',
@@ -145,7 +146,7 @@ const installMobileMatchMediaMock = () => {
 };
 
 describe('ChatDialogs attachment preview', () => {
-  it('renders file caption input and propagates changes in the upload dialog', () => {
+  it('renders file caption input, focuses it, and propagates changes in the upload dialog', async () => {
     const onFileCaptionChange = vi.fn();
 
     renderWithTheme(buildProps({
@@ -157,13 +158,75 @@ describe('ChatDialogs attachment preview', () => {
 
     const captionInput = screen.getByRole('textbox');
     expect(captionInput).toHaveValue('Текущая подпись');
+    await waitFor(() => expect(captionInput).toHaveFocus());
+    expect(screen.getByTestId('chat-file-upload-panel')).toBeInTheDocument();
+    expect(screen.getByText('Отправить как файл')).toBeInTheDocument();
+    expect(screen.getByText('report.pdf')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Добавить' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Отмена' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Отправить' })).toBeInTheDocument();
 
     fireEvent.change(captionInput, { target: { value: 'Новая подпись' } });
 
     expect(onFileCaptionChange).toHaveBeenCalledWith('Новая подпись');
   });
 
-  it('renders image preview modal with preview actions in the top menu and closes from the button', async () => {
+  it('wires upload dialog add, cancel, send, and remove actions', () => {
+    const fileInput = document.createElement('input');
+    const clickFileInput = vi.spyOn(fileInput, 'click').mockImplementation(() => {});
+    const onClearSelectedFiles = vi.fn();
+    const onRemoveSelectedFile = vi.fn();
+    const onSendFiles = vi.fn();
+
+    renderWithTheme(buildProps({
+      fileDialogOpen: true,
+      fileInputRef: { current: fileInput },
+      selectedFiles: [new File(['demo'], 'report.pdf', { type: 'application/pdf' })],
+      onClearSelectedFiles,
+      onRemoveSelectedFile,
+      onSendFiles,
+    }));
+
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить' }));
+    expect(clickFileInput).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: /Удалить report\.pdf/ }));
+    expect(onRemoveSelectedFile).toHaveBeenCalledWith(0);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отправить' }));
+    expect(onSendFiles).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }));
+    expect(onClearSelectedFiles).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders the upload panel in light and dark themes', () => {
+    const darkTheme = createTheme({ palette: { mode: 'dark' } });
+    const lightProps = buildProps({
+      fileDialogOpen: true,
+      selectedFiles: [new File(['demo'], 'light.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })],
+    });
+    const darkProps = buildProps({
+      theme: darkTheme,
+      fileDialogOpen: true,
+      selectedFiles: [new File(['demo'], 'dark.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })],
+    });
+
+    const { unmount } = renderWithTheme(lightProps);
+    expect(screen.getByTestId('chat-file-upload-panel')).toBeInTheDocument();
+    expect(screen.getByText('light.docx')).toBeInTheDocument();
+    unmount();
+
+    render(
+      <ThemeProvider theme={darkTheme}>
+        <ChatDialogs {...darkProps} />
+      </ThemeProvider>,
+    );
+    expect(screen.getByTestId('chat-file-upload-panel')).toBeInTheDocument();
+    expect(screen.getByText('dark.docx')).toBeInTheDocument();
+  });
+
+  it('renders image preview modal with bottom actions, metadata, and closes from the button', async () => {
     const onCloseAttachmentPreview = vi.fn();
     const attachmentPreview = {
       messageId: 'msg-1',
@@ -173,15 +236,24 @@ describe('ChatDialogs attachment preview', () => {
         file_size: 4096,
       },
       fileUrl: buildAttachmentUrl('msg-1', 'att-1'),
+      senderName: 'Максим',
+      createdAt: '2026-03-21T14:59:00Z',
     };
 
     renderWithTheme(buildProps({ attachmentPreview, onCloseAttachmentPreview }));
 
     expect(screen.getByRole('img', { name: 'photo.png' })).toBeInTheDocument();
     expect(screen.queryByText('photo.png')).not.toBeInTheDocument();
+    expect(screen.getByTestId('chat-attachment-preview-content')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-attachment-preview-bottom-bar')).toBeVisible();
+    expect(screen.getByText('Фотография 1 из 1')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-attachment-preview-meta')).toHaveTextContent('Максим');
+    expect(screen.getByTestId('chat-attachment-preview-download')).toHaveAttribute('href', buildAttachmentUrl('msg-1', 'att-1'));
+    expect(screen.getByTestId('chat-attachment-preview-download')).toHaveAttribute('download', 'photo.png');
+    expect(screen.getByTestId('chat-attachment-preview-open')).toHaveAttribute('href', buildAttachmentUrl('msg-1', 'att-1'));
 
     const topbar = screen.getByTestId('chat-attachment-preview-topbar');
-    fireEvent.click(within(topbar).getAllByRole('button')[1]);
+    fireEvent.click(screen.getByTestId('chat-attachment-preview-more'));
 
     const [downloadLink, externalLink] = await screen.findAllByRole('menuitem');
     expect(downloadLink.getAttribute('href')).toBe(buildAttachmentUrl('msg-1', 'att-1'));
@@ -189,7 +261,7 @@ describe('ChatDialogs attachment preview', () => {
     expect(externalLink).toHaveAttribute('href', buildAttachmentUrl('msg-1', 'att-1'));
 
     fireEvent.keyDown(screen.getByRole('menu'), { key: 'Escape', code: 'Escape', keyCode: 27 });
-    fireEvent.click(within(topbar).getAllByRole('button')[0]);
+    fireEvent.click(within(topbar).getByLabelText('Закрыть предпросмотр'));
     expect(onCloseAttachmentPreview).toHaveBeenCalledTimes(1);
   });
 
@@ -225,12 +297,12 @@ describe('ChatDialogs attachment preview', () => {
 
     const dialog = screen.getByRole('dialog');
 
-    expect(screen.getByText(/1 \/ 2/)).toBeInTheDocument();
+    expect(screen.getByText('Фотография 1 из 2')).toBeInTheDocument();
     expect(within(dialog).getByRole('img')).toHaveAttribute('src', buildAttachmentUrl('msg-3', 'att-1'));
 
     fireEvent.click(screen.getByTestId('chat-attachment-preview-next'));
 
-    await waitFor(() => expect(screen.getByText(/2 \/ 2/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Фотография 2 из 2')).toBeInTheDocument());
     await waitFor(() => expect(within(dialog).getByRole('img')).toHaveAttribute('src', buildAttachmentUrl('msg-3', 'att-2')));
   });
 
@@ -269,7 +341,7 @@ describe('ChatDialogs attachment preview', () => {
     fireEvent.touchMove(dialogContent, { touches: [{ clientX: 140, clientY: 144 }] });
     fireEvent.touchEnd(dialogContent, { changedTouches: [{ clientX: 132, clientY: 146 }] });
 
-    await waitFor(() => expect(screen.getByText(/2 \/ 2/)).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText('Фотография 2 из 2')).toBeInTheDocument());
   });
 
   it('renders immersive preview chrome and toggles it on media tap', () => {
@@ -287,17 +359,41 @@ describe('ChatDialogs attachment preview', () => {
     renderWithTheme(buildProps({ attachmentPreview }));
 
     const topbar = screen.getByTestId('chat-attachment-preview-topbar');
+    const bottomBar = screen.getByTestId('chat-attachment-preview-bottom-bar');
     const image = screen.getByRole('img', { name: 'preview-photo.png' });
 
     expect(topbar).toBeVisible();
+    expect(bottomBar).toBeVisible();
     expect(screen.queryByText('preview-photo.png')).not.toBeInTheDocument();
-    expect(within(topbar).getAllByRole('button')[1]).toBeVisible();
+    expect(screen.getByTestId('chat-attachment-preview-actions')).toBeVisible();
 
     fireEvent.click(image);
     expect(topbar).not.toBeVisible();
+    expect(bottomBar).not.toBeVisible();
 
     fireEvent.click(image);
     expect(topbar).toBeVisible();
+    expect(screen.getByTestId('chat-attachment-preview-bottom-bar')).toBeVisible();
+  });
+
+  it('closes image preview when clicking the empty dimmed area', () => {
+    const onCloseAttachmentPreview = vi.fn();
+    const attachmentPreview = {
+      messageId: 'msg-empty-click',
+      attachment: {
+        id: 'att-empty-click',
+        file_name: 'empty-click.png',
+        file_size: 2048,
+        mime_type: 'image/png',
+      },
+      fileUrl: buildAttachmentUrl('msg-empty-click', 'att-empty-click'),
+    };
+
+    renderWithTheme(buildProps({ attachmentPreview, onCloseAttachmentPreview }));
+
+    fireEvent.click(screen.getByTestId('chat-attachment-preview-content'));
+
+    expect(onCloseAttachmentPreview).toHaveBeenCalledTimes(1);
   });
 
   it('renders videos inside the fullscreen media viewer', () => {
@@ -318,8 +414,8 @@ describe('ChatDialogs attachment preview', () => {
     const video = document.querySelector('video');
     expect(video).toBeInTheDocument();
     expect(video).toHaveAttribute('src', buildAttachmentUrl('msg-5', 'att-1'));
-    const topbar = screen.getByTestId('chat-attachment-preview-topbar');
-    expect(within(topbar).getAllByRole('button')[1]).toBeInTheDocument();
+    expect(screen.getByText('Видео 1 из 1')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-attachment-preview-actions')).toBeInTheDocument();
     expect(screen.queryByText('clip.mp4')).not.toBeInTheDocument();
   });
 
@@ -403,7 +499,7 @@ describe('ChatDialogs attachment preview', () => {
     }
   });
 
-  it('renders a telegram-like mobile file send dock with a circular send button', () => {
+  it('renders a telegram-like mobile file send dock and focuses the caption field', async () => {
     const mobileMatchMedia = installMobileMatchMediaMock();
 
     try {
@@ -413,7 +509,9 @@ describe('ChatDialogs attachment preview', () => {
       }));
 
       expect(screen.getByTestId('file-dialog-mobile-dock')).toBeInTheDocument();
-      expect(screen.getByPlaceholderText(/Добавить подпись/i)).toBeInTheDocument();
+      const captionInput = screen.getByPlaceholderText('Подпись');
+      expect(captionInput).toBeInTheDocument();
+      await waitFor(() => expect(captionInput).toHaveFocus());
       expect(screen.getByTestId('file-dialog-send')).toBeInTheDocument();
       fireEvent.click(screen.getByLabelText('Действия с файлами'));
       expect(screen.getByTestId('file-dialog-add-more')).toBeInTheDocument();

@@ -20,6 +20,7 @@ from pydantic import BaseModel
 
 from .config import config
 from .database import ScanStore
+from .patterns import list_patterns
 from .worker import ScanWorker
 
 # Enable imports from WEB-itinvent backend for shared auth/permission logic.
@@ -96,6 +97,12 @@ class TaskResultPayload(BaseModel):
 
 
 class IncidentAckPayload(BaseModel):
+    ack_by: Optional[str] = ""
+
+
+class IncidentBulkAckPayload(BaseModel):
+    incident_ids: Optional[List[str]] = None
+    filters: Optional[Dict[str, Any]] = None
     ack_by: Optional[str] = ""
 
 
@@ -532,11 +539,51 @@ async def ack_incident(
     return {"success": True, "incident": acked}
 
 
+@app.post("/api/v1/scan/incidents/bulk-ack")
+async def bulk_ack_incidents(
+    payload: IncidentBulkAckPayload,
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_ACK)),
+) -> Dict[str, Any]:
+    return store.bulk_ack_incidents(
+        incident_ids=payload.incident_ids,
+        filters=payload.filters,
+        ack_by=str(payload.ack_by or "").strip(),
+    )
+
+
+@app.get("/api/v1/scan/hosts/{hostname}/scan-runs")
+async def host_scan_runs(
+    hostname: str,
+    limit: int = Query(30, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    return store.list_host_scan_runs(hostname=hostname, limit=limit, offset=offset)
+
+
+@app.get("/api/v1/scan/tasks/{task_id}/observations")
+async def task_observations(
+    task_id: str,
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    return store.list_task_observations(task_id=task_id, limit=limit, offset=offset)
+
+
 @app.get("/api/v1/scan/dashboard")
 async def dashboard(
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
     return store.dashboard()
+
+
+@app.get("/api/v1/scan/patterns")
+async def patterns(
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    items = list_patterns()
+    return {"items": items, "total": len(items)}
 
 
 @app.get("/api/v1/scan/agents")

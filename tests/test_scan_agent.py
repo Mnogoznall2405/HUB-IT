@@ -23,7 +23,8 @@ def _make_config() -> dict:
     return {
         "server_base": "https://hubit.zsgp.ru/api/v1/scan",
         "api_key": "test-key",
-        "poll_interval": 60,
+        "poll_interval": 600,
+        "poll_jitter_sec": 120,
         "timeout": 20,
         "max_file_bytes": 1024 * 1024,
         "run_scan_on_start": False,
@@ -35,6 +36,7 @@ def _make_config() -> dict:
         "outbox_max_items": 5000,
         "outbox_max_age_days": 14,
         "outbox_max_total_mb": 512,
+        "outbox_drain_batch": 10,
     }
 
 
@@ -45,12 +47,18 @@ def _make_pattern_defs(pattern: str) -> list[dict]:
 def test_read_env_defaults_to_on_demand(monkeypatch):
     monkeypatch.delenv("SCAN_AGENT_SCAN_ON_START", raising=False)
     monkeypatch.delenv("SCAN_AGENT_WATCHDOG_ENABLED", raising=False)
+    monkeypatch.delenv("SCAN_AGENT_POLL_INTERVAL_SEC", raising=False)
+    monkeypatch.delenv("SCAN_AGENT_POLL_JITTER_SEC", raising=False)
+    monkeypatch.delenv("SCAN_AGENT_OUTBOX_DRAIN_BATCH", raising=False)
     monkeypatch.setenv("SCAN_AGENT_API_KEY", "configured-key")
 
     config = scan_agent._read_env()
 
     assert config["run_scan_on_start"] is False
     assert config["watchdog_enabled"] is False
+    assert config["poll_interval"] == 600
+    assert config["poll_jitter_sec"] == 120
+    assert config["outbox_drain_batch"] == 10
 
 
 def test_poll_tasks_scan_now_keeps_task_acknowledged_until_server_processing_finishes(monkeypatch):
@@ -78,7 +86,7 @@ def test_poll_tasks_scan_now_keeps_task_acknowledged_until_server_processing_fin
         return _DummyResponse()
 
     monkeypatch.setattr(agent, "_send", fake_send)
-    monkeypatch.setattr(agent, "run_scan_once", lambda scan_task_id=None: run_stats)
+    monkeypatch.setattr(agent, "run_scan_once", lambda scan_task_id=None, force_rescan=False: run_stats)
 
     agent.poll_tasks()
 
@@ -114,7 +122,7 @@ def test_poll_tasks_scan_now_completes_immediately_when_server_has_no_jobs(monke
         return _DummyResponse()
 
     monkeypatch.setattr(agent, "_send", fake_send)
-    monkeypatch.setattr(agent, "run_scan_once", lambda scan_task_id=None: run_stats)
+    monkeypatch.setattr(agent, "run_scan_once", lambda scan_task_id=None, force_rescan=False: run_stats)
 
     agent.poll_tasks()
 
@@ -146,7 +154,7 @@ def test_poll_tasks_scan_now_fails_when_files_are_deferred_to_outbox(monkeypatch
         return _DummyResponse()
 
     monkeypatch.setattr(agent, "_send", fake_send)
-    monkeypatch.setattr(agent, "run_scan_once", lambda scan_task_id=None: run_stats)
+    monkeypatch.setattr(agent, "run_scan_once", lambda scan_task_id=None, force_rescan=False: run_stats)
 
     agent.poll_tasks()
 
@@ -157,6 +165,52 @@ def test_poll_tasks_scan_now_fails_when_files_are_deferred_to_outbox(monkeypatch
         and payload.get("error_text") == "Deferred to outbox: 1"
         for _, _, payload in sent_payloads
     )
+
+
+def test_poll_tasks_passes_force_rescan_payload_to_scan_once(monkeypatch):
+    agent = scan_agent.ScanAgent(_make_config())
+    calls = []
+    run_stats = {
+        "phase": "completed",
+        "scanned": 0,
+        "queued": 0,
+        "skipped": 0,
+        "deferred": 0,
+        "deduped": 0,
+        "deleted_from_state": 0,
+        "force_rescan": True,
+        "jobs_total": 0,
+        "jobs_pending": 0,
+        "jobs_done_clean": 0,
+        "jobs_done_with_incident": 0,
+        "jobs_failed": 0,
+    }
+
+    def fake_send(method, url, **kwargs):
+        if url.endswith("/tasks/poll"):
+            return _DummyResponse(
+                data={
+                    "tasks": [
+                        {
+                            "task_id": "task-force",
+                            "command": "scan_now",
+                            "payload": {"force_rescan": True},
+                        }
+                    ]
+                }
+            )
+        return _DummyResponse()
+
+    def fake_run_scan_once(scan_task_id=None, force_rescan=False):
+        calls.append({"scan_task_id": scan_task_id, "force_rescan": force_rescan})
+        return run_stats
+
+    monkeypatch.setattr(agent, "_send", fake_send)
+    monkeypatch.setattr(agent, "run_scan_once", fake_run_scan_once)
+
+    agent.poll_tasks()
+
+    assert calls == [{"scan_task_id": "task-force", "force_rescan": True}]
 
 
 def test_run_forever_does_not_scan_on_start_by_default(monkeypatch):
@@ -173,7 +227,7 @@ def test_run_forever_does_not_scan_on_start_by_default(monkeypatch):
     monkeypatch.setattr(agent, "poll_tasks", lambda: (_ for _ in ()).throw(_StopLoop()))
     monkeypatch.setattr(agent, "_outbox_prune_limits", lambda: None)
     monkeypatch.setattr(agent, "_drain_outbox", lambda max_items=200: 0)
-    monkeypatch.setattr(agent, "process_watchdog_queue", lambda max_items=200: {"scanned": 0, "queued": 0, "skipped": 0})
+    monkeypatch.setattr(agent, "process_watchdog_queue", lambda max_items=200: {"scanned": 0, "queued": 0, "skipped": 0, "deferred": 0, "deduped": 0})
     monkeypatch.setattr(agent, "_persist_state", lambda: None)
     monkeypatch.setattr(agent, "_write_status", lambda force=False: None)
     monkeypatch.setattr(agent, "_stop_watchdog", lambda: None)
@@ -279,7 +333,21 @@ def test_unsupported_file_skips_hashing(monkeypatch, temp_dir):
 
     result = agent._scan_path(image_path)
 
-    assert result == {"scanned": 0, "queued": 0, "skipped": 1, "deferred": 0}
+    assert result == {"scanned": 0, "queued": 0, "skipped": 1, "deferred": 0, "deduped": 0}
+
+
+def test_scan_path_can_report_skip_reasons(monkeypatch, temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    image_path = Path(temp_dir) / "photo.jpg"
+    image_path.write_bytes(b"image-bytes")
+
+    monkeypatch.setattr(scan_agent, "_sha256_file", lambda path: (_ for _ in ()).throw(AssertionError("hash should not be called")))
+
+    result = agent._scan_path(image_path, include_reasons=True)
+
+    assert result["files_seen"] == 1
+    assert result["skipped"] == 1
+    assert result["skipped_reasons"] == {"unsupported_extension": 1}
 
 
 def test_cp1251_text_file_detects_patterns(monkeypatch, temp_dir):
@@ -321,6 +389,133 @@ def test_identical_content_in_different_paths_creates_two_events(monkeypatch, te
     assert sent_payloads[0]["event_id"] != sent_payloads[1]["event_id"]
 
 
+def test_event_id_is_stable_across_scan_tasks(temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    path = Path(temp_dir) / "match.txt"
+    path.write_text("secret-token", encoding="utf-8")
+    stat_result = path.stat()
+    file_hash = scan_agent._sha256_file(path)
+
+    first = agent._build_event_id(path, file_hash, stat_result, scan_task_id="task-1")
+    second = agent._build_event_id(path, file_hash, stat_result, scan_task_id="task-2")
+
+    assert first == second
+
+
+def test_force_rescan_ignores_scanned_state(monkeypatch, temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    agent.pattern_defs = _make_pattern_defs("secret-token")
+    path = Path(temp_dir) / "match.txt"
+    path.write_text("secret-token", encoding="utf-8")
+    sent_payloads = []
+
+    monkeypatch.setattr(agent, "_send_ingest", lambda payload: sent_payloads.append(payload) or True)
+
+    first = agent._scan_path(path)
+    second = agent._scan_path(path)
+    third = agent._scan_path(path, force_rescan=True)
+
+    assert first["queued"] == 1
+    assert second["skipped"] == 1
+    assert third["queued"] == 1
+    assert len(sent_payloads) == 2
+
+
+def test_force_rescan_prunes_deleted_state(monkeypatch, temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    missing_path = Path(temp_dir) / "missing.txt"
+    agent.state = {
+        "files": {
+            scan_agent._norm_path(missing_path): {
+                "hash": "hash-missing",
+                "mtime": 1,
+                "size": 2,
+                "ts": 3,
+            }
+        },
+        "hashes": {"hash-missing": 3},
+    }
+    agent._roots = []
+
+    monkeypatch.setattr(agent, "refresh_roots", lambda force=False: None)
+    monkeypatch.setattr(agent, "_outbox_prune_limits", lambda: None)
+    monkeypatch.setattr(agent, "_drain_outbox", lambda max_items=10: 0)
+    monkeypatch.setattr(agent, "_persist_state", lambda: None)
+    monkeypatch.setattr(agent, "_write_status", lambda force=False: None)
+
+    summary = agent.run_scan_once(force_rescan=True)
+
+    assert summary["force_rescan"] is True
+    assert summary["deleted_from_state"] == 1
+    assert agent.state["files"] == {}
+    assert agent.state["hashes"] == {}
+
+
+def test_force_rescan_reports_deleted_event_from_state(monkeypatch, temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    missing_path = Path(temp_dir) / "missing.txt"
+    agent.state = {
+        "files": {
+            scan_agent._norm_path(missing_path): {
+                "hash": "hash-missing",
+                "event_id": "event-missing",
+                "source_kind": "text",
+                "mtime": 1,
+                "size": 2,
+                "ts": 3,
+            }
+        },
+        "hashes": {"hash-missing": 3},
+    }
+    agent._roots = []
+
+    monkeypatch.setattr(agent, "refresh_roots", lambda force=False: None)
+    monkeypatch.setattr(agent, "_outbox_prune_limits", lambda: None)
+    monkeypatch.setattr(agent, "_drain_outbox", lambda max_items=10: 0)
+    monkeypatch.setattr(agent, "_persist_state", lambda: None)
+    monkeypatch.setattr(agent, "_write_status", lambda force=False: None)
+
+    summary = agent.run_scan_once(force_rescan=True)
+
+    assert summary["deleted_from_state"] == 1
+    assert summary["deleted_file_events"] == [
+        {
+            "file_path": scan_agent._norm_path(missing_path),
+            "file_hash": "hash-missing",
+            "event_id": "event-missing",
+            "source_kind": "text",
+        }
+    ]
+
+
+def test_force_rescan_reports_cleaned_event_for_previous_match(monkeypatch, temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    path = Path(temp_dir) / "cleaned.txt"
+    path.write_text("no secrets here", encoding="utf-8")
+    stat_result = path.stat()
+    previous_hash = "old-match-hash"
+    agent.state = {
+        "files": {
+            scan_agent._norm_path(path): {
+                "hash": previous_hash,
+                "event_id": "event-old-match",
+                "source_kind": "text",
+                "mtime": int(stat_result.st_mtime),
+                "size": int(stat_result.st_size),
+                "ts": 3,
+            }
+        },
+        "hashes": {previous_hash: 3},
+    }
+
+    result = agent._scan_path(path, force_rescan=True, include_reasons=True)
+
+    assert result["skipped_reasons"] == {"no_match": 1}
+    assert result["cleaned_events"][0]["event_id"] == "event-old-match"
+    assert result["cleaned_events"][0]["file_hash"] == previous_hash
+    assert result["cleaned_events"][0]["file_path"] == str(path)
+
+
 def test_run_scan_once_drains_outbox_once_after_failed_ingest(monkeypatch, temp_dir):
     agent = scan_agent.ScanAgent(_make_config())
     agent.pattern_defs = _make_pattern_defs("classified")
@@ -337,7 +532,7 @@ def test_run_scan_once_drains_outbox_once_after_failed_ingest(monkeypatch, temp_
     monkeypatch.setattr(agent, "_send_ingest", lambda payload: False)
     monkeypatch.setattr(agent, "_outbox_enqueue", lambda payload: outbox_payloads.append(payload) or None)
     monkeypatch.setattr(agent, "_outbox_prune_limits", lambda: prune_calls.append("prune"))
-    monkeypatch.setattr(agent, "_drain_outbox", lambda max_items=200: drain_calls.append(max_items) or 0)
+    monkeypatch.setattr(agent, "_drain_outbox", lambda max_items=10: drain_calls.append(max_items) or 0)
     monkeypatch.setattr(agent, "_persist_state", lambda: None)
     monkeypatch.setattr(agent, "_write_status", lambda force=False: None)
 
@@ -349,7 +544,7 @@ def test_run_scan_once_drains_outbox_once_after_failed_ingest(monkeypatch, temp_
     assert summary["jobs_total"] == 0
     assert len(outbox_payloads) == 2
     assert prune_calls == ["prune"]
-    assert drain_calls == [200]
+    assert drain_calls == [10]
 
 
 def test_heartbeat_reports_shared_agent_version(monkeypatch):

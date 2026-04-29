@@ -201,4 +201,58 @@ describe('useReadReceipts', () => {
       intersectionObserver.restore();
     }
   });
+
+  it('keeps one observer across message appends and observes new unread messages', async () => {
+    const intersectionObserver = installIntersectionObserverMock();
+    const markRead = vi.fn().mockResolvedValue({ ok: true });
+
+    try {
+      const { rerender } = render(
+        <ReadReceiptsHarness
+          conversationId="conv-1"
+          messages={MESSAGES}
+          markRead={markRead}
+        />,
+      );
+
+      expect(intersectionObserver.instances).toHaveLength(1);
+      expect(intersectionObserver.instances[0].observed.size).toBe(2);
+
+      const appendedMessages = [
+        ...MESSAGES,
+        {
+          id: 'msg-c',
+          body: 'Unread C',
+          is_own: false,
+        },
+      ];
+      rerender(
+        <ReadReceiptsHarness
+          conversationId="conv-1"
+          messages={appendedMessages}
+          markRead={markRead}
+        />,
+      );
+
+      expect(intersectionObserver.instances).toHaveLength(1);
+      expect(intersectionObserver.instances[0].observed.size).toBe(3);
+
+      const msgC = document.querySelector('[data-chat-message-id="msg-c"]');
+      act(() => {
+        intersectionObserver.instances[0].trigger([
+          { target: msgC, isIntersecting: true, intersectionRatio: 0.9 },
+        ]);
+      });
+
+      expect(screen.getByTestId('effective-read-id').textContent).toBe('msg-c');
+
+      await act(async () => {
+        vi.advanceTimersByTime(500);
+      });
+
+      expect(markRead).toHaveBeenCalledWith('conv-1', 'msg-c');
+    } finally {
+      intersectionObserver.restore();
+    }
+  });
 });

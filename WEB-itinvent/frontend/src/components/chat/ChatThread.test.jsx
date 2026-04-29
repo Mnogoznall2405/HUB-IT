@@ -3,7 +3,14 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
-import ChatThread, { ChatBubble } from './ChatThread';
+import ChatThread, {
+  ChatBubble,
+  getChatKeyboardBottomSpacer,
+  getComposerMentionTrigger,
+  isMobileMessageLongPress,
+  shouldSuppressNativeMessageGesture,
+  shouldCancelLongPressMove,
+} from './ChatThread';
 
 const theme = createTheme();
 const ui = {
@@ -26,6 +33,8 @@ const ui = {
 };
 
 const renderWithTheme = (node) => render(<ThemeProvider theme={theme}>{node}</ThemeProvider>);
+
+const getBubbleSurfaceByText = (text) => screen.getByText(text).closest('[data-chat-bubble-surface="true"]');
 
 const buildThreadProps = (overrides = {}) => ({
   theme,
@@ -103,6 +112,29 @@ const buildThreadProps = (overrides = {}) => ({
 });
 
 describe('ChatBubble', () => {
+  it('highlights plain-text mentions in message bodies', () => {
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-mention',
+          kind: 'text',
+          body: 'Посмотри, @assignee',
+          is_own: false,
+          sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+      />,
+    );
+
+    expect(screen.getByText('@assignee')).toBeInTheDocument();
+  });
+
   it('renders attachments together with the optional file caption', () => {
     renderWithTheme(
       <ChatBubble
@@ -132,6 +164,56 @@ describe('ChatBubble', () => {
 
     expect(screen.getByText('report.pdf')).toBeInTheDocument();
     expect(screen.getByText('Подпись к вложению')).toBeInTheDocument();
+  });
+
+  it('renders office mail action details and edit action', () => {
+    const onEditAction = vi.fn();
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="ai"
+        message={{
+          id: 'msg-action-mail',
+          kind: 'text',
+          body: 'Mail draft',
+          body_format: 'markdown',
+          is_own: false,
+          action_card: {
+            id: 'action-mail-1',
+            action_type: 'office.mail.send',
+            status: 'pending',
+            preview: {
+              title: 'Отправка письма',
+              summary: 'Subject -> ivanov@example.com',
+              effects: ['подпись будет добавлена автоматически при отправке'],
+              warnings: ['Письмо без темы.'],
+              mail: {
+                to: ['ivanov@example.com'],
+                cc: ['copy@example.com'],
+                bcc_count: 1,
+                subject: 'Subject',
+                body_preview: 'Body preview',
+                attachment_count: 2,
+              },
+            },
+          },
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onConfirmAction={vi.fn()}
+        onCancelAction={vi.fn()}
+        onEditAction={onEditAction}
+      />,
+    );
+
+    expect(screen.getByText('Кому: ivanov@example.com')).toBeInTheDocument();
+    expect(screen.getByText('Тема: Subject')).toBeInTheDocument();
+    expect(screen.getByText('Вложения: 2')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('Редактировать'));
+    expect(onEditAction).toHaveBeenCalledTimes(1);
   });
 
   it('hides repeated sender name for grouped messages', () => {
@@ -249,18 +331,19 @@ describe('ChatBubble', () => {
   });
 
   it('renders markdown message bodies with markdown elements', () => {
-    renderWithTheme(
+    const message = {
+      id: 'msg-markdown',
+      kind: 'text',
+      body_format: 'markdown',
+      body: '## Markdown Title\n\n| Name | Value |\n| --- | --- |\n| Printer | Ready |',
+      created_at: '2026-03-21T10:03:00Z',
+      is_own: false,
+      sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+    };
+    const { rerender } = renderWithTheme(
       <ChatBubble
         conversationKind="direct"
-        message={{
-          id: 'msg-markdown',
-          kind: 'text',
-          body_format: 'markdown',
-          body: '## Markdown Title\n\n| Name | Value |\n| --- | --- |\n| Printer | Ready |',
-          created_at: '2026-03-21T10:03:00Z',
-          is_own: false,
-          sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
-        }}
+        message={message}
         navigate={vi.fn()}
         theme={theme}
         ui={ui}
@@ -277,6 +360,25 @@ describe('ChatBubble', () => {
     expect(screen.getByTestId('chat-bubble-meta-bottom')).toBeInTheDocument();
     expect(screen.queryByTestId('chat-bubble-meta-inline')).not.toBeInTheDocument();
     expect(screen.queryByText('## Markdown Title')).not.toBeInTheDocument();
+
+    rerender(
+      <ThemeProvider theme={theme}>
+        <ChatBubble
+          conversationKind="direct"
+          message={message}
+          navigate={vi.fn()}
+          theme={theme}
+          ui={ui}
+          onOpenReads={vi.fn()}
+          onOpenAttachmentPreview={vi.fn()}
+          onReplyMessage={vi.fn()}
+          selectionMode
+          selected
+        />
+      </ThemeProvider>,
+    );
+    expect(screen.getAllByTestId('chat-markdown-body')).toHaveLength(1);
+    expect(screen.getAllByRole('table')).toHaveLength(1);
   });
 
   it('renders forwarded markdown as markdown and keeps the preview attribution-only', () => {
@@ -372,7 +474,7 @@ describe('ChatBubble', () => {
       />,
     );
 
-    fireEvent.touchStart(screen.getByText('hello').closest('[data-chat-message-id]'));
+    fireEvent.touchStart(getBubbleSurfaceByText('hello'));
     vi.advanceTimersByTime(450);
 
     expect(onReplyMessage).toHaveBeenCalledTimes(1);
@@ -405,12 +507,365 @@ describe('ChatBubble', () => {
       />,
     );
 
-    fireEvent.touchStart(screen.getByText('menu').closest('[data-chat-message-id]'));
+    fireEvent.touchStart(getBubbleSurfaceByText('menu'));
     vi.advanceTimersByTime(450);
 
     expect(onOpenMessageMenu).toHaveBeenCalledTimes(1);
     expect(onOpenMessageMenu.mock.calls[0][0]).toEqual(expect.objectContaining({ id: 'msg-4' }));
     expect(onReplyMessage).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('starts message selection on mobile long press after tiny finger movement', () => {
+    vi.useFakeTimers();
+    const onStartMessageSelection = vi.fn();
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-long-select',
+          kind: 'text',
+          body: 'hold me',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onStartMessageSelection={onStartMessageSelection}
+        compactMobile
+      />,
+    );
+
+    const bubble = getBubbleSurfaceByText('hold me');
+    fireEvent.touchStart(bubble, { touches: [{ clientX: 120, clientY: 240 }] });
+    fireEvent.touchMove(bubble, { touches: [{ clientX: 124, clientY: 246 }] });
+    vi.advanceTimersByTime(450);
+
+    expect(onStartMessageSelection).toHaveBeenCalledTimes(1);
+    expect(onStartMessageSelection).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-long-select' }));
+    vi.useRealTimers();
+  });
+
+  it('starts message selection on pure mobile hold without requiring finger movement', () => {
+    vi.useFakeTimers();
+    const onStartMessageSelection = vi.fn();
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-pure-hold-select',
+          kind: 'text',
+          body: 'pure hold',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onStartMessageSelection={onStartMessageSelection}
+        mobileInteractionsEnabled
+      />,
+    );
+
+    const bubble = getBubbleSurfaceByText('pure hold');
+    fireEvent.touchStart(bubble, { touches: [{ clientX: 120, clientY: 240 }] });
+    vi.advanceTimersByTime(450);
+
+    expect(onStartMessageSelection).toHaveBeenCalledTimes(1);
+    expect(onStartMessageSelection).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-pure-hold-select' }));
+    vi.useRealTimers();
+  });
+
+  it('starts message selection on mobile long press even when the layout is wider than phone', () => {
+    vi.useFakeTimers();
+    const onStartMessageSelection = vi.fn();
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-mobile-wide-select',
+          kind: 'text',
+          body: 'wide mobile hold',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onStartMessageSelection={onStartMessageSelection}
+        compactMobile={false}
+        mobileInteractionsEnabled
+      />,
+    );
+
+    fireEvent.touchStart(getBubbleSurfaceByText('wide mobile hold'), {
+      touches: [{ clientX: 140, clientY: 260 }],
+    });
+    vi.advanceTimersByTime(450);
+
+    expect(onStartMessageSelection).toHaveBeenCalledTimes(1);
+    expect(onStartMessageSelection).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-mobile-wide-select' }));
+    vi.useRealTimers();
+  });
+
+  it('keeps mobile long press alive through native touchcancel after a tiny movement', () => {
+    vi.useFakeTimers();
+    const onStartMessageSelection = vi.fn();
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-touchcancel-select',
+          kind: 'text',
+          body: 'cancel-safe hold',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onStartMessageSelection={onStartMessageSelection}
+        mobileInteractionsEnabled
+      />,
+    );
+
+    const bubble = getBubbleSurfaceByText('cancel-safe hold');
+    fireEvent.touchStart(bubble, { touches: [{ clientX: 120, clientY: 240 }] });
+    fireEvent.touchMove(bubble, { touches: [{ clientX: 124, clientY: 246 }] });
+    fireEvent.touchCancel(bubble);
+    vi.advanceTimersByTime(450);
+
+    expect(onStartMessageSelection).toHaveBeenCalledTimes(1);
+    expect(onStartMessageSelection).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-touchcancel-select' }));
+    vi.useRealTimers();
+  });
+
+  it('keeps mobile long press alive through native touchcancel after pure hold', () => {
+    vi.useFakeTimers();
+    const onStartMessageSelection = vi.fn();
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-touchcancel-pure-select',
+          kind: 'text',
+          body: 'pure cancel hold',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onStartMessageSelection={onStartMessageSelection}
+        mobileInteractionsEnabled
+      />,
+    );
+
+    const bubble = getBubbleSurfaceByText('pure cancel hold');
+    fireEvent.touchStart(bubble, { touches: [{ clientX: 120, clientY: 240 }] });
+    fireEvent.touchCancel(bubble);
+    vi.advanceTimersByTime(450);
+
+    expect(onStartMessageSelection).toHaveBeenCalledTimes(1);
+    expect(onStartMessageSelection).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-touchcancel-pure-select' }));
+    vi.useRealTimers();
+  });
+
+  it('suppresses mobile native context menu and selects the message instead', () => {
+    const onStartMessageSelection = vi.fn();
+    const onOpenMessageMenu = vi.fn();
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-mobile-context-select',
+          kind: 'text',
+          body: 'context hold',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onStartMessageSelection={onStartMessageSelection}
+        onOpenMessageMenu={onOpenMessageMenu}
+        mobileInteractionsEnabled
+      />,
+    );
+
+    fireEvent.contextMenu(getBubbleSurfaceByText('context hold'));
+
+    expect(onStartMessageSelection).toHaveBeenCalledTimes(1);
+    expect(onStartMessageSelection).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-mobile-context-select' }));
+    expect(onOpenMessageMenu).not.toHaveBeenCalled();
+  });
+
+  it('starts message selection through pointer fallback when touch events are not delivered', () => {
+    vi.useFakeTimers();
+    const onStartMessageSelection = vi.fn();
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-pointer-select',
+          kind: 'text',
+          body: 'pointer hold',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onStartMessageSelection={onStartMessageSelection}
+        mobileInteractionsEnabled
+      />,
+    );
+
+    const bubble = getBubbleSurfaceByText('pointer hold');
+    fireEvent.pointerDown(bubble, {
+      pointerType: 'touch',
+      pointerId: 9,
+      clientX: 120,
+      clientY: 240,
+    });
+    vi.advanceTimersByTime(450);
+
+    expect(onStartMessageSelection).toHaveBeenCalledTimes(1);
+    expect(onStartMessageSelection).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-pointer-select' }));
+    vi.useRealTimers();
+  });
+
+  it('does not double-select when pointer and touch start fire for the same mobile hold', () => {
+    vi.useFakeTimers();
+    const onStartMessageSelection = vi.fn();
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-dupe-gesture',
+          kind: 'text',
+          body: 'dupe hold',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onStartMessageSelection={onStartMessageSelection}
+        mobileInteractionsEnabled
+      />,
+    );
+
+    const bubble = getBubbleSurfaceByText('dupe hold');
+    fireEvent.pointerDown(bubble, {
+      pointerType: 'touch',
+      pointerId: 4,
+      clientX: 120,
+      clientY: 240,
+    });
+    fireEvent.touchStart(bubble, { touches: [{ clientX: 120, clientY: 240 }] });
+    vi.advanceTimersByTime(450);
+
+    expect(onStartMessageSelection).toHaveBeenCalledTimes(1);
+    vi.useRealTimers();
+  });
+
+  it('suppresses mobile context menu during a pending hold without selecting twice', () => {
+    vi.useFakeTimers();
+    const onStartMessageSelection = vi.fn();
+    const onOpenMessageMenu = vi.fn();
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-context-pending',
+          kind: 'text',
+          body: 'pending context',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onStartMessageSelection={onStartMessageSelection}
+        onOpenMessageMenu={onOpenMessageMenu}
+        mobileInteractionsEnabled
+      />,
+    );
+
+    const bubble = getBubbleSurfaceByText('pending context');
+    fireEvent.pointerDown(bubble, {
+      pointerType: 'touch',
+      pointerId: 5,
+      clientX: 120,
+      clientY: 240,
+    });
+    fireEvent.contextMenu(bubble);
+    vi.advanceTimersByTime(450);
+
+    expect(onStartMessageSelection).toHaveBeenCalledTimes(1);
+    expect(onOpenMessageMenu).not.toHaveBeenCalled();
+    vi.useRealTimers();
+  });
+
+  it('cancels mobile long press when the finger moves like a scroll', () => {
+    vi.useFakeTimers();
+    const onStartMessageSelection = vi.fn();
+
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-long-scroll',
+          kind: 'text',
+          body: 'scroll me',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onStartMessageSelection={onStartMessageSelection}
+        compactMobile
+      />,
+    );
+
+    const bubble = getBubbleSurfaceByText('scroll me');
+    fireEvent.touchStart(bubble, { touches: [{ clientX: 120, clientY: 240 }] });
+    fireEvent.touchMove(bubble, { touches: [{ clientX: 122, clientY: 270 }] });
+    vi.advanceTimersByTime(450);
+
+    expect(onStartMessageSelection).not.toHaveBeenCalled();
     vi.useRealTimers();
   });
 
@@ -436,7 +891,7 @@ describe('ChatBubble', () => {
       />,
     );
 
-    fireEvent.contextMenu(screen.getByText('context menu').closest('[data-chat-message-id]'), {
+    fireEvent.contextMenu(getBubbleSurfaceByText('context menu'), {
       clientX: 148,
       clientY: 212,
     });
@@ -481,6 +936,47 @@ describe('ChatBubble', () => {
     expect(screen.getByTestId('chat-unread-separator')).toBeInTheDocument();
   });
 
+  it('does not rescan date markers on every sticky-date scroll frame', async () => {
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          messages: [
+            {
+              id: 'msg-date-1',
+              conversation_id: 'conv-1',
+              kind: 'text',
+              body: 'Morning',
+              created_at: '2026-03-21T10:00:00Z',
+              is_own: false,
+              sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+            },
+            {
+              id: 'msg-date-2',
+              conversation_id: 'conv-1',
+              kind: 'text',
+              body: 'Later',
+              created_at: '2026-03-21T10:01:00Z',
+              is_own: true,
+              sender: { id: 1, username: 'author', full_name: 'Task Author' },
+            },
+          ],
+        })}
+      />,
+    );
+
+    const threadScroll = screen.getByTestId('chat-thread-scroll');
+    const originalQuerySelectorAll = threadScroll.querySelectorAll.bind(threadScroll);
+    const querySelectorAll = vi.fn(originalQuerySelectorAll);
+    threadScroll.querySelectorAll = querySelectorAll;
+
+    await act(async () => {
+      fireEvent.scroll(threadScroll, { target: { scrollTop: 80 } });
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
+
+    expect(querySelectorAll).not.toHaveBeenCalled();
+  });
+
   it('renders a pinned message bar and forwards open/unpin actions', () => {
     const onOpenPinnedMessage = vi.fn();
     const onUnpinPinnedMessage = vi.fn();
@@ -509,6 +1005,8 @@ describe('ChatBubble', () => {
   it('renders Telegram-like message selection controls and actions', () => {
     const onToggleMessageSelection = vi.fn();
     const onClearMessageSelection = vi.fn();
+    const onCopySelectedMessages = vi.fn();
+    const onReplySelectedMessage = vi.fn();
     const onForwardSelectedMessages = vi.fn();
 
     renderWithTheme(
@@ -540,6 +1038,8 @@ describe('ChatBubble', () => {
           canCopySelectedMessages: true,
           onToggleMessageSelection,
           onClearMessageSelection,
+          onCopySelectedMessages,
+          onReplySelectedMessage,
           onForwardSelectedMessages,
         })}
       />,
@@ -547,19 +1047,76 @@ describe('ChatBubble', () => {
 
     expect(screen.getByTestId('chat-selection-toolbar')).toBeInTheDocument();
     expect(screen.getByTestId('chat-selection-action-dock')).toBeInTheDocument();
-    expect(screen.getByTestId('chat-selection-reply-header')).toHaveTextContent('Ответить');
-    expect(screen.getByTestId('chat-selection-copy-header')).toHaveTextContent('Копировать');
-    expect(screen.getByTestId('chat-selection-forward-header')).toHaveTextContent('Переслать');
-    expect(screen.getByText('1')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-selection-count-badge')).toHaveTextContent('1');
+    expect(screen.getByTestId('chat-selection-reply-action')).toHaveTextContent('Ответить');
+    expect(screen.getByTestId('chat-selection-forward-action')).toHaveTextContent('Переслать');
+    expect(screen.queryByTestId('chat-selection-count-label')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('chat-selection-delete-action')).not.toBeInTheDocument();
+    expect(screen.queryByText('Task Assignee')).not.toBeInTheDocument();
+    expect(getComputedStyle(screen.getByText('Selected message').closest('[data-chat-message-id]')).backgroundColor).toBe('rgba(0, 0, 0, 0)');
+    expect(screen.getByText('Selected message').closest('[data-chat-bubble-surface="true"]')).toHaveStyle({
+      outline: 'none',
+      border: 'none',
+    });
 
     fireEvent.click(screen.getByTestId('chat-message-select-msg-select-2'));
     expect(onToggleMessageSelection).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-select-2' }));
 
+    fireEvent.click(screen.getByTestId('chat-selection-copy-action'));
+    expect(onCopySelectedMessages).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('chat-selection-reply-action'));
+    expect(onReplySelectedMessage).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('chat-selection-header-forward-action'));
+    expect(onForwardSelectedMessages).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByTestId('chat-selection-forward-action'));
+    expect(onForwardSelectedMessages).toHaveBeenCalledTimes(2);
+
     fireEvent.click(screen.getByTestId('chat-selection-clear'));
     expect(onClearMessageSelection).toHaveBeenCalledTimes(1);
+  });
 
-    fireEvent.click(screen.getAllByLabelText('Переслать выбранные сообщения')[0]);
-    expect(onForwardSelectedMessages).toHaveBeenCalledTimes(1);
+  it('disables mobile selection reply when multiple messages are selected', () => {
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          messages: [
+            {
+              id: 'msg-select-many-1',
+              conversation_id: 'conv-1',
+              kind: 'text',
+              body: 'First selected message',
+              created_at: '2026-03-21T10:00:00Z',
+              is_own: true,
+              sender: { id: 1, username: 'author', full_name: 'Task Author' },
+            },
+            {
+              id: 'msg-select-many-2',
+              conversation_id: 'conv-1',
+              kind: 'text',
+              body: 'Second selected message',
+              created_at: '2026-03-21T10:01:00Z',
+              is_own: false,
+              sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+            },
+          ],
+          selectedMessageIds: ['msg-select-many-1', 'msg-select-many-2'],
+          selectedMessageCount: 2,
+          canReplySelectedMessage: false,
+          canCopySelectedMessages: true,
+          onClearMessageSelection: vi.fn(),
+          onCopySelectedMessages: vi.fn(),
+          onForwardSelectedMessages: vi.fn(),
+          onReplySelectedMessage: vi.fn(),
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('chat-selection-count-badge')).toHaveTextContent('2');
+    expect(screen.getByTestId('chat-selection-reply-action')).toBeDisabled();
+    expect(screen.getByTestId('chat-selection-forward-action')).not.toBeDisabled();
   });
 
   it('supports a left-edge swipe back gesture on mobile thread', () => {
@@ -653,9 +1210,261 @@ describe('ChatBubble', () => {
     expect(screen.getByTestId('chat-attachment-gallery')).toBeInTheDocument();
     expect(screen.getByText('+1')).toBeInTheDocument();
   });
+
+  it('uses smaller selection circles on phone and desktop layouts', () => {
+    const { rerender } = renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-circle-size',
+          kind: 'text',
+          body: 'circle size',
+          is_own: false,
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        selectionMode
+        selected
+        compactMobile
+      />,
+    );
+
+    expect(screen.getByTestId('chat-message-select-msg-circle-size')).toHaveStyle({
+      width: '28px',
+      height: '28px',
+      top: '50%',
+    });
+
+    rerender(
+      <ThemeProvider theme={theme}>
+        <ChatBubble
+          conversationKind="direct"
+          message={{
+            id: 'msg-circle-size',
+            kind: 'text',
+            body: 'circle size',
+            is_own: false,
+          }}
+          navigate={vi.fn()}
+          theme={theme}
+          ui={ui}
+          onOpenReads={vi.fn()}
+          onOpenAttachmentPreview={vi.fn()}
+          onReplyMessage={vi.fn()}
+          selectionMode
+          selected
+          compactMobile={false}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByTestId('chat-message-select-msg-circle-size')).toHaveStyle({
+      width: '26px',
+      height: '26px',
+    });
+  });
 });
 
 describe('ChatThread composer', () => {
+  it('keeps mobile message long-press policy independent from compact phone layout', () => {
+    expect(isMobileMessageLongPress({ mobileInteractionsEnabled: true, compactMobile: false })).toBe(true);
+    expect(isMobileMessageLongPress({ mobileInteractionsEnabled: false, compactMobile: true })).toBe(true);
+    expect(isMobileMessageLongPress({ mobileInteractionsEnabled: false, compactMobile: false })).toBe(false);
+    expect(shouldSuppressNativeMessageGesture({ mobileInteractionsEnabled: true, compactMobile: false })).toBe(true);
+    expect(shouldSuppressNativeMessageGesture({ mobileInteractionsEnabled: false, compactMobile: false })).toBe(false);
+    expect(shouldCancelLongPressMove({
+      startX: 100,
+      startY: 100,
+      currentX: 106,
+      currentY: 121,
+    })).toBe(false);
+    expect(shouldCancelLongPressMove({
+      startX: 100,
+      startY: 100,
+      currentX: 103,
+      currentY: 132,
+    })).toBe(true);
+  });
+
+  it('adds only a compact keyboard spacer on mobile and no spacer elsewhere', () => {
+    expect(getChatKeyboardBottomSpacer({
+      compactMobile: true,
+      keyboardInset: 280,
+      composerHeight: 112,
+    })).toBe(20);
+    expect(getChatKeyboardBottomSpacer({
+      compactMobile: true,
+      keyboardInset: 280,
+      composerHeight: 260,
+    })).toBe(32);
+    expect(getChatKeyboardBottomSpacer({
+      compactMobile: false,
+      keyboardInset: 280,
+      composerHeight: 112,
+    })).toBe(0);
+    expect(getChatKeyboardBottomSpacer({
+      compactMobile: true,
+      keyboardInset: 0,
+      composerHeight: 112,
+    })).toBe(0);
+  });
+
+  it('detects a mention trigger at the composer caret', () => {
+    expect(getComposerMentionTrigger('Привет @ass', 11)).toEqual({
+      start: 7,
+      end: 11,
+      query: 'ass',
+    });
+    expect(getComposerMentionTrigger('mail@test', 9)).toBeNull();
+    expect(getComposerMentionTrigger('Привет @ass ignee', 16)).toBeNull();
+  });
+
+  it('shows mention suggestions and inserts the selected user into the composer', () => {
+    function MentionComposerHarness() {
+      const [text, setText] = React.useState('');
+      return (
+        <ChatThread
+          {...buildThreadProps({
+            messageText: text,
+            onMessageTextChange: setText,
+            mentionCandidates: [
+              {
+                id: 2,
+                username: 'assignee',
+                full_name: 'Task Assignee',
+                presence: { is_online: true },
+              },
+            ],
+          })}
+        />
+      );
+    }
+
+    renderWithTheme(<MentionComposerHarness />);
+    const composer = screen.getByTestId('chat-composer-textarea');
+    fireEvent.change(composer, {
+      target: {
+        value: '@a',
+        selectionStart: 2,
+        selectionEnd: 2,
+      },
+    });
+
+    expect(screen.getByTestId('chat-mention-suggestions')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('chat-mention-option-assignee'));
+    expect(composer).toHaveValue('@assignee ');
+  });
+
+  it('renders Telegram-style file drop panel during drag over', () => {
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          isFileDragActive: true,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('chat-file-drop-panel')).toBeInTheDocument();
+    expect(screen.getByText('Отправить как файл')).toBeInTheDocument();
+    expect(screen.getByText('Отпустите мышку, чтобы добавить файл')).toBeInTheDocument();
+    expect(screen.queryByText('Отпустите файлы, чтобы добавить их к отправке')).not.toBeInTheDocument();
+  });
+
+  it('reserves only a small bottom gap for compact mobile keyboard layout', () => {
+    expect(getChatKeyboardBottomSpacer({
+      compactMobile: true,
+      keyboardInset: 220,
+      composerHeight: 96,
+    })).toBe(17);
+
+    expect(getChatKeyboardBottomSpacer({
+      compactMobile: true,
+      keyboardInset: 0,
+      composerHeight: 96,
+    })).toBe(0);
+
+    expect(getChatKeyboardBottomSpacer({
+      compactMobile: false,
+      keyboardInset: 220,
+      composerHeight: 96,
+    })).toBe(0);
+  });
+
+  it('preserves thread scroll position when entering selection mode', async () => {
+    const messages = [
+      {
+        id: 'msg-anchor-1',
+        conversation_id: 'conv-1',
+        kind: 'text',
+        body: 'Anchor one',
+        created_at: '2026-03-21T10:00:00Z',
+        is_own: false,
+        sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+      },
+      {
+        id: 'msg-anchor-2',
+        conversation_id: 'conv-1',
+        kind: 'text',
+        body: 'Anchor two',
+        created_at: '2026-03-21T10:01:00Z',
+        is_own: true,
+        sender: { id: 1, username: 'author', full_name: 'Task Author' },
+      },
+    ];
+    const { rerender } = renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          messages,
+          selectedMessageCount: 0,
+          selectedMessageIds: [],
+        })}
+      />,
+    );
+
+    const threadScroll = screen.getByTestId('chat-thread-scroll');
+    let scrollTop = 240;
+    Object.defineProperty(threadScroll, 'scrollTop', {
+      configurable: true,
+      get: () => scrollTop,
+      set: (value) => {
+        scrollTop = Number(value);
+      },
+    });
+    Object.defineProperty(threadScroll, 'scrollHeight', {
+      configurable: true,
+      get: () => 1200,
+    });
+    Object.defineProperty(threadScroll, 'clientHeight', {
+      configurable: true,
+      get: () => 400,
+    });
+
+    fireEvent.scroll(threadScroll, { target: { scrollTop: 240 } });
+    scrollTop = 312;
+
+    rerender(
+      <ThemeProvider theme={theme}>
+        <ChatThread
+          {...buildThreadProps({
+            messages,
+            selectedMessageCount: 1,
+            selectedMessageIds: ['msg-anchor-1'],
+          })}
+        />
+      </ThemeProvider>,
+    );
+
+    await act(async () => {
+      await new Promise((resolve) => window.requestAnimationFrame(resolve));
+    });
+
+    expect(scrollTop).toBe(240);
+  });
+
   it('keeps the thread pinned to bottom when the composer height grows', async () => {
     let resizeObserverCallback = null;
     const originalResizeObserver = global.ResizeObserver;

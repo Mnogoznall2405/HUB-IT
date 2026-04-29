@@ -90,6 +90,7 @@ def upgrade() -> None:
         )
 
     bind = op.get_bind()
+    bool_true = "TRUE" if bind.dialect.name == "postgresql" else "1"
     schema_prefix = f"{app_schema}." if app_schema else ""
     bind.execute(sa.text(
         f"""
@@ -119,8 +120,8 @@ def upgrade() -> None:
                 WHEN LOWER(COALESCE(u.auth_source, 'local')) = 'ldap' THEN 'primary_session'
                 ELSE 'stored_credentials'
             END AS auth_mode,
-            1 AS is_primary,
-            1 AS is_active,
+            {bool_true} AS is_primary,
+            {bool_true} AS is_active,
             0 AS sort_order,
             NULL AS last_selected_at,
             COALESCE(u.created_at, CURRENT_TIMESTAMP) AS created_at,

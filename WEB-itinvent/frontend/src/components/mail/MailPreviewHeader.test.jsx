@@ -86,6 +86,37 @@ describe('MailPreviewHeader', () => {
     expect(screen.getAllByText('Удалить').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Заголовки').length).toBeGreaterThan(0);
   });
+  it('opens forward compose from the dedicated preview header button', () => {
+    const props = buildProps({ compactMobile: false, showBackButton: false });
+    renderWithTheme(<MailPreviewHeader {...props} />);
+
+    fireEvent.click(screen.getByTestId('mail-preview-forward'));
+
+    expect(props.onOpenComposeFromMessage).toHaveBeenCalledWith('forward');
+  });
+
+  it('opens a scrollable mobile move sheet from the message action sheet', () => {
+    const moveTargets = Array.from({ length: 14 }, (_, index) => ({
+      value: `folder-${index + 1}`,
+      label: `Folder ${index + 1}`,
+    }));
+    const props = buildProps({ moveTargets });
+
+    renderWithTheme(<MailPreviewHeader {...props} />);
+
+    fireEvent.click(screen.getByTestId('mail-preview-mobile-more'));
+    fireEvent.click(screen.getByTestId('mail-preview-mobile-open-move-sheet'));
+
+    const moveSheet = screen.getByTestId('mail-preview-mobile-move-sheet');
+    expect(moveSheet).toBeVisible();
+    expect(screen.getByTestId('mail-preview-mobile-move-option-folder-14')).toBeTruthy();
+
+    fireEvent.click(screen.getByTestId('mail-preview-mobile-move-option-folder-14'));
+
+    expect(props.onMoveTargetChange).toHaveBeenCalledWith('folder-14');
+    expect(props.onMoveSelectedMessage).toHaveBeenCalledWith('folder-14');
+  });
+
   it('keeps a long desktop subject clamped and lifts tiny metadata typography', () => {
     const longSubject = 'Very long customer support thread subject that should stay readable without forcing the preview header onto a single line';
 
@@ -104,7 +135,7 @@ describe('MailPreviewHeader', () => {
 
     expect(screen.getByTestId('mail-preview-title').textContent).toBe(longSubject);
     expect(getComputedStyle(screen.getByTestId('mail-preview-title')).webkitLineClamp).toBe('2');
-    expect(getComputedStyle(screen.getByTestId('mail-preview-date')).fontSize).toBe('0.76rem');
-    expect(getComputedStyle(screen.getByTestId('mail-preview-sender-label')).fontSize).toBe('0.75rem');
+    expect(getComputedStyle(screen.getByTestId('mail-preview-date')).fontSize).toBe('0.8rem');
+    expect(getComputedStyle(screen.getByTestId('mail-preview-sender-label')).fontSize).toBe('0.78rem');
   });
 });

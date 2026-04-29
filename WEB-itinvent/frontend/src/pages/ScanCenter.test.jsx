@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ScanCenter from './ScanCenter';
 import { scanAPI } from '../api/client';
@@ -8,6 +8,7 @@ vi.mock('../api/client', () => ({
   scanAPI: {
     getDashboard: vi.fn(),
     getBranches: vi.fn(),
+    getPatterns: vi.fn(),
     getAgentsTable: vi.fn(),
     getAgentsActivity: vi.fn(),
     getHostsTable: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock('../api/client', () => ({
     getTasks: vi.fn(),
     createTask: vi.fn(),
     ackIncident: vi.fn(),
+    ackIncidentsBatch: vi.fn(),
   },
 }));
 
@@ -87,6 +89,7 @@ describe('ScanCenter page', () => {
   beforeEach(() => {
     scanAPI.getDashboard.mockReset();
     scanAPI.getBranches.mockReset();
+    scanAPI.getPatterns.mockReset();
     scanAPI.getAgentsTable.mockReset();
     scanAPI.getAgentsActivity.mockReset();
     scanAPI.getHostsTable.mockReset();
@@ -94,9 +97,17 @@ describe('ScanCenter page', () => {
     scanAPI.getTasks.mockReset();
     scanAPI.createTask.mockReset();
     scanAPI.ackIncident.mockReset();
+    scanAPI.ackIncidentsBatch.mockReset();
 
     scanAPI.getDashboard.mockResolvedValue(dashboardPayload);
     scanAPI.getBranches.mockResolvedValue(['Тюмень', 'Москва']);
+    scanAPI.getPatterns.mockResolvedValue({
+      total: 2,
+      items: [
+        { id: 'password_strict', name: 'Пароль', category: 'Учетные данные', weight: 1, enabled_by_default: true },
+        { id: 'loan_keyword', name: 'Займ', category: 'Финансы', weight: 0.8, enabled_by_default: true },
+      ],
+    });
     scanAPI.getAgentsTable.mockResolvedValue({ total: 1, items: [agentRow] });
     scanAPI.getAgentsActivity.mockResolvedValue({ items: [] });
     scanAPI.getHostsTable.mockResolvedValue({ total: 1, items: [hostRow] });
@@ -116,11 +127,22 @@ describe('ScanCenter page', () => {
         ttl_at: 1710000500,
       },
     });
+    scanAPI.ackIncidentsBatch.mockResolvedValue({ success: true, acked_count: 1, total_matched: 1 });
   });
 
   afterEach(() => {
+    cleanup();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
+
+  const openAgentsSection = async () => {
+    fireEvent.click(await screen.findByRole('tab', { name: /Агенты/i }));
+  };
+
+  const openHostsSection = async () => {
+    fireEvent.click(await screen.findByRole('tab', { name: /Хосты/i }));
+  };
 
   it('creates scan task without full page reload and switches to task polling', async () => {
     scanAPI.getAgentsActivity
@@ -213,16 +235,20 @@ describe('ScanCenter page', () => {
     scanAPI.getHostsTable.mockClear();
     scanAPI.getAgentsActivity.mockClear();
 
+    await openAgentsSection();
+
     const agentCell = (await screen.findAllByText('HOST-01')).find((node) => node.closest('tr'));
     const agentRowElement = agentCell.closest('tr');
     const buttons = within(agentRowElement).getAllByRole('button');
 
     fireEvent.click(buttons[0]);
+    fireEvent.click(await screen.findByRole('button', { name: /Запустить/i }));
 
     await waitFor(() => {
       expect(scanAPI.createTask).toHaveBeenCalledWith({
         agent_id: 'agent-1',
         command: 'scan_now',
+        payload: { server_pdf_pattern_ids: ['password_strict', 'loan_keyword'] },
         dedupe_key: 'scan_now:agent-1',
       });
     });
@@ -234,6 +260,65 @@ describe('ScanCenter page', () => {
     expect(scanAPI.getDashboard).not.toHaveBeenCalled();
     expect(scanAPI.getAgentsTable).not.toHaveBeenCalled();
     expect(scanAPI.getHostsTable).not.toHaveBeenCalled();
+  });
+
+  it('creates force rescan task with selected PDF patterns', async () => {
+    render(<ScanCenter />);
+
+    await waitFor(() => {
+      expect(scanAPI.getAgentsTable).toHaveBeenCalled();
+    });
+
+    await openAgentsSection();
+
+    const agentCell = (await screen.findAllByText('HOST-01')).find((node) => node.closest('tr'));
+    const agentRowElement = agentCell.closest('tr');
+    const buttons = within(agentRowElement).getAllByRole('button');
+
+    fireEvent.click(buttons[1]);
+    fireEvent.click(await screen.findByRole('button', { name: /Запустить/i }));
+
+    await waitFor(() => {
+      expect(scanAPI.createTask).toHaveBeenCalledWith({
+        agent_id: 'agent-1',
+        command: 'scan_now',
+        payload: { force_rescan: true, server_pdf_pattern_ids: ['password_strict', 'loan_keyword'] },
+        dedupe_key: 'scan_now_force:agent-1',
+      });
+    });
+  });
+
+  it('disables scan commands while an agent has an active task', async () => {
+    scanAPI.getAgentsTable.mockResolvedValue({
+      total: 1,
+      items: [
+        {
+          ...agentRow,
+          active_task: {
+            id: 'task-active',
+            agent_id: 'agent-1',
+            command: 'scan_now',
+            status: 'acknowledged',
+            created_at: 1710000200,
+            updated_at: 1710000200,
+            ttl_at: 1710000500,
+            result: { phase: 'server_processing', scanned: 1, queued: 1, jobs_total: 1, jobs_pending: 1 },
+          },
+        },
+      ],
+    });
+
+    render(<ScanCenter />);
+
+    await openAgentsSection();
+
+    const agentCell = (await screen.findAllByText('HOST-01')).find((node) => node.closest('tr'));
+    const agentRowElement = agentCell.closest('tr');
+    const buttons = within(agentRowElement).getAllByRole('button');
+
+    expect(buttons[0]).toBeDisabled();
+    expect(buttons[1]).toBeDisabled();
+    expect(buttons[2]).toBeDisabled();
   });
 
   it('renders completed scan task as finished only after OCR is done', async () => {
@@ -270,7 +355,47 @@ describe('ScanCenter page', () => {
 
     render(<ScanCenter />);
 
-    await screen.findByText(/Скан: 4 · clean 1 · incidents 1/i);
+    await openAgentsSection();
+
+    await screen.findByText(/Скан: проверено 4 · без инцидентов 1 · с инцидентами 1/i);
+  });
+
+  it('renders force scan summary counters', async () => {
+    scanAPI.getAgentsTable.mockResolvedValue({
+      total: 1,
+      items: [
+        {
+          ...agentRow,
+          last_task: {
+            id: 'task-force',
+            agent_id: 'agent-1',
+            command: 'scan_now',
+            status: 'completed',
+            created_at: 1710000200,
+            updated_at: 1710000220,
+            completed_at: 1710000220,
+            ttl_at: 1710000500,
+            result: {
+              phase: 'completed',
+              force_rescan: true,
+              scanned: 4,
+              queued: 0,
+              skipped: 1,
+              deduped: 3,
+              deleted_from_state: 2,
+              jobs_total: 0,
+            },
+          },
+        },
+      ],
+    });
+
+    render(<ScanCenter />);
+
+    await openAgentsSection();
+
+    await screen.findByText(/Скан с 0: проверено 4 .* дубли: 3 .* удалено из учета: 2/i);
+    await screen.findByText(/Скан с 0 · Завершено/i);
   });
 
   it('loads host incidents drawer directly by hostname', async () => {
@@ -279,6 +404,8 @@ describe('ScanCenter page', () => {
     await waitFor(() => {
       expect(scanAPI.getHostsTable).toHaveBeenCalled();
     });
+
+    await openHostsSection();
 
     const hostCell = [...await screen.findAllByText('HOST-01')].reverse().find((node) => node.closest('tr'));
     const hostRowElement = hostCell.closest('tr');
@@ -296,10 +423,63 @@ describe('ScanCenter page', () => {
       );
     });
 
-    const params = scanAPI.getIncidents.mock.calls[0][0];
+    const params = scanAPI.getIncidents.mock.calls.find(([callParams]) => callParams?.hostname === 'HOST-01')?.[0];
     expect(params).not.toHaveProperty('host');
     expect(params).not.toHaveProperty('agentId');
     expect(params).not.toHaveProperty('computer_name');
+  });
+
+  it('loads incident inbox in 500-row batches and renders grouped host rows', async () => {
+    const firstPage = Array.from({ length: 500 }, (_, idx) => ({
+      ...incidentRow,
+      id: `incident-${idx}`,
+      hostname: 'HOST-BATCH',
+      file_path: `C:\\Docs\\secret-${idx}.pdf`,
+      file_name: `secret-${idx}.pdf`,
+      created_at: 1710000100 - idx,
+    }));
+    const secondPage = [{
+      ...incidentRow,
+      id: 'incident-500',
+      hostname: 'HOST-BATCH',
+      file_path: 'C:\\Docs\\secret-500.pdf',
+      file_name: 'secret-500.pdf',
+      created_at: 1709999600,
+    }];
+    scanAPI.getIncidents.mockImplementation((params = {}) => {
+      if (Number(params.offset || 0) === 500) {
+        return Promise.resolve({ total: 501, items: secondPage, limit: 500, offset: 500, has_more: false, next_offset: null });
+      }
+      return Promise.resolve({ total: 501, items: firstPage, limit: 500, offset: 0, has_more: true, next_offset: 500 });
+    });
+
+    render(<ScanCenter />);
+
+    await waitFor(() => {
+      expect(scanAPI.getIncidents).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 500, offset: 0 }),
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
+      expect(scanAPI.getIncidents).toHaveBeenCalledWith(
+        expect.objectContaining({ limit: 500, offset: 500 }),
+        expect.objectContaining({ signal: expect.any(Object) }),
+      );
+    });
+    expect(await screen.findByText('HOST-BATCH')).toBeTruthy();
+  });
+
+  it('acknowledges the current incident inbox filter with one batch request', async () => {
+    render(<ScanCenter />);
+
+    await screen.findByText('HOST-01');
+    fireEvent.click(screen.getByRole('button', { name: /Просмотрено по фильтру/i }));
+
+    await waitFor(() => {
+      expect(scanAPI.ackIncidentsBatch).toHaveBeenCalledWith({
+        filters: expect.objectContaining({}),
+        ack_by: 'web-user',
+      });
+    });
   });
 
   it('filters agents and hosts by selected branch from the options list', async () => {

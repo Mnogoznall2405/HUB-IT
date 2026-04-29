@@ -16,25 +16,37 @@ DEFAULT_INSTALL_DIR = Path(r"C:\Program Files\IT-Invent\Agent")
 DEFAULT_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
 DEFAULT_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "Agent"
 EXECUTABLE_NAME = "ITInventAgent.exe"
+SCAN_AGENT_EXECUTABLE_NAME = "ITInventScanAgent.exe"
 MSI_HELPER_EXECUTABLE_NAME = "ITInventAgentMsiHelper.exe"
 ENV_FILE_NAME = ".env"
 INSTALL_SCRIPT_NAME = "install_agent_task.ps1"
 UNINSTALL_SCRIPT_NAME = "uninstall_agent_task.ps1"
+FULL_UNINSTALL_SCRIPT_NAME = "full_uninstall_agent.ps1"
 SCRIPTS_DIR_NAME = "scripts"
 INSTALLER_MACHINE_ENV_KEYS = (
     "SCAN_AGENT_SCAN_ON_START",
     "SCAN_AGENT_WATCHDOG_ENABLED",
 )
+AGENT_RUNTIME_PROCESS_NAMES = (
+    "ITInventAgent",
+    "ITInventScanAgent",
+    "ITInventOutlookProbe",
+)
 FORCED_SCAN_ENV_VALUES = {
+    "ITINV_AGENT_HEARTBEAT_SEC": "600",
+    "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "120",
+    "SCAN_AGENT_POLL_INTERVAL_SEC": "600",
+    "SCAN_AGENT_POLL_JITTER_SEC": "120",
     "SCAN_AGENT_SCAN_ON_START": "0",
     "SCAN_AGENT_WATCHDOG_ENABLED": "0",
 }
 MSI_DEFAULT_ENV_VALUES = {
     "ITINV_AGENT_INTERVAL_SEC": "3600",
-    "ITINV_AGENT_HEARTBEAT_SEC": "300",
-    "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "60",
+    "ITINV_AGENT_HEARTBEAT_SEC": "600",
+    "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "120",
     "ITINV_SCAN_ENABLED": "1",
-    "SCAN_AGENT_POLL_INTERVAL_SEC": "60",
+    "SCAN_AGENT_POLL_INTERVAL_SEC": "600",
+    "SCAN_AGENT_POLL_JITTER_SEC": "120",
     "ITINV_OUTLOOK_SEARCH_ROOTS": "D:\\",
 }
 MSI_REQUIRED_SILENT_KEYS = (
@@ -68,6 +80,11 @@ def add_msi_args(parser) -> None:
         "--msi-uninstall-cleanup",
         action="store_true",
         help="Internal MSI uninstall cleanup entrypoint",
+    )
+    parser.add_argument(
+        "--msi-full-uninstall-cleanup",
+        action="store_true",
+        help="Internal cleanup MSI entrypoint for removing old agent versions",
     )
     parser.add_argument("--install-dir", default="", help="Agent install directory for MSI helper modes")
     parser.add_argument("--env-file-path", default="", help="Explicit .env path for MSI helper modes")
@@ -108,10 +125,20 @@ def add_msi_args(parser) -> None:
         default="",
         help="MSI runtime config: ITINV_OUTLOOK_SEARCH_ROOTS",
     )
+    parser.add_argument("--log-path", default="", help="Optional PowerShell cleanup log path")
+    parser.add_argument(
+        "--self-uninstall-product-code",
+        default="",
+        help="MSI ProductCode to uninstall after one-shot cleanup completes",
+    )
 
 
 def is_msi_mode(namespace) -> bool:
-    return bool(getattr(namespace, "msi_install", False) or getattr(namespace, "msi_uninstall_cleanup", False))
+    return bool(
+        getattr(namespace, "msi_install", False)
+        or getattr(namespace, "msi_uninstall_cleanup", False)
+        or getattr(namespace, "msi_full_uninstall_cleanup", False)
+    )
 
 
 def resolve_install_dir(raw_value: str = "") -> Path:
@@ -351,9 +378,28 @@ def _run_powershell_script(script_path: Path, script_args: Sequence[str]) -> Non
         raise RuntimeError(f"PowerShell script failed ({script_path.name}, code={result.returncode})\n{detail}".strip())
 
 
+def stop_scheduled_task(task_name: str = DEFAULT_TASK_NAME, logger=None) -> int:
+    normalized_task_name = str(task_name or DEFAULT_TASK_NAME).strip() or DEFAULT_TASK_NAME
+    try:
+        result = _run_command(["schtasks.exe", "/End", "/TN", normalized_task_name], timeout_sec=30)
+    except Exception as exc:
+        if logger is not None:
+            logger.warning("Failed to stop scheduled task %s before install: %s", normalized_task_name, exc)
+        return -1
+    if logger is not None:
+        if result.returncode == 0:
+            logger.info("Scheduled task %s stopped before install", normalized_task_name)
+        else:
+            detail = (result.stderr or result.stdout or "").strip()
+            logger.info("Scheduled task %s was not running before install: %s", normalized_task_name, detail)
+    return int(result.returncode)
+
+
 def stop_agent_processes(process_name: str = "ITInventAgent", skip_pid: Optional[int] = None) -> List[int]:
     stopped: List[int] = []
-    base_names = {process_name.lower(), "itinventoutlookprobe"}
+    base_names = {str(process_name or "").strip().lower()}
+    base_names.update(name.lower() for name in AGENT_RUNTIME_PROCESS_NAMES)
+    base_names.discard("")
     names = set(base_names)
     names.update(f"{name}.exe" for name in base_names)
     for proc in psutil.process_iter(["pid", "name"]):
@@ -383,6 +429,13 @@ def run_msi_install(namespace, logger) -> int:
     install_dir = resolve_install_dir(getattr(namespace, "install_dir", ""))
     env_file_path = resolve_env_file_path(install_dir, getattr(namespace, "env_file_path", ""))
     executable_path = resolve_executable_path(install_dir)
+    task_name = str(getattr(namespace, "task_name", DEFAULT_TASK_NAME) or DEFAULT_TASK_NAME)
+
+    stop_scheduled_task(task_name, logger)
+    stopped_pids = stop_agent_processes(skip_pid=os.getpid())
+    if stopped_pids:
+        logger.info("Stopped old IT-Invent agent processes before install: %s", stopped_pids)
+
     overrides = namespace_to_env_overrides(namespace)
     existing = read_runtime_env_map(env_file_path, install_dir)
     merged = build_runtime_env_values(existing, overrides)
@@ -401,7 +454,7 @@ def run_msi_install(namespace, logger) -> int:
         script_path,
         [
             "-TaskName",
-            str(getattr(namespace, "task_name", DEFAULT_TASK_NAME) or DEFAULT_TASK_NAME),
+            task_name,
             "-ExecutablePath",
             str(executable_path),
             "-RepeatMinutes",
@@ -439,3 +492,65 @@ def run_msi_uninstall_cleanup(namespace, logger) -> int:
     )
     logger.info("MSI uninstall cleanup helper completed successfully for %s", install_dir)
     return 0
+
+
+def run_msi_full_uninstall_cleanup(namespace, logger) -> int:
+    install_dir = resolve_install_dir(getattr(namespace, "install_dir", ""))
+    runtime_root = resolve_runtime_root(str(getattr(namespace, "env_file_path", "") or ""))
+    log_path = str(getattr(namespace, "log_path", "") or "").strip()
+
+    script_path = resolve_script_path(FULL_UNINSTALL_SCRIPT_NAME)
+    script_args = [
+        "-TaskName",
+        str(getattr(namespace, "task_name", DEFAULT_TASK_NAME) or DEFAULT_TASK_NAME),
+        "-InstallPath",
+        str(install_dir),
+        "-RuntimeRoot",
+        str(runtime_root),
+        "-LegacyProgramDataRoot",
+        str(DEFAULT_PROGRAM_DATA_ROOT),
+        "-ClearInstallerEnv",
+    ]
+    if log_path:
+        script_args.extend(["-LogPath", log_path])
+
+    _run_powershell_script(script_path, script_args)
+    schedule_self_uninstall(str(getattr(namespace, "self_uninstall_product_code", "") or "").strip(), logger)
+    logger.info("MSI full uninstall cleanup helper completed successfully for %s", install_dir)
+    return 0
+
+
+def schedule_self_uninstall(product_code: str, logger) -> bool:
+    normalized = str(product_code or "").strip()
+    if not normalized:
+        logger.info("Cleanup MSI self-uninstall skipped because ProductCode is empty")
+        return False
+    if not (normalized.startswith("{") and normalized.endswith("}") and len(normalized) == 38):
+        logger.warning("Cleanup MSI self-uninstall skipped because ProductCode is invalid: %s", normalized)
+        return False
+
+    command = (
+        "$ErrorActionPreference='SilentlyContinue'; "
+        "Start-Sleep -Seconds 15; "
+        f"$productCode='{normalized}'; "
+        "Start-Process -FilePath 'msiexec.exe' "
+        "-ArgumentList @('/x', $productCode, '/qn', '/norestart') "
+        "-WindowStyle Hidden -Wait"
+    )
+    subprocess.Popen(
+        [
+            _resolve_powershell(),
+            "-NoProfile",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            command,
+        ],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        creationflags=CREATE_NO_WINDOW,
+    )
+    logger.info("Scheduled one-shot cleanup MSI self-uninstall for %s", normalized)
+    return True

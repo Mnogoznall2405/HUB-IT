@@ -158,6 +158,49 @@ def test_list_agents_table_and_tasks_include_active_and_last_task(temp_dir):
     assert tasks["items"][0]["status"] == "queued"
 
 
+def test_create_scan_task_returns_existing_active_scan_for_agent(temp_dir):
+    store = _make_store(temp_dir)
+
+    first = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    second = store.create_task(
+        agent_id="agent-1",
+        command="scan_now",
+        payload={"force_rescan": True},
+        dedupe_key="scan_now_force:agent-1",
+    )
+
+    assert second["id"] == first["id"]
+    with store._lock, store._connect() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM scan_tasks WHERE agent_id='agent-1' AND command='scan_now'").fetchone()[0]
+    assert total == 1
+
+
+def test_create_scan_task_returns_active_unlinked_job_for_agent(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\secret.pdf",
+            "file_name": "secret.pdf",
+            "file_hash": "hash-secret",
+            "file_size": 2048,
+            "source_kind": "text",
+            "event_id": "active-job",
+        }
+    )
+
+    created = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now_force:agent-1")
+
+    assert created["id"] == queued["job_id"]
+    assert created["command"] == "scan_now"
+    assert created["status"] == "queued"
+    with store._lock, store._connect() as conn:
+        total = conn.execute("SELECT COUNT(*) FROM scan_tasks WHERE agent_id='agent-1'").fetchone()[0]
+    assert total == 0
+
+
 def test_list_agents_table_prefers_active_scan_jobs_over_ping_task(temp_dir):
     store = _make_store(temp_dir)
     now_ts = int(time.time())
@@ -281,6 +324,155 @@ def test_list_hosts_table_filters_and_aggregates_host_context(temp_dir):
     ack_hosts = store.list_hosts_table(status="ack", limit=10, offset=0)
     assert ack_hosts["total"] == 1
     assert ack_hosts["items"][0]["hostname"] == "HOST-01"
+
+
+def test_list_incidents_pages_beyond_500_and_returns_page_metadata(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    for idx in range(520):
+        _seed_incident(
+            store,
+            agent_id="agent-1",
+            hostname="HOST-01",
+            branch="Тюмень",
+            user_login="corp\\petrov",
+            user_full_name="Петров П.П.",
+            file_path=fr"C:\Docs\secret-{idx}.pdf",
+            file_name=f"secret-{idx}.pdf",
+            source_kind="pdf",
+            severity="high",
+            status="new",
+            created_at=now_ts - idx,
+        )
+
+    first = store.list_incidents(hostname="HOST-01", limit=500, offset=0)
+    second = store.list_incidents(hostname="HOST-01", limit=500, offset=500)
+
+    assert first["total"] == 520
+    assert len(first["items"]) == 500
+    assert first["limit"] == 500
+    assert first["offset"] == 0
+    assert first["has_more"] is True
+    assert first["next_offset"] == 500
+    assert len(second["items"]) == 20
+    assert second["has_more"] is False
+    assert second["next_offset"] is None
+
+
+def test_bulk_ack_incidents_by_ids_only_updates_selected_new_rows(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    first = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\secret.pdf",
+        file_name="secret.pdf",
+        source_kind="pdf",
+        severity="high",
+        status="new",
+        created_at=now_ts,
+    )
+    second = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\notes.txt",
+        file_name="notes.txt",
+        source_kind="text",
+        severity="low",
+        status="new",
+        created_at=now_ts - 1,
+    )
+    third = _seed_incident(
+        store,
+        agent_id="agent-2",
+        hostname="HOST-02",
+        branch="Москва",
+        user_login="corp\\ivanov",
+        user_full_name="Иванов И.И.",
+        file_path=r"C:\Docs\other.pdf",
+        file_name="other.pdf",
+        source_kind="pdf",
+        severity="medium",
+        status="new",
+        created_at=now_ts - 2,
+    )
+
+    result = store.bulk_ack_incidents(
+        incident_ids=[first["incident_id"], second["incident_id"]],
+        ack_by="tester",
+    )
+
+    assert result == {"success": True, "acked_count": 2, "total_matched": 2}
+    assert store.list_incidents(status="new", limit=10, offset=0)["total"] == 1
+    assert store.list_incidents(status="new", hostname="HOST-02", limit=10, offset=0)["items"][0]["id"] == third["incident_id"]
+
+
+def test_bulk_ack_incidents_by_filters_reuses_incident_filters(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\secret.pdf",
+        file_name="secret.pdf",
+        source_kind="pdf",
+        severity="high",
+        status="new",
+        created_at=now_ts,
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\notes.txt",
+        file_name="notes.txt",
+        source_kind="text",
+        severity="low",
+        status="new",
+        created_at=now_ts - 1,
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-2",
+        hostname="HOST-02",
+        branch="Москва",
+        user_login="corp\\ivanov",
+        user_full_name="Иванов И.И.",
+        file_path=r"C:\Docs\other.pdf",
+        file_name="other.pdf",
+        source_kind="pdf",
+        severity="high",
+        status="ack",
+        created_at=now_ts - 2,
+    )
+
+    result = store.bulk_ack_incidents(
+        filters={"hostname": "host-01", "source_kind": "pdf", "file_ext": "pdf", "has_fragment": True},
+        ack_by="tester",
+    )
+
+    assert result == {"success": True, "acked_count": 1, "total_matched": 1}
+    remaining = store.list_incidents(status="new", limit=10, offset=0)
+    assert remaining["total"] == 1
+    assert remaining["items"][0]["file_ext"] == "txt"
 
 
 def test_agent_online_timeout_is_used_for_agents_and_dashboard(temp_dir):
@@ -423,6 +615,328 @@ def test_queue_job_strips_pdf_from_payload_json_and_writes_transient_spool(temp_
     payload = json.loads(job_row["payload_json"])
     assert "pdf_slice_b64" not in payload
     assert store.read_job_pdf_spool(job_id=queued["job_id"]) == b"%PDF-1.4 spool"
+
+
+def test_queue_job_dedupes_stable_event_id_without_new_incident(temp_dir):
+    store = _make_store(temp_dir)
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "branch": "branch",
+        "file_path": r"C:\Docs\secret.pdf",
+        "file_name": "secret.pdf",
+        "file_hash": "hash-secret",
+        "file_size": 2048,
+        "source_kind": "text",
+        "text_excerpt": "secret-token",
+        "local_pattern_hits": [{"pattern": "p1", "value": "secret-token"}],
+        "event_id": "stable-event-id",
+    }
+
+    first = store.queue_job(dict(payload))
+    second = store.queue_job(dict(payload))
+
+    assert first["deduped"] is False
+    assert second["deduped"] is True
+    assert second["job_id"] == first["job_id"]
+    with store._lock, store._connect() as conn:
+        jobs_total = conn.execute("SELECT COUNT(*) FROM scan_jobs WHERE event_id='stable-event-id'").fetchone()[0]
+        incidents_total = conn.execute("SELECT COUNT(*) FROM scan_incidents").fetchone()[0]
+    assert jobs_total == 1
+    assert incidents_total == 0
+
+
+def test_queue_job_records_duplicate_observation_for_scan_task(temp_dir):
+    store = _make_store(temp_dir)
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "branch": "BR",
+        "user_login": "user",
+        "file_path": r"C:\Users\user\Documents\secret.txt",
+        "file_name": "secret.txt",
+        "file_hash": "hash-secret",
+        "file_size": 100,
+        "source_kind": "text",
+        "event_id": "stable-observation-event",
+    }
+    first = store.queue_job(dict(payload))
+    job = _get_job(store, first["job_id"])
+    incident = store.create_finding_and_incident(
+        job=job,
+        severity="high",
+        category="secrets",
+        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        short_reason="password",
+    )
+    store.finalize_job(job_id=first["job_id"], status="done_with_incident", summary="incident")
+    task = store.create_task(agent_id="agent-1", command="scan_now", payload={"force_rescan": True}, dedupe_key="force:agent-1")
+
+    second = store.queue_job({**payload, "scan_task_id": task["id"]})
+
+    assert second["deduped"] is True
+    observations = store.list_task_observations(task_id=task["id"])
+    assert observations["total"] == 1
+    assert observations["items"][0]["observation_type"] == "found_duplicate"
+    assert observations["items"][0]["linked_incident_id"] == incident["incident_id"]
+
+
+def test_force_scan_deleted_event_resolves_incident_and_run_history(temp_dir):
+    store = _make_store(temp_dir)
+    store.upsert_agent_heartbeat({"agent_id": "agent-1", "hostname": "HOST-01", "last_seen_at": int(time.time())})
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": r"C:\Users\user\Documents\secret.txt",
+            "file_name": "secret.txt",
+            "file_hash": "hash-secret",
+            "file_size": 100,
+            "source_kind": "text",
+            "event_id": "deleted-event-id",
+        }
+    )
+    incident = store.create_finding_and_incident(
+        job=_get_job(store, queued["job_id"]),
+        severity="medium",
+        category="secrets",
+        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        short_reason="password",
+    )
+    store.finalize_job(job_id=queued["job_id"], status="done_with_incident", summary="incident")
+    task = store.create_task(agent_id="agent-1", command="scan_now", payload={"force_rescan": True}, dedupe_key="force:agent-1")
+
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="completed",
+        result={
+            "force_rescan": True,
+            "phase": "completed",
+            "deleted_file_events": [
+                {
+                    "file_path": r"C:\Users\user\Documents\secret.txt",
+                    "file_hash": "hash-secret",
+                    "event_id": "deleted-event-id",
+                    "source_kind": "text",
+                }
+            ],
+            "cleaned_file_events": [],
+        },
+        error_text="",
+    )
+
+    with store._lock, store._connect() as conn:
+        row = conn.execute("SELECT status, resolved_reason, resolved_by_task_id FROM scan_incidents WHERE id=?", (incident["incident_id"],)).fetchone()
+    assert row["status"] == "resolved_deleted"
+    assert row["resolved_reason"] == "file_missing_on_force_scan"
+    assert row["resolved_by_task_id"] == task["id"]
+    observations = store.list_task_observations(task_id=task["id"])
+    assert observations["items"][0]["observation_type"] == "deleted"
+    runs = store.list_host_scan_runs(hostname="HOST-01")
+    assert runs["items"][0]["id"] == task["id"]
+    assert runs["items"][0]["observation_counts"]["deleted"] == 1
+
+
+def test_force_scan_cleaned_event_resolves_incident(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": r"C:\Users\user\Documents\secret.txt",
+            "file_name": "secret.txt",
+            "file_hash": "hash-old",
+            "file_size": 100,
+            "source_kind": "text",
+            "event_id": "cleaned-event-id",
+        }
+    )
+    incident = store.create_finding_and_incident(
+        job=_get_job(store, queued["job_id"]),
+        severity="low",
+        category="secrets",
+        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        short_reason="password",
+    )
+    store.finalize_job(job_id=queued["job_id"], status="done_with_incident", summary="incident")
+    task = store.create_task(agent_id="agent-1", command="scan_now", payload={"force_rescan": True}, dedupe_key="force:agent-1")
+
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="completed",
+        result={
+            "force_rescan": True,
+            "phase": "completed",
+            "deleted_file_events": [],
+            "cleaned_file_events": [
+                {
+                    "file_path": r"C:\Users\user\Documents\secret.txt",
+                    "file_hash": "hash-old",
+                    "current_file_hash": "hash-new-clean",
+                    "event_id": "cleaned-event-id",
+                    "source_kind": "text",
+                }
+            ],
+        },
+        error_text="",
+    )
+
+    with store._lock, store._connect() as conn:
+        row = conn.execute("SELECT status, resolved_reason FROM scan_incidents WHERE id=?", (incident["incident_id"],)).fetchone()
+    assert row["status"] == "resolved_clean"
+    assert row["resolved_reason"] == "file_has_no_matches_on_force_scan"
+
+
+def test_force_scan_deleted_event_becomes_moved_when_same_hash_found(temp_dir):
+    store = _make_store(temp_dir)
+    old_path = r"C:\Users\user\Documents\old.txt"
+    new_path = r"C:\Users\user\Desktop\old.txt"
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": old_path,
+            "file_name": "old.txt",
+            "file_hash": "hash-moved",
+            "file_size": 100,
+            "source_kind": "text",
+            "event_id": "moved-old-event",
+        }
+    )
+    incident = store.create_finding_and_incident(
+        job=_get_job(store, queued["job_id"]),
+        severity="high",
+        category="secrets",
+        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        short_reason="password",
+    )
+    store.finalize_job(job_id=queued["job_id"], status="done_with_incident", summary="incident")
+    task = store.create_task(agent_id="agent-1", command="scan_now", payload={"force_rescan": True}, dedupe_key="force:agent-1")
+    store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": new_path,
+            "file_name": "old.txt",
+            "file_hash": "hash-moved",
+            "file_size": 100,
+            "source_kind": "text",
+            "event_id": "moved-new-event",
+            "scan_task_id": task["id"],
+        }
+    )
+
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "force_rescan": True,
+            "phase": "server_processing",
+            "deleted_file_events": [
+                {
+                    "file_path": old_path,
+                    "file_hash": "hash-moved",
+                    "event_id": "moved-old-event",
+                    "source_kind": "text",
+                }
+            ],
+            "cleaned_file_events": [],
+        },
+        error_text="",
+    )
+
+    with store._lock, store._connect() as conn:
+        row = conn.execute("SELECT status, resolved_reason FROM scan_incidents WHERE id=?", (incident["incident_id"],)).fetchone()
+    assert row["status"] == "resolved_moved"
+    assert row["resolved_reason"] == "file_found_at_new_path"
+
+
+def test_deduped_previous_job_does_not_complete_new_force_scan_task(temp_dir):
+    store = _make_store(temp_dir)
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "branch": "branch",
+        "file_path": r"C:\Docs\secret.pdf",
+        "file_name": "secret.pdf",
+        "file_hash": "hash-secret",
+        "file_size": 2048,
+        "source_kind": "text",
+        "text_excerpt": "secret-token",
+        "local_pattern_hits": [{"pattern": "p1", "value": "secret-token"}],
+        "event_id": "stable-force-event-id",
+    }
+    previous = store.queue_job(dict(payload))
+    store.finalize_job(job_id=previous["job_id"], status="done_with_incident", summary="old incident")
+
+    task = store.create_task(
+        agent_id="agent-1",
+        command="scan_now",
+        payload={"force_rescan": True},
+        dedupe_key="scan_now_force:agent-1",
+    )
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "phase": "local_scan",
+            "scanned": 0,
+            "queued": 0,
+            "skipped": 0,
+            "deferred": 0,
+            "deduped": 0,
+            "force_rescan": True,
+            "jobs_total": 0,
+            "jobs_pending": 0,
+            "jobs_done_clean": 0,
+            "jobs_done_with_incident": 0,
+            "jobs_failed": 0,
+        },
+        error_text="",
+    )
+
+    deduped = store.queue_job({**payload, "scan_task_id": task["id"]})
+
+    assert deduped["deduped"] is True
+    assert _get_job(store, previous["job_id"])["scan_task_id"] == ""
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "acknowledged"
+    assert task_result["phase"] == "local_scan"
+    assert task_result["jobs_total"] == 0
+    assert task_result["jobs_done_with_incident"] == 0
+
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="completed",
+        result={
+            "phase": "completed",
+            "scanned": 1,
+            "queued": 0,
+            "skipped": 0,
+            "deferred": 0,
+            "deduped": 1,
+            "force_rescan": True,
+            "jobs_total": 0,
+            "jobs_pending": 0,
+            "jobs_done_clean": 0,
+            "jobs_done_with_incident": 0,
+            "jobs_failed": 0,
+        },
+        error_text="",
+    )
+
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "completed"
+    assert task_result["scanned"] == 1
+    assert task_result["deduped"] == 1
+    assert task_result["jobs_done_with_incident"] == 0
 
 
 def test_acknowledged_local_scan_task_switches_to_server_processing_when_jobs_exist(temp_dir):

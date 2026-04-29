@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from .config import ScanServerConfig
 from .database import ScanStore
 from .ocr import is_tesseract_available, ocr_pdf_bytes
-from .patterns import allowed_pattern_ids, classify_severity, scan_text
+from .patterns import allowed_pattern_ids, classify_severity, normalize_pattern_filter, scan_text
 
 logger = logging.getLogger(__name__)
 
@@ -187,9 +187,11 @@ class ScanWorker(threading.Thread):
             return b""
         return _safe_b64decode(raw_b64)
 
-    def _coerce_matches(self, raw_items: Any) -> List[Dict[str, str]]:
+    def _coerce_matches(self, raw_items: Any, allowed_pattern_ids_filter: Optional[set[str]] = None) -> List[Dict[str, str]]:
         items = raw_items if isinstance(raw_items, list) else []
         allowed = allowed_pattern_ids()
+        if allowed_pattern_ids_filter is not None:
+            allowed = allowed & allowed_pattern_ids_filter
         out: List[Dict[str, str]] = []
         for item in items:
             if not isinstance(item, dict):
@@ -224,6 +226,13 @@ class ScanWorker(threading.Thread):
             seen.add(key)
             out.append(item)
         return out
+
+    def _scan_text_with_filter(self, text: str, allowed_pattern_ids_filter: Optional[set[str]]) -> List[Dict[str, str]]:
+        if allowed_pattern_ids_filter is None:
+            return scan_text(text)
+        if not allowed_pattern_ids_filter:
+            return []
+        return scan_text(text, allowed_pattern_ids=allowed_pattern_ids_filter)
 
     def _get_ocr_pool(self) -> Optional[ProcessPoolExecutor | ThreadPoolExecutor]:
         if not self.config.ocr_enabled or not self._ocr_available:
@@ -335,13 +344,18 @@ class ScanWorker(threading.Thread):
             logger.warning("OCR failed for artifact=%s: %s - %s", artifact_path, type(exc).__name__, exc)
             return "", "ocr_error"
 
-    def _collect_pdf_matches(self, pdf_bytes: bytes, artifact_path: Optional[Path] = None) -> Dict[str, Any]:
+    def _collect_pdf_matches(
+        self,
+        pdf_bytes: bytes,
+        artifact_path: Optional[Path] = None,
+        allowed_pattern_ids_filter: Optional[set[str]] = None,
+    ) -> Dict[str, Any]:
         if not pdf_bytes:
             return {"matches": [], "outcome": "", "reason": "No PDF payload"}
 
         text_layer = _extract_pdf_text(pdf_bytes, max_pages=3)
         if text_layer:
-            text_matches = scan_text(text_layer)
+            text_matches = self._scan_text_with_filter(text_layer, allowed_pattern_ids_filter)
             if text_matches:
                 self._log_pdf_outcome("text_layer_match", artifact_path=artifact_path, matches_count=len(text_matches))
                 return {
@@ -385,7 +399,7 @@ class ScanWorker(threading.Thread):
                 "reason": detail,
             }
 
-        matches = scan_text(ocr_text)
+        matches = self._scan_text_with_filter(ocr_text, allowed_pattern_ids_filter)
         if matches:
             self._log_pdf_outcome("ocr_match", artifact_path=artifact_path, matches_count=len(matches))
             return {
@@ -432,13 +446,16 @@ class ScanWorker(threading.Thread):
 
         try:
             pdf_bytes = self._payload_pdf_bytes(payload, job_id=job_id)
-            matches = self._coerce_matches(payload.get("local_pattern_hits"))
             pdf_outcome = ""
-            requires_pdf_payload = str(job.get("source_kind") or "").strip().lower() == "pdf_slice"
+            source_kind = str(job.get("source_kind") or "").strip().lower()
+            is_pdf_job = source_kind in {"pdf", "pdf_slice"}
+            requires_pdf_payload = source_kind == "pdf_slice"
+            allowed_pattern_ids_filter = self._server_pdf_pattern_filter(job) if is_pdf_job else None
+            matches = self._coerce_matches(payload.get("local_pattern_hits"), allowed_pattern_ids_filter)
 
             text_excerpt = str(payload.get("text_excerpt") or "")
             if text_excerpt:
-                matches.extend(scan_text(text_excerpt))
+                matches.extend(self._scan_text_with_filter(text_excerpt, allowed_pattern_ids_filter))
 
             if requires_pdf_payload and not pdf_bytes:
                 raise RuntimeError("Missing transient PDF payload")
@@ -446,7 +463,11 @@ class ScanWorker(threading.Thread):
             if not matches and pdf_bytes:
                 file_name = str(job.get("file_name") or "unnamed")
                 logger.debug("Processing job_id=%s, file=%s", job_id, file_name)
-                pdf_result = self._collect_pdf_matches(pdf_bytes, artifact_path=None)
+                pdf_result = self._collect_pdf_matches(
+                    pdf_bytes,
+                    artifact_path=None,
+                    allowed_pattern_ids_filter=allowed_pattern_ids_filter,
+                )
                 matches.extend(pdf_result.get("matches") or [])
                 pdf_outcome = str(pdf_result.get("outcome") or "")
             matches = self._dedupe_matches(matches)
@@ -478,3 +499,17 @@ class ScanWorker(threading.Thread):
             logger.exception("Job processing failed job_id=%s: %s", job_id, exc)
         finally:
             self.store.delete_job_pdf_spool(job_id=job_id)
+
+    def _server_pdf_pattern_filter(self, job: Dict[str, Any]) -> Optional[set[str]]:
+        task_id = str(job.get("scan_task_id") or "").strip()
+        if not task_id:
+            return None
+        try:
+            getter = getattr(self.store, "get_task_payload", None)
+            task_payload = getter(task_id) if callable(getter) else {}
+        except Exception as exc:
+            logger.warning("Failed to load scan task payload for task_id=%s: %s", task_id, exc)
+            return None
+        if not isinstance(task_payload, dict) or "server_pdf_pattern_ids" not in task_payload:
+            return None
+        return normalize_pattern_filter(task_payload.get("server_pdf_pattern_ids"))

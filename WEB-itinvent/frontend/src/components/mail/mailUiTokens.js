@@ -92,6 +92,14 @@ export function buildMailUiTokens(theme) {
     rowCompactMinHeight: 62,
     toolbarHeight: 44,
     mobileToolbarHeight: 46,
+    bulkBarHeight: 68,
+    bulkBottomBarBg: office.isDark
+      ? alpha(theme.palette.background.paper, 0.96)
+      : alpha(theme.palette.background.paper, 0.98),
+    bulkActionSize: 48,
+    sheetHandleColor: office.isDark
+      ? alpha(theme.palette.common.white, 0.24)
+      : alpha(theme.palette.common.black, 0.18),
     fontSizeMeta: '0.8rem',
     fontSizeFine: '0.78rem',
     fontSizeLabel: '0.82rem',

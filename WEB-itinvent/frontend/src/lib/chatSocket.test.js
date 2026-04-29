@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../api/client', () => ({
   API_V1_BASE: '/api/v1',
@@ -53,9 +53,14 @@ describe('chatSocket client lifecycle', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.useFakeTimers();
+    vi.spyOn(Math, 'random').mockReturnValue(0.5);
     MockWebSocket.instances = [];
     window.WebSocket = MockWebSocket;
     globalThis.WebSocket = MockWebSocket;
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
   });
 
   it('ignores stale close events from a replaced socket', async () => {
@@ -215,6 +220,35 @@ describe('chatSocket client lifecycle', () => {
     chatSocket.close(true);
   });
 
+  it('handles backend rate-limited error envelopes without crashing', async () => {
+    const { chatSocket, CHAT_SOCKET_ACTIVITY_EVENT } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    const activityEvents = [];
+
+    window.addEventListener(CHAT_SOCKET_ACTIVITY_EVENT, (event) => {
+      activityEvents.push(event.detail);
+    });
+
+    socket.emitOpen();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'error',
+        payload: {
+          code: 'rate_limited',
+          retry_after_ms: 1000,
+        },
+      }),
+    });
+
+    expect(activityEvents[activityEvents.length - 1]).toEqual(expect.objectContaining({
+      type: 'error',
+    }));
+
+    release();
+    chatSocket.close(true);
+  });
+
   it('rejects sendMessage immediately when an open socket fails to send', async () => {
     const { chatSocket } = await loadChatSocket();
     const release = chatSocket.retain();
@@ -298,5 +332,72 @@ describe('chatSocket client lifecycle', () => {
 
     release();
     chatSocket.close(true);
+  });
+
+  it('does not queue volatile typing commands while offline', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+
+    chatSocket.sendTyping('conv-1', true);
+
+    expect(chatSocket.messageQueue).toHaveLength(0);
+    expect(chatSocket.pendingConversationSubscriptions.size).toBe(0);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('keeps only the latest offline conversation subscription intent', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+
+    chatSocket.subscribeConversation('conv-1');
+    chatSocket.unsubscribeConversation('conv-1');
+    chatSocket.subscribeConversation('conv-1');
+
+    expect(chatSocket.messageQueue).toHaveLength(0);
+    expect(chatSocket.pendingConversationSubscriptions.size).toBe(1);
+    expect(chatSocket.pendingConversationSubscriptions.get('conv-1').type).toBe('chat.subscribe_conversation');
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('caps the offline message queue and drops the oldest queued message', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+
+    for (let index = 0; index < 105; index += 1) {
+      chatSocket.send({
+        type: 'chat.test_command',
+        payload: { index },
+      });
+    }
+
+    expect(chatSocket.messageQueue).toHaveLength(100);
+    expect(chatSocket.messageQueue[0].payload.index).toBe(5);
+    expect(warnSpy).toHaveBeenCalled();
+
+    release();
+    chatSocket.close(true);
+    warnSpy.mockRestore();
+  });
+
+  it('adds jitter to reconnect delays', async () => {
+    Math.random.mockReturnValue(1);
+    const setTimeoutSpy = vi.spyOn(window, 'setTimeout');
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 1006 });
+
+    expect(setTimeoutSpy).toHaveBeenCalledWith(expect.any(Function), 1250);
+
+    release();
+    chatSocket.close(true);
+    setTimeoutSpy.mockRestore();
   });
 });

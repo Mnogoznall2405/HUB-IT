@@ -19,6 +19,7 @@ import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
+import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import DoneRoundedIcon from '@mui/icons-material/DoneRounded';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
@@ -37,10 +38,12 @@ import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 
 import { AttachmentCard, PresenceAvatar, TaskShareCard } from './ChatCommon';
+import ChatFileUploadPanel from './ChatFileUploadPanel';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
 import MarkdownRenderer from '../hub/MarkdownRenderer';
 import {
   buildTimelineItems,
+  CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX,
   formatFullDate,
   formatFileSize,
   formatShortTime,
@@ -49,13 +52,16 @@ import {
   getDateDividerLabel,
   getReplyPreviewText,
   getSearchResultPreview,
+  getPersonStatusLine,
   hasChatMarkdownTable,
   isImageAttachment,
 } from './chatHelpers';
 
 const GROUP_WINDOW_MS = 10 * 60 * 1000;
-const COMPOSER_STICK_DISTANCE_PX = 96;
+const COMPOSER_STICK_DISTANCE_PX = CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
 const BLUR_SCROLL_DELTA_PX = 12;
+const LONG_PRESS_SCROLL_CANCEL_PX = 30;
+const LONG_PRESS_HORIZONTAL_CANCEL_PX = 44;
 const BACK_SWIPE_EDGE_PX = 28;
 const BACK_SWIPE_START_PX = 14;
 const BACK_SWIPE_TRIGGER_PX = 84;
@@ -85,6 +91,138 @@ const CHAT_FONT_SIZES = {
 };
 const LIGHT_GROUP_SENDER_COLORS = ['#d45246', '#c97a00', '#2f8b44', '#387adf', '#8b4ccf', '#0f9d8a', '#c95d9c', '#468fba'];
 const DARK_GROUP_SENDER_COLORS = ['#ff7b73', '#f6c15c', '#7de26f', '#6bb6ff', '#c59bff', '#64e1cf', '#ff99dc', '#7bd7ff'];
+
+export const getChatKeyboardBottomSpacer = ({ compactMobile = false, keyboardInset = 0, composerHeight = 0 } = {}) => {
+  if (!compactMobile || Number(keyboardInset || 0) <= 0) return 0;
+  const measuredComposerHeight = Number(composerHeight || 0);
+  const baseGap = Number.isFinite(measuredComposerHeight) && measuredComposerHeight > 0
+    ? Math.round(measuredComposerHeight * 0.18)
+    : 12;
+  return Math.max(16, Math.min(32, baseGap));
+};
+
+export const isMobileMessageLongPress = ({
+  mobileInteractionsEnabled = false,
+  compactMobile = false,
+} = {}) => Boolean(mobileInteractionsEnabled || compactMobile);
+
+export const shouldCancelLongPressMove = ({
+  startX = 0,
+  startY = 0,
+  currentX = 0,
+  currentY = 0,
+} = {}) => {
+  const deltaX = Math.abs(Number(currentX || 0) - Number(startX || 0));
+  const deltaY = Math.abs(Number(currentY || 0) - Number(startY || 0));
+  if (deltaY >= LONG_PRESS_SCROLL_CANCEL_PX && deltaY > deltaX + 8) return true;
+  if (deltaX >= LONG_PRESS_HORIZONTAL_CANCEL_PX && deltaX > deltaY + 16) return true;
+  return false;
+};
+
+export const shouldSuppressNativeMessageGesture = ({
+  mobileInteractionsEnabled = false,
+  compactMobile = false,
+} = {}) => isMobileMessageLongPress({ mobileInteractionsEnabled, compactMobile });
+
+const MENTION_QUERY_LIMIT = 32;
+const MENTION_RESULT_LIMIT = 8;
+const MENTION_TEXT_PATTERN = /(@[0-9A-Za-zА-Яа-яЁё_.-]+)/g;
+
+function getPersonDisplayName(person) {
+  return String(person?.full_name || person?.name || person?.username || '').trim();
+}
+
+function getPersonMentionHandle(person) {
+  const username = String(person?.username || '').trim().replace(/^@+/, '');
+  if (username) return username;
+  return getPersonDisplayName(person)
+    .replace(/\s+/g, '_')
+    .replace(/[^0-9A-Za-zА-Яа-яЁё_.-]+/g, '')
+    .slice(0, 48);
+}
+
+function getPersonInitials(person) {
+  const name = getPersonDisplayName(person);
+  if (!name) return '@';
+  return name
+    .split(/\s+/)
+    .filter(Boolean)
+    .slice(0, 2)
+    .map((part) => part[0])
+    .join('')
+    .toUpperCase();
+}
+
+function normalizeMentionSearch(value) {
+  return String(value || '').trim().replace(/^@+/, '').toLowerCase();
+}
+
+function filterMentionCandidates(candidates, query, limit = MENTION_RESULT_LIMIT) {
+  const normalizedQuery = normalizeMentionSearch(query);
+  const seen = new Set();
+  const result = [];
+  (Array.isArray(candidates) ? candidates : []).forEach((candidate) => {
+    const person = candidate?.user || candidate;
+    const id = Number(person?.id || 0);
+    const handle = getPersonMentionHandle(person);
+    const displayName = getPersonDisplayName(person);
+    if (!handle && !displayName) return;
+    const key = id > 0 ? `id:${id}` : `handle:${handle.toLowerCase()}`;
+    if (seen.has(key)) return;
+    const haystack = `${handle} ${displayName}`.toLowerCase();
+    if (normalizedQuery && !haystack.includes(normalizedQuery)) return;
+    seen.add(key);
+    result.push(person);
+  });
+  return result.slice(0, limit);
+}
+
+export function getComposerMentionTrigger(value, caretPosition) {
+  const text = String(value || '');
+  const caret = Math.max(0, Math.min(Number(caretPosition ?? text.length), text.length));
+  const beforeCaret = text.slice(0, caret);
+  const atIndex = beforeCaret.lastIndexOf('@');
+  if (atIndex < 0) return null;
+  const charBeforeAt = atIndex > 0 ? beforeCaret[atIndex - 1] : '';
+  if (charBeforeAt && !/\s/.test(charBeforeAt)) return null;
+  const query = beforeCaret.slice(atIndex + 1);
+  if (query.length > MENTION_QUERY_LIMIT || /\s/.test(query)) return null;
+  return {
+    start: atIndex,
+    end: caret,
+    query,
+  };
+}
+
+function renderPlainTextWithMentions(value, mentionColor) {
+  const text = String(value || '');
+  if (!text || !text.includes('@')) return text;
+  const parts = [];
+  let lastIndex = 0;
+  text.replace(MENTION_TEXT_PATTERN, (match, _mention, offset) => {
+    if (offset > lastIndex) {
+      parts.push(text.slice(lastIndex, offset));
+    }
+    parts.push(
+      <Box
+        key={`mention-${offset}-${match}`}
+        component="span"
+        sx={{
+          color: mentionColor,
+          fontWeight: 800,
+        }}
+      >
+        {match}
+      </Box>,
+    );
+    lastIndex = offset + match.length;
+    return match;
+  });
+  if (lastIndex < text.length) {
+    parts.push(text.slice(lastIndex));
+  }
+  return parts.length > 0 ? parts : text;
+}
 
 const messageAppear = keyframes`
   from {
@@ -253,6 +391,16 @@ function getGalleryAspectRatio(totalCount, index) {
   return '1 / 1';
 }
 
+function formatSelectedMessageCount(count = 0) {
+  const normalizedCount = Math.max(0, Number(count || 0));
+  const mod100 = normalizedCount % 100;
+  const mod10 = normalizedCount % 10;
+  if (mod100 >= 11 && mod100 <= 14) return `${normalizedCount} сообщений`;
+  if (mod10 === 1) return `${normalizedCount} сообщение`;
+  if (mod10 >= 2 && mod10 <= 4) return `${normalizedCount} сообщения`;
+  return `${normalizedCount} сообщений`;
+}
+
 function HeaderAction({ title, children, onClick, active = false, compactMobile = false, hidden = false, disabled = false }) {
   if (hidden) return null;
   return (
@@ -290,52 +438,6 @@ function HeaderAction({ title, children, onClick, active = false, compactMobile 
         </IconButton>
       </span>
     </Tooltip>
-  );
-}
-
-function SelectionHeaderAction({ title, children, onClick, theme, ui, compactMobile = false, disabled = false, accent = false, testId }) {
-  return (
-    <Button
-      type="button"
-      size="small"
-      data-testid={testId}
-      aria-label={title}
-      disabled={disabled}
-      onClick={onClick}
-      startIcon={children}
-      sx={{
-        minWidth: compactMobile ? 88 : 112,
-        height: compactMobile ? 36 : 38,
-        px: compactMobile ? 1.05 : 1.35,
-        borderRadius: 1.6,
-        textTransform: 'none',
-        fontSize: compactMobile ? '0.82rem' : '0.88rem',
-        fontWeight: accent ? 800 : 750,
-        lineHeight: 1,
-        color: accent ? (ui.accentText || theme.palette.primary.main) : theme.palette.text.primary,
-        bgcolor: accent ? alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.1) : alpha(ui.surfaceStrong || '#ffffff', theme.palette.mode === 'dark' ? 0.32 : 0.78),
-        border: `1px solid ${accent ? alpha(ui.accentText || theme.palette.primary.main, 0.22) : ui.borderSoft}`,
-        boxShadow: ui.shadowSoft,
-        '& .MuiButton-startIcon': {
-          mr: 0.65,
-          ml: 0,
-        },
-        '&:hover': {
-          bgcolor: accent ? alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.22 : 0.14) : alpha(ui.surfaceStrong || '#ffffff', theme.palette.mode === 'dark' ? 0.44 : 0.9),
-        },
-        '&:active': {
-          opacity: 0.74,
-          transform: 'scale(0.98)',
-        },
-        '&.Mui-disabled': {
-          opacity: 0.42,
-          color: ui.textSecondary,
-          borderColor: ui.borderSoft,
-        },
-      }}
-    >
-      {title}
-    </Button>
   );
 }
 
@@ -558,6 +660,225 @@ function AiInteractiveStatusBanner({ aiStatusDisplay, theme, ui, compactMobile =
   );
 }
 
+function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirmAction, onCancelAction, onEditAction }) {
+  const [busy, setBusy] = useState('');
+  const card = actionCard && typeof actionCard === 'object' ? actionCard : null;
+  if (!card) return null;
+  const preview = card.preview && typeof card.preview === 'object' ? card.preview : {};
+  const status = String(card.status || 'pending').trim().toLowerCase();
+  const isPending = status === 'pending';
+  const title = String(preview.title || 'Действие ITinvent').trim();
+  const summary = String(preview.summary || '').trim();
+  const databaseId = String(card.database_id || preview.database_id || '').trim();
+  const items = Array.isArray(preview.items) ? preview.items : [];
+  const item = preview.item && typeof preview.item === 'object' ? preview.item : null;
+  const target = preview.target && typeof preview.target === 'object' ? preview.target : null;
+  const mail = preview.mail && typeof preview.mail === 'object' ? preview.mail : null;
+  const warnings = Array.isArray(preview.warnings) ? preview.warnings.filter(Boolean) : [];
+  const effects = Array.isArray(preview.effects) ? preview.effects.filter(Boolean) : [];
+  const isOfficeMail = String(card.action_type || '').startsWith('office.mail.');
+  const statusLabel = {
+    pending: 'Ожидает подтверждения',
+    confirmed: 'Выполнено',
+    cancelled: 'Отменено',
+    expired: 'Истекло',
+    failed: 'Ошибка',
+  }[status] || status;
+  const runAction = async (kind) => {
+    const handler = kind === 'confirm' ? onConfirmAction : onCancelAction;
+    if (typeof handler !== 'function' || !card.id) return;
+    setBusy(kind);
+    try {
+      await handler(card, message);
+    } finally {
+      setBusy('');
+    }
+  };
+  return (
+    <Box
+      data-testid="chat-ai-action-card"
+      sx={{
+        mt: 0.85,
+        mb: 1.75,
+        p: compactMobile ? 1 : 1.15,
+        borderRadius: 1.5,
+        border: '1px solid',
+        borderColor: status === 'failed' ? alpha(theme.palette.error.main, 0.35) : ui.borderSoft,
+        bgcolor: alpha(ui.surfaceStrong || theme.palette.background.paper, theme.palette.mode === 'dark' ? 0.24 : 0.7),
+      }}
+    >
+      <Stack spacing={0.7}>
+        <Stack direction="row" spacing={0.8} alignItems="flex-start" justifyContent="space-between">
+          <Box sx={{ minWidth: 0 }}>
+            <Typography sx={{ fontSize: 14, lineHeight: 1.2, fontWeight: 800, color: 'inherit' }}>
+              {title}
+            </Typography>
+            {summary ? (
+              <Typography sx={{ mt: 0.25, fontSize: 13, lineHeight: 1.25, color: ui.textSecondary }}>
+                {summary}
+              </Typography>
+            ) : null}
+          </Box>
+          <Box
+            component="span"
+            sx={{
+              flexShrink: 0,
+              px: 0.75,
+              py: 0.25,
+              borderRadius: 999,
+              fontSize: 11,
+              fontWeight: 800,
+              color: isPending ? ui.accentText : ui.textSecondary,
+              bgcolor: isPending ? alpha(ui.accentText || theme.palette.primary.main, 0.12) : alpha(ui.textSecondary || '#64748b', 0.12),
+            }}
+          >
+            {statusLabel}
+          </Box>
+        </Stack>
+        {databaseId ? (
+          <Typography sx={{ fontSize: 12, color: ui.textSecondary }}>
+            База: {databaseId}
+          </Typography>
+        ) : null}
+        {items.length > 0 ? (
+          <Stack spacing={0.35}>
+            {items.slice(0, 4).map((row, index) => (
+              <Typography key={`${row?.inv_no || index}`} sx={{ fontSize: 12.5, lineHeight: 1.25, color: 'inherit' }}>
+                {`${row?.inv_no || 'без инв. №'}${row?.name ? ` · ${row.name}` : ''}${row?.owner ? ` · ${row.owner}` : ''}`}
+              </Typography>
+            ))}
+            {items.length > 4 ? (
+              <Typography sx={{ fontSize: 12, color: ui.textSecondary }}>{`Еще ${items.length - 4} поз.`}</Typography>
+            ) : null}
+          </Stack>
+        ) : item ? (
+          <Typography sx={{ fontSize: 12.5, lineHeight: 1.25, color: 'inherit' }}>
+            {[item.inv_no, item.model, item.branch, item.location].filter(Boolean).join(' · ')}
+            {item.qty_current !== undefined && item.qty_current !== null ? ` · остаток: ${item.qty_current}` : ''}
+            {item.qty_next !== undefined && item.qty_next !== null ? ` → ${item.qty_next}` : ''}
+          </Typography>
+        ) : null}
+        {target?.name ? (
+          <Typography sx={{ fontSize: 12.5, color: 'inherit' }}>
+            Получатель: {target.name}{target.department ? ` · ${target.department}` : ''}
+          </Typography>
+        ) : null}
+        {mail ? (
+          <Stack spacing={0.35}>
+            <Typography sx={{ fontSize: 12.5, color: 'inherit' }}>
+              Кому: {(Array.isArray(mail.to) ? mail.to : []).join(', ') || 'не указано'}
+            </Typography>
+            {Array.isArray(mail.cc) && mail.cc.length > 0 ? (
+              <Typography sx={{ fontSize: 12.5, color: ui.textSecondary }}>
+                Копия: {mail.cc.join(', ')}
+              </Typography>
+            ) : null}
+            {Number(mail.bcc_count || 0) > 0 ? (
+              <Typography sx={{ fontSize: 12.5, color: ui.textSecondary }}>
+                Скрытая копия: {Number(mail.bcc_count || 0)}
+              </Typography>
+            ) : null}
+            <Typography sx={{ fontSize: 12.5, color: 'inherit' }}>
+              Тема: {mail.subject || 'без темы'}
+            </Typography>
+            {mail.body_preview ? (
+              <Typography sx={{ fontSize: 12.5, lineHeight: 1.3, color: ui.textSecondary, whiteSpace: 'pre-wrap' }}>
+                {mail.body_preview}
+              </Typography>
+            ) : null}
+            {Number(mail.attachment_count || 0) > 0 ? (
+              <Typography sx={{ fontSize: 12.5, color: ui.textSecondary }}>
+                Вложения: {Number(mail.attachment_count || 0)}
+              </Typography>
+            ) : null}
+          </Stack>
+        ) : null}
+        {effects.length > 0 ? (
+          <Typography sx={{ fontSize: 12, color: ui.textSecondary }}>
+            {effects.join(' · ')}
+          </Typography>
+        ) : null}
+        {warnings.length > 0 ? (
+          <Stack spacing={0.25}>
+            {warnings.map((warning, index) => (
+              <Typography key={`${warning}-${index}`} sx={{ fontSize: 12.3, color: theme.palette.warning.main }}>
+                {warning}
+              </Typography>
+            ))}
+          </Stack>
+        ) : null}
+        {card.error_text ? (
+          <Typography sx={{ fontSize: 12.5, color: theme.palette.error.main }}>
+            {card.error_text}
+          </Typography>
+        ) : null}
+        {isPending ? (
+          <Stack direction="row" spacing={0.8} sx={{ pt: 0.35 }}>
+            <Button
+              size="small"
+              variant="contained"
+              onClick={() => runAction('confirm')}
+              disabled={Boolean(busy)}
+              sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+            >
+              {busy === 'confirm' ? 'Выполняю...' : 'Подтвердить'}
+            </Button>
+            {isOfficeMail ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={() => onEditAction?.(card, message)}
+                disabled={Boolean(busy)}
+                sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800 }}
+              >
+                Редактировать
+              </Button>
+            ) : null}
+            <Button
+              size="small"
+              variant="text"
+              onClick={() => runAction('cancel')}
+              disabled={Boolean(busy)}
+              sx={{ borderRadius: 1.2, textTransform: 'none', fontWeight: 800, color: ui.textSecondary }}
+            >
+              {busy === 'cancel' ? 'Отмена...' : 'Отменить'}
+            </Button>
+          </Stack>
+        ) : null}
+      </Stack>
+    </Box>
+  );
+}
+
+const ChatMarkdownBody = memo(function ChatMarkdownBody({
+  value,
+  bubbleText,
+  hasMarkdownTable = false,
+}) {
+  return (
+    <Box
+      className="chat-selectable"
+      data-testid="chat-markdown-body"
+      sx={{
+        display: 'block',
+        pr: 0.25,
+        pb: hasMarkdownTable ? 2.1 : 1.8,
+        color: bubbleText,
+        fontSize: CHAT_FONT_SIZES.body,
+        lineHeight: 1.34,
+        userSelect: 'text',
+        fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+        '& .MuiBox-root': {
+          color: bubbleText,
+          fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+        },
+      }}
+    >
+      <MarkdownRenderer value={value} variant="chat" />
+    </Box>
+  );
+});
+
 export function ChatBubble({
   conversationKind,
   message,
@@ -568,6 +889,9 @@ export function ChatBubble({
   onOpenAttachmentPreview,
   onReplyMessage,
   onOpenMessageMenu,
+  onConfirmAction,
+  onCancelAction,
+  onEditAction,
   highlighted = false,
   selectionMode = false,
   selected = false,
@@ -576,6 +900,7 @@ export function ChatBubble({
   groupedWithPrevious = false,
   groupedWithNext = false,
   compactMobile = false,
+  mobileInteractionsEnabled = false,
   readTargetRef,
 }) {
   const task = message?.kind === 'task_share' ? message?.task_preview : null;
@@ -611,8 +936,18 @@ export function ChatBubble({
   const bubbleBg = message?.is_own ? ui.bubbleOwnBg : ui.bubbleOtherBg;
   const bubbleText = message?.is_own ? ui.bubbleOwnText : ui.bubbleOtherText;
   const longPressTimerRef = useRef(null);
+  const longPressStartRef = useRef({ x: 0, y: 0 });
+  const longPressGestureRef = useRef({ source: '', pointerId: null, handled: false });
   const prefersReducedMotion = useReducedMotion();
   const canToggleSelection = typeof onToggleMessageSelection === 'function';
+  const mobileMessageInteractionsEnabled = isMobileMessageLongPress({
+    mobileInteractionsEnabled,
+    compactMobile,
+  });
+  const suppressNativeMessageGesture = shouldSuppressNativeMessageGesture({
+    mobileInteractionsEnabled,
+    compactMobile,
+  });
   const showQuickActions = !selectionMode && !compactMobile && emojiOnlyCount === 0 && typeof onOpenMessageMenu === 'function';
 
   const clearLongPress = () => {
@@ -620,6 +955,15 @@ export function ChatBubble({
       window.clearTimeout(longPressTimerRef.current);
       longPressTimerRef.current = null;
     }
+    longPressGestureRef.current = { source: '', pointerId: null, handled: longPressGestureRef.current.handled };
+  };
+
+  const resetLongPressGesture = () => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressGestureRef.current = { source: '', pointerId: null, handled: false };
   };
 
   const toggleSelection = () => {
@@ -628,35 +972,132 @@ export function ChatBubble({
   };
 
   const handleClickCapture = (event) => {
+    if (longPressGestureRef.current.handled) {
+      event.preventDefault();
+      event.stopPropagation();
+      longPressGestureRef.current = { source: '', pointerId: null, handled: false };
+      return;
+    }
     if (!selectionMode) return;
     event.preventDefault();
     event.stopPropagation();
     toggleSelection();
   };
 
-  const startLongPress = (event) => {
-    if (!compactMobile) return;
-    const target = event?.currentTarget || null;
-    clearLongPress();
+  const runLongPressAction = (target) => {
+    if (selectionMode && canToggleSelection) {
+      toggleSelection();
+      return;
+    }
+    if (typeof onStartMessageSelection === 'function') {
+      onStartMessageSelection(message);
+      return;
+    }
+    if (typeof onOpenMessageMenu === 'function') {
+      onOpenMessageMenu(message, target);
+      return;
+    }
+    onReplyMessage?.(message);
+  };
+
+  const scheduleLongPress = ({ x = 0, y = 0, target = null, pointerId = null, source = 'touch' } = {}) => {
+    if (!mobileMessageInteractionsEnabled) return;
+    if (longPressTimerRef.current) return;
+    if (longPressGestureRef.current.source && longPressGestureRef.current.source !== source) return;
+    longPressStartRef.current = {
+      x: Number(x || 0),
+      y: Number(y || 0),
+    };
+    longPressGestureRef.current = { source, pointerId, handled: false };
     longPressTimerRef.current = window.setTimeout(() => {
       longPressTimerRef.current = null;
-      if (selectionMode && canToggleSelection) {
-        toggleSelection();
-        return;
-      }
-      if (typeof onStartMessageSelection === 'function') {
-        onStartMessageSelection(message);
-        return;
-      }
-      if (typeof onOpenMessageMenu === 'function') {
-        onOpenMessageMenu(message, target);
-        return;
-      }
-      onReplyMessage?.(message);
+      longPressGestureRef.current = { ...longPressGestureRef.current, handled: true };
+      runLongPressAction(target);
     }, 420);
   };
 
+  const startLongPress = (event) => {
+    if (!mobileMessageInteractionsEnabled) return;
+    if (suppressNativeMessageGesture && event?.cancelable) {
+      event.preventDefault();
+    }
+    const touch = event?.touches?.[0] || null;
+    scheduleLongPress({
+      x: Number(touch?.clientX || 0),
+      y: Number(touch?.clientY || 0),
+      target: event?.currentTarget || null,
+      source: 'touch',
+    });
+  };
+
+  const startPointerLongPress = (event) => {
+    if (!mobileMessageInteractionsEnabled) return;
+    if (event?.pointerType && event.pointerType !== 'touch') return;
+    if (suppressNativeMessageGesture && event?.cancelable) {
+      event.preventDefault();
+    }
+    scheduleLongPress({
+      x: Number(event?.clientX || 0),
+      y: Number(event?.clientY || 0),
+      target: event?.currentTarget || null,
+      pointerId: event?.pointerId ?? null,
+      source: 'pointer',
+    });
+  };
+
+  const handleLongPressMove = (event) => {
+    if (!longPressTimerRef.current) return;
+    const touch = event?.touches?.[0] || null;
+    if (!touch) {
+      resetLongPressGesture();
+      return;
+    }
+    if (shouldCancelLongPressMove({
+      startX: longPressStartRef.current.x,
+      startY: longPressStartRef.current.y,
+      currentX: Number(touch.clientX || 0),
+      currentY: Number(touch.clientY || 0),
+    })) {
+      resetLongPressGesture();
+    }
+  };
+
+  const handlePointerLongPressMove = (event) => {
+    if (!longPressTimerRef.current) return;
+    if (event?.pointerType && event.pointerType !== 'touch') return;
+    if (longPressGestureRef.current.pointerId !== null && event?.pointerId !== longPressGestureRef.current.pointerId) return;
+    if (shouldCancelLongPressMove({
+      startX: longPressStartRef.current.x,
+      startY: longPressStartRef.current.y,
+      currentX: Number(event?.clientX || 0),
+      currentY: Number(event?.clientY || 0),
+    })) {
+      resetLongPressGesture();
+    }
+  };
+
+  const handleTouchCancel = () => {
+    if (!mobileMessageInteractionsEnabled) {
+      resetLongPressGesture();
+    }
+  };
+
+  const handlePointerCancel = () => {
+    if (!mobileMessageInteractionsEnabled) {
+      resetLongPressGesture();
+    }
+  };
+
   const handleContextMenu = (event) => {
+    if (mobileMessageInteractionsEnabled) {
+      event.preventDefault();
+      event.stopPropagation();
+      if (!longPressTimerRef.current && !longPressGestureRef.current.handled) {
+        longPressGestureRef.current = { source: 'contextmenu', pointerId: null, handled: true };
+        runLongPressAction(event.currentTarget);
+      }
+      return;
+    }
     if (selectionMode && canToggleSelection) {
       event.preventDefault();
       event.stopPropagation();
@@ -797,25 +1238,30 @@ export function ChatBubble({
         }
         onReplyMessage?.(message);
       }}
-      onContextMenu={handleContextMenu}
-      onTouchStart={startLongPress}
-      onTouchEnd={clearLongPress}
-      onTouchCancel={clearLongPress}
-      onTouchMove={clearLongPress}
       className={joinClasses('relative flex flex-col', message?.is_own ? 'items-end' : 'items-start')}
       sx={{
         width: '100%',
         pt: showSender ? 0.28 : groupedWithPrevious ? '1px' : 0.65,
         pb: groupedWithNext ? '1px' : 0.28,
-        pl: selectionMode ? { xs: 5.1, md: 5.6 } : 0,
-        pr: selectionMode ? { xs: 0.45, md: 0.75 } : 0,
-        mx: selectionMode ? { xs: -0.2, md: -0.6 } : 0,
-        borderRadius: selectionMode ? 2.25 : 0,
-        bgcolor: selected ? alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.12) : 'transparent',
+        pl: 0,
+        pr: 0,
+        mx: 0,
+        borderRadius: 0,
+        bgcolor: selected && !compactMobile ? alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.12) : 'transparent',
         cursor: selectionMode ? 'pointer' : 'default',
         animation: prefersReducedMotion || (compactMobile && !message?.isOptimistic) ? 'none' : `${messageAppear} 150ms ease-out`,
         overflowAnchor: 'none',
         transition: 'background-color 120ms ease',
+        ...(mobileMessageInteractionsEnabled ? {
+          WebkitTouchCallout: 'none',
+          WebkitUserSelect: 'none',
+          userSelect: 'none',
+          touchAction: 'pan-y',
+          '& .chat-selectable, & .chat-selectable *': {
+            WebkitUserSelect: 'none',
+            userSelect: 'none',
+          },
+        } : {}),
       }}
     >
       {selectionMode ? (
@@ -832,24 +1278,32 @@ export function ChatBubble({
           }}
           sx={{
             position: 'absolute',
-            left: { xs: 10, md: 13 },
+            left: { xs: 6, md: 10 },
             top: '50%',
             transform: 'translateY(-50%)',
-            width: 30,
-            height: 30,
+            width: compactMobile ? 28 : 26,
+            height: compactMobile ? 28 : 26,
             p: 0,
             border: 'none',
             borderRadius: 999,
             display: 'inline-flex',
             alignItems: 'center',
             justifyContent: 'center',
-            color: selected ? (ui.accentText || theme.palette.primary.main) : alpha(ui.textSecondary || theme.palette.text.secondary, 0.78),
-            bgcolor: selected ? alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.1) : alpha(ui.surfaceStrong || '#ffffff', theme.palette.mode === 'dark' ? 0.32 : 0.78),
-            boxShadow: selected ? `0 0 0 2px ${alpha(ui.accentText || theme.palette.primary.main, 0.16)}` : ui.shadowSoft,
+            color: selected ? (ui.accentText || theme.palette.primary.main) : alpha(ui.textSecondary || theme.palette.text.secondary, 0.82),
+            bgcolor: compactMobile
+              ? 'transparent'
+              : selected ? alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.1) : alpha(ui.surfaceStrong || '#ffffff', theme.palette.mode === 'dark' ? 0.32 : 0.78),
+            boxShadow: compactMobile
+              ? 'none'
+              : selected ? `0 0 0 2px ${alpha(ui.accentText || theme.palette.primary.main, 0.16)}` : ui.shadowSoft,
             cursor: 'pointer',
+            outline: 'none',
+            '&:focus, &:focus-visible': {
+              outline: 'none',
+            },
           }}
         >
-          {selected ? <CheckCircleRoundedIcon sx={{ fontSize: 22 }} /> : <RadioButtonUncheckedRoundedIcon sx={{ fontSize: 22 }} />}
+          {selected ? <CheckCircleRoundedIcon sx={{ fontSize: compactMobile ? 21 : 20 }} /> : <RadioButtonUncheckedRoundedIcon sx={{ fontSize: compactMobile ? 21 : 20 }} />}
         </Box>
       ) : null}
 
@@ -857,18 +1311,34 @@ export function ChatBubble({
         <Typography
           variant="caption"
           className="px-3 pb-1 text-[14px] font-medium leading-[1.15]"
-          sx={{ color: senderAccentColor, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: CHAT_FONT_SIZES.sender }}
+          sx={{
+            color: senderAccentColor,
+            fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+            fontSize: CHAT_FONT_SIZES.sender,
+            ml: selectionMode && !message?.is_own ? { xs: 5, md: 4.2 } : 0,
+          }}
         >
           {message?.sender?.full_name || message?.sender?.username || 'Пользователь'}
         </Typography>
       ) : null}
 
       <Box
+        data-chat-bubble-surface="true"
         data-chat-table-layout={hasMarkdownTable ? 'wide' : undefined}
+        onContextMenu={handleContextMenu}
+        onPointerDown={startPointerLongPress}
+        onPointerMove={handlePointerLongPressMove}
+        onPointerUp={clearLongPress}
+        onPointerCancel={handlePointerCancel}
+        onTouchStart={startLongPress}
+        onTouchEnd={clearLongPress}
+        onTouchCancel={handleTouchCancel}
+        onTouchMove={handleLongPressMove}
         className={joinClasses('relative transition duration-100', compactMobile ? 'active:opacity-90' : '')}
         sx={{
           width: bubbleWidth,
           maxWidth: bubbleMaxWidth,
+          ml: selectionMode && !message?.is_own ? { xs: 5, md: 4.2 } : 0,
           px: task ? 0.62 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : 1.18,
           py: task ? 0.62 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : 0.82,
           borderRadius: emojiOnlyCount ? 0 : getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
@@ -881,11 +1351,13 @@ export function ChatBubble({
                 ? (theme.palette.mode === 'dark' ? '0 1px 0 rgba(255,255,255,0.02), 0 8px 18px rgba(3, 8, 15, 0.12)' : '0 8px 20px rgba(70, 92, 114, 0.12)')
                 : ui.shadowSoft
             ),
-          outline: selected
-            ? `2px solid ${alpha(ui.accentText || theme.palette.primary.main, 0.5)}`
-            : highlighted ? `2px solid ${alpha(theme.palette.primary.main, 0.42)}` : 'none',
-          outlineOffset: selected || highlighted ? 2 : 0,
+          outline: highlighted ? `2px solid ${alpha(theme.palette.primary.main, 0.42)}` : 'none',
+          outlineOffset: highlighted ? 2 : 0,
+          border: 'none',
           userSelect: 'none',
+          '&:focus, &:focus-visible': {
+            outline: highlighted ? `2px solid ${alpha(theme.palette.primary.main, 0.42)}` : 'none',
+          },
           transition: 'background-color 120ms ease, box-shadow 120ms ease, transform 120ms ease, outline-color 120ms ease',
           '&:hover .chat-bubble-actions': {
             opacity: 1,
@@ -1086,25 +1558,11 @@ export function ChatBubble({
             ) : null}
           </Stack>
         ) : isMarkdownBody ? (
-          <Box
-            className="chat-selectable"
-            sx={{
-              display: 'block',
-              pr: 0.25,
-              pb: hasMarkdownTable ? 2.1 : 1.8,
-              color: bubbleText,
-              fontSize: CHAT_FONT_SIZES.body,
-              lineHeight: 1.34,
-              userSelect: 'text',
-              fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-              '& .MuiBox-root': {
-                color: bubbleText,
-                fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-              },
-            }}
-          >
-            <MarkdownRenderer value={message?.body} variant="chat" />
-          </Box>
+          <ChatMarkdownBody
+            value={message?.body}
+            bubbleText={bubbleText}
+            hasMarkdownTable={hasMarkdownTable}
+          />
         ) : (
           <Typography
             variant="body1"
@@ -1129,9 +1587,20 @@ export function ChatBubble({
               } : undefined,
             }}
           >
-            {message?.body}
+            {renderPlainTextWithMentions(message?.body, ui.accentText || theme.palette.primary.main)}
           </Typography>
         )}
+
+        <AiActionCard
+          actionCard={message?.action_card}
+          message={message}
+          theme={theme}
+          ui={ui}
+          compactMobile={compactMobile}
+          onConfirmAction={onConfirmAction}
+          onCancelAction={onCancelAction}
+          onEditAction={onEditAction}
+        />
 
         {!showMediaMetaOverlay ? (
         <Stack
@@ -1217,10 +1686,8 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
   onOpenMenu,
   selectionMode = false,
   selectedMessageCount = 0,
-  canReplySelectedMessage = false,
   canCopySelectedMessages = false,
   onClearMessageSelection,
-  onReplySelectedMessage,
   onCopySelectedMessages,
   onForwardSelectedMessages,
 }) {
@@ -1241,6 +1708,94 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
     width: '100%',
   };
 
+  if (selectionMode && compactMobile) {
+    const selectionIconButtonSx = {
+      width: 38,
+      height: 38,
+      borderRadius: 0,
+      color: alpha('#ffffff', 0.96),
+      bgcolor: 'transparent',
+      transition: 'opacity 120ms ease, transform 120ms ease',
+      '&:active': {
+        opacity: 0.62,
+        transform: 'scale(0.96)',
+      },
+      '&:disabled': {
+        opacity: 0.34,
+      },
+    };
+
+    return (
+      <Box
+        className="chat-safe-top chat-no-select"
+        data-testid="chat-selection-toolbar"
+        sx={{
+          ...headerShellSx,
+          px: 0.65,
+          pb: 0.3,
+          bgcolor: alpha(ui.threadTopbarBg || '#202434', 0.98),
+          backdropFilter: 'blur(18px) saturate(1.06)',
+          borderBottom: `1px solid ${alpha('#ffffff', 0.06)}`,
+          boxShadow: 'none',
+        }}
+      >
+        <Stack
+          direction="row"
+          alignItems="center"
+          justifyContent="space-between"
+          sx={{
+            ...headerContentSx,
+            minHeight: 44,
+          }}
+        >
+          <Stack direction="row" spacing={0.9} alignItems="center" sx={{ minWidth: 0 }}>
+            <IconButton
+              data-testid="chat-selection-clear"
+              aria-label="Отменить выделение"
+              onClick={onClearMessageSelection}
+              sx={selectionIconButtonSx}
+            >
+              <CloseRoundedIcon sx={{ fontSize: 28 }} />
+            </IconButton>
+            <Typography
+              data-testid="chat-selection-count-badge"
+              sx={{
+                color: alpha('#ffffff', 0.96),
+                fontSize: 21,
+                fontWeight: 700,
+                lineHeight: 1,
+                fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+              }}
+            >
+              {selectedMessageCount}
+            </Typography>
+          </Stack>
+
+          <Stack direction="row" spacing={0.65} alignItems="center">
+            <IconButton
+              data-testid="chat-selection-copy-action"
+              aria-label="Копировать"
+              disabled={!canCopySelectedMessages || selectedMessageCount <= 0 || typeof onCopySelectedMessages !== 'function'}
+              onClick={onCopySelectedMessages}
+              sx={selectionIconButtonSx}
+            >
+              <ContentCopyRoundedIcon sx={{ fontSize: 25 }} />
+            </IconButton>
+            <IconButton
+              data-testid="chat-selection-header-forward-action"
+              aria-label="Переслать"
+              disabled={selectedMessageCount <= 0 || typeof onForwardSelectedMessages !== 'function'}
+              onClick={onForwardSelectedMessages}
+              sx={selectionIconButtonSx}
+            >
+              <ForwardRoundedIcon sx={{ fontSize: 27 }} />
+            </IconButton>
+          </Stack>
+        </Stack>
+      </Box>
+    );
+  }
+
   if (selectionMode) {
     return (
       <Box className="chat-safe-top chat-no-select" data-testid="chat-selection-toolbar" sx={headerShellSx}>
@@ -1251,67 +1806,84 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
           justifyContent="space-between"
           sx={headerContentSx}
         >
-          <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
-            <IconButton
-              size="small"
-              data-testid="chat-selection-clear"
-              aria-label="Отменить выделение"
-              onClick={onClearMessageSelection}
+          <Stack direction="row" spacing={compactMobile ? 0.75 : 1} alignItems="center" sx={{ minWidth: 0 }}>
+            {isMobile ? (
+              <IconButton
+                size="small"
+                onClick={onBack}
+                aria-label="Назад к чатам"
+                sx={{
+                  ml: -0.2,
+                  width: compactMobile ? 34 : 38,
+                  height: compactMobile ? 34 : 38,
+                  borderRadius: 0,
+                  bgcolor: 'transparent',
+                }}
+              >
+                <ArrowBackRoundedIcon />
+              </IconButton>
+            ) : null}
+            <Box
+              data-testid="chat-selection-count-badge"
               sx={{
-                width: compactMobile ? 34 : 38,
-                height: compactMobile ? 34 : 38,
-                borderRadius: 0,
-                color: theme.palette.text.primary,
+                width: compactMobile ? 34 : 36,
+                height: compactMobile ? 34 : 36,
+                borderRadius: 999,
+                display: 'inline-flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                flexShrink: 0,
+                bgcolor: ui.accentText || theme.palette.primary.main,
+                color: theme.palette.primary.contrastText,
+                fontWeight: 850,
+                fontSize: compactMobile ? 16 : 17,
+                fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
               }}
             >
-              <CloseRoundedIcon />
-            </IconButton>
-            <Box sx={{ minWidth: 0 }}>
-              <Typography sx={{ fontWeight: 800, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_FONT_SIZES.headerTitleMobile : '1.02rem', fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
-                {selectedMessageCount}
-              </Typography>
-              <Typography sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_FONT_SIZES.headerSubtitleMobile : '0.82rem', lineHeight: 1.12, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
-                {selectedMessageCount === 1 ? 'сообщение выбрано' : 'сообщений выбрано'}
-              </Typography>
+              {selectedMessageCount}
+            </Box>
+            <Box
+              component="button"
+              type="button"
+              onClick={onOpenInfo}
+              aria-label="Информация о чате"
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: compactMobile ? '10px' : '12px',
+                p: 0,
+                border: 'none',
+                bgcolor: 'transparent',
+                color: theme.palette.text.primary,
+                textAlign: 'left',
+                cursor: 'pointer',
+                minWidth: 0,
+              }}
+            >
+              <PresenceAvatar
+                item={activeConversation.kind === 'direct' ? (activeConversation.direct_peer || activeConversation) : activeConversation}
+                online={Boolean(activeConversation?.kind === 'direct' && activeConversation?.direct_peer?.presence?.is_online)}
+                size={compactMobile ? 40 : 42}
+              />
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_FONT_SIZES.headerTitleMobile : '1.02rem', letterSpacing: '-0.01em', fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
+                  {activeConversation.title}
+                </Typography>
+                <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_FONT_SIZES.previewBody : '0.82rem', lineHeight: 1.12, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
+                  {typingLine || headerSubtitle}
+                </Typography>
+              </Box>
             </Box>
           </Stack>
 
-          <Stack direction="row" spacing={compactMobile ? 0.55 : 0.75} alignItems="center" justifyContent="flex-end" useFlexGap sx={{ flexWrap: 'wrap' }}>
-            <SelectionHeaderAction
-              title="Ответить"
-              onClick={onReplySelectedMessage}
-              theme={theme}
-              ui={ui}
-              compactMobile={compactMobile}
-              disabled={!canReplySelectedMessage}
-              testId="chat-selection-reply-header"
-            >
-              <ReplyRoundedIcon fontSize="small" />
-            </SelectionHeaderAction>
-            <SelectionHeaderAction
-              title="Копировать"
-              onClick={onCopySelectedMessages}
-              theme={theme}
-              ui={ui}
-              compactMobile={compactMobile}
-              disabled={!canCopySelectedMessages}
-              testId="chat-selection-copy-header"
-            >
-              <ContentCopyRoundedIcon fontSize="small" />
-            </SelectionHeaderAction>
-            <SelectionHeaderAction
-              title="Переслать"
-              onClick={onForwardSelectedMessages}
-              theme={theme}
-              ui={ui}
-              compactMobile={compactMobile}
-              disabled={selectedMessageCount <= 0}
-              accent
-              testId="chat-selection-forward-header"
-            >
-              <ForwardRoundedIcon fontSize="small" />
-            </SelectionHeaderAction>
-          </Stack>
+          <HeaderAction
+            title="Действия чата"
+            onClick={onOpenMenu}
+            active={contextPanelOpen}
+            compactMobile={compactMobile}
+          >
+            <MoreVertRoundedIcon fontSize="small" />
+          </HeaderAction>
         </Stack>
       </Box>
     );
@@ -1526,6 +2098,7 @@ const ChatMessageList = memo(function ChatMessageList({
   theme,
   ui,
   compactMobile,
+  mobileInteractionsEnabled = false,
   activeConversation,
   navigate,
   threadWallpaperSx,
@@ -1543,6 +2116,9 @@ const ChatMessageList = memo(function ChatMessageList({
   onOpenAttachmentPreview,
   onReplyMessage,
   onOpenMessageMenu,
+  onConfirmAction,
+  onCancelAction,
+  onEditAction,
   selectedMessageIds = [],
   onToggleMessageSelection,
   onStartMessageSelection,
@@ -1566,6 +2142,12 @@ const ChatMessageList = memo(function ChatMessageList({
   const jumpPillBg = ui.jumpPillBg || theme.palette.primary.main;
   const jumpPillText = ui.jumpPillText || theme.palette.primary.contrastText;
   const contentMaxWidth = Number(ui.contentMaxWidth || 980);
+  const keyboardBottomSpacer = getChatKeyboardBottomSpacer({
+    compactMobile,
+    keyboardInset,
+    composerHeight,
+  });
+  const scrollBottomPadding = compactMobile ? 8 + keyboardBottomSpacer : 8;
   const selectedMessageIdSet = useMemo(
     () => new Set((Array.isArray(selectedMessageIds) ? selectedMessageIds : []).map((value) => String(value || '').trim()).filter(Boolean)),
     [selectedMessageIds],
@@ -1587,23 +2169,33 @@ const ChatMessageList = memo(function ChatMessageList({
   const [stickyDateLabel, setStickyDateLabel] = useState('');
   const stickyDateLabelRef = useRef('');
   const stickyDateFrameRef = useRef(null);
+  const stickyDateAnchorsRef = useRef([]);
 
   useLayoutEffect(() => {
     if (!compactMobile || !threadScrollRef.current) return undefined;
     const container = threadScrollRef.current;
     if (!container) return undefined;
 
+    const refreshStickyDateAnchors = () => {
+      stickyDateAnchorsRef.current = Array.from(container.querySelectorAll('[data-message-date]'))
+        .map((el) => ({
+          top: Number(el.offsetTop || 0),
+          label: String(el.dataset.messageDate || '').trim(),
+        }))
+        .filter((item) => item.label);
+    };
+
     // Находим все сообщения с датами и отслеживаем какое вверху
     const updateVisibleDateNow = () => {
       stickyDateFrameRef.current = null;
-      const messageElements = container.querySelectorAll('[data-message-date]');
+      const messageElements = stickyDateAnchorsRef.current;
       let currentLabel = '';
-      const containerRect = container.getBoundingClientRect();
+      const thresholdTop = Number(container.scrollTop || 0) + 100;
       messageElements.forEach((el) => {
-        const rect = el.getBoundingClientRect();
+        const elementTop = Number(el.top || 0);
         // Если сообщение в видимой области (выше центра)
-        if (rect.top >= containerRect.top && rect.top <= containerRect.top + 100) {
-          currentLabel = el.dataset.messageDate || currentLabel;
+        if (elementTop <= thresholdTop) {
+          currentLabel = el.label || currentLabel;
         }
       });
       if (currentLabel && currentLabel !== stickyDateLabelRef.current) {
@@ -1618,17 +2210,27 @@ const ChatMessageList = memo(function ChatMessageList({
       stickyDateFrameRef.current = window.requestAnimationFrame(updateVisibleDateNow);
     };
 
+    refreshStickyDateAnchors();
     scheduleVisibleDateUpdate();
+    const resizeTarget = threadContentRef?.current || container;
+    const resizeObserver = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => {
+        refreshStickyDateAnchors();
+        scheduleVisibleDateUpdate();
+      })
+      : null;
+    resizeObserver?.observe?.(resizeTarget);
 
     container.addEventListener('scroll', scheduleVisibleDateUpdate, { passive: true });
     return () => {
       container.removeEventListener('scroll', scheduleVisibleDateUpdate);
+      resizeObserver?.disconnect?.();
       if (stickyDateFrameRef.current !== null) {
         window.cancelAnimationFrame(stickyDateFrameRef.current);
         stickyDateFrameRef.current = null;
       }
     };
-  }, [compactMobile, messages.length, threadScrollRef]);
+  }, [compactMobile, messages.length, threadContentRef, threadScrollRef]);
 
   return (
     <>
@@ -1650,8 +2252,12 @@ const ChatMessageList = memo(function ChatMessageList({
           px: { xs: compactMobile ? 0.7 : 1.1, md: 2.2 },
           pt: { xs: 0.5, md: 1.8 },
           pb: {
-            xs: '8px',
+            xs: `${scrollBottomPadding}px`,
             md: '18px',
+          },
+          scrollPaddingBottom: {
+            xs: `${Math.max(24, scrollBottomPadding + 16)}px`,
+            md: '28px',
           },
           position: 'relative',
           userSelect: 'none',
@@ -1685,22 +2291,22 @@ const ChatMessageList = memo(function ChatMessageList({
               sx={{
                 position: 'sticky',
                 top: 12,
-                zIndex: 4,
+                zIndex: 6,
                 mx: 'auto',
-                mb: 1.25,
-                maxWidth: 340,
+                mb: 1.5,
+                display: 'flex',
+                justifyContent: 'center',
+                pointerEvents: 'none',
               }}
             >
-              <Box
-                className="rounded-full border px-4 py-2 text-center text-[13px] font-semibold backdrop-blur-xl"
-                sx={{
-                  borderColor: alpha(ui.accentText, 0.18),
-                  backgroundColor: alpha(ui.accentText, 0.1),
-                  color: ui.accentText,
-                }}
-              >
-                Отпустите файлы, чтобы добавить их к отправке
-              </Box>
+              <ChatFileUploadPanel
+                mode="drop"
+                files={[]}
+                showActions={false}
+                showCaption={false}
+                theme={theme}
+                ui={ui}
+              />
             </Box>
           ) : null}
 
@@ -1794,6 +2400,9 @@ const ChatMessageList = memo(function ChatMessageList({
                     onOpenAttachmentPreview={onOpenAttachmentPreview}
                     onReplyMessage={onReplyMessage}
                     onOpenMessageMenu={onOpenMessageMenu}
+                    onConfirmAction={onConfirmAction}
+                    onCancelAction={onCancelAction}
+                    onEditAction={onEditAction}
                     selectionMode={selectionMode}
                     selected={selected}
                     onToggleMessageSelection={onToggleMessageSelection}
@@ -1802,6 +2411,7 @@ const ChatMessageList = memo(function ChatMessageList({
                     groupedWithPrevious={Boolean(groupedMeta.groupedWithPrevious)}
                     groupedWithNext={Boolean(groupedMeta.groupedWithNext)}
                     compactMobile={compactMobile}
+                    mobileInteractionsEnabled={mobileInteractionsEnabled}
                     readTargetRef={getReadTargetRef?.(item.message?.id)}
                   />
                 </div>
@@ -1820,7 +2430,15 @@ const ChatMessageList = memo(function ChatMessageList({
         animate={{ opacity: 1, y: 0, scale: 1 }}
         exit={{ opacity: 0, y: 10, scale: 0.96 }}
         transition={{ duration: 0.16, ease: 'easeOut' }}
-        sx={{ position: 'absolute', right: { xs: 12, md: 22 }, bottom: { xs: `${Math.max(12, keyboardInset + 10)}px`, md: '20px' }, zIndex: 4 }}
+        sx={{
+          position: 'absolute',
+          right: { xs: 12, md: 22 },
+          bottom: {
+            xs: `${Math.max(12, keyboardInset + (selectionMode ? 92 : 10))}px`,
+            md: selectionMode ? '96px' : '20px',
+          },
+          zIndex: 4,
+        }}
       >
         <Badge
           badgeContent={Number(activeConversation?.unread_count || 0)}
@@ -1885,6 +2503,8 @@ const ChatComposer = memo(function ChatComposer({
   onComposerDragOver,
   onComposerDragLeave,
   onComposerFocusChange,
+  mentionCandidates = [],
+  onSearchMentionPeople,
   composerDockRef,
   keyboardInset = 0,
 }) {
@@ -1898,6 +2518,11 @@ const ChatComposer = memo(function ChatComposer({
   const composerDismissColor = theme.palette.mode === 'dark' ? alpha('#ffffff', 0.6) : composerAuxColor;
   const canSendComposerMessage = Boolean(String(messageText || '').trim());
   const filesBusy = preparingFiles || sendingFiles;
+  const [mentionTrigger, setMentionTrigger] = useState(null);
+  const mentionTriggerRef = useRef(null);
+  const [remoteMentionPeople, setRemoteMentionPeople] = useState([]);
+  const [mentionLoading, setMentionLoading] = useState(false);
+  const [activeMentionIndex, setActiveMentionIndex] = useState(0);
   const selectedFilesTotalLabel = useMemo(() => {
     const finalBytes = Number(selectedFilesSummary?.finalTotalBytes || 0);
     const originalBytes = Number(selectedFilesSummary?.originalTotalBytes || finalBytes);
@@ -1907,14 +2532,133 @@ const ChatComposer = memo(function ChatComposer({
     return finalBytes > 0 ? formatFileSize(finalBytes) : '';
   }, [selectedFilesSummary]);
 
+  const updateMentionTriggerFromTextarea = useCallback((node) => {
+    if (!node) {
+      mentionTriggerRef.current = null;
+      setMentionTrigger(null);
+      return;
+    }
+    const nextTrigger = getComposerMentionTrigger(node.value, node.selectionStart);
+    const previousTrigger = mentionTriggerRef.current;
+    const unchanged = Boolean(previousTrigger) === Boolean(nextTrigger)
+      && String(previousTrigger?.query || '') === String(nextTrigger?.query || '')
+      && Number(previousTrigger?.start ?? -1) === Number(nextTrigger?.start ?? -1)
+      && Number(previousTrigger?.end ?? -1) === Number(nextTrigger?.end ?? -1);
+    mentionTriggerRef.current = nextTrigger;
+    if (!unchanged) {
+      setMentionTrigger(nextTrigger);
+      setActiveMentionIndex(0);
+    }
+  }, []);
+
+  const localMentionPeople = useMemo(
+    () => filterMentionCandidates(mentionCandidates, mentionTrigger?.query, MENTION_RESULT_LIMIT),
+    [mentionCandidates, mentionTrigger?.query],
+  );
+
+  useEffect(() => {
+    const query = String(mentionTrigger?.query || '').trim();
+    if (!mentionTrigger || query.length < 1 || typeof onSearchMentionPeople !== 'function') {
+      setRemoteMentionPeople([]);
+      setMentionLoading(false);
+      return undefined;
+    }
+    let cancelled = false;
+    setMentionLoading(true);
+    const timeoutId = window.setTimeout(async () => {
+      try {
+        const people = await onSearchMentionPeople(query);
+        if (cancelled) return;
+        setRemoteMentionPeople(Array.isArray(people) ? people : []);
+      } catch {
+        if (!cancelled) setRemoteMentionPeople([]);
+      } finally {
+        if (!cancelled) setMentionLoading(false);
+      }
+    }, 140);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [mentionTrigger, onSearchMentionPeople]);
+
+  const mentionOptions = useMemo(
+    () => filterMentionCandidates([...localMentionPeople, ...remoteMentionPeople], mentionTrigger?.query, MENTION_RESULT_LIMIT),
+    [localMentionPeople, mentionTrigger?.query, remoteMentionPeople],
+  );
+  const mentionOpen = Boolean(mentionTrigger) && (mentionOptions.length > 0 || mentionLoading);
+
+  const closeMentions = useCallback(() => {
+    mentionTriggerRef.current = null;
+    setMentionTrigger(null);
+    setRemoteMentionPeople([]);
+    setMentionLoading(false);
+    setActiveMentionIndex(0);
+  }, []);
+
+  const insertMention = useCallback((person) => {
+    const trigger = mentionTriggerRef.current || mentionTrigger;
+    const handle = getPersonMentionHandle(person);
+    if (!trigger || !handle) return;
+    const currentValue = String(messageText || '');
+    const insertText = `@${handle} `;
+    const nextValue = `${currentValue.slice(0, trigger.start)}${insertText}${currentValue.slice(trigger.end)}`;
+    const nextCaret = trigger.start + insertText.length;
+    onMessageTextChange?.(nextValue);
+    closeMentions();
+    window.requestAnimationFrame(() => {
+      const node = composerRef?.current;
+      node?.focus?.();
+      node?.setSelectionRange?.(nextCaret, nextCaret);
+      updateMentionTriggerFromTextarea(node);
+    });
+  }, [closeMentions, composerRef, mentionTrigger, messageText, onMessageTextChange, updateMentionTriggerFromTextarea]);
+
   const handleFocus = useCallback((event) => {
     onComposerFocusChange?.(true);
     onComposerSelectionSync?.(event);
-  }, [onComposerFocusChange, onComposerSelectionSync]);
+    updateMentionTriggerFromTextarea(event.currentTarget);
+  }, [onComposerFocusChange, onComposerSelectionSync, updateMentionTriggerFromTextarea]);
 
   const handleBlur = useCallback(() => {
     onComposerFocusChange?.(false);
   }, [onComposerFocusChange]);
+
+  const handleComposerChange = useCallback((event) => {
+    onMessageTextChange?.(event.target.value);
+    updateMentionTriggerFromTextarea(event.target);
+  }, [onMessageTextChange, updateMentionTriggerFromTextarea]);
+
+  const handleComposerSelection = useCallback((event) => {
+    onComposerSelectionSync?.(event);
+    updateMentionTriggerFromTextarea(event.currentTarget);
+  }, [onComposerSelectionSync, updateMentionTriggerFromTextarea]);
+
+  const handleComposerKeyDown = useCallback((event) => {
+    if (mentionOpen) {
+      if (event.key === 'ArrowDown') {
+        event.preventDefault();
+        setActiveMentionIndex((current) => (mentionOptions.length > 0 ? (current + 1) % mentionOptions.length : 0));
+        return;
+      }
+      if (event.key === 'ArrowUp') {
+        event.preventDefault();
+        setActiveMentionIndex((current) => (mentionOptions.length > 0 ? (current - 1 + mentionOptions.length) % mentionOptions.length : 0));
+        return;
+      }
+      if ((event.key === 'Enter' || event.key === 'Tab') && mentionOptions.length > 0) {
+        event.preventDefault();
+        insertMention(mentionOptions[Math.max(0, Math.min(activeMentionIndex, mentionOptions.length - 1))]);
+        return;
+      }
+      if (event.key === 'Escape') {
+        event.preventDefault();
+        closeMentions();
+        return;
+      }
+    }
+    onComposerKeyDown?.(event);
+  }, [activeMentionIndex, closeMentions, insertMention, mentionOpen, mentionOptions, onComposerKeyDown]);
 
   const preserveComposerKeyboard = useCallback((event) => {
     if (!compactMobile) return;
@@ -2032,6 +2776,88 @@ const ChatComposer = memo(function ChatComposer({
           </div>
         ) : null}
 
+        {mentionOpen ? (
+          <Box
+            data-testid="chat-mention-suggestions"
+            sx={{
+              mb: 0.75,
+              overflow: 'hidden',
+              borderRadius: compactMobile ? 3 : 2,
+              border: '1px solid',
+              borderColor: ui.borderSoft,
+              bgcolor: alpha(ui.composerDockBg || composerBg, theme.palette.mode === 'dark' ? 0.98 : 0.96),
+              boxShadow: theme.palette.mode === 'dark'
+                ? '0 14px 32px rgba(0,0,0,0.28)'
+                : '0 14px 32px rgba(15,23,42,0.14)',
+            }}
+          >
+            {mentionOptions.map((person, index) => {
+              const handle = getPersonMentionHandle(person);
+              const displayName = getPersonDisplayName(person) || handle;
+              const selected = index === activeMentionIndex;
+              return (
+                <Box
+                  key={`${person?.id || handle}-${index}`}
+                  component="button"
+                  type="button"
+                  data-testid={`chat-mention-option-${handle}`}
+                  onMouseDown={(event) => event.preventDefault()}
+                  onPointerDown={(event) => {
+                    if (!compactMobile) return;
+                    event.preventDefault();
+                    insertMention(person);
+                  }}
+                  onClick={() => insertMention(person)}
+                  sx={{
+                    width: '100%',
+                    minHeight: compactMobile ? 50 : 48,
+                    px: 1.1,
+                    py: 0.65,
+                    border: 'none',
+                    bgcolor: selected ? alpha(ui.accentText || theme.palette.primary.main, 0.13) : 'transparent',
+                    color: composerPrimaryText,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    textAlign: 'left',
+                    cursor: 'pointer',
+                    '&:hover': {
+                      bgcolor: alpha(ui.accentText || theme.palette.primary.main, 0.1),
+                    },
+                  }}
+                >
+                  <Avatar
+                    sx={{
+                      width: 34,
+                      height: 34,
+                      fontSize: 13,
+                      fontWeight: 850,
+                      bgcolor: alpha(ui.accentText || theme.palette.primary.main, 0.18),
+                      color: ui.accentText || theme.palette.primary.main,
+                    }}
+                  >
+                    {getPersonInitials(person)}
+                  </Avatar>
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                    <Typography noWrap sx={{ color: composerPrimaryText, fontSize: 14.5, fontWeight: 800, lineHeight: 1.15 }}>
+                      {displayName}
+                    </Typography>
+                    <Typography noWrap sx={{ color: composerAuxColor, fontSize: 12.5, lineHeight: 1.25 }}>
+                      @{handle}{person?.presence ? ` · ${getPersonStatusLine(person)}` : ''}
+                    </Typography>
+                  </Box>
+                </Box>
+              );
+            })}
+            {mentionLoading && mentionOptions.length === 0 ? (
+              <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 1.25, py: 1, color: composerAuxColor }}>
+                <CircularProgress size={16} />
+                <Typography sx={{ fontSize: 13, color: composerAuxColor }}>Ищем людей...</Typography>
+              </Stack>
+            ) : null}
+          </Box>
+        ) : null}
+
         <div className="flex items-end gap-2">
           <Box
             data-testid="chat-composer-capsule"
@@ -2094,11 +2920,11 @@ const ChatComposer = memo(function ChatComposer({
                 aria-label="Message"
                 placeholder="Message"
                 value={messageText}
-                onChange={(event) => onMessageTextChange(event.target.value)}
-                onKeyDown={onComposerKeyDown}
-                onSelect={onComposerSelectionSync}
-                onClick={onComposerSelectionSync}
-                onKeyUp={onComposerSelectionSync}
+                onChange={handleComposerChange}
+                onKeyDown={handleComposerKeyDown}
+                onSelect={handleComposerSelection}
+                onClick={handleComposerSelection}
+                onKeyUp={handleComposerSelection}
                 onFocus={handleFocus}
                 onBlur={handleBlur}
                 onPaste={onComposerPaste}
@@ -2185,24 +3011,26 @@ const SelectionActionDock = memo(function SelectionActionDock({
   compactMobile,
   selectedMessageCount = 0,
   canReplySelectedMessage = false,
-  canCopySelectedMessages = false,
+  canDeleteSelectedMessages = false,
+  onClearMessageSelection,
   onReplySelectedMessage,
-  onCopySelectedMessages,
   onForwardSelectedMessages,
+  onDeleteSelectedMessages,
 }) {
   const actionButtonSx = {
     minWidth: 0,
-    width: compactMobile ? 86 : 92,
+    height: compactMobile ? 48 : 52,
     border: 'none',
     bgcolor: 'transparent',
     color: ui.textPrimary || theme.palette.text.primary,
     display: 'flex',
-    flexDirection: 'column',
+    flexDirection: 'row',
     alignItems: 'center',
-    gap: 0.45,
-    px: 0.85,
-    py: 0.65,
-    borderRadius: 2.5,
+    justifyContent: 'center',
+    gap: compactMobile ? 0.45 : 0.8,
+    px: compactMobile ? 0.7 : 1.6,
+    py: 0.8,
+    borderRadius: 999,
     cursor: 'pointer',
     transition: 'background-color 120ms ease, opacity 100ms ease, transform 100ms ease',
     '&:active': {
@@ -2215,57 +3043,182 @@ const SelectionActionDock = memo(function SelectionActionDock({
     },
   };
 
+  if (compactMobile) {
+    const mobilePillSx = {
+      flex: '1 1 0',
+      minWidth: 0,
+      height: 48,
+      border: `1px solid ${alpha('#ffffff', 0.07)}`,
+      bgcolor: alpha(ui.composerBg || '#202434', 0.98),
+      color: alpha('#ffffff', 0.78),
+      display: 'inline-flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: 0.65,
+      px: 0.95,
+      borderRadius: 999,
+      boxShadow: '0 9px 24px rgba(0,0,0,0.3)',
+      backdropFilter: 'blur(18px) saturate(1.06)',
+      cursor: 'pointer',
+      transition: 'opacity 120ms ease, transform 120ms ease, background-color 120ms ease',
+      '&:active': {
+        transform: 'scale(0.97)',
+        opacity: 0.72,
+      },
+      '&:disabled': {
+        opacity: 0.36,
+        cursor: 'not-allowed',
+      },
+    };
+    const mobileLabelSx = {
+      fontSize: 17,
+      fontWeight: 780,
+      lineHeight: 1,
+      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+      whiteSpace: 'nowrap',
+    };
+
+    return (
+      <Box
+        data-testid="chat-selection-action-dock"
+        sx={{
+          flexShrink: 0,
+          px: 0.72,
+          pt: 0.45,
+          pb: 'max(env(safe-area-inset-bottom), 8px)',
+          bgcolor: 'transparent',
+        }}
+      >
+        <Stack
+          direction="row"
+          alignItems="center"
+          spacing={0.65}
+          sx={{
+            width: '100%',
+            mx: 'auto',
+          }}
+        >
+          <Box
+            component="button"
+            type="button"
+            data-testid="chat-selection-reply-action"
+            aria-label="Ответить"
+            disabled={!canReplySelectedMessage || selectedMessageCount !== 1 || typeof onReplySelectedMessage !== 'function'}
+            onClick={onReplySelectedMessage}
+            sx={mobilePillSx}
+          >
+            <Typography sx={mobileLabelSx}>Ответить</Typography>
+            <ReplyRoundedIcon sx={{ fontSize: 23 }} />
+          </Box>
+          <Box
+            component="button"
+            type="button"
+            data-testid="chat-selection-forward-action"
+            aria-label="Переслать"
+            disabled={selectedMessageCount <= 0 || typeof onForwardSelectedMessages !== 'function'}
+            onClick={onForwardSelectedMessages}
+            sx={mobilePillSx}
+          >
+            <ForwardRoundedIcon sx={{ fontSize: 23 }} />
+            <Typography sx={mobileLabelSx}>Переслать</Typography>
+          </Box>
+        </Stack>
+      </Box>
+    );
+  }
+
   return (
     <Box
       data-testid="chat-selection-action-dock"
       sx={{
         flexShrink: 0,
-        px: compactMobile ? 1 : 1.4,
-        pt: 0.75,
+        px: compactMobile ? 1.05 : 1.6,
+        pt: compactMobile ? 0.75 : 1,
         pb: compactMobile ? 'max(env(safe-area-inset-bottom), 10px)' : 1.1,
-        bgcolor: ui.composerBg,
-        borderTop: `1px solid ${ui.borderSoft}`,
-        backdropFilter: 'blur(22px) saturate(1.08)',
+        bgcolor: 'transparent',
       }}
     >
-      <Stack direction="row" alignItems="center" justifyContent="space-around" sx={{ maxWidth: 420, mx: 'auto' }}>
+      <Stack
+        direction="row"
+        alignItems="center"
+        spacing={compactMobile ? 0.35 : 1.1}
+        sx={{
+          maxWidth: 760,
+          mx: 'auto',
+          minHeight: compactMobile ? 70 : 72,
+          px: compactMobile ? 0.75 : 1.5,
+          py: compactMobile ? 0.65 : 0.8,
+          borderRadius: compactMobile ? 4 : 3,
+          bgcolor: alpha(ui.composerBg || theme.palette.background.paper, theme.palette.mode === 'dark' ? 0.96 : 0.94),
+          border: `1px solid ${ui.borderSoft}`,
+          boxShadow: theme.palette.mode === 'dark' ? '0 14px 36px rgba(0,0,0,0.32)' : '0 14px 34px rgba(15, 23, 42, 0.16)',
+          backdropFilter: 'blur(22px) saturate(1.08)',
+        }}
+      >
         <Box
           component="button"
           type="button"
-          aria-label="Ответить выбранным сообщением"
-          disabled={!canReplySelectedMessage}
-          onClick={onReplySelectedMessage}
-          sx={actionButtonSx}
+          data-testid="chat-selection-clear"
+          aria-label="Отменить выделение"
+          onClick={onClearMessageSelection}
+          sx={{
+            ...actionButtonSx,
+            width: compactMobile ? 44 : 50,
+            px: 0,
+            flexShrink: 0,
+          }}
         >
-          <ReplyRoundedIcon sx={{ fontSize: 22 }} />
-          <Typography sx={{ fontSize: 12.5, fontWeight: 750, lineHeight: 1 }}>
-            Ответить
-          </Typography>
+          <CloseRoundedIcon sx={{ fontSize: compactMobile ? 27 : 30 }} />
         </Box>
-        <Box
-          component="button"
-          type="button"
-          aria-label="Копировать выбранные сообщения"
-          disabled={!canCopySelectedMessages}
-          onClick={onCopySelectedMessages}
-          sx={actionButtonSx}
+        <Typography
+          data-testid="chat-selection-count-label"
+          sx={{
+            flex: '1 1 88px',
+            minWidth: 0,
+            color: ui.textPrimary || theme.palette.text.primary,
+            fontSize: compactMobile ? 16.5 : 19,
+            fontWeight: 850,
+            lineHeight: 1.1,
+            fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+            whiteSpace: 'nowrap',
+          }}
         >
-          <ContentCopyRoundedIcon sx={{ fontSize: 22 }} />
-          <Typography sx={{ fontSize: 12.5, fontWeight: 750, lineHeight: 1 }}>
-            Копировать
-          </Typography>
-        </Box>
+          {formatSelectedMessageCount(selectedMessageCount)}
+        </Typography>
         <Box
           component="button"
           type="button"
+          data-testid="chat-selection-forward-action"
           aria-label="Переслать выбранные сообщения"
           disabled={selectedMessageCount <= 0}
           onClick={onForwardSelectedMessages}
-          sx={{ ...actionButtonSx, color: ui.accentText || theme.palette.primary.main }}
+          sx={{
+            ...actionButtonSx,
+            color: ui.accentText || theme.palette.primary.main,
+            flex: '0 0 auto',
+          }}
         >
-          <ForwardRoundedIcon sx={{ fontSize: 22 }} />
-          <Typography sx={{ fontSize: 12.5, fontWeight: 850, lineHeight: 1 }}>
+          <ForwardRoundedIcon sx={{ fontSize: compactMobile ? 24 : 28 }} />
+          <Typography sx={{ fontSize: compactMobile ? 15.5 : 18, fontWeight: 850, lineHeight: 1, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
             Переслать
+          </Typography>
+        </Box>
+        <Box
+          component="button"
+          type="button"
+          data-testid="chat-selection-delete-action"
+          aria-label="Удалить выбранные сообщения"
+          disabled={!canDeleteSelectedMessages || selectedMessageCount <= 0 || typeof onDeleteSelectedMessages !== 'function'}
+          onClick={onDeleteSelectedMessages}
+          sx={{
+            ...actionButtonSx,
+            color: theme.palette.error.main,
+            flex: '0 0 auto',
+          }}
+        >
+          <DeleteRoundedIcon sx={{ fontSize: compactMobile ? 24 : 28 }} />
+          <Typography sx={{ fontSize: compactMobile ? 15.5 : 18, fontWeight: 850, lineHeight: 1, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+            Удалить
           </Typography>
         </Box>
       </Stack>
@@ -2278,6 +3231,7 @@ export default function ChatThread({
   ui,
   isMobile,
   compactMobile = false,
+  mobileInteractionsEnabled = false,
   activeConversation,
   activeConversationId,
   navigate,
@@ -2300,16 +3254,21 @@ export default function ChatThread({
   onOpenAttachmentPreview,
   onReplyMessage,
   onOpenMessageMenu,
+  onConfirmAction,
+  onCancelAction,
+  onEditAction,
   selectedMessageIds = [],
   selectedMessageCount = 0,
   canReplySelectedMessage = false,
   canCopySelectedMessages = false,
+  canDeleteSelectedMessages = false,
   onToggleMessageSelection,
   onStartMessageSelection,
   onClearMessageSelection,
   onReplySelectedMessage,
   onCopySelectedMessages,
   onForwardSelectedMessages,
+  onDeleteSelectedMessages,
   onOpenComposerMenu,
   composerRef,
   messageText,
@@ -2323,6 +3282,8 @@ export default function ChatThread({
   onComposerDragOver,
   onComposerDragLeave,
   isFileDragActive,
+  mentionCandidates = [],
+  onSearchMentionPeople,
   showJumpToLatest,
   onJumpToLatest,
   replyMessage,
@@ -2347,11 +3308,13 @@ export default function ChatThread({
   getReadTargetRef,
 }) {
   const { openDrawer, headerMode } = useMainLayoutShell();
+  const resolvedMobileInteractionsEnabled = Boolean(mobileInteractionsEnabled || isMobile);
   const composerDockRef = useRef(null);
   const lastScrollTopRef = useRef(0);
   const composerFocusedRef = useRef(false);
   const threadPinnedToBottomRef = useRef(true);
   const previousComposerLayoutRef = useRef({ composerHeight: null, keyboardInset: null });
+  const previousSelectionModeRef = useRef(false);
   const backSwipeRef = useRef({ tracking: false, engaged: false, startX: 0, startY: 0 });
   const [composerHeight, setComposerHeight] = useState(compactMobile ? 92 : 102);
   const [keyboardInset, setKeyboardInset] = useState(0);
@@ -2360,6 +3323,48 @@ export default function ChatThread({
   const showConversationLoadingState = !activeConversation && (messagesLoading || hasConversationTarget);
   const showEmbeddedMenuButton = compactMobile && headerMode !== 'notifications-only';
   const selectionMode = Number(selectedMessageCount || 0) > 0;
+
+  useLayoutEffect(() => {
+    const previousSelectionMode = previousSelectionModeRef.current;
+    previousSelectionModeRef.current = selectionMode;
+    if (previousSelectionMode === selectionMode) return;
+    const container = threadScrollRef.current;
+    if (!container) return;
+    const preservedScrollTop = Number(lastScrollTopRef.current || container.scrollTop || 0);
+    window.requestAnimationFrame(() => {
+      if (threadScrollRef.current !== container) return;
+      if (Math.abs(Number(container.scrollTop || 0) - preservedScrollTop) < 1) return;
+      container.scrollTop = preservedScrollTop;
+      lastScrollTopRef.current = preservedScrollTop;
+    });
+  }, [selectionMode, threadScrollRef]);
+
+  const scrollPinnedThreadToBottom = useCallback(({ settleFrames = 1 } = {}) => {
+    const container = threadScrollRef.current;
+    if (!container || !threadPinnedToBottomRef.current) return;
+
+    const scrollToBottom = () => {
+      const nextScrollTop = Math.max(0, Number(container.scrollHeight || 0) - Number(container.clientHeight || 0));
+      container.scrollTop = nextScrollTop;
+      lastScrollTopRef.current = nextScrollTop;
+    };
+
+    scrollToBottom();
+
+    let remainingFrames = Math.max(0, Math.floor(Number(settleFrames || 0)));
+    if (remainingFrames <= 0) return;
+
+    const settle = () => {
+      if (!threadPinnedToBottomRef.current) return;
+      scrollToBottom();
+      remainingFrames -= 1;
+      if (remainingFrames > 0) {
+        window.requestAnimationFrame(settle);
+      }
+    };
+
+    window.requestAnimationFrame(settle);
+  }, [threadScrollRef]);
 
   useEffect(() => {
     const node = composerDockRef.current;
@@ -2393,13 +3398,8 @@ export default function ChatThread({
     const insetChanged = Math.abs(Number(keyboardInset || 0) - Number(previousLayout.keyboardInset || 0)) > 1;
     if (!heightChanged && !insetChanged) return;
 
-    const container = threadScrollRef.current;
-    if (!container || !threadPinnedToBottomRef.current) return;
-
-    const nextScrollTop = Math.max(0, Number(container.scrollHeight || 0) - Number(container.clientHeight || 0));
-    container.scrollTop = nextScrollTop;
-    lastScrollTopRef.current = nextScrollTop;
-  }, [composerHeight, keyboardInset, threadScrollRef]);
+    scrollPinnedThreadToBottom({ settleFrames: 2 });
+  }, [composerHeight, keyboardInset, scrollPinnedThreadToBottom]);
 
   // Простое отслеживание клавиатуры через resize окна
   useEffect(() => {
@@ -2426,17 +3426,18 @@ export default function ChatThread({
     composerFocusedRef.current = Boolean(focused);
     if (!focused) return;
     if (!threadPinnedToBottomRef.current) return;
-    const container = threadScrollRef.current;
-    if (!container) return;
 
     let scrollFrameId = null;
+    let remainingFrames = 2;
     const scrollToEnd = () => {
       if (!composerFocusedRef.current || !threadPinnedToBottomRef.current) return;
       if (scrollFrameId) return;
       scrollFrameId = window.requestAnimationFrame(() => {
         scrollFrameId = null;
         if (!composerFocusedRef.current || !threadPinnedToBottomRef.current) return;
-        container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        scrollPinnedThreadToBottom({ settleFrames: 0 });
+        remainingFrames -= 1;
+        if (remainingFrames > 0) scrollToEnd();
       });
     };
 
@@ -2453,7 +3454,7 @@ export default function ChatThread({
         }
       }, 2000);
     }
-  }, [threadScrollRef]);
+  }, [scrollPinnedThreadToBottom]);
 
   const handleThreadTouchStart = useCallback((event) => {
     if (!compactMobile || typeof onBack !== 'function') return;
@@ -2620,10 +3621,8 @@ export default function ChatThread({
         onOpenMenu={onOpenMenu}
         selectionMode={selectionMode}
         selectedMessageCount={selectedMessageCount}
-        canReplySelectedMessage={canReplySelectedMessage}
         canCopySelectedMessages={canCopySelectedMessages}
         onClearMessageSelection={onClearMessageSelection}
-        onReplySelectedMessage={onReplySelectedMessage}
         onCopySelectedMessages={onCopySelectedMessages}
         onForwardSelectedMessages={onForwardSelectedMessages}
       />
@@ -2659,6 +3658,7 @@ export default function ChatThread({
         theme={theme}
         ui={ui}
         compactMobile={compactMobile}
+        mobileInteractionsEnabled={resolvedMobileInteractionsEnabled}
         activeConversation={activeConversation}
         navigate={navigate}
         threadWallpaperSx={threadWallpaperSx}
@@ -2676,6 +3676,9 @@ export default function ChatThread({
         onOpenAttachmentPreview={onOpenAttachmentPreview}
         onReplyMessage={onReplyMessage}
         onOpenMessageMenu={onOpenMessageMenu}
+        onConfirmAction={onConfirmAction}
+        onCancelAction={onCancelAction}
+        onEditAction={onEditAction}
         selectedMessageIds={selectedMessageIds}
         onToggleMessageSelection={onToggleMessageSelection}
         onStartMessageSelection={onStartMessageSelection}
@@ -2691,17 +3694,18 @@ export default function ChatThread({
         getReadTargetRef={getReadTargetRef}
       />
 
-      {selectionMode && compactMobile ? (
+      {selectionMode ? (
         <SelectionActionDock
           theme={theme}
           ui={ui}
           compactMobile={compactMobile}
           selectedMessageCount={selectedMessageCount}
           canReplySelectedMessage={canReplySelectedMessage}
-          canCopySelectedMessages={canCopySelectedMessages}
+          canDeleteSelectedMessages={canDeleteSelectedMessages}
+          onClearMessageSelection={onClearMessageSelection}
           onReplySelectedMessage={onReplySelectedMessage}
-          onCopySelectedMessages={onCopySelectedMessages}
           onForwardSelectedMessages={onForwardSelectedMessages}
+          onDeleteSelectedMessages={onDeleteSelectedMessages}
         />
       ) : (
         <ChatComposer
@@ -2732,6 +3736,8 @@ export default function ChatThread({
           onComposerDragOver={onComposerDragOver}
           onComposerDragLeave={onComposerDragLeave}
           onComposerFocusChange={handleComposerFocusChange}
+          mentionCandidates={mentionCandidates}
+          onSearchMentionPeople={onSearchMentionPeople}
           composerDockRef={composerDockRef}
           keyboardInset={keyboardInset}
         />

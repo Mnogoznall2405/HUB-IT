@@ -349,13 +349,34 @@ function buildDefaultExchangeLoginPreview(username) {
   return `${normalized}@zsgp.corp`;
 }
 
+const MAILBOX_AUTH_LABELS = {
+  primary_credentials: '\u041e\u0431\u0449\u0438\u0439 \u0447\u0435\u0440\u0435\u0437 AD-\u0443\u0447\u0435\u0442\u043a\u0443',
+  primary_session: '\u0422\u0435\u043a\u0443\u0449\u0438\u0439 \u0432\u0445\u043e\u0434 AD',
+  stored_credentials: '\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043d\u044b\u0439 \u043b\u043e\u0433\u0438\u043d/\u043f\u0430\u0440\u043e\u043b\u044c',
+};
+
+function normalizeMailboxAuthMode(value, fallback = 'stored_credentials') {
+  const normalized = String(value || '').trim();
+  return ['primary_credentials', 'primary_session', 'stored_credentials'].includes(normalized)
+    ? normalized
+    : fallback;
+}
+
+function getDefaultMailboxAuthMode(user) {
+  return String(user?.auth_source || '').trim().toLowerCase() === 'ldap'
+    ? 'primary_credentials'
+    : 'stored_credentials';
+}
+
 function createEmptyMailboxDraft(user) {
+  const authMode = getDefaultMailboxAuthMode(user);
   return {
     id: '',
     label: '',
     mailbox_email: '',
-    mailbox_login: buildDefaultExchangeLoginPreview(user?.username),
+    mailbox_login: authMode === 'stored_credentials' ? buildDefaultExchangeLoginPreview(user?.username) : '',
     mailbox_password: '',
+    auth_mode: authMode,
     is_primary: false,
     is_active: true,
   };
@@ -369,6 +390,7 @@ function createMailboxDraftFromEntry(entry, user) {
     mailbox_email: String(entry.mailbox_email || ''),
     mailbox_login: String(entry.mailbox_login || entry.effective_mailbox_login || buildDefaultExchangeLoginPreview(user?.username)),
     mailbox_password: '',
+    auth_mode: normalizeMailboxAuthMode(entry.auth_mode, getDefaultMailboxAuthMode(user)),
     is_primary: Boolean(entry.is_primary),
     is_active: entry.is_active !== false,
   };
@@ -621,20 +643,33 @@ function ProfileTab({ user, dbOptions }) {
   }, [user]);
 
   const handleMailboxDraftChange = useCallback((key, value) => {
-    setMailboxDraft((prev) => ({ ...(prev || {}), [key]: value }));
-  }, []);
+    setMailboxDraft((prev) => {
+      const next = { ...(prev || {}), [key]: value };
+      if (key === 'auth_mode' && value !== 'stored_credentials') {
+        next.mailbox_login = '';
+        next.mailbox_password = '';
+        next.is_primary = false;
+      }
+      if (key === 'auth_mode' && value === 'stored_credentials' && !String(next.mailbox_login || '').trim()) {
+        next.mailbox_login = buildDefaultExchangeLoginPreview(user?.username);
+      }
+      return next;
+    });
+  }, [user?.username]);
 
   const handleMailboxSubmit = useCallback(async () => {
+    const authMode = normalizeMailboxAuthMode(mailboxDraft.auth_mode);
     const payload = {
       label: String(mailboxDraft.label || '').trim() || undefined,
       mailbox_email: String(mailboxDraft.mailbox_email || '').trim(),
-      mailbox_login: String(mailboxDraft.mailbox_login || '').trim() || undefined,
-      mailbox_password: String(mailboxDraft.mailbox_password || ''),
-      is_primary: Boolean(mailboxDraft.is_primary),
+      mailbox_login: authMode === 'stored_credentials' ? String(mailboxDraft.mailbox_login || '').trim() || undefined : undefined,
+      mailbox_password: authMode === 'stored_credentials' ? String(mailboxDraft.mailbox_password || '') : undefined,
+      auth_mode: authMode,
+      is_primary: authMode === 'primary_credentials' ? false : Boolean(mailboxDraft.is_primary),
       is_active: Boolean(mailboxDraft.is_active),
     };
     if (!payload.mailbox_email) return;
-    if (mailboxDialogMode === 'create' && !payload.mailbox_password) return;
+    if (authMode === 'stored_credentials' && mailboxDialogMode === 'create' && !payload.mailbox_password) return;
     setMailboxSaving(true);
     try {
       if (mailboxDialogMode === 'edit' && mailboxDraft.id) {
@@ -756,6 +791,7 @@ function ProfileTab({ user, dbOptions }) {
                   <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap>
                     {entry.is_primary ? <Chip size="small" color="primary" label="Основной" /> : null}
                     <Chip size="small" color={entry.is_active ? 'success' : 'default'} label={entry.is_active ? 'Активен' : 'Отключён'} />
+                    <Chip size="small" variant="outlined" label={MAILBOX_AUTH_LABELS[String(entry.auth_mode || '').trim()] || MAILBOX_AUTH_LABELS.stored_credentials} />
                     <Chip size="small" variant="outlined" label={`Unread: ${Number(entry.unread_count || 0)}`} />
                   </Stack>
                 </Stack>
@@ -801,6 +837,26 @@ function ProfileTab({ user, dbOptions }) {
               onChange={(event) => handleMailboxDraftChange('mailbox_email', event.target.value)}
               required
             />
+            <FormControl fullWidth size="small">
+              <InputLabel id="mailbox-auth-mode-label">{'\u0421\u043f\u043e\u0441\u043e\u0431 \u0432\u0445\u043e\u0434\u0430'}</InputLabel>
+              <Select
+                labelId="mailbox-auth-mode-label"
+                label={'\u0421\u043f\u043e\u0441\u043e\u0431 \u0432\u0445\u043e\u0434\u0430'}
+                value={mailboxDraft.auth_mode || 'stored_credentials'}
+                onChange={(event) => handleMailboxDraftChange('auth_mode', event.target.value)}
+              >
+                <MenuItem value="primary_credentials">{MAILBOX_AUTH_LABELS.primary_credentials}</MenuItem>
+                {String(mailboxDraft.auth_mode || '').trim() === 'primary_session' ? (
+                  <MenuItem value="primary_session">{MAILBOX_AUTH_LABELS.primary_session}</MenuItem>
+                ) : null}
+                <MenuItem value="stored_credentials">{MAILBOX_AUTH_LABELS.stored_credentials}</MenuItem>
+              </Select>
+            </FormControl>
+            {String(mailboxDraft.auth_mode || '').trim() === 'primary_credentials' ? (
+              <Alert severity="info" sx={{ borderRadius: '10px' }}>
+                {'\u0414\u043b\u044f \u043e\u0431\u0449\u0435\u0433\u043e \u044f\u0449\u0438\u043a\u0430 \u0443\u043a\u0430\u0436\u0438\u0442\u0435 \u0442\u043e\u043b\u044c\u043a\u043e \u0435\u0433\u043e \u0430\u0434\u0440\u0435\u0441. Exchange \u0431\u0443\u0434\u0435\u0442 \u043e\u0442\u043a\u0440\u044b\u0442 \u0447\u0435\u0440\u0435\u0437 \u0432\u0430\u0448\u0443 \u043e\u0441\u043d\u043e\u0432\u043d\u0443\u044e AD-\u0443\u0447\u0435\u0442\u043a\u0443. \u0415\u0441\u043b\u0438 \u043f\u0430\u0440\u043e\u043b\u044c \u0438\u0437\u043c\u0435\u043d\u0438\u043b\u0441\u044f, \u0432\u044b\u0439\u0434\u0438\u0442\u0435 \u0438 \u0441\u043d\u043e\u0432\u0430 \u0432\u043e\u0439\u0434\u0438\u0442\u0435 \u0447\u0435\u0440\u0435\u0437 AD.'}
+              </Alert>
+            ) : null}
             <TextField
               fullWidth
               size="small"
@@ -808,6 +864,7 @@ function ProfileTab({ user, dbOptions }) {
               value={mailboxDraft.mailbox_login}
               onChange={(event) => handleMailboxDraftChange('mailbox_login', event.target.value)}
               placeholder={buildDefaultExchangeLoginPreview(user?.username)}
+              disabled={String(mailboxDraft.auth_mode || '').trim() !== 'stored_credentials'}
             />
             <TextField
               fullWidth
@@ -816,6 +873,7 @@ function ProfileTab({ user, dbOptions }) {
               label="Пароль"
               value={mailboxDraft.mailbox_password}
               onChange={(event) => handleMailboxDraftChange('mailbox_password', event.target.value)}
+              disabled={String(mailboxDraft.auth_mode || '').trim() !== 'stored_credentials'}
               helperText={mailboxDialogMode === 'edit' ? 'Оставьте пустым, чтобы не менять текущий пароль.' : 'Пароль будет сразу проверен через Exchange.'}
             />
             <FormControlLabel
@@ -823,6 +881,7 @@ function ProfileTab({ user, dbOptions }) {
                 <Checkbox
                   checked={Boolean(mailboxDraft.is_primary)}
                   onChange={(event) => handleMailboxDraftChange('is_primary', event.target.checked)}
+                  disabled={String(mailboxDraft.auth_mode || '').trim() === 'primary_credentials'}
                 />
               )}
               label="Сделать основным"
@@ -846,7 +905,11 @@ function ProfileTab({ user, dbOptions }) {
             disabled={
               mailboxSaving
               || !String(mailboxDraft.mailbox_email || '').trim()
-              || (mailboxDialogMode === 'create' && !String(mailboxDraft.mailbox_password || '').trim())
+              || (
+                String(mailboxDraft.auth_mode || '').trim() === 'stored_credentials'
+                && mailboxDialogMode === 'create'
+                && !String(mailboxDraft.mailbox_password || '').trim()
+              )
             }
           >
             {mailboxSaving ? 'Сохранение...' : 'Сохранить'}
@@ -3650,7 +3713,12 @@ const AI_ITINVENT_DEFAULT_TOOLS = [
   'itinvent.directory.locations',
   'itinvent.directory.equipment_types',
   'itinvent.directory.statuses',
+  'itinvent.analytics.summary',
 ];
+
+const AI_ITINVENT_MULTI_DB_TOOL_ID = 'itinvent.equipment.search_multi_db';
+const AI_FILES_CREATE_TOOL_ID = 'ai.files.create';
+const AI_FILES_REPORT_TOOL_ID = 'ai.files.report';
 
 const AI_ITINVENT_TOOL_OPTIONS = [
   { id: 'itinvent.database.current', label: 'Текущая база' },
@@ -3665,17 +3733,52 @@ const AI_ITINVENT_TOOL_OPTIONS = [
   { id: 'itinvent.directory.locations', label: 'Справочник локаций' },
   { id: 'itinvent.directory.equipment_types', label: 'Справочник типов оборудования' },
   { id: 'itinvent.directory.statuses', label: 'Справочник статусов' },
-  { id: 'itinvent.equipment.search_multi_db', label: 'Мульти-БД поиск (admin)' },
+  { id: 'itinvent.analytics.summary', label: 'Аналитика инвентаря' },
+  { id: 'itinvent.entity.resolve', label: 'Разрешение сущностей' },
+  { id: 'itinvent.action.transfer_draft', label: 'Черновик передачи' },
+  { id: 'itinvent.action.consumable_consume_draft', label: 'Черновик списания расходника' },
+  { id: 'itinvent.action.consumable_qty_draft', label: 'Черновик остатка расходника' },
+  { id: AI_ITINVENT_MULTI_DB_TOOL_ID, label: 'Мульти-БД поиск (admin)' },
 ];
+
+const AI_FILE_TOOL_OPTIONS = [
+  { id: AI_FILES_CREATE_TOOL_ID, label: 'Создание файлов' },
+  { id: AI_FILES_REPORT_TOOL_ID, label: 'Красивые отчёты' },
+];
+
+const AI_OFFICE_TOOL_OPTIONS = [
+  { id: 'office.mail.search', label: 'Поиск писем' },
+  { id: 'office.mail.get_message', label: 'Открыть письмо' },
+  { id: 'office.mail.contacts.resolve', label: 'Поиск почтовых контактов' },
+  { id: 'office.tasks.search', label: 'Поиск задач' },
+  { id: 'office.tasks.get', label: 'Открыть карточку задачи' },
+  { id: 'office.workday.summary', label: 'Сводка рабочего дня' },
+];
+
+const AI_OFFICE_ACTION_TOOL_OPTIONS = [
+  { id: 'office.action.mail_send_draft', label: 'Черновик нового письма' },
+  { id: 'office.action.mail_reply_draft', label: 'Черновик ответа на письмо' },
+  { id: 'office.action.task_create_draft', label: 'Черновик новой задачи' },
+  { id: 'office.action.task_comment_draft', label: 'Черновик комментария к задаче' },
+  { id: 'office.action.task_status_draft', label: 'Черновик смены статуса задачи' },
+];
+
+const AI_ITINVENT_TOOL_IDS = new Set(AI_ITINVENT_TOOL_OPTIONS.map((item) => item.id));
+const AI_FILE_TOOL_IDS = new Set(AI_FILE_TOOL_OPTIONS.map((item) => item.id));
+const AI_OFFICE_TOOL_IDS = new Set([...AI_OFFICE_TOOL_OPTIONS, ...AI_OFFICE_ACTION_TOOL_OPTIONS].map((item) => item.id));
 
 const getAiBotEnabledTools = (value) => (
   Array.isArray(value?.enabled_tools) ? value.enabled_tools.map((item) => String(item).trim()).filter(Boolean) : []
 );
 
-const isAiBotLiveDataEnabled = (value) => getAiBotEnabledTools(value).length > 0;
+const getAiBotItinventTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_ITINVENT_TOOL_IDS.has(item));
+const getAiBotFileTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_FILE_TOOL_IDS.has(item));
+const getAiBotOfficeTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_OFFICE_TOOL_IDS.has(item));
+
+const isAiBotLiveDataEnabled = (value) => getAiBotItinventTools(value).length > 0;
 
 const shouldWarnAiBotLiveDataDisabled = (value) => (
-  Boolean(value?.is_enabled ?? true) && !isAiBotLiveDataEnabled(value)
+  Boolean(value?.is_enabled ?? true) && getAiBotEnabledTools(value).length === 0
 );
 
 const createAiBotDraft = (value = {}) => ({
@@ -3773,17 +3876,39 @@ export function AiBotsAdminSection({
   const renderBotFields = (draft, onChange) => {
     const enabledTools = getAiBotEnabledTools(draft);
     const liveDataEnabled = isAiBotLiveDataEnabled(draft);
+    const fileToolsEnabled = getAiBotFileTools(draft).length > 0;
+    const officeToolsEnabled = getAiBotOfficeTools(draft).length > 0;
     const liveDataWarning = shouldWarnAiBotLiveDataDisabled(draft);
     const allowedDatabases = Array.isArray(draft?.allowed_databases) ? draft.allowed_databases : [];
 
-    const toggleLiveData = (checked) => {
-      if (checked) {
-        onChange('enabled_tools', enabledTools.length > 0 ? enabledTools : AI_ITINVENT_DEFAULT_TOOLS);
+    const setDatabaseMode = (mode) => {
+      const nextMode = String(mode || 'single').trim() || 'single';
+      onChange('multi_db_mode', nextMode);
+      if (nextMode === 'admin_multi_db') {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, AI_ITINVENT_MULTI_DB_TOOL_ID])));
         return;
       }
-      onChange('enabled_tools', []);
+      onChange('enabled_tools', enabledTools.filter((item) => item !== AI_ITINVENT_MULTI_DB_TOOL_ID));
+      onChange('allowed_databases', []);
+    };
+
+    const toggleLiveData = (checked) => {
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...AI_ITINVENT_DEFAULT_TOOLS])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_ITINVENT_TOOL_IDS.has(item)));
       onChange('multi_db_mode', 'single');
       onChange('allowed_databases', []);
+    };
+
+    const toggleFileTools = (checked) => {
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...AI_FILE_TOOL_OPTIONS.map((item) => item.id)])));
+        onChange('allow_generated_artifacts', true);
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_FILE_TOOL_IDS.has(item)));
     };
 
     const toggleTool = (toolId, checked) => {
@@ -3791,13 +3916,46 @@ export function AiBotsAdminSection({
       if (!normalizedToolId) return;
       if (checked) {
         onChange('enabled_tools', Array.from(new Set([...enabledTools, normalizedToolId])));
+        if (normalizedToolId === AI_ITINVENT_MULTI_DB_TOOL_ID) {
+          onChange('multi_db_mode', 'admin_multi_db');
+        }
         return;
       }
       onChange('enabled_tools', enabledTools.filter((item) => item !== normalizedToolId));
-      if (normalizedToolId === 'itinvent.equipment.search_multi_db') {
+      if (normalizedToolId === AI_ITINVENT_MULTI_DB_TOOL_ID) {
         onChange('multi_db_mode', 'single');
         onChange('allowed_databases', []);
       }
+    };
+
+    const toggleFileTool = (toolId, checked) => {
+      const normalizedToolId = String(toolId || '').trim();
+      if (!normalizedToolId) return;
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, normalizedToolId])));
+        onChange('allow_generated_artifacts', true);
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => item !== normalizedToolId));
+    };
+
+    const toggleOfficeTools = (checked) => {
+      const officeIds = [...AI_OFFICE_TOOL_OPTIONS, ...AI_OFFICE_ACTION_TOOL_OPTIONS].map((item) => item.id);
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...officeIds])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_OFFICE_TOOL_IDS.has(item)));
+    };
+
+    const toggleOfficeTool = (toolId, checked) => {
+      const normalizedToolId = String(toolId || '').trim();
+      if (!normalizedToolId) return;
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, normalizedToolId])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => item !== normalizedToolId));
     };
 
     return (
@@ -3839,20 +3997,20 @@ export function AiBotsAdminSection({
             <Stack spacing={1.1}>
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
                 <Box sx={{ minWidth: 0, flex: 1 }}>
-                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Live data / ITinvent tools</Typography>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Данные ITinvent</Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Read-only access to ITinvent data. Current KB/files flow remains unchanged while tools are disabled.
+                    Инструменты чтения данных ITinvent и действия через карточки подтверждения.
                   </Typography>
                 </Box>
                 <FormControlLabel
                   control={<Switch checked={liveDataEnabled} onChange={(event) => toggleLiveData(event.target.checked)} />}
-                  label="ITinvent live data"
+                  label="Инструменты ITinvent"
                 />
               </Stack>
 
               {liveDataWarning ? (
                 <Alert severity="warning">
-                  This bot is enabled but has no live ITinvent tools saved. Chat will fall back to plain LLM answers until you enable ITinvent live data and save.
+                  Бот включён, но у него не сохранены инструменты ITinvent. В чате он будет отвечать как обычная LLM, пока инструменты ITinvent не будут включены и сохранены.
                 </Alert>
               ) : null}
 
@@ -3878,15 +4036,15 @@ export function AiBotsAdminSection({
                   <Grid container spacing={1.1}>
                     <Grid item xs={12} md={4}>
                       <FormControl fullWidth size="small">
-                        <InputLabel id={`ai-bot-mode-${draft.slug || 'new'}`}>DB mode</InputLabel>
+                        <InputLabel id={`ai-bot-mode-${draft.slug || 'new'}`}>Режим базы данных</InputLabel>
                         <Select
                           labelId={`ai-bot-mode-${draft.slug || 'new'}`}
-                          label="DB mode"
+                          label="Режим базы данных"
                           value={draft.multi_db_mode || 'single'}
-                          onChange={(event) => onChange('multi_db_mode', String(event.target.value || 'single'))}
+                          onChange={(event) => setDatabaseMode(event.target.value)}
                         >
-                          <MenuItem value="single">Single DB</MenuItem>
-                          <MenuItem value="admin_multi_db">Admin multi-DB</MenuItem>
+                          <MenuItem value="single">Одна база</MenuItem>
+                          <MenuItem value="admin_multi_db">Админ: несколько баз</MenuItem>
                         </Select>
                       </FormControl>
                     </Grid>
@@ -3914,9 +4072,114 @@ export function AiBotsAdminSection({
                             </MenuItem>
                           ))}
                         </Select>
+                        <Typography variant="caption" color="text.secondary" sx={{ mt: 0.5 }}>
+                          Пустой список означает, что админу доступны все настроенные базы.
+                        </Typography>
                       </FormControl>
                     </Grid>
                   </Grid>
+                </Stack>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Создание файлов</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Создание файлов и отчётов как обычных вложений в чат. Работает только при включённом параметре «Генерировать файлы».
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={fileToolsEnabled} onChange={(event) => toggleFileTools(event.target.checked)} />}
+                  label="Инструменты файлов"
+                />
+              </Stack>
+
+              <Collapse in={fileToolsEnabled} unmountOnExit>
+                <Grid container spacing={0.5}>
+                  {AI_FILE_TOOL_OPTIONS.map((tool) => (
+                    <Grid item xs={12} md={6} key={tool.id}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={enabledTools.includes(tool.id)}
+                            onChange={(event) => toggleFileTool(tool.id, event.target.checked)}
+                          />
+                        )}
+                        label={tool.label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Офисные инструменты</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Инструменты для почты и задач. Действия на изменение готовятся как карточки подтверждения.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={officeToolsEnabled} onChange={(event) => toggleOfficeTools(event.target.checked)} />}
+                  label="Офисные инструменты"
+                />
+              </Stack>
+
+              <Collapse in={officeToolsEnabled} unmountOnExit>
+                <Stack spacing={1.1}>
+                  <Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800 }}>
+                      Только чтение
+                    </Typography>
+                    <Grid container spacing={0.5}>
+                      {AI_OFFICE_TOOL_OPTIONS.map((tool) => (
+                        <Grid item xs={12} md={6} key={tool.id}>
+                          <FormControlLabel
+                            control={(
+                              <Checkbox
+                                size="small"
+                                checked={enabledTools.includes(tool.id)}
+                                onChange={(event) => toggleOfficeTool(tool.id, event.target.checked)}
+                              />
+                            )}
+                            label={tool.label}
+                          />
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </Box>
+                  <Box>
+                    <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 800 }}>
+                      Действия с подтверждением
+                    </Typography>
+                    <Grid container spacing={0.5}>
+                      {AI_OFFICE_ACTION_TOOL_OPTIONS.map((tool) => (
+                        <Grid item xs={12} md={6} key={tool.id}>
+                          <FormControlLabel
+                            control={(
+                              <Checkbox
+                                size="small"
+                                checked={enabledTools.includes(tool.id)}
+                                onChange={(event) => toggleOfficeTool(tool.id, event.target.checked)}
+                              />
+                            )}
+                            label={tool.label}
+                          />
+                        </Grid>
+                      ))}
+                    </Grid>
+                  </Box>
                 </Stack>
               </Collapse>
             </Stack>
@@ -3932,7 +4195,7 @@ export function AiBotsAdminSection({
         <Box>
           <Typography variant="h6" sx={{ fontWeight: 800 }}>AI Bots</Typography>
           <Typography variant="body2" color="text.secondary">
-            OpenRouter: {openrouterConfigured ? 'configured' : 'not configured'}
+            OpenRouter: {openrouterConfigured ? 'настроен' : 'не настроен'}
           </Typography>
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.35 }}>
             PM2: `itinvent-ai-chat-worker` • health-check: `scripts/pm2/health-check.ps1`
@@ -3950,19 +4213,19 @@ export function AiBotsAdminSection({
       </Alert>
 
       <Alert severity="info" sx={{ mb: 2 }}>
-        Live ITinvent access is configured only here in Settings / AI Bots. Users with `chat.ai.use` can open AI chats, but only admin or `settings.ai.manage` can enable live tools.
+        Доступ к живым данным ITinvent настраивается только здесь, в разделе «Настройки / AI-боты». Пользователи с `chat.ai.use` могут открывать AI-чаты, но включать инструменты может только админ или пользователь с `settings.ai.manage`.
       </Alert>
 
       {loading && (!Array.isArray(bots) || bots.length === 0) ? (
         <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 2 }}>
           <CircularProgress size={18} />
-          <Typography variant="body2" color="text.secondary">Loading AI bots…</Typography>
+          <Typography variant="body2" color="text.secondary">Загрузка AI-ботов…</Typography>
         </Stack>
       ) : null}
 
       {!loading && Array.isArray(bots) && bots.length === 0 ? (
         <Alert severity="info" sx={{ mb: 2 }}>
-          AI bots not created yet. Create the first bot here, then open it from the chat sidebar.
+          AI-боты ещё не созданы. Создайте первого бота здесь, затем откройте его в боковой панели чата.
         </Alert>
       ) : null}
 
@@ -4009,15 +4272,15 @@ export function AiBotsAdminSection({
                 {renderBotFields(draft, (key, value) => updateDraft(bot.id, key, value))}
                 {persistedLiveDataWarning ? (
                   <Alert severity="warning" sx={{ mt: 1.5 }}>
-                    Persisted config is enabled but has no saved live ITinvent tools. Chat users will get plain LLM answers until this bot is saved with live data enabled.
+                    Бот включён, но у него не сохранены инструменты. В чате он будет отвечать как обычная LLM, пока инструменты не будут включены и сохранены.
                   </Alert>
                 ) : null}
                 <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1} sx={{ mt: 1.5 }}>
                   <Typography variant="caption" color="text.secondary">
-                    Bot user ID: {bot.bot_user_id || 'pending'} • Updated: {bot.updated_at || 'n/a'}
+                    Пользователь бота: {bot.bot_user_id || 'ожидает создания'} • Обновлено: {bot.updated_at || 'н/д'}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    Saved tools: {persistedEnabledTools.length} - DB mode: {bot?.tool_settings?.multi_db_mode || 'single'}
+                    Сохранено инструментов: {persistedEnabledTools.length} - режим БД: {bot?.tool_settings?.multi_db_mode || 'single'}
                   </Typography>
                   <Button
                     variant="contained"

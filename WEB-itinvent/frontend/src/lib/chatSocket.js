@@ -15,7 +15,15 @@ export const CHAT_SOCKET_AI_RUN_UPDATED_EVENT = 'chat-ws-ai-run-updated';
 const HEARTBEAT_MS = 25_000;
 const REQUEST_TIMEOUT_MS = 15_000;
 const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
+const RECONNECT_JITTER_RATIO = 0.25;
+const STABLE_CONNECTION_MS = 5_000;
+const MAX_QUEUED_MESSAGES = 100;
 const NON_RECONNECTABLE_CLOSE_CODES = new Set([4401, 4403]);
+const VOLATILE_OFFLINE_COMMANDS = new Set(['chat.typing', 'chat.ping']);
+const CONVERSATION_SUBSCRIPTION_COMMANDS = new Set([
+  'chat.subscribe_conversation',
+  'chat.unsubscribe_conversation',
+]);
 
 const canUseBrowserSocket = () => typeof window !== 'undefined' && typeof window.WebSocket !== 'undefined';
 
@@ -59,8 +67,10 @@ class ChatSocketClient {
     this.reconnectAttempt = 0;
     this.manualClose = false;
     this.messageQueue = [];
+    this.pendingConversationSubscriptions = new Map();
     this.missedPongs = 0;
     this.maxMissedPongs = 3;
+    this.stableConnectionTimer = null;
   }
 
   retain() {
@@ -200,7 +210,6 @@ class ChatSocketClient {
     this.setStatus(this.reconnectAttempt > 0 ? 'reconnecting' : 'connecting');
     socket.onopen = () => {
       if (this.socket !== socket) return;
-      this.reconnectAttempt = 0;
       this.missedPongs = 0;
       this.setStatus('connected');
       this.startHeartbeat();
@@ -249,6 +258,7 @@ class ChatSocketClient {
   close(manual = false) {
     this.manualClose = Boolean(manual);
     this.messageQueue = [];
+    this.pendingConversationSubscriptions.clear();
     if (this.reconnectTimer) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -275,7 +285,7 @@ class ChatSocketClient {
     if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) return false;
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
-      this.messageQueue.push(payload);
+      this.enqueueOfflineMessage(payload);
       if (!socket || socket.readyState === WebSocket.CLOSED) {
         this.connect();
       }
@@ -342,8 +352,9 @@ class ChatSocketClient {
       this.resolvePendingRequest(requestId, payload);
       return;
     }
-    if (eventType === 'chat.error') {
-      this.rejectPendingRequest(requestId, new Error(String(payload?.detail || 'Chat websocket error')));
+    if (eventType === 'chat.error' || eventType === 'error') {
+      const message = String(payload?.detail || payload?.code || 'Chat websocket error');
+      this.rejectPendingRequest(requestId, new Error(message));
       return;
     }
     if (eventType === 'chat.snapshot') {
@@ -385,7 +396,9 @@ class ChatSocketClient {
 
   scheduleReconnect() {
     if (this.reconnectTimer || this.retainCount <= 0) return;
-    const delay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
+    const baseDelay = RECONNECT_DELAYS_MS[Math.min(this.reconnectAttempt, RECONNECT_DELAYS_MS.length - 1)];
+    const jitter = baseDelay * RECONNECT_JITTER_RATIO * ((Math.random() * 2) - 1);
+    const delay = Math.max(0, Math.min(RECONNECT_DELAYS_MS[RECONNECT_DELAYS_MS.length - 1], baseDelay + jitter));
     this.reconnectAttempt += 1;
     this.reconnectTimer = window.setTimeout(() => {
       this.reconnectTimer = null;
@@ -395,6 +408,12 @@ class ChatSocketClient {
 
   startHeartbeat() {
     this.stopHeartbeat();
+    this.stableConnectionTimer = window.setTimeout(() => {
+      if (this.socket && this.socket.readyState === WebSocket.OPEN) {
+        this.reconnectAttempt = 0;
+      }
+      this.stableConnectionTimer = null;
+    }, STABLE_CONNECTION_MS);
     this.heartbeatTimer = window.setInterval(() => {
       if (this.missedPongs >= this.maxMissedPongs) {
         // Connection is dead, force reconnect
@@ -426,6 +445,10 @@ class ChatSocketClient {
     if (this.heartbeatTimeout) {
       window.clearTimeout(this.heartbeatTimeout);
       this.heartbeatTimeout = null;
+    }
+    if (this.stableConnectionTimer) {
+      window.clearTimeout(this.stableConnectionTimer);
+      this.stableConnectionTimer = null;
     }
   }
 
@@ -461,15 +484,39 @@ class ChatSocketClient {
     });
   }
 
+  enqueueOfflineMessage(payload) {
+    const messageType = String(payload?.type || '').trim();
+    if (!messageType || VOLATILE_OFFLINE_COMMANDS.has(messageType)) {
+      return;
+    }
+    if (CONVERSATION_SUBSCRIPTION_COMMANDS.has(messageType)) {
+      const conversationId = normalizeConversationId(payload?.conversation_id);
+      if (!conversationId) return;
+      this.pendingConversationSubscriptions.set(conversationId, payload);
+      return;
+    }
+    if (this.messageQueue.length >= MAX_QUEUED_MESSAGES) {
+      this.messageQueue.shift();
+      if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+        console.warn('chatSocket offline queue limit reached; dropped oldest queued message');
+      }
+    }
+    this.messageQueue.push(payload);
+  }
+
   flushQueue() {
-    if (!this.socket || this.socket.readyState !== WebSocket.OPEN || this.messageQueue.length === 0) return;
+    if (!this.socket || this.socket.readyState !== WebSocket.OPEN) return;
+    // Conversation subscriptions are replayed from activeConversationIds on connect.
+    // Keep only the last offline intent so stale subscribe/unsubscribe commands do not flush.
+    this.pendingConversationSubscriptions.clear();
     const queued = [...this.messageQueue];
     this.messageQueue = [];
+    if (queued.length === 0) return;
     queued.forEach((payload) => {
       try {
         this.socket.send(JSON.stringify(payload));
       } catch {
-        this.messageQueue.push(payload);
+        this.enqueueOfflineMessage(payload);
       }
     });
   }

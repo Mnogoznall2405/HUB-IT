@@ -36,6 +36,8 @@ def main(argv=None) -> int:
     try:
         if args.msi_install:
             return agent_installer.run_msi_install(args, logging)
+        if args.msi_full_uninstall_cleanup:
+            return agent_installer.run_msi_full_uninstall_cleanup(args, logging)
         return agent_installer.run_msi_uninstall_cleanup(args, logging)
     except Exception as exc:
         logging.exception("MSI helper failed: %s", exc)

@@ -7,6 +7,7 @@ import { equipmentAPI } from '../api/client';
 vi.mock('../api/client', () => ({
   equipmentAPI: {
     getAgentComputers: vi.fn(),
+    searchAgentComputers: vi.fn(),
     getAgentComputerChanges: vi.fn(),
   },
 }));
@@ -100,6 +101,33 @@ const sampleComputer = {
     ],
     total_outlook_size_bytes: 60 * (1024 ** 3),
   },
+  user_profile_sizes: {
+    collected_at: 1710002600,
+    profiles_count: 1,
+    total_size_bytes: 12 * (1024 ** 3),
+    profiles: [
+      {
+        user_name: 'petrov_aa',
+        profile_path: 'C:\\Users\\petrov_aa',
+        total_size_bytes: 12 * (1024 ** 3),
+        files_count: 1200,
+        dirs_count: 80,
+        errors_count: 0,
+        partial: true,
+        partial_reasons: ['entry_limit'],
+        top_level_folders: [
+          { name: 'Documents', path: 'C:\\Users\\petrov_aa\\Documents', size_bytes: 8 * (1024 ** 3), files_count: 600, dirs_count: 20, partial: true, partial_reasons: ['entry_limit'] },
+          { name: 'Desktop', path: 'C:\\Users\\petrov_aa\\Desktop', size_bytes: 2 * (1024 ** 3), files_count: 200, dirs_count: 10 },
+          { name: 'AppData', path: 'C:\\Users\\petrov_aa\\AppData', size_bytes: 1 * (1024 ** 3), files_count: 300, dirs_count: 30 },
+          { name: 'Downloads', path: 'C:\\Users\\petrov_aa\\Downloads', size_bytes: 512 * (1024 ** 2), files_count: 60, dirs_count: 5 },
+          { name: 'Pictures', path: 'C:\\Users\\petrov_aa\\Pictures', size_bytes: 256 * (1024 ** 2), files_count: 30, dirs_count: 4 },
+          { name: 'Music', path: 'C:\\Users\\petrov_aa\\Music', size_bytes: 128 * (1024 ** 2), files_count: 10, dirs_count: 2 },
+        ],
+      },
+    ],
+    partial: true,
+    partial_reasons: ['entry_limit'],
+  },
   has_hardware_changes: true,
   changes_count_30d: 1,
   last_change_at: 1710002500,
@@ -116,8 +144,23 @@ const sampleComputer = {
 describe('Computers page', () => {
   beforeEach(() => {
     equipmentAPI.getAgentComputers.mockReset();
+    equipmentAPI.searchAgentComputers.mockReset();
     equipmentAPI.getAgentComputerChanges.mockReset();
     equipmentAPI.getAgentComputers.mockResolvedValue([sampleComputer]);
+    equipmentAPI.searchAgentComputers.mockResolvedValue({
+      items: [sampleComputer],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+      next_offset: null,
+      summary: {
+        total: 1,
+        statuses: { online: 1, stale: 0, offline: 0, unknown: 0 },
+        branches: { [sampleComputer.branch_name]: 1 },
+        outlook: { critical: 1 },
+      },
+    });
     equipmentAPI.getAgentComputerChanges.mockResolvedValue({
       totals: { changed_24h: 1, changed_7d: 1, changed_30d: 1 },
       daily: [],
@@ -133,7 +176,7 @@ describe('Computers page', () => {
     render(<Computers />);
 
     await waitFor(() => {
-      expect(equipmentAPI.getAgentComputers).toHaveBeenCalledTimes(1);
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(1);
     });
 
     fireEvent.click(await screen.findByText(sampleComputer.location_name));
@@ -144,6 +187,20 @@ describe('Computers page', () => {
     expect(await screen.findByText(new RegExp(`Филиал: ${sampleComputer.branch_name}`))).toBeInTheDocument();
     expect(screen.getByText(/Загрузка CPU:/)).toBeInTheDocument();
     expect(screen.getByText(sampleComputer.outlook_active_path)).toBeInTheDocument();
+    expect(screen.getByText('petrov_aa')).toBeInTheDocument();
+    expect(screen.getByText('Расчет не полный')).toBeInTheDocument();
+    expect(screen.getByText('Частично')).toBeInTheDocument();
+    expect(screen.queryByText('partial')).not.toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes('Документы') && content.includes('8.0'))).toBeInTheDocument();
+    expect(screen.getByText((content) => content.includes('+ еще 2'))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: /Показать все папки \(6\)/i }));
+    expect(screen.getByText('AppData')).toBeInTheDocument();
+    expect(screen.getByText('Изображения')).toBeInTheDocument();
+    expect(screen.getByText('Music')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('checkbox', { name: /Скрыть системные/i }));
+    expect(screen.queryByText('AppData')).not.toBeInTheDocument();
+    expect(screen.getByText('Скрыто системных: 1')).toBeInTheDocument();
+    expect(screen.getByText('Music')).toBeInTheDocument();
     expect(screen.getByText('Samsung SSD')).toBeInTheDocument();
   }, 15000);
 
@@ -151,15 +208,23 @@ describe('Computers page', () => {
     render(<Computers />);
 
     await waitFor(() => {
-      expect(equipmentAPI.getAgentComputers).toHaveBeenCalledWith(
-        expect.objectContaining({ scope: 'selected', sortBy: 'hostname', sortDir: 'asc' })
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
+        expect.objectContaining({
+          scope: 'selected',
+          sortBy: 'hostname',
+          sortDir: 'asc',
+          limit: 50,
+          offset: 0,
+          includeSummary: true,
+          searchFields: expect.arrayContaining(['identity', 'profiles', 'outlook']),
+        })
       );
     });
 
     fireEvent.change(screen.getByLabelText('Поиск'), { target: { value: 'petrov' } });
 
     await waitFor(() => {
-      expect(equipmentAPI.getAgentComputers).toHaveBeenLastCalledWith(
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
         expect.objectContaining({ q: 'petrov' })
       );
     }, { timeout: 2000 });
@@ -167,7 +232,7 @@ describe('Computers page', () => {
     fireEvent.click(screen.getByLabelText('Изменения'));
 
     await waitFor(() => {
-      expect(equipmentAPI.getAgentComputers).toHaveBeenLastCalledWith(
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
         expect.objectContaining({ changedOnly: true })
       );
     }, { timeout: 2000 });
@@ -175,9 +240,123 @@ describe('Computers page', () => {
     fireEvent.click(screen.getByLabelText('Текущая БД'));
 
     await waitFor(() => {
-      expect(equipmentAPI.getAgentComputers).toHaveBeenLastCalledWith(
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
         expect.objectContaining({ scope: 'all' })
       );
     }, { timeout: 2000 });
+  }, 15000);
+
+  it('automatically loads remaining pages after the first page is shown', async () => {
+    const nextComputer = {
+      ...sampleComputer,
+      hostname: 'PC-02',
+      mac_address: 'AA-BB-CC-DD-EE-02',
+      location_name: 'Office 2',
+    };
+    equipmentAPI.searchAgentComputers
+      .mockResolvedValueOnce({
+        items: [sampleComputer],
+        total: 2,
+        limit: 1,
+        offset: 0,
+        has_more: true,
+        next_offset: 1,
+        summary: {
+          total: 2,
+          statuses: { online: 2, stale: 0, offline: 0, unknown: 0 },
+          branches: { [sampleComputer.branch_name]: 2 },
+          outlook: { critical: 2 },
+        },
+      })
+      .mockResolvedValueOnce({
+        items: [nextComputer],
+        total: 2,
+        limit: 1,
+        offset: 1,
+        has_more: false,
+        next_offset: null,
+      });
+
+    render(<Computers />);
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 0, includeSummary: true })
+      );
+    });
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 1, includeSummary: false })
+      );
+    }, { timeout: 3000 });
+
+    expect(equipmentAPI.getAgentComputerChanges).toHaveBeenCalledTimes(1);
+  }, 15000);
+
+  it('refreshes the loaded range and does not query when a location is expanded', async () => {
+    const nextComputer = {
+      ...sampleComputer,
+      hostname: 'PC-02',
+      mac_address: 'AA-BB-CC-DD-EE-02',
+      location_name: sampleComputer.location_name,
+    };
+    equipmentAPI.searchAgentComputers
+      .mockResolvedValueOnce({
+        items: [sampleComputer],
+        total: 2,
+        limit: 1,
+        offset: 0,
+        has_more: true,
+        next_offset: 1,
+        summary: {
+          total: 2,
+          statuses: { online: 2, stale: 0, offline: 0, unknown: 0 },
+          branches: { [sampleComputer.branch_name]: 2 },
+          outlook: { critical: 2 },
+        },
+      })
+      .mockResolvedValueOnce({
+        items: [nextComputer],
+        total: 2,
+        limit: 1,
+        offset: 1,
+        has_more: false,
+        next_offset: null,
+      })
+      .mockResolvedValueOnce({
+        items: [sampleComputer, nextComputer],
+        total: 2,
+        limit: 2,
+        offset: 0,
+        has_more: false,
+        next_offset: null,
+        summary: {
+          total: 2,
+          statuses: { online: 2, stale: 0, offline: 0, unknown: 0 },
+          branches: { [sampleComputer.branch_name]: 2 },
+          outlook: { critical: 2 },
+        },
+      });
+
+    render(<Computers />);
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
+        expect.objectContaining({ offset: 1, includeSummary: false })
+      );
+    }, { timeout: 3000 });
+
+    const callsAfterAutoLoad = equipmentAPI.searchAgentComputers.mock.calls.length;
+    fireEvent.click(await screen.findByText(sampleComputer.location_name));
+    expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(callsAfterAutoLoad);
+
+    fireEvent.click(screen.getByRole('button', { name: /РћР±РЅРѕРІРёС‚СЊ РґР°РЅРЅС‹Рµ|Обновить данные/i }));
+
+    await waitFor(() => {
+      expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
+        expect.objectContaining({ offset: 0, limit: 2, includeSummary: true })
+      );
+    });
   }, 15000);
 });

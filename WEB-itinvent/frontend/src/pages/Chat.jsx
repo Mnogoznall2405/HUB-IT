@@ -1,39 +1,61 @@
-import { Suspense, lazy, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Box, Paper, Stack } from '@mui/material';
+import { Suspense, lazy, startTransition, useCallback, useDeferredValue, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  Alert,
+  Box,
+  Button,
+  Checkbox,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
+  FormControlLabel,
+  Paper,
+  Stack,
+  TextField,
+  Typography,
+} from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 
-import { chatAPI } from '../api/client';
+import { chatAPI, mailAPI } from '../api/client';
 import ChatSidebar from '../components/chat/ChatSidebar';
 import ChatThread from '../components/chat/ChatThread';
 import {
-  buildChatUploadSignature,
-  prepareChatUploadFiles,
   summarizePreparedChatUploadItems,
 } from '../components/chat/chatUploadPrep';
 import {
   CHAT_FILE_ACCEPT,
-  CHAT_MAX_FILE_BYTES,
-  CHAT_MAX_FILE_COUNT,
   buildAttachmentUrl,
   buildChatDraftKey,
   buildChatPinnedMessageKey,
   countUnreadIncomingAfterMarker,
-  detectChatBodyFormat,
   getConversationHeaderSubtitle,
   getMessagePreview,
   getUnreadAnchorId,
-  isArchiveFile,
   isImageAttachment,
   isMediaAttachment,
   isVideoAttachment,
   normalizeChatAttachmentUrl,
   resolveLatestMessageIdInOrder,
-  sortByName,
 } from '../components/chat/chatHelpers';
 import useReadReceipts from '../components/chat/useReadReceipts';
+import useChatActiveThreadPolling from '../components/chat/useChatActiveThreadPolling';
+import useChatAiStatusPolling from '../components/chat/useChatAiStatusPolling';
+import useChatComposerSending from '../components/chat/useChatComposerSending';
+import useChatFileSending from '../components/chat/useChatFileSending';
+import useChatForwardMessages from '../components/chat/useChatForwardMessages';
+import useChatGroupDialog from '../components/chat/useChatGroupDialog';
+import useChatMessageMenuActions from '../components/chat/useChatMessageMenuActions';
+import useChatMessageSearch from '../components/chat/useChatMessageSearch';
+import useChatSelectedMessageActions from '../components/chat/useChatSelectedMessageActions';
+import useChatSidebarSearch from '../components/chat/useChatSidebarSearch';
+import useChatSocketEvents from '../components/chat/useChatSocketEvents';
+import useChatSocketLifecycle from '../components/chat/useChatSocketLifecycle';
+import useChatTaskShareDialog from '../components/chat/useChatTaskShareDialog';
+import useChatTaskSharing from '../components/chat/useChatTaskSharing';
+import useChatThreadViewport from '../components/chat/useChatThreadViewport';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { useMainLayoutShell } from '../components/layout/MainLayoutShellContext';
@@ -41,19 +63,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../lib/chatFeature';
 import { getOrFetchSWR, invalidateSWRCacheByPrefix, peekSWRCache, setSWRCache } from '../lib/swrCache';
-import {
-  CHAT_SOCKET_ACTIVITY_EVENT,
-  chatSocket,
-  CHAT_SOCKET_AI_RUN_UPDATED_EVENT,
-  CHAT_SOCKET_CONVERSATION_UPDATED_EVENT,
-  CHAT_SOCKET_MESSAGE_CREATED_EVENT,
-  CHAT_SOCKET_MESSAGE_READ_EVENT,
-  CHAT_SOCKET_PRESENCE_UPDATED_EVENT,
-  CHAT_SOCKET_SNAPSHOT_EVENT,
-  CHAT_SOCKET_STATUS_EVENT,
-  CHAT_SOCKET_TYPING_EVENT,
-  CHAT_SOCKET_UNREAD_SUMMARY_EVENT,
-} from '../lib/chatSocket';
+import { chatSocket } from '../lib/chatSocket';
 import { buildChatUiTokens } from '../components/chat/chatUiTokens';
 
 const loadChatContextPanelModule = () => import('../components/chat/ChatContextPanel');
@@ -76,12 +86,25 @@ const INITIAL_THREAD_POSITION_SETTLE_MS = 1_200;
 const INITIAL_THREAD_POSITION_MAX_MS = 6_000;
 const INITIAL_THREAD_AUTOSCROLL_GUARD_MS = 500;
 const INITIAL_THREAD_SCROLL_TRACE_WINDOW_MS = 200;
+const OUTGOING_BOTTOM_SETTLE_FRAMES = 2;
+const ACTIVE_THREAD_REVALIDATE_DEDUP_MS = 2_500;
 const CHAT_SWR_STALE_TIME_MS = 30_000;
 const CHAT_THREAD_BOOTSTRAP_LIMIT = 40;
+export const getChatBottomInstantSettleFrames = ({ userInitiated = false } = {}) => (
+  userInitiated ? OUTGOING_BOTTOM_SETTLE_FRAMES : 1
+);
 export const buildChatConversationsCacheKeyParts = (userId) => ['chat', 'conversations', String(userId || 'guest')];
 export const buildChatThreadCacheKeyParts = (userId, conversationId) => ['chat', 'thread', String(userId || 'guest'), String(conversationId || '').trim(), 'latest'];
 export const buildChatLastConversationSessionKey = (userId) => `chat:last-conversation:${String(userId || 'guest')}`;
 export const buildChatLastMobileViewSessionKey = (userId) => `chat:last-mobile-view:${String(userId || 'guest')}`;
+export const shouldDeferChatUrlSyncForRequestedConversation = ({
+  applyingRequestedConversationId,
+  activeConversationId,
+}) => {
+  const applyingId = String(applyingRequestedConversationId || '').trim();
+  if (!applyingId) return false;
+  return String(activeConversationId || '').trim() !== applyingId;
+};
 const CHAT_MOBILE_HISTORY_FLAG = '__hubChatMobileShell';
 const CHAT_MOBILE_HISTORY_VIEW_KEY = '__hubChatMobileShellView';
 const CHAT_MOBILE_HISTORY_DRAWER_KEY = '__hubChatMobileShellDrawer';
@@ -134,18 +157,11 @@ export const buildAiLiveDataNotice = ({
   aiStatus,
   aiBots,
 }) => {
-  if (String(activeConversationKind || '').trim() !== 'ai') return null;
-  const activeBot = resolveActiveAiBotRecord({
-    aiBots,
-    activeConversationId,
-    aiStatus,
-  });
-  if (!activeBot || Boolean(activeBot?.live_data_enabled)) return null;
-  const botTitle = String(activeBot?.title || aiStatus?.bot_title || 'This AI bot').trim() || 'This AI bot';
-  return {
-    severity: 'warning',
-    text: `${botTitle} is currently answering without live ITinvent data. Enable "ITinvent live data" in Settings -> AI Bots (admin / settings.ai.manage).`,
-  };
+  void activeConversationKind;
+  void activeConversationId;
+  void aiStatus;
+  void aiBots;
+  return null;
 };
 const AI_STATUS_FALLBACK_TEXTS = {
   queued: 'Запрос принят. Ставлю задачу в очередь.',
@@ -201,6 +217,186 @@ export const shouldPollActiveAiThread = ({
   if (!chatWsEnabled) return false;
   return String(socketStatus || '').trim() !== 'connected';
 };
+
+const splitMailRecipients = (value) => (
+  String(value || '')
+    .split(/[;,]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+);
+
+const joinMailRecipients = (value) => (
+  Array.isArray(value) ? value.filter(Boolean).join('; ') : ''
+);
+
+const normalizeMailAttachmentRefs = (value) => (
+  (Array.isArray(value) ? value : [])
+    .map((item) => ({
+      message_id: String(item?.message_id || '').trim(),
+      attachment_id: String(item?.attachment_id || item?.id || '').trim(),
+      file_name: String(item?.file_name || item?.name || '').trim(),
+      size: Number(item?.size || item?.file_size || 0) || 0,
+    }))
+    .filter((item) => item.message_id && item.attachment_id)
+);
+
+function AiMailActionEditDialog({
+  open,
+  actionCard,
+  availableAttachments = [],
+  onClose,
+  onSubmit,
+}) {
+  const preview = actionCard?.preview && typeof actionCard.preview === 'object' ? actionCard.preview : {};
+  const mail = preview.mail && typeof preview.mail === 'object' ? preview.mail : {};
+  const [draft, setDraft] = useState(() => ({
+    mailbox_id: String(mail.mailbox_id || ''),
+    to: joinMailRecipients(mail.to),
+    cc: joinMailRecipients(mail.cc),
+    bcc: joinMailRecipients(mail.bcc),
+    subject: String(mail.subject || ''),
+    body: String(mail.body || mail.body_preview || ''),
+    attachment_refs: normalizeMailAttachmentRefs(mail.attachment_refs),
+  }));
+  const [signatureHtml, setSignatureHtml] = useState('');
+  const [sending, setSending] = useState(false);
+  const [errorText, setErrorText] = useState('');
+
+  useEffect(() => {
+    if (!open) return;
+    setDraft({
+      mailbox_id: String(mail.mailbox_id || ''),
+      to: joinMailRecipients(mail.to),
+      cc: joinMailRecipients(mail.cc),
+      bcc: joinMailRecipients(mail.bcc),
+      subject: String(mail.subject || ''),
+      body: String(mail.body || mail.body_preview || ''),
+      attachment_refs: normalizeMailAttachmentRefs(mail.attachment_refs),
+    });
+    setErrorText('');
+  }, [open, mail.body, mail.body_preview, mail.mailbox_id, mail.subject]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    let cancelled = false;
+    mailAPI.getMyConfig({ mailbox_id: draft.mailbox_id || undefined })
+      .then((config) => {
+        if (!cancelled) setSignatureHtml(String(config?.mail_signature_html || ''));
+      })
+      .catch(() => {
+        if (!cancelled) setSignatureHtml('');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open, draft.mailbox_id]);
+
+  const selectedAttachmentKeys = useMemo(() => (
+    new Set(normalizeMailAttachmentRefs(draft.attachment_refs).map((item) => `${item.message_id}:${item.attachment_id}`))
+  ), [draft.attachment_refs]);
+
+  const toggleAttachment = (attachment) => {
+    const ref = {
+      message_id: String(attachment?.message_id || '').trim(),
+      attachment_id: String(attachment?.attachment_id || attachment?.id || '').trim(),
+      file_name: String(attachment?.file_name || '').trim(),
+      size: Number(attachment?.file_size || attachment?.size || 0) || 0,
+    };
+    if (!ref.message_id || !ref.attachment_id) return;
+    const key = `${ref.message_id}:${ref.attachment_id}`;
+    setDraft((current) => {
+      const currentRefs = normalizeMailAttachmentRefs(current.attachment_refs);
+      const exists = currentRefs.some((item) => `${item.message_id}:${item.attachment_id}` === key);
+      return {
+        ...current,
+        attachment_refs: exists
+          ? currentRefs.filter((item) => `${item.message_id}:${item.attachment_id}` !== key)
+          : [...currentRefs, ref].slice(0, 10),
+      };
+    });
+  };
+
+  const handleSubmit = async () => {
+    const payload = {
+      mailbox_id: draft.mailbox_id,
+      to: splitMailRecipients(draft.to),
+      cc: splitMailRecipients(draft.cc),
+      bcc: splitMailRecipients(draft.bcc),
+      subject: String(draft.subject || ''),
+      body: String(draft.body || ''),
+      is_html: true,
+      attachment_refs: normalizeMailAttachmentRefs(draft.attachment_refs),
+    };
+    if (mail.reply_to_message_id) payload.reply_to_message_id = String(mail.reply_to_message_id || '');
+    if (payload.to.length === 0) {
+      setErrorText('Укажите хотя бы одного получателя.');
+      return;
+    }
+    if (!payload.body.trim()) {
+      setErrorText('Текст письма не должен быть пустым.');
+      return;
+    }
+    setSending(true);
+    setErrorText('');
+    try {
+      await onSubmit?.(payload);
+    } catch (error) {
+      setErrorText(error?.response?.data?.detail || error?.message || 'Не удалось отправить письмо.');
+      setSending(false);
+      return;
+    }
+    setSending(false);
+  };
+
+  return (
+    <Dialog open={Boolean(open)} onClose={sending ? undefined : onClose} maxWidth="md" fullWidth>
+      <DialogTitle>Редактировать письмо</DialogTitle>
+      <DialogContent dividers>
+        <Stack spacing={1.4} sx={{ pt: 0.5 }}>
+          {errorText ? <Alert severity="error">{errorText}</Alert> : null}
+          <TextField size="small" label="Mailbox" value={draft.mailbox_id} onChange={(event) => setDraft((current) => ({ ...current, mailbox_id: event.target.value }))} fullWidth />
+          <TextField size="small" label="Кому" value={draft.to} onChange={(event) => setDraft((current) => ({ ...current, to: event.target.value }))} fullWidth />
+          <TextField size="small" label="Копия" value={draft.cc} onChange={(event) => setDraft((current) => ({ ...current, cc: event.target.value }))} fullWidth />
+          <TextField size="small" label="Скрытая копия" value={draft.bcc} onChange={(event) => setDraft((current) => ({ ...current, bcc: event.target.value }))} fullWidth />
+          <TextField size="small" label="Тема" value={draft.subject} onChange={(event) => setDraft((current) => ({ ...current, subject: event.target.value }))} fullWidth />
+          <TextField label="Текст" value={draft.body} onChange={(event) => setDraft((current) => ({ ...current, body: event.target.value }))} fullWidth multiline minRows={7} />
+          <Box>
+            <Typography sx={{ fontSize: 13, fontWeight: 800, mb: 0.5 }}>Вложения из чата</Typography>
+            {availableAttachments.length > 0 ? (
+              <Stack spacing={0.2}>
+                {availableAttachments.slice(0, 30).map((attachment) => {
+                  const key = `${attachment.message_id}:${attachment.attachment_id}`;
+                  return (
+                    <FormControlLabel
+                      key={key}
+                      control={<Checkbox size="small" checked={selectedAttachmentKeys.has(key)} onChange={() => toggleAttachment(attachment)} />}
+                      label={`${attachment.file_name || 'Файл'}${attachment.file_size ? ` · ${attachment.file_size} байт` : ''}`}
+                    />
+                  );
+                })}
+              </Stack>
+            ) : (
+              <Typography sx={{ fontSize: 13, color: 'text.secondary' }}>В этой беседе нет файлов для вложения.</Typography>
+            )}
+          </Box>
+          <Alert severity="info">Подпись будет добавлена автоматически при отправке.</Alert>
+          {signatureHtml ? (
+            <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1.2 }}>
+              <Typography sx={{ fontSize: 12, fontWeight: 800, mb: 0.5, color: 'text.secondary' }}>Подпись</Typography>
+              <Box sx={{ fontSize: 13, '& img': { maxWidth: '100%' } }} dangerouslySetInnerHTML={{ __html: signatureHtml }} />
+            </Box>
+          ) : null}
+        </Stack>
+      </DialogContent>
+      <DialogActions>
+        <Button onClick={onClose} disabled={sending} sx={{ textTransform: 'none' }}>Отмена</Button>
+        <Button variant="contained" onClick={handleSubmit} disabled={sending} sx={{ textTransform: 'none' }}>
+          {sending ? 'Отправляю...' : 'Отправить'}
+        </Button>
+      </DialogActions>
+    </Dialog>
+  );
+}
 
 export const resolveActiveThreadTransportState = ({
   activeConversationId,
@@ -333,13 +529,36 @@ const sortThreadMessages = (messages) => (
   })
 );
 
-const reconcileThreadMessages = (currentMessages, incomingMessages, {
+const compareThreadMessagePosition = (left, right) => {
+  const createdDiff = String(left?.created_at || '').localeCompare(String(right?.created_at || ''));
+  if (createdDiff !== 0) return createdDiff;
+  return String(left?.id || '').localeCompare(String(right?.id || ''));
+};
+
+const shouldPreserveFreshLocalThreadMessage = ({
+  message,
+  conversationId = '',
+  incomingIds,
+  incomingLastMessage,
+}) => {
+  const normalizedMessageId = normalizeThreadMessageId(message);
+  if (!normalizedMessageId || incomingIds.has(normalizedMessageId)) return false;
+  if (message?.isOptimistic) return false;
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (normalizedConversationId && String(message?.conversation_id || '').trim() !== normalizedConversationId) return false;
+  if (!incomingLastMessage?.id) return false;
+  return compareThreadMessagePosition(message, incomingLastMessage) > 0;
+};
+
+export const reconcileThreadMessages = (currentMessages, incomingMessages, {
   conversationId = '',
   preserveSendingOptimistic = false,
+  mode = 'replace',
 } = {}) => {
   const current = Array.isArray(currentMessages) ? currentMessages : [];
   const incoming = Array.isArray(incomingMessages) ? incomingMessages.filter((item) => item?.id) : [];
   const currentById = new Map(current.map((item) => [normalizeThreadMessageId(item), item]));
+  const incomingIds = new Set(incoming.map((item) => normalizeThreadMessageId(item)).filter(Boolean));
   const currentOptimisticByClientId = new Map();
   current.forEach((item) => {
     const clientMessageId = normalizeThreadMessageClientId(item);
@@ -360,6 +579,19 @@ const reconcileThreadMessages = (currentMessages, incomingMessages, {
     return areThreadMessagesEquivalent(existing, nextMessage) ? existing : nextMessage;
   });
 
+  if (String(mode || '').trim() === 'replaceWindowButPreserveFreshLocal') {
+    const incomingLastMessage = sortThreadMessages(incoming).at(-1) || null;
+    current.forEach((message) => {
+      if (!shouldPreserveFreshLocalThreadMessage({
+        message,
+        conversationId,
+        incomingIds,
+        incomingLastMessage,
+      })) return;
+      next.push(message);
+    });
+  }
+
   if (preserveSendingOptimistic) {
     current.forEach((message) => {
       const clientMessageId = normalizeThreadMessageClientId(message);
@@ -378,13 +610,50 @@ const reconcileThreadMessages = (currentMessages, incomingMessages, {
   return current;
 };
 
-const hasThreadMessageEquivalent = (messages, message) => {
+const hasPersistedThreadMessageEquivalent = (messages, message) => {
   const list = Array.isArray(messages) ? messages : [];
   const messageId = normalizeThreadMessageId(message);
   const clientMessageId = normalizeThreadMessageClientId(message);
   return list.some((item) => (
-    (messageId && normalizeThreadMessageId(item) === messageId)
-    || (clientMessageId && normalizeThreadMessageClientId(item) === clientMessageId)
+    !item?.isOptimistic
+    && (
+      (messageId && normalizeThreadMessageId(item) === messageId)
+      || (clientMessageId && normalizeThreadMessageClientId(item) === clientMessageId)
+    )
+  ));
+};
+
+export const shouldSkipActiveThreadRevalidate = ({
+  activeConversationId,
+  conversationId,
+  reason = '',
+  messages = [],
+  latestSocketMessage = null,
+  now = Date.now(),
+  dedupeMs = ACTIVE_THREAD_REVALIDATE_DEDUP_MS,
+} = {}) => {
+  const activeId = String(activeConversationId || '').trim();
+  const targetId = String(conversationId || '').trim();
+  if (!activeId || !targetId || activeId !== targetId) return false;
+
+  const normalizedReason = String(reason || '').trim();
+  const canDedupeReason = normalizedReason === 'message_created'
+    || normalizedReason === 'created'
+    || normalizedReason === 'updated'
+    || normalizedReason === 'ai_run_completed'
+    || normalizedReason === 'ai_run_failed';
+  if (!canDedupeReason) return false;
+
+  const socketConversationId = String(latestSocketMessage?.conversationId || '').trim();
+  const socketMessageId = String(latestSocketMessage?.messageId || '').trim();
+  const socketAt = Number(latestSocketMessage?.at || 0);
+  if (!socketConversationId || socketConversationId !== targetId || !socketMessageId) return false;
+  if (!Number.isFinite(socketAt) || socketAt <= 0) return false;
+  if ((Number(now || Date.now()) - socketAt) > Number(dedupeMs || 0)) return false;
+
+  return (Array.isArray(messages) ? messages : []).some((message) => (
+    !message?.isOptimistic
+    && String(message?.id || '').trim() === socketMessageId
   ));
 };
 
@@ -554,7 +823,7 @@ export default function Chat() {
   const navigate = useNavigate();
   const location = useLocation();
   const { user, hasPermission } = useAuth();
-  const { notifyApiError, notifyInfo, notifySuccess, notifyWarning } = useNotification();
+  const { notifyApiError, notifyInfo, notifyWarning } = useNotification();
   const { drawerOpen, openDrawer, closeDrawer } = useMainLayoutShell();
   const userCacheId = String(user?.id || 'guest').trim() || 'guest';
   const requestedConversationId = String(new URLSearchParams(location.search).get('conversation') || '').trim();
@@ -588,6 +857,7 @@ export default function Chat() {
   const conversationsRef = useRef([]);
   const messagesRef = useRef([]);
   const requestedConversationHandledRef = useRef('');
+  const applyingRequestedConversationRef = useRef('');
   const requestedMessageRevealKeyRef = useRef('');
   const conversationsRequestSeqRef = useRef(0);
   const conversationsLoadingRequestSeqRef = useRef(0);
@@ -596,12 +866,14 @@ export default function Chat() {
   const messagesLoadingRequestSeqRef = useRef(0);
   const messagesLoadingRef = useRef(false);
   const threadNearBottomRef = useRef(true);
+  const threadViewportSyncFrameRef = useRef(null);
+  const bottomInstantSettleFrameRef = useRef(null);
   const prependScrollRestoreRef = useRef(null);
   const messagesHasMoreRef = useRef(false);
   const messagesHasNewerRef = useRef(false);
   const highlightResetTimeoutRef = useRef(null);
   const suppressDraftSyncRef = useRef(false);
-  const messageSearchRequestSeqRef = useRef(0);
+  const revealMessageRef = useRef(null);
   const typingStopTimeoutRef = useRef(null);
   const typingParticipantsTimeoutsRef = useRef(new Map());
   const typingStartedRef = useRef(false);
@@ -613,14 +885,17 @@ export default function Chat() {
   const logChatDebugRef = useRef(null);
   const socketStatusRef = useRef(CHAT_WS_ENABLED ? 'connecting' : 'disabled');
   const lastSocketActivityAtRef = useRef(0);
+  const latestActiveThreadSocketMessageRef = useRef(null);
   const degradedThreadRevalidateCountRef = useRef(0);
+  const showJumpToLatestRef = useRef(false);
+  const loadConversationsRef = useRef(null);
+  const openMobileThreadViewRef = useRef(null);
   const aiRunStartedAtByConversationRef = useRef({});
   const pendingInitialAnchorRef = useRef(null);
   const pendingInitialAnchorSettleTimeoutRef = useRef(null);
   const pendingInitialAnchorRetryTimeoutRef = useRef(null);
   const pendingInitialAnchorResizeFrameRef = useRef(null);
   const suppressThreadScrollCancelRef = useRef(false);
-  const skipNextGroupSearchRef = useRef(false);
   const chatDebugSeqRef = useRef(0);
   const optimisticMessageSeqRef = useRef(0);
   const draftWriteTimeoutRef = useRef(null);
@@ -650,10 +925,22 @@ export default function Chat() {
   const [conversationsLoading, setConversationsLoading] = useState(() => !initialConversationsCache?.data);
   const [conversationBootstrapComplete, setConversationBootstrapComplete] = useState(false);
   const [conversationFilter, setConversationFilter] = useState('all');
-  const [sidebarQuery, setSidebarQuery] = useState('');
-  const [searchingSidebar, setSearchingSidebar] = useState(false);
-  const [searchPeople, setSearchPeople] = useState([]);
-  const [searchChats, setSearchChats] = useState([]);
+  const {
+    patchSearchConversations,
+    patchSearchPersonPresence,
+    resetSidebarSearch,
+    searchChats,
+    searchPeople,
+    searchResultEmpty,
+    searchingSidebar,
+    setSidebarQuery,
+    sidebarQuery,
+    sidebarSearchActive,
+    upsertSearchConversation,
+  } = useChatSidebarSearch({
+    notifyApiError,
+    searchDebounceMs: SEARCH_MS,
+  });
   const [aiBots, setAiBots] = useState([]);
   const [aiBotsLoading, setAiBotsLoading] = useState(false);
   const [aiBotsError, setAiBotsError] = useState('');
@@ -678,29 +965,63 @@ export default function Chat() {
   const [messageText, setMessageText] = useState('');
   const [replyMessage, setReplyMessage] = useState(null);
   const [pinnedMessage, setPinnedMessage] = useState(null);
-  const [groupOpen, setGroupOpen] = useState(false);
-  const [groupTitle, setGroupTitle] = useState('');
-  const [groupSearch, setGroupSearch] = useState('');
-  const [groupUsers, setGroupUsers] = useState([]);
-  const [groupUsersLoading, setGroupUsersLoading] = useState(false);
-  const [groupSelectedUsers, setGroupSelectedUsers] = useState([]);
-  const [groupMemberIds, setGroupMemberIds] = useState([]);
-  const [creatingConversation, setCreatingConversation] = useState(false);
+  const {
+    addGroupMember,
+    closeGroupDialog,
+    createGroup,
+    creatingConversation,
+    groupCreateDisabled,
+    groupMemberIds,
+    groupOpen,
+    groupSearch,
+    groupSelectedUsers,
+    groupTitle,
+    groupUsers,
+    groupUsersLoading,
+    openGroupDialog,
+    patchGroupPresence,
+    removeGroupMember,
+    setGroupSearch,
+    setGroupTitle,
+  } = useChatGroupDialog({
+    isMobile,
+    loadChatDialogsModule,
+    loadConversationsRef,
+    notifyApiError,
+    openMobileThreadViewRef,
+    searchDebounceMs: SEARCH_MS,
+    setActiveConversationId,
+  });
   const [openingPeerId, setOpeningPeerId] = useState('');
   const [threadMenuAnchor, setThreadMenuAnchor] = useState(null);
   const [messageMenuAnchor, setMessageMenuAnchor] = useState(null);
   const [messageMenuMessage, setMessageMenuMessage] = useState(null);
   const [composerMenuAnchor, setComposerMenuAnchor] = useState(null);
-  const [shareOpen, setShareOpen] = useState(false);
+  const {
+    openShareDialog,
+    resetShareDialog,
+    setSharingTaskId,
+    setTaskSearch,
+    shareOpen,
+    shareableLoading,
+    shareableTasks,
+    sharingTaskId,
+    taskSearch,
+  } = useChatTaskShareDialog({
+    activeConversationId,
+    loadChatDialogsModule,
+    notifyApiError,
+    searchDebounceMs: SEARCH_MS,
+    setComposerMenuAnchor,
+    setMessageMenuAnchor,
+    setMessageMenuMessage,
+    setThreadMenuAnchor,
+  });
   const [forwardOpen, setForwardOpen] = useState(false);
   const [forwardConversationQuery, setForwardConversationQuery] = useState('');
   const [forwardingConversationId, setForwardingConversationId] = useState('');
   const [forwardMessages, setForwardMessages] = useState([]);
   const [selectedMessageIds, setSelectedMessageIds] = useState([]);
-  const [taskSearch, setTaskSearch] = useState('');
-  const [shareableTasks, setShareableTasks] = useState([]);
-  const [shareableLoading, setShareableLoading] = useState(false);
-  const [sharingTaskId, setSharingTaskId] = useState('');
   const [fileDialogOpen, setFileDialogOpen] = useState(false);
   const [selectedUploadItems, setSelectedUploadItems] = useState([]);
   const [fileCaption, setFileCaption] = useState('');
@@ -709,6 +1030,7 @@ export default function Chat() {
   const [fileUploadProgress, setFileUploadProgress] = useState(0);
   const [fileDragActive, setFileDragActive] = useState(false);
   const [showJumpToLatest, setShowJumpToLatest] = useState(false);
+  showJumpToLatestRef.current = showJumpToLatest;
   const [infoOpen, setInfoOpen] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
   const [emojiAnchorEl, setEmojiAnchorEl] = useState(null);
@@ -717,11 +1039,30 @@ export default function Chat() {
   const [messageReadsItems, setMessageReadsItems] = useState([]);
   const [messageReadsMessage, setMessageReadsMessage] = useState(null);
   const [settingsUpdating, setSettingsUpdating] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
-  const [messageSearch, setMessageSearch] = useState('');
-  const [messageSearchResults, setMessageSearchResults] = useState([]);
-  const [messageSearchLoading, setMessageSearchLoading] = useState(false);
-  const [messageSearchHasMore, setMessageSearchHasMore] = useState(false);
+  const {
+    closeSearchDialog,
+    loadMoreSearchResults,
+    messageSearch,
+    messageSearchHasMore,
+    messageSearchLoading,
+    messageSearchResults,
+    openSearchDialog,
+    openSearchResult,
+    resetMessageSearch,
+    searchOpen,
+    setMessageSearch,
+  } = useChatMessageSearch({
+    activeConversationId,
+    activeConversationIdRef,
+    loadChatDialogsModule,
+    notifyApiError,
+    notifyInfo,
+    revealMessageRef,
+    searchDebounceMs: SEARCH_MS,
+    setMessageMenuAnchor,
+    setMessageMenuMessage,
+    setThreadMenuAnchor,
+  });
   const selectedFiles = useMemo(
     () => selectedUploadItems.map((item) => item?.file).filter(Boolean),
     [selectedUploadItems],
@@ -744,7 +1085,6 @@ export default function Chat() {
   );
   const selectedMessageCount = selectedMessages.length;
   const canCopySelectedMessages = selectedMessages.some((message) => String(getMessagePreview(message) || '').trim());
-  const [messageSearchBeforeId, setMessageSearchBeforeId] = useState('');
   const [highlightedMessageId, setHighlightedMessageId] = useState('');
   const [socketStatus, setSocketStatus] = useState(CHAT_WS_ENABLED ? 'connecting' : 'disabled');
   const [lastSocketActivityAt, setLastSocketActivityAt] = useState(0);
@@ -757,6 +1097,10 @@ export default function Chat() {
       fileUploadAbortRef.current?.abort?.();
     } catch {
       // Ignore abort cleanup failures on unmount.
+    }
+    if (bottomInstantSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(bottomInstantSettleFrameRef.current);
+      bottomInstantSettleFrameRef.current = null;
     }
   }, []);
 
@@ -784,6 +1128,33 @@ export default function Chat() {
       members: Array.isArray(detail?.members) ? detail.members : undefined,
     };
   }, [activeConversationId, activeConversationSummary, conversationDetailsById]);
+  const mentionCandidates = useMemo(() => {
+    const currentUserId = Number(user?.id || 0);
+    const byKey = new Map();
+    const addPerson = (value) => {
+      const person = value?.user || value;
+      if (!person || typeof person !== 'object') return;
+      const personId = Number(person?.id || 0);
+      if (Number.isFinite(personId) && personId > 0 && personId === currentUserId) return;
+      const username = String(person?.username || '').trim();
+      const fullName = String(person?.full_name || person?.name || '').trim();
+      if (!username && !fullName) return;
+      const key = personId > 0 ? `id:${personId}` : `username:${username.toLowerCase()}`;
+      if (!key || byKey.has(key)) return;
+      byKey.set(key, person);
+    };
+    addPerson(activeConversation?.direct_peer);
+    (Array.isArray(activeConversation?.members) ? activeConversation.members : []).forEach(addPerson);
+    (Array.isArray(activeConversation?.member_preview) ? activeConversation.member_preview : []).forEach(addPerson);
+    searchPeople.slice(0, 12).forEach(addPerson);
+    return Array.from(byKey.values()).slice(0, 32);
+  }, [activeConversation, searchPeople, user?.id]);
+  const searchMentionPeople = useCallback(async (query) => {
+    const normalizedQuery = String(query || '').trim().replace(/^@+/, '');
+    if (!normalizedQuery) return [];
+    const response = await chatAPI.getUsers({ q: normalizedQuery, limit: 8 });
+    return Array.isArray(response?.items) ? response.items : [];
+  }, []);
   const canUseAiChat = canUseAiChatPermission(hasPermission);
   const activeAiStatus = useMemo(
     () => aiStatusByConversation[String(activeConversationId || '').trim()] || null,
@@ -876,6 +1247,7 @@ export default function Chat() {
     setMessages((current) => reconcileThreadMessages(current, items, {
       conversationId: normalizedConversationId,
       preserveSendingOptimistic: true,
+      mode: 'replaceWindowButPreserveFreshLocal',
     }));
     setMessagesHasMore(Boolean(payload?.has_older ?? payload?.has_more));
     setMessagesHasNewer(Boolean(payload?.has_newer));
@@ -1013,8 +1385,6 @@ export default function Chat() {
     [activeConversationId, aiBots, conversations, draftsByConversation],
   );
 
-  const sidebarSearchActive = Boolean(String(sidebarQuery || '').trim());
-  const searchResultEmpty = sidebarSearchActive && !searchingSidebar && searchPeople.length === 0 && searchChats.length === 0;
   const showContextPanel = !isMobile && contextPanelOpen;
   const renderDesktopContextPanel = !isMobile && Boolean(activeConversation) && showContextPanel;
   const emojiPickerOpen = Boolean(emojiAnchorEl);
@@ -1208,6 +1578,7 @@ export default function Chat() {
     if (currentHistoryKey === nextHistoryKey) return;
     writeMobileHistoryState(nextState, 'push', normalizedConversationId);
   }, [closeDrawer, getCurrentBrowserConversationId, getMobileHistoryKey, isMobile, readMobileHistoryState, writeMobileHistoryState]);
+  openMobileThreadViewRef.current = openMobileThreadView;
 
   const openMobileInboxView = useCallback(() => {
     if (!isMobile) return;
@@ -1254,16 +1625,6 @@ export default function Chat() {
     () => buildChatPinnedMessageKey(user?.id, activeConversationId),
     [activeConversationId, user?.id],
   );
-
-  const resetShareDialog = useCallback(() => {
-    setThreadMenuAnchor(null);
-    setMessageMenuAnchor(null);
-    setMessageMenuMessage(null);
-    setShareOpen(false);
-    setTaskSearch('');
-    setShareableTasks([]);
-    setSharingTaskId('');
-  }, []);
 
   const closeAttachmentPreview = useCallback(() => {
     setAttachmentPreview(null);
@@ -1462,12 +1823,15 @@ export default function Chat() {
     }
   }, [isChatScrollTraceEnabled, logChatDebug]);
 
-  const syncThreadViewportState = useCallback((node) => {
-    if (!node) return;
-    const nearBottom = (node.scrollHeight - node.scrollTop - node.clientHeight) < 80;
-    threadNearBottomRef.current = nearBottom;
-    setShowJumpToLatest(!nearBottom);
-  }, []);
+  const {
+    scheduleThreadViewportStateSync,
+    syncThreadViewportState,
+  } = useChatThreadViewport({
+    setShowJumpToLatest,
+    showJumpToLatestRef,
+    threadNearBottomRef,
+    threadViewportSyncFrameRef,
+  });
 
   const setThreadScrollTop = useCallback((nextScrollTop, { source = 'unknown' } = {}) => {
     const container = threadScrollRef.current;
@@ -1481,10 +1845,65 @@ export default function Chat() {
       guardActive: isInitialViewportGuardActive(),
     });
     suppressThreadScrollCancel();
+    if (Math.abs(Number(container.scrollTop || 0) - normalizedScrollTop) < 1) {
+      syncThreadViewportState(container);
+      return true;
+    }
     container.scrollTop = normalizedScrollTop;
     syncThreadViewportState(container);
     return true;
   }, [isInitialViewportGuardActive, suppressThreadScrollCancel, syncThreadViewportState, traceProgrammaticThreadScroll]);
+
+  const scrollThreadToBottomInstant = useCallback(({
+    source = 'unknown',
+    settleFrames = 0,
+    userInitiated = false,
+  } = {}) => {
+    const container = threadScrollRef.current;
+    if (!container) return false;
+
+    if (bottomInstantSettleFrameRef.current !== null) {
+      window.cancelAnimationFrame(bottomInstantSettleFrameRef.current);
+      bottomInstantSettleFrameRef.current = null;
+    }
+
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    const scrollToCurrentBottom = (nextSource) => {
+      const node = threadScrollRef.current;
+      if (!node) return false;
+      return setThreadScrollTop(
+        Math.max(0, Number(node.scrollHeight || 0) - Number(node.clientHeight || 0)),
+        { source: nextSource },
+      );
+    };
+
+    scrollToCurrentBottom(source);
+
+    const framesToSettle = Math.max(0, Math.floor(Number(settleFrames || 0)));
+    if (framesToSettle <= 0) return true;
+
+    let remainingFrames = framesToSettle;
+    const settle = () => {
+      bottomInstantSettleFrameRef.current = null;
+      const node = threadScrollRef.current;
+      if (!node) return;
+      if (conversationId && conversationId !== String(activeConversationIdRef.current || '').trim()) return;
+
+      const distanceFromBottom = Math.max(
+        0,
+        Number(node.scrollHeight || 0) - Number(node.scrollTop || 0) - Number(node.clientHeight || 0),
+      );
+      if (!userInitiated && distanceFromBottom > 160) return;
+
+      scrollToCurrentBottom(`${source}:settle`);
+      remainingFrames -= 1;
+      if (remainingFrames <= 0) return;
+      bottomInstantSettleFrameRef.current = window.requestAnimationFrame(settle);
+    };
+
+    bottomInstantSettleFrameRef.current = window.requestAnimationFrame(settle);
+    return true;
+  }, [setThreadScrollTop]);
 
   const scrollThreadBottomIntoView = useCallback(({ source = 'unknown', behavior = 'smooth' } = {}) => {
     const container = threadScrollRef.current;
@@ -1645,6 +2064,7 @@ export default function Chat() {
     if (threadScrollRef.current) {
       setThreadScrollTop(0, { source: 'queueInitialThreadPosition:reset' });
       threadNearBottomRef.current = false;
+      showJumpToLatestRef.current = false;
       setShowJumpToLatest(false);
     }
     clearPendingInitialAnchorSettleTimer();
@@ -1832,6 +2252,12 @@ export default function Chat() {
     const normalizedMessageId = String(messageId || '').trim();
     const attachmentId = String(attachment?.id || '').trim();
     if (!normalizedMessageId || !attachmentId) return;
+    const sourceMessage = messagesRef.current.find((item) => String(item?.id || '').trim() === normalizedMessageId);
+    const senderName = String(
+      sourceMessage?.sender?.full_name
+      || sourceMessage?.sender?.username
+      || '',
+    ).trim();
     const variantUrls = attachment?.variant_urls || {};
     const inlineOriginalUrl = buildAttachmentUrl(normalizedMessageId, attachmentId, { inline: true });
     const originalUrl = normalizeChatAttachmentUrl(attachment?.original_url || attachment?.originalUrl)
@@ -1855,6 +2281,10 @@ export default function Chat() {
       previewUrl,
       originalUrl,
       posterUrl: normalizeChatAttachmentUrl(attachment?.poster_url || attachment?.posterUrl || variantUrls.poster),
+      senderName,
+      createdAt: String(sourceMessage?.created_at || '').trim(),
+      activeIndex: 0,
+      totalCount: 1,
     });
   }, []);
 
@@ -1905,6 +2335,11 @@ export default function Chat() {
     }
 
     const sourceMessage = messagesRef.current.find((item) => String(item?.id || '').trim() === normalizedMessageId);
+    const senderName = String(
+      sourceMessage?.sender?.full_name
+      || sourceMessage?.sender?.username
+      || '',
+    ).trim();
     const mediaItems = (Array.isArray(sourceMessage?.attachments) ? sourceMessage.attachments : [])
       .map(normalizePreviewAttachment)
       .filter(Boolean)
@@ -1922,6 +2357,9 @@ export default function Chat() {
       posterUrl: activeAttachment.posterUrl || '',
       items: previewItems,
       activeIndex,
+      totalCount: previewItems.length,
+      senderName,
+      createdAt: String(sourceMessage?.created_at || '').trim(),
       kind: isVideoAttachment(activeAttachment) ? 'video' : 'image',
       startedFromGallery: previewItems.length > 1,
     });
@@ -2117,6 +2555,10 @@ export default function Chat() {
     if (highlightResetTimeoutRef.current) {
       window.clearTimeout(highlightResetTimeoutRef.current);
     }
+    if (threadViewportSyncFrameRef.current !== null) {
+      window.cancelAnimationFrame(threadViewportSyncFrameRef.current);
+      threadViewportSyncFrameRef.current = null;
+    }
   }, []);
 
   useEffect(() => () => {
@@ -2193,6 +2635,7 @@ export default function Chat() {
     window.requestAnimationFrame(() => {
       const node = composerRef.current;
       if (!node?.focus) return;
+      if (typeof document !== 'undefined' && document.activeElement === node) return;
       try {
         node.focus({ preventScroll: true });
       } catch {
@@ -2405,35 +2848,52 @@ export default function Chat() {
     };
   }, [user?.full_name, user?.id, user?.username]);
 
-  const upsertThreadMessage = useCallback((message, { replaceId = '' } = {}) => {
-    if (!message?.id) return;
-    const normalizedConversationId = String(message?.conversation_id || '').trim();
-    const normalizedReplaceId = String(replaceId || '').trim();
-    if (!normalizedConversationId || normalizedConversationId !== activeConversationIdRef.current) return;
+  const upsertThreadMessages = useCallback((incomingMessages, { replaceByMessageId = null } = {}) => {
+    const sourceMessages = (Array.isArray(incomingMessages) ? incomingMessages : [incomingMessages])
+      .filter((message) => {
+        const normalizedConversationId = String(message?.conversation_id || '').trim();
+        return message?.id && normalizedConversationId && normalizedConversationId === activeConversationIdRef.current;
+      });
+    if (sourceMessages.length === 0) return;
+    const replacementMap = replaceByMessageId instanceof Map ? replaceByMessageId : new Map();
     setMessages((current) => {
-      const next = [];
-      let inserted = false;
+      let next = [...current];
       let changed = false;
-      current.forEach((item) => {
-        const itemId = String(item?.id || '').trim();
-        if (itemId === String(message.id).trim() || (normalizedReplaceId && itemId === normalizedReplaceId)) {
-          if (!inserted) {
-            const nextMessage = withStableMessageRenderKey(message, item);
-            next.push(areThreadMessagesEquivalent(item, nextMessage) ? item : nextMessage);
-            if (!areThreadMessagesEquivalent(item, nextMessage)) changed = true;
-            inserted = true;
-          } else {
+
+      sourceMessages.forEach((message) => {
+        const messageId = String(message?.id || '').trim();
+        const normalizedReplaceId = String(replacementMap.get(messageId) || '').trim();
+        if (!messageId) return;
+
+        const existingIndex = next.findIndex((item) => {
+          const itemId = String(item?.id || '').trim();
+          return itemId === messageId || (normalizedReplaceId && itemId === normalizedReplaceId);
+        });
+
+        if (existingIndex >= 0) {
+          const existing = next[existingIndex];
+          const nextMessage = withStableMessageRenderKey(message, existing);
+          if (!areThreadMessagesEquivalent(existing, nextMessage)) {
+            next[existingIndex] = nextMessage;
             changed = true;
           }
-          if (itemId !== String(message.id).trim()) changed = true;
+          if (String(existing?.id || '').trim() !== messageId) {
+            changed = true;
+          }
+          if (normalizedReplaceId) {
+            const beforeLength = next.length;
+            next = next.filter((item, index) => (
+              index === existingIndex || String(item?.id || '').trim() !== normalizedReplaceId
+            ));
+            if (next.length !== beforeLength) changed = true;
+          }
           return;
         }
-        next.push(item);
-      });
-      if (!inserted) {
+
         next.push(withStableMessageRenderKey(message));
         changed = true;
-      }
+      });
+
       const ordered = sortThreadMessages(next);
       if (!changed && ordered.length === current.length) {
         for (let index = 0; index < ordered.length; index += 1) {
@@ -2446,6 +2906,16 @@ export default function Chat() {
       return changed ? ordered : current;
     });
   }, [withStableMessageRenderKey]);
+
+  const upsertThreadMessage = useCallback((message, { replaceId = '' } = {}) => {
+    if (!message?.id) return;
+    const messageId = String(message.id || '').trim();
+    const normalizedReplaceId = String(replaceId || '').trim();
+    const replaceByMessageId = normalizedReplaceId && messageId
+      ? new Map([[messageId, normalizedReplaceId]])
+      : null;
+    upsertThreadMessages([message], { replaceByMessageId });
+  }, [upsertThreadMessages]);
 
   const patchThreadMessage = useCallback((messageId, patch) => {
     const normalizedMessageId = String(messageId || '').trim();
@@ -2486,9 +2956,7 @@ export default function Chat() {
       ordered.unshift(selected);
       return ordered;
     });
-    setSearchChats((current) => current.map((item) => (
-      item.id === normalizedConversationId ? conversation : item
-    )));
+    upsertSearchConversation(conversation);
     setConversationDetailsById((current) => {
       const existing = current[normalizedConversationId];
       if (!existing) return current;
@@ -2504,7 +2972,7 @@ export default function Chat() {
         },
       };
     });
-  }, []);
+  }, [upsertSearchConversation]);
 
   const mergeMessageIntoThread = useCallback((message) => {
     if (!message?.id) return;
@@ -2518,6 +2986,31 @@ export default function Chat() {
     }
     upsertThreadMessage(withStableMessageRenderKey(message));
   }, [isLikelyOptimisticReplacement, upsertThreadMessage, withStableMessageRenderKey]);
+
+  const applyOutgoingThreadMessage = useCallback((conversationId, message, {
+    replaceId = '',
+    previewOverrides = { unread_count: 0 },
+    scroll = false,
+    scrollSource = 'outgoingMessage',
+    promote = true,
+  } = {}) => {
+    const normalizedConversationId = String(conversationId || '').trim();
+    if (!normalizedConversationId || !message?.id) return false;
+
+    upsertThreadMessage(message, { replaceId });
+    if (message?.is_own && !message?.isOptimistic) {
+      setViewerLastReadMessageId(String(message.id || '').trim());
+      setViewerLastReadAt(String(message.created_at || '').trim());
+    }
+    startTransition(() => {
+      syncConversationPreview(normalizedConversationId, message, previewOverrides);
+      if (promote) promoteConversationToTop(normalizedConversationId);
+    });
+    if (scroll) {
+      queueAutoScroll('bottom_instant', scrollSource, { userInitiated: true });
+    }
+    return true;
+  }, [promoteConversationToTop, queueAutoScroll, syncConversationPreview, upsertThreadMessage]);
 
   const applyMessageReadDelta = useCallback((payload) => {
     const messageId = String(payload?.message_id || '').trim();
@@ -2589,31 +3082,9 @@ export default function Chat() {
         patchConversationPresence(conversation),
       ]),
     ));
-    setSearchChats((current) => current.map(patchConversationPresence));
-    setSearchPeople((current) => current.map((item) => (
-      Number(item?.id || 0) === normalizedUserId
-        ? {
-            ...item,
-            presence,
-          }
-        : item
-    )));
-    setGroupUsers((current) => current.map((item) => (
-      Number(item?.id || 0) === normalizedUserId
-        ? {
-            ...item,
-            presence,
-          }
-        : item
-    )));
-    setGroupSelectedUsers((current) => current.map((item) => (
-      Number(item?.id || 0) === normalizedUserId
-        ? {
-            ...item,
-            presence,
-          }
-        : item
-    )));
+    patchSearchConversations(patchConversationPresence);
+    patchSearchPersonPresence(normalizedUserId, presence);
+    patchGroupPresence(normalizedUserId, presence);
     setMessageReadsItems((current) => current.map((item) => (
       Number(item?.user?.id || 0) === normalizedUserId
         ? {
@@ -2625,7 +3096,7 @@ export default function Chat() {
           }
         : item
     )));
-  }, []);
+  }, [patchGroupPresence, patchSearchConversations, patchSearchPersonPresence]);
 
   const syncComposerSelection = useCallback(() => {
     const input = composerRef.current;
@@ -2652,127 +3123,6 @@ export default function Chat() {
       composerSelectionRef.current = { start: nextPosition, end: nextPosition };
     });
   }, [messageText]);
-
-  const queueSelectedFilesLegacy = useCallback(async (files) => {
-    if (preparingFiles || sendingFiles) return false;
-
-    const incomingFiles = Array.from(files || []).filter(Boolean);
-    if (incomingFiles.length === 0) return false;
-
-    const existingItems = Array.isArray(selectedUploadItems) ? selectedUploadItems : [];
-    const archiveFiles = incomingFiles.filter((file) => isArchiveFile(file));
-    if (archiveFiles.length > 0) {
-      notifyWarning?.(CHAT_ARCHIVE_UPLOAD_WARNING);
-    }
-    const allowedIncomingFiles = incomingFiles.filter((file) => !isArchiveFile(file));
-    if (allowedIncomingFiles.length === 0) {
-      if (existingItems.length > 0) setFileDialogOpen(true);
-      return false;
-    }
-    const seenSignatures = new Set(
-      existingItems
-        .map((item) => String(item?.signature || buildChatUploadSignature(item?.file || item)).trim())
-        .filter(Boolean),
-    );
-    const uniqueIncomingFiles = allowedIncomingFiles.filter((file) => {
-      const signature = buildChatUploadSignature(file);
-      if (!signature || seenSignatures.has(signature)) {
-        return false;
-      }
-      seenSignatures.add(signature);
-      return true;
-    });
-    if (uniqueIncomingFiles.length === 0) {
-      if (existingItems.length > 0) setFileDialogOpen(true);
-      return false;
-    }
-    if ((existingItems.length + uniqueIncomingFiles.length) > CHAT_MAX_FILE_COUNT) {
-      notifyWarning?.(`Можно отправить не более ${CHAT_MAX_FILE_COUNT} файлов за один раз.`);
-      return false;
-    }
-    const totalBytes = existingItems.reduce((sum, item) => sum + Number(item?.file?.size || 0), 0);
-    if (totalBytes > CHAT_MAX_FILE_BYTES) {
-      notifyWarning?.('Суммарный размер файлов превышает 25 МБ.');
-      return false;
-    }
-    setSelectedUploadItems(existingItems);
-    setFileDialogOpen(true);
-    return true;
-  }, [notifyWarning, preparingFiles, selectedUploadItems, sendingFiles]);
-  void queueSelectedFilesLegacy;
-
-  const queueSelectedFiles = useCallback(async (files) => {
-    if (preparingFiles || sendingFiles) return false;
-
-    const incomingFiles = Array.from(files || []).filter(Boolean);
-    if (incomingFiles.length === 0) return false;
-
-    const existingItems = Array.isArray(selectedUploadItems) ? selectedUploadItems : [];
-    const archiveFiles = incomingFiles.filter((file) => isArchiveFile(file));
-    if (archiveFiles.length > 0) {
-      notifyWarning?.(CHAT_ARCHIVE_UPLOAD_WARNING);
-    }
-    const allowedIncomingFiles = incomingFiles.filter((file) => !isArchiveFile(file));
-    if (allowedIncomingFiles.length === 0) {
-      if (existingItems.length > 0) setFileDialogOpen(true);
-      return false;
-    }
-    const seenSignatures = new Set(
-      existingItems
-        .map((item) => String(item?.signature || buildChatUploadSignature(item?.file || item)).trim())
-        .filter(Boolean),
-    );
-    const uniqueIncomingFiles = allowedIncomingFiles.filter((file) => {
-      const signature = buildChatUploadSignature(file);
-      if (!signature || seenSignatures.has(signature)) {
-        return false;
-      }
-      seenSignatures.add(signature);
-      return true;
-    });
-
-    if (uniqueIncomingFiles.length === 0) {
-      if (existingItems.length > 0) setFileDialogOpen(true);
-      return false;
-    }
-
-    if ((existingItems.length + uniqueIncomingFiles.length) > CHAT_MAX_FILE_COUNT) {
-      notifyWarning?.(`Можно отправить не более ${CHAT_MAX_FILE_COUNT} файлов за один раз.`);
-      return false;
-    }
-
-    setFileDialogOpen(true);
-    setPreparingFiles(true);
-    setFileUploadProgress(0);
-
-    try {
-      const optimisticTotalBytes = (
-        existingItems.reduce((sum, item) => sum + Number(item?.file?.size || 0), 0)
-        + uniqueIncomingFiles.reduce((sum, file) => sum + Number(file?.size || 0), 0)
-      );
-      const prepareOptions = optimisticTotalBytes > CHAT_MAX_FILE_BYTES
-        ? { forcePrepare: true, prepareAboveBytes: 0 }
-        : {};
-      const preparedResult = await prepareChatUploadFiles(
-        uniqueIncomingFiles,
-        prepareOptions,
-      );
-      const preparedItems = Array.isArray(preparedResult?.items) ? preparedResult.items : [];
-      const nextItems = [...existingItems, ...preparedItems];
-      const totalBytes = nextItems.reduce((sum, item) => sum + Number(item?.file?.size || 0), 0);
-      if (totalBytes > CHAT_MAX_FILE_BYTES) {
-        notifyWarning?.('Суммарный размер файлов после подготовки превышает 25 МБ.');
-        return false;
-      }
-      setSelectedUploadItems(nextItems);
-      return true;
-    } catch {
-      notifyWarning?.('Не удалось подготовить файлы к отправке.');
-      return false;
-    } finally {
-      setPreparingFiles(false);
-    }
-  }, [notifyWarning, preparingFiles, selectedUploadItems, sendingFiles]);
 
   const markConversationReadLive = useCallback(async (conversationId, messageId) => {
     const normalizedConversationId = String(conversationId || '').trim();
@@ -2869,6 +3219,7 @@ export default function Chat() {
       }
     }
   }, [applyConversationsPayload, conversationsCacheKeyParts, notifyApiError]);
+  loadConversationsRef.current = loadConversations;
 
   const abortActiveThreadLoad = useCallback(() => {
     const controller = threadLoadAbortRef.current;
@@ -3238,7 +3589,7 @@ export default function Chat() {
       });
 
       if ((lastMessageChanged || firstConversationMessageArrived) && shouldStickToBottom && !initialAnchorPending) {
-        queueAutoScroll('bottom', 'loadMessages:latest_payload');
+        queueAutoScroll('bottom_instant', 'loadMessages:latest_payload');
       }
 
       logChatDebug('loadMessages:success', {
@@ -3323,78 +3674,6 @@ export default function Chat() {
     onReadSyncError: handleReadReceiptsSyncError,
   });
 
-  const loadGroupUsers = useCallback(async (query = '') => {
-    if (!CHAT_FEATURE_ENABLED) return;
-    setGroupUsersLoading(true);
-    try {
-      const data = await chatAPI.getUsers({ q: query, limit: 100 });
-      setGroupUsers(sortByName(Array.isArray(data?.items) ? data.items : []));
-    } catch (error) {
-      setGroupUsers([]);
-      notifyApiError(error, 'Не удалось загрузить пользователей для группового чата.');
-    } finally {
-      setGroupUsersLoading(false);
-    }
-  }, [notifyApiError]);
-
-  const loadShareableTasks = useCallback(async (conversationId, query = '') => {
-    const id = String(conversationId || '').trim();
-    if (!id) {
-      setShareableTasks([]);
-      return;
-    }
-    setShareableLoading(true);
-    try {
-      const data = await chatAPI.getShareableTasks(id, { q: query, limit: 50 });
-      setShareableTasks(Array.isArray(data?.items) ? data.items : []);
-    } catch (error) {
-      notifyApiError(error, 'Не удалось загрузить задачи, доступные для отправки в этот чат.');
-      setShareableTasks([]);
-    } finally {
-      setShareableLoading(false);
-    }
-  }, [notifyApiError]);
-
-  const runMessageSearch = useCallback(async ({ reset = false } = {}) => {
-    const conversationId = String(activeConversationIdRef.current || activeConversationId || '').trim();
-    const query = String(messageSearch || '').trim();
-    if (!conversationId || !query) {
-      setMessageSearchResults([]);
-      setMessageSearchHasMore(false);
-      setMessageSearchBeforeId('');
-      return;
-    }
-
-    const reqSeq = ++messageSearchRequestSeqRef.current;
-    setMessageSearchLoading(true);
-    try {
-      const beforeMessageId = reset ? '' : String(messageSearchBeforeId || '').trim();
-      const data = await chatAPI.searchMessages(conversationId, {
-        q: query,
-        limit: 20,
-        before_message_id: beforeMessageId || undefined,
-      });
-      if (reqSeq !== messageSearchRequestSeqRef.current) return;
-
-      const items = Array.isArray(data?.items) ? data.items : [];
-      setMessageSearchResults((current) => (reset ? items : [...current, ...items]));
-      setMessageSearchHasMore(Boolean(data?.has_more));
-      setMessageSearchBeforeId(items[items.length - 1]?.id || beforeMessageId || '');
-    } catch (error) {
-      if (reqSeq !== messageSearchRequestSeqRef.current) return;
-      notifyApiError(error, 'Не удалось выполнить поиск по сообщениям.');
-      if (reset) {
-        setMessageSearchResults([]);
-        setMessageSearchHasMore(false);
-        setMessageSearchBeforeId('');
-      }
-    } finally {
-      if (reqSeq === messageSearchRequestSeqRef.current) {
-        setMessageSearchLoading(false);
-      }
-    }
-  }, [activeConversationId, messageSearch, messageSearchBeforeId, notifyApiError]);
-
   const revealMessage = useCallback(async (messageId) => {
     const normalizedMessageId = String(messageId || '').trim();
     if (!normalizedMessageId || !activeConversationIdRef.current) return false;
@@ -3416,6 +3695,7 @@ export default function Chat() {
     }
     return false;
   }, [loadMessages, scrollToMessage]);
+  revealMessageRef.current = revealMessage;
 
   useEffect(() => {
     if (!requestedMessageId) {
@@ -3443,17 +3723,6 @@ export default function Chat() {
       cancelled = true;
     };
   }, [activeConversationId, location.search, messages.length, messagesLoading, navigate, requestedConversationId, requestedMessageId, revealMessage]);
-
-  const openSearchResult = useCallback(async (message) => {
-    const normalizedMessageId = String(message?.id || '').trim();
-    if (!normalizedMessageId) return;
-    const found = await revealMessage(normalizedMessageId);
-    if (!found) {
-      notifyInfo?.('Не удалось найти это сообщение в загруженной истории. Попробуйте повторить поиск.', { title: 'Сообщение не найдено' });
-      return;
-    }
-    setSearchOpen(false);
-  }, [notifyInfo, revealMessage]);
 
   const handleOpenPinnedMessage = useCallback(async () => {
     const normalizedMessageId = String(pinnedMessage?.id || '').trim();
@@ -3487,47 +3756,13 @@ export default function Chat() {
         });
         return next;
       });
-      setSearchChats((current) => current.map((item) => (item.id === updated.id ? updated : item)));
-      notifySuccess('Настройки чата обновлены.');
+      upsertSearchConversation(updated);
     } catch (error) {
       notifyApiError(error, 'Не удалось обновить настройки чата.');
     } finally {
       setSettingsUpdating(false);
     }
-  }, [activeConversationId, notifyApiError, notifySuccess]);
-
-  useEffect(() => {
-    if (!searchOpen || !activeConversationId) return undefined;
-    const timeoutId = window.setTimeout(() => {
-      void runMessageSearch({ reset: true });
-    }, SEARCH_MS);
-    return () => window.clearTimeout(timeoutId);
-  }, [activeConversationId, messageSearch, runMessageSearch, searchOpen]);
-
-  const runSidebarSearch = useCallback(async (query) => {
-    const normalizedQuery = String(query || '').trim();
-    if (!normalizedQuery) {
-      setSearchPeople([]);
-      setSearchChats([]);
-      setSearchingSidebar(false);
-      return;
-    }
-    setSearchingSidebar(true);
-    try {
-      const [usersResponse, conversationsResponse] = await Promise.all([
-        chatAPI.getUsers({ q: normalizedQuery, limit: 12 }),
-        chatAPI.getConversations({ q: normalizedQuery, limit: 20 }),
-      ]);
-      setSearchPeople(sortByName(Array.isArray(usersResponse?.items) ? usersResponse.items : []));
-      setSearchChats(Array.isArray(conversationsResponse?.items) ? conversationsResponse.items : []);
-    } catch (error) {
-      notifyApiError(error, 'Не удалось выполнить поиск по людям и чатам.');
-      setSearchPeople([]);
-      setSearchChats([]);
-    } finally {
-      setSearchingSidebar(false);
-    }
-  }, [notifyApiError]);
+  }, [activeConversationId, notifyApiError, upsertSearchConversation]);
 
   const loadAiBots = useCallback(async () => {
     if (!canUseAiChat) {
@@ -3653,12 +3888,8 @@ export default function Chat() {
       void loadThreadBootstrap(activeConversationId, { reason: 'effect:activeConversation' });
     }
     setReplyMessage(null);
-    setSearchOpen(false);
-    setMessageSearch('');
-    setMessageSearchResults([]);
-    setMessageSearchHasMore(false);
-    setMessageSearchBeforeId('');
-  }, [activeConversationId, applyLatestThreadPayload, clearInitialViewportGuard, loadThreadBootstrap, resolvePendingInitialAnchorFromPayload, userCacheId]);
+    resetMessageSearch();
+  }, [activeConversationId, applyLatestThreadPayload, clearInitialViewportGuard, loadThreadBootstrap, resetMessageSearch, resolvePendingInitialAnchorFromPayload, userCacheId]);
 
   useEffect(() => {
     suppressDraftSyncRef.current = true;
@@ -3777,11 +4008,18 @@ export default function Chat() {
         requestedConversationHandledRef.current = requestedConversationId;
         if (requestedExists) {
           invalidConversationRef.current = '';
+          applyingRequestedConversationRef.current = requestedConversationId;
           setActiveConversationId(requestedConversationId);
-          if (isMobile) setMobileView('thread');
+          if (isMobile) {
+            setMobileView('thread');
+            if (mobileHistoryReadyRef.current) {
+              writeMobileHistoryState({ view: 'thread', drawerOpen: false, infoOpen: false }, 'replace', requestedConversationId);
+            }
+          }
           setConversationBootstrapComplete(true);
           return;
         }
+        applyingRequestedConversationRef.current = '';
         if (invalidConversationRef.current !== requestedConversationId) {
           invalidConversationRef.current = requestedConversationId;
           notifyInfo?.('Чат из ссылки недоступен или вы больше не являетесь его участником.', { title: 'Чат недоступен' });
@@ -3798,6 +4036,7 @@ export default function Chat() {
       if (restoredConversationId) {
         if (restoredExists) {
           invalidConversationRef.current = '';
+          applyingRequestedConversationRef.current = '';
           setActiveConversationId(restoredConversationId);
           if (isMobile) setMobileView(restoredMobileView === 'thread' ? 'thread' : 'inbox');
           setConversationBootstrapComplete(true);
@@ -3817,10 +4056,17 @@ export default function Chat() {
       requestedConversationHandledRef.current = requestedConversationId;
       if (requestedExists) {
         invalidConversationRef.current = '';
+        applyingRequestedConversationRef.current = requestedConversationId;
         setActiveConversationId(requestedConversationId);
-        if (isMobile) setMobileView('thread');
+        if (isMobile) {
+          setMobileView('thread');
+          if (mobileHistoryReadyRef.current) {
+            writeMobileHistoryState({ view: 'thread', drawerOpen: false, infoOpen: false }, 'replace', requestedConversationId);
+          }
+        }
         return;
       }
+      applyingRequestedConversationRef.current = '';
       if (invalidConversationRef.current !== requestedConversationId) {
         invalidConversationRef.current = requestedConversationId;
         notifyInfo?.('Чат из ссылки недоступен или вы больше не являетесь его участником.', { title: 'Чат недоступен' });
@@ -3833,6 +4079,7 @@ export default function Chat() {
 
     if (!requestedConversationId) {
       requestedConversationHandledRef.current = '';
+      applyingRequestedConversationRef.current = '';
     }
     if (activeConversationId && conversations.some((item) => item.id === activeConversationId)) return;
     if (activeConversationId) {
@@ -3841,7 +4088,7 @@ export default function Chat() {
     cancelPendingInitialAnchor();
     setActiveConversationId('');
     if (isMobile) setMobileView('inbox');
-  }, [activeConversationId, cancelPendingInitialAnchor, clearStoredConversationState, conversationBootstrapComplete, conversations, conversationsLoading, isMobile, navigate, notifyInfo, requestedConversationId, restoredConversationId, restoredMobileView]);
+  }, [activeConversationId, cancelPendingInitialAnchor, clearStoredConversationState, conversationBootstrapComplete, conversations, conversationsLoading, isMobile, navigate, notifyInfo, requestedConversationId, restoredConversationId, restoredMobileView, writeMobileHistoryState]);
 
   useEffect(() => {
     if (!conversationBootstrapComplete) return;
@@ -3849,6 +4096,16 @@ export default function Chat() {
     const currentParams = new URLSearchParams(location.search);
     const currentConversation = String(currentParams.get('conversation') || '').trim();
     const nextConversation = String(activeConversationId || '').trim();
+    const applyingRequestedConversationId = String(applyingRequestedConversationRef.current || '').trim();
+    if (shouldDeferChatUrlSyncForRequestedConversation({
+      applyingRequestedConversationId,
+      activeConversationId: nextConversation,
+    })) {
+      return;
+    }
+    if (applyingRequestedConversationId && nextConversation === applyingRequestedConversationId) {
+      applyingRequestedConversationRef.current = '';
+    }
     if (currentConversation === nextConversation) return;
     if (nextConversation) currentParams.set('conversation', nextConversation);
     else currentParams.delete('conversation');
@@ -3856,147 +4113,45 @@ export default function Chat() {
     navigate({ pathname: '/chat', search: nextSearch ? `?${nextSearch}` : '' }, { replace: true });
   }, [activeConversationId, conversationBootstrapComplete, isMobile, location.search, navigate]);
 
-  useEffect(() => {
-    if (!CHAT_FEATURE_ENABLED || !conversationBootstrapComplete) return undefined;
+  useChatActiveThreadPolling({
+    activeConversationId,
+    activeConversationIdRef,
+    activeThreadTransportState,
+    buildActiveThreadPollLoadOptions,
+    conversationBootstrapComplete,
+    degradedThreadRevalidateCountRef,
+    incrementalPollMs: ACTIVE_THREAD_INCREMENTAL_POLL_MS,
+    lastConversationsLoadAtRef,
+    lastForegroundRefreshAtRef,
+    listPollMs: LIST_POLL_MS,
+    loadConversations,
+    loadMessages,
+    loadMessagesRef,
+    logChatDebugRef,
+    messagesLoadingRef,
+    messagesRef,
+    sidebarSearchActive,
+    shouldPollActiveThreadIncrementally,
+    threadPollMs: THREAD_POLL_MS,
+  });
 
-    const triggerForegroundRefresh = () => {
-      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
-      const now = Date.now();
-      if ((now - Number(lastForegroundRefreshAtRef.current || 0)) < 1250) return;
-      if ((now - Number(lastConversationsLoadAtRef.current || 0)) < 3000) return;
-      lastForegroundRefreshAtRef.current = now;
+  useChatAiStatusPolling({
+    activeConversationId,
+    activeConversationKind: activeConversation?.kind,
+    activeThreadTransportState,
+    aiStatus: activeAiStatus,
+    canUseAiChat,
+    intervalMs: AI_ACTIVE_POLL_MS,
+    mergeAiStatusPayload,
+    setAiStatusByConversation,
+    shouldPollActiveAiThread,
+    socketStatus,
+  });
 
-      if (!sidebarSearchActive) {
-        void loadConversations({ silent: true, force: true });
-      }
-      if (activeConversationIdRef.current && !messagesLoadingRef.current) {
-        void loadMessagesRef.current?.(activeConversationIdRef.current, {
-          silent: true,
-          reason: 'window:foreground',
-          force: true,
-        });
-      }
-    };
-
-    const handleVisibilityChange = () => {
-      if (document.visibilityState !== 'visible') return;
-      triggerForegroundRefresh();
-    };
-
-    window.addEventListener('focus', triggerForegroundRefresh);
-    document.addEventListener('visibilitychange', handleVisibilityChange);
-    return () => {
-      window.removeEventListener('focus', triggerForegroundRefresh);
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    };
-  }, [conversationBootstrapComplete, loadConversations, sidebarSearchActive]);
-
-  useEffect(() => {
-    if (!CHAT_FEATURE_ENABLED || CHAT_WS_ENABLED) return undefined;
-    const intervalId = window.setInterval(() => {
-      if (!sidebarSearchActive) void loadConversations({ silent: true, force: true });
-    }, LIST_POLL_MS);
-    return () => window.clearInterval(intervalId);
-  }, [loadConversations, sidebarSearchActive]);
-
-  useEffect(() => {
-    if (!CHAT_FEATURE_ENABLED || CHAT_WS_ENABLED || !activeConversationId) return undefined;
-    const intervalId = window.setInterval(() => {
-      void loadMessages(activeConversationId, { silent: true, reason: 'poll:thread', force: true });
-    }, THREAD_POLL_MS);
-    return () => window.clearInterval(intervalId);
-  }, [activeConversationId, loadMessages]);
-
-  useEffect(() => {
-    const normalizedConversationId = String(activeConversationId || '').trim();
-    if (!shouldPollActiveThreadIncrementally({
-      activeConversationId: normalizedConversationId,
-      transportState: activeThreadTransportState,
-    })) {
-      return undefined;
-    }
-    let cancelled = false;
-    let inFlight = false;
-    const pollOnce = () => {
-      if (cancelled || inFlight || messagesLoadingRef.current) return;
-      const currentConversationId = String(activeConversationIdRef.current || normalizedConversationId).trim();
-      if (!currentConversationId) return;
-      inFlight = true;
-      degradedThreadRevalidateCountRef.current += 1;
-      logChatDebugRef.current?.('threadPoll:degradedRevalidate', {
-        conversationId: currentConversationId,
-        transportState: activeThreadTransportState,
-        count: Number(degradedThreadRevalidateCountRef.current || 0),
-      });
-      const request = loadMessagesRef.current?.(
-        currentConversationId,
-        buildActiveThreadPollLoadOptions(messagesRef.current),
-      );
-      Promise.resolve(request).finally(() => {
-        inFlight = false;
-      });
-    };
-    pollOnce();
-    const intervalId = window.setInterval(pollOnce, ACTIVE_THREAD_INCREMENTAL_POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [activeConversationId, activeThreadTransportState]);
-
-  useEffect(() => {
-    const normalizedConversationId = String(activeConversationId || '').trim();
-    if (!shouldPollActiveAiThread({
-      activeConversationId: normalizedConversationId,
-      activeConversationKind: activeConversation?.kind,
-      aiStatus: activeAiStatus,
-      canUseAiChat,
-      transportState: activeThreadTransportState,
-      socketStatus,
-    })) {
-      return undefined;
-    }
-    let cancelled = false;
-    const pollOnce = () => {
-      if (cancelled || !normalizedConversationId) return;
-      void chatAPI.getConversationAiStatus(normalizedConversationId)
-        .then((status) => {
-          if (cancelled || !status || String(status?.conversation_id || '').trim() !== normalizedConversationId) return;
-          setAiStatusByConversation((current) => mergeAiStatusPayload(current, status, normalizedConversationId));
-        })
-        .catch(() => {});
-    };
-    pollOnce();
-    const intervalId = window.setInterval(pollOnce, AI_ACTIVE_POLL_MS);
-    return () => {
-      cancelled = true;
-      window.clearInterval(intervalId);
-    };
-  }, [activeAiStatus, activeConversation?.kind, activeConversationId, activeThreadTransportState, canUseAiChat, socketStatus]);
-
-  useEffect(() => {
-    if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return undefined;
-    const releaseSocket = chatSocket.retain();
-    return () => {
-      releaseSocket();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return undefined;
-    if (typeof chatSocket.subscribeInbox !== 'function') return undefined;
-    Promise.resolve(chatSocket.subscribeInbox()).catch(() => {});
-    return () => {
-      chatSocket.unsubscribeInbox?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return undefined;
-    if (typeof chatSocket.watchPresence !== 'function') return undefined;
-    Promise.resolve(chatSocket.watchPresence(watchedPresenceUserIds)).catch(() => {});
-    return undefined;
-  }, [watchedPresenceUserIdsKey]);
+  useChatSocketLifecycle({
+    watchedPresenceUserIds,
+    watchedPresenceUserIdsKey,
+  });
 
   useEffect(() => {
     const normalizedConversationId = String(activeConversationId || '').trim();
@@ -4012,236 +4167,45 @@ export default function Chat() {
     };
   }, [activeConversationId, contextPanelOpen, infoOpen, loadConversationDetail]);
 
-  useEffect(() => {
-    if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return undefined;
-    const handleSocketActivity = (event) => {
-      const eventType = String(event?.detail?.type || '').trim() || 'socket:message';
-      markSocketActivity(eventType);
-    };
-
-    const handleSocketStatus = (event) => {
-      const nextStatus = String(event?.detail?.status || '').trim() || 'disconnected';
-      const previousStatus = socketStatusRef.current;
-      logChatDebug('socket:status', {
-        previousStatus,
-        nextStatus,
-      });
-      if (nextStatus === previousStatus) return;
-      socketStatusRef.current = nextStatus;
-      setSocketStatus(nextStatus);
-      if (nextStatus === 'connected' && previousStatus !== 'connected') {
-        markSocketActivity('socket:connected');
-        if (!skippedInitialSocketRefreshRef.current) {
-          skippedInitialSocketRefreshRef.current = true;
-          return;
-        }
-        if ((Date.now() - Number(lastConversationsLoadAtRef.current || 0)) < 3000) return;
-        if (conversationsLoadingRef.current) return;
-        void loadConversations({ silent: true, force: true });
-        if (
-          activeConversationIdRef.current
-          && !messagesLoadingRef.current
-          && !hasPendingInitialAnchorForConversation(activeConversationIdRef.current)
-        ) {
-          void loadMessages(activeConversationIdRef.current, { silent: true, reason: 'socket:connected', force: true });
-        }
-      }
-    };
-
-    const handleSnapshot = () => {
-      markSocketActivity('chat.snapshot');
-      if (!skippedInitialSnapshotRefreshRef.current) {
-        skippedInitialSnapshotRefreshRef.current = true;
-        return;
-      }
-      if ((Date.now() - Number(lastConversationsLoadAtRef.current || 0)) < 3000) return;
-      if (conversationsLoadingRef.current) return;
-      void loadConversations({ silent: true, force: true });
-    };
-
-    const handleConversationUpdated = (event) => {
-      const envelope = event?.detail || {};
-      const payload = envelope?.payload || {};
-      const conversation = payload?.conversation;
-      const reason = String(payload?.reason || '').trim();
-      if (!conversation?.id) return;
-      upsertConversation(conversation, {
-        promote: reason === 'message_created' || reason === 'created',
-      });
-      const normalizedConversationId = String(conversation?.id || '').trim();
-      if (
-        normalizedConversationId
-        && normalizedConversationId === activeConversationIdRef.current
-        && !messagesLoadingRef.current
-        && (
-          reason === 'message_created'
-          || reason === 'created'
-          || reason === 'updated'
-        )
-      ) {
-        const requestOptions = buildActiveThreadPollLoadOptions(messagesRef.current);
-        void loadMessagesRef.current?.(normalizedConversationId, {
-          ...requestOptions,
-          reason: reason === 'updated'
-            ? 'socket:conversation_updated'
-            : (requestOptions.afterMessageId ? 'socket:conversation_updated:newer' : 'socket:conversation_updated:bootstrap'),
-        });
-      }
-    };
-
-    const handleMessageCreated = (event) => {
-      const envelope = event?.detail || {};
-      const message = envelope?.payload || {};
-      const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
-      if (!message?.id || conversationId !== activeConversationIdRef.current) return;
-      const alreadyRendered = hasThreadMessageEquivalent(messagesRef.current, message);
-      if (String(activeConversation?.kind || '').trim() === 'ai' && !Boolean(message?.is_own)) {
-        const startedAt = Number(aiRunStartedAtByConversationRef.current?.[conversationId] || 0);
-        if (Number.isFinite(startedAt) && startedAt > 0) {
-          logChatDebugRef.current?.('aiRun:replyLatency', {
-            conversationId,
-            messageId: String(message?.id || '').trim(),
-            latencyMs: Math.max(0, Date.now() - startedAt),
-          });
-          aiRunStartedAtByConversationRef.current = {
-            ...aiRunStartedAtByConversationRef.current,
-            [conversationId]: 0,
-          };
-        }
-      }
-      mergeMessageIntoThread(message);
-      syncConversationPreview(conversationId, message, message?.is_own ? { unread_count: 0 } : {});
-      promoteConversationToTop(conversationId);
-      if (message?.is_own) {
-        setViewerLastReadMessageId(String(message.id || '').trim());
-        setViewerLastReadAt(String(message.created_at || '').trim());
-      }
-      if (!hasPendingInitialAnchorForConversation(conversationId)) {
-        queueAutoScroll(
-          threadNearBottomRef.current || (Boolean(message?.is_own) && !alreadyRendered) ? 'bottom' : false,
-          'socket:message_created',
-        );
-      }
-    };
-
-    const handleMessageRead = (event) => {
-      const envelope = event?.detail || {};
-      const payload = envelope?.payload || {};
-      const message = payload?.message;
-      const conversationId = String(
-        envelope?.conversation_id
-        || payload?.conversation_id
-        || message?.conversation_id
-        || ''
-      ).trim();
-      if (conversationId !== activeConversationIdRef.current) return;
-      if (message?.id) {
-        mergeMessageIntoThread(message);
-        return;
-      }
-      if (!String(payload?.message_id || '').trim()) return;
-      applyMessageReadDelta(payload);
-    };
-
-    const handlePresenceUpdated = (event) => {
-      const envelope = event?.detail || {};
-      const payload = envelope?.payload || {};
-      updatePresenceInCollections(payload?.user_id, payload?.presence);
-    };
-
-    const handleTyping = (event) => {
-      const envelope = event?.detail || {};
-      const payload = envelope?.payload || {};
-      const conversationId = String(envelope?.conversation_id || '').trim();
-      const userId = Number(payload?.user_id || 0);
-      const senderName = String(payload?.sender_name || '').trim();
-      if (!conversationId || conversationId !== activeConversationIdRef.current || !userId || userId === Number(user?.id || 0)) {
-        return;
-      }
-      const isTyping = String(envelope?.type || '').trim() === 'chat.typing.started';
-      const key = `${conversationId}:${userId}`;
-      const currentTimeout = typingParticipantsTimeoutsRef.current.get(key);
-      if (currentTimeout) {
-        window.clearTimeout(currentTimeout);
-        typingParticipantsTimeoutsRef.current.delete(key);
-      }
-      if (isTyping) {
-        setTypingUsers((current) => (
-          current.includes(senderName) ? current : [...current, senderName].filter(Boolean)
-        ));
-        const timeoutId = window.setTimeout(() => {
-          setTypingUsers((current) => current.filter((item) => item !== senderName));
-          typingParticipantsTimeoutsRef.current.delete(key);
-        }, 4000);
-        typingParticipantsTimeoutsRef.current.set(key, timeoutId);
-        return;
-      }
-      setTypingUsers((current) => current.filter((item) => item !== senderName));
-    };
-
-    const handleAiRunUpdated = (event) => {
-      const envelope = event?.detail || {};
-      const payload = envelope?.payload || {};
-      const conversationId = String(
-        envelope?.conversation_id
-        || payload?.conversation_id
-        || ''
-      ).trim();
-      if (!conversationId) return;
-      const status = String(payload?.status || '').trim();
-      const botTitle = String(payload?.bot_title || '').trim();
-      setAiStatusByConversation((current) => mergeAiStatusPayload(current, payload, conversationId));
-      if ((status === 'queued' || status === 'running') && String(payload?.run_id || '').trim()) {
-        setTypingUsers((current) => (
-          botTitle && !current.includes(botTitle) ? [...current, botTitle] : current
-        ));
-        aiRunStartedAtByConversationRef.current = {
-          ...aiRunStartedAtByConversationRef.current,
-          [conversationId]: Date.parse(String(payload?.updated_at || '').trim()) || Date.now(),
-        };
-      }
-      if (
-        conversationId === activeConversationIdRef.current
-        && (status === 'completed' || status === 'failed')
-        && !messagesLoadingRef.current
-      ) {
-        const requestOptions = buildActiveThreadPollLoadOptions(messagesRef.current);
-        void loadMessagesRef.current?.(conversationId, {
-          ...requestOptions,
-          reason: requestOptions.afterMessageId ? 'socket:ai-run-updated:newer' : 'socket:ai-run-updated:bootstrap',
-        });
-      }
-      if ((status === 'completed' || status === 'failed') && botTitle) {
-        setTypingUsers((current) => current.filter((item) => item !== botTitle));
-        aiRunStartedAtByConversationRef.current = {
-          ...aiRunStartedAtByConversationRef.current,
-          [conversationId]: 0,
-        };
-      }
-    };
-
-    window.addEventListener(CHAT_SOCKET_ACTIVITY_EVENT, handleSocketActivity);
-    window.addEventListener(CHAT_SOCKET_STATUS_EVENT, handleSocketStatus);
-    window.addEventListener(CHAT_SOCKET_SNAPSHOT_EVENT, handleSnapshot);
-    window.addEventListener(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, handleConversationUpdated);
-    window.addEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleMessageCreated);
-    window.addEventListener(CHAT_SOCKET_MESSAGE_READ_EVENT, handleMessageRead);
-    window.addEventListener(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, handlePresenceUpdated);
-    window.addEventListener(CHAT_SOCKET_TYPING_EVENT, handleTyping);
-    window.addEventListener(CHAT_SOCKET_AI_RUN_UPDATED_EVENT, handleAiRunUpdated);
-
-    return () => {
-      window.removeEventListener(CHAT_SOCKET_ACTIVITY_EVENT, handleSocketActivity);
-      window.removeEventListener(CHAT_SOCKET_STATUS_EVENT, handleSocketStatus);
-      window.removeEventListener(CHAT_SOCKET_SNAPSHOT_EVENT, handleSnapshot);
-      window.removeEventListener(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, handleConversationUpdated);
-      window.removeEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleMessageCreated);
-      window.removeEventListener(CHAT_SOCKET_MESSAGE_READ_EVENT, handleMessageRead);
-      window.removeEventListener(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, handlePresenceUpdated);
-      window.removeEventListener(CHAT_SOCKET_TYPING_EVENT, handleTyping);
-      window.removeEventListener(CHAT_SOCKET_AI_RUN_UPDATED_EVENT, handleAiRunUpdated);
-    };
-  }, [activeConversation?.kind, applyMessageReadDelta, hasPendingInitialAnchorForConversation, loadConversations, loadMessages, logChatDebug, markSocketActivity, mergeMessageIntoThread, promoteConversationToTop, queueAutoScroll, syncConversationPreview, updatePresenceInCollections, upsertConversation, user?.id]);
+  useChatSocketEvents({
+    activeConversation,
+    activeConversationIdRef,
+    aiRunStartedAtByConversationRef,
+    applyMessageReadDelta,
+    buildActiveThreadPollLoadOptions,
+    conversationsLoadingRef,
+    hasPendingInitialAnchorForConversation,
+    hasPersistedThreadMessageEquivalent,
+    lastConversationsLoadAtRef,
+    latestActiveThreadSocketMessageRef,
+    loadConversations,
+    loadMessages,
+    loadMessagesRef,
+    logChatDebug,
+    logChatDebugRef,
+    markSocketActivity,
+    mergeAiStatusPayload,
+    mergeMessageIntoThread,
+    messagesLoadingRef,
+    messagesRef,
+    promoteConversationToTop,
+    queueAutoScroll,
+    setAiStatusByConversation,
+    setSocketStatus,
+    setTypingUsers,
+    setViewerLastReadAt,
+    setViewerLastReadMessageId,
+    shouldSkipActiveThreadRevalidate,
+    skippedInitialSnapshotRefreshRef,
+    skippedInitialSocketRefreshRef,
+    socketStatusRef,
+    syncConversationPreview,
+    threadNearBottomRef,
+    typingParticipantsTimeoutsRef,
+    updatePresenceInCollections,
+    upsertConversation,
+    userId: user?.id,
+  });
 
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || !CHAT_WS_ENABLED) return undefined;
@@ -4288,33 +4252,6 @@ export default function Chat() {
     }, 1800);
     return undefined;
   }, [activeConversationId, deferredMessageText]);
-
-  useEffect(() => {
-    const timeoutId = window.setTimeout(() => {
-      void runSidebarSearch(sidebarQuery);
-    }, SEARCH_MS);
-    return () => window.clearTimeout(timeoutId);
-  }, [runSidebarSearch, sidebarQuery]);
-
-  useEffect(() => {
-    if (!groupOpen) return undefined;
-    if (!String(groupSearch || '').trim() && skipNextGroupSearchRef.current) {
-      skipNextGroupSearchRef.current = false;
-      return undefined;
-    }
-    const timeoutId = window.setTimeout(() => {
-      void loadGroupUsers(groupSearch);
-    }, SEARCH_MS);
-    return () => window.clearTimeout(timeoutId);
-  }, [groupOpen, groupSearch, loadGroupUsers]);
-
-  useEffect(() => {
-    if (!shareOpen || !activeConversationId) return undefined;
-    const timeoutId = window.setTimeout(() => {
-      void loadShareableTasks(activeConversationId, taskSearch);
-    }, SEARCH_MS);
-    return () => window.clearTimeout(timeoutId);
-  }, [activeConversationId, loadShareableTasks, shareOpen, taskSearch]);
 
   useLayoutEffect(() => {
     let cancelled = false;
@@ -4395,8 +4332,12 @@ export default function Chat() {
       : `autoScroll:${scrollMode}`;
 
     if (scrollMode === 'bottom_instant') {
-      setThreadScrollTop(container.scrollHeight - container.clientHeight, {
+      scrollThreadToBottomInstant({
         source: tracedScrollSource,
+        userInitiated: Boolean(scrollMeta?.userInitiated),
+        settleFrames: getChatBottomInstantSettleFrames({
+          userInitiated: Boolean(scrollMeta?.userInitiated),
+        }),
       });
       logChatDebug('autoScroll:bottom_instant', {
         conversationId: activeConversationIdRef.current,
@@ -4408,6 +4349,7 @@ export default function Chat() {
 
     if (scrollMode === 'bottom') {
       threadNearBottomRef.current = true;
+      showJumpToLatestRef.current = false;
       setShowJumpToLatest(false);
     }
     logChatDebug('autoScroll:bottom', {
@@ -4424,6 +4366,7 @@ export default function Chat() {
     schedulePendingInitialAnchorRetry,
     logChatDebug,
     scrollThreadBottomIntoView,
+    scrollThreadToBottomInstant,
     setThreadScrollTop,
   ]);
 
@@ -4451,20 +4394,21 @@ export default function Chat() {
       conversationId: normalizedConversationId,
     });
     void prefetchThreadBootstrap(normalizedConversationId);
+    if (normalizedConversationId && normalizedConversationId === String(activeConversationIdRef.current || '').trim()) {
+      void loadThreadBootstrap(normalizedConversationId, {
+        silent: true,
+        reason: 'openConversation:active-refresh',
+        force: true,
+      });
+    }
     setInfoOpen(false);
     setActiveConversationId(normalizedConversationId);
-    setSearchOpen(false);
-    setMessageSearch('');
-    setMessageSearchResults([]);
-    setMessageSearchHasMore(false);
-    setMessageSearchBeforeId('');
+    resetMessageSearch();
     if (isMobile) {
       openMobileThreadView(normalizedConversationId);
-      setSidebarQuery('');
-      setSearchPeople([]);
-      setSearchChats([]);
+      resetSidebarSearch();
     }
-  }, [isMobile, logChatDebug, openMobileThreadView, prefetchThreadBootstrap]);
+  }, [isMobile, loadThreadBootstrap, logChatDebug, openMobileThreadView, prefetchThreadBootstrap, resetMessageSearch, resetSidebarSearch]);
 
   const handleOpenPeer = useCallback(async (peer) => {
     const peerId = Number(peer?.id || 0);
@@ -4472,10 +4416,7 @@ export default function Chat() {
     setOpeningPeerId(String(peerId));
     try {
       const created = await chatAPI.createDirectConversation(peerId);
-      notifySuccess(`Диалог с ${peer?.full_name || peer?.username || 'пользователем'} готов.`);
-      setSidebarQuery('');
-      setSearchPeople([]);
-      setSearchChats([]);
+      resetSidebarSearch();
       const items = await loadConversations({ silent: true, force: true });
       const createdId = String(created?.id || '');
       const nextConversationId = items.find((item) => item.id === createdId)?.id || createdId || '';
@@ -4488,7 +4429,7 @@ export default function Chat() {
     } finally {
       setOpeningPeerId('');
     }
-  }, [focusComposer, isMobile, loadConversations, notifyApiError, notifySuccess, openMobileThreadView]);
+  }, [focusComposer, isMobile, loadConversations, notifyApiError, openMobileThreadView, resetSidebarSearch]);
 
   const handleOpenAiBot = useCallback(async (bot) => {
     const botId = String(bot?.id || '').trim();
@@ -4532,329 +4473,152 @@ export default function Chat() {
     }
   }, [focusComposer, notifyApiError, openConversation, upsertConversation]);
 
-  const sendMessage = useCallback(async () => {
-    const conversationId = String(activeConversationId || '').trim();
-    const body = String(messageText || '').trim();
-    if (!conversationId || !body) return false;
-    const bodyFormat = detectChatBodyFormat(body);
-    const draftReplyMessage = replyMessage ? { ...replyMessage } : null;
-    const optimisticMessage = createOptimisticTextMessage({
-      conversationId,
-      body,
-      bodyFormat,
-      replyPreview: buildReplyPreview(draftReplyMessage),
-    });
-    const draftStorageKeyForConversation = buildChatDraftKey(user?.id, conversationId);
-    if (draftWriteTimeoutRef.current) {
-      window.clearTimeout(draftWriteTimeoutRef.current);
-      draftWriteTimeoutRef.current = null;
-    }
-    flushDraftToStorage(draftStorageKeyForConversation, '');
-    setMessageText('');
-    setReplyMessage(null);
-    if (optimisticMessage) {
-      // Keep the UI responsive and allow consecutive sends before the server round-trip finishes.
-      upsertThreadMessage(optimisticMessage);
-      syncConversationPreview(conversationId, optimisticMessage, { unread_count: 0 });
-      promoteConversationToTop(conversationId);
-    }
-    cancelPendingInitialAnchor();
-    queueAutoScroll('bottom', 'sendMessage', { userInitiated: true });
-    logChatDebug('sendMessage:autoScroll', {
-      conversationId,
-      optimistic: Boolean(optimisticMessage),
-    });
-    focusComposer({ forceMobile: true });
+  const { handleComposerSend, sendMessage } = useChatComposerSending({
+    activeConversation,
+    activeConversationId,
+    activeConversationIdRef,
+    applyOutgoingThreadMessage,
+    buildReplyPreview,
+    cancelPendingInitialAnchor,
+    createOptimisticTextMessage,
+    draftWriteTimeoutRef,
+    flushDraftToStorage,
+    focusComposer,
+    latestMessageTextRef,
+    logChatDebug,
+    messageText,
+    notifyApiError,
+    readSelectedDatabaseId,
+    removeThreadMessage,
+    replyMessage,
+    setMessageText,
+    setOptimisticAiQueuedStatus,
+    setReplyMessage,
+    setSocketStatus,
+    socketStatusRef,
+    userId: user?.id,
+  });
+
+  const patchAiActionCard = useCallback((messageId, actionCard) => {
+    const normalizedMessageId = String(messageId || actionCard?.message_id || '').trim();
+    if (!normalizedMessageId || !actionCard) return;
+    patchThreadMessage(normalizedMessageId, { action_card: actionCard });
+  }, [patchThreadMessage]);
+
+  const [mailActionEditor, setMailActionEditor] = useState(null);
+
+  const confirmAiAction = useCallback(async (actionCard, message, payloadOverrides = undefined) => {
+    const actionId = String(actionCard?.id || '').trim();
+    if (!actionId) return;
     try {
-      let serverMessage = null;
-      const canSendViaSocket = CHAT_WS_ENABLED && socketStatusRef.current === 'connected';
-      if (canSendViaSocket) {
-        try {
-          const response = await chatSocket.sendMessage(conversationId, body, {
-            client_message_id: optimisticMessage?.client_message_id || undefined,
-            database_id: readSelectedDatabaseId() || undefined,
-            reply_to_message_id: draftReplyMessage?.id || undefined,
-            body_format: bodyFormat,
-          });
-          serverMessage = response?.message || null;
-        } catch (socketError) {
-          logChatDebug('sendMessage:socketFallback', {
-            conversationId,
-            error: String(socketError?.message || socketError),
-          });
-          socketStatusRef.current = 'disconnected';
-          setSocketStatus('disconnected');
-        }
+      const updated = await chatAPI.confirmAiAction(actionId, payloadOverrides);
+      patchAiActionCard(message?.id, updated);
+      if (String(updated?.status || '').trim() === 'expired') {
+        notifyApiError(new Error('Срок действия карточки истек.'), 'Действие не выполнено.');
+      } else if (String(updated?.status || '').trim() === 'failed') {
+        notifyApiError(new Error(updated?.error_text || 'Ошибка выполнения.'), 'Действие не выполнено.');
       }
-      if (!serverMessage) {
-        serverMessage = await chatAPI.sendMessage(conversationId, body, {
-          client_message_id: optimisticMessage?.client_message_id || undefined,
-          reply_to_message_id: draftReplyMessage?.id || undefined,
-          body_format: bodyFormat,
-        });
-      }
-      if (serverMessage?.id) {
-        upsertThreadMessage(serverMessage, { replaceId: optimisticMessage?.id });
-        syncConversationPreview(conversationId, serverMessage, { unread_count: 0 });
-        promoteConversationToTop(conversationId);
-        if (activeConversation?.kind === 'ai') {
-          setOptimisticAiQueuedStatus(conversationId, activeConversation?.title);
-        }
-      } else if (optimisticMessage?.id) {
-        removeThreadMessage(optimisticMessage.id);
-      }
-      return true;
     } catch (error) {
-      if (optimisticMessage?.id) {
-        removeThreadMessage(optimisticMessage.id);
-      }
-      const currentDraftText = String(latestMessageTextRef.current || '').trim();
-      if (activeConversationIdRef.current === conversationId && !currentDraftText) {
-        // Restore only if the user has not already started typing the next message.
-        setMessageText((current) => (String(current || '').trim() ? current : body));
-        setReplyMessage((current) => current ?? draftReplyMessage);
-        focusComposer({ forceMobile: true });
-      } else if (draftStorageKeyForConversation) {
-        try {
-          window.localStorage.setItem(draftStorageKeyForConversation, body);
-        } catch {
-          // Ignore browser storage failures for drafts.
-        }
-      }
-      notifyApiError(error, 'Не удалось отправить сообщение.');
-      return false;
+      notifyApiError(error, 'Не удалось подтвердить действие ITinvent.');
     }
-  }, [activeConversation?.kind, activeConversation?.title, activeConversationId, buildReplyPreview, cancelPendingInitialAnchor, createOptimisticTextMessage, flushDraftToStorage, focusComposer, logChatDebug, messageText, notifyApiError, promoteConversationToTop, queueAutoScroll, replyMessage, removeThreadMessage, setOptimisticAiQueuedStatus, syncConversationPreview, upsertThreadMessage, user?.id]);
+  }, [notifyApiError, patchAiActionCard]);
 
-  const handleComposerSend = useCallback(async () => {
-    return sendMessage();
-  }, [sendMessage]);
-
-  const createGroup = useCallback(async () => {
-    const title = String(groupTitle || '').trim();
-    const memberIds = [...new Set((Array.isArray(groupMemberIds) ? groupMemberIds : []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0))];
-    if (!title || memberIds.length < 2) return;
-    setCreatingConversation(true);
-    try {
-      const created = await chatAPI.createGroupConversation({ title, member_user_ids: memberIds });
-      notifySuccess('Групповой чат создан.');
-      setGroupOpen(false);
-      setGroupTitle('');
-      setGroupSearch('');
-      setGroupUsers([]);
-      setGroupSelectedUsers([]);
-      setGroupMemberIds([]);
-      const items = await loadConversations({ silent: true, force: true });
-      const createdId = String(created?.id || '').trim();
-      const nextConversationId = items.find((item) => item.id === createdId)?.id || createdId || '';
-      setActiveConversationId(nextConversationId);
-      if (isMobile) openMobileThreadView(nextConversationId);
-    } catch (error) {
-      notifyApiError(error, 'Не удалось создать групповой чат.');
-    } finally {
-      setCreatingConversation(false);
-    }
-  }, [groupMemberIds, groupTitle, isMobile, loadConversations, notifyApiError, notifySuccess, openMobileThreadView]);
-
-  const resetGroupDialogState = useCallback(() => {
-    setGroupTitle('');
-    setGroupSearch('');
-    setGroupUsers([]);
-    setGroupSelectedUsers([]);
-    setGroupMemberIds([]);
+  const editAiAction = useCallback((actionCard, message) => {
+    if (!String(actionCard?.action_type || '').startsWith('office.mail.')) return;
+    setMailActionEditor({ actionCard, message });
   }, []);
 
-  const addGroupMember = useCallback((userItem) => {
-    const normalizedUserId = Number(userItem?.id || 0);
-    if (!Number.isFinite(normalizedUserId) || normalizedUserId <= 0) return;
-    setGroupSelectedUsers((current) => {
-      if (current.some((item) => Number(item?.id || 0) === normalizedUserId)) {
-        return current;
-      }
-      return sortByName([...current, userItem]);
-    });
-    setGroupMemberIds((current) => {
-      const nextIds = new Set((Array.isArray(current) ? current : []).map((value) => Number(value)).filter((value) => Number.isFinite(value) && value > 0));
-      nextIds.add(normalizedUserId);
-      return [...nextIds];
-    });
-  }, []);
+  const chatMailAttachmentOptions = useMemo(() => (
+    (Array.isArray(messages) ? messages : []).flatMap((message) => (
+      (Array.isArray(message?.attachments) ? message.attachments : []).map((attachment) => ({
+        message_id: String(message?.id || '').trim(),
+        attachment_id: String(attachment?.id || '').trim(),
+        file_name: String(attachment?.file_name || attachment?.name || '').trim(),
+        file_size: Number(attachment?.file_size || attachment?.size || 0) || 0,
+      }))
+    )).filter((item) => item.message_id && item.attachment_id)
+  ), [messages]);
 
-  const removeGroupMember = useCallback((userId) => {
-    const normalizedUserId = Number(userId || 0);
-    if (!Number.isFinite(normalizedUserId) || normalizedUserId <= 0) return;
-    setGroupSelectedUsers((current) => current.filter((item) => Number(item?.id || 0) !== normalizedUserId));
-    setGroupMemberIds((current) => current.filter((value) => Number(value) !== normalizedUserId));
-  }, []);
+  const submitMailActionEdit = useCallback(async (payloadOverrides) => {
+    const actionCard = mailActionEditor?.actionCard;
+    const message = mailActionEditor?.message;
+    const actionId = String(actionCard?.id || '').trim();
+    if (!actionId) return;
+    const updated = await chatAPI.confirmAiAction(actionId, payloadOverrides);
+    patchAiActionCard(message?.id, updated);
+    if (String(updated?.status || '').trim() !== 'confirmed') {
+      throw new Error(updated?.error_text || 'Письмо не отправлено.');
+    }
+    setMailActionEditor(null);
+  }, [mailActionEditor, patchAiActionCard]);
 
-  const shareTask = useCallback(async (taskId) => {
-    const conversationId = String(activeConversationId || '').trim();
-    const normalizedTaskId = String(taskId || '').trim();
-    if (!conversationId || !normalizedTaskId) return;
-    setSharingTaskId(normalizedTaskId);
+  const cancelAiAction = useCallback(async (actionCard, message) => {
+    const actionId = String(actionCard?.id || '').trim();
+    if (!actionId) return;
     try {
-      const serverMessage = await chatAPI.shareTask(conversationId, normalizedTaskId, {
-        reply_to_message_id: replyMessage?.id || undefined,
-      });
-      notifySuccess('Задача отправлена в чат.');
-      cancelPendingInitialAnchor();
-      queueAutoScroll('bottom', 'shareTask', { userInitiated: true });
-      logChatDebug('shareTask:autoScroll', {
-        conversationId,
-      });
-      setReplyMessage(null);
-      resetShareDialog();
-      if (serverMessage?.id) {
-        upsertThreadMessage(serverMessage);
-        syncConversationPreview(conversationId, serverMessage, { unread_count: 0 });
-        promoteConversationToTop(conversationId);
-      }
+      const updated = await chatAPI.cancelAiAction(actionId);
+      patchAiActionCard(message?.id, updated);
     } catch (error) {
-      notifyApiError(error, 'Не удалось отправить задачу в чат.');
-    } finally {
-      setSharingTaskId('');
+      notifyApiError(error, 'Не удалось отменить действие ITinvent.');
     }
-  }, [activeConversationId, cancelPendingInitialAnchor, logChatDebug, notifyApiError, notifySuccess, promoteConversationToTop, queueAutoScroll, replyMessage, resetShareDialog, syncConversationPreview, upsertThreadMessage]);
+  }, [notifyApiError, patchAiActionCard]);
 
-  const handleSelectFiles = useCallback((event) => {
-    if (preparingFiles || sendingFiles) return;
-    const files = Array.from(event?.target?.files || []);
-    if (event?.target) event.target.value = '';
-    void queueSelectedFiles(files);
-  }, [preparingFiles, queueSelectedFiles, sendingFiles]);
+  const { shareTask: shareTaskFromHook } = useChatTaskSharing({
+    activeConversationId,
+    applyOutgoingThreadMessage,
+    cancelPendingInitialAnchor,
+    logChatDebug,
+    notifyApiError,
+    replyMessage,
+    resetShareDialog,
+    setReplyMessage,
+    setSharingTaskId,
+  });
 
-  const openFilePicker = useCallback(() => {
-    void loadChatDialogsModule();
-    setThreadMenuAnchor(null);
-    setComposerMenuAnchor(null);
-    setEmojiAnchorEl(null);
-    if (preparingFiles || sendingFiles) return;
-    if (selectedFiles.length > 0) {
-      setFileDialogOpen(true);
-      return;
-    }
-    fileInputRef.current?.click?.();
-  }, [preparingFiles, selectedFiles.length, sendingFiles]);
-
-  const openMediaPicker = useCallback(() => {
-    void loadChatDialogsModule();
-    setComposerMenuAnchor(null);
-    setEmojiAnchorEl(null);
-    if (preparingFiles || sendingFiles) return;
-    if (selectedFiles.length > 0) {
-      setFileDialogOpen(true);
-      return;
-    }
-    mediaFileInputRef.current?.click?.();
-  }, [preparingFiles, selectedFiles.length, sendingFiles]);
-
-  const sendFilesLegacy = useCallback(async () => {
-    const conversationId = String(activeConversationId || '').trim();
-    if (!conversationId || selectedFiles.length === 0) return;
-    setSendingFiles(true);
-    try {
-      await chatAPI.sendFiles(conversationId, selectedUploadItems, {
-        body: fileCaption,
-        reply_to_message_id: replyMessage?.id || undefined,
-      });
-      notifySuccess('Файлы отправлены в чат.');
-      setSelectedUploadItems([]);
-      setFileCaption('');
-      setFileDialogOpen(false);
-      setReplyMessage(null);
-      cancelPendingInitialAnchor();
-      queueAutoScroll('bottom', 'sendFiles:fallback', { userInitiated: true });
-      logChatDebug('sendFiles:autoScroll', {
-        conversationId,
-      });
-      if (!CHAT_WS_ENABLED) {
-        await loadMessages(conversationId, { silent: true, reason: 'sendFiles:fallback_refresh', force: true });
-        promoteConversationToTop(conversationId);
-      }
-    } catch (error) {
-      notifyApiError(error, 'Не удалось отправить файлы в чат.');
-    } finally {
-      setSendingFiles(false);
-    }
-  }, [activeConversationId, cancelPendingInitialAnchor, fileCaption, loadMessages, logChatDebug, notifyApiError, notifySuccess, promoteConversationToTop, queueAutoScroll, replyMessage, selectedFiles.length, selectedUploadItems]);
-  void sendFilesLegacy;
-
-  const sendFiles = useCallback(async () => {
-    const conversationId = String(activeConversationId || '').trim();
-    if (!conversationId || selectedFiles.length === 0 || preparingFiles) return;
-
-    const totalBytes = selectedUploadItems.reduce(
-      (sum, item) => sum + Number(item?.transferSize || item?.transferFile?.size || item?.file?.size || 0),
-      0,
-    );
-    const abortController = typeof AbortController === 'function' ? new AbortController() : null;
-    const draftReplyMessage = replyMessage ? { ...replyMessage } : null;
-    const optimisticMessage = createOptimisticFileMessage({
-      conversationId,
-      files: selectedFiles,
-      body: fileCaption,
-      replyPreview: buildReplyPreview(draftReplyMessage),
-    });
-    fileUploadAbortRef.current = abortController;
-    setSendingFiles(true);
-    setFileUploadProgress(0);
-    if (optimisticMessage) {
-      upsertThreadMessage(optimisticMessage);
-      syncConversationPreview(conversationId, optimisticMessage, { unread_count: 0 });
-      promoteConversationToTop(conversationId);
-    }
-
-    try {
-      const serverMessage = await chatAPI.sendFiles(conversationId, selectedUploadItems, {
-        body: fileCaption,
-        reply_to_message_id: draftReplyMessage?.id || undefined,
-        signal: abortController?.signal,
-        onUploadProgress: (progressEvent) => {
-          const loaded = Number(progressEvent?.loaded || 0);
-          const total = Number(progressEvent?.total || totalBytes || 0);
-          if (total <= 0) return;
-          const nextProgress = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
-          setFileUploadProgress(nextProgress);
-          if (optimisticMessage?.id) {
-            patchThreadMessage(optimisticMessage.id, { uploadProgress: nextProgress });
-          }
-        },
-      });
-      notifySuccess('Файлы отправлены в чат.');
-      setSelectedUploadItems([]);
-      setFileCaption('');
-      setFileDialogOpen(false);
-      setFileUploadProgress(0);
-      setReplyMessage(null);
-      cancelPendingInitialAnchor();
-      queueAutoScroll('bottom', 'sendFiles', { userInitiated: true });
-      logChatDebug('sendFiles:autoScroll', {
-        conversationId,
-      });
-      if (serverMessage?.id) {
-        upsertThreadMessage(serverMessage, { replaceId: optimisticMessage?.id });
-        syncConversationPreview(conversationId, serverMessage, { unread_count: 0 });
-        promoteConversationToTop(conversationId);
-        if (activeConversation?.kind === 'ai') {
-          setOptimisticAiQueuedStatus(conversationId, activeConversation?.title);
-        }
-      } else if (optimisticMessage?.id) {
-        removeThreadMessage(optimisticMessage.id);
-      }
-    } catch (error) {
-      if (optimisticMessage?.id) {
-        removeThreadMessage(optimisticMessage.id);
-      }
-      if (String(error?.code || '') !== 'ERR_CANCELED') {
-        notifyApiError(error, 'Не удалось отправить файлы в чат.');
-      }
-    } finally {
-      revokeObjectUrls(optimisticMessage?.optimisticObjectUrls);
-      fileUploadAbortRef.current = null;
-      setSendingFiles(false);
-      setFileUploadProgress(0);
-    }
-  }, [activeConversation?.kind, activeConversation?.title, activeConversationId, buildReplyPreview, cancelPendingInitialAnchor, createOptimisticFileMessage, fileCaption, logChatDebug, notifyApiError, notifySuccess, patchThreadMessage, preparingFiles, promoteConversationToTop, queueAutoScroll, removeThreadMessage, replyMessage, revokeObjectUrls, selectedFiles, selectedUploadItems, setOptimisticAiQueuedStatus, syncConversationPreview, upsertThreadMessage]);
+  const {
+    clearSelectedFiles,
+    closeFileDialog,
+    handleSelectFiles,
+    openFilePicker,
+    openMediaPicker,
+    queueSelectedFiles,
+    removeSelectedFile,
+    sendFiles,
+  } = useChatFileSending({
+    activeConversation,
+    activeConversationId,
+    applyOutgoingThreadMessage,
+    buildReplyPreview,
+    cancelPendingInitialAnchor,
+    createOptimisticFileMessage,
+    fileCaption,
+    fileInputRef,
+    fileUploadAbortRef,
+    loadChatDialogsModule,
+    logChatDebug,
+    mediaFileInputRef,
+    notifyApiError,
+    notifyWarning,
+    patchThreadMessage,
+    preparingFiles,
+    removeThreadMessage,
+    replyMessage,
+    revokeObjectUrls,
+    selectedFiles,
+    selectedUploadItems,
+    sendingFiles,
+    setComposerMenuAnchor,
+    setEmojiAnchorEl,
+    setFileCaption,
+    setFileDialogOpen,
+    setFileUploadProgress,
+    setOptimisticAiQueuedStatus,
+    setPreparingFiles,
+    setReplyMessage,
+    setSelectedUploadItems,
+    setSendingFiles,
+    setThreadMenuAnchor,
+  });
 
   const handleComposerKeyDown = useCallback((event) => {
     if (
@@ -4888,282 +4652,91 @@ export default function Chat() {
     }
   }, [notifyApiError]);
 
-  const handleReplyMessage = useCallback((message) => {
-    if (!message || !message.id) return;
-    setReplyMessage(message);
-    focusComposer();
-  }, [focusComposer]);
+  const {
+    clearSelectedMessages,
+    closeMessageMenu,
+    handleCopyMessage,
+    handleCopyMessageLink,
+    handleOpenAttachmentFromMessageMenu,
+    handleOpenReadsFromMessageMenu,
+    handleOpenTaskFromMessageMenu,
+    handleReplyFromMessageMenu,
+    handleReplyMessage,
+    handleReportMessageFromMenu,
+    handleSelectMessageFromMenu,
+    handleTogglePinMessageFromMenu,
+    openMessageMenu,
+    startMessageSelection,
+    toggleMessageSelection,
+  } = useChatMessageMenuActions({
+    activeConversationIdRef,
+    buildPinnedMessagePayload,
+    focusComposer,
+    loadChatDialogsModule,
+    notifyInfo,
+    notifyWarning,
+    openMediaViewer,
+    openMessageReads,
+    openTaskFromChat,
+    persistPinnedMessage,
+    pinnedMessage,
+    setComposerMenuAnchor,
+    setMessageMenuAnchor,
+    setMessageMenuMessage,
+    setReplyMessage,
+    setSelectedMessageIds,
+    setThreadMenuAnchor,
+  });
 
-  const closeMessageMenu = useCallback(() => {
-    setMessageMenuAnchor(null);
-    setMessageMenuMessage(null);
-  }, []);
+  const {
+    copySelectedMessages: selectedCopySelectedMessages,
+    openForwardSelectedMessages: selectedOpenForwardSelectedMessages,
+    replyToSelectedMessage: selectedReplyToSelectedMessage,
+  } = useChatSelectedMessageActions({
+    clearSelectedMessages,
+    focusComposer,
+    loadChatDialogsModule,
+    normalizeForwardMessageQueue,
+    notifyWarning,
+    selectedMessages,
+    setComposerMenuAnchor,
+    setForwardConversationQuery,
+    setForwardMessages,
+    setForwardOpen,
+    setMessageMenuAnchor,
+    setMessageMenuMessage,
+    setReplyMessage,
+    setThreadMenuAnchor,
+  });
 
-  const clearSelectedMessages = useCallback(() => {
-    setSelectedMessageIds([]);
-  }, []);
-
-  const toggleMessageSelection = useCallback((message) => {
-    const messageId = String(message?.id || '').trim();
-    if (!messageId) return;
-    setSelectedMessageIds((current) => {
-      const source = Array.isArray(current) ? current : [];
-      if (source.includes(messageId)) {
-        return source.filter((id) => id !== messageId);
-      }
-      return [...source, messageId];
-    });
-  }, []);
-
-  const startMessageSelection = useCallback((message) => {
-    const messageId = String(message?.id || '').trim();
-    if (!messageId) return;
-    setMessageMenuAnchor(null);
-    setMessageMenuMessage(null);
-    setComposerMenuAnchor(null);
-    setSelectedMessageIds((current) => {
-      const source = Array.isArray(current) ? current : [];
-      return source.includes(messageId) ? source : [...source, messageId];
-    });
-  }, []);
-
-  const replyToSelectedMessage = useCallback(() => {
-    if (selectedMessages.length !== 1) return;
-    const [message] = selectedMessages;
-    if (!message?.id) return;
-    setReplyMessage(message);
-    clearSelectedMessages();
-    focusComposer({ forceMobile: true });
-  }, [clearSelectedMessages, focusComposer, selectedMessages]);
-
-  const copySelectedMessages = useCallback(async () => {
-    const text = selectedMessages
-      .map((message) => String(getMessagePreview(message) || '').trim())
-      .filter(Boolean)
-      .join('\n\n');
-    if (!text) {
-      notifyWarning('В выбранных сообщениях нет текста для копирования.');
-      return;
-    }
-    if (!navigator?.clipboard?.writeText) {
-      notifyWarning('Буфер обмена недоступен в этом браузере.');
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(text);
-      notifySuccess(selectedMessages.length === 1 ? 'Сообщение скопировано.' : 'Сообщения скопированы.');
-      clearSelectedMessages();
-    } catch {
-      notifyWarning('Не удалось скопировать выбранные сообщения.');
-    }
-  }, [clearSelectedMessages, notifySuccess, notifyWarning, selectedMessages]);
-
-  const openForwardSelectedMessages = useCallback(() => {
-    if (selectedMessages.length <= 0) return;
-    void loadChatDialogsModule();
-    setThreadMenuAnchor(null);
-    setMessageMenuAnchor(null);
-    setMessageMenuMessage(null);
-    setComposerMenuAnchor(null);
-    setForwardConversationQuery('');
-    setForwardMessages(normalizeForwardMessageQueue(selectedMessages));
-    setForwardOpen(true);
-  }, [selectedMessages]);
-
-  const openMessageMenu = useCallback((message, anchorTarget) => {
-    void loadChatDialogsModule();
-    if (!message?.id || !anchorTarget) return;
-    setThreadMenuAnchor(null);
-    setComposerMenuAnchor(null);
-    setMessageMenuMessage(message);
-    if (anchorTarget?.nodeType === 1) {
-      setMessageMenuAnchor({
-        anchorEl: anchorTarget,
-        anchorPosition: null,
-      });
-      return;
-    }
-    const anchorEl = anchorTarget?.anchorEl?.nodeType === 1 ? anchorTarget.anchorEl : null;
-    const anchorPosition = anchorTarget?.anchorPosition && Number.isFinite(Number(anchorTarget.anchorPosition.top))
-      && Number.isFinite(Number(anchorTarget.anchorPosition.left))
-      ? {
-          top: Math.round(Number(anchorTarget.anchorPosition.top || 0)),
-          left: Math.round(Number(anchorTarget.anchorPosition.left || 0)),
-        }
-      : null;
-    if (!anchorEl && !anchorPosition) return;
-    setMessageMenuAnchor({
-      anchorEl,
-      anchorPosition,
-      anchorReference: anchorPosition ? 'anchorPosition' : 'anchorEl',
-    });
-  }, []);
-
-  const handleReplyFromMessageMenu = useCallback((message) => {
-    closeMessageMenu();
-    handleReplyMessage(message);
-  }, [closeMessageMenu, handleReplyMessage]);
-
-  const handleCopyMessage = useCallback(async (message) => {
-    closeMessageMenu();
-    const text = String(getMessagePreview(message) || '').trim();
-    if (!text) return;
-    if (!navigator?.clipboard?.writeText) {
-      notifyWarning('Буфер обмена недоступен в этом браузере.');
-      return;
-    }
-    try {
-      await navigator.clipboard.writeText(text);
-      notifySuccess('Сообщение скопировано.');
-    } catch {
-      notifyWarning('Не удалось скопировать сообщение.');
-    }
-  }, [closeMessageMenu, notifySuccess, notifyWarning]);
-
-  const handleCopyMessageLink = useCallback(async (message) => {
-    closeMessageMenu();
-    const messageId = String(message?.id || '').trim();
-    const conversationId = String(message?.conversation_id || activeConversationIdRef.current || '').trim();
-    if (!messageId || !conversationId) return;
-    if (!navigator?.clipboard?.writeText || typeof window === 'undefined') {
-      notifyWarning('Р‘СѓС„РµСЂ РѕР±РјРµРЅР° РЅРµРґРѕСЃС‚СѓРїРµРЅ РІ СЌС‚РѕРј Р±СЂР°СѓР·РµСЂРµ.');
-      return;
-    }
-    try {
-      const link = new URL('/chat', window.location.origin);
-      link.searchParams.set('conversation', conversationId);
-      link.searchParams.set('message', messageId);
-      await navigator.clipboard.writeText(link.toString());
-      notifySuccess('РЎСЃС‹Р»РєР° РЅР° СЃРѕРѕР±С‰РµРЅРёРµ СЃРєРѕРїРёСЂРѕРІР°РЅР°.');
-    } catch {
-      notifyWarning('РќРµ СѓРґР°Р»РѕСЃСЊ СЃРєРѕРїРёСЂРѕРІР°С‚СЊ СЃСЃС‹Р»РєСѓ РЅР° СЃРѕРѕР±С‰РµРЅРёРµ.');
-    }
-  }, [closeMessageMenu, notifySuccess, notifyWarning]);
-
-  const handleForwardMessageFromMenu = useCallback((message) => {
-    closeMessageMenu();
-    const forwardMessageId = String(message?.id || '').trim();
-    if (!forwardMessageId) return;
-    void loadChatDialogsModule();
-    setThreadMenuAnchor(null);
-    setMessageMenuAnchor(null);
-    setMessageMenuMessage(null);
-    setComposerMenuAnchor(null);
-    setForwardConversationQuery('');
-    setForwardMessages(normalizeForwardMessageQueue(message));
-    setForwardOpen(true);
-  }, [closeMessageMenu]);
-
-  const handleTogglePinMessageFromMenu = useCallback((message) => {
-    closeMessageMenu();
-    const nextPinnedMessage = buildPinnedMessagePayload(message);
-    if (!nextPinnedMessage) return;
-    const currentPinnedMessageId = String(pinnedMessage?.id || '').trim();
-    // Message pinning stays local for this chat/user until a server-side pinned-message model exists.
-    if (currentPinnedMessageId && currentPinnedMessageId === nextPinnedMessage.id) {
-      persistPinnedMessage(null);
-      return;
-    }
-    persistPinnedMessage(nextPinnedMessage);
-  }, [buildPinnedMessagePayload, closeMessageMenu, persistPinnedMessage, pinnedMessage?.id]);
-
-  const handleForwardMessageToConversation = useCallback(async (conversationId) => {
-    const targetConversationId = String(conversationId || '').trim();
-    const messagesToForward = normalizeForwardMessageQueue(forwardMessages);
-    if (!targetConversationId || messagesToForward.length <= 0 || forwardingConversationId) return;
-    setForwardingConversationId(targetConversationId);
-    try {
-      setForwardOpen(false);
-      setForwardConversationQuery('');
-      const forwardedMessages = [];
-      for (const sourceMessage of messagesToForward) {
-        const sourceMessageId = String(sourceMessage?.id || '').trim();
-        if (!sourceMessageId) continue;
-        // Keep order identical to the selected thread order.
-        // eslint-disable-next-line no-await-in-loop
-        const forwardedMessage = await chatAPI.forwardMessage(targetConversationId, sourceMessageId);
-        if (forwardedMessage?.id) forwardedMessages.push(forwardedMessage);
-      }
-
-      setForwardMessages([]);
-      clearSelectedMessages();
-      setReplyMessage(null);
-
-      if (activeConversationIdRef.current === targetConversationId) {
-        forwardedMessages.forEach((item) => {
-          upsertThreadMessage(item);
-          syncConversationPreview(targetConversationId, item, { unread_count: 0 });
-        });
-        promoteConversationToTop(targetConversationId);
-        queueAutoScroll('bottom', 'forwardMessages', { userInitiated: true });
-      } else {
-        void loadConversations({ silent: true, force: true });
-      }
-
-      openConversation(targetConversationId);
-      notifySuccess(forwardedMessages.length === 1 ? 'Сообщение переслано.' : `Переслано сообщений: ${forwardedMessages.length}.`);
-    } catch (error) {
-      notifyApiError(error, messagesToForward.length === 1 ? 'Не удалось переслать сообщение.' : 'Не удалось переслать выбранные сообщения.');
-      setForwardOpen(true);
-    } finally {
-      setForwardingConversationId('');
-    }
-  }, [clearSelectedMessages, forwardMessages, forwardingConversationId, loadConversations, notifyApiError, notifySuccess, openConversation, promoteConversationToTop, queueAutoScroll, syncConversationPreview, upsertThreadMessage]);
-
-  const handleReportMessageFromMenu = useCallback(async (message) => {
-    closeMessageMenu();
-    const messageId = String(message?.id || '').trim();
-    const conversationId = String(message?.conversation_id || activeConversationIdRef.current || '').trim();
-    if (!messageId || !conversationId || typeof window === 'undefined') {
-      notifyInfo('Автоматическая отправка жалоб пока не подключена.', { title: 'Пожаловаться' });
-      return;
-    }
-    const link = new URL('/chat', window.location.origin);
-    link.searchParams.set('conversation', conversationId);
-    link.searchParams.set('message', messageId);
-    const preview = String(getMessagePreview(message) || '').trim();
-    const senderName = String(message?.sender?.full_name || message?.sender?.username || '').trim();
-    const reportPayload = [
-      'Жалоба на сообщение',
-      senderName ? `Отправитель: ${senderName}` : '',
-      preview ? `Текст: ${preview}` : '',
-      `Ссылка: ${link.toString()}`,
-    ].filter(Boolean).join('\n');
-    if (navigator?.clipboard?.writeText) {
-      try {
-        await navigator.clipboard.writeText(reportPayload);
-        notifyInfo('Данные сообщения скопированы. Жалобу можно передать модератору вручную.', { title: 'Пожаловаться' });
-        return;
-      } catch {
-        // Fall through to the generic hint below.
-      }
-    }
-    notifyInfo('Автоматическая отправка жалоб пока не подключена.', { title: 'Пожаловаться' });
-  }, [closeMessageMenu, notifyInfo]);
-
-  const handleSelectMessageFromMenu = useCallback((message) => {
-    closeMessageMenu();
-    startMessageSelection(message);
-  }, [closeMessageMenu, startMessageSelection]);
-
-  const handleOpenReadsFromMessageMenu = useCallback((message) => {
-    closeMessageMenu();
-    void openMessageReads(message);
-  }, [closeMessageMenu, openMessageReads]);
-
-  const handleOpenAttachmentFromMessageMenu = useCallback((message) => {
-    closeMessageMenu();
-    const firstAttachment = Array.isArray(message?.attachments) ? message.attachments[0] : null;
-    if (!message?.id || !firstAttachment?.id) return;
-    openMediaViewer(message.id, firstAttachment);
-  }, [closeMessageMenu, openMediaViewer]);
-
-  const handleOpenTaskFromMessageMenu = useCallback((message) => {
-    closeMessageMenu();
-    const taskId = String(message?.task_preview?.id || '').trim();
-    if (!taskId) return;
-    openTaskFromChat(taskId);
-  }, [closeMessageMenu, openTaskFromChat]);
+  const {
+    handleForwardMessageFromMenu: forwardHookMessageFromMenu,
+    handleForwardMessageToConversation: forwardHookMessageToConversation,
+  } = useChatForwardMessages({
+    activeConversationIdRef,
+    clearSelectedMessages,
+    closeMessageMenu,
+    forwardMessages,
+    forwardingConversationId,
+    loadChatDialogsModule,
+    loadConversations,
+    normalizeForwardMessageQueue,
+    notifyApiError,
+    openConversation,
+    promoteConversationToTop,
+    queueAutoScroll,
+    setComposerMenuAnchor,
+    setForwardConversationQuery,
+    setForwardMessages,
+    setForwardOpen,
+    setForwardingConversationId,
+    setMessageMenuAnchor,
+    setMessageMenuMessage,
+    setReplyMessage,
+    setThreadMenuAnchor,
+    syncConversationPreview,
+    upsertThreadMessages,
+  });
 
   const handleUnpinPinnedMessage = useCallback(() => {
     persistPinnedMessage(null);
@@ -5173,22 +4746,6 @@ export default function Chat() {
     setReplyMessage(null);
     focusComposer();
   }, [focusComposer]);
-
-  const openSearchDialog = useCallback(() => {
-    void loadChatDialogsModule();
-    setThreadMenuAnchor(null);
-    setMessageMenuAnchor(null);
-    setMessageMenuMessage(null);
-    setSearchOpen(true);
-    setMessageSearchResults([]);
-    setMessageSearchHasMore(false);
-    setMessageSearchBeforeId('');
-  }, []);
-
-  const loadMoreSearchResults = useCallback(async () => {
-    if (!messageSearchHasMore || messageSearchLoading) return;
-    await runMessageSearch({ reset: false });
-  }, [messageSearchHasMore, messageSearchLoading, runMessageSearch]);
 
   const loadOlderMessages = useCallback(async () => {
     const firstMessageId = String(messagesRef.current[0]?.id || '').trim();
@@ -5222,12 +4779,13 @@ export default function Chat() {
         clearInitialViewportGuard(likelyManualScroll ? 'manual_scroll:suppressed_override' : 'manual_scroll');
       }
     }
-    syncThreadViewportState(node);
-  }, [cancelPendingInitialAnchor, clearInitialViewportGuard, isInitialViewportGuardActive, logChatDebug, syncThreadViewportState]);
+    scheduleThreadViewportStateSync(node);
+  }, [cancelPendingInitialAnchor, clearInitialViewportGuard, isInitialViewportGuardActive, logChatDebug, scheduleThreadViewportStateSync]);
 
   const jumpToLatest = useCallback(async () => {
     cancelPendingInitialAnchor();
     threadNearBottomRef.current = true;
+    showJumpToLatestRef.current = false;
     setShowJumpToLatest(false);
     queueAutoScroll('bottom', 'jumpToLatest', { userInitiated: true });
     logChatDebug('jumpToLatest', {
@@ -5273,60 +4831,6 @@ export default function Chat() {
     setFileDragActive(false);
     void queueSelectedFiles(Array.from(event.dataTransfer.files || []));
   }, [queueSelectedFiles]);
-
-  const closeFileDialog = useCallback(() => {
-    if (preparingFiles || sendingFiles) return;
-    setFileDialogOpen(false);
-    setSelectedUploadItems([]);
-    setFileCaption('');
-    setFileUploadProgress(0);
-  }, [preparingFiles, sendingFiles]);
-
-  const clearSelectedFiles = useCallback(() => {
-    if (preparingFiles || sendingFiles) return;
-    setFileDialogOpen(false);
-    setSelectedUploadItems([]);
-    setFileCaption('');
-    setFileUploadProgress(0);
-  }, [preparingFiles, sendingFiles]);
-
-  const removeSelectedFile = useCallback((fileIndex) => {
-    if (preparingFiles || sendingFiles) return;
-    const normalizedIndex = Number(fileIndex);
-    if (!Number.isInteger(normalizedIndex) || normalizedIndex < 0) return;
-    setSelectedUploadItems((current) => {
-      const next = (Array.isArray(current) ? current : []).filter((_, index) => index !== normalizedIndex);
-      if (next.length === 0) {
-        setFileDialogOpen(false);
-        setFileCaption('');
-        setFileUploadProgress(0);
-      }
-      return next;
-    });
-  }, [preparingFiles, sendingFiles]);
-
-  const closeGroupDialog = useCallback(() => {
-    if (creatingConversation) return;
-    setGroupOpen(false);
-    resetGroupDialogState();
-  }, [creatingConversation, resetGroupDialogState]);
-
-  const openGroupDialog = useCallback(() => {
-    void loadChatDialogsModule();
-    resetGroupDialogState();
-    skipNextGroupSearchRef.current = true;
-    setGroupOpen(true);
-    void loadGroupUsers('');
-  }, [loadGroupUsers, resetGroupDialogState]);
-
-  const openShareDialog = useCallback(() => {
-    void loadChatDialogsModule();
-    setThreadMenuAnchor(null);
-    setMessageMenuAnchor(null);
-    setMessageMenuMessage(null);
-    setComposerMenuAnchor(null);
-    setShareOpen(true);
-  }, []);
 
   const closeForwardDialog = useCallback(() => {
     if (forwardingConversationId) return;
@@ -5436,6 +4940,7 @@ export default function Chat() {
       ui={ui}
       isMobile={isMobile}
       compactMobile={isPhone}
+      mobileInteractionsEnabled={isMobile}
       activeConversation={activeConversation}
       activeConversationId={activeConversationId}
       navigate={navigate}
@@ -5461,6 +4966,9 @@ export default function Chat() {
       onOpenAttachmentPreview={openMediaViewer}
       onReplyMessage={handleReplyMessage}
       onOpenMessageMenu={openMessageMenu}
+      onConfirmAction={confirmAiAction}
+      onCancelAction={cancelAiAction}
+      onEditAction={editAiAction}
       selectedMessageIds={selectedVisibleMessageIds}
       selectedMessageCount={selectedMessageCount}
       canReplySelectedMessage={selectedMessageCount === 1}
@@ -5468,9 +4976,9 @@ export default function Chat() {
       onToggleMessageSelection={toggleMessageSelection}
       onStartMessageSelection={startMessageSelection}
       onClearMessageSelection={clearSelectedMessages}
-      onReplySelectedMessage={replyToSelectedMessage}
-      onCopySelectedMessages={copySelectedMessages}
-      onForwardSelectedMessages={openForwardSelectedMessages}
+      onReplySelectedMessage={selectedReplyToSelectedMessage}
+      onCopySelectedMessages={selectedCopySelectedMessages}
+      onForwardSelectedMessages={selectedOpenForwardSelectedMessages}
       onOpenComposerMenu={(event) => {
         void loadChatDialogsModule();
         setComposerMenuAnchor(event.currentTarget);
@@ -5491,6 +4999,8 @@ export default function Chat() {
       onComposerDrop={handleComposerDrop}
       onComposerDragOver={handleComposerDragOver}
       onComposerDragLeave={handleComposerDragLeave}
+      mentionCandidates={mentionCandidates}
+      onSearchMentionPeople={searchMentionPeople}
       isFileDragActive={fileDragActive}
       showJumpToLatest={showJumpToLatest}
       onJumpToLatest={jumpToLatest}
@@ -5548,6 +5058,13 @@ export default function Chat() {
             multiple
             accept="image/*,video/*"
             onChange={handleSelectFiles}
+          />
+          <AiMailActionEditDialog
+            open={Boolean(mailActionEditor)}
+            actionCard={mailActionEditor?.actionCard}
+            availableAttachments={chatMailAttachmentOptions}
+            onClose={() => setMailActionEditor(null)}
+            onSubmit={submitMailActionEdit}
           />
           {!CHAT_FEATURE_ENABLED ? (
             <Alert severity="info" sx={{ borderRadius: isPhone ? 0 : 3, py: isPhone ? 0.15 : undefined }}>
@@ -5712,7 +5229,7 @@ export default function Chat() {
                 onTogglePinMessageFromMenu={handleTogglePinMessageFromMenu}
                 messageMenuPinned={String(messageMenuMessage?.id || '').trim() === String(pinnedMessage?.id || '').trim()}
                 onCopyMessageLink={handleCopyMessageLink}
-                onForwardMessageFromMenu={handleForwardMessageFromMenu}
+                onForwardMessageFromMenu={forwardHookMessageFromMenu}
                 onReportMessageFromMenu={handleReportMessageFromMenu}
                 onSelectMessageFromMenu={handleSelectMessageFromMenu}
                 onOpenReadsFromMessageMenu={handleOpenReadsFromMessageMenu}
@@ -5757,7 +5274,7 @@ export default function Chat() {
                 onAddGroupMember={addGroupMember}
                 onRemoveGroupMember={removeGroupMember}
                 creatingConversation={creatingConversation}
-                groupCreateDisabled={creatingConversation || !String(groupTitle || '').trim() || groupMemberIds.length < 2}
+                groupCreateDisabled={groupCreateDisabled}
                 onCreateGroup={createGroup}
                 shareOpen={shareOpen}
                 onCloseShare={resetShareDialog}
@@ -5766,7 +5283,7 @@ export default function Chat() {
                 shareableTasks={shareableTasks}
                 shareableLoading={shareableLoading}
                 sharingTaskId={sharingTaskId}
-                onShareTask={shareTask}
+                onShareTask={shareTaskFromHook}
                 forwardOpen={forwardOpen}
                 onCloseForward={closeForwardDialog}
                 forwardSelectionCount={forwardMessages.length}
@@ -5775,7 +5292,7 @@ export default function Chat() {
                 forwardTargets={forwardTargets}
                 forwardTargetsLoading={false}
                 forwardingConversationId={forwardingConversationId}
-                onForwardMessageToConversation={handleForwardMessageToConversation}
+                onForwardMessageToConversation={forwardHookMessageToConversation}
                 onOpenAttachmentPreview={openMediaViewer}
                 attachmentPreview={attachmentPreview}
                 onCloseAttachmentPreview={closeAttachmentPreview}
@@ -5791,7 +5308,7 @@ export default function Chat() {
                 onUpdateConversationSettings={updateConversationSettings}
                 onOpenTask={openTaskFromChat}
                 searchOpen={searchOpen}
-                onCloseSearch={() => setSearchOpen(false)}
+                onCloseSearch={closeSearchDialog}
                 messageSearch={messageSearch}
                 onMessageSearchChange={setMessageSearch}
                 messageSearchResults={messageSearchResults}

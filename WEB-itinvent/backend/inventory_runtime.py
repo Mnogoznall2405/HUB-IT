@@ -82,6 +82,7 @@ class InventoryPayload(BaseModel):
     security: Optional[Dict[str, Any]] = None
     updates: Optional[Dict[str, Any]] = None
     outlook: Optional[Dict[str, Any]] = None
+    user_profile_sizes: Optional[Dict[str, Any]] = None
     timestamp: int
 
 
@@ -438,6 +439,105 @@ def _enrich_outlook_fields(record: Dict[str, Any]) -> None:
     record["outlook_archives_count"] = len([row for row in archives if isinstance(row, dict)])
 
 
+def _normalize_user_profile_folder(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    name = _normalize_text(raw.get("name"))
+    path = _normalize_text(raw.get("path"))
+    if not name and not path:
+        return None
+    return {
+        "name": name,
+        "path": path,
+        "size_bytes": max(0, _to_int(raw.get("size_bytes"), 0)),
+        "files_count": max(0, _to_int(raw.get("files_count"), 0)),
+        "dirs_count": max(0, _to_int(raw.get("dirs_count"), 0)),
+        "errors_count": max(0, _to_int(raw.get("errors_count"), 0)),
+        "partial": bool(raw.get("partial")),
+        "partial_reason": _normalize_text(raw.get("partial_reason")),
+        "partial_reasons": _normalize_user_profile_partial_reasons(raw.get("partial_reasons")),
+    }
+
+
+def _normalize_user_profile_partial_reasons(raw: Any) -> List[str]:
+    values = raw if isinstance(raw, list) else [raw]
+    result: List[str] = []
+    for value in values:
+        reason = _normalize_text(value).lower()
+        if reason in {"timeout", "entry_limit", "total_timeout"} and reason not in result:
+            result.append(reason)
+    return result
+
+
+def _normalize_user_profile_size(raw: Any) -> Optional[Dict[str, Any]]:
+    if not isinstance(raw, dict):
+        return None
+    user_name = _normalize_text(raw.get("user_name"))
+    profile_path = _normalize_text(raw.get("profile_path"))
+    if not user_name and not profile_path:
+        return None
+    folders = []
+    for row in raw.get("top_level_folders") if isinstance(raw.get("top_level_folders"), list) else []:
+        normalized = _normalize_user_profile_folder(row)
+        if normalized:
+            folders.append(normalized)
+    return {
+        "user_name": user_name,
+        "profile_path": profile_path,
+        "total_size_bytes": max(0, _to_int(raw.get("total_size_bytes"), 0)),
+        "top_level_folders": folders,
+        "files_count": max(0, _to_int(raw.get("files_count"), 0)),
+        "dirs_count": max(0, _to_int(raw.get("dirs_count"), 0)),
+        "errors_count": max(0, _to_int(raw.get("errors_count"), 0)),
+        "duration_ms": max(0, _to_int(raw.get("duration_ms"), 0)),
+        "partial": bool(raw.get("partial")),
+        "partial_reason": _normalize_text(raw.get("partial_reason")),
+        "partial_reasons": _normalize_user_profile_partial_reasons(raw.get("partial_reasons")),
+    }
+
+
+def _normalize_user_profile_sizes(raw: Any) -> Dict[str, Any]:
+    raw_dict = raw if isinstance(raw, dict) else {}
+    profiles = []
+    if isinstance(raw_dict.get("profiles"), list):
+        for row in raw_dict.get("profiles") or []:
+            normalized = _normalize_user_profile_size(row)
+            if normalized:
+                profiles.append(normalized)
+    total_size = sum(max(0, _to_int(row.get("total_size_bytes"), 0)) for row in profiles)
+    collected_at = _to_int(raw_dict.get("collected_at"), 0)
+    partial_reasons = _normalize_user_profile_partial_reasons(raw_dict.get("partial_reasons"))
+    for row in profiles:
+        for reason in _normalize_user_profile_partial_reasons(row.get("partial_reasons")):
+            if reason not in partial_reasons:
+                partial_reasons.append(reason)
+    raw_limits = raw_dict.get("limits") if isinstance(raw_dict.get("limits"), dict) else {}
+    return {
+        "cache_version": max(0, _to_int(raw_dict.get("cache_version"), 0)),
+        "collected_at": max(0, collected_at),
+        "profiles_count": len(profiles),
+        "total_size_bytes": total_size,
+        "profiles": profiles,
+        "partial": bool(raw_dict.get("partial")) or any(bool(row.get("partial")) for row in profiles),
+        "partial_reasons": partial_reasons,
+        "duration_ms": max(0, _to_int(raw_dict.get("duration_ms"), 0)),
+        "limits": {
+            "profile_budget_sec": max(0, _to_int(raw_limits.get("profile_budget_sec"), 0)),
+            "total_budget_sec": max(0, _to_int(raw_limits.get("total_budget_sec"), 0)),
+            "max_entries_per_profile": max(0, _to_int(raw_limits.get("max_entries_per_profile"), 0)),
+            "max_profiles": max(0, _to_int(raw_limits.get("max_profiles"), 0)),
+        },
+    }
+
+
+def _enrich_user_profile_size_fields(record: Dict[str, Any]) -> None:
+    user_profile_sizes = _normalize_user_profile_sizes(record.get("user_profile_sizes"))
+    record["user_profile_sizes"] = user_profile_sizes
+    record["user_profile_sizes_total_bytes"] = max(0, _to_int(user_profile_sizes.get("total_size_bytes"), 0))
+    record["user_profile_sizes_profiles_count"] = max(0, _to_int(user_profile_sizes.get("profiles_count"), 0))
+    record["user_profile_sizes_partial"] = bool(user_profile_sizes.get("partial"))
+
+
 def _merge_payload(previous: Any, incoming: Dict[str, Any]) -> Dict[str, Any]:
     merged: Dict[str, Any] = dict(previous) if isinstance(previous, dict) else {}
     for key, value in incoming.items():
@@ -445,9 +545,12 @@ def _merge_payload(previous: Any, incoming: Dict[str, Any]) -> Dict[str, Any]:
             merged[key] = value
     if "outlook" in incoming:
         merged["outlook"] = _normalize_outlook_payload(incoming.get("outlook"))
+    if "user_profile_sizes" in incoming:
+        merged["user_profile_sizes"] = _normalize_user_profile_sizes(incoming.get("user_profile_sizes"))
     _ensure_identity_fields(merged)
     _ensure_runtime_fields(merged)
     _enrich_outlook_fields(merged)
+    _enrich_user_profile_size_fields(merged)
     return merged
 
 

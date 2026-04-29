@@ -33,6 +33,7 @@ class InventoryWorker(threading.Thread):
         self.config = config
         self.stop_event = stop_event
         self.last_successful_flush_at: Optional[int] = None
+        self._last_cleanup_at: int = 0
 
     def _next_backoff(self, attempt_count: int) -> int:
         return min(int(self.config.backoff_cap_sec), max(1, 2 ** max(0, attempt_count - 1)))
@@ -68,9 +69,27 @@ class InventoryWorker(threading.Thread):
         self.store.mark_done(queue_id, processed_at=int(time.time()))
         self.last_successful_flush_at = int(time.time())
 
+    def _cleanup_if_due(self) -> None:
+        now_ts = int(time.time())
+        if now_ts - self._last_cleanup_at < int(self.config.cleanup_interval_sec):
+            return
+        self._last_cleanup_at = now_ts
+        try:
+            result = self.store.cleanup_retention(
+                done_retention_days=int(self.config.done_retention_days),
+                dead_retention_days=int(self.config.dead_retention_days),
+            )
+        except Exception as exc:
+            logger.warning("Inventory queue cleanup failed: %s", exc)
+            return
+        removed = int(result.get("done_removed") or 0) + int(result.get("dead_removed") or 0)
+        if removed:
+            logger.info("Inventory queue cleanup removed old rows: %s", result)
+
     def run(self) -> None:
         logger.info("Inventory worker started")
         while not self.stop_event.is_set():
+            self._cleanup_if_due()
             batch = self.store.claim_next_batch(limit=int(self.config.batch_size))
             if not batch:
                 self.stop_event.wait(float(self.config.worker_interval_sec))

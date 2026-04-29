@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+import os
 import re
 import threading
 import time
@@ -17,6 +19,7 @@ from backend.appdb.models import AppAiKbChunk, AppAiKbDocument
 from backend.services.kb_service import kb_service
 
 TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё_]{3,}", flags=re.UNICODE)
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -25,6 +28,15 @@ def _utc_now() -> datetime:
 
 def _normalize_text(value: object) -> str:
     return str(value or "").strip()
+
+
+def _env_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    raw = _normalize_text(os.getenv(name)) or str(default)
+    try:
+        value = float(raw)
+    except Exception:
+        value = float(default)
+    return max(minimum, min(maximum, value))
 
 
 def _normalize_tags(value: Any) -> list[str]:
@@ -105,7 +117,7 @@ class AiKbRetrievalService:
     def __init__(self) -> None:
         self._sync_lock = threading.Lock()
         self._last_sync_monotonic = 0.0
-        self._sync_interval_sec = 120.0
+        self._sync_interval_sec = _env_float("AI_KB_INDEX_FRESHNESS_TTL_SEC", 30.0, 1.0, 3600.0)
 
     def sync_index(self, *, image_extractor=None) -> None:
         ensure_app_schema_initialized()
@@ -224,12 +236,23 @@ class AiKbRetrievalService:
         age_limit = float(max_age_sec if max_age_sec is not None else self._sync_interval_sec)
         now = time.monotonic()
         if self._last_sync_monotonic > 0 and (now - self._last_sync_monotonic) < age_limit:
+            logger.debug("AI KB index is fresh; skipping sync: age_sec=%.1f ttl_sec=%.1f", now - self._last_sync_monotonic, age_limit)
             return
         with self._sync_lock:
             now = time.monotonic()
             if self._last_sync_monotonic > 0 and (now - self._last_sync_monotonic) < age_limit:
+                logger.debug("AI KB index is fresh after lock; skipping sync: age_sec=%.1f ttl_sec=%.1f", now - self._last_sync_monotonic, age_limit)
                 return
             self.sync_index(image_extractor=image_extractor)
+
+    def get_metrics(self) -> dict[str, float | str]:
+        now = time.monotonic()
+        age_sec = 0.0 if self._last_sync_monotonic <= 0 else max(0.0, now - self._last_sync_monotonic)
+        return {
+            "backend": "python",
+            "index_age_sec": round(age_sec, 1),
+            "freshness_ttl_sec": round(float(self._sync_interval_sec), 1),
+        }
 
     def retrieve(self, *, query: str, allowed_scope: list[str] | None = None, limit: int = 5) -> list[dict[str, Any]]:
         ensure_app_schema_initialized()

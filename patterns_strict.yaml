@@ -6,6 +6,7 @@ patterns:
 
   - id: password_strict
     name: Пароль
+    category: Учетные данные
     type: regex
     pattern: '(?i)(?:пароль|password|pass|pwd)\s*[:=\-—]\s*["'']?([A-Za-z0-9!@#$%^&*]{6,64})["'']?(?!(?:\s*(?:запомнить|регистрация|вход)))'
     weight: 1.0
@@ -14,6 +15,7 @@ patterns:
 
   - id: login_strict
     name: Логин
+    category: Учетные данные
     type: regex
     pattern: '(?i)(?:login|логин|user|username)\s*[:=\-—]\s*["'']?([a-zA-Z0-9._\-]{3,32})["'']?(?!(?:\s*[a-zA-Z0-9._\-]+@[a-zA-Z0-9._\-]+\.[a-zA-Z]{2,}))'
     weight: 0.7
@@ -24,6 +26,7 @@ patterns:
 
   - id: api_token
     name: API Key / Bearer Token
+    category: Ключи и токены
     type: regex
     pattern: '(?i)\b(api[_-]?key|auth(?:entication)?_token|access_token|bearer)\s*[:=]\s*["'']?([a-zA-Z0-9_\-]{16,})["'']?'
     weight: 1.0
@@ -32,6 +35,7 @@ patterns:
 
   - id: dsp_official_use
     name: ДСП (Для служебного пользования)
+    category: Грифы и секретность
     type: regex
     pattern: '(?i)Для\s+служебного\s+пользования'
     weight: 1.0
@@ -40,6 +44,7 @@ patterns:
 
   - id: dsp_with_exclusion
     name: ДСП с контекстом документа
+    category: Грифы и секретность
     type: regex
     pattern: '(?i)Для\s+служебного\s+пользования(?:\s+(?:Экз\.|Экз\.?|№|N|#|экземпляр|с\s+контекстом))?(?!(?:\s+плита|\s+лист|\s*[:\-]\s*\d+мм|\s+\d+мм|.*?ДСП\s+22\s+мм|.*?столешница\s+ДСП|.*?стол\s+ДСП))'
     weight: 1.0
@@ -48,12 +53,14 @@ patterns:
 
   - id: secret_strict
     name: Секретно / Конфиденциально
+    category: Грифы и секретность
     type: regex
     pattern: '(?i)(?:совершенно\s+секретно|top\s+secret|strictly\s+confidential|гриф\s*[:=]?\s*(?:секретно|secret))'
     weight: 1.0
 
   - id: trade_secret_strict
     name: Коммерческая тайна
+    category: Грифы и секретность
     type: regex
     pattern: '(?i)(?:коммерческая\s+тайна|commercial\s+secret|trade\s+secret|режим\s+КТ)'
     weight: 1.0
@@ -62,56 +69,72 @@ patterns:
 
   - id: real_credentials_pair
     name: Учетные данные (логин/пароль пара)
+    category: Учетные данные
     type: regex
     pattern: '(?i)(?:Логин|Login|User|Username)[:\s=]+([a-zA-Z0-9._\-]{3,32})[\s,;]+(?:Пароль|Password|Pass)[:\s=]+([A-Za-z0-9!@#$%^&*]{6,64})(?!\s*(?:запомнить|регистрация|вход))'
     weight: 1.0
 
   - id: admin_password
     name: Административный пароль
+    category: Учетные данные
     type: regex
     pattern: '(?i)(?:admin|administrator|root)[\s:]+([a-zA-Z0-9]{3,32})[\s,;]+(?:password|пароль)[\s:]+([A-Za-z0-9!@#$%^&*]{6,64})'
     weight: 1.0
 
   - id: classified_document_header
     name: Заголовок секретного документа
+    category: Грифы и секретность
     type: regex
     pattern: '(?i)(?:СОВЕРШЕННО\s+СЕКРЕТНО|СЕКРЕТНО|КОНФИДЕНЦИАЛЬНО|ДЛЯ\s+СЛУЖЕБНОГО\s+ПОЛЬЗОВАНИЯ)(?:.*?)(?:Экз\.|Экз\.?|№|N|#)[:\s]*\d+'
     weight: 1.0
 
   - id: internal_use_only
     name: Внутреннее использование
+    category: Грифы и секретность
     type: regex
     pattern: '(?i)(?:Только\s+для\s+внутреннего\s+использования|Internal\s+Use\s+Only|Внутренний\s+документ|Не\s+для\s+распространения)'
     weight: 0.8
 
   - id: security_clearance
     name: Уровень допуска
+    category: Грифы и секретность
     type: regex
     pattern: '(?i)(?:Допуск|Уровень\s+допуска)[:\s]*(?:особой\s+важности|совершенно\s+секретно|секретно|несекретно)'
     weight: 0.9
+
+  - id: loan_keyword
+    name: Займ
+    category: Финансы
+    type: regex
+    pattern: '(?iu)\b(?:займ|займа|займу|займом|займе|займы|займов|займам|займами|займах|заём|заёма|заёму|заёмом|заёме|заёмы|заёмов|заёмам|заёмами|заёмах)\b'
+    weight: 0.8
 
   # === ПАСПОРТА И ДОКУМЕНТЫ ===
 
   - id: passport_rf_context
     name: Паспорт РФ (с контекстом)
+    category: Документы
     type: regex
     pattern: '(?i)(?:паспорт|удостоверение\s+личности)\s*(?:РФ|России|гражданина|выдан|кем\s+выдан|дата\s+выдачи).*?(\d{2})\s*(\d{2})\s*№?\s*(\d{6})(?!(?:.*?(?:образец|пример|шаблон|договор|реквизиты|ООО|АО|ПАО|ИП\s+\d{2})))'
     weight: 0.95
 
   - id: passport_foreign
     name: Иностранный паспорт
+    category: Документы
     type: regex
     pattern: '(?i)(?!(?:образец|пример|шаблон|договор|реквизиты))(?:загран[\s\-]?паспорт|паспорт\s+иностранный).*?([A-Z]{1,2}\d{6,9})(?!(?:.*?(?:образец|пример|шаблон)))'
     weight: 0.8
 
   - id: snils_real
     name: СНИЛС (только физлиц)
+    category: Документы
     type: regex
     pattern: '(?i)(?!(?:ООО|АО|ПАО|ИП|организация|предприятие|компания|фирма|общество))\bСНИЛС.*?(\d{3})[ \-]*(\d{3})[ \-]*(\d{3})[ \-]*(\d{2})'
     weight: 0.8
 
   - id: passport_rf_context_only
     name: Паспорт РФ (по контексту - только УМВД)
+    category: Документы
     type: regex
     pattern: '(?i)(?!(?:образец|пример|шаблон|договор))УМВД.*?РОССИИ'
     weight: 0.9

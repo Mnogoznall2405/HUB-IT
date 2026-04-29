@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import time
 from typing import Any, Optional
 
@@ -59,6 +60,43 @@ http_logger = logging.getLogger("backend.chat.api")
 logger.setLevel(logging.INFO)
 http_logger.setLevel(logging.INFO)
 runtime_logger = logging.getLogger("uvicorn.error")
+
+
+def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+    raw = str(os.getenv(name, str(default)) or "").strip()
+    try:
+        value = int(raw)
+    except Exception:
+        value = int(default)
+    return max(minimum, min(maximum, value))
+
+
+CHAT_WS_COMMANDS_PER_SEC = _env_int("CHAT_WS_COMMANDS_PER_SEC", 20, 1, 1000)
+CHAT_WS_COMMAND_BURST = _env_int("CHAT_WS_COMMAND_BURST", 40, 1, 5000)
+CHAT_WS_RATE_LIMIT_MAX_VIOLATIONS = _env_int("CHAT_WS_RATE_LIMIT_MAX_VIOLATIONS", 3, 1, 20)
+CHAT_WS_RATE_LIMIT_RETRY_AFTER_MS = 1000
+
+
+class _ChatWsCommandRateLimiter:
+    def __init__(self, *, rate_per_sec: int, burst: int) -> None:
+        self.rate_per_sec = max(1.0, float(rate_per_sec))
+        self.capacity = max(1.0, float(burst))
+        self.tokens = self.capacity
+        self.updated_at = time.monotonic()
+        self.violations = 0
+
+    def allow(self) -> tuple[bool, int]:
+        now = time.monotonic()
+        elapsed = max(0.0, now - self.updated_at)
+        self.updated_at = now
+        self.tokens = min(self.capacity, self.tokens + (elapsed * self.rate_per_sec))
+        if self.tokens >= 1.0:
+            self.tokens -= 1.0
+            return True, 0
+        self.violations += 1
+        missing = max(0.0, 1.0 - self.tokens)
+        retry_after_ms = max(CHAT_WS_RATE_LIMIT_RETRY_AFTER_MS, int((missing / self.rate_per_sec) * 1000.0))
+        return False, retry_after_ms
 
 
 def _normalize_text(value: object, default: str = "") -> str:
@@ -1107,6 +1145,46 @@ async def get_conversation_ai_status(
         _raise_chat_http_error(exc)
 
 
+@router.post("/ai/actions/{action_id}/confirm")
+async def confirm_ai_action(
+    action_id: str,
+    payload: dict[str, Any] | None = Body(default=None),
+    current_user: User = Depends(require_permission(PERM_CHAT_AI_USE)),
+):
+    from backend.ai_chat.action_cards import confirm_action
+
+    try:
+        return await _run_chat_call(
+            confirm_action,
+            action_id=action_id,
+            current_user=current_user,
+            payload_overrides=payload,
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Action was not found")
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.post("/ai/actions/{action_id}/cancel")
+async def cancel_ai_action(
+    action_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_AI_USE)),
+):
+    from backend.ai_chat.action_cards import cancel_action
+
+    try:
+        return await _run_chat_call(
+            cancel_action,
+            action_id=action_id,
+            current_user=current_user,
+        )
+    except LookupError:
+        raise HTTPException(status_code=404, detail="Action was not found")
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
 @router.post("/conversations/{conversation_id}/upload-sessions", response_model=ChatUploadSessionResponse)
 async def create_chat_upload_session(
     conversation_id: str,
@@ -1310,6 +1388,10 @@ async def chat_websocket(websocket: WebSocket):
         if first_connection:
             await _publish_presence_updated(int(current_user.id))
 
+        rate_limiter = _ChatWsCommandRateLimiter(
+            rate_per_sec=CHAT_WS_COMMANDS_PER_SEC,
+            burst=CHAT_WS_COMMAND_BURST,
+        )
         while True:
             if not _ws_is_connected(websocket):
                 break
@@ -1335,7 +1417,33 @@ async def chat_websocket(websocket: WebSocket):
             payload = (envelope or {}).get("payload")
             if not isinstance(payload, dict):
                 payload = {}
-            chat_realtime.touch_presence(connection_id)
+
+            allowed, retry_after_ms = rate_limiter.allow()
+            if not allowed:
+                chat_realtime.record_rate_limited(connection_id)
+                await chat_realtime.send_to_connection(
+                    connection_id,
+                    event_type="error",
+                    payload={
+                        "code": "rate_limited",
+                        "retry_after_ms": int(retry_after_ms),
+                    },
+                    request_id=request_id,
+                    conversation_id=conversation_id,
+                )
+                logger.warning(
+                    "Chat websocket rate limited: user_id=%s connection_id=%s message_type=%s violations=%s",
+                    int(current_user.id),
+                    connection_id,
+                    message_type or "-",
+                    int(rate_limiter.violations),
+                )
+                if int(rate_limiter.violations) >= CHAT_WS_RATE_LIMIT_MAX_VIOLATIONS:
+                    await websocket.close(code=1008, reason="chat websocket rate limit exceeded")
+                    break
+                continue
+            if message_type not in {"chat.typing", "chat.ping"}:
+                chat_realtime.touch_presence(connection_id)
 
             try:
                 if message_type == "chat.subscribe_inbox":
@@ -1525,7 +1633,6 @@ async def chat_websocket(websocket: WebSocket):
                     continue
 
                 if message_type == "chat.ping":
-                    chat_realtime.touch_presence(connection_id)
                     await chat_realtime.send_to_connection(
                         connection_id,
                         event_type="chat.pong",

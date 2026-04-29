@@ -468,7 +468,7 @@ def test_chat_push_subscription_receives_message_push_payload(chat_env, monkeypa
     payload = json.loads(push_call["data"])
     assert payload["data"]["conversation_id"] == conversation["id"]
     assert payload["data"]["message_id"] == created["id"]
-    assert payload["data"]["route"] == f"/chat?conversation={conversation['id']}"
+    assert payload["data"]["route"] == f"/chat?conversation={conversation['id']}&message={created['id']}"
 
     removed = service.delete_push_subscription(
         current_user_id=2,
@@ -569,6 +569,72 @@ def test_send_message_notifications_use_targeted_sender_lookup(chat_env, monkeyp
         and item.get("body") == "Targeted sender lookup"
         for item in chat_items
     )
+
+
+def test_send_message_mention_notifies_muted_group_member(chat_env, monkeypatch):
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    users_by_id = {
+        1: _raw_user(1, "author", "Task Author", "operator"),
+        2: _raw_user(2, "assignee", "Task Assignee", "operator"),
+        3: _raw_user(3, "controller", "Task Controller", "admin"),
+    }
+
+    monkeypatch.setattr(
+        chat_service_module.user_service,
+        "get_users_map_by_ids",
+        lambda user_ids: {
+            int(user_id): dict(users_by_id[int(user_id)])
+            for user_id in list(user_ids or [])
+            if int(user_id) in users_by_id
+        },
+    )
+
+    conversation = service.create_group_conversation(
+        current_user_id=1,
+        title="Ops",
+        member_user_ids=[2, 3],
+    )
+    service.update_conversation_settings(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        is_muted=True,
+    )
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="@assignee проверь, пожалуйста",
+        defer_push_notifications=True,
+    )
+
+    polled = hub_service.poll_notifications(user_id=2, limit=20)
+    mention_items = [
+        item for item in polled["items"]
+        if item.get("entity_type") == "chat" and item.get("entity_id") == conversation["id"]
+    ]
+
+    assert created["conversation_id"] == conversation["id"]
+    assert any(
+        item.get("event_type") == "chat.mention"
+        and "Ops" in item.get("title", "")
+        and "@assignee" in item.get("body", "")
+        for item in mention_items
+    )
+
+    with chat_db_module.chat_session() as session:
+        jobs = list(
+            session.execute(
+                select(chat_models_module.ChatPushOutbox).where(
+                    chat_models_module.ChatPushOutbox.message_id == created["id"],
+                    chat_models_module.ChatPushOutbox.recipient_user_id == 2,
+                )
+            ).scalars()
+        )
+
+    assert len(jobs) == 1
+    assert jobs[0].status == "queued"
+    assert "Ops" in jobs[0].title
 
 
 def test_send_message_ack_uses_targeted_message_presence_lookup(chat_env, monkeypatch):

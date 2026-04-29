@@ -272,6 +272,32 @@ class AppAiBotRun(AppBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppAiPendingAction(AppBase):
+    __tablename__ = "ai_pending_actions"
+    __table_args__ = _table_args(
+        Index("ix_app_ai_pending_actions_run_status", "run_id", "status"),
+        Index("ix_app_ai_pending_actions_status_expires_at", "status", "expires_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    action_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="pending", index=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
+    run_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
+    requester_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    database_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    preview_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    executed_by_user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppAiKbDocument(AppBase):
     __tablename__ = "ai_kb_documents"
     __table_args__ = _table_args(
@@ -351,6 +377,71 @@ class AppInventoryHost(AppBase):
     last_seen_at: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
     last_full_snapshot_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
     payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppInventoryUserProfile(AppBase):
+    __tablename__ = "inventory_user_profiles"
+    __table_args__ = _table_args(
+        Index("ix_app_inventory_user_profiles_mac_address", "mac_address"),
+        Index("ix_app_inventory_user_profiles_user_name", "user_name"),
+        Index("ix_app_inventory_user_profiles_profile_path", "profile_path"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mac_address: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    profile_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    total_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    files_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    dirs_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    errors_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    partial: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppInventoryOutlookFile(AppBase):
+    __tablename__ = "inventory_outlook_files"
+    __table_args__ = _table_args(
+        Index("ix_app_inventory_outlook_files_mac_address", "mac_address"),
+        Index("ix_app_inventory_outlook_files_kind", "kind"),
+        Index("ix_app_inventory_outlook_files_file_path", "file_path"),
+        Index("ix_app_inventory_outlook_files_file_type", "file_type"),
+        Index("ix_app_inventory_outlook_files_size_bytes", "size_bytes"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mac_address: Mapped[str] = mapped_column(String(64), nullable=False)
+    kind: Mapped[str] = mapped_column(String(32), nullable=False, default="archive")
+    file_path: Mapped[str | None] = mapped_column(Text, nullable=True)
+    file_type: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    last_modified_at: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppInventoryHostSqlContext(AppBase):
+    __tablename__ = "inventory_host_sql_contexts"
+    __table_args__ = _table_args(
+        UniqueConstraint("mac_address", "hostname", "db_id", name="uq_app_inventory_host_sql_context"),
+        Index("ix_app_inventory_host_sql_contexts_mac_address", "mac_address"),
+        Index("ix_app_inventory_host_sql_contexts_hostname", "hostname"),
+        Index("ix_app_inventory_host_sql_contexts_db_id", "db_id"),
+        Index("ix_app_inventory_host_sql_contexts_branch_name", "branch_name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    mac_address: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    hostname: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    branch_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    branch_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    location_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    employee_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    ip_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 

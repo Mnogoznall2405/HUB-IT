@@ -338,6 +338,107 @@ def generate_transfer_acts(
     return acts
 
 
+def generate_transfer_acts_without_move(
+    *,
+    items: list[dict[str, Any]],
+    issuer_name: str,
+    issuer_email: Optional[str],
+    db_id: Optional[str],
+) -> list[dict[str, Any]]:
+    """
+    Generate handover acts for current holders without updating inventory data.
+
+    Items are grouped by their current employee so each recipient gets a
+    separate act. The selected issuer is written as FROM_EMPLOYEE.
+    """
+    safe_issuer = str(issuer_name or "").strip() or "Без владельца"
+    grouped: dict[str, dict[str, Any]] = {}
+
+    for item in items or []:
+        holder = str(
+            item.get("employee_name")
+            or item.get("OWNER_DISPLAY_NAME")
+            or item.get("old_employee_name")
+            or "Без владельца"
+        ).strip() or "Без владельца"
+        holder_dept = str(
+            item.get("employee_dept")
+            or item.get("OWNER_DEPT")
+            or item.get("new_employee_dept")
+            or ""
+        ).strip()
+        holder_email = str(item.get("employee_email") or item.get("OWNER_EMAIL") or "").strip()
+        bucket = grouped.setdefault(
+            holder,
+            {
+                "holder": holder,
+                "holder_dept": holder_dept,
+                "holder_email": holder_email,
+                "items": [],
+            },
+        )
+        if holder_dept and not bucket.get("holder_dept"):
+            bucket["holder_dept"] = holder_dept
+        if holder_email and not bucket.get("holder_email"):
+            bucket["holder_email"] = holder_email
+        bucket["items"].append(
+            {
+                "inv_no": item.get("inv_no") or item.get("INV_NO"),
+                "serial_no": item.get("serial_no") or item.get("SERIAL_NO"),
+                "part_no": item.get("part_no") or item.get("PART_NO"),
+                "type_name": item.get("type_name") or item.get("TYPE_NAME"),
+                "model_name": item.get("model_name") or item.get("MODEL_NAME"),
+            }
+        )
+
+    acts: list[dict[str, Any]] = []
+    for holder, bucket in grouped.items():
+        act_items = list(bucket.get("items") or [])
+        if not act_items:
+            continue
+
+        try:
+            file_path, file_type = _build_docx_act(
+                old_employee=safe_issuer,
+                new_employee=holder,
+                new_employee_dept=str(bucket.get("holder_dept") or ""),
+                items=act_items,
+            )
+            file_path, file_type = _try_convert_to_pdf(file_path)
+        except Exception as exc:
+            logger.error("Failed to generate act without move for %s: %s", holder, exc)
+            continue
+
+        act_id = str(uuid4())
+        record = {
+            "act_id": act_id,
+            "file_path": str(file_path),
+            "file_name": file_path.name,
+            "file_type": file_type,
+            "old_employee_name": safe_issuer,
+            "old_employee_email": (issuer_email or "").strip() or None,
+            "new_employee_name": holder,
+            "new_employee_email": str(bucket.get("holder_email") or "").strip() or None,
+            "equipment_count": len(act_items),
+            "db_id": db_id,
+            "created_at": datetime.now().isoformat(),
+            "act_mode": "without_move",
+        }
+        _ACT_STORE[act_id] = record
+        acts.append(
+            {
+                "act_id": act_id,
+                "old_employee": safe_issuer,
+                "new_employee": holder,
+                "equipment_count": len(act_items),
+                "file_name": file_path.name,
+                "file_type": file_type,
+            }
+        )
+
+    return acts
+
+
 async def _send_files(
     recipient_email: str,
     records: list[dict[str, Any]],

@@ -13,7 +13,14 @@ import { useMemo } from 'react';
 import { useTheme } from '@mui/material/styles';
 import ReactQuill from 'react-quill';
 import 'react-quill/dist/quill.snow.css';
-import { buildMailUiTokens, getMailUiFontScopeSx } from './mailUiTokens';
+import {
+  buildMailUiTokens,
+  getMailDialogActionsSx,
+  getMailDialogContentSx,
+  getMailDialogPaperSx,
+  getMailDialogTitleSx,
+  getMailMetaTextSx,
+} from './mailUiTokens';
 import { buildSignaturePreviewHtml } from './mailOutgoingPreview';
 
 export default function MailSignatureDialog({
@@ -33,12 +40,12 @@ export default function MailSignatureDialog({
   );
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: { ...getMailUiFontScopeSx(), borderRadius: '12px' } }}>
-      <DialogTitle sx={{ fontWeight: 700 }}>Подпись</DialogTitle>
-      <DialogContent dividers>
+    <Dialog open={open} onClose={onClose} maxWidth="md" fullWidth PaperProps={{ sx: getMailDialogPaperSx(tokens) }}>
+      <DialogTitle sx={getMailDialogTitleSx(tokens)}>Подпись</DialogTitle>
+      <DialogContent dividers sx={getMailDialogContentSx(tokens)}>
         <Stack spacing={1.2} sx={{ mt: 0.5 }}>
-          <Typography variant="caption" color="text.secondary">
-            Подпись отправляется в стандартном письме с белым фоном. В ответах и пересылках она ставится перед историей переписки.
+          <Typography sx={getMailMetaTextSx(tokens)}>
+            Подпись отправляется без зависимости от темы интерфейса. В ответах и пересылках она ставится перед историей переписки.
           </Typography>
           <Box
             sx={{
@@ -49,13 +56,13 @@ export default function MailSignatureDialog({
               '& .ql-toolbar': {
                 borderColor: tokens.panelBorder,
                 bgcolor: tokens.surfaceBg,
-                borderTopLeftRadius: '8px',
-                borderTopRightRadius: '8px',
+                borderTopLeftRadius: tokens.radiusSm,
+                borderTopRightRadius: tokens.radiusSm,
               },
               '& .ql-container': {
                 borderColor: tokens.panelBorder,
-                borderBottomLeftRadius: '8px',
-                borderBottomRightRadius: '8px',
+                borderBottomLeftRadius: tokens.radiusSm,
+                borderBottomRightRadius: tokens.radiusSm,
                 color: 'text.primary',
                 bgcolor: tokens.panelSolid,
                 fontFamily: 'var(--mail-message-font)',
@@ -72,8 +79,8 @@ export default function MailSignatureDialog({
             />
           </Box>
 
-          <Paper variant="outlined" sx={{ p: 1.5, borderRadius: '10px', bgcolor: tokens.surfaceBg, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
-            <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+          <Paper variant="outlined" sx={{ p: 1.5, borderRadius: tokens.radiusLg, bgcolor: tokens.surfaceBg, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
+            <Typography sx={getMailMetaTextSx(tokens, { fontWeight: 700 })}>
               Как это будет выглядеть в письме:
             </Typography>
             <Box
@@ -83,9 +90,11 @@ export default function MailSignatureDialog({
                 fontSize: '0.9rem',
                 lineHeight: 1.45,
                 fontFamily: 'var(--mail-message-font)',
-                borderRadius: '10px',
-                border: '1px solid #dbe2ea',
-                bgcolor: '#ffffff',
+                borderRadius: tokens.radiusSm,
+                border: '1px solid',
+                borderColor: tokens.surfaceBorder,
+                bgcolor: 'transparent',
+                color: tokens.textPrimary,
                 px: 1.6,
                 py: 1.35,
                 '& img': { maxWidth: '100%' },
@@ -96,8 +105,9 @@ export default function MailSignatureDialog({
                 '& blockquote': {
                   margin: '0.8em 0 0',
                   padding: '0 0 0 12px',
-                  borderLeft: '3px solid #cbd5e1',
-                  color: '#475569',
+                  borderLeft: '3px solid',
+                  borderColor: tokens.surfaceBorder,
+                  color: tokens.textSecondary,
                 },
               }}
               dangerouslySetInnerHTML={{ __html: signaturePreviewHtml }}
@@ -106,7 +116,7 @@ export default function MailSignatureDialog({
         </Stack>
       </DialogContent>
 
-      <DialogActions sx={{ px: 3, pb: 2 }}>
+      <DialogActions sx={getMailDialogActionsSx(tokens)}>
         <Button onClick={onClear} disabled={signatureSaving} sx={{ textTransform: 'none' }}>
           Очистить
         </Button>

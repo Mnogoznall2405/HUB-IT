@@ -22,6 +22,24 @@ ITINVENT_TOOL_DIRECTORY_LOCATIONS = "itinvent.directory.locations"
 ITINVENT_TOOL_DIRECTORY_EQUIPMENT_TYPES = "itinvent.directory.equipment_types"
 ITINVENT_TOOL_DIRECTORY_STATUSES = "itinvent.directory.statuses"
 ITINVENT_TOOL_EQUIPMENT_SEARCH_MULTI_DB = "itinvent.equipment.search_multi_db"
+ITINVENT_TOOL_ANALYTICS_SUMMARY = "itinvent.analytics.summary"
+ITINVENT_TOOL_ENTITY_RESOLVE = "itinvent.entity.resolve"
+ITINVENT_TOOL_ACTION_TRANSFER_DRAFT = "itinvent.action.transfer_draft"
+ITINVENT_TOOL_ACTION_CONSUMABLE_CONSUME_DRAFT = "itinvent.action.consumable_consume_draft"
+ITINVENT_TOOL_ACTION_CONSUMABLE_QTY_DRAFT = "itinvent.action.consumable_qty_draft"
+AI_TOOL_FILES_CREATE = "ai.files.create"
+AI_TOOL_FILES_REPORT = "ai.files.report"
+OFFICE_TOOL_MAIL_SEARCH = "office.mail.search"
+OFFICE_TOOL_MAIL_GET_MESSAGE = "office.mail.get_message"
+OFFICE_TOOL_MAIL_CONTACTS_RESOLVE = "office.mail.contacts.resolve"
+OFFICE_TOOL_TASKS_SEARCH = "office.tasks.search"
+OFFICE_TOOL_TASKS_GET = "office.tasks.get"
+OFFICE_TOOL_WORKDAY_SUMMARY = "office.workday.summary"
+OFFICE_TOOL_ACTION_MAIL_SEND_DRAFT = "office.action.mail_send_draft"
+OFFICE_TOOL_ACTION_MAIL_REPLY_DRAFT = "office.action.mail_reply_draft"
+OFFICE_TOOL_ACTION_TASK_CREATE_DRAFT = "office.action.task_create_draft"
+OFFICE_TOOL_ACTION_TASK_COMMENT_DRAFT = "office.action.task_comment_draft"
+OFFICE_TOOL_ACTION_TASK_STATUS_DRAFT = "office.action.task_status_draft"
 
 DEFAULT_ITINVENT_TOOL_IDS = [
     ITINVENT_TOOL_DATABASE_CURRENT,
@@ -36,6 +54,7 @@ DEFAULT_ITINVENT_TOOL_IDS = [
     ITINVENT_TOOL_DIRECTORY_LOCATIONS,
     ITINVENT_TOOL_DIRECTORY_EQUIPMENT_TYPES,
     ITINVENT_TOOL_DIRECTORY_STATUSES,
+    ITINVENT_TOOL_ANALYTICS_SUMMARY,
 ]
 
 AI_TOOL_MULTI_DB_MODE_SINGLE = "single"
@@ -76,6 +95,16 @@ def get_available_database_ids() -> set[str]:
     return {item["id"] for item in get_available_database_options() if _normalize_text(item.get("id"))}
 
 
+def normalize_database_id(value: object) -> str | None:
+    normalized = _normalize_text(value)
+    if not normalized:
+        return None
+    available_database_ids = get_available_database_ids()
+    if available_database_ids and normalized not in available_database_ids:
+        return None
+    return normalized
+
+
 def normalize_enabled_tools(value: Any) -> list[str]:
     seen: set[str] = set()
     result: list[str] = []
@@ -111,22 +140,12 @@ def resolve_effective_database_id(
     user_payload: dict[str, Any] | None,
     explicit_database_id: str | None = None,
 ) -> str | None:
-    available_database_ids = get_available_database_ids()
-
-    def _normalize_database_id(value: object) -> str | None:
-        normalized = _normalize_text(value)
-        if not normalized:
-            return None
-        if available_database_ids and normalized not in available_database_ids:
-            return None
-        return normalized
-
-    explicit = _normalize_database_id(explicit_database_id)
+    explicit = normalize_database_id(explicit_database_id)
     user = user_payload if isinstance(user_payload, dict) else {}
     role = _normalize_text(user.get("role")).lower()
-    assigned_database = _normalize_database_id(user.get("assigned_database"))
+    assigned_database = normalize_database_id(user.get("assigned_database"))
     if not assigned_database:
-        assigned_database = _normalize_database_id(
+        assigned_database = normalize_database_id(
             user_db_selection_service.get_assigned_database(user.get("telegram_id"))
         )
     if assigned_database and role != "admin":
@@ -135,12 +154,12 @@ def resolve_effective_database_id(
         return explicit
     user_id = int(user.get("id") or 0)
     if user_id > 0:
-        pinned_database = _normalize_database_id(
+        pinned_database = normalize_database_id(
             settings_service.get_user_settings(user_id).get("pinned_database")
         )
         if pinned_database:
             return pinned_database
-    default_database = _normalize_database_id(getattr(config.database, "database", None))
+    default_database = normalize_database_id(getattr(config.database, "database", None))
     if default_database:
         return default_database
     for item in get_available_database_options():
@@ -161,6 +180,7 @@ class AiToolExecutionContext:
     effective_database_id: str | None
     enabled_tools: list[str]
     tool_settings: dict[str, Any]
+    allow_generated_artifacts: bool = True
 
     @property
     def is_admin(self) -> bool:
@@ -179,4 +199,18 @@ class AiToolExecutionContext:
         if not self.is_admin or self.multi_db_mode != AI_TOOL_MULTI_DB_MODE_ADMIN:
             return []
         targets = [item for item in self.allowed_databases if item]
+        if not targets:
+            return [item["id"] for item in get_available_database_options() if _normalize_text(item.get("id"))]
         return targets
+
+    def resolve_tool_database_id(self, requested_database_id: object = None) -> str | None:
+        requested = normalize_database_id(requested_database_id)
+        current = normalize_database_id(self.effective_database_id)
+        if not requested:
+            return current
+        if not self.is_admin:
+            return requested if current and requested == current else None
+        if self.multi_db_mode == AI_TOOL_MULTI_DB_MODE_ADMIN:
+            targets = set(self.resolve_multi_db_targets())
+            return requested if requested in targets else None
+        return requested if current and requested == current else None

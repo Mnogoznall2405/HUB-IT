@@ -1,7 +1,7 @@
 /**
  * Main App component with routing and authentication.
  */
-import { lazy, Suspense, useCallback, useEffect } from 'react';
+import { Component, lazy, Suspense, useCallback, useEffect } from 'react';
 import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
 import { Box } from '@mui/material';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
@@ -282,6 +282,63 @@ const PageFallback = () => (
   </Box>
 );
 
+class RouteErrorBoundary extends Component {
+  constructor(props) {
+    super(props);
+    this.state = { hasError: false };
+  }
+
+  static getDerivedStateFromError() {
+    return { hasError: true };
+  }
+
+  componentDidCatch(error) {
+    console.error('Route render failed:', error);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <Box
+          sx={{
+            minHeight: '100vh',
+            display: 'grid',
+            placeItems: 'center',
+            bgcolor: '#07090c',
+            color: '#fff',
+            px: 2,
+          }}
+        >
+          <Box
+            sx={{
+              width: 'min(100%, 420px)',
+              border: '1px solid rgba(255,255,255,0.12)',
+              borderRadius: '24px',
+              bgcolor: 'rgba(255,255,255,0.06)',
+              p: 3,
+              textAlign: 'center',
+            }}
+          >
+            <Box sx={{ fontSize: 22, fontWeight: 700, mb: 1 }}>Нужно обновить экран</Box>
+            <Box sx={{ color: 'rgba(255,255,255,0.62)', fontSize: 14, lineHeight: 1.7, mb: 2 }}>
+              Приложение было открыто долго, и раздел не удалось догрузить.
+            </Box>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              className="min-h-12 rounded-[16px] !bg-cyan-200 px-5 text-sm font-semibold !text-zinc-950"
+            >
+              Обновить
+            </button>
+          </Box>
+        </Box>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
 function App() {
   const rawBase = String(import.meta.env.BASE_URL || '/');
   const normalizedBase = rawBase === './' || rawBase === '.' ? '/' : rawBase;
@@ -297,6 +354,7 @@ function App() {
       <AuthProvider>
         <AppPushBootstrap />
         <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+          <RouteErrorBoundary>
           <Suspense fallback={<PageFallback />}>
             <Routes>
               <Route path="/login" element={<Login />} />
@@ -370,6 +428,7 @@ function App() {
               <Route path="*" element={<HomeRedirect />} />
             </Routes>
           </Suspense>
+          </RouteErrorBoundary>
         </Box>
       </AuthProvider>
     </BrowserRouter>

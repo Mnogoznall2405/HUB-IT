@@ -219,6 +219,7 @@ class TransferActInfo(BaseModel):
     """Generated transfer act metadata."""
     act_id: str = Field(..., description="Act identifier")
     old_employee: str = Field(..., description="Old employee name")
+    new_employee: Optional[str] = Field(None, description="New/current employee name")
     equipment_count: int = Field(..., description="Equipment count in act")
     file_name: str = Field(..., description="Generated file name")
     file_type: Literal["pdf", "docx"] = Field(..., description="File extension")
@@ -233,6 +234,14 @@ class TransferExecuteRequest(BaseModel):
     branch_no: Optional[int | str] = Field(None, description="Optional target BRANCH_NO")
     loc_no: Optional[int | str] = Field(None, description="Optional target LOC_NO")
     comment: Optional[str] = Field(None, description="Optional transfer comment")
+
+
+class TransferActOnlyRequest(BaseModel):
+    """Generate transfer-like act without changing equipment ownership/location."""
+    inv_nos: List[str] = Field(..., min_length=1, description="Inventory numbers")
+    issuer_employee: str = Field(..., min_length=1, description="Employee/person who issued equipment")
+    issuer_owner_no: Optional[int] = Field(None, description="Optional OWNER_NO for issuer")
+    comment: Optional[str] = Field(None, description="Optional act comment")
 
 
 class TransferExecuteResponse(BaseModel):

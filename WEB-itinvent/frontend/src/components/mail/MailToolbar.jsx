@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   Badge,
   Box,
@@ -25,15 +25,16 @@ import {
   buildMailUiTokens,
   getMailBottomSheetPaperSx,
   getMailIconButtonSx,
-  getMailDialogPaperSx,
+  getMailMenuPaperSx,
   getMailMetaTextSx,
   getMailSurfaceButtonSx,
 } from './mailUiTokens';
 
-const iconButtonSx = (tokens) => ({
+const iconButtonSx = (tokens, overrides = {}) => ({
   ...getMailIconButtonSx(tokens, {
     width: 40,
     height: 40,
+    ...overrides,
   }),
 });
 
@@ -165,6 +166,7 @@ export default function MailToolbar({
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const [mailboxMenuAnchorEl, setMailboxMenuAnchorEl] = useState(null);
   const [mobileMailboxSheetOpen, setMobileMailboxSheetOpen] = useState(false);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
 
   const normalizedMailboxes = Array.isArray(mailboxes) ? mailboxes : [];
   const activeMailboxId = String(activeMailbox?.id || '').trim();
@@ -175,6 +177,13 @@ export default function MailToolbar({
       || 'Ящик'
   ).trim();
   const activeUnreadCount = Number(activeMailbox?.unread_count || 0);
+
+  useEffect(() => {
+    if (!mobile) return;
+    if (String(search || '').trim() || hasActiveFilters) {
+      setMobileSearchOpen(true);
+    }
+  }, [hasActiveFilters, mobile, search]);
 
   const searchField = (
     <TextField
@@ -216,20 +225,20 @@ export default function MailToolbar({
         <Box
           className="mail-safe-top"
           sx={{
-            px: 1.25,
-            pb: 1.1,
+            px: 1,
+            py: 0.75,
             bgcolor: tokens.panelBg,
             borderBottom: '1px solid',
             borderColor: tokens.panelBorder,
           }}
         >
-          <Stack spacing={1}>
-            <Stack direction="row" spacing={1} alignItems="center">
+          <Stack spacing={mobileSearchOpen ? 0.75 : 0}>
+            <Stack direction="row" spacing={0.65} alignItems="center">
               <IconButton
                 aria-label="Открыть навигацию"
                 data-testid="mail-toolbar-open-navigation"
                 onClick={onOpenNavigation}
-                sx={iconButtonSx(tokens)}
+                sx={iconButtonSx(tokens, { width: 38, height: 38 })}
               >
                 <MenuRoundedIcon fontSize="small" />
               </IconButton>
@@ -243,8 +252,8 @@ export default function MailToolbar({
                 sx={{
                   flex: 1,
                   minWidth: 0,
-                  minHeight: 40,
-                  px: 1.2,
+                  minHeight: 38,
+                  px: 1,
                   justifyContent: 'space-between',
                   ...getMailSurfaceButtonSx(tokens, {
                     borderRadius: tokens.controlRadius,
@@ -266,27 +275,36 @@ export default function MailToolbar({
                     <Typography noWrap sx={{ fontWeight: 700, fontSize: '0.9rem' }}>
                       {activeMailboxLabel}
                     </Typography>
-                    {currentFolderLabel ? (
-                    <Typography noWrap sx={getMailMetaTextSx(tokens)}>
-                        {currentFolderLabel}
-                      </Typography>
-                    ) : null}
                   </Box>
                 </Stack>
                 <ExpandMoreRoundedIcon fontSize="small" />
               </Button>
 
               <IconButton
+                aria-label="Открыть поиск"
+                data-testid="mail-toolbar-toggle-search"
+                onClick={() => setMobileSearchOpen((prev) => !prev)}
+                sx={iconButtonSx(tokens, {
+                  width: 38,
+                  height: 38,
+                  bgcolor: mobileSearchOpen ? tokens.selectedBg : tokens.actionBg,
+                  color: mobileSearchOpen ? 'primary.main' : tokens.textPrimary,
+                })}
+              >
+                <SearchRoundedIcon fontSize="small" />
+              </IconButton>
+
+              <IconButton
                 aria-label="Открыть действия"
                 data-testid="mail-toolbar-open-tools"
                 onClick={onOpenToolsMenu}
-                sx={iconButtonSx(tokens)}
+                sx={iconButtonSx(tokens, { width: 38, height: 38 })}
               >
                 <MoreHorizRoundedIcon fontSize="small" />
               </IconButton>
             </Stack>
 
-            {searchField}
+            {mobileSearchOpen ? searchField : null}
 
             {hasActiveFilters ? (
               <Chip
@@ -414,11 +432,10 @@ export default function MailToolbar({
         open={Boolean(mailboxMenuAnchorEl)}
         onClose={() => setMailboxMenuAnchorEl(null)}
         PaperProps={{
-          sx: getMailDialogPaperSx(tokens, {
+          sx: getMailMenuPaperSx(tokens, {
             mt: 0.8,
             minWidth: 320,
             maxWidth: 360,
-            bgcolor: tokens.menuBg,
           }),
         }}
       >

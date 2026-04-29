@@ -82,6 +82,8 @@ vi.mock('../components/layout/PageShell', () => ({
       data-mail-ui-font={sx?.['--mail-ui-font'] || ''}
       data-mail-message-font={sx?.['--mail-message-font'] || ''}
       data-mail-mono-font={sx?.['--mail-mono-font'] || ''}
+      data-mail-radius-md={sx?.['--mail-radius-md'] || ''}
+      data-mail-radius-lg={sx?.['--mail-radius-lg'] || ''}
     >
       {children}
     </div>
@@ -90,7 +92,15 @@ vi.mock('../components/layout/PageShell', () => ({
 
 vi.mock('../components/mail/MailAttachmentPreviewDialog', () => ({ default: () => null }));
 vi.mock('../components/mail/MailAdvancedSearchDialog', () => ({ default: () => null }));
-vi.mock('../components/mail/MailBulkActionBar', () => ({ default: () => null }));
+vi.mock('../components/mail/MailBulkActionBar', () => ({
+  default: ({ count, isMobile, onClear }) => (
+    <div data-testid="mail-bulk-action-bar" data-count={String(count || 0)} data-mobile={isMobile ? 'true' : 'false'}>
+      <button type="button" data-testid="mail-bulk-clear" onClick={() => onClear?.()}>
+        clear-bulk
+      </button>
+    </div>
+  ),
+}));
 vi.mock('../components/mail/MailComposeDialog', () => ({
   default: ({
     open,
@@ -194,16 +204,21 @@ vi.mock('../components/mail/MailToolsMenu', () => ({ default: () => null }));
 vi.mock('../components/mail/MailViewSettingsDialog', () => ({ default: () => null }));
 
 vi.mock('../components/mail/MailMessageList', () => ({
-  default: ({ listData, viewMode, onSelectId, messageListRef, onLoadMoreMessages }) => {
+  default: ({ listData, viewMode, selectedItems, onSelectId, onToggleSelectedListItem, messageListRef, onLoadMoreMessages, bottomInset }) => {
     mockRenderStats.messageList += 1;
     return (
-    <div data-testid="mail-list" data-scroll-root="true" ref={messageListRef}>
+    <div data-testid="mail-list" data-scroll-root="true" data-bottom-inset={String(bottomInset || '')} ref={messageListRef}>
       {(Array.isArray(listData?.items) ? listData.items : []).map((item) => {
         const rowId = String(viewMode === 'conversations' ? (item?.conversation_id || item?.id || '') : (item?.id || ''));
         return (
-          <button key={rowId} type="button" data-testid={`mail-item-${rowId}`} onClick={() => onSelectId(rowId, item)}>
-            {rowId}
-          </button>
+          <div key={rowId}>
+            <button type="button" data-testid={`mail-item-${rowId}`} onClick={() => onSelectId(rowId, item)}>
+              {rowId}
+            </button>
+            <button type="button" data-testid={`mail-item-select-${rowId}`} onClick={() => onToggleSelectedListItem?.(rowId)}>
+              {Array.isArray(selectedItems) && selectedItems.includes(rowId) ? 'selected' : 'select'}
+            </button>
+          </div>
         );
       })}
       {onLoadMoreMessages ? (
@@ -518,6 +533,8 @@ describe('Mail read-state behavior', () => {
     expect(shell.getAttribute('data-mail-ui-font')).toContain('Segoe UI Variable');
     expect(shell.getAttribute('data-mail-message-font')).toContain('Aptos');
     expect(shell.getAttribute('data-mail-mono-font')).toContain('Cascadia Mono');
+    expect(shell.getAttribute('data-mail-radius-md')).toBe('10px');
+    expect(shell.getAttribute('data-mail-radius-lg')).toBe('12px');
   });
 
   it('marks an unread deep-linked message as read on open', async () => {
@@ -1210,7 +1227,7 @@ describe('Mail read-state behavior', () => {
     });
 
     expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'notifications-only');
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'default');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
     expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
     expect(screen.getByTestId('mail-toolbar')).toBeTruthy();
     expect(within(screen.getByTestId('page-shell')).queryByTestId('mail-folder-rail')).toBeNull();
@@ -1274,7 +1291,7 @@ describe('Mail read-state behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'notifications-only');
-      expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'default');
+      expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
       expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
       expect(screen.queryByTestId('mail-mobile-preview-screen')).toBeNull();
     });
@@ -1313,6 +1330,54 @@ describe('Mail read-state behavior', () => {
     });
 
     expect(screen.getByTestId('mail-mobile-navigation-drawer')).not.toBeVisible();
+  });
+
+  it('passes mobile bulk selection mode to the action bar and lifts the compose fab', async () => {
+    installMatchMedia({ mobile: true });
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      messages: {
+        items: [
+          buildMessage({ id: 'msg-1', subject: 'First' }),
+          buildMessage({ id: 'msg-2', subject: 'Second' }),
+        ],
+        total: 2,
+        offset: 0,
+        limit: 20,
+        has_more: false,
+        next_offset: null,
+        search_limited: false,
+        searched_window: 0,
+      },
+    }));
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-list-panel')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-item-select-msg-1'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-bulk-action-bar')).toHaveAttribute('data-mobile', 'true');
+    });
+    expect(screen.getByTestId('mail-bulk-action-bar')).toHaveAttribute('data-count', '1');
+    expect(screen.getByTestId('mail-list')).toHaveAttribute('data-bottom-inset', 'calc(78px + env(safe-area-inset-bottom, 0px))');
+    expect(screen.getByTestId('mail-compose-fab')).toHaveAttribute('data-mobile-bulk-offset', 'true');
+
+    fireEvent.click(screen.getByTestId('mail-item-msg-2'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-bulk-action-bar')).toHaveAttribute('data-count', '2');
+    });
+    expect(screen.queryByTestId('mail-mobile-preview-screen')).toBeNull();
+    expect(mockGetMessage).not.toHaveBeenCalledWith('msg-2', expect.any(Object));
   });
 
   it('keeps vertical scrolling gestures on the mobile list from opening navigation', async () => {

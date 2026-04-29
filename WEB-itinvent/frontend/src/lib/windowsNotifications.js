@@ -201,6 +201,21 @@ export function markMailSystemNotificationShown(messageId) {
   return true;
 }
 
+export function getMailSystemNotificationId(item) {
+  if (typeof item === 'string' || typeof item === 'number') {
+    return String(item || '').trim();
+  }
+  const mailboxId = String(item?.mailbox_id || item?.mailbox_email || '').trim();
+  const stableMessageId = String(
+    item?.internet_message_id
+    || item?.message_id
+    || item?.id
+    || ''
+  ).trim();
+  if (!stableMessageId) return '';
+  return mailboxId ? `${mailboxId}:${stableMessageId}` : stableMessageId;
+}
+
 export function createHubSystemNotification(item, { onNavigate } = {}) {
   const normalizedId = String(item?.id || '').trim();
   if (!normalizedId) return null;
@@ -244,10 +259,11 @@ export function createHubSystemNotification(item, { onNavigate } = {}) {
 
 export function createMailSystemNotification(item, { onNavigate } = {}) {
   const normalizedId = String(item?.id || '').trim();
-  if (!normalizedId) return null;
+  const notificationId = getMailSystemNotificationId(item);
+  if (!normalizedId || !notificationId) return null;
   if (!isBrowserNotificationSupported()) return null;
   if (getBrowserNotificationPermission() !== 'granted') return null;
-  if (hasShownMailSystemNotification(normalizedId)) return null;
+  if (hasShownMailSystemNotification(notificationId)) return null;
 
   const { title, body } = getMailNotificationDisplay(item);
   /*
@@ -268,10 +284,10 @@ export function createMailSystemNotification(item, { onNavigate } = {}) {
   try {
     const notification = new window.Notification(title, {
       body,
-      tag: `mail:${normalizedId}`,
+      tag: `mail:${notificationId}`,
       renotify: false,
     });
-    markMailSystemNotificationShown(normalizedId);
+    markMailSystemNotificationShown(notificationId);
     notification.onclick = () => {
       try {
         notification.close?.();

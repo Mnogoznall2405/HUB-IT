@@ -25,6 +25,7 @@ const FILTERS = [
   { value: 'pinned', label: 'Закреплённые' },
   { value: 'archived', label: 'Архив' },
 ];
+export const CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION = false;
 
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
 
@@ -147,7 +148,6 @@ function ConversationRow({
 
   return (
     <motion.div
-      layout
       initial={reducedMotion ? false : { opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={reducedMotion ? { duration: 0 } : { duration: 0.18, delay: Math.min(index, 7) * 0.02 }}
@@ -325,7 +325,6 @@ function AiConversationRow({
 
   return (
     <motion.div
-      layout
       initial={reducedMotion ? false : { opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
       transition={reducedMotion ? { duration: 0 } : { duration: 0.18, delay: Math.min(index, 7) * 0.02 }}

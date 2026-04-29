@@ -30,7 +30,8 @@ python scan_agent/agent.py
 
 - `SCAN_AGENT_SERVER_BASE` — URL scan backend
 - `SCAN_AGENT_API_KEY` — API key агента
-- `SCAN_AGENT_POLL_INTERVAL_SEC` — интервал heartbeat/poll, по умолчанию `60`
+- `SCAN_AGENT_POLL_INTERVAL_SEC` — интервал heartbeat/poll, по умолчанию `600`
+- `SCAN_AGENT_POLL_JITTER_SEC` — jitter heartbeat/poll, по умолчанию `120`
 - `SCAN_AGENT_HTTP_TIMEOUT_SEC` — HTTP timeout, по умолчанию `20`
 - `SCAN_AGENT_MAX_FILE_MB` — лимит размера файла, по умолчанию `50`
 - `SCAN_AGENT_SCAN_ON_START` — `1|0`, по умолчанию `0`

@@ -105,7 +105,6 @@ npm run build
 - вложения
 - reactions
 - threads
-- websocket/SSE realtime
 - отдельный мобильный/Desktop client
 
 ## Проверка после запуска

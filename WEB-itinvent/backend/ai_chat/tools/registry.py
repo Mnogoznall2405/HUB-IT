@@ -60,7 +60,18 @@ class AiToolRegistry:
         try:
             args = tool.validate_args(raw_args)
         except ValidationError as exc:
-            raise AiToolValidationError(f"Invalid tool arguments for {normalized_tool_id}") from exc
+            detail_parts: list[str] = []
+            for error in exc.errors()[:3]:
+                loc = ".".join(str(item) for item in error.get("loc", ())) or "args"
+                msg = _normalize_text(error.get("msg"))
+                detail_parts.append(f"{loc}: {msg}" if msg else loc)
+            detail = "; ".join(detail_parts) or "schema validation failed"
+            logger.warning(
+                "ai_tool_validation_failed tool_id=%s errors=%s",
+                normalized_tool_id,
+                detail,
+            )
+            raise AiToolValidationError(f"Invalid tool arguments for {normalized_tool_id}: {detail}") from exc
         result = tool.execute(context=context, args=args)
         latency_ms = max(0, int((time.perf_counter() - started_at) * 1000))
         audit_row = {

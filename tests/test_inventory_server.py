@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+import time
 from pathlib import Path
 import sys
 
@@ -133,6 +134,128 @@ def test_worker_moves_repeated_failures_to_dead_letter(temp_dir, monkeypatch):
     assert stats_after_retry["dead_letter_count"] == 0
     assert stats_after_dead["queue_depth"] == 0
     assert stats_after_dead["dead_letter_count"] == 1
+
+
+def test_inventory_queue_cleanup_removes_old_done_and_dead_rows(temp_dir):
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    now_ts = int(time.time())
+    done_payload = _payload(timestamp=1_710_100_001)
+    dead_payload = _payload(timestamp=1_710_100_002)
+    fresh_payload = _payload(timestamp=1_710_100_003)
+    done_id = store.enqueue(done_payload, inventory_runtime.build_inventory_dedupe_key(done_payload))["id"]
+    dead_id = store.enqueue(dead_payload, inventory_runtime.build_inventory_dedupe_key(dead_payload))["id"]
+    fresh_id = store.enqueue(fresh_payload, inventory_runtime.build_inventory_dedupe_key(fresh_payload))["id"]
+
+    store.mark_done(done_id, processed_at=now_ts - 8 * 24 * 60 * 60)
+    store.mark_dead(dead_id, error_text="boom", processed_at=now_ts - 31 * 24 * 60 * 60, attempt_count=2)
+    store.mark_done(fresh_id, processed_at=now_ts)
+
+    result = store.cleanup_retention(done_retention_days=7, dead_retention_days=30)
+
+    assert result == {"done_removed": 1, "dead_removed": 1}
+    with store._lock, store._connect() as conn:
+        rows = conn.execute("SELECT status FROM inventory_ingest_queue").fetchall()
+    assert [row["status"] for row in rows] == ["done"]
+
+
+def test_inventory_queue_vacuum_reports_size_result(temp_dir):
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    payload = _payload(timestamp=1_710_100_004)
+    queue_id = store.enqueue(payload, inventory_runtime.build_inventory_dedupe_key(payload))["id"]
+    store.mark_done(queue_id, processed_at=int(time.time()) - 8 * 24 * 60 * 60)
+    store.cleanup_retention(done_retention_days=7, dead_retention_days=30)
+
+    result = store.vacuum()
+
+    assert set(result) == {"before_bytes", "after_bytes", "saved_bytes"}
+    assert result["before_bytes"] >= result["after_bytes"]
+
+
+def test_user_profile_sizes_are_stored_without_hardware_change_noise(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+    monkeypatch.setattr(inventory_runtime, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory_runtime, "get_app_database_url", lambda: database_url)
+
+    first = _payload(timestamp=1_710_100_010)
+    first["user_profile_sizes"] = {
+        "cache_version": 2,
+        "collected_at": 1_710_100_010,
+        "limits": {
+            "profile_budget_sec": 45,
+            "total_budget_sec": 180,
+            "max_entries_per_profile": 500000,
+            "max_profiles": 50,
+        },
+        "profiles": [
+            {
+                "user_name": "tester",
+                "profile_path": r"C:\Users\tester",
+                "total_size_bytes": 100,
+                "top_level_folders": [
+                    {
+                        "name": "Documents",
+                        "path": r"C:\Users\tester\Documents",
+                        "size_bytes": 100,
+                        "partial": True,
+                        "partial_reasons": ["entry_limit"],
+                    }
+                ],
+                "files_count": 1,
+                "dirs_count": 1,
+                "errors_count": 0,
+                "duration_ms": 5,
+                "partial": True,
+                "partial_reasons": ["entry_limit"],
+            }
+        ],
+        "partial": True,
+        "partial_reasons": ["entry_limit"],
+    }
+    second = _payload(timestamp=1_710_100_020)
+    second["user_profile_sizes"] = {
+        **first["user_profile_sizes"],
+        "collected_at": 1_710_100_020,
+        "profiles": [{**first["user_profile_sizes"]["profiles"][0], "total_size_bytes": 200}],
+    }
+
+    inventory_runtime.process_inventory_payload(first)
+    inventory_runtime.process_inventory_payload(second)
+
+    app_store = AppInventoryStore(database_url=database_url)
+    host = app_store.get_host("AA-BB-CC-DD-EE-10")
+    changes = app_store.list_change_events()
+    assert host["user_profile_sizes"]["total_size_bytes"] == 200
+    assert host["user_profile_sizes_total_bytes"] == 200
+    assert host["user_profile_sizes"]["partial_reasons"] == ["entry_limit"]
+    assert host["user_profile_sizes"]["limits"]["max_entries_per_profile"] == 500000
+    assert changes == []
+
+
+def test_inventory_worker_flushes_300_items_without_backlog(temp_dir, monkeypatch):
+    store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    config = _worker_config(temp_dir)
+    handled = []
+
+    monkeypatch.setattr(inventory_runtime, "process_inventory_payload", lambda payload: handled.append(payload))
+
+    for idx in range(300):
+        payload = _payload(timestamp=1_710_200_000 + idx)
+        payload["hostname"] = f"PC-LOAD-{idx:03d}"
+        payload["mac_address"] = f"AA-BB-CC-DD-EE-{idx % 100:02d}"
+        store.enqueue(payload, inventory_runtime.build_inventory_dedupe_key(payload))
+
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+    while True:
+        batch = store.claim_next_batch(limit=50)
+        if not batch:
+            break
+        for item in batch:
+            worker._handle_item(item)
+
+    stats = store.queue_stats()
+    assert len(handled) == 300
+    assert stats["queue_depth"] == 0
+    assert stats["dead_letter_count"] == 0
 
 
 def test_inventory_app_enqueues_and_reports_health(temp_dir, monkeypatch):

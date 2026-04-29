@@ -162,6 +162,33 @@ class InventoryQueueStore:
             )
             conn.commit()
 
+    def cleanup_retention(self, *, done_retention_days: int, dead_retention_days: int) -> Dict[str, int]:
+        now_ts = int(time.time())
+        done_cutoff = now_ts - max(1, int(done_retention_days)) * 24 * 60 * 60
+        dead_cutoff = now_ts - max(1, int(dead_retention_days)) * 24 * 60 * 60
+        with self._lock, self._connect() as conn:
+            done_cursor = conn.execute(
+                "DELETE FROM inventory_ingest_queue WHERE status = 'done' AND COALESCE(processed_at, created_at) < ?",
+                (done_cutoff,),
+            )
+            dead_cursor = conn.execute(
+                "DELETE FROM inventory_ingest_queue WHERE status = 'dead' AND COALESCE(processed_at, created_at) < ?",
+                (dead_cutoff,),
+            )
+            conn.commit()
+        return {
+            "done_removed": int(done_cursor.rowcount or 0),
+            "dead_removed": int(dead_cursor.rowcount or 0),
+        }
+
+    def vacuum(self) -> Dict[str, int]:
+        before_bytes = int(self.db_path.stat().st_size) if self.db_path.exists() else 0
+        with self._lock:
+            with self._connect() as conn:
+                conn.execute("VACUUM")
+        after_bytes = int(self.db_path.stat().st_size) if self.db_path.exists() else 0
+        return {"before_bytes": before_bytes, "after_bytes": after_bytes, "saved_bytes": max(0, before_bytes - after_bytes)}
+
     def queue_stats(self) -> Dict[str, Any]:
         now_ts = int(time.time())
         with self._lock, self._connect() as conn:

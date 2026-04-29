@@ -138,7 +138,7 @@ export default function MailAdvancedSearchDialog({
                     size="small"
                     variant="outlined"
                     onClick={() => onApplyRecent(item)}
-                    sx={{ textTransform: 'none', borderRadius: '999px' }}
+                    sx={{ textTransform: 'none', borderRadius: tokens.chipRadius }}
                   >
                     {item?.label || item?.q || 'Поиск'}
                   </Button>

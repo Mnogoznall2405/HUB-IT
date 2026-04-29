@@ -4,7 +4,7 @@ import logging
 import os
 from pathlib import Path
 import re
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import yaml
 
@@ -44,6 +44,24 @@ def _re_flags(flags: Any) -> int:
         elif token in {"multiline", "m"}:
             out |= re.MULTILINE
     return out
+
+
+def _normalize_pattern_category(value: Any) -> str:
+    text = str(value or "").strip()
+    return text or "Общие"
+
+
+def _normalize_enabled_by_default(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return True
+    raw = str(value or "").strip().lower()
+    if raw in {"0", "false", "no", "off", "disabled"}:
+        return False
+    if raw in {"1", "true", "yes", "on", "enabled"}:
+        return True
+    return True
 
 
 def _load_defs() -> Tuple[List[Dict[str, Any]], Dict[str, float], Dict[str, float]]:
@@ -90,6 +108,8 @@ def _load_defs() -> Tuple[List[Dict[str, Any]], Dict[str, float], Dict[str, floa
             {
                 "id": pattern_id,
                 "name": str(row.get("name") or pattern_id),
+                "category": _normalize_pattern_category(row.get("category")),
+                "enabled_by_default": _normalize_enabled_by_default(row.get("enabled_by_default")),
                 "weight": weight,
                 "regex": regex,
             }
@@ -116,19 +136,53 @@ def allowed_pattern_ids() -> set[str]:
     return set(ALLOWED_PATTERN_IDS)
 
 
+def normalize_pattern_filter(allowed_pattern_ids: Optional[Iterable[Any]]) -> Optional[set[str]]:
+    if allowed_pattern_ids is None:
+        return None
+    normalized = {
+        str(item or "").strip()
+        for item in allowed_pattern_ids
+        if str(item or "").strip()
+    }
+    if not normalized:
+        return None
+    return normalized & ALLOWED_PATTERN_IDS
+
+
+def list_patterns() -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    for item in PATTERN_DEFS:
+        pattern_id = str(item.get("id") or "").strip()
+        if not pattern_id:
+            continue
+        out.append(
+            {
+                "id": pattern_id,
+                "name": str(item.get("name") or pattern_id),
+                "category": _normalize_pattern_category(item.get("category")),
+                "weight": float(item.get("weight") or 1.0),
+                "enabled_by_default": _normalize_enabled_by_default(item.get("enabled_by_default")),
+            }
+        )
+    return out
+
+
 def _snippet(text: str, start: int, end: int, radius: int = 36) -> str:
     left = max(0, start - radius)
     right = min(len(text), end + radius)
     return text[left:right].replace("\n", " ").strip()
 
 
-def scan_text(text: str) -> List[Dict[str, str]]:
+def scan_text(text: str, allowed_pattern_ids: Optional[Iterable[Any]] = None) -> List[Dict[str, str]]:
     source = str(text or "")
     if not source.strip():
         return []
+    allowed = normalize_pattern_filter(allowed_pattern_ids)
     out: List[Dict[str, str]] = []
     for item in PATTERN_DEFS:
         pattern_id = str(item.get("id") or "")
+        if allowed is not None and pattern_id not in allowed:
+            continue
         name = str(item.get("name") or pattern_id)
         weight = float(item.get("weight") or 1.0)
         regex = item.get("regex")

@@ -23,6 +23,8 @@ import {
   Typography,
 } from '@mui/material';
 import {
+  ExpandLess as ExpandLessIcon,
+  ExpandMore as ExpandMoreIcon,
   Refresh as RefreshIcon,
   Lan as LanIcon,
   MailOutline as MailOutlineIcon,
@@ -37,11 +39,23 @@ import { useTheme } from '@mui/material/styles';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
 const SEEN_CHANGES_STORAGE_KEY = 'computers_seen_changes_by_pc_v1';
+const USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY = 'computers_hide_system_user_profile_folders_v1';
 const AUTO_REFRESH_BASE_SEC = 60;
 const AUTO_REFRESH_STEP_SEC = 30;
 const AUTO_REFRESH_MAX_SEC = 120;
 const SEARCH_DEBOUNCE_MS = 350;
+const COMPUTERS_PAGE_SIZE = 50;
 const OUTLOOK_ARCHIVE_LIMIT_BYTES = 50 * 1024 * 1024 * 1024;
+const COMPUTER_SEARCH_FIELD_OPTIONS = [
+  { key: 'identity', label: 'ПК' },
+  { key: 'user', label: 'Пользователь' },
+  { key: 'profiles', label: 'Профили' },
+  { key: 'outlook', label: 'Outlook архивы' },
+  { key: 'network', label: 'Сеть' },
+  { key: 'location', label: 'Филиал' },
+  { key: 'database', label: 'БД' },
+];
+const DEFAULT_COMPUTER_SEARCH_FIELDS = COMPUTER_SEARCH_FIELD_OPTIONS.map((item) => item.key);
 
 function StatCard({ title, value, helper, color = 'inherit' }) {
   const theme = useTheme();
@@ -222,6 +236,70 @@ function formatBytesCompact(value) {
   return `${size.toFixed(1)} ${units[idx]}`;
 }
 
+const USER_PROFILE_PARTIAL_HINT = 'Агент остановил обход по лимиту времени или количеству файлов, чтобы не нагружать диск';
+const USER_PROFILE_FOLDER_PREVIEW_LIMIT = 4;
+const USER_PROFILE_FOLDER_LABELS = {
+  Desktop: 'Рабочий стол',
+  Documents: 'Документы',
+  Downloads: 'Загрузки',
+  Pictures: 'Изображения',
+};
+const USER_PROFILE_SYSTEM_FOLDER_NAMES = new Set([
+  'appdata',
+  'application data',
+  'cookies',
+  'intelgraphicsprofiles',
+  'links',
+  'local settings',
+  'nethood',
+  'printhood',
+  'recent',
+  'saved games',
+  'searches',
+  'sendto',
+  'start menu',
+  'templates',
+]);
+
+function formatUserProfileFolderName(name) {
+  const raw = String(name || '').trim();
+  return USER_PROFILE_FOLDER_LABELS[raw] || raw || '-';
+}
+
+function getUserProfileKey(profile, idx) {
+  return String(profile?.profilePath || profile?.userName || `profile-${idx}`).trim() || `profile-${idx}`;
+}
+
+function isUserProfileSystemFolder(folder) {
+  const name = String(folder?.name || '').trim();
+  const normalized = name.toLowerCase();
+  if (!normalized) return false;
+  return normalized.startsWith('.') || USER_PROFILE_SYSTEM_FOLDER_NAMES.has(normalized);
+}
+
+function getUserProfileFolders(profile, hideSystemFolders = false) {
+  const folders = Array.isArray(profile?.topLevelFolders) ? profile.topLevelFolders : [];
+  if (!hideSystemFolders) return folders;
+  return folders.filter((folder) => !isUserProfileSystemFolder(folder));
+}
+
+function formatUserProfileFolderSummary(profile, hideSystemFolders = false) {
+  const folders = getUserProfileFolders(profile, hideSystemFolders);
+  if (folders.length === 0) return '';
+  const visible = folders
+    .slice(0, USER_PROFILE_FOLDER_PREVIEW_LIMIT)
+    .map((folder) => `${formatUserProfileFolderName(folder.name)} ${formatBytesCompact(folder.sizeBytes)}`);
+  const hiddenCount = Math.max(0, folders.length - USER_PROFILE_FOLDER_PREVIEW_LIMIT);
+  return hiddenCount > 0 ? `${visible.join(' · ')} · + еще ${hiddenCount}` : visible.join(' · ');
+}
+
+function getUserProfileFolderShare(folder, profile) {
+  const sizeBytes = Number(folder?.sizeBytes || 0);
+  const totalBytes = Number(profile?.totalSizeBytes || 0);
+  if (!Number.isFinite(sizeBytes) || !Number.isFinite(totalBytes) || sizeBytes <= 0 || totalBytes <= 0) return 0;
+  return Math.max(1, Math.min(100, Math.round((sizeBytes / totalBytes) * 100)));
+}
+
 function outlookStatusColor(status) {
   const normalized = String(status || '').trim().toLowerCase();
   if (normalized === 'ok') return 'success';
@@ -376,6 +454,48 @@ function resolveOutlookFiles(outlookMeta) {
   return unique;
 }
 
+function resolveUserProfileSizes(pc) {
+  const raw = pc?.user_profile_sizes && typeof pc.user_profile_sizes === 'object' ? pc.user_profile_sizes : {};
+  const profiles = Array.isArray(raw?.profiles)
+    ? raw.profiles
+      .filter((row) => row && typeof row === 'object')
+      .map((row) => ({
+        userName: String(row.user_name || '').trim(),
+        profilePath: String(row.profile_path || '').trim(),
+        totalSizeBytes: Number(row.total_size_bytes || 0),
+        filesCount: Number(row.files_count || 0),
+        dirsCount: Number(row.dirs_count || 0),
+        errorsCount: Number(row.errors_count || 0),
+        partial: Boolean(row.partial),
+        partialReasons: Array.isArray(row.partial_reasons) ? row.partial_reasons.map((item) => String(item || '').trim()).filter(Boolean) : [],
+        topLevelFolders: Array.isArray(row.top_level_folders)
+          ? row.top_level_folders
+            .filter((folder) => folder && typeof folder === 'object')
+            .map((folder) => ({
+              name: String(folder.name || '').trim(),
+              path: String(folder.path || '').trim(),
+              sizeBytes: Number(folder.size_bytes || 0),
+              filesCount: Number(folder.files_count || 0),
+              dirsCount: Number(folder.dirs_count || 0),
+              errorsCount: Number(folder.errors_count || 0),
+              partial: Boolean(folder.partial),
+              partialReasons: Array.isArray(folder.partial_reasons) ? folder.partial_reasons.map((item) => String(item || '').trim()).filter(Boolean) : [],
+            }))
+          : [],
+      }))
+    : [];
+  profiles.sort((left, right) => right.totalSizeBytes - left.totalSizeBytes);
+  const totalSizeBytes = Number(raw?.total_size_bytes || profiles.reduce((sum, row) => sum + row.totalSizeBytes, 0));
+  return {
+    collectedAt: Number(raw?.collected_at || 0),
+    profilesCount: Number(raw?.profiles_count || profiles.length),
+    totalSizeBytes,
+    profiles,
+    partial: Boolean(raw?.partial) || profiles.some((row) => row.partial),
+    partialReasons: Array.isArray(raw?.partial_reasons) ? raw.partial_reasons.map((item) => String(item || '').trim()).filter(Boolean) : [],
+  };
+}
+
 function pcChangeKey(pc) {
   const mac = String(pc?.mac_address || '').replace(/[^0-9A-Fa-f]/g, '').toUpperCase();
   if (mac) return `mac:${mac}`;
@@ -451,11 +571,15 @@ function Computers() {
   const [computers, setComputers] = useState([]);
   const [changes, setChanges] = useState({ totals: {}, daily: [] });
   const [loading, setLoading] = useState(true);
+  const [autoLoadingMore, setAutoLoadingMore] = useState(false);
   const [selected, setSelected] = useState(null);
   const [open, setOpen] = useState(false);
 
   const [q, setQ] = useState('');
   const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [searchFields, setSearchFields] = useState(DEFAULT_COMPUTER_SEARCH_FIELDS);
+  const [searchMeta, setSearchMeta] = useState({ total: 0, limit: COMPUTERS_PAGE_SIZE, offset: 0, has_more: false, next_offset: null });
+  const [searchSummary, setSearchSummary] = useState(null);
   const [status, setStatus] = useState('all');
   const [outlookStatus, setOutlookStatus] = useState('all');
   const [branch, setBranch] = useState('all');
@@ -463,11 +587,15 @@ function Computers() {
   const [showAllComputers, setShowAllComputers] = useState(false);
   const [showDashboard, setShowDashboard] = useState(() => localStorage.getItem('computers_show_dashboard') !== '0');
   const [showLocation, setShowLocation] = useState(() => localStorage.getItem('computers_show_location') !== '0');
+  const [hideSystemUserProfileFolders, setHideSystemUserProfileFolders] = useState(() => localStorage.getItem(USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY) === '1');
   const [expandedLocations, setExpandedLocations] = useState({});
+  const [expandedUserProfiles, setExpandedUserProfiles] = useState({});
   const [seenChangesByPc, setSeenChangesByPc] = useState(() => readSeenChangesMap());
 
   const inFlightRef = useRef(false);
   const pollTimerRef = useRef(null);
+  const autoLoadTimerRef = useRef(null);
+  const loadedCountRef = useRef(0);
   const retryDelaySecRef = useRef(AUTO_REFRESH_BASE_SEC);
   const hasInitializedRef = useRef(false);
 
@@ -480,6 +608,13 @@ function Computers() {
     }
   }, []);
 
+  const clearAutoLoadTimer = useCallback(() => {
+    if (autoLoadTimerRef.current) {
+      clearTimeout(autoLoadTimerRef.current);
+      autoLoadTimerRef.current = null;
+    }
+  }, []);
+
   useEffect(() => {
     const timer = setTimeout(() => {
       setDebouncedQuery(String(q || '').trim());
@@ -487,26 +622,49 @@ function Computers() {
     return () => clearTimeout(timer);
   }, [q]);
 
-  const load = useCallback(async ({ withLoader = false } = {}) => {
+  const getBackgroundRefreshLimit = useCallback(() => {
+    const loadedCount = Number(loadedCountRef.current || 0);
+    return Math.min(500, loadedCount || COMPUTERS_PAGE_SIZE);
+  }, []);
+
+  const load = useCallback(async ({ withLoader = false, append = false, offset = 0, limit = COMPUTERS_PAGE_SIZE } = {}) => {
     if (inFlightRef.current) return false;
     inFlightRef.current = true;
     try {
       if (withLoader) setLoading(true);
-      const [pcData, changeData] = await Promise.all([
-        equipmentAPI.getAgentComputers({
+      if (append) setAutoLoadingMore(true);
+      const [pcPayload, changeData] = await Promise.all([
+        equipmentAPI.searchAgentComputers({
           scope,
           branch: branch !== 'all' ? branch : undefined,
           status: status !== 'all' ? status : undefined,
           outlookStatus: outlookStatus !== 'all' ? outlookStatus : undefined,
           q: debouncedQuery || undefined,
+          searchFields,
           changedOnly,
           sortBy: 'hostname',
           sortDir: 'asc',
+          limit,
+          offset,
+          includeSummary: !append,
         }),
-        equipmentAPI.getAgentComputerChanges(50),
+        append ? Promise.resolve(null) : equipmentAPI.getAgentComputerChanges(50),
       ]);
-      setComputers(Array.isArray(pcData) ? pcData : []);
-      setChanges(changeData && typeof changeData === 'object' ? changeData : { totals: {}, daily: [] });
+      const items = Array.isArray(pcPayload?.items) ? pcPayload.items : (Array.isArray(pcPayload) ? pcPayload : []);
+      setComputers((prev) => {
+        const next = append ? [...prev, ...items] : items;
+        loadedCountRef.current = next.length;
+        return next;
+      });
+      setSearchMeta({
+        total: Number(pcPayload?.total ?? items.length) || 0,
+        limit: Number(pcPayload?.limit ?? limit) || limit,
+        offset: Number(pcPayload?.offset ?? offset) || 0,
+        has_more: Boolean(pcPayload?.has_more),
+        next_offset: pcPayload?.next_offset ?? null,
+      });
+      setSearchSummary((prev) => (pcPayload?.summary && typeof pcPayload.summary === 'object' ? pcPayload.summary : (append ? prev : null)));
+      setChanges((prev) => (changeData && typeof changeData === 'object' ? changeData : (append ? prev : { totals: {}, daily: [] })));
       retryDelaySecRef.current = AUTO_REFRESH_BASE_SEC;
       return true;
     } catch (err) {
@@ -515,9 +673,10 @@ function Computers() {
       return false;
     } finally {
       if (withLoader) setLoading(false);
+      if (append) setAutoLoadingMore(false);
       inFlightRef.current = false;
     }
-  }, [branch, changedOnly, debouncedQuery, outlookStatus, scope, status]);
+  }, [branch, changedOnly, debouncedQuery, outlookStatus, scope, searchFields, status]);
 
   const scheduleNextPoll = useCallback((delaySec) => {
     clearPollTimer();
@@ -528,15 +687,38 @@ function Computers() {
         clearPollTimer();
         return;
       }
-      await load({ withLoader: false });
+      await load({ withLoader: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
       scheduleNextPoll(retryDelaySecRef.current);
     }, Math.max(1, nextDelaySec) * 1000);
-  }, [clearPollTimer, load]);
+  }, [clearPollTimer, getBackgroundRefreshLimit, load]);
 
   const handleManualRefresh = useCallback(async () => {
-    await load({ withLoader: true });
+    await load({ withLoader: true, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
     scheduleNextPoll(retryDelaySecRef.current);
-  }, [load, scheduleNextPoll]);
+  }, [getBackgroundRefreshLimit, load, scheduleNextPoll]);
+
+  useEffect(() => {
+    clearAutoLoadTimer();
+    if (loading || autoLoadingMore || !searchMeta.has_more) return undefined;
+    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return undefined;
+    const nextOffset = Number(searchMeta.next_offset ?? computers.length);
+    if (!Number.isFinite(nextOffset) || nextOffset < 0 || nextOffset <= 0) return undefined;
+    autoLoadTimerRef.current = setTimeout(() => {
+      load({ withLoader: false, append: true, offset: nextOffset });
+    }, 250);
+    return clearAutoLoadTimer;
+  }, [autoLoadingMore, clearAutoLoadTimer, computers.length, load, loading, searchMeta.has_more, searchMeta.next_offset]);
+
+  const toggleSearchField = useCallback((fieldKey) => {
+    setSearchFields((prev) => {
+      const current = Array.isArray(prev) ? prev : DEFAULT_COMPUTER_SEARCH_FIELDS;
+      if (current.includes(fieldKey)) {
+        const next = current.filter((item) => item !== fieldKey);
+        return next.length > 0 ? next : current;
+      }
+      return [...current, fieldKey];
+    });
+  }, []);
 
   useEffect(() => {
     let isActive = true;
@@ -550,8 +732,9 @@ function Computers() {
     return () => {
       isActive = false;
       clearPollTimer();
+      clearAutoLoadTimer();
     };
-  }, [clearPollTimer, load, scheduleNextPoll]);
+  }, [clearAutoLoadTimer, clearPollTimer, load, scheduleNextPoll]);
 
   useEffect(() => {
     const handleVisibilityChange = async () => {
@@ -559,12 +742,12 @@ function Computers() {
         clearPollTimer();
         return;
       }
-      await load({ withLoader: false });
+      await load({ withLoader: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
       scheduleNextPoll(retryDelaySecRef.current);
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [clearPollTimer, load, scheduleNextPoll]);
+  }, [clearPollTimer, getBackgroundRefreshLimit, load, scheduleNextPoll]);
 
   useEffect(() => {
     const reloadAfterDbSwitch = async () => {
@@ -577,7 +760,8 @@ function Computers() {
       }
       setSelected(null);
       setOpen(false);
-      await load({ withLoader: true });
+      loadedCountRef.current = 0;
+      await load({ withLoader: true, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE });
       scheduleNextPoll(AUTO_REFRESH_BASE_SEC);
     };
 
@@ -607,6 +791,10 @@ function Computers() {
   }, [showLocation]);
 
   useEffect(() => {
+    localStorage.setItem(USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY, hideSystemUserProfileFolders ? '1' : '0');
+  }, [hideSystemUserProfileFolders]);
+
+  useEffect(() => {
     if (canViewAllComputers) return;
     setShowAllComputers(false);
   }, [canViewAllComputers]);
@@ -624,6 +812,12 @@ function Computers() {
     setSelected(null);
     setOpen(false);
   }, [computers, selected]);
+
+  useEffect(() => {
+    if (!open) {
+      setExpandedUserProfiles({});
+    }
+  }, [open]);
 
   useEffect(() => {
     localStorage.setItem(SEEN_CHANGES_STORAGE_KEY, JSON.stringify(seenChangesByPc));
@@ -658,12 +852,18 @@ function Computers() {
   };
 
   const branches = useMemo(() => {
-    const uniq = new Set(computers.map((pc) => String(pc.branch_name || 'Без филиала').trim() || 'Без филиала'));
+    const summaryBranches = searchSummary?.branches && typeof searchSummary.branches === 'object'
+      ? Object.keys(searchSummary.branches)
+      : [];
+    const uniq = new Set([
+      ...summaryBranches,
+      ...computers.map((pc) => String(pc.branch_name || 'Без филиала').trim() || 'Без филиала'),
+    ]);
     if (branch !== 'all') {
       uniq.add(branch);
     }
     return Array.from(uniq).sort((a, b) => a.localeCompare(b, 'ru'));
-  }, [branch, computers]);
+  }, [branch, computers, searchSummary]);
 
   const filtered = computers;
 
@@ -693,29 +893,35 @@ function Computers() {
   }, [filtered, showLocation]);
 
   const statusRows = useMemo(() => {
-    const map = { online: 0, stale: 0, offline: 0, unknown: 0 };
-    filtered.forEach((pc) => {
-      const key = String(pc.status || 'unknown').toLowerCase();
-      map[key] = (map[key] || 0) + 1;
-    });
+    const summaryStatuses = searchSummary?.statuses && typeof searchSummary.statuses === 'object' ? searchSummary.statuses : null;
+    const map = summaryStatuses ? { ...summaryStatuses } : { online: 0, stale: 0, offline: 0, unknown: 0 };
+    if (!summaryStatuses) {
+      filtered.forEach((pc) => {
+        const key = String(pc.status || 'unknown').toLowerCase();
+        map[key] = (map[key] || 0) + 1;
+      });
+    }
     return [
       { label: 'В сети', value: map.online || 0 },
       { label: 'Нет свежих', value: map.stale || 0 },
       { label: 'Оффлайн', value: map.offline || 0 },
       { label: 'Неизвестно', value: map.unknown || 0 },
     ];
-  }, [filtered]);
+  }, [filtered, searchSummary]);
 
   const branchRows = useMemo(() => {
-    const counters = {};
-    filtered.forEach((pc) => {
-      const name = String(pc.branch_name || 'Без филиала').trim() || 'Без филиала';
-      counters[name] = (counters[name] || 0) + 1;
-    });
-    return Object.entries(counters)
+    const counters = searchSummary?.branches && typeof searchSummary.branches === 'object' ? searchSummary.branches : {};
+    const nextCounters = Object.keys(counters).length > 0 ? { ...counters } : {};
+    if (Object.keys(nextCounters).length === 0) {
+      filtered.forEach((pc) => {
+        const name = String(pc.branch_name || 'Без филиала').trim() || 'Без филиала';
+        nextCounters[name] = (nextCounters[name] || 0) + 1;
+      });
+    }
+    return Object.entries(nextCounters)
       .sort((a, b) => a[0].localeCompare(b[0], 'ru'))
       .map(([label, value]) => ({ label, value }));
-  }, [filtered]);
+  }, [filtered, searchSummary]);
 
   const changeRows = useMemo(() => {
     const daily = Array.isArray(changes.daily) ? changes.daily : [];
@@ -735,9 +941,13 @@ function Computers() {
   const selectedDriveUsage = useMemo(() => resolveCardDriveUsage(selected), [selected]);
   const selectedOutlookUsage = useMemo(() => resolveOutlookArchiveUsage(selectedOutlook), [selectedOutlook]);
   const selectedOutlookFiles = useMemo(() => resolveOutlookFiles(selectedOutlook), [selectedOutlook]);
+  const selectedUserProfileSizes = useMemo(() => resolveUserProfileSizes(selected), [selected]);
   const toggleLocationGroup = useCallback((branchName, locationName) => {
     const key = `${branchName}__${locationName}`;
     setExpandedLocations((prev) => ({ ...(prev || {}), [key]: !Boolean(prev?.[key]) }));
+  }, []);
+  const toggleUserProfileFolders = useCallback((profileKey) => {
+    setExpandedUserProfiles((prev) => ({ ...(prev || {}), [profileKey]: !Boolean(prev?.[profileKey]) }));
   }, []);
 
   return (
@@ -765,7 +975,7 @@ function Computers() {
             />
             <Tooltip title="Обновить данные">
               <span>
-                <IconButton onClick={handleManualRefresh} disabled={loading} color="primary">
+                <IconButton aria-label="Обновить данные" onClick={handleManualRefresh} disabled={loading} color="primary">
                   <RefreshIcon />
                 </IconButton>
               </span>
@@ -799,7 +1009,7 @@ function Computers() {
           <>
             <Grid container spacing={2} sx={{ mb: 2 }}>
               <Grid item xs={12} sm={6} md={3}>
-                <StatCard title="Всего ПК" value={filtered.length} helper="по текущим фильтрам" />
+                <StatCard title="Всего ПК" value={Number(searchSummary?.total ?? searchMeta.total ?? filtered.length)} helper="по текущим фильтрам" />
               </Grid>
               <Grid item xs={12} sm={6} md={3}>
                 <StatCard title="В сети" value={statusRows[0]?.value || 0} helper="heartbeat до 12 минут" color="success.main" />
@@ -829,8 +1039,30 @@ function Computers() {
                 label="Поиск"
                 value={q}
                 onChange={(e) => setQ(e.target.value)}
-                placeholder="ПК, ФИО, логин, IP, MAC"
+                placeholder="ПК, ФИО, профиль, PST/OST, IP, MAC"
               />
+            </Grid>
+            <Grid item xs={12} md={8}>
+              <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
+                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                  Искать в
+                </Typography>
+                {COMPUTER_SEARCH_FIELD_OPTIONS.map((option) => {
+                  const active = searchFields.includes(option.key);
+                  return (
+                    <Chip
+                      key={option.key}
+                      size="small"
+                      clickable
+                      color={active ? 'primary' : 'default'}
+                      variant={active ? 'filled' : 'outlined'}
+                      label={option.label}
+                      onClick={() => toggleSearchField(option.key)}
+                      sx={{ height: 26 }}
+                    />
+                  );
+                })}
+              </Stack>
             </Grid>
             <Grid item xs={12} sm={6} md={2}>
               <FormControl fullWidth size="small">
@@ -926,7 +1158,12 @@ function Computers() {
                                 <Grid item xs={12} sm={6} md={4} lg={3} xl={2} key={`${pc.mac_address || pc.hostname || idx}`}>
                                   <Paper
                                     variant="outlined"
-                                    onClick={() => { markPcChangesSeen(pc); setSelected(pc); setOpen(true); }}
+                                    onClick={() => {
+                                      markPcChangesSeen(pc);
+                                      setExpandedUserProfiles({});
+                                      setSelected(pc);
+                                      setOpen(true);
+                                    }}
                                     sx={{
                                       ...getOfficePanelSx(ui, {
                                         p: 1.1,
@@ -1029,6 +1266,18 @@ function Computers() {
                 </Stack>
               </Paper>
             ))}
+            {searchMeta.has_more ? (
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.8, py: 1 }}>
+                <LinearProgress sx={{ width: { xs: '100%', sm: 360 }, maxWidth: '100%' }} />
+                <Typography variant="caption" color="text.secondary">
+                  Подгружаю остальные ПК: {computers.length} из {searchMeta.total}
+                </Typography>
+              </Box>
+            ) : searchMeta.total > computers.length ? (
+              <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center', py: 1 }}>
+                Показано {computers.length} из {searchMeta.total}
+              </Typography>
+            ) : null}
           </Stack>
         )}
 
@@ -1090,6 +1339,160 @@ function Computers() {
                   <Typography variant="body2">
                     Подключение: {selected.network_link?.device_code ? `${selected.network_link.device_code} / ${selected.network_link.port_name || 'порт ?'} / ${selected.network_link.socket_code || 'розетка ?'}` : 'не определено'}
                   </Typography>
+                </Paper>
+
+                <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Профили пользователей</Typography>
+                <Paper variant="outlined" sx={{ p: 1.4 }}>
+                  <Stack spacing={0.9}>
+                    <Stack direction="row" spacing={0.8} alignItems="center" flexWrap="wrap" useFlexGap>
+                      <Chip size="small" label={`Всего: ${formatBytesCompact(selectedUserProfileSizes.totalSizeBytes)}`} />
+                      <Chip size="small" variant="outlined" label={`Профилей: ${selectedUserProfileSizes.profilesCount}`} />
+                      {selectedUserProfileSizes.partial && (
+                        <Tooltip title={USER_PROFILE_PARTIAL_HINT}>
+                          <Chip size="small" color="warning" label="Расчет не полный" />
+                        </Tooltip>
+                      )}
+                      <Typography variant="caption" color="text.secondary">
+                        Обновлено: {selectedUserProfileSizes.collectedAt ? formatTs(selectedUserProfileSizes.collectedAt) : '-'}
+                      </Typography>
+                      <FormControlLabel
+                        control={(
+                          <Switch
+                            size="small"
+                            checked={hideSystemUserProfileFolders}
+                            onChange={(event) => setHideSystemUserProfileFolders(event.target.checked)}
+                          />
+                        )}
+                        label={(
+                          <Tooltip describeChild title="Скрывает AppData, dot-папки и служебные каталоги профиля только в интерфейсе">
+                            <Typography variant="caption" component="span">Скрыть системные</Typography>
+                          </Tooltip>
+                        )}
+                        sx={{ ml: 0, mr: 0 }}
+                      />
+                    </Stack>
+                    {selectedUserProfileSizes.profiles.length > 0 ? (
+                      <Stack spacing={0.7}>
+                        {selectedUserProfileSizes.profiles.slice(0, 8).map((profile, idx) => {
+                          const profileKey = getUserProfileKey(profile, idx);
+                          const foldersExpanded = Boolean(expandedUserProfiles[profileKey]);
+                          const visibleFolders = getUserProfileFolders(profile, hideSystemUserProfileFolders);
+                          const folderSummary = formatUserProfileFolderSummary(profile, hideSystemUserProfileFolders);
+                          const allFolderCount = profile.topLevelFolders.length;
+                          const folderCount = visibleFolders.length;
+                          const hiddenSystemFolderCount = Math.max(0, allFolderCount - folderCount);
+                          const folderButtonCount = hiddenSystemFolderCount > 0 ? `${folderCount} из ${allFolderCount}` : String(allFolderCount);
+                          return (
+                            <Paper key={profileKey} variant="outlined" sx={{ p: 0.85 }}>
+                              <Stack spacing={0.8}>
+                                <Stack direction="row" spacing={0.9} justifyContent="space-between" alignItems="flex-start">
+                                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                                    <Tooltip title={profile.profilePath || '-'}>
+                                      <Typography variant="caption" sx={{ display: 'block', fontWeight: 700 }} noWrap>
+                                        {profile.userName || profile.profilePath || '-'}
+                                      </Typography>
+                                    </Tooltip>
+                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.1 }}>
+                                      {profile.filesCount} файлов · {profile.dirsCount} папок{profile.errorsCount > 0 ? ` · ошибок: ${profile.errorsCount}` : ''}
+                                    </Typography>
+                                    {!!folderSummary && (
+                                      <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.1 }} noWrap>
+                                        {folderSummary}
+                                      </Typography>
+                                    )}
+                                  </Box>
+                                  <Stack alignItems="flex-end" spacing={0.3} sx={{ flexShrink: 0 }}>
+                                    <Typography variant="caption" sx={{ fontWeight: 700 }}>{formatBytesCompact(profile.totalSizeBytes)}</Typography>
+                                    {profile.partial && (
+                                      <Tooltip title={USER_PROFILE_PARTIAL_HINT}>
+                                        <Chip size="small" color="warning" label="Частично" sx={{ height: 22 }} />
+                                      </Tooltip>
+                                    )}
+                                  </Stack>
+                                </Stack>
+
+                                {allFolderCount > 0 && (
+                                  <Box>
+                                    <Button
+                                      type="button"
+                                      size="small"
+                                      variant="text"
+                                      onClick={() => toggleUserProfileFolders(profileKey)}
+                                      endIcon={foldersExpanded ? <ExpandLessIcon fontSize="small" /> : <ExpandMoreIcon fontSize="small" />}
+                                      aria-expanded={foldersExpanded}
+                                      aria-controls={`profile-folders-${idx}`}
+                                      sx={{ px: 0.2, py: 0.1, minHeight: 24, fontSize: '0.75rem' }}
+                                    >
+                                      {foldersExpanded ? 'Скрыть папки' : `${hideSystemUserProfileFolders ? 'Показать папки' : 'Показать все папки'} (${folderButtonCount})`}
+                                    </Button>
+                                    <Collapse in={foldersExpanded} timeout="auto" unmountOnExit>
+                                      <Box id={`profile-folders-${idx}`} sx={{ mt: 0.7, borderTop: 1, borderColor: 'divider' }}>
+                                        {hiddenSystemFolderCount > 0 && (
+                                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', py: 0.7 }}>
+                                            Скрыто системных: {hiddenSystemFolderCount}
+                                          </Typography>
+                                        )}
+                                        {folderCount === 0 ? (
+                                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', py: 0.7 }}>
+                                            Все папки скрыты фильтром.
+                                          </Typography>
+                                        ) : visibleFolders.map((folder, folderIdx) => {
+                                          const share = getUserProfileFolderShare(folder, profile);
+                                          return (
+                                            <Box
+                                              key={`${folder.path || folder.name || folderIdx}`}
+                                              sx={{
+                                                py: 0.75,
+                                                borderBottom: folderIdx === visibleFolders.length - 1 ? 0 : 1,
+                                                borderColor: 'divider',
+                                              }}
+                                            >
+                                              <Stack direction="row" spacing={0.9} justifyContent="space-between" alignItems="flex-start">
+                                                <Box sx={{ minWidth: 0, flex: 1 }}>
+                                                  <Tooltip title={folder.path || folder.name || '-'}>
+                                                    <Typography variant="caption" sx={{ display: 'block', fontWeight: 700 }} noWrap>
+                                                      {formatUserProfileFolderName(folder.name)}
+                                                    </Typography>
+                                                  </Tooltip>
+                                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                                    {folder.filesCount || 0} файлов · {folder.dirsCount || 0} папок{folder.errorsCount > 0 ? ` · ошибок: ${folder.errorsCount}` : ''}
+                                                  </Typography>
+                                                </Box>
+                                                <Stack alignItems="flex-end" spacing={0.3} sx={{ flexShrink: 0, minWidth: 86 }}>
+                                                  <Typography variant="caption" sx={{ fontWeight: 700 }}>{formatBytesCompact(folder.sizeBytes)}</Typography>
+                                                  {folder.partial && (
+                                                    <Tooltip title={USER_PROFILE_PARTIAL_HINT}>
+                                                      <Chip size="small" color="warning" label="Частично" sx={{ height: 20 }} />
+                                                    </Tooltip>
+                                                  )}
+                                                </Stack>
+                                              </Stack>
+                                              <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.7, mt: 0.45 }}>
+                                                <LinearProgress
+                                                  variant="determinate"
+                                                  value={share}
+                                                  sx={{ flex: 1, height: 5, borderRadius: 4 }}
+                                                />
+                                                <Typography variant="caption" color="text.secondary" sx={{ minWidth: 34, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                                  {share}%
+                                                </Typography>
+                                              </Box>
+                                            </Box>
+                                          );
+                                        })}
+                                      </Box>
+                                    </Collapse>
+                                  </Box>
+                                )}
+                              </Stack>
+                            </Paper>
+                          );
+                        })}
+                      </Stack>
+                    ) : (
+                      <Typography variant="body2" color="text.secondary">Размеры профилей еще не собраны.</Typography>
+                    )}
+                  </Stack>
                 </Paper>
 
                 <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Система</Typography>

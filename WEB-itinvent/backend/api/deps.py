@@ -343,29 +343,49 @@ async def get_current_database_id(
     Returns:
         Database ID (e.g., "ITINVENT", "MSK-ITINVENT") or None
     """
-    user_assigned_db = (str(current_user.assigned_database or "").strip() or None)
+    def _normalize_database_id(value: object) -> Optional[str]:
+        normalized = str(value or "").strip()
+        if not normalized:
+            return None
+        try:
+            from backend.api.v1.database import get_all_db_configs
+
+            available_ids = {
+                str(item.get("id") or "").strip()
+                for item in list(get_all_db_configs() or [])
+                if str(item.get("id") or "").strip()
+            }
+        except Exception:
+            available_ids = set()
+        if available_ids and normalized not in available_ids:
+            return None
+        return normalized
+
+    user_assigned_db = _normalize_database_id(current_user.assigned_database)
     # If user is linked to Telegram and has assigned DB in bot mapping:
     # non-admin users are strictly pinned to that DB.
-    assigned_db = user_assigned_db or user_db_selection_service.get_assigned_database(current_user.telegram_id)
+    assigned_db = user_assigned_db or _normalize_database_id(user_db_selection_service.get_assigned_database(current_user.telegram_id))
     if assigned_db and current_user.role != "admin":
         return assigned_db
 
     # Allow explicit request-scoped override.
-    if x_database_id and x_database_id.strip():
-        return x_database_id.strip()
+    header_db = _normalize_database_id(x_database_id)
+    if header_db:
+        return header_db
 
-    user_db = get_user_database(current_user.id, current_user.username)
+    user_db = _normalize_database_id(get_user_database(current_user.id, current_user.username))
     if user_db:
         return user_db
 
     # Fallback to user settings pinned DB.
     settings = settings_service.get_user_settings(current_user.id)
-    pinned = (settings.get("pinned_database") or "").strip()
+    pinned = _normalize_database_id(settings.get("pinned_database"))
     if pinned:
         return pinned
 
     # Cookie fallback.
-    if selected_database and selected_database.strip():
-        return selected_database.strip()
+    cookie_db = _normalize_database_id(selected_database)
+    if cookie_db:
+        return cookie_db
 
     return None

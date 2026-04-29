@@ -123,6 +123,9 @@ def _run_postgres_app_schema_maintenance(connection) -> None:
         'ALTER TABLE IF EXISTS "app"."ai_bot_runs" ADD COLUMN IF NOT EXISTS "status_text" TEXT',
         'UPDATE "app"."ai_bot_runs" SET "stage" = "status" WHERE "stage" IS NULL',
         'UPDATE "app"."ai_bot_runs" SET "status_text" = \'\' WHERE "status_text" IS NULL',
+        'CREATE INDEX IF NOT EXISTS "ix_app_ai_pending_actions_message_id" ON "app"."ai_pending_actions" ("message_id")',
+        'CREATE INDEX IF NOT EXISTS "ix_app_ai_pending_actions_run_status" ON "app"."ai_pending_actions" ("run_id", "status")',
+        'CREATE INDEX IF NOT EXISTS "ix_app_ai_pending_actions_status_expires_at" ON "app"."ai_pending_actions" ("status", "expires_at")',
     ]
     for statement in statements:
         try:
@@ -189,6 +192,14 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
                     connection.execute(text("ALTER TABLE ai_bot_runs ADD COLUMN status_text TEXT"))
                 connection.execute(text("UPDATE ai_bot_runs SET stage = status WHERE stage IS NULL"))
                 connection.execute(text("UPDATE ai_bot_runs SET status_text = '' WHERE status_text IS NULL"))
+            pending_action_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('ai_pending_actions')"))
+            }
+            if pending_action_columns:
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_ai_pending_actions_message_id ON ai_pending_actions(message_id)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_ai_pending_actions_run_status ON ai_pending_actions(run_id, status)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_ai_pending_actions_status_expires_at ON ai_pending_actions(status, expires_at)"))
 
 
 def initialize_app_schema(database_url: str | None = None, *, force: bool = False) -> None:

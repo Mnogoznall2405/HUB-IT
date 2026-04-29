@@ -63,6 +63,7 @@ import MailViewSettingsDialog from '../components/mail/MailViewSettingsDialog';
 import { buildRenderedMailHtml, filterVisibleMailAttachments } from '../components/mail/mailHtmlContent';
 import { normalizeComposeSubject } from '../components/mail/mailComposeSubject';
 import {
+  buildMailUiTokens,
   getMailDialogActionsSx,
   getMailDialogContentSx,
   getMailDialogPaperSx,
@@ -71,7 +72,6 @@ import {
 } from '../components/mail/mailUiTokens';
 import { formatMailPersonWithEmail, getMailPersonDisplay, getMailPersonEmail } from '../components/mail/mailPeople';
 import { mergeQuotedHistoryHtml, splitQuotedHistoryHtml } from '../components/mail/mailQuotedHistory';
-import { buildOfficeUiTokens } from '../theme/officeUiTokens';
 
 const loadMailComposeDialog = () => import('../components/mail/MailComposeDialog');
 const MailComposeDialog = lazy(loadMailComposeDialog);
@@ -1558,7 +1558,7 @@ function MailComposeHost({
 
 function Mail() {
   const theme = useTheme();
-  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const ui = useMemo(() => buildMailUiTokens(theme), [theme]);
   const mailRenderColorScheme = ui.isDark ? 'dark' : 'light';
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const navigate = useNavigate();
@@ -1723,6 +1723,7 @@ function Mail() {
   const suppressNextAutoReadRef = useRef('');
   const autoReadInFlightRef = useRef(new Set());
   const autoReadCompletedAtRef = useRef(new Map());
+  const localReadStateOverridesRef = useRef(new Map());
   const detailPrefetchInFlightRef = useRef(new Set());
   const detailPrefetchCompletedAtRef = useRef(new Map());
   const skipNextListRefreshRef = useRef(false);
@@ -1879,6 +1880,7 @@ function Mail() {
     )
   );
   const mailAccessReady = Boolean(mailboxInfo && !mailRequiresPassword && !mailRequiresRelogin);
+  const mailboxUsesPrimaryCredentials = String(mailboxInfo?.auth_mode || '').trim().toLowerCase() === 'primary_credentials';
   const canSaveMailForAllDevices = Boolean(
     mailboxInfo
     && String(mailboxInfo?.auth_mode || '').trim().toLowerCase() === 'primary_session'
@@ -2451,6 +2453,84 @@ function Mail() {
       autoReadCompletedAtRef.current.set(normalizedGuardKey, Date.now());
     }
   }, []);
+  const getReadStateOverrideKey = useCallback((mode, targetId) => {
+    const normalizedMode = normalizeMailViewMode(mode);
+    const normalizedTargetId = String(targetId || '').trim();
+    return normalizedTargetId ? `${normalizedMode}:${normalizedTargetId}` : '';
+  }, []);
+  const pruneLocalReadStateOverrides = useCallback(() => {
+    const now = Date.now();
+    const overrides = localReadStateOverridesRef.current || new Map();
+    for (const [key, entry] of overrides.entries()) {
+      if ((now - Number(entry?.updatedAt || 0)) >= MAIL_AUTO_READ_GUARD_TTL_MS) {
+        overrides.delete(key);
+      }
+    }
+    localReadStateOverridesRef.current = overrides;
+  }, []);
+  const setLocalReadStateOverride = useCallback((mode, targetId, isRead) => {
+    const key = getReadStateOverrideKey(mode, targetId);
+    if (!key) return;
+    pruneLocalReadStateOverrides();
+    localReadStateOverridesRef.current.set(key, {
+      isRead: Boolean(isRead),
+      updatedAt: Date.now(),
+    });
+  }, [getReadStateOverrideKey, pruneLocalReadStateOverrides]);
+  const clearLocalReadStateOverride = useCallback((mode, targetId) => {
+    const key = getReadStateOverrideKey(mode, targetId);
+    if (!key) return;
+    localReadStateOverridesRef.current.delete(key);
+  }, [getReadStateOverrideKey]);
+  const getLocalReadStateOverride = useCallback((mode, targetId) => {
+    const key = getReadStateOverrideKey(mode, targetId);
+    if (!key) return null;
+    pruneLocalReadStateOverrides();
+    const entry = localReadStateOverridesRef.current.get(key);
+    return entry ? Boolean(entry.isRead) : null;
+  }, [getReadStateOverrideKey, pruneLocalReadStateOverrides]);
+  const applyReadStateOverridesToListData = useCallback((nextListData, selectionMode = viewMode) => {
+    const normalized = normalizeMailListResponse(nextListData);
+    const normalizedMode = normalizeMailViewMode(selectionMode);
+    const items = (Array.isArray(normalized.items) ? normalized.items : []).map((item) => {
+      if (normalizedMode === 'conversations') {
+        const conversationId = String(item?.conversation_id || item?.id || '').trim();
+        const override = getLocalReadStateOverride('conversations', conversationId);
+        if (override === null) return item;
+        return {
+          ...item,
+          unread_count: override ? 0 : Math.max(1, Number(item?.unread_count || 0)),
+        };
+      }
+      const messageId = String(item?.id || '').trim();
+      const override = getLocalReadStateOverride('messages', messageId);
+      return override === null ? item : { ...item, is_read: override };
+    });
+    return {
+      ...normalized,
+      items,
+    };
+  }, [getLocalReadStateOverride, viewMode]);
+  const applyReadStateOverridesToMessageDetail = useCallback((message) => {
+    if (!message || typeof message !== 'object') return message;
+    const messageId = String(message?.id || '').trim();
+    const override = getLocalReadStateOverride('messages', messageId);
+    return override === null ? message : { ...message, is_read: override };
+  }, [getLocalReadStateOverride]);
+  const applyReadStateOverridesToConversationDetail = useCallback((conversation) => {
+    if (!conversation || typeof conversation !== 'object') return conversation;
+    const conversationId = String(conversation?.conversation_id || conversation?.id || '').trim();
+    const override = getLocalReadStateOverride('conversations', conversationId);
+    if (override === null) return conversation;
+    return {
+      ...conversation,
+      unread_count: override ? 0 : Math.max(1, Number(conversation?.unread_count || 0)),
+      items: (Array.isArray(conversation?.items) ? conversation.items : []).map((item) => ({
+        ...item,
+        is_read: override,
+      })),
+    };
+  }, [getLocalReadStateOverride]);
   const prefetchMailDetail = useCallback((targetId, { mode = viewMode } = {}) => {
     if (!mailAccessReady) return;
     const normalizedId = String(targetId || '').trim();
@@ -2611,6 +2691,19 @@ function Mail() {
       return;
     }
     if (mailRequiresPassword) {
+      if (mailboxUsesPrimaryCredentials) {
+        setMailCredentialsOpen(false);
+        setMailCredentialsError('');
+        setMailCredentialsPassword('');
+        setError('Для общего ящика нужно заново войти через AD, чтобы обновить пароль основной учетной записи.');
+        selectedIdRef.current = '';
+        setSelectedId('');
+        setSelectedMessage(null);
+        setSelectedConversation(null);
+        setSelectedItems([]);
+        setSelectedByMode({ messages: '', conversations: '' });
+        return;
+      }
       openMailCredentialsDialog(mailboxInfo, { reason: mailCredentialsReason || 'missing', errorText: mailCredentialsError });
       selectedIdRef.current = '';
       setSelectedId('');
@@ -2629,6 +2722,7 @@ function Mail() {
     mailCredentialsReason,
     mailRequiresPassword,
     mailRequiresRelogin,
+    mailboxUsesPrimaryCredentials,
     mailboxInfo,
     openMailCredentialsDialog,
   ]);
@@ -3035,14 +3129,14 @@ function Mail() {
       const bootstrapHasVisibleMessages = Array.isArray(normalizedMessagesPayload.items)
         && normalizedMessagesPayload.items.length > 0;
       skipNextListRefreshRef.current = bootstrapHasVisibleMessages;
-      const resolvedListData = buildMailListState({
+      const resolvedListData = applyReadStateOverridesToListData(buildMailListState({
         previousListData,
         nextListData: normalizedMessagesPayload,
         updateMode: currentListKeyRef.current === resolvedListContextKey && isExpandedMailListData(previousListData)
           ? 'head-merge'
           : 'replace',
         selectionMode: viewMode,
-      });
+      }), viewMode);
       listDataRef.current = resolvedListData;
       setListData((prev) => {
         const prevItems = Array.isArray(prev?.items) ? prev.items : [];
@@ -3069,6 +3163,7 @@ function Mail() {
   }, [
     activeMailboxId,
     advancedFiltersApplied,
+    applyReadStateOverridesToListData,
     currentFolderScope,
     debouncedSearch,
     filterDateFrom,
@@ -3200,7 +3295,19 @@ function Mail() {
       return false;
     }
     const refreshedConfig = await refreshConfig();
-    openMailCredentialsDialog(refreshedConfig || mailboxInfo, {
+    const nextConfig = refreshedConfig || mailboxInfo;
+    if (String(nextConfig?.auth_mode || '').trim().toLowerCase() === 'primary_credentials') {
+      setMailCredentialsOpen(false);
+      setMailCredentialsError('');
+      setMailCredentialsPassword('');
+      setError(
+        errorCode === 'MAIL_AUTH_INVALID'
+          ? 'Пароль основной AD-учетной записи устарел или неверен. Выйдите и снова войдите через AD.'
+          : 'Для общего ящика нужно заново войти через AD, чтобы обновить пароль основной учетной записи.'
+      );
+      return true;
+    }
+    openMailCredentialsDialog(nextConfig, {
       reason: errorCode === 'MAIL_AUTH_INVALID' ? 'expired' : 'missing',
       errorText: errorCode === 'MAIL_AUTH_INVALID'
         ? 'Пароль корпоративной почты устарел или неверен. Введите новый пароль.'
@@ -3479,12 +3586,12 @@ function Mail() {
   } = {}) => {
     const normalizedMode = normalizeMailViewMode(selectionMode);
     const previousListData = listDataRef.current || createEmptyListData();
-    const resolvedListData = buildMailListState({
+    const resolvedListData = applyReadStateOverridesToListData(buildMailListState({
       previousListData,
       nextListData,
       updateMode,
       selectionMode: normalizedMode,
-    });
+    }), normalizedMode);
     const incomingItems = Array.isArray(resolvedListData?.items) ? resolvedListData.items : [];
     listDataRef.current = resolvedListData;
     setListData((prev) => {
@@ -3535,7 +3642,7 @@ function Mail() {
     }
     persistRecentListSnapshot(currentListContextKey, resolvedListData);
     return resolvedListData;
-  }, [clearSelection, currentListCacheKey, currentListContextKey, folder, isMobile, persistRecentListSnapshot, viewMode]);
+  }, [applyReadStateOverridesToListData, clearSelection, currentListCacheKey, currentListContextKey, folder, isMobile, persistRecentListSnapshot, viewMode]);
 
   const invalidateMailClientCache = useCallback((prefixes = ['bootstrap', 'folder-summary', 'folder-tree', 'list', 'message-detail', 'conversation-detail']) => {
     (Array.isArray(prefixes) ? prefixes : []).forEach((prefix) => {
@@ -3725,12 +3832,15 @@ function Mail() {
     );
     if (!result?.data || detailContextRef.current !== currentSelectionKey) return result?.data || null;
     if (viewMode === 'conversations') {
-      const items = Array.isArray(result.data?.items) ? result.data.items : [];
-      setSelectedConversation(result.data || null);
+      const nextConversation = applyReadStateOverridesToConversationDetail(result.data);
+      const items = Array.isArray(nextConversation?.items) ? nextConversation.items : [];
+      setSelectedConversation(nextConversation || null);
       setSelectedMessage(items.length > 0 ? items[items.length - 1] : null);
-      return result.data;
+      return nextConversation || result.data;
     }
-    const nextMessage = mergeMessageDetailPreservingBody(result.data, selectedMessageRef.current);
+    const nextMessage = applyReadStateOverridesToMessageDetail(
+      mergeMessageDetailPreservingBody(result.data, selectedMessageRef.current)
+    );
     setSWRCache(detailCacheKey, nextMessage);
     persistRecentMessageDetailSnapshot(nextMessage);
     setSelectedConversation(null);
@@ -3739,6 +3849,8 @@ function Mail() {
   }, [
     activeMailboxId,
     advancedFiltersApplied?.folder_scope,
+    applyReadStateOverridesToConversationDetail,
+    applyReadStateOverridesToMessageDetail,
     folder,
     mailAccessReady,
     mailCacheScope,
@@ -3825,16 +3937,26 @@ function Mail() {
   const applyMessageReadStateLocally = useCallback(({ messageId, isRead, unreadDelta = 0 }) => {
     const normalizedMessageId = String(messageId || '');
     if (!normalizedMessageId) return;
-    setListData((prev) => ({
-      ...(prev || {}),
-      items: (Array.isArray(prev?.items) ? prev.items : []).map((item) => (
+    const applyToList = (source) => ({
+      ...(source || {}),
+      items: (Array.isArray(source?.items) ? source.items : []).map((item) => (
         String(item?.id || '') === normalizedMessageId ? { ...item, is_read: Boolean(isRead) } : item
       )),
-    }));
+    });
+    listDataRef.current = applyToList(listDataRef.current);
+    setListData((prev) => applyToList(prev));
     setSelectedMessage((prev) => {
       if (String(prev?.id || '') !== normalizedMessageId) return prev;
-      return { ...(prev || {}), is_read: Boolean(isRead) };
+      const nextMessage = { ...(prev || {}), is_read: Boolean(isRead) };
+      selectedMessageRef.current = nextMessage;
+      return nextMessage;
     });
+    if (String(selectedMessageRef.current?.id || '') === normalizedMessageId) {
+      selectedMessageRef.current = {
+        ...(selectedMessageRef.current || {}),
+        is_read: Boolean(isRead),
+      };
+    }
     const recentDetail = getRecentMessageDetailSnapshot(normalizedMessageId);
     if (recentDetail) {
       persistRecentMessageDetailSnapshot({
@@ -3861,17 +3983,19 @@ function Mail() {
           Number(messageCount || 0),
           Number(unreadCount || 0),
         );
-    setListData((prev) => ({
-      ...(prev || {}),
-      items: (Array.isArray(prev?.items) ? prev.items : []).map((item) => (
+    const applyToList = (source) => ({
+      ...(source || {}),
+      items: (Array.isArray(source?.items) ? source.items : []).map((item) => (
         String(item?.conversation_id || item?.id || '') === normalizedConversationId
           ? { ...item, unread_count: finalUnreadCount }
           : item
       )),
-    }));
+    });
+    listDataRef.current = applyToList(listDataRef.current);
+    setListData((prev) => applyToList(prev));
     setSelectedConversation((prev) => {
       if (String(prev?.conversation_id || '') !== normalizedConversationId) return prev;
-      return {
+      const nextConversation = {
         ...(prev || {}),
         unread_count: finalUnreadCount,
         items: (Array.isArray(prev?.items) ? prev.items : []).map((item) => ({
@@ -3879,12 +4003,32 @@ function Mail() {
           is_read: Boolean(isRead),
         })),
       };
+      selectedConversationRef.current = nextConversation;
+      return nextConversation;
     });
+    if (String(selectedConversationRef.current?.conversation_id || '') === normalizedConversationId) {
+      selectedConversationRef.current = {
+        ...(selectedConversationRef.current || {}),
+        unread_count: finalUnreadCount,
+        items: (Array.isArray(selectedConversationRef.current?.items) ? selectedConversationRef.current.items : []).map((item) => ({
+          ...item,
+          is_read: Boolean(isRead),
+        })),
+      };
+    }
     setSelectedMessage((prev) => {
       if (!prev) return prev;
       if (String(prev?.conversation_id || '') !== normalizedConversationId) return prev;
-      return { ...(prev || {}), is_read: Boolean(isRead) };
+      const nextMessage = { ...(prev || {}), is_read: Boolean(isRead) };
+      selectedMessageRef.current = nextMessage;
+      return nextMessage;
     });
+    if (String(selectedMessageRef.current?.conversation_id || '') === normalizedConversationId) {
+      selectedMessageRef.current = {
+        ...(selectedMessageRef.current || {}),
+        is_read: Boolean(isRead),
+      };
+    }
     updateCurrentFolderUnread(unreadDelta);
   }, [updateCurrentFolderUnread]);
 
@@ -3906,6 +4050,7 @@ function Mail() {
       ? (nextIsRead ? -normalizedUnreadCount : Math.max(0, normalizedMessageCount - normalizedUnreadCount))
       : (nextIsRead ? (normalizedUnreadCount > 0 ? -1 : 0) : (normalizedUnreadCount > 0 ? 0 : 1));
 
+    setLocalReadStateOverride(normalizedMode, normalizedTargetId, nextIsRead);
     if (normalizedMode === 'conversations') {
       applyConversationReadStateLocally({
         conversationId: normalizedTargetId,
@@ -3960,6 +4105,7 @@ function Mail() {
       mutationSucceeded = true;
       return true;
     } catch (requestError) {
+      clearLocalReadStateOverride(normalizedMode, normalizedTargetId);
       await Promise.allSettled([
         refreshList({ silent: true, force: true }),
         refreshFolderSummary({ force: true }),
@@ -3976,6 +4122,7 @@ function Mail() {
     advancedFiltersApplied,
     applyConversationReadStateLocally,
     applyMessageReadStateLocally,
+    clearLocalReadStateOverride,
     emitMailUnreadRefresh,
     folder,
     getMailErrorDetail,
@@ -3984,6 +4131,7 @@ function Mail() {
     refreshFolderSummary,
     refreshList,
     settleAutoReadGuard,
+    setLocalReadStateOverride,
     withActiveMailboxPayload,
     activeMailboxId,
     unreadOnly,
@@ -4250,23 +4398,26 @@ function Mail() {
     const applyDetailPayload = (data, { suppressAutoRead = false } = {}) => {
       if (!data) return;
       if (viewMode === 'conversations') {
-        const items = Array.isArray(data?.items) ? data.items : [];
-        setSelectedConversation(data || null);
+        const nextConversation = applyReadStateOverridesToConversationDetail(data);
+        const items = Array.isArray(nextConversation?.items) ? nextConversation.items : [];
+        setSelectedConversation(nextConversation || null);
         setSelectedMessage(items.length > 0 ? items[items.length - 1] : null);
         const autoReadGuardKey = `${detailContextKey}:auto-read`;
-        if (!suppressAutoRead && Number(data?.unread_count || 0) > 0 && beginAutoReadGuard(autoReadGuardKey)) {
+        if (!suppressAutoRead && Number(nextConversation?.unread_count || 0) > 0 && beginAutoReadGuard(autoReadGuardKey)) {
           void performMailReadMutation({
             mode: 'conversations',
-            targetId: String(data?.conversation_id || selectedId),
+            targetId: String(nextConversation?.conversation_id || selectedId),
             nextIsRead: true,
-            currentUnreadCount: Number(data?.unread_count || 0),
-            currentMessageCount: Number(data?.messages_count || items.length || 1),
+            currentUnreadCount: Number(nextConversation?.unread_count || 0),
+            currentMessageCount: Number(nextConversation?.messages_count || items.length || 1),
             errorMessage: 'Не удалось отметить диалог как прочитанный.',
             autoReadGuardKey,
           });
         }
       } else {
-        const nextMessage = mergeMessageDetailPreservingBody(data, selectedMessageRef.current);
+        const nextMessage = applyReadStateOverridesToMessageDetail(
+          mergeMessageDetailPreservingBody(data, selectedMessageRef.current)
+        );
         setSelectedConversation(null);
         setSelectedMessage(nextMessage || null);
         const autoReadGuardKey = `${detailContextKey}:auto-read`;
@@ -4335,8 +4486,10 @@ function Mail() {
         if (cancelled || controller.signal.aborted) return;
         if (result?.data && detailContextRef.current === detailContextKey) {
           const nextDetail = viewMode === 'messages'
-            ? mergeMessageDetailPreservingBody(result.data, selectedMessageRef.current)
-            : result.data;
+            ? applyReadStateOverridesToMessageDetail(
+                mergeMessageDetailPreservingBody(result.data, selectedMessageRef.current)
+              )
+            : applyReadStateOverridesToConversationDetail(result.data);
           if (viewMode === 'messages') {
             setSWRCache(detailCacheKey, nextDetail);
             persistRecentMessageDetailSnapshot(nextDetail);
@@ -4356,8 +4509,10 @@ function Mail() {
             if (cancelled || controller.signal.aborted || detailContextRef.current !== detailContextKey) return;
             if (freshResult?.data) {
               const nextDetail = viewMode === 'messages'
-                ? mergeMessageDetailPreservingBody(freshResult.data, selectedMessageRef.current)
-                : freshResult.data;
+                ? applyReadStateOverridesToMessageDetail(
+                    mergeMessageDetailPreservingBody(freshResult.data, selectedMessageRef.current)
+                  )
+                : applyReadStateOverridesToConversationDetail(freshResult.data);
               if (viewMode === 'messages') {
                 setSWRCache(detailCacheKey, nextDetail);
                 persistRecentMessageDetailSnapshot(nextDetail);
@@ -4414,6 +4569,8 @@ function Mail() {
   }, [
     activeMailboxId,
     advancedFiltersApplied,
+    applyReadStateOverridesToConversationDetail,
+    applyReadStateOverridesToMessageDetail,
     clearSelection,
     folder,
     getMailErrorDetail,
@@ -5631,12 +5788,13 @@ function Mail() {
             setMoveTarget('');
             dragMessageIdsRef.current = [];
           }}
+          isMobile={isMobile}
         />
       ) : null}
       <Box
         sx={{
           px: { xs: 1.2, md: 1.6 },
-          py: { xs: 1, md: 1.15 },
+          py: { xs: 0.65, md: 1.15 },
           borderBottom: '1px solid',
           borderColor: ui.borderSoft,
           bgcolor: alpha(ui.panelBg, ui.isDark ? 0.98 : 0.94),
@@ -5694,6 +5852,14 @@ function Mail() {
         onPrefetchId={undefined}
         onSelectId={async (value, item) => {
           const nextId = String(value || '');
+          if (isMobile && viewMode === 'messages' && selectedMessageIds.length > 0) {
+            setSelectedItems((prev) => (
+              prev.includes(nextId)
+                ? prev.filter((selectedItem) => selectedItem !== nextId)
+                : [...prev, nextId]
+            ));
+            return;
+          }
           if (viewMode === 'messages') {
             saveCurrentListScrollPosition({ selectedMessageIdAtOpen: nextId });
             const sameMessageAlreadyOpen = (
@@ -5740,6 +5906,7 @@ function Mail() {
         messageListRef={messageListRef}
         loadMoreSentinelRef={loadMoreSentinelRef}
         isMobile={isMobile}
+        bottomInset={isMobile && selectedMessageIds.length > 0 ? 'calc(78px + env(safe-area-inset-bottom, 0px))' : 0}
         onSwipeRead={isMobile ? undefined : handleSwipeRead}
         onSwipeDelete={isMobile ? undefined : handleSwipeDelete}
         onRestoreMessage={handleListRestoreMessage}
@@ -5964,7 +6131,8 @@ function Mail() {
                           label={currentDay}
                           sx={{
                             height: 22,
-                            fontSize: '0.75rem',
+                            fontSize: ui.fontSizeFine,
+                            borderRadius: ui.chipRadius,
                             bgcolor: ui.actionBg,
                             color: ui.mutedText,
                             border: '1px solid',
@@ -5983,7 +6151,7 @@ function Mail() {
                             borderRadius: '50%',
                             bgcolor: getAvatarColor(senderLine),
                             color: 'common.white',
-                            fontSize: '0.75rem',
+                            fontSize: ui.fontSizeFine,
                             fontWeight: 700,
                             display: 'flex',
                             alignItems: 'center',
@@ -6000,7 +6168,7 @@ function Mail() {
                           px: 1.1,
                           py: 0.9,
                           maxWidth: { xs: '92%', md: '78%' },
-                          borderRadius: mine ? '14px 14px 4px 14px' : '14px 14px 14px 4px',
+                          borderRadius: mine ? `${ui.radiusLg} ${ui.radiusLg} ${ui.radiusXs} ${ui.radiusLg}` : `${ui.radiusLg} ${ui.radiusLg} ${ui.radiusLg} ${ui.radiusXs}`,
                           borderColor: mine
                             ? alpha(theme.palette.primary.main, ui.isDark ? 0.46 : 0.28)
                             : (String(selectedMessage?.id) === String(item?.id) ? ui.selectedBorder : ui.borderSoft),
@@ -6076,7 +6244,7 @@ function Mail() {
                             borderRadius: '50%',
                             bgcolor: 'primary.main',
                             color: 'primary.contrastText',
-                            fontSize: '0.75rem',
+                            fontSize: ui.fontSizeFine,
                             fontWeight: 700,
                             display: 'flex',
                             alignItems: 'center',
@@ -6116,7 +6284,7 @@ function Mail() {
                   placeholder="Напишите сообщение..."
                   value={quickReplyBody}
                   onChange={(event) => setQuickReplyBody(event.target.value)}
-                  InputProps={{ sx: { borderRadius: '10px' } }}
+                  InputProps={{ sx: { borderRadius: ui.inputRadius } }}
                 />
                 <Stack
                   direction={{ xs: 'column', sm: 'row' }}
@@ -6186,7 +6354,7 @@ function Mail() {
           {selectedMessageRenderResult.hasBlockedExternalImages ? (
             <Alert
               severity="info"
-              sx={{ mb: 1.2, borderRadius: '10px' }}
+              sx={{ mb: 1.2, borderRadius: ui.radiusMd }}
               action={(
                 <Button
                   color="inherit"
@@ -6506,7 +6674,7 @@ function Mail() {
   return (
     <MainLayout
       headerMode={isMobileFullscreenPreview ? 'hidden' : 'notifications-only'}
-      contentMode={isMobileFullscreenPreview ? 'edge-to-edge-mobile' : 'default'}
+      contentMode={isMobile ? 'edge-to-edge-mobile' : 'default'}
     >
       <PageShell
         fullHeight={!isMobile}
@@ -6524,14 +6692,17 @@ function Mail() {
           '--mail-panel-bg': ui.panelBg,
           '--mail-panel-solid': ui.panelSolid,
           '--mail-divider': ui.borderSoft,
+          '--mail-radius-sm': ui.radiusSm,
+          '--mail-radius-md': ui.radiusMd,
+          '--mail-radius-lg': ui.radiusLg,
         }}
       >
-        {showPageChrome && error ? <Alert severity="error" onClose={() => setError('')} sx={{ borderRadius: '10px', mb: 1 }}>{error}</Alert> : null}
-        {showPageChrome && message ? <Alert severity="success" onClose={() => setMessage('')} sx={{ borderRadius: '10px', mb: 1 }}>{message}</Alert> : null}
+        {showPageChrome && error ? <Alert severity="error" onClose={() => setError('')} sx={{ borderRadius: ui.radiusMd, mb: 1 }}>{error}</Alert> : null}
+        {showPageChrome && message ? <Alert severity="success" onClose={() => setMessage('')} sx={{ borderRadius: ui.radiusMd, mb: 1 }}>{message}</Alert> : null}
         {showPageChrome && showSaveMailForAllDevicesBanner ? (
           <Alert
             severity="info"
-            sx={{ borderRadius: '10px', mb: 1, alignItems: 'center' }}
+            sx={{ borderRadius: ui.radiusMd, mb: 1, alignItems: 'center' }}
             action={(
               <Button
                 color="inherit"
@@ -6608,7 +6779,7 @@ function Mail() {
                   sx={{
                     width: 34,
                     height: 34,
-                    borderRadius: '999px',
+                    borderRadius: ui.iconButtonRadius,
                   }}
                 >
                   <CloseRoundedIcon fontSize="small" />
@@ -6657,15 +6828,22 @@ function Mail() {
 
         {canRenderMailArea && !isMobileFullscreenPreview ? (
           <IconButton
+            data-testid="mail-compose-fab"
+            data-mobile-bulk-offset={isMobile && selectedMessageIds.length > 0 ? 'true' : 'false'}
             aria-label="Написать письмо"
             onClick={openCompose}
             sx={{
               position: 'fixed',
               right: { xs: 16, md: 24 },
-              bottom: { xs: 'calc(20px + env(safe-area-inset-bottom, 0px))', md: 28 },
+              bottom: {
+                xs: selectedMessageIds.length > 0
+                  ? 'calc(92px + env(safe-area-inset-bottom, 0px))'
+                  : 'calc(20px + env(safe-area-inset-bottom, 0px))',
+                md: 28,
+              },
               width: 58,
               height: 58,
-              borderRadius: '999px',
+              borderRadius: ui.radius.round,
               bgcolor: theme.palette.primary.main,
               color: theme.palette.primary.contrastText,
               boxShadow: '0 18px 40px rgba(37, 99, 235, 0.28)',
@@ -6735,7 +6913,7 @@ function Mail() {
           <DialogContent dividers sx={getMailDialogContentSx(ui)}>
             <Stack spacing={1.2} sx={{ mt: 0.5 }}>
               {folderDialogMode === 'create' && folderDialogTarget ? (
-                <Alert severity="info" sx={{ borderRadius: '10px' }}>
+                <Alert severity="info" sx={{ borderRadius: ui.radiusMd }}>
                   {`Родительская папка: ${folderDialogTarget.label || folderDialogTarget.name || '-'}`}
                 </Alert>
               ) : null}
@@ -6767,7 +6945,7 @@ function Mail() {
           </DialogTitle>
           <DialogContent dividers sx={getMailDialogContentSx(ui)}>
             <Stack spacing={1.3} sx={{ mt: 0.5 }}>
-              <Alert severity={mailCredentialsReason === 'expired' ? 'warning' : 'info'} sx={{ borderRadius: '10px' }}>
+              <Alert severity={mailCredentialsReason === 'expired' ? 'warning' : 'info'} sx={{ borderRadius: ui.radiusMd }}>
                 {mailCredentialsReason === 'expired'
                   ? 'Exchange больше не принимает сохранённый пароль. Введите новый пароль от корпоративной учётной записи.'
                   : mailCredentialsReason === 'shared'
@@ -6799,7 +6977,7 @@ function Mail() {
                 onChange={(event) => setMailCredentialsPassword(event.target.value)}
                 autoFocus
               />
-              {mailCredentialsError ? <Alert severity="error" sx={{ borderRadius: '10px' }}>{mailCredentialsError}</Alert> : null}
+              {mailCredentialsError ? <Alert severity="error" sx={{ borderRadius: ui.radiusMd }}>{mailCredentialsError}</Alert> : null}
             </Stack>
           </DialogContent>
           <DialogActions sx={getMailDialogActionsSx(ui)}>

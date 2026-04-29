@@ -1,4 +1,4 @@
-﻿import { forwardRef, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Suspense, forwardRef, lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -16,7 +16,6 @@ import {
   IconButton,
   List,
   ListItemText,
-  LinearProgress,
   Menu,
   MenuItem,
   Paper,
@@ -29,7 +28,6 @@ import {
 import { alpha } from '@mui/material/styles';
 import Slide from '@mui/material/Slide';
 import useMediaQuery from '@mui/material/useMediaQuery';
-import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import CheckCircleOutlineRoundedIcon from '@mui/icons-material/CheckCircleOutlineRounded';
@@ -38,13 +36,10 @@ import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
-import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
-import EmojiPicker from 'emoji-picker-react';
 import FlagOutlinedIcon from '@mui/icons-material/FlagOutlined';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
 import InfoOutlinedIcon from '@mui/icons-material/InfoOutlined';
 import LinkRoundedIcon from '@mui/icons-material/LinkRounded';
-import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded';
@@ -56,13 +51,13 @@ import ShareIcon from '@mui/icons-material/Share';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 import VolumeOffIcon from '@mui/icons-material/VolumeOff';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
-import { AnimatePresence, motion } from 'framer-motion';
 
 import ChatContextPanel from './ChatContextPanel';
+import ChatFileUploadDialog from './ChatFileUploadDialog';
+import ChatMediaPreviewDialog from './ChatMediaPreviewDialog';
 import { PresenceAvatar } from './ChatCommon';
 import {
   CHAT_MAX_FILE_COUNT,
-  formatFileSize,
   formatFullDate,
   getConversationHeaderSubtitle,
   getMessagePreview,
@@ -71,7 +66,6 @@ import {
   getSearchResultPreview,
   getStatusMeta,
   getTaskAssignee,
-  normalizeChatAttachmentUrl,
 } from './chatHelpers';
 
 const TELEGRAM_CHAT_FONT_FAMILY = [
@@ -84,6 +78,8 @@ const TELEGRAM_CHAT_FONT_FAMILY = [
   'Arial',
   'sans-serif',
 ].join(', ');
+
+const LazyEmojiPicker = lazy(() => import('emoji-picker-react'));
 
 const MobileInfoTransition = forwardRef(function MobileInfoTransition(props, ref) {
   return (
@@ -103,38 +99,6 @@ const MobileInfoTransition = forwardRef(function MobileInfoTransition(props, ref
     />
   );
 });
-
-const clampPreviewIndex = (value, length) => {
-  const normalizedLength = Number(length || 0);
-  if (normalizedLength <= 0) return 0;
-  const numericValue = Number(value || 0);
-  if (!Number.isFinite(numericValue)) return 0;
-  return Math.min(normalizedLength - 1, Math.max(0, Math.trunc(numericValue)));
-};
-
-const isPreviewVideo = (item) => String(item?.mime_type || item?.mimeType || '').toLowerCase().startsWith('video/');
-const isLocalImageFile = (file) => String(file?.type || '').toLowerCase().startsWith('image/');
-const getFileExtension = (fileName) => {
-  const normalized = String(fileName || '').trim();
-  if (!normalized.includes('.')) return '';
-  return normalized.split('.').pop()?.toUpperCase() || '';
-};
-const truncateFileLabel = (value, max = 22) => {
-  const normalized = String(value || '').trim();
-  if (normalized.length <= max) return normalized;
-  return `${normalized.slice(0, Math.max(0, max - 3))}...`;
-};
-
-const getSelectedFileSummaryLabel = (items) => {
-  const source = Array.isArray(items) ? items : [];
-  const count = source.length;
-  if (count <= 0) return 'Файлы';
-  const imageCount = source.filter(isLocalImageFile).length;
-  if (imageCount === count) return count === 1 ? '1 фото' : `${count} фото`;
-  if (count === 1) return '1 файл';
-  if (count < 5) return `${count} файла`;
-  return `${count} файлов`;
-};
 
 function DialogSkeletonLine({ ui, width = '100%', height = 14, radius = 999, sx }) {
   return (
@@ -168,53 +132,6 @@ function DialogListSkeleton({ ui, rows = 4, compact = false }) {
         </Stack>
       ))}
     </Stack>
-  );
-}
-
-function FileDialogDocumentIcon({ extension, accentColor }) {
-  const label = String(extension || 'file').slice(0, 4).toLowerCase();
-  return (
-    <Box
-      sx={{
-        position: 'relative',
-        width: 40,
-        height: 48,
-        flexShrink: 0,
-        borderRadius: '8px 11px 12px 8px',
-        bgcolor: accentColor,
-        display: 'flex',
-        alignItems: 'flex-end',
-        justifyContent: 'center',
-        pb: 0.75,
-        overflow: 'hidden',
-        boxShadow: 'inset 0 -1px 0 rgba(0,0,0,0.08)',
-        '&::after': {
-          content: '""',
-          position: 'absolute',
-          top: 0,
-          right: 0,
-          width: 14,
-          height: 14,
-          bgcolor: alpha('#ffffff', 0.92),
-          clipPath: 'polygon(0 0, 100% 0, 100% 100%)',
-        },
-      }}
-    >
-      <Typography
-        component="span"
-        sx={{
-          color: '#ffffff',
-          fontWeight: 800,
-          fontSize: '0.88rem',
-          lineHeight: 1,
-          letterSpacing: '-0.01em',
-          textTransform: 'lowercase',
-          userSelect: 'none',
-        }}
-      >
-        {label}
-      </Typography>
-    </Box>
   );
 }
 
@@ -546,24 +463,9 @@ export default function ChatDialogs({
     && typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const groupSearchInputRef = useRef(null);
-  const previewGestureRef = useRef({
-    startX: 0,
-    startY: 0,
-    active: false,
-    dragged: false,
-    mode: 'none',
-  });
-  const previewChromeTimeoutRef = useRef(null);
-  const [attachmentPreviewIndex, setAttachmentPreviewIndex] = useState(0);
-  const [previewChromeVisible, setPreviewChromeVisible] = useState(true);
-  const [previewMenuAnchorEl, setPreviewMenuAnchorEl] = useState(null);
-  const [fileActionsAnchorEl, setFileActionsAnchorEl] = useState(null);
   const [groupStep, setGroupStep] = useState('members');
-  const [selectedFilePreviewUrls, setSelectedFilePreviewUrls] = useState([]);
-  const [previewDismissOffset, setPreviewDismissOffset] = useState(0);
   const selectedGroupUsers = Array.isArray(groupSelectedUsers) ? groupSelectedUsers : [];
   const availableGroupUsers = Array.isArray(groupUsers) ? groupUsers : [];
-  const selectedFileItems = Array.isArray(selectedFiles) ? selectedFiles : [];
   const activeConversationKind = String(activeConversation?.kind || '').trim();
   const messageMenuAnchorElement = messageMenuAnchor?.nodeType === 1
     ? messageMenuAnchor
@@ -609,37 +511,7 @@ export default function ChatDialogs({
     () => new Set(selectedGroupUsers.map((item) => String(item?.id || '').trim()).filter(Boolean)),
     [selectedGroupUsers],
   );
-  const previewItems = useMemo(() => {
-    const items = Array.isArray(attachmentPreview?.items) ? attachmentPreview.items : [];
-    if (items.length > 0) return items;
-    return attachmentPreview?.attachment ? [attachmentPreview.attachment] : [];
-  }, [attachmentPreview]);
-  const safeAttachmentPreviewIndex = clampPreviewIndex(attachmentPreviewIndex, previewItems.length);
-  const activePreviewItem = previewItems[safeAttachmentPreviewIndex] || attachmentPreview?.attachment || null;
-  const activePreviewOriginalUrl = normalizeChatAttachmentUrl(
-    activePreviewItem?.originalUrl
-    || activePreviewItem?.fileUrl
-    || attachmentPreview?.originalUrl
-    || attachmentPreview?.fileUrl
-    || '',
-  );
-  const activePreviewBaseUrl = normalizeChatAttachmentUrl(
-    activePreviewItem?.previewUrl
-    || attachmentPreview?.previewUrl
-    || activePreviewOriginalUrl
-    || '',
-  );
-  const activePreviewPosterUrl = normalizeChatAttachmentUrl(
-    activePreviewItem?.posterUrl
-    || attachmentPreview?.posterUrl
-    || '',
-  );
-  const canStepPreview = previewItems.length > 1;
-  const activePreviewIsVideo = isPreviewVideo(activePreviewItem);
-  const [activePreviewUrl, setActivePreviewUrl] = useState('');
   const composerMenuOpen = Boolean(composerMenuAnchor);
-  const previewMenuOpen = Boolean(previewMenuAnchorEl);
-  const previewChromeActive = previewChromeVisible || previewMenuOpen;
   const canProceedToGroupDetails = selectedGroupUsers.length >= 2 && !creatingConversation;
   const isGroupDetailsStep = groupStep === 'details';
   const accentColor = ui.accentText || theme.palette.primary.main;
@@ -649,12 +521,6 @@ export default function ChatDialogs({
   const groupInputBg = theme.palette.mode === 'dark'
     ? alpha(ui.sidebarSearchBg || ui.panelBg || '#111827', 0.9)
     : alpha(ui.sidebarSearchBg || '#f8fafc', 0.94);
-  const selectedFileSummaryLabel = useMemo(
-    () => getSelectedFileSummaryLabel(selectedFileItems),
-    [selectedFileItems],
-  );
-  const filesBusy = preparingFiles || sendingFiles;
-  const normalizedUploadProgress = Math.max(0, Math.min(100, Math.round(Number(fileUploadProgress || 0))));
   const isDarkTheme = theme.palette.mode === 'dark';
   const popupSurface = ui.drawerBg || ui.panelBg || (isDarkTheme ? '#17212b' : '#ffffff');
   const popupSurfaceSoft = ui.surfaceMuted || ui.drawerBgSoft || (isDarkTheme ? alpha('#ffffff', 0.06) : '#f3f5f7');
@@ -666,15 +532,6 @@ export default function ChatDialogs({
   const popupActiveBg = ui.sidebarRowPressed || (isDarkTheme ? alpha('#ffffff', 0.1) : alpha('#17212b', 0.1));
   const popupDangerColor = ui.dangerText || (isDarkTheme ? '#ff6666' : '#d94d4d');
   const popupShadow = ui.shadowStrong || (isDarkTheme ? '0 20px 56px rgba(0, 0, 0, 0.42)' : '0 18px 48px rgba(15, 23, 42, 0.18)');
-  const fileDialogSurface = ui.drawerBg || (isDarkTheme ? '#20242b' : '#ffffff');
-  const fileDialogMutedText = ui.textSecondary || (isDarkTheme ? '#9eabb9' : '#8b97a3');
-  const fileDialogSurfaceSoft = ui.drawerBgSoft || ui.surfaceMuted || (isDarkTheme ? '#2a3038' : '#f3f5f7');
-  const fileDialogSurfaceActive = ui.surfaceHover || (isDarkTheme ? '#343b45' : '#e8edf3');
-  const fileDialogTextColor = ui.textStrong || (isDarkTheme ? '#f6f8fb' : '#1c2733');
-  const fileDialogSendBg = ui.composerActionBg || (isDarkTheme ? '#4f9ef8' : '#4a9df3');
-  const fileDialogSendText = ui.textOnAccent || '#ffffff';
-  const fileDialogMenuOpen = Boolean(fileActionsAnchorEl);
-  const fileDialogTitle = selectedFileItems.length > 0 ? `Отправить ${selectedFileSummaryLabel}` : 'Отправить файл';
   const dialogPaperSx = useMemo(() => ({
     borderRadius: { xs: 3, sm: 3.5 },
     border: `1px solid ${alpha(ui.borderSoft || '#334155', 0.95)}`,
@@ -830,38 +687,6 @@ export default function ChatDialogs({
   }, [forwardingConversationId, onCloseForward]);
 
   useEffect(() => {
-    if (!selectedFileItems.length) {
-      setSelectedFilePreviewUrls([]);
-      return undefined;
-    }
-    const nextUrls = selectedFileItems.map((file) => {
-      if (!isLocalImageFile(file) || typeof URL === 'undefined' || typeof URL.createObjectURL !== 'function') return '';
-      try {
-        return URL.createObjectURL(file);
-      } catch {
-        return '';
-      }
-    });
-    setSelectedFilePreviewUrls(nextUrls);
-    return () => {
-      nextUrls.forEach((value) => {
-        if (!value || typeof URL === 'undefined' || typeof URL.revokeObjectURL !== 'function') return;
-        try {
-          URL.revokeObjectURL(value);
-        } catch {
-          // Ignore local blob cleanup failures in tests/older browsers.
-        }
-      });
-    };
-  }, [selectedFileItems]);
-
-  useEffect(() => {
-    if (!fileDialogOpen) {
-      setFileActionsAnchorEl(null);
-    }
-  }, [fileDialogOpen]);
-
-  useEffect(() => {
     if (!groupOpen) {
       setGroupStep('members');
     }
@@ -891,201 +716,6 @@ export default function ChatDialogs({
       return;
     }
     handleAddGroupMember(item);
-  };
-
-  useEffect(() => {
-    setAttachmentPreviewIndex(clampPreviewIndex(attachmentPreview?.activeIndex, previewItems.length));
-  }, [attachmentPreview, previewItems.length]);
-
-  useEffect(() => {
-    const nextBaseUrl = activePreviewBaseUrl || activePreviewOriginalUrl;
-    setActivePreviewUrl(nextBaseUrl);
-    if (!nextBaseUrl || !activePreviewOriginalUrl || nextBaseUrl === activePreviewOriginalUrl || activePreviewIsVideo) {
-      return undefined;
-    }
-    let cancelled = false;
-    const image = new Image();
-    image.onload = () => {
-      if (!cancelled) {
-        setActivePreviewUrl(activePreviewOriginalUrl);
-      }
-    };
-    image.onerror = () => {};
-    image.src = activePreviewOriginalUrl;
-    return () => {
-      cancelled = true;
-    };
-  }, [activePreviewBaseUrl, activePreviewIsVideo, activePreviewOriginalUrl, safeAttachmentPreviewIndex]);
-
-  useEffect(() => {
-    setPreviewMenuAnchorEl(null);
-  }, [safeAttachmentPreviewIndex, attachmentPreview]);
-
-  const stepAttachmentPreview = useCallback((direction) => {
-    if (!canStepPreview) return;
-    setAttachmentPreviewIndex((current) => {
-      const nextIndex = current + direction;
-      if (nextIndex < 0) return previewItems.length - 1;
-      if (nextIndex >= previewItems.length) return 0;
-      return nextIndex;
-    });
-  }, [canStepPreview, previewItems.length]);
-
-  const clearPreviewChromeTimer = useCallback(() => {
-    if (previewChromeTimeoutRef.current) {
-      window.clearTimeout(previewChromeTimeoutRef.current);
-      previewChromeTimeoutRef.current = null;
-    }
-  }, []);
-
-  const bumpPreviewChromeVisibility = useCallback((stick = false) => {
-    setPreviewChromeVisible(true);
-    clearPreviewChromeTimer();
-    if (stick || !attachmentPreview || previewMenuOpen) return;
-    previewChromeTimeoutRef.current = window.setTimeout(() => {
-      setPreviewChromeVisible(false);
-    }, 2200);
-  }, [attachmentPreview, clearPreviewChromeTimer, previewMenuOpen]);
-
-  const togglePreviewChrome = useCallback(() => {
-    if (previewMenuOpen) {
-      setPreviewMenuAnchorEl(null);
-      return;
-    }
-    clearPreviewChromeTimer();
-    setPreviewChromeVisible((current) => {
-      const next = !current;
-      if (next && attachmentPreview) {
-        previewChromeTimeoutRef.current = window.setTimeout(() => {
-          setPreviewChromeVisible(false);
-        }, 2200);
-      }
-      return next;
-    });
-  }, [attachmentPreview, clearPreviewChromeTimer, previewMenuOpen]);
-
-  const triggerFilePicker = useCallback(() => {
-    if (filesBusy) return;
-    fileInputRef?.current?.click?.();
-  }, [fileInputRef, filesBusy]);
-
-  const openFileActionsMenu = useCallback((event) => {
-    if (filesBusy) return;
-    setFileActionsAnchorEl(event.currentTarget);
-  }, [filesBusy]);
-
-  const closeFileActionsMenu = useCallback(() => {
-    setFileActionsAnchorEl(null);
-  }, []);
-
-  const handleClearFileSelection = useCallback(() => {
-    closeFileActionsMenu();
-    onClearSelectedFiles?.();
-  }, [closeFileActionsMenu, onClearSelectedFiles]);
-
-  const beginPreviewGesture = useCallback((startX, startY) => {
-    previewGestureRef.current = {
-      startX: Number(startX || 0),
-      startY: Number(startY || 0),
-      active: true,
-      dragged: false,
-      mode: 'none',
-    };
-    setPreviewDismissOffset(0);
-    bumpPreviewChromeVisibility(true);
-  }, [bumpPreviewChromeVisibility]);
-
-  const updatePreviewGesture = useCallback((currentX, currentY) => {
-    if (!previewGestureRef.current.active) return;
-    const deltaX = Number(currentX || 0) - previewGestureRef.current.startX;
-    const deltaY = Number(currentY || 0) - previewGestureRef.current.startY;
-    if (Math.abs(deltaX) > 8 || Math.abs(deltaY) > 8) {
-      previewGestureRef.current.dragged = true;
-    }
-    if (previewGestureRef.current.mode === 'none') {
-      if (previewFullScreen && deltaY > 10 && Math.abs(deltaY) > (Math.abs(deltaX) + 8)) {
-        previewGestureRef.current.mode = 'dismiss';
-      } else if (Math.abs(deltaX) > 10 && Math.abs(deltaX) > (Math.abs(deltaY) + 6)) {
-        previewGestureRef.current.mode = 'step';
-      }
-    }
-    if (previewGestureRef.current.mode === 'dismiss') {
-      setPreviewDismissOffset(Math.max(0, Math.min(180, deltaY)));
-    }
-  }, [previewFullScreen]);
-
-  const finishPreviewGesture = useCallback((endX, endY) => {
-    if (!previewGestureRef.current.active) return;
-    const deltaX = Number(endX || 0) - previewGestureRef.current.startX;
-    const deltaY = Number(endY || 0) - previewGestureRef.current.startY;
-    const dragged = Boolean(previewGestureRef.current.dragged);
-    const mode = previewGestureRef.current.mode;
-    previewGestureRef.current.active = false;
-    previewGestureRef.current.dragged = false;
-    previewGestureRef.current.mode = 'none';
-    if (!dragged) return;
-    if (mode === 'dismiss') {
-      if (deltaY > 92) {
-        onCloseAttachmentPreview?.();
-      }
-      setPreviewDismissOffset(0);
-      return;
-    }
-    if (Math.abs(deltaX) > 46 && Math.abs(deltaX) > Math.abs(deltaY)) {
-      stepAttachmentPreview(deltaX < 0 ? 1 : -1);
-      bumpPreviewChromeVisibility();
-    }
-    setPreviewDismissOffset(0);
-  }, [bumpPreviewChromeVisibility, onCloseAttachmentPreview, stepAttachmentPreview]);
-
-  useEffect(() => {
-    if (!attachmentPreview) {
-      clearPreviewChromeTimer();
-      setPreviewChromeVisible(true);
-      setPreviewMenuAnchorEl(null);
-      setPreviewDismissOffset(0);
-      return undefined;
-    }
-    bumpPreviewChromeVisibility();
-    return () => {
-      clearPreviewChromeTimer();
-    };
-  }, [attachmentPreview, safeAttachmentPreviewIndex, bumpPreviewChromeVisibility, clearPreviewChromeTimer]);
-
-  useEffect(() => {
-    if (!attachmentPreview || !canStepPreview) return undefined;
-    const handlePreviewKeyDown = (event) => {
-      if (event.key === 'ArrowLeft') {
-        event.preventDefault();
-        stepAttachmentPreview(-1);
-      }
-      if (event.key === 'ArrowRight') {
-        event.preventDefault();
-        stepAttachmentPreview(1);
-      }
-    };
-    window.addEventListener('keydown', handlePreviewKeyDown);
-    return () => {
-      window.removeEventListener('keydown', handlePreviewKeyDown);
-    };
-  }, [attachmentPreview, canStepPreview, stepAttachmentPreview]);
-
-  useEffect(() => {
-    if (!previewMenuOpen) return undefined;
-    clearPreviewChromeTimer();
-    setPreviewChromeVisible(true);
-    return undefined;
-  }, [previewMenuOpen, clearPreviewChromeTimer]);
-
-  const handleOpenPreviewMenu = (event) => {
-    clearPreviewChromeTimer();
-    setPreviewChromeVisible(true);
-    setPreviewMenuAnchorEl(event.currentTarget);
-  };
-
-  const handleClosePreviewMenu = () => {
-    setPreviewMenuAnchorEl(null);
-    bumpPreviewChromeVisibility();
   };
 
   const closeThreadMenu = () => {
@@ -1624,374 +1254,44 @@ export default function ChatDialogs({
           },
         }}
       >
-        <EmojiPicker
-          onEmojiClick={(emojiData) => onInsertEmoji?.(emojiData?.emoji || '')}
-          autoFocusSearch={false}
-          searchPlaceholder="Найти эмодзи"
-          skinTonesDisabled={false}
-          previewConfig={{ showPreview: false }}
-          width={320}
-          height={360}
-          theme={theme.palette.mode === 'dark' ? 'dark' : 'light'}
-        />
+        {emojiPickerOpen ? (
+          <Suspense
+            fallback={(
+              <Box sx={{ width: 320, height: 360, display: 'grid', placeItems: 'center' }}>
+                <CircularProgress size={24} />
+              </Box>
+            )}
+          >
+            <LazyEmojiPicker
+              onEmojiClick={(emojiData) => onInsertEmoji?.(emojiData?.emoji || '')}
+              autoFocusSearch={false}
+              searchPlaceholder="Найти эмодзи"
+              skinTonesDisabled={false}
+              previewConfig={{ showPreview: false }}
+              width={320}
+              height={360}
+              theme={theme.palette.mode === 'dark' ? 'dark' : 'light'}
+            />
+          </Suspense>
+        ) : null}
       </Popover>
 
-      <Dialog
+      <ChatFileUploadDialog
+        caption={fileCaption}
+        fileInputRef={fileInputRef}
+        files={selectedFiles}
+        onCaptionChange={onFileCaptionChange}
+        onClearFiles={onClearSelectedFiles}
+        onClose={onCloseFileDialog}
+        onRemoveFile={onRemoveSelectedFile}
+        onSend={onSendFiles}
         open={fileDialogOpen}
-        onClose={filesBusy ? undefined : onCloseFileDialog}
-        fullScreen={false}
-        fullWidth={false}
-        maxWidth={false}
-        PaperProps={{
-          sx: {
-            m: 1.5,
-            width: 'min(calc(100vw - 28px), 404px)',
-            maxWidth: '100%',
-            borderRadius: '24px',
-            border: 'none',
-            bgcolor: fileDialogSurface,
-            color: fileDialogTextColor,
-            backgroundImage: 'none',
-            boxShadow: isDarkTheme ? '0 24px 56px rgba(0,0,0,0.52)' : '0 20px 48px rgba(18,26,34,0.22)',
-            overflow: 'hidden',
-            fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-          },
-        }}
-      >
-        <Box sx={{ px: 1.9, pt: 1.6, pb: 1.55 }}>
-          <Stack spacing={1.25}>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <IconButton
-                onClick={onCloseFileDialog}
-                disabled={filesBusy}
-                aria-label="Закрыть отправку файлов"
-                sx={{
-                  width: 34,
-                  height: 34,
-                  color: fileDialogMutedText,
-                  ml: -0.4,
-                }}
-              >
-                <CloseRoundedIcon />
-              </IconButton>
-              <Typography
-                variant="subtitle1"
-                sx={{
-                  flex: 1,
-                  minWidth: 0,
-                  textAlign: 'center',
-                  fontWeight: 800,
-                  color: fileDialogTextColor,
-                  letterSpacing: '-0.01em',
-                  fontSize: '1.02rem',
-                  pr: 0.2,
-                }}
-                noWrap
-              >
-                {fileDialogTitle}
-              </Typography>
-              <IconButton
-                onClick={openFileActionsMenu}
-                disabled={filesBusy}
-                aria-label="Действия с файлами"
-                sx={{
-                  width: 34,
-                  height: 34,
-                  color: fileDialogMutedText,
-                  mr: -0.4,
-                }}
-              >
-                <MoreVertRoundedIcon />
-              </IconButton>
-            </Stack>
-
-            {(preparingFiles || sendingFiles) ? (
-              <Paper
-                elevation={0}
-                data-testid="file-dialog-upload-progress"
-                sx={{
-                  px: 1.4,
-                  py: 1.15,
-                  borderRadius: '18px',
-                  bgcolor: fileDialogSurfaceSoft,
-                }}
-              >
-                <Stack spacing={0.7}>
-                  <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-                    <Typography variant="body2" sx={{ fontWeight: 700, color: fileDialogTextColor }}>
-                      {preparingFiles ? 'Подготовка файлов...' : sendingFiles ? 'Отправка файлов...' : 'Файлы готовы к отправке'}
-                    </Typography>
-                    {sendingFiles ? (
-                      <Typography variant="caption" sx={{ color: fileDialogMutedText, fontWeight: 800 }}>
-                        {normalizedUploadProgress}%
-                      </Typography>
-                    ) : null}
-                  </Stack>
-                  <Typography variant="caption" sx={{ color: fileDialogMutedText }}>
-                    {preparingFiles ? 'Подготавливаем изображения и документы перед отправкой.' : 'Файлы загружаются в чат.'}
-                  </Typography>
-                  {sendingFiles ? (
-                    <LinearProgress
-                      variant="determinate"
-                      value={normalizedUploadProgress}
-                      sx={{
-                        height: 5,
-                        borderRadius: 999,
-                        bgcolor: isDarkTheme ? alpha('#ffffff', 0.12) : alpha('#17212b', 0.08),
-                        '& .MuiLinearProgress-bar': { borderRadius: 999 },
-                      }}
-                    />
-                  ) : null}
-                </Stack>
-              </Paper>
-            ) : null}
-
-            <Stack
-              spacing={0.85}
-              sx={{
-                maxHeight: 'min(34vh, 220px)',
-                overflowY: 'auto',
-                pr: 0.15,
-              }}
-            >
-              {preparingFiles && selectedFileItems.length === 0 ? (
-                <Paper
-                  elevation={0}
-                  sx={{
-                    px: 1.5,
-                    py: 2.4,
-                    borderRadius: '18px',
-                    bgcolor: fileDialogSurfaceSoft,
-                  }}
-                >
-                  <Stack alignItems="center" spacing={1.3}>
-                    <DialogSkeletonLine ui={ui} width={54} height={54} radius={18} />
-                    <Typography variant="body2" sx={{ color: fileDialogMutedText }}>
-                      Подготавливаем файлы...
-                    </Typography>
-                  </Stack>
-                </Paper>
-              ) : selectedFileItems.length === 0 ? (
-                <Paper
-                  elevation={0}
-                  sx={{
-                    px: 1.5,
-                    py: 2,
-                    borderRadius: '18px',
-                    bgcolor: fileDialogSurfaceSoft,
-                  }}
-                >
-                  <Typography variant="body2" sx={{ color: fileDialogMutedText, textAlign: 'center' }}>
-                    Файлы не выбраны.
-                  </Typography>
-                </Paper>
-              ) : (
-                selectedFileItems.map((file, index) => {
-                  const previewUrl = selectedFilePreviewUrls[index] || '';
-                  const isImage = isLocalImageFile(file) && Boolean(previewUrl);
-                  return (
-                    <Paper
-                      key={`${file.name}-${index}`}
-                      className="file-dialog-row"
-                      elevation={0}
-                      sx={{
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.2,
-                        px: 1.25,
-                        py: 1.15,
-                        borderRadius: '18px',
-                        bgcolor: fileDialogSurfaceSoft,
-                        '&:hover .file-dialog-row-remove, &:focus-within .file-dialog-row-remove': {
-                          opacity: 1,
-                        },
-                      }}
-                    >
-                      <Box
-                        sx={{
-                          width: 48,
-                          height: 48,
-                          flexShrink: 0,
-                          overflow: 'hidden',
-                          borderRadius: 1.4,
-                          bgcolor: isImage ? fileDialogSurfaceActive : 'transparent',
-                          display: 'flex',
-                          alignItems: 'center',
-                          justifyContent: 'center',
-                        }}
-                      >
-                        {isImage ? (
-                          <Box
-                            component="img"
-                            src={previewUrl}
-                            alt={file.name}
-                            sx={{ display: 'block', width: '100%', height: '100%', objectFit: 'cover' }}
-                          />
-                        ) : (
-                          <FileDialogDocumentIcon extension={getFileExtension(file.name) || 'FILE'} accentColor={fileDialogSendBg} />
-                        )}
-                      </Box>
-                      <Box sx={{ minWidth: 0, flex: 1 }}>
-                        <Typography
-                          variant="body2"
-                          sx={{
-                            fontWeight: 700,
-                            fontSize: '1.02rem',
-                            color: fileDialogTextColor,
-                            lineHeight: 1.2,
-                          }}
-                          noWrap
-                        >
-                          {truncateFileLabel(file.name, 34)}
-                        </Typography>
-                        <Typography
-                          variant="caption"
-                          sx={{
-                            display: 'block',
-                            mt: 0.3,
-                            color: fileDialogMutedText,
-                            fontSize: '0.98rem',
-                            lineHeight: 1.15,
-                          }}
-                          noWrap
-                        >
-                          {formatFileSize(file.size)}
-                        </Typography>
-                      </Box>
-                      <IconButton
-                        size="small"
-                        className="file-dialog-row-remove"
-                        aria-label={`Удалить ${file.name}`}
-                        data-testid={`file-dialog-remove-${index}`}
-                        onClick={() => onRemoveSelectedFile?.(index)}
-                        disabled={filesBusy}
-                        sx={{
-                          width: 30,
-                          height: 30,
-                          color: fileDialogMutedText,
-                          bgcolor: 'transparent',
-                          opacity: 0,
-                          transition: 'opacity 120ms ease, background-color 120ms ease',
-                          '&:hover': { bgcolor: fileDialogSurfaceActive },
-                        }}
-                      >
-                        <CloseRoundedIcon sx={{ fontSize: 18 }} />
-                      </IconButton>
-                    </Paper>
-                  );
-                })
-              )}
-            </Stack>
-
-            <Stack direction="row" spacing={1.15} alignItems="flex-end" data-testid="file-dialog-mobile-dock">
-              <Box
-                sx={{
-                  flex: 1,
-                  minHeight: 48,
-                  display: 'flex',
-                  alignItems: 'center',
-                  borderTop: `1px solid ${alpha(fileDialogMutedText, isDarkTheme ? 0.26 : 0.22)}`,
-                  pt: 0.7,
-                }}
-              >
-                <InputBase
-                  placeholder="Добавить подпись..."
-                  value={fileCaption}
-                  onChange={(event) => onFileCaptionChange?.(event.target.value)}
-                  multiline
-                  minRows={1}
-                  maxRows={4}
-                  disabled={filesBusy}
-                  inputProps={{ maxLength: 12000 }}
-                  sx={{
-                    flex: 1,
-                    fontSize: '1rem',
-                    lineHeight: 1.35,
-                    color: fileDialogTextColor,
-                    '& textarea': {
-                      p: 0,
-                    },
-                    '& textarea::placeholder': {
-                      color: fileDialogMutedText,
-                      opacity: 1,
-                    },
-                  }}
-                />
-              </Box>
-              <Button
-                variant="contained"
-                data-testid="file-dialog-send"
-                onClick={() => void onSendFiles()}
-                disabled={filesBusy || selectedFileItems.length === 0}
-                sx={{
-                  minWidth: 126,
-                  height: 48,
-                  borderRadius: '18px',
-                  px: 2.4,
-                  fontWeight: 800,
-                  fontSize: '0.98rem',
-                  boxShadow: 'none',
-                  bgcolor: !filesBusy && selectedFileItems.length > 0 ? fileDialogSendBg : alpha(fileDialogSendBg, 0.38),
-                  color: fileDialogSendText,
-                  '&:hover': {
-                    bgcolor: !filesBusy && selectedFileItems.length > 0 ? alpha(fileDialogSendBg, 0.94) : alpha(fileDialogSendBg, 0.38),
-                    boxShadow: 'none',
-                  },
-                }}
-              >
-                {preparingFiles ? 'ПОДГОТОВКА' : sendingFiles ? 'ОТПРАВКА' : 'ОТПРАВИТЬ'}
-              </Button>
-            </Stack>
-          </Stack>
-        </Box>
-      </Dialog>
-
-      <Menu
-        anchorEl={fileActionsAnchorEl}
-        open={fileDialogMenuOpen}
-        onClose={closeFileActionsMenu}
-        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-        PaperProps={{
-          elevation: 0,
-          sx: {
-            minWidth: 210,
-            borderRadius: 2.4,
-            border: `1px solid ${popupBorderColor}`,
-            bgcolor: popupSurface,
-            color: popupTextColor,
-            backgroundImage: 'none',
-            boxShadow: popupShadow,
-            '& .MuiMenuItem-root': {
-              gap: 1.25,
-              minHeight: 42,
-              fontWeight: 600,
-              fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-              color: popupTextColor,
-              '&:hover': { bgcolor: popupHoverBg },
-            },
-            '& .MuiSvgIcon-root': {
-              color: popupIconColor,
-            },
-          },
-        }}
-      >
-        <MenuItem
-          data-testid="file-dialog-add-more"
-          onClick={() => {
-            closeFileActionsMenu();
-            triggerFilePicker();
-          }}
-          disabled={filesBusy}
-        >
-          <AttachFileRoundedIcon fontSize="small" />
-          Добавить ещё
-        </MenuItem>
-        <MenuItem onClick={handleClearFileSelection} disabled={filesBusy || selectedFileItems.length === 0}>
-          <DeleteOutlineIcon fontSize="small" />
-          Очистить список
-        </MenuItem>
-      </Menu>
+        preparing={preparingFiles}
+        sending={sendingFiles}
+        theme={theme}
+        ui={ui}
+        uploadProgress={fileUploadProgress}
+      />
 
       <Dialog
         open={groupOpen}
@@ -2565,311 +1865,12 @@ export default function ChatDialogs({
         </DialogContent>
       </Dialog>
 
-      <Dialog
-        open={Boolean(attachmentPreview)}
-        onClose={onCloseAttachmentPreview}
+      <ChatMediaPreviewDialog
+        attachmentPreview={attachmentPreview}
         fullScreen={previewFullScreen}
-        fullWidth
-        maxWidth={false}
-        BackdropProps={{
-          sx: {
-            bgcolor: alpha('#020617', 0.9),
-            backdropFilter: 'blur(10px)',
-          },
-        }}
-        PaperProps={{
-          sx: {
-            m: previewFullScreen ? 0 : 2,
-            width: previewFullScreen ? '100%' : 'min(100vw - 32px, 1320px)',
-            maxWidth: '100%',
-            height: previewFullScreen ? '100dvh' : 'calc(100dvh - 32px)',
-            borderRadius: previewFullScreen ? 0 : 4.5,
-            bgcolor: alpha('#020617', 0.98),
-            color: '#fff',
-            overflow: 'hidden',
-            backgroundImage: 'none',
-            boxShadow: previewFullScreen ? 'none' : '0 28px 90px rgba(2, 6, 23, 0.58)',
-          },
-        }}
-      >
-        <DialogTitle
-          data-testid="chat-attachment-preview-topbar"
-          sx={{
-            ...dialogTitleSx,
-            display: previewChromeActive ? 'block' : 'none',
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            zIndex: 4,
-            px: { xs: 1.25, md: 2.25 },
-            pt: 'max(env(safe-area-inset-top), 12px)',
-            pb: 1,
-            borderBottom: 'none',
-            background: 'linear-gradient(180deg, rgba(2,6,23,0.82) 0%, rgba(2,6,23,0.34) 100%)',
-            backdropFilter: 'blur(16px)',
-          }}
-        >
-          <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1}>
-            <IconButton
-              aria-label="Закрыть предпросмотр"
-              onClick={onCloseAttachmentPreview}
-              sx={{
-                color: alpha('#fff', 0.88),
-                bgcolor: alpha('#020617', 0.42),
-                border: `1px solid ${alpha('#fff', 0.08)}`,
-                backdropFilter: 'blur(12px)',
-              }}
-            >
-              <CloseRoundedIcon />
-            </IconButton>
-            {canStepPreview ? (
-              <Typography
-                variant="caption"
-                sx={{
-                  px: 1.25,
-                  py: 0.6,
-                  borderRadius: 999,
-                  bgcolor: alpha('#020617', 0.36),
-                  border: `1px solid ${alpha('#fff', 0.06)}`,
-                  color: alpha('#fff', 0.74),
-                  fontWeight: 800,
-                  letterSpacing: '0.02em',
-                }}
-              >
-                {safeAttachmentPreviewIndex + 1} / {previewItems.length}
-              </Typography>
-            ) : (
-              <Box sx={{ flex: 1 }} />
-            )}
-            <IconButton
-              aria-label="Действия с медиа"
-              onClick={handleOpenPreviewMenu}
-              sx={{
-                color: alpha('#fff', 0.88),
-                bgcolor: alpha('#020617', 0.42),
-                border: `1px solid ${alpha('#fff', 0.08)}`,
-                backdropFilter: 'blur(12px)',
-              }}
-            >
-              <MoreHorizRoundedIcon />
-            </IconButton>
-          </Stack>
-        </DialogTitle>
-        <DialogContent
-          data-testid="chat-attachment-preview-content"
-          sx={{
-            position: 'relative',
-            p: 0,
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-            minHeight: '100%',
-            bgcolor: alpha('#020617', 0.72),
-            userSelect: 'none',
-          }}
-          onTouchStart={(event) => {
-            const touch = event.touches?.[0];
-            if (!touch) return;
-            beginPreviewGesture(touch.clientX, touch.clientY);
-          }}
-          onTouchMove={(event) => {
-            const touch = event.touches?.[0];
-            if (!touch) return;
-            updatePreviewGesture(touch.clientX, touch.clientY);
-          }}
-          onTouchEnd={(event) => {
-            const touch = event.changedTouches?.[0];
-            if (!touch) return;
-            finishPreviewGesture(touch.clientX, touch.clientY);
-          }}
-          onClick={(event) => {
-            const interactiveTarget = event.target?.closest?.('button, a');
-            if (interactiveTarget) return;
-            if (activePreviewIsVideo && event.target?.closest?.('video')) return;
-            togglePreviewChrome();
-          }}
-        >
-          {canStepPreview && previewChromeActive ? (
-            <>
-              <IconButton
-                aria-label="Предыдущее вложение"
-                data-testid="chat-attachment-preview-prev"
-                onClick={() => {
-                  stepAttachmentPreview(-1);
-                  bumpPreviewChromeVisibility();
-                }}
-                sx={{
-                  position: 'absolute',
-                  left: { xs: 10, md: 18 },
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  zIndex: 4,
-                  color: '#fff',
-                  bgcolor: alpha('#020617', 0.54),
-                  border: `1px solid ${alpha('#fff', 0.12)}`,
-                  backdropFilter: 'blur(14px)',
-                  '&:hover': { bgcolor: alpha('#020617', 0.72) },
-                }}
-              >
-                <ChevronLeftRoundedIcon />
-              </IconButton>
-              <IconButton
-                aria-label="Следующее вложение"
-                data-testid="chat-attachment-preview-next"
-                onClick={() => {
-                  stepAttachmentPreview(1);
-                  bumpPreviewChromeVisibility();
-                }}
-                sx={{
-                  position: 'absolute',
-                  right: { xs: 10, md: 18 },
-                  top: '50%',
-                  transform: 'translateY(-50%)',
-                  zIndex: 4,
-                  color: '#fff',
-                  bgcolor: alpha('#020617', 0.54),
-                  border: `1px solid ${alpha('#fff', 0.12)}`,
-                  backdropFilter: 'blur(14px)',
-                  '&:hover': { bgcolor: alpha('#020617', 0.72) },
-                }}
-              >
-                <ChevronRightRoundedIcon />
-              </IconButton>
-            </>
-          ) : null}
-          <AnimatePresence initial={false} mode="wait">
-            {activePreviewUrl ? (
-              <Box
-                component={motion.div}
-                key={`${activePreviewItem?.id || activePreviewUrl}-${activePreviewIsVideo ? 'video' : 'image'}`}
-                initial={prefersReducedMotion ? false : { opacity: 0, scale: 0.975 }}
-                animate={{ opacity: 1, scale: 1 }}
-                exit={prefersReducedMotion ? { opacity: 0 } : { opacity: 0, scale: 0.985 }}
-                transition={{ duration: prefersReducedMotion ? 0.12 : 0.18, ease: 'easeOut' }}
-                drag={canStepPreview && !activePreviewIsVideo ? 'x' : false}
-                dragConstraints={{ left: 0, right: 0 }}
-                dragElastic={0.18}
-                onDragStart={() => bumpPreviewChromeVisibility(true)}
-                onDragEnd={(_, info) => {
-                  const offsetX = Number(info?.offset?.x || 0);
-                  const velocityX = Number(info?.velocity?.x || 0);
-                  if (Math.abs(offsetX) > 72 || Math.abs(velocityX) > 540) {
-                    stepAttachmentPreview(offsetX < 0 ? 1 : -1);
-                    bumpPreviewChromeVisibility();
-                    return;
-                  }
-                  bumpPreviewChromeVisibility(true);
-                }}
-                sx={{
-                  width: '100%',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  px: previewFullScreen ? 0 : { xs: 1.5, md: 4 },
-                  cursor: canStepPreview && !activePreviewIsVideo ? 'grab' : 'default',
-                }}
-              >
-                {activePreviewIsVideo ? (
-                  <Box
-                    sx={{
-                      width: '100%',
-                      maxWidth: previewFullScreen ? '100%' : 'min(1100px, 100%)',
-                      maxHeight: previewFullScreen ? 'calc(100dvh - 72px)' : 'calc(100dvh - 120px)',
-                      borderRadius: previewFullScreen ? 0 : 3,
-                      overflow: 'hidden',
-                      boxShadow: previewFullScreen ? 'none' : '0 24px 72px rgba(0,0,0,0.42)',
-                    }}
-                  >
-                    <video
-                      src={activePreviewOriginalUrl || activePreviewUrl}
-                      poster={activePreviewPosterUrl || undefined}
-                      controls
-                      playsInline
-                      autoPlay
-                      style={{
-                        display: 'block',
-                        width: '100%',
-                        maxWidth: '100%',
-                        maxHeight: previewFullScreen ? 'calc(100dvh - 72px)' : 'calc(100dvh - 120px)',
-                        objectFit: 'contain',
-                        backgroundColor: '#000',
-                      }}
-                      onPlay={() => bumpPreviewChromeVisibility()}
-                      onPause={() => bumpPreviewChromeVisibility(true)}
-                    />
-                  </Box>
-                ) : (
-                  <Box
-                    component="img"
-                    src={activePreviewUrl}
-                    alt={activePreviewItem?.file_name || 'Изображение'}
-                    onError={() => {
-                      if (activePreviewOriginalUrl && activePreviewUrl !== activePreviewOriginalUrl) {
-                        setActivePreviewUrl(activePreviewOriginalUrl);
-                      }
-                    }}
-                    sx={{
-                      display: 'block',
-                      maxWidth: '100%',
-                      maxHeight: previewFullScreen ? 'calc(100dvh - 72px)' : 'calc(100dvh - 120px)',
-                      objectFit: 'contain',
-                      borderRadius: previewFullScreen ? 0 : 3,
-                      boxShadow: previewFullScreen ? 'none' : '0 24px 72px rgba(0,0,0,0.42)',
-                    }}
-                  />
-                )}
-              </Box>
-            ) : null}
-          </AnimatePresence>
-        </DialogContent>
-        <Menu
-          anchorEl={previewMenuAnchorEl}
-          open={previewMenuOpen}
-          onClose={handleClosePreviewMenu}
-          anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
-          transformOrigin={{ vertical: 'top', horizontal: 'right' }}
-          slotProps={{
-            paper: {
-              sx: {
-                mt: 0.5,
-                minWidth: 220,
-                borderRadius: 3,
-                bgcolor: alpha('#0f172a', 0.98),
-                color: '#fff',
-                border: `1px solid ${alpha('#fff', 0.08)}`,
-                backdropFilter: 'blur(20px)',
-                boxShadow: '0 22px 64px rgba(2, 6, 23, 0.56)',
-              },
-            },
-          }}
-        >
-          <MenuItem
-            component="a"
-            href={activePreviewOriginalUrl || activePreviewUrl || '#'}
-            download={activePreviewItem?.file_name || attachmentPreview?.attachment?.file_name || undefined}
-            disabled={!activePreviewOriginalUrl && !activePreviewUrl}
-            onClick={handleClosePreviewMenu}
-            sx={{ gap: 1.25, py: 1.15, fontWeight: 700 }}
-          >
-            <DownloadRoundedIcon fontSize="small" />
-            Скачать
-          </MenuItem>
-          <MenuItem
-            component="a"
-            href={activePreviewOriginalUrl || activePreviewUrl || '#'}
-            target="_blank"
-            rel="noopener noreferrer"
-            disabled={!activePreviewOriginalUrl && !activePreviewUrl}
-            onClick={handleClosePreviewMenu}
-            sx={{ gap: 1.25, py: 1.15, fontWeight: 700 }}
-          >
-            <OpenInNewRoundedIcon fontSize="small" />
-            Открыть в браузере
-          </MenuItem>
-        </Menu>
-      </Dialog>
-
+        onClose={onCloseAttachmentPreview}
+        prefersReducedMotion={prefersReducedMotion}
+      />
       <Dialog open={searchOpen} onClose={onCloseSearch} fullWidth maxWidth="sm" PaperProps={{ sx: dialogPaperSx }}>
         <DialogTitle sx={dialogTitleSx}>Поиск по сообщениям</DialogTitle>
         <DialogContent sx={dialogContentSx}>

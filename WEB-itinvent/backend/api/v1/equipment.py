@@ -32,6 +32,7 @@ from backend.models.equipment import (
     ConsumableConsumeResponse,
     ConsumableQtyUpdateRequest,
     ConsumableQtyUpdateResponse,
+    TransferActOnlyRequest,
     TransferExecuteRequest,
     TransferExecuteResponse,
     TransferEmailRequest,
@@ -44,10 +45,14 @@ from backend.models.equipment import (
     TransferActReminderResponse,
 )
 from backend.services.transfer_service import (
-    generate_transfer_acts,
+    generate_transfer_acts_without_move,
     get_act_record,
     send_transfer_acts_email,
     send_binary_file_email,
+)
+from backend.services.equipment_transfer_execution_service import (
+    EquipmentTransferExecutionError,
+    execute_equipment_transfer,
 )
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 from backend.services.act_upload_service import (
@@ -1104,7 +1109,31 @@ async def transfer_equipment(
     Transfer one or multiple equipment items to another employee with CI_HISTORY logging.
     Generates transfer acts grouped by old employee.
     """
-    inv_nos = []
+    try:
+        result = execute_equipment_transfer(
+            payload=payload,
+            db_id=db_id,
+            current_user=current_user,
+            allow_create_owner=True,
+        )
+    except EquipmentTransferExecutionError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
+    return TransferExecuteResponse(**result)
+
+
+@router.post("/transfer/act-only", response_model=TransferExecuteResponse)
+async def create_transfer_act_without_move(
+    payload: TransferActOnlyRequest,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Generate handover acts for selected equipment without changing ITEMS or CI_HISTORY.
+
+    The current equipment owner is treated as the recipient. The issuer can be an
+    existing owner or a manual name such as "Без владельца".
+    """
+    inv_nos: list[str] = []
     for raw in payload.inv_nos or []:
         normalized = str(raw or "").strip()
         if normalized and normalized not in inv_nos:
@@ -1115,158 +1144,52 @@ async def transfer_equipment(
             detail="No inventory numbers provided",
         )
 
-    target_employee_name = (payload.new_employee or "").strip()
-    target_employee_dept_input = (payload.new_employee_dept or "").strip()
-    if len(target_employee_name) < 2:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="new_employee is required",
-        )
-
-    # Resolve/create target owner
-    target_employee_no: Optional[int] = _to_int(payload.new_employee_no)
-    if target_employee_no is not None:
-        owner_row = queries.get_owner_by_no(target_employee_no, db_id)
+    issuer_name = str(payload.issuer_employee or "").strip() or "Без владельца"
+    issuer_email: Optional[str] = None
+    issuer_owner_no = _to_int(payload.issuer_owner_no)
+    if issuer_owner_no is not None:
+        owner_row = queries.get_owner_by_no(issuer_owner_no, db_id)
         if not owner_row:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid new_employee_no",
+                detail="Invalid issuer_owner_no",
             )
-        target_employee_name = (
+        issuer_name = str(
             owner_row.get("OWNER_DISPLAY_NAME")
             or owner_row.get("owner_display_name")
-            or owner_row.get("employee_name")
-            or target_employee_name
-        )
-    else:
-        target_employee_no = queries.get_owner_no_by_name(target_employee_name, strict=True, db_id=db_id)
-        if target_employee_no is None:
-            target_employee_no = queries.get_owner_no_by_name(target_employee_name, strict=False, db_id=db_id)
-        if target_employee_no is None:
-            target_employee_no = queries.create_owner(
-                target_employee_name,
-                department=(target_employee_dept_input or None),
-                db_id=db_id,
-            )
-        if target_employee_no is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Failed to resolve or create target employee",
-            )
+            or issuer_name
+        ).strip() or issuer_name
+        issuer_email = queries.get_owner_email_by_no(issuer_owner_no, db_id)
 
-    target_owner = queries.get_owner_by_no(target_employee_no, db_id) or {}
-    target_employee_dept = (
-        target_owner.get("OWNER_DEPT")
-        or target_owner.get("owner_dept")
-        or target_owner.get("employee_dept")
-        or target_employee_dept_input
-        or ""
-    )
-    target_employee_email = queries.get_owner_email_by_no(target_employee_no, db_id)
-
-    target_branch_no = payload.branch_no
-    target_loc_no = payload.loc_no
-
-    if target_branch_no is not None:
-        branch_row = queries.get_branch_by_no(target_branch_no, db_id)
-        if not branch_row:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid branch_no",
-            )
-
-    if target_loc_no is not None:
-        location_row = queries.get_location_by_no(target_loc_no, db_id)
-        if not location_row:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid loc_no",
-            )
-
-    changed_by = current_user.username if current_user else "IT-WEB"
-    transferred: list[dict] = []
-    failed: list[dict] = []
-
+    resolved_items: list[dict[str, Any]] = []
+    failed: list[dict[str, str]] = []
     for inv_no in inv_nos:
-        transfer_result = queries.transfer_equipment_by_inv_with_history(
-            inv_no=inv_no,
-            new_employee_no=target_employee_no,
-            new_employee_name=target_employee_name,
-            new_branch_no=target_branch_no,
-            new_loc_no=target_loc_no,
-            changed_by=changed_by,
-            comment=payload.comment,
-            db_id=db_id,
-        )
-        if transfer_result.get("success"):
-            old_employee_no = transfer_result.get("old_employee_no")
-            old_email = None
-            if old_employee_no is not None:
-                old_email = queries.get_owner_email_by_no(int(old_employee_no), db_id)
-            transfer_result["old_employee_email"] = old_email
-            transferred.append(transfer_result)
+        row = queries.get_equipment_by_inv(inv_no, db_id)
+        if row:
+            resolved_items.append(row)
         else:
             failed.append(
                 {
                     "inv_no": inv_no,
-                    "error": transfer_result.get("message") or "Transfer failed",
+                    "error": f"Equipment with INV_NO {inv_no} not found",
                 }
             )
 
     acts = []
-    if transferred:
-        acts = generate_transfer_acts(
-            transferred_items=transferred,
-            new_employee_name=target_employee_name,
-            new_employee_dept=str(target_employee_dept or ""),
-            new_employee_email=target_employee_email,
+    if resolved_items:
+        acts = generate_transfer_acts_without_move(
+            items=resolved_items,
+            issuer_name=issuer_name,
+            issuer_email=issuer_email,
             db_id=db_id,
         )
 
-    reminder_result = {
-        "created": False,
-        "warning": None,
-        "task_id": None,
-        "reminder_id": None,
-        "controller_username": None,
-        "controller_fallback_used": False,
-    }
-    if acts:
-        try:
-            reminder_result = transfer_act_reminder_service.create_transfer_reminder(
-                db_id=db_id,
-                transferred_items=transferred,
-                acts=acts,
-                new_employee_no=target_employee_no,
-                new_employee_name=target_employee_name,
-                actor_user=current_user,
-            )
-        except Exception as exc:
-            logger.exception("Failed to create transfer act upload reminder")
-            reminder_result = {
-                "created": False,
-                "warning": f"Напоминание о загрузке акта не создано: {exc}",
-                "task_id": None,
-                "reminder_id": None,
-                "controller_username": None,
-                "controller_fallback_used": False,
-            }
-
-    if transferred:
-        invalidate_equipment_cache(db_id)
-
     return TransferExecuteResponse(
-        success_count=len(transferred),
+        success_count=len(resolved_items),
         failed_count=len(failed),
-        transferred=transferred,
+        transferred=[],
         failed=failed,
         acts=acts,
-        upload_reminder_created=bool(reminder_result.get("created")),
-        upload_reminder_task_id=reminder_result.get("task_id"),
-        upload_reminder_id=reminder_result.get("reminder_id"),
-        upload_reminder_warning=reminder_result.get("warning"),
-        upload_reminder_controller_username=reminder_result.get("controller_username"),
-        upload_reminder_controller_fallback_used=bool(reminder_result.get("controller_fallback_used")),
     )
 
 
@@ -1730,6 +1653,30 @@ async def get_equipment_acts(
         "total": len(acts),
         "current_act": acts[0] if acts else None,
         "acts": acts,
+    }
+
+
+@router.get("/{inv_no}/history")
+async def get_equipment_history(
+    inv_no: str,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    """Get transfer history linked to an equipment item by inventory number."""
+    equipment = queries.get_equipment_by_inv(inv_no, db_id)
+    if not equipment:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Equipment with inventory number {inv_no} not found",
+        )
+
+    history_payload = queries.get_equipment_history_by_inv(inv_no, db_id)
+    history = history_payload.get("history") or []
+    return {
+        "inv_no": str(inv_no),
+        "item_id": history_payload.get("item_id"),
+        "total": len(history),
+        "history": history,
     }
 
 

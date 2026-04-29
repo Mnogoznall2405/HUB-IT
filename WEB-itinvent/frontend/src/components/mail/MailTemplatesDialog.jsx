@@ -29,7 +29,14 @@ import AddIcon from '@mui/icons-material/Add';
 import ArrowDownwardIcon from '@mui/icons-material/ArrowDownward';
 import ArrowUpwardIcon from '@mui/icons-material/ArrowUpward';
 import DeleteIcon from '@mui/icons-material/Delete';
-import { buildMailUiTokens, getMailUiFontScopeSx } from './mailUiTokens';
+import {
+  buildMailUiTokens,
+  getMailDialogActionsSx,
+  getMailDialogContentSx,
+  getMailDialogPaperSx,
+  getMailDialogTitleSx,
+  getMailMetaTextSx,
+} from './mailUiTokens';
 
 export default function MailTemplatesDialog({
   open,
@@ -68,12 +75,12 @@ export default function MailTemplatesDialog({
   const canDelete = Boolean(templateEditId);
 
   return (
-    <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth PaperProps={{ sx: { ...getMailUiFontScopeSx(), borderRadius: '14px' } }}>
-      <DialogTitle sx={{ fontWeight: 700 }}>Шаблоны IT-заявок</DialogTitle>
-      <DialogContent dividers>
+    <Dialog open={open} onClose={onClose} maxWidth="xl" fullWidth PaperProps={{ sx: getMailDialogPaperSx(tokens) }}>
+      <DialogTitle sx={getMailDialogTitleSx(tokens)}>Шаблоны IT-заявок</DialogTitle>
+      <DialogContent dividers sx={getMailDialogContentSx(tokens)}>
         <Grid container spacing={1.5}>
           <Grid item xs={12} md={3.5}>
-            <Paper variant="outlined" sx={{ borderRadius: '12px', maxHeight: 560, overflowY: 'auto' }}>
+            <Paper variant="outlined" sx={{ borderRadius: tokens.radiusLg, maxHeight: 560, overflowY: 'auto', bgcolor: tokens.panelSolid, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
               <List dense>
                 <ListItemButton onClick={startCreateTemplate} selected={!templateEditId}>
                   <ListItemText primary="+ Новый шаблон" primaryTypographyProps={{ fontWeight: 700 }} />
@@ -105,7 +112,7 @@ export default function MailTemplatesDialog({
                     label="Код"
                     value={templateCode}
                     onChange={(event) => setTemplateCode(event.target.value)}
-                    InputProps={{ sx: { borderRadius: '10px' } }}
+                    InputProps={{ sx: { borderRadius: tokens.inputRadius } }}
                     fullWidth
                   />
                 </Grid>
@@ -115,7 +122,7 @@ export default function MailTemplatesDialog({
                     label="Название"
                     value={templateTitle}
                     onChange={(event) => setTemplateTitle(event.target.value)}
-                    InputProps={{ sx: { borderRadius: '10px' } }}
+                    InputProps={{ sx: { borderRadius: tokens.inputRadius } }}
                     fullWidth
                   />
                 </Grid>
@@ -125,7 +132,7 @@ export default function MailTemplatesDialog({
                     label="Категория"
                     value={templateCategory}
                     onChange={(event) => setTemplateCategory(event.target.value)}
-                    InputProps={{ sx: { borderRadius: '10px' } }}
+                    InputProps={{ sx: { borderRadius: tokens.inputRadius } }}
                     fullWidth
                   />
                 </Grid>
@@ -136,7 +143,7 @@ export default function MailTemplatesDialog({
                 label="Шаблон темы"
                 value={templateSubject}
                 onChange={(event) => setTemplateSubject(event.target.value)}
-                InputProps={{ sx: { borderRadius: '10px' } }}
+                InputProps={{ sx: { borderRadius: tokens.inputRadius } }}
                 fullWidth
               />
 
@@ -146,11 +153,11 @@ export default function MailTemplatesDialog({
                 onChange={(event) => setTemplateBody(event.target.value)}
                 minRows={6}
                 multiline
-                InputProps={{ sx: { borderRadius: '10px' } }}
+                InputProps={{ sx: { borderRadius: tokens.inputRadius } }}
                 fullWidth
               />
 
-              <Paper variant="outlined" sx={{ p: 1.1, borderRadius: '12px' }}>
+              <Paper variant="outlined" sx={{ p: 1.1, borderRadius: tokens.radiusLg, bgcolor: tokens.panelSolid, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
                 <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Поля формы</Typography>
                   <Button size="small" variant="outlined" startIcon={<AddIcon />} onClick={addTemplateField} sx={{ textTransform: 'none' }}>
@@ -164,10 +171,10 @@ export default function MailTemplatesDialog({
                     const supportsOptions = fieldType === 'select' || fieldType === 'multiselect';
                     const optionsText = normalizeFieldOptions(field?.options).join('\n');
                     return (
-                      <Paper key={`${field?.key || 'field'}_${index}`} variant="outlined" sx={{ p: 1, borderRadius: '10px' }}>
+                      <Paper key={`${field?.key || 'field'}_${index}`} variant="outlined" sx={{ p: 1, borderRadius: tokens.radiusMd, bgcolor: tokens.panelBg, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
                         <Stack spacing={0.85}>
                           <Stack direction="row" justifyContent="space-between" alignItems="center">
-                            <Typography variant="caption" sx={{ fontWeight: 700, color: 'text.secondary' }}>
+                            <Typography sx={getMailMetaTextSx(tokens, { fontWeight: 700 })}>
                               {`Поле #${index + 1}`}
                             </Typography>
                             <Stack direction="row" spacing={0.2}>
@@ -284,8 +291,8 @@ export default function MailTemplatesDialog({
               </Paper>
 
               {(templateVariableHints || []).length > 0 ? (
-                <Paper variant="outlined" sx={{ p: 1, borderRadius: '12px' }}>
-                  <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>
+                <Paper variant="outlined" sx={{ p: 1, borderRadius: tokens.radiusLg, bgcolor: tokens.panelSolid, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
+                  <Typography sx={getMailMetaTextSx(tokens, { fontWeight: 700 })}>
                     Доступные переменные
                   </Typography>
                   <Stack direction="row" spacing={0.5} useFlexGap flexWrap="wrap" sx={{ mt: 0.7 }}>
@@ -296,8 +303,8 @@ export default function MailTemplatesDialog({
                 </Paper>
               ) : null}
 
-              <Paper variant="outlined" sx={{ p: 1.1, borderRadius: '12px', bgcolor: tokens.surfaceBg, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
-                <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 700 }}>Предпросмотр шаблона</Typography>
+              <Paper variant="outlined" sx={{ p: 1.1, borderRadius: tokens.radiusLg, bgcolor: tokens.surfaceBg, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
+                <Typography sx={getMailMetaTextSx(tokens, { fontWeight: 700 })}>Предпросмотр шаблона</Typography>
                 <Box sx={{ mt: 0.7, whiteSpace: 'pre-wrap', fontSize: '0.84rem' }}>
                   {templateEditorPreview || 'Предпросмотр появится после заполнения шаблона.'}
                 </Box>
@@ -307,7 +314,7 @@ export default function MailTemplatesDialog({
         </Grid>
       </DialogContent>
 
-      <DialogActions sx={{ px: 2.5, py: 1.5 }}>
+      <DialogActions sx={getMailDialogActionsSx(tokens)}>
         <Button onClick={onClose} sx={{ textTransform: 'none' }}>Закрыть</Button>
         {canDelete ? (
           <Button
@@ -323,7 +330,7 @@ export default function MailTemplatesDialog({
           variant="contained"
           onClick={saveTemplate}
           disabled={templateSaving || templateDeleting}
-          sx={{ textTransform: 'none', borderRadius: '10px', fontWeight: 700 }}
+          sx={{ textTransform: 'none', borderRadius: tokens.controlRadius, fontWeight: 700 }}
         >
           {templateSaving ? 'Сохранение...' : 'Сохранить'}
         </Button>

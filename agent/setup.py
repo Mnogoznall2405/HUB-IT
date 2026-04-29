@@ -12,14 +12,23 @@ sys.setrecursionlimit(10000)
 REPO_ROOT = Path(__file__).resolve().parents[1]
 AGENT_SRC = REPO_ROOT / "agent" / "src"
 AGENT_ENTRY = REPO_ROOT / "agent.py"
+SCAN_AGENT_ENTRY = REPO_ROOT / "scan_agent" / "agent.py"
 MSI_HELPER_ENTRY = REPO_ROOT / "agent_msi_helper.py"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 if str(AGENT_SRC) not in sys.path:
     sys.path.insert(0, str(AGENT_SRC))
 
-from agent_installer import DEFAULT_REPEAT_MINUTES, DEFAULT_TASK_NAME, EXECUTABLE_NAME, MSI_HELPER_EXECUTABLE_NAME
+from agent_installer import (
+    DEFAULT_REPEAT_MINUTES,
+    DEFAULT_TASK_NAME,
+    EXECUTABLE_NAME,
+    MSI_HELPER_EXECUTABLE_NAME,
+    SCAN_AGENT_EXECUTABLE_NAME,
+)
 from agent_version import AGENT_VERSION
+
+UPGRADE_CODE = "{A285621C-4B2F-4BE6-9AD3-799896D4F901}"
 
 # Use a unique project-local temp path to avoid stale locks from previous cx_Freeze runs.
 BUILD_TMP_ROOT = REPO_ROOT / "tmp" / "cxfreeze"
@@ -55,6 +64,11 @@ executables = [
         shortcut_name="IT-Invent Agent",
     ),
     Executable(
+        str(SCAN_AGENT_ENTRY),
+        base=base,
+        target_name=SCAN_AGENT_EXECUTABLE_NAME,
+    ),
+    Executable(
         str(MSI_HELPER_ENTRY),
         base=base,
         target_name=MSI_HELPER_EXECUTABLE_NAME,
@@ -65,6 +79,12 @@ build_exe_options = {
     "excludes": [
         "tkinter",
         "unittest",
+        "pytest",
+        "pluggy",
+        "pygments",
+        "pytz",
+        "pandas",
+        "numpy",
     ],
     "packages": ["wmi", "psutil", "requests", "scan_agent", "yaml", "itinvent_agent", "watchdog", "certifi"],
     "includes": ["scan_agent.agent", "fitz", "watchdog.events", "watchdog.observers", "agent_installer"],
@@ -140,6 +160,7 @@ bdist_msi_options = {
     "add_to_path": False,
     "initial_target_dir": r"[ProgramFiles64Folder]\\IT-Invent\\Agent",
     "all_users": True,
+    "upgrade_code": UPGRADE_CODE,
     "data": msi_data,
 }
 

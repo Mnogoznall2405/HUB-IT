@@ -132,6 +132,38 @@ class SqlAlchemyCompatConnection:
         self.total_changes = total_rowcount
         return CompatResult([], rowcount=total_rowcount)
 
+    def sync_identity_sequences(self, table_names: set[str] | list[str] | tuple[str, ...] | None = None) -> None:
+        if self._engine.dialect.name != "postgresql":
+            return
+
+        known_tables = set(self._table_names)
+        requested_tables = (
+            [str(item).strip() for item in table_names]
+            if table_names is not None
+            else list(self._table_names)
+        )
+        for table_name in requested_tables:
+            if not table_name or table_name not in known_tables:
+                continue
+            sequence_name = self._connection.execute(
+                text("SELECT pg_get_serial_sequence(:table_name, 'id')"),
+                {"table_name": self._table_name_for_regclass_lookup(table_name)},
+            ).scalar()
+            if not sequence_name:
+                continue
+            self._connection.execute(
+                text(
+                    f"""
+                    SELECT setval(
+                        CAST(:sequence_name AS regclass),
+                        GREATEST(COALESCE((SELECT MAX("id") FROM {self._qualified_table_identifier(table_name)}), 0) + 1, 1),
+                        false
+                    )
+                    """
+                ),
+                {"sequence_name": str(sequence_name)},
+            )
+
     def executescript(self, script: str) -> None:
         chunks = [chunk.strip() for chunk in str(script or "").split(";")]
         for chunk in chunks:
@@ -181,6 +213,21 @@ class SqlAlchemyCompatConnection:
                 rewritten,
             )
         return rewritten
+
+    @staticmethod
+    def _quote_identifier(identifier: str) -> str:
+        return '"' + str(identifier).replace('"', '""') + '"'
+
+    def _qualified_table_identifier(self, table_name: str) -> str:
+        table_identifier = self._quote_identifier(table_name)
+        if not self._schema:
+            return table_identifier
+        return f"{self._quote_identifier(self._schema)}.{table_identifier}"
+
+    def _table_name_for_regclass_lookup(self, table_name: str) -> str:
+        if not self._schema:
+            return str(table_name)
+        return f"{self._schema}.{table_name}"
 
     def _bind_qmark_params(self, sql: str, params: tuple[Any, ...] | list[Any]):
         values = list(params)
