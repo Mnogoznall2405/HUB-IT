@@ -13,6 +13,9 @@ vi.mock('../api/client', () => ({
     getAgentsActivity: vi.fn(),
     getHostsTable: vi.fn(),
     getIncidents: vi.fn(),
+    getHostScanRuns: vi.fn(),
+    getTaskObservations: vi.fn(),
+    exportScanTaskIncidents: vi.fn(),
     getTasks: vi.fn(),
     createTask: vi.fn(),
     ackIncident: vi.fn(),
@@ -41,6 +44,13 @@ const dashboardPayload = {
     incidents_new: 1,
     queue_active: 0,
     queue_expired: 0,
+    server_pdf_pending: 42,
+    server_pdf_queued: 40,
+    server_pdf_processing: 2,
+    server_pdf_processed: 120,
+    server_pdf_done_clean: 100,
+    server_pdf_done_with_incident: 18,
+    server_pdf_failed: 2,
   },
   new_hosts: ['HOST-01'],
 };
@@ -87,6 +97,19 @@ const incidentRow = {
 
 describe('ScanCenter page', () => {
   beforeEach(() => {
+    Object.defineProperty(window.URL, 'createObjectURL', {
+      writable: true,
+      value: vi.fn(() => 'blob:scan-report'),
+    });
+    Object.defineProperty(window.URL, 'revokeObjectURL', {
+      writable: true,
+      value: vi.fn(),
+    });
+    Object.defineProperty(HTMLAnchorElement.prototype, 'click', {
+      writable: true,
+      value: vi.fn(),
+    });
+
     scanAPI.getDashboard.mockReset();
     scanAPI.getBranches.mockReset();
     scanAPI.getPatterns.mockReset();
@@ -94,6 +117,9 @@ describe('ScanCenter page', () => {
     scanAPI.getAgentsActivity.mockReset();
     scanAPI.getHostsTable.mockReset();
     scanAPI.getIncidents.mockReset();
+    scanAPI.getHostScanRuns.mockReset();
+    scanAPI.getTaskObservations.mockReset();
+    scanAPI.exportScanTaskIncidents.mockReset();
     scanAPI.getTasks.mockReset();
     scanAPI.createTask.mockReset();
     scanAPI.ackIncident.mockReset();
@@ -112,6 +138,36 @@ describe('ScanCenter page', () => {
     scanAPI.getAgentsActivity.mockResolvedValue({ items: [] });
     scanAPI.getHostsTable.mockResolvedValue({ total: 1, items: [hostRow] });
     scanAPI.getIncidents.mockResolvedValue({ total: 1, items: [incidentRow] });
+    scanAPI.getHostScanRuns.mockResolvedValue({
+      total: 1,
+      items: [{
+        id: 'task-1',
+        agent_id: 'agent-1',
+        hostname: 'HOST-01',
+        command: 'scan_now',
+        status: 'completed',
+        created_at: 1710000200,
+        updated_at: 1710000220,
+        completed_at: 1710000220,
+        result: { phase: 'completed', scanned: 4, skipped: 1 },
+        observation_counts: {
+          found_new: 1,
+          found_duplicate: 0,
+          deleted: 0,
+          cleaned: 0,
+          moved: 0,
+          total: 1,
+        },
+      }],
+    });
+    scanAPI.getTaskObservations.mockResolvedValue({ total: 1, items: [] });
+    scanAPI.exportScanTaskIncidents.mockResolvedValue({
+      data: new Blob(['xlsx']),
+      headers: {
+        'content-disposition': 'attachment; filename="scan_incidents_HOST-01_task-1.xlsx"',
+        'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      },
+    });
     scanAPI.getTasks.mockResolvedValue({
       total: 0,
       items: [],
@@ -143,6 +199,17 @@ describe('ScanCenter page', () => {
   const openHostsSection = async () => {
     fireEvent.click(await screen.findByRole('tab', { name: /Хосты/i }));
   };
+
+  it('shows server PDF queue totals on the dashboard', async () => {
+    render(<ScanCenter />);
+
+    expect(await screen.findByText('PDF очередь')).toBeInTheDocument();
+    expect(screen.getByText('42')).toBeInTheDocument();
+    expect(screen.getByText('ждёт: 40 · в работе: 2')).toBeInTheDocument();
+    expect(screen.getByText('Обработано PDF')).toBeInTheDocument();
+    expect(screen.getByText('120')).toBeInTheDocument();
+    expect(screen.getByText('чисто: 100 · инциденты: 18 · ошибки: 2')).toBeInTheDocument();
+  });
 
   it('creates scan task without full page reload and switches to task polling', async () => {
     scanAPI.getAgentsActivity
@@ -427,6 +494,33 @@ describe('ScanCenter page', () => {
     expect(params).not.toHaveProperty('host');
     expect(params).not.toHaveProperty('agentId');
     expect(params).not.toHaveProperty('computer_name');
+  });
+
+  it('exports incidents report for a selected scan run', async () => {
+    render(<ScanCenter />);
+
+    await waitFor(() => {
+      expect(scanAPI.getHostsTable).toHaveBeenCalled();
+    });
+
+    await openHostsSection();
+
+    const hostCell = [...await screen.findAllByText('HOST-01')].reverse().find((node) => node.closest('tr'));
+    const hostRowElement = hostCell.closest('tr');
+    fireEvent.click(within(hostRowElement).getByRole('button'));
+
+    await waitFor(() => {
+      expect(scanAPI.getHostScanRuns).toHaveBeenCalledWith('HOST-01', { limit: 30, offset: 0 });
+    });
+
+    const exportButton = (await screen.findAllByRole('button', { name: /Excel/i, hidden: true })).at(-1);
+    fireEvent.click(exportButton);
+
+    await waitFor(() => {
+      expect(scanAPI.exportScanTaskIncidents).toHaveBeenCalledWith('task-1');
+    });
+    expect(window.URL.createObjectURL).toHaveBeenCalled();
+    expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
   });
 
   it('loads incident inbox in 500-row batches and renders grouped host rows', async () => {

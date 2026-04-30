@@ -46,6 +46,8 @@ def test_inventory_endpoints_support_app_db_backend(temp_dir, monkeypatch):
             "branch_name": "РўСЋРјРµРЅСЊ",
             "location_name": "РљР°Р±РёРЅРµС‚ 12",
             "employee_name": "РџРµС‚СЂРѕРІ Рђ.Рђ.",
+            "inv_no": "101795",
+            "model_name": "Dell OptiPlex 7090",
             "ip_address": "10.10.1.11",
         },
     )
@@ -110,7 +112,17 @@ def test_inventory_endpoints_support_app_db_backend(temp_dir, monkeypatch):
     assert len(computers) == 1
     assert computers[0]["hostname"] == "PC-01"
     assert computers[0]["branch_name"] == "РўСЋРјРµРЅСЊ"
+    assert computers[0]["inventory_inv_no"] == "101795"
+    assert computers[0]["inventory_model_name"] == "Dell OptiPlex 7090"
     assert computers[0]["has_hardware_changes"] is True
+
+    cached_context = inventory.AppInventoryStore(database_url=database_url).get_sql_context(
+        mac_address="AA-BB-CC-DD-EE-01",
+        hostname="PC-01",
+        db_id="DB1",
+    )
+    assert cached_context["inv_no"] == "101795"
+    assert cached_context["model_name"] == "Dell OptiPlex 7090"
 
 
 def test_inventory_heartbeat_deferred_updates_presence_without_full_rewrite(temp_dir, monkeypatch):

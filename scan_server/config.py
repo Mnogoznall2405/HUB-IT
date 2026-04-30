@@ -13,6 +13,9 @@ except Exception:  # pragma: no cover - optional dependency for standalone scan_
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ROOT_ENV_PATH = PROJECT_ROOT / ".env"
+SCAN_JOB_MAX_WORKERS_LIMIT = 12
+SCAN_OCR_MAX_PROCESSES_DEFAULT = 12
+SCAN_OCR_MAX_PROCESSES_LIMIT = 12
 if load_dotenv is not None and ROOT_ENV_PATH.exists():
     load_dotenv(str(ROOT_ENV_PATH))
 
@@ -20,6 +23,13 @@ if load_dotenv is not None and ROOT_ENV_PATH.exists():
 def _to_int(value: str, default: int) -> int:
     try:
         return int(str(value).strip())
+    except Exception:
+        return default
+
+
+def _to_float(value: str, default: float) -> float:
+    try:
+        return float(str(value).strip())
     except Exception:
         return default
 
@@ -50,7 +60,15 @@ class ScanServerConfig:
     task_ack_timeout_sec: int
     agent_online_timeout_sec: int
     resolve_agent_sql_context: bool
+    ingest_max_pending_pdf_jobs: int
+    ingest_max_concurrency: int
+    transient_max_gb: float
+    ingest_retry_after_sec: int
+    job_processing_timeout_sec: int
+    scan_job_max_attempts: int
+    scan_worker_enabled: bool
     worker_interval_sec: int
+    scan_job_max_workers: int
     ocr_enabled: bool
     ocr_tesseract_cmd: str
     ocr_lang: str
@@ -92,10 +110,10 @@ class ScanServerConfig:
                 5, min(300, _to_int(os.getenv("SCAN_SERVER_WATCHDOG_INTERVAL_SEC", "30"), 30))
             ),
             watchdog_timeout_sec=max(
-                1, min(30, _to_int(os.getenv("SCAN_SERVER_WATCHDOG_TIMEOUT_SEC", "3"), 3))
+                1, min(30, _to_int(os.getenv("SCAN_SERVER_WATCHDOG_TIMEOUT_SEC", "10"), 10))
             ),
             watchdog_failures=max(
-                1, min(10, _to_int(os.getenv("SCAN_SERVER_WATCHDOG_FAILURES", "3"), 3))
+                1, min(10, _to_int(os.getenv("SCAN_SERVER_WATCHDOG_FAILURES", "5"), 5))
             ),
             watchdog_startup_grace_sec=max(
                 0,
@@ -119,15 +137,56 @@ class ScanServerConfig:
                 os.getenv("SCAN_SERVER_RESOLVE_AGENT_SQL_CONTEXT", "0"),
                 False,
             ),
+            ingest_max_pending_pdf_jobs=max(
+                100,
+                _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_PDF_JOBS", "25000"), 25000),
+            ),
+            ingest_max_concurrency=max(
+                1,
+                min(32, _to_int(os.getenv("SCAN_INGEST_MAX_CONCURRENCY", "4"), 4)),
+            ),
+            transient_max_gb=max(
+                1.0,
+                _to_float(os.getenv("SCAN_TRANSIENT_MAX_GB", "80"), 80.0),
+            ),
+            ingest_retry_after_sec=max(
+                1,
+                min(3600, _to_int(os.getenv("SCAN_INGEST_RETRY_AFTER_SEC", "60"), 60)),
+            ),
+            job_processing_timeout_sec=max(
+                60,
+                _to_int(os.getenv("SCAN_JOB_PROCESSING_TIMEOUT_SEC", "1800"), 1800),
+            ),
+            scan_job_max_attempts=max(
+                1,
+                min(20, _to_int(os.getenv("SCAN_JOB_MAX_ATTEMPTS", "3"), 3)),
+            ),
+            scan_worker_enabled=_to_bool(os.getenv("SCAN_WORKER_ENABLED", "1"), True),
             worker_interval_sec=max(
                 1, _to_int(os.getenv("SCAN_WORKER_INTERVAL_SEC", "3"), 3)
+            ),
+            scan_job_max_workers=max(
+                1,
+                min(
+                    SCAN_JOB_MAX_WORKERS_LIMIT,
+                    _to_int(os.getenv("SCAN_JOB_MAX_WORKERS", "4"), 4),
+                ),
             ),
             ocr_enabled=_to_bool(os.getenv("SCAN_OCR_ENABLED", "1"), True),
             ocr_tesseract_cmd=str(
                 os.getenv("SCAN_OCR_TESSERACT_CMD", r"C:\Program Files\Tesseract-OCR\tesseract.exe")
             ).strip(),
             ocr_lang=str(os.getenv("SCAN_OCR_LANG", "rus")).strip() or "rus",
-            ocr_max_processes=max(1, min(16, _to_int(os.getenv("SCAN_OCR_MAX_PROCESSES", "4"), 4))),
+            ocr_max_processes=max(
+                1,
+                min(
+                    SCAN_OCR_MAX_PROCESSES_LIMIT,
+                    _to_int(
+                        os.getenv("SCAN_OCR_MAX_PROCESSES", str(SCAN_OCR_MAX_PROCESSES_DEFAULT)),
+                        SCAN_OCR_MAX_PROCESSES_DEFAULT,
+                    ),
+                ),
+            ),
             ocr_timeout_sec=max(5, min(300, _to_int(os.getenv("SCAN_OCR_TIMEOUT_SEC", "45"), 45))),
             ocr_dpi=max(100, min(600, _to_int(os.getenv("SCAN_OCR_DPI", "300"), 300))),
             ocr_only_if_no_text=_to_bool(os.getenv("SCAN_OCR_ONLY_IF_NO_TEXT", "1"), True),

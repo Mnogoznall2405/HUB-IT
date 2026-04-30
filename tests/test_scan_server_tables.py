@@ -512,6 +512,77 @@ def test_agent_online_timeout_is_used_for_agents_and_dashboard(temp_dir):
     assert dashboard["totals"]["agents_offline"] == 1
 
 
+def test_dashboard_reports_server_pdf_job_queue(temp_dir):
+    store = _make_store(temp_dir)
+    first = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\first.pdf",
+            "file_name": "first.pdf",
+            "file_hash": "hash-first",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "dashboard-pdf-first",
+            "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 first"),
+        }
+    )
+    store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\second.pdf",
+            "file_name": "second.pdf",
+            "file_hash": "hash-second",
+            "file_size": 2048,
+            "source_kind": "pdf",
+            "event_id": "dashboard-pdf-second",
+        }
+    )
+    store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\note.txt",
+            "file_name": "note.txt",
+            "file_hash": "hash-text",
+            "file_size": 128,
+            "source_kind": "text",
+            "event_id": "dashboard-text",
+        }
+    )
+
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == first["job_id"]
+
+    dashboard = store.dashboard()
+
+    assert dashboard["totals"]["server_pdf_pending"] == 2
+    assert dashboard["totals"]["server_pdf_queued"] == 1
+    assert dashboard["totals"]["server_pdf_processing"] == 1
+    assert dashboard["totals"]["server_queue_pending"] == 3
+    assert dashboard["job_queue"]["pdf_total"] == 2
+    assert dashboard["totals"]["server_pdf_processed"] == 0
+    assert dashboard["totals"]["server_pdf_done_clean"] == 0
+    assert dashboard["totals"]["server_pdf_done_with_incident"] == 0
+    assert dashboard["totals"]["server_pdf_failed"] == 0
+
+    store.finalize_job(job_id=first["job_id"], status="done_clean", summary="clean")
+
+    dashboard = store.dashboard()
+    assert dashboard["totals"]["server_pdf_pending"] == 1
+    assert dashboard["totals"]["server_pdf_queued"] == 1
+    assert dashboard["totals"]["server_pdf_processing"] == 0
+    assert dashboard["totals"]["server_pdf_processed"] == 1
+    assert dashboard["totals"]["server_pdf_done_clean"] == 1
+    assert dashboard["totals"]["server_pdf_done_with_incident"] == 0
+    assert dashboard["totals"]["server_pdf_failed"] == 0
+
+
 def test_scan_task_progress_tracks_linked_jobs_until_all_ocr_finishes(temp_dir):
     store = _make_store(temp_dir)
     task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
@@ -615,6 +686,87 @@ def test_queue_job_strips_pdf_from_payload_json_and_writes_transient_spool(temp_
     payload = json.loads(job_row["payload_json"])
     assert "pdf_slice_b64" not in payload
     assert store.read_job_pdf_spool(job_id=queued["job_id"]) == b"%PDF-1.4 spool"
+
+
+def test_claim_next_jobs_marks_batch_processing_and_keeps_spool_files(temp_dir):
+    store = _make_store(temp_dir)
+    job_ids: list[str] = []
+    for idx in range(5):
+        queued = store.queue_job(
+            {
+                "agent_id": "agent-1",
+                "hostname": "HOST-01",
+                "branch": "branch",
+                "file_path": rf"C:\Docs\secret-{idx}.pdf",
+                "file_name": f"secret-{idx}.pdf",
+                "file_hash": f"hash-secret-{idx}",
+                "file_size": 2048,
+                "source_kind": "pdf_slice",
+                "event_id": f"pdf-spool-batch-{idx}",
+                "pdf_slice_b64": _pdf_b64(f"%PDF-1.4 spool {idx}".encode("ascii")),
+            }
+        )
+        job_ids.append(queued["job_id"])
+
+    claimed = store.claim_next_jobs(4)
+
+    assert [row["id"] for row in claimed] == job_ids[:4]
+    assert [row["status"] for row in claimed] == ["processing"] * 4
+    assert [_get_job(store, job_id)["status"] for job_id in job_ids] == [
+        "processing",
+        "processing",
+        "processing",
+        "processing",
+        "queued",
+    ]
+    for idx, job_id in enumerate(job_ids):
+        assert store.read_job_pdf_spool(job_id=job_id) == f"%PDF-1.4 spool {idx}".encode("ascii")
+
+
+def test_claim_next_job_compatibility_and_finalize_deletes_only_finished_spool(temp_dir):
+    store = _make_store(temp_dir)
+    first = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\first.pdf",
+            "file_name": "first.pdf",
+            "file_hash": "hash-first",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "pdf-spool-compat-first",
+            "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 first"),
+        }
+    )
+    second = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\second.pdf",
+            "file_name": "second.pdf",
+            "file_hash": "hash-second",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "pdf-spool-compat-second",
+            "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 second"),
+        }
+    )
+
+    claimed = store.claim_next_job()
+
+    assert claimed is not None
+    assert claimed["id"] == first["job_id"]
+    assert _get_job(store, first["job_id"])["status"] == "processing"
+    assert _get_job(store, second["job_id"])["status"] == "queued"
+    assert store.read_job_pdf_spool(job_id=first["job_id"]) == b"%PDF-1.4 first"
+    assert store.read_job_pdf_spool(job_id=second["job_id"]) == b"%PDF-1.4 second"
+
+    store.finalize_job(job_id=first["job_id"], status="done_clean", summary="clean")
+
+    assert store.read_job_pdf_spool(job_id=first["job_id"]) == b""
+    assert store.read_job_pdf_spool(job_id=second["job_id"]) == b"%PDF-1.4 second"
 
 
 def test_queue_job_dedupes_stable_event_id_without_new_incident(temp_dir):
@@ -1169,6 +1321,32 @@ def test_store_reconcile_completes_acknowledged_scan_task_after_restart(temp_dir
     assert task_result["jobs_done_clean"] == 1
 
 
+def test_store_reopen_does_not_reset_processing_jobs(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\active.pdf",
+            "file_name": "active.pdf",
+            "file_hash": "hash-active",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "processing-survives-reopen",
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+    claimed = store.claim_next_job()
+    assert claimed["id"] == queued["job_id"]
+
+    reopened = _make_store(temp_dir)
+    job_row = _get_job(reopened, queued["job_id"])
+
+    assert job_row["status"] == "processing"
+    assert int(job_row["started_at"] or 0) > 0
+
+
 def test_store_reconcile_fails_stale_local_scan_acknowledged_task(temp_dir):
     store = _make_store(temp_dir)
     task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
@@ -1349,6 +1527,95 @@ def test_reconcile_job_pdf_spool_fails_pending_pdf_jobs_without_payload(temp_dir
     assert job_row["error_text"] == "Missing transient PDF payload"
     assert task_row["status"] == "failed"
     assert task_result["jobs_failed"] == 1
+
+
+def test_reconcile_job_pdf_spool_waits_for_fresh_processing_job_without_payload(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\processing.pdf",
+            "file_name": "processing.pdf",
+            "file_hash": "hash-processing",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "processing-missing-spool",
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+    store.claim_next_job()
+    store.delete_job_pdf_spool(job_id=queued["job_id"])
+
+    result = store.reconcile_job_pdf_spool()
+    job_row = _get_job(store, queued["job_id"])
+
+    assert result["failed_jobs"] == 0
+    assert result["waiting_processing_missing"] == 1
+    assert job_row["status"] == "processing"
+
+
+def test_reconcile_job_pdf_spool_fails_stale_processing_job_without_payload(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\stale.pdf",
+            "file_name": "stale.pdf",
+            "file_hash": "hash-stale",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "stale-processing-missing-spool",
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+    store.claim_next_job()
+    store.delete_job_pdf_spool(job_id=queued["job_id"])
+    stale_started_at = int(time.time()) - (store.job_processing_timeout_sec + 60)
+    with store._lock, store._connect() as conn:
+        conn.execute("UPDATE scan_jobs SET started_at=? WHERE id=?", (stale_started_at, queued["job_id"]))
+        conn.commit()
+
+    result = store.reconcile_job_pdf_spool()
+    job_row = _get_job(store, queued["job_id"])
+
+    assert result["failed_jobs"] == 1
+    assert job_row["status"] == "failed"
+    assert job_row["error_text"] == "Missing transient PDF payload"
+
+
+def test_queue_job_reopens_missing_transient_payload_job_with_same_event_id(temp_dir):
+    store = _make_store(temp_dir)
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "branch": "branch",
+        "file_path": r"C:\Docs\retry.pdf",
+        "file_name": "retry.pdf",
+        "file_hash": "hash-retry",
+        "file_size": 2048,
+        "source_kind": "pdf_slice",
+        "event_id": "retry-missing-payload",
+        "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 first"),
+    }
+    first = store.queue_job(dict(payload))
+    store.finalize_job(
+        job_id=first["job_id"],
+        status="failed",
+        error_text="Missing transient PDF payload",
+    )
+
+    reopened = store.queue_job({**payload, "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 second")})
+    job_row = _get_job(store, first["job_id"])
+
+    assert reopened["job_id"] == first["job_id"]
+    assert reopened["reopened"] is True
+    assert job_row["status"] == "queued"
+    assert job_row["error_text"] in (None, "")
+    assert store.read_job_pdf_spool(job_id=first["job_id"]).startswith(b"%PDF-1.4 second")
 
 
 def test_scrub_scan_job_pdf_payloads_removes_legacy_pdf_from_sqlite_payloads(temp_dir):

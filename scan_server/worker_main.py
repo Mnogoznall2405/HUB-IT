@@ -1,27 +1,24 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 import os
 import signal
-import sys
 import threading
+import time
 from pathlib import Path
 from typing import BinaryIO, Optional
 
-if sys.platform.startswith("win") and hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
-
-import uvicorn
-
 from .config import config
+from .database import ScanStore
+from .worker import ScanWorker
+
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
-logger = logging.getLogger("scan-server-main")
+logger = logging.getLogger("scan-worker")
 
 
 def _acquire_singleton_lock(lock_path: Path) -> Optional[BinaryIO]:
@@ -53,10 +50,10 @@ def _wait_for_singleton_lock(lock_path: Path, stop_event: threading.Event) -> Op
         handle = _acquire_singleton_lock(lock_path)
         if handle is not None:
             if warned:
-                logger.info("Scan API lock acquired after waiting")
+                logger.info("Standalone scan worker lock acquired after waiting")
             return handle
         if not warned:
-            logger.warning("Another scan API process is already running; waiting for lock")
+            logger.warning("Another standalone scan worker is already running; waiting for lock")
             warned = True
         stop_event.wait(5)
     return None
@@ -71,22 +68,33 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
 
-    lock_handle = _wait_for_singleton_lock(config.db_path.parent / "scan_server.lock", stop_event)
+    lock_handle = _wait_for_singleton_lock(config.db_path.parent / "scan_worker.lock", stop_event)
     if lock_handle is None:
         return
 
-    from .app import app
+    store = ScanStore(
+        db_path=config.db_path,
+        archive_dir=config.archive_dir,
+        task_ack_timeout_sec=config.task_ack_timeout_sec,
+        agent_online_timeout_sec=config.agent_online_timeout_sec,
+        resolve_agent_sql_context=config.resolve_agent_sql_context,
+        job_processing_timeout_sec=config.job_processing_timeout_sec,
+    )
 
+    worker = ScanWorker(store=store, config=config, stop_event=stop_event)
+    worker.start()
+    logger.info("Standalone scan worker process started")
     try:
-        uvicorn.run(
-            app,
-            host=config.host,
-            port=config.port,
-            reload=False,
-            loop="scan_server.uvicorn_loops:windows_selector_loop_factory",
-        )
+        while worker.is_alive() and not stop_event.wait(1):
+            time.sleep(0)
     finally:
+        stop_event.set()
+        worker.join(timeout=5)
+        if worker.is_alive():
+            logger.warning("Standalone scan worker did not stop within timeout; forcing process exit")
+            os._exit(0)
         lock_handle.close()
+        logger.info("Standalone scan worker process stopped")
 
 
 if __name__ == "__main__":

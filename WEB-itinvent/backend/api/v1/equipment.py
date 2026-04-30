@@ -3,7 +3,7 @@ Equipment API endpoints - search, retrieve and update equipment information.
 """
 from typing import Optional, Any, List
 
-from fastapi import APIRouter, Depends, Query, HTTPException, status, UploadFile, File
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, HTTPException, status, UploadFile, File
 from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
 import os
@@ -45,6 +45,7 @@ from backend.models.equipment import (
     TransferActReminderResponse,
 )
 from backend.services.transfer_service import (
+    get_act_records,
     generate_transfer_acts_without_move,
     get_act_record,
     send_transfer_acts_email,
@@ -54,6 +55,7 @@ from backend.services.equipment_transfer_execution_service import (
     EquipmentTransferExecutionError,
     execute_equipment_transfer,
 )
+from backend.services import transfer_act_job_service
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 from backend.services.act_upload_service import (
     DraftNotFoundError,
@@ -79,6 +81,174 @@ def _to_int(value: Any) -> Optional[int]:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _normalize_inv_nos(raw_items: Any) -> list[str]:
+    inv_nos: list[str] = []
+    for raw in raw_items or []:
+        normalized = str(raw or "").strip()
+        if normalized and normalized not in inv_nos:
+            inv_nos.append(normalized)
+    return inv_nos
+
+
+def _queued_transfer_response(job: dict[str, Any]) -> TransferExecuteResponse:
+    return TransferExecuteResponse(
+        success_count=0,
+        failed_count=0,
+        transferred=[],
+        failed=[],
+        acts=[],
+        job_id=str(job.get("id") or ""),
+        job_status=str(job.get("status") or "queued"),
+        job_status_text=str(job.get("status_text") or "Акты создаются, обновите статус через несколько секунд"),
+        job_operation=str(job.get("operation") or ""),
+        job_request_count=int(job.get("request_count") or 0),
+        job_created_at=job.get("created_at"),
+        job_started_at=job.get("started_at"),
+        job_completed_at=job.get("completed_at"),
+    )
+
+
+def _result_with_act_records(result: dict[str, Any]) -> dict[str, Any]:
+    payload = dict(result or {})
+    act_ids = [str(act.get("act_id") or "").strip() for act in list(payload.get("acts") or [])]
+    payload["_act_records"] = get_act_records([act_id for act_id in act_ids if act_id])
+    return payload
+
+
+def _run_transfer_job(
+    *,
+    job_id: str,
+    payload: TransferExecuteRequest,
+    db_id: Optional[str],
+    current_user: User,
+) -> None:
+    logger.info("Transfer act job started job_id=%s operation=transfer inv_count=%s", job_id, len(payload.inv_nos or []))
+    transfer_act_job_service.mark_processing(job_id, "Выполняется перемещение и создание актов")
+    try:
+        result = execute_equipment_transfer(
+            payload=payload,
+            db_id=db_id,
+            current_user=current_user,
+            allow_create_owner=True,
+        )
+        transfer_act_job_service.mark_done(job_id, _result_with_act_records(result))
+        logger.info(
+            "Transfer act job done job_id=%s operation=transfer success=%s failed=%s acts=%s",
+            job_id,
+            result.get("success_count"),
+            result.get("failed_count"),
+            len(result.get("acts") or []),
+        )
+    except EquipmentTransferExecutionError as exc:
+        logger.warning("Transfer act job failed job_id=%s status=%s detail=%s", job_id, exc.status_code, exc.detail)
+        transfer_act_job_service.mark_failed(
+            job_id,
+            exc.detail,
+            {
+                "success_count": 0,
+                "failed_count": 1,
+                "transferred": [],
+                "failed": [{"inv_no": "", "error": exc.detail}],
+                "acts": [],
+            },
+        )
+    except Exception as exc:
+        logger.exception("Transfer act job failed job_id=%s", job_id)
+        transfer_act_job_service.mark_failed(job_id, str(exc))
+
+
+def _run_act_only_job(
+    *,
+    job_id: str,
+    payload: TransferActOnlyRequest,
+    db_id: Optional[str],
+) -> None:
+    inv_nos = _normalize_inv_nos(payload.inv_nos)
+    logger.info("Transfer act job started job_id=%s operation=act_only inv_count=%s", job_id, len(inv_nos))
+    transfer_act_job_service.mark_processing(job_id, "Создаются акты без перемещения")
+    try:
+        issuer_name = str(payload.issuer_employee or "").strip() or "Без владельца"
+        issuer_email: Optional[str] = None
+        issuer_owner_no = _to_int(payload.issuer_owner_no)
+        if issuer_owner_no is not None:
+            owner_row = queries.get_owner_by_no(issuer_owner_no, db_id)
+            if not owner_row:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid issuer_owner_no")
+            issuer_name = str(
+                owner_row.get("OWNER_DISPLAY_NAME")
+                or owner_row.get("owner_display_name")
+                or issuer_name
+            ).strip() or issuer_name
+            issuer_email = queries.get_owner_email_by_no(issuer_owner_no, db_id)
+
+        rows = queries.get_transfer_act_items_by_inv_nos(inv_nos, db_id)
+        rows_by_inv: dict[str, dict[str, Any]] = {}
+        for row in rows or []:
+            key = str(row.get("inv_no") or "").strip()
+            if key:
+                rows_by_inv[key] = row
+                try:
+                    rows_by_inv[str(int(round(float(key))))] = row
+                except (TypeError, ValueError):
+                    pass
+
+        resolved_items: list[dict[str, Any]] = []
+        failed: list[dict[str, str]] = []
+        for inv_no in inv_nos:
+            row = rows_by_inv.get(inv_no)
+            if row is None:
+                try:
+                    row = rows_by_inv.get(str(int(round(float(inv_no)))))
+                except (TypeError, ValueError):
+                    row = None
+            if row:
+                resolved_items.append(row)
+            else:
+                failed.append({"inv_no": inv_no, "error": f"Equipment with INV_NO {inv_no} not found"})
+
+        acts = []
+        if resolved_items:
+            acts = generate_transfer_acts_without_move(
+                items=resolved_items,
+                issuer_name=issuer_name,
+                issuer_email=issuer_email,
+                db_id=db_id,
+            )
+
+        result = {
+            "success_count": len(resolved_items),
+            "failed_count": len(failed),
+            "transferred": [],
+            "failed": failed,
+            "acts": acts,
+        }
+        transfer_act_job_service.mark_done(job_id, _result_with_act_records(result))
+        logger.info(
+            "Transfer act job done job_id=%s operation=act_only success=%s failed=%s acts=%s",
+            job_id,
+            result["success_count"],
+            result["failed_count"],
+            len(acts),
+        )
+    except HTTPException as exc:
+        detail = str(exc.detail or "Не удалось создать акты")
+        logger.warning("Transfer act job failed job_id=%s status=%s detail=%s", job_id, exc.status_code, detail)
+        transfer_act_job_service.mark_failed(
+            job_id,
+            detail,
+            {
+                "success_count": 0,
+                "failed_count": 1,
+                "transferred": [],
+                "failed": [{"inv_no": "", "error": detail}],
+                "acts": [],
+            },
+        )
+    except Exception as exc:
+        logger.exception("Transfer act job failed job_id=%s", job_id)
+        transfer_act_job_service.mark_failed(job_id, str(exc))
 
 
 def _ascii_safe_filename(file_name: str) -> str:
@@ -1102,6 +1272,7 @@ async def delete_equipment_by_inv(
 @router.post("/transfer", response_model=TransferExecuteResponse)
 async def transfer_equipment(
     payload: TransferExecuteRequest,
+    background_tasks: BackgroundTasks,
     db_id: Optional[str] = Depends(get_current_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
@@ -1109,21 +1280,31 @@ async def transfer_equipment(
     Transfer one or multiple equipment items to another employee with CI_HISTORY logging.
     Generates transfer acts grouped by old employee.
     """
-    try:
-        result = execute_equipment_transfer(
-            payload=payload,
-            db_id=db_id,
-            current_user=current_user,
-            allow_create_owner=True,
-        )
-    except EquipmentTransferExecutionError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=exc.detail) from exc
-    return TransferExecuteResponse(**result)
+    inv_nos = _normalize_inv_nos(payload.inv_nos)
+    if not inv_nos:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
+
+    job = transfer_act_job_service.create_job(
+        operation="transfer",
+        payload=payload.model_dump(mode="json"),
+        db_id=db_id,
+        user=current_user,
+        request_count=len(inv_nos),
+    )
+    background_tasks.add_task(
+        _run_transfer_job,
+        job_id=str(job.get("id") or ""),
+        payload=payload,
+        db_id=db_id,
+        current_user=current_user,
+    )
+    return _queued_transfer_response(job)
 
 
 @router.post("/transfer/act-only", response_model=TransferExecuteResponse)
 async def create_transfer_act_without_move(
     payload: TransferActOnlyRequest,
+    background_tasks: BackgroundTasks,
     db_id: Optional[str] = Depends(get_current_database_id),
     _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
@@ -1133,64 +1314,38 @@ async def create_transfer_act_without_move(
     The current equipment owner is treated as the recipient. The issuer can be an
     existing owner or a manual name such as "Без владельца".
     """
-    inv_nos: list[str] = []
-    for raw in payload.inv_nos or []:
-        normalized = str(raw or "").strip()
-        if normalized and normalized not in inv_nos:
-            inv_nos.append(normalized)
+    inv_nos = _normalize_inv_nos(payload.inv_nos)
     if not inv_nos:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="No inventory numbers provided",
         )
 
-    issuer_name = str(payload.issuer_employee or "").strip() or "Без владельца"
-    issuer_email: Optional[str] = None
-    issuer_owner_no = _to_int(payload.issuer_owner_no)
-    if issuer_owner_no is not None:
-        owner_row = queries.get_owner_by_no(issuer_owner_no, db_id)
-        if not owner_row:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid issuer_owner_no",
-            )
-        issuer_name = str(
-            owner_row.get("OWNER_DISPLAY_NAME")
-            or owner_row.get("owner_display_name")
-            or issuer_name
-        ).strip() or issuer_name
-        issuer_email = queries.get_owner_email_by_no(issuer_owner_no, db_id)
-
-    resolved_items: list[dict[str, Any]] = []
-    failed: list[dict[str, str]] = []
-    for inv_no in inv_nos:
-        row = queries.get_equipment_by_inv(inv_no, db_id)
-        if row:
-            resolved_items.append(row)
-        else:
-            failed.append(
-                {
-                    "inv_no": inv_no,
-                    "error": f"Equipment with INV_NO {inv_no} not found",
-                }
-            )
-
-    acts = []
-    if resolved_items:
-        acts = generate_transfer_acts_without_move(
-            items=resolved_items,
-            issuer_name=issuer_name,
-            issuer_email=issuer_email,
-            db_id=db_id,
-        )
-
-    return TransferExecuteResponse(
-        success_count=len(resolved_items),
-        failed_count=len(failed),
-        transferred=[],
-        failed=failed,
-        acts=acts,
+    job = transfer_act_job_service.create_job(
+        operation="act_only",
+        payload=payload.model_dump(mode="json"),
+        db_id=db_id,
+        user=_,
+        request_count=len(inv_nos),
     )
+    background_tasks.add_task(
+        _run_act_only_job,
+        job_id=str(job.get("id") or ""),
+        payload=payload,
+        db_id=db_id,
+    )
+    return _queued_transfer_response(job)
+
+
+@router.get("/transfer/act-jobs/{job_id}", response_model=TransferExecuteResponse)
+async def get_transfer_act_job(
+    job_id: str,
+    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    payload = transfer_act_job_service.response_payload(job_id)
+    if payload is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer act job not found")
+    return TransferExecuteResponse(**payload)
 
 
 @router.post("/transfer/email", response_model=TransferEmailResult)

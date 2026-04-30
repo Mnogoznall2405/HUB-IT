@@ -1,9 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
-  Accordion,
-  AccordionDetails,
-  AccordionSummary,
   Autocomplete,
   Box,
   Button,
@@ -12,6 +9,7 @@ import {
   Checkbox,
   Chip,
   CircularProgress,
+  Collapse,
   Dialog,
   DialogActions,
   DialogContent,
@@ -43,6 +41,7 @@ import {
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import {
+  Download as DownloadIcon,
   ExpandMore as ExpandMoreIcon,
   PlayArrow as PlayArrowIcon,
   Refresh as RefreshIcon,
@@ -66,6 +65,7 @@ const AUTO_REFRESH_MS = 30_000;
 const TASK_POLL_MS = 3_000;
 const DEFAULT_ROWS_PER_PAGE = 25;
 const ROWS_PER_PAGE_OPTIONS = [25, 50, 100];
+const SCAN_RUN_OBSERVATION_LIMIT = 80;
 const ACTIVE_TASK_STATUSES = new Set(['queued', 'delivered', 'acknowledged']);
 
 function normalizePatternRows(value) {
@@ -108,6 +108,26 @@ function patternPayloadSummary(payload, patterns) {
   const total = Array.isArray(patterns) ? patterns.length : 0;
   if (!total) return '';
   return `PDF паттерны: ${selected} из ${total}`;
+}
+
+function parseFilename(contentDisposition) {
+  if (!contentDisposition) return '';
+  const matched = /filename="?([^"]+)"?/i.exec(String(contentDisposition));
+  return matched?.[1] || '';
+}
+
+function downloadBlobResponse(response, fallbackName) {
+  const blob = response?.data instanceof Blob
+    ? response.data
+    : new Blob([response?.data || response], { type: response?.headers?.['content-type'] || 'application/octet-stream' });
+  const url = window.URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = parseFilename(response?.headers?.['content-disposition']) || fallbackName || 'scan_report.xlsx';
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  window.URL.revokeObjectURL(url);
 }
 
 function useDebouncedValue(value, delayMs = 300) {
@@ -247,6 +267,27 @@ function summarizeTaskResult(task) {
     return `Скан: ${Number(result.scanned || 0)} · отправлено: ${Number(result.queued || 0)} · пропущено: ${Number(result.skipped || 0)}`;
   }
   return 'Задача выполнена';
+}
+
+function scanRunErrorText(run) {
+  const status = String(run?.status || '').trim().toLowerCase();
+  if (status !== 'failed') return '';
+  const result = run?.result && typeof run.result === 'object' ? run.result : {};
+  const failedJobs = Number(run?.failed_jobs_count || result.jobs_failed || 0);
+  const failedJobErrors = String(run?.failed_job_errors || result.failed_job_errors || '').trim();
+  if (failedJobs > 0 && failedJobErrors) {
+    return `Не обработано PDF: ${failedJobs}. ${failedJobErrors}`;
+  }
+  if (failedJobs > 0) {
+    return `Не обработано PDF: ${failedJobs}. Проверьте ошибки заданий обработки PDF.`;
+  }
+  return String(
+    run?.error_text
+      || result.error_text
+      || result.error
+      || result.message
+      || 'Запуск скана завершился с ошибкой без подробного текста',
+  ).trim();
 }
 
 function renderFragments(incident) {
@@ -405,6 +446,7 @@ function ScanCenter() {
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const incidentWorkAreaHeight = 'calc(100dvh - var(--app-shell-header-offset) - 360px)';
   const { hasPermission } = useAuth();
+  const canScanRead = hasPermission('scan.read');
   const canScanAck = hasPermission('scan.ack');
   const canScanTasks = hasPermission('scan.tasks');
 
@@ -463,6 +505,7 @@ function ScanCenter() {
   const [expandedScanRunId, setExpandedScanRunId] = useState('');
   const [scanRunObservations, setScanRunObservations] = useState({});
   const [scanRunObservationsLoading, setScanRunObservationsLoading] = useState('');
+  const [exportingScanRunId, setExportingScanRunId] = useState('');
   const [incidentQ, setIncidentQ] = useState('');
   const [incidentStatus, setIncidentStatus] = useState('all');
   const [incidentSeverity, setIncidentSeverity] = useState('all');
@@ -730,7 +773,6 @@ function ScanCenter() {
       const items = Array.isArray(response?.items) ? response.items : [];
       setHostScanRuns(items);
       setHostScanRunsTotal(Number(response?.total || 0));
-      setExpandedScanRunId((prev) => prev || String(items[0]?.id || ''));
     } catch (error) {
       console.error('Host scan runs load failed', error);
       if (requestId === hostScanRunsRequestIdRef.current && !silent) {
@@ -749,7 +791,7 @@ function ScanCenter() {
     if (!normalizedTaskId || scanRunObservations[normalizedTaskId]) return;
     setScanRunObservationsLoading(normalizedTaskId);
     try {
-      const response = await scanAPI.getTaskObservations(normalizedTaskId, { limit: 500, offset: 0 });
+      const response = await scanAPI.getTaskObservations(normalizedTaskId, { limit: SCAN_RUN_OBSERVATION_LIMIT, offset: 0 });
       setScanRunObservations((prev) => ({
         ...prev,
         [normalizedTaskId]: {
@@ -765,6 +807,26 @@ function ScanCenter() {
       }));
     } finally {
       setScanRunObservationsLoading((prev) => (prev === normalizedTaskId ? '' : prev));
+    }
+  };
+
+  const handleExportScanRunIncidents = async (event, run) => {
+    event?.stopPropagation?.();
+    const taskId = String(run?.id || '').trim();
+    if (!taskId || !canScanRead) return;
+    setExportingScanRunId(taskId);
+    try {
+      const response = await scanAPI.exportScanTaskIncidents(taskId);
+      const hostPart = String(run?.hostname || selectedHost || 'host').trim().replace(/[^A-Za-z0-9._-]+/g, '_') || 'host';
+      downloadBlobResponse(response, `scan_incidents_${hostPart}_${taskId.slice(0, 8) || 'task'}.xlsx`);
+    } catch (error) {
+      console.error('Scan run export failed', error);
+      setTaskNotice({
+        severity: 'error',
+        text: 'Не удалось экспортировать отчет запуска скана',
+      });
+    } finally {
+      setExportingScanRunId('');
     }
   };
 
@@ -1161,6 +1223,8 @@ function ScanCenter() {
   const renderScanRunObservations = (runId) => {
     const bucket = scanRunObservations[runId];
     const items = Array.isArray(bucket?.items) ? bucket.items : [];
+    const total = Number(bucket?.total || 0);
+    const visibleItems = items.slice(0, SCAN_RUN_OBSERVATION_LIMIT);
     if (scanRunObservationsLoading === runId && items.length === 0) {
       return <Box sx={{ py: 2, display: 'flex', justifyContent: 'center' }}><CircularProgress size={22} /></Box>;
     }
@@ -1169,7 +1233,7 @@ function ScanCenter() {
     }
     return (
       <Stack spacing={0.8}>
-        {items.map((item) => (
+        {visibleItems.map((item) => (
           <Paper key={item.id} variant="outlined" sx={{ p: 1, borderRadius: 1.2 }}>
             <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
               <Box sx={{ minWidth: 0 }}>
@@ -1189,6 +1253,11 @@ function ScanCenter() {
             </Stack>
           </Paper>
         ))}
+        {total > visibleItems.length && (
+          <Typography variant="caption" color="text.secondary" sx={{ px: 0.3 }}>
+            Показано {visibleItems.length} из {total}. Полный список доступен в Excel-отчете.
+          </Typography>
+        )}
       </Stack>
     );
   };
@@ -1208,17 +1277,40 @@ function ScanCenter() {
           const isForce = isForceScanTask(run);
           const checked = Number(run.result?.scanned || 0);
           const skipped = Number(run.result?.skipped || 0);
+          const expanded = expandedScanRunId === runId;
+          const runError = scanRunErrorText(run);
+          const toggleRun = () => setExpandedScanRunId((prev) => (prev === runId ? '' : runId));
           return (
-            <Accordion
+            <Paper
               key={runId}
-              expanded={expandedScanRunId === runId}
-              onChange={(_, expanded) => setExpandedScanRunId(expanded ? runId : '')}
-              disableGutters
               variant="outlined"
-              sx={{ borderRadius: 1.5, '&:before': { display: 'none' } }}
+              sx={{
+                borderRadius: 1,
+                overflow: 'hidden',
+                borderColor: expanded ? 'primary.light' : 'divider',
+              }}
             >
-              <AccordionSummary expandIcon={<ExpandMoreIcon />}>
-                <Box sx={{ width: '100%' }}>
+              <Box
+                sx={{
+                  p: 1.2,
+                  display: 'grid',
+                  gridTemplateColumns: { xs: '1fr', sm: 'minmax(0, 1fr) auto' },
+                  gap: 1,
+                  alignItems: 'start',
+                }}
+              >
+                <Box
+                  role="button"
+                  tabIndex={0}
+                  onClick={toggleRun}
+                  onKeyDown={(event) => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                      event.preventDefault();
+                      toggleRun();
+                    }
+                  }}
+                  sx={{ minWidth: 0, cursor: 'pointer' }}
+                >
                   <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
                     <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
                       {isForce ? 'Скан с 0' : 'Скан'} · {formatTaskTimestamp(run)}
@@ -1240,12 +1332,59 @@ function ScanCenter() {
                     <Chip size="small" color="success" label={`очищены ${Number(counts.cleaned || 0)}`} />
                     <Chip size="small" color="success" label={`перемещены ${Number(counts.moved || 0)}`} />
                   </Stack>
+                  {!!runError && (
+                    <Alert severity="error" sx={{ mt: 0.9, py: 0.2, alignItems: 'center' }}>
+                      <Typography variant="caption" sx={{ fontWeight: 700, wordBreak: 'break-word' }}>
+                        {runError}
+                      </Typography>
+                    </Alert>
+                  )}
                 </Box>
-              </AccordionSummary>
-              <AccordionDetails>
-                {renderScanRunObservations(runId)}
-              </AccordionDetails>
-            </Accordion>
+                <Stack direction="row" spacing={0.8} sx={{ justifyContent: { xs: 'stretch', sm: 'flex-end' } }}>
+                  <Button
+                    type="button"
+                    aria-label="Экспорт Excel"
+                    size="small"
+                    variant="contained"
+                    startIcon={exportingScanRunId === runId ? <CircularProgress size={15} color="inherit" /> : <DownloadIcon />}
+                    disabled={!canScanRead || exportingScanRunId === runId}
+                    onClick={(event) => handleExportScanRunIncidents(event, run)}
+                    sx={{
+                      flex: { xs: 1, sm: '0 0 auto' },
+                      minHeight: 32,
+                      borderRadius: 1,
+                      px: 1.4,
+                      fontWeight: 800,
+                      textTransform: 'none',
+                      bgcolor: '#1f5f4a',
+                      color: '#fff',
+                      boxShadow: 'none',
+                      transition: 'transform 160ms ease, background-color 160ms ease',
+                      '&:hover': { bgcolor: '#184b3a', boxShadow: 'none', transform: 'translateY(-1px)' },
+                      '&:active': { transform: 'translateY(0)' },
+                      '&.Mui-disabled': { bgcolor: 'action.disabledBackground' },
+                    }}
+                  >
+                    {exportingScanRunId === runId ? 'Готовлю...' : 'Экспорт Excel'}
+                  </Button>
+                  <Button
+                    type="button"
+                    aria-label={expanded ? 'Свернуть запуск скана' : 'Развернуть запуск скана'}
+                    size="small"
+                    variant="outlined"
+                    onClick={toggleRun}
+                    sx={{ minWidth: 34, px: 0.6, borderRadius: 1 }}
+                  >
+                    <ExpandMoreIcon sx={{ transform: expanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 160ms ease' }} />
+                  </Button>
+                </Stack>
+              </Box>
+              <Collapse in={expanded} timeout="auto" unmountOnExit>
+                <Box sx={{ px: 1.2, pb: 1.2 }}>
+                  {renderScanRunObservations(runId)}
+                </Box>
+              </Collapse>
+            </Paper>
           );
         })}
       </Stack>
@@ -1441,6 +1580,22 @@ function ScanCenter() {
           <Grid item xs={12} sm={6} md={3}>{renderSummaryCard('В сети', Number(totals.agents_online || 0), 'активны за 5 минут', 'success.main')}</Grid>
           <Grid item xs={12} sm={6} md={3}>{renderSummaryCard('Новые инциденты', Number(totals.incidents_new || 0), 'статус NEW', 'warning.main')}</Grid>
           <Grid item xs={12} sm={6} md={3}>{renderSummaryCard('Очередь задач', Number(totals.queue_active || 0), `просрочено: ${Number(totals.queue_expired || 0)}`, 'info.main')}</Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            {renderSummaryCard(
+              'PDF очередь',
+              Number(totals.server_pdf_pending || 0),
+              `ждёт: ${Number(totals.server_pdf_queued || 0)} · в работе: ${Number(totals.server_pdf_processing || 0)}`,
+              'secondary.main',
+            )}
+          </Grid>
+          <Grid item xs={12} sm={6} md={3}>
+            {renderSummaryCard(
+              'Обработано PDF',
+              Number(totals.server_pdf_processed || 0),
+              `чисто: ${Number(totals.server_pdf_done_clean || 0)} · инциденты: ${Number(totals.server_pdf_done_with_incident || 0)} · ошибки: ${Number(totals.server_pdf_failed || 0)}`,
+              'success.main',
+            )}
+          </Grid>
         </Grid>
 
         <Paper variant="outlined" sx={{ p: 2, mb: 2 }}>

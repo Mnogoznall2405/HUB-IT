@@ -143,6 +143,8 @@ def _context_map(now_ts):
             "branch_name": "Тюмень",
             "location_name": "Кабинет 12",
             "employee_name": "Петров А.А.",
+            "inv_no": "101795",
+            "model_name": "Dell OptiPlex 7090",
             "ip_address": "10.10.1.11",
         },
         ("AABBCCDDEE02", "DB1"): {
@@ -150,6 +152,8 @@ def _context_map(now_ts):
             "branch_name": "Тюмень",
             "location_name": "Склад",
             "employee_name": "Сидоров Б.Б.",
+            "inv_no": "101796",
+            "model_name": "HP ProDesk 400 G6",
             "ip_address": "10.10.1.22",
         },
         ("AABBCCDDEE03", "DB2"): {
@@ -157,6 +161,8 @@ def _context_map(now_ts):
             "branch_name": "Сургут",
             "location_name": "Офис 2",
             "employee_name": "Иванов В.В.",
+            "inv_no": "201001",
+            "model_name": "Lenovo ThinkCentre M720q",
             "ip_address": "10.20.1.33",
         },
     }
@@ -247,6 +253,54 @@ def _get_computers(**overrides):
     return inventory.get_computers(**params)
 
 
+def test_sql_context_cache_without_inventory_model_is_refreshed(monkeypatch):
+    calls = []
+
+    class CacheStore:
+        def __init__(self):
+            self.saved = None
+
+        def get_sql_context(self, *, mac_address, hostname, db_id):
+            return {
+                "branch_no": "101",
+                "branch_name": "Tyumen",
+                "location_name": "Office",
+                "employee_name": "Petrov A.A.",
+                "ip_address": "10.10.1.11",
+            }
+
+        def upsert_sql_context(self, *, mac_address, hostname, db_id, context):
+            self.saved = dict(context)
+
+    store = CacheStore()
+
+    def fake_resolve(mac_address, hostname, db_id):
+        calls.append((mac_address, hostname, db_id))
+        return {
+            "branch_no": "101",
+            "branch_name": "Tyumen",
+            "location_name": "Office",
+            "employee_name": "Petrov A.A.",
+            "inv_no": "101795",
+            "model_name": "Dell OptiPlex 7090",
+            "ip_address": "10.10.1.11",
+        }
+
+    monkeypatch.setattr(inventory, "_resolve_sql_context", fake_resolve)
+
+    result = inventory._resolve_sql_context_cached(
+        store,
+        mac_address="AA-BB-CC-DD-EE-01",
+        hostname="PC-01",
+        db_id="DB1",
+    )
+
+    assert calls == [("AA-BB-CC-DD-EE-01", "PC-01", "DB1")]
+    assert result["inv_no"] == "101795"
+    assert result["model_name"] == "Dell OptiPlex 7090"
+    assert store.saved["model_name"] == "Dell OptiPlex 7090"
+
+
 def test_get_computers_enriches_contract_and_keeps_heartbeat_safe(monkeypatch):
     now_ts = 1_710_000_000
     _patch_environment(monkeypatch, now_ts)
@@ -260,6 +314,8 @@ def test_get_computers_enriches_contract_and_keeps_heartbeat_safe(monkeypatch):
     assert full_row["location_name"] == "Кабинет 12"
     assert full_row["database_id"] == "DB1"
     assert full_row["database_name"] == "Основная БД"
+    assert full_row["inventory_inv_no"] == "101795"
+    assert full_row["inventory_model_name"] == "Dell OptiPlex 7090"
     assert full_row["network_link"]["device_code"] == "SW-01"
     assert full_row["ip_primary"] == "10.10.1.11"
     assert full_row["cpu_load_percent"] == 12.3
@@ -277,6 +333,8 @@ def test_get_computers_enriches_contract_and_keeps_heartbeat_safe(monkeypatch):
     assert heartbeat_row["branch_name"] == "Тюмень"
     assert heartbeat_row["location_name"] == "Склад"
     assert heartbeat_row["user_full_name"] == "Сидоров Б.Б."
+    assert heartbeat_row["inventory_inv_no"] == "101796"
+    assert heartbeat_row["inventory_model_name"] == "HP ProDesk 400 G6"
     assert heartbeat_row["cpu_load_percent"] == 9.5
     assert heartbeat_row["ram_used_percent"] == 32.2
     assert heartbeat_row["uptime_seconds"] == 180

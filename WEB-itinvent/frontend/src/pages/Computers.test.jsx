@@ -37,6 +37,8 @@ const sampleComputer = {
   branch_name: 'Тюмень',
   location_name: 'Кабинет 12',
   database_name: 'Основная БД',
+  inventory_inv_no: '101795',
+  inventory_model_name: 'Dell OptiPlex 7090',
   ip_primary: '10.10.1.11',
   network_link: {
     device_code: 'SW-01',
@@ -186,6 +188,7 @@ describe('Computers page', () => {
 
     expect(await screen.findByText(new RegExp(`Филиал: ${sampleComputer.branch_name}`))).toBeInTheDocument();
     expect(screen.getByText(/Загрузка CPU:/)).toBeInTheDocument();
+    expect(screen.getByText(`Модель ITinvent: ${sampleComputer.inventory_model_name}`)).toBeInTheDocument();
     expect(screen.getByText(sampleComputer.outlook_active_path)).toBeInTheDocument();
     expect(screen.getByText('petrov_aa')).toBeInTheDocument();
     expect(screen.getByText('Расчет не полный')).toBeInTheDocument();

@@ -115,7 +115,7 @@ export const UPLOAD_ACT_MAX_SIZE_MB = 15;
 export const UPLOAD_ACT_MAX_SIZE_BYTES = UPLOAD_ACT_MAX_SIZE_MB * 1024 * 1024;
 const TABLE_WIDTHS = {
   consumables: { inv: 140, type: 140, model: 200, qty: 120, actions: 56 },
-  equipment: { select: 56, inv: 120, serial: 110, type: 120, model: 170, employee: 220, status: 110, actions: 56 },
+  equipment: { select: 56, inv: 120, serial: 110, partNo: 130, type: 120, model: 170, employee: 220, status: 110, actions: 56 },
   equipmentMobile: { inv: 130, employee: 210, status: 110, actions: 56 },
 };
 
@@ -2030,6 +2030,13 @@ const EquipmentRow = memo(function EquipmentRow({
         </TableCell>
       )}
       {!isMobile && (
+        <TableCell sx={{ width: TABLE_WIDTHS.equipment.partNo }}>
+          <Typography variant="body2" noWrap>
+            {String(item.PART_NO || item.part_no || '-')}
+          </Typography>
+        </TableCell>
+      )}
+      {!isMobile && (
         <TableCell sx={{ width: TABLE_WIDTHS.equipment.type }}>
           <Typography variant="body2" noWrap>
             {String(item.TYPE_NAME || item.type_name || '-')}
@@ -2098,6 +2105,8 @@ const EquipmentTable = memo(function EquipmentTable({
         return toInvNo(item);
       case 'serial':
         return String(item?.SERIAL_NO || item?.serial_no || item?.HW_SERIAL_NO || item?.hw_serial_no || '').trim();
+      case 'partNo':
+        return String(item?.PART_NO || item?.part_no || '').trim();
       case 'type':
         return String(item?.TYPE_NAME || item?.type_name || '').trim();
       case 'model':
@@ -2175,6 +2184,7 @@ const EquipmentTable = memo(function EquipmentTable({
       : ((allowSelection ? TABLE_WIDTHS.equipment.select : 0)
         + TABLE_WIDTHS.equipment.inv
         + TABLE_WIDTHS.equipment.serial
+        + TABLE_WIDTHS.equipment.partNo
         + TABLE_WIDTHS.equipment.type
         + TABLE_WIDTHS.equipment.model
         + TABLE_WIDTHS.equipment.employee
@@ -2276,6 +2286,17 @@ const EquipmentTable = memo(function EquipmentTable({
                       onClick={() => onTableSort('serial')}
                     >
                       Серийный
+                    </TableSortLabel>
+                  </TableCell>
+                )}
+                {!isMobile && (
+                  <TableCell sx={{ width: TABLE_WIDTHS.equipment.partNo }}>
+                    <TableSortLabel
+                      active={tableSort.field === 'partNo'}
+                      direction={tableSort.field === 'partNo' ? tableSort.direction : 'asc'}
+                      onClick={() => onTableSort('partNo')}
+                    >
+                      Part Number
                     </TableSortLabel>
                   </TableCell>
                 )}
@@ -2598,6 +2619,8 @@ function Database() {
   const [transferEmployeeOptions, setTransferEmployeeOptions] = useState([]);
   const [transferEmployeeLoading, setTransferEmployeeLoading] = useState(false);
   const [transferResult, setTransferResult] = useState(null);
+  const [transferJobPolling, setTransferJobPolling] = useState(false);
+  const transferJobPollSeqRef = useRef(0);
   const [transferEmailMode, setTransferEmailMode] = useState('old');
   const [transferManualEmail, setTransferManualEmail] = useState('');
   const [transferRecipientInput, setTransferRecipientInput] = useState('');
@@ -5724,6 +5747,7 @@ function Database() {
   }, []);
 
   const resetTransferState = useCallback(() => {
+    transferJobPollSeqRef.current += 1;
     setTransferOperationMode(TRANSFER_OPERATION_MOVE);
     setNewEmployee('');
     setNewEmployeeNo(null);
@@ -5738,6 +5762,7 @@ function Database() {
     setTransferEmployeeOptions([]);
     setTransferEmployeeLoading(false);
     setTransferResult(null);
+    setTransferJobPolling(false);
     setTransferEmailMode('old');
     setTransferManualEmail('');
     setTransferRecipientInput('');
@@ -5820,6 +5845,69 @@ function Database() {
       setActionError('Не удалось скачать акт.');
     }
   }, []);
+
+  const pollTransferActJob = useCallback(async (jobId, options = {}) => {
+    const normalizedJobId = String(jobId || '').trim();
+    if (!normalizedJobId) return;
+
+    const pollSeq = transferJobPollSeqRef.current + 1;
+    transferJobPollSeqRef.current = pollSeq;
+    setTransferJobPolling(true);
+    setActionError('');
+
+    const wait = (ms) => new Promise((resolve) => {
+      window.setTimeout(resolve, ms);
+    });
+
+    for (let attempt = 0; attempt < 240; attempt += 1) {
+      await wait(attempt < 4 ? 1200 : 2500);
+      if (transferJobPollSeqRef.current !== pollSeq) return;
+
+      try {
+        const result = await equipmentAPI.getTransferActJob(normalizedJobId);
+        if (transferJobPollSeqRef.current !== pollSeq) return;
+
+        setTransferResult(result);
+        const status = String(result?.job_status || '').toLowerCase();
+        if (status === 'done' || status === 'failed') {
+          setTransferJobPolling(false);
+          const failedCount = Number(result?.failed_count || 0);
+          if (status === 'failed') {
+            setActionError(result?.job_error || 'Создание актов завершилось ошибкой.');
+          } else if (failedCount > 0) {
+            setActionError(`Подготовлено ${result.success_count}, ошибок ${failedCount}`);
+          } else {
+            setActionError('');
+          }
+
+          if (options.refreshEquipment && status === 'done') {
+            const targetInvNos = Array.isArray(options.targetInvNos) ? options.targetInvNos : [];
+            if (
+              Number(result?.success_count || 0) > 0 &&
+              targetInvNos.includes(String(detailModal?.invNo || '').trim())
+            ) {
+              setDetailHistory([]);
+              setDetailHistoryLoadedInvNo('');
+            }
+            await fetchAllEquipment({ force: true });
+          }
+          return;
+        }
+      } catch (error) {
+        if (transferJobPollSeqRef.current !== pollSeq) return;
+        console.error('Transfer act job polling error:', error);
+        setTransferJobPolling(false);
+        const apiDetail = error?.response?.data?.detail;
+        setActionError(typeof apiDetail === 'string' ? apiDetail : 'Не удалось обновить статус создания актов.');
+        return;
+      }
+    }
+
+    if (transferJobPollSeqRef.current === pollSeq) {
+      setTransferJobPolling(false);
+      setActionError('Создание актов всё ещё выполняется. Обновите статус позже.');
+    }
+  }, [detailModal?.invNo, fetchAllEquipment]);
 
   const handleOpenEquipmentActFile = useCallback((act) => {
     const docNo = String(readFirst(act, ['doc_no', 'DOC_NO'], '')).trim();
@@ -9462,9 +9550,32 @@ function Database() {
 
                 {transferResult && (
                   <Box sx={{ display: 'grid', gap: 1.5 }}>
-                    <Alert severity={transferResult.failed_count > 0 ? 'warning' : 'success'}>
-                      {transferOperationMode === TRANSFER_OPERATION_ACT_ONLY ? 'Подготовлено позиций' : 'Перенесено'}: {transferResult.success_count}, ошибок: {transferResult.failed_count}
+                    <Alert
+                      severity={
+                        String(transferResult.job_status || '').toLowerCase() === 'failed'
+                          ? 'error'
+                          : transferJobPolling || ['queued', 'processing'].includes(String(transferResult.job_status || '').toLowerCase())
+                            ? 'info'
+                            : transferResult.failed_count > 0
+                              ? 'warning'
+                              : 'success'
+                      }
+                    >
+                      {transferJobPolling || ['queued', 'processing'].includes(String(transferResult.job_status || '').toLowerCase())
+                        ? (transferResult.job_status_text || 'Акты создаются, обновите статус через несколько секунд')
+                        : `${transferOperationMode === TRANSFER_OPERATION_ACT_ONLY ? 'Подготовлено позиций' : 'Перенесено'}: ${transferResult.success_count}, ошибок: ${transferResult.failed_count}`}
                     </Alert>
+                    {transferResult.job_id && !transferJobPolling && ['queued', 'processing'].includes(String(transferResult.job_status || '').toLowerCase()) && (
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        onClick={() => void pollTransferActJob(transferResult.job_id, {
+                          refreshEquipment: transferOperationMode !== TRANSFER_OPERATION_ACT_ONLY,
+                        })}
+                      >
+                        Обновить статус
+                      </Button>
+                    )}
 
                     {(transferResult.upload_reminder_created || transferResult.upload_reminder_warning) && (
                       <Box sx={{ display: 'grid', gap: 1 }}>
@@ -9624,7 +9735,14 @@ function Database() {
                     <Button
                       variant="contained"
                       onClick={handleTransferEmailSend}
-                      disabled={!canDatabaseWrite || transferEmailLoading}
+                      disabled={
+                        !canDatabaseWrite ||
+                        transferEmailLoading ||
+                        transferJobPolling ||
+                        ['queued', 'processing'].includes(String(transferResult.job_status || '').toLowerCase()) ||
+                        !Array.isArray(transferResult.acts) ||
+                        transferResult.acts.length === 0
+                      }
                     >
                       {transferEmailLoading ? 'Отправка...' : 'Отправить акт'}
                     </Button>
@@ -10021,10 +10139,17 @@ function Database() {
                           issuer_owner_no: newEmployeeNo || undefined,
                         });
                         setTransferResult(response);
+                        if (response?.job_id && ['queued', 'processing'].includes(String(response?.job_status || '').toLowerCase())) {
+                          void pollTransferActJob(response.job_id);
+                        }
                         setTransferEmailStatus('');
                         setTransferEmailError('');
                         setSelectedItems([]);
 
+                        if (response?.job_id) {
+                          setActionError('');
+                          return;
+                        }
                         if (Number(response?.failed_count || 0) > 0) {
                           setActionError(`Подготовлено ${response.success_count}, ошибок ${response.failed_count}`);
                         } else {
@@ -10064,9 +10189,19 @@ function Database() {
                         loc_no: transferLocationNo,
                       });
                       setTransferResult(response);
+                      if (response?.job_id && ['queued', 'processing'].includes(String(response?.job_status || '').toLowerCase())) {
+                        void pollTransferActJob(response.job_id, {
+                          refreshEquipment: true,
+                          targetInvNos,
+                        });
+                      }
                       setTransferEmailStatus('');
                       setTransferEmailError('');
                       setSelectedItems([]);
+                      if (response?.job_id) {
+                        setActionError('');
+                        return;
+                      }
                       if (
                         Number(response?.success_count || 0) > 0 &&
                         targetInvNos.includes(String(detailModal?.invNo || '').trim())

@@ -273,6 +273,8 @@ class AppInventoryStore:
                 "branch_name": row.branch_name,
                 "location_name": row.location_name,
                 "employee_name": row.employee_name,
+                "inv_no": row.inventory_inv_no,
+                "model_name": row.inventory_model_name,
                 "ip_address": row.ip_address,
             }
 
@@ -302,6 +304,8 @@ class AppInventoryStore:
             row.branch_name = _normalize_text(context.get("branch_name")) or None
             row.location_name = _normalize_text(context.get("location_name")) or None
             row.employee_name = _normalize_text(context.get("employee_name")) or None
+            row.inventory_inv_no = _normalize_text(context.get("inv_no") or context.get("inventory_inv_no")) or None
+            row.inventory_model_name = _normalize_text(context.get("model_name") or context.get("inventory_model_name")) or None
             row.ip_address = _normalize_text(context.get("ip_address")) or None
             row.updated_at = now
 

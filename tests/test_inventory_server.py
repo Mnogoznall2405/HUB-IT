@@ -136,6 +136,36 @@ def test_worker_moves_repeated_failures_to_dead_letter(temp_dir, monkeypatch):
     assert stats_after_dead["dead_letter_count"] == 1
 
 
+def test_worker_survives_claim_batch_exception(temp_dir):
+    class FlakyStore:
+        def __init__(self) -> None:
+            self.claim_calls = 0
+            self.error_seen = threading.Event()
+
+        def cleanup_retention(self, *, done_retention_days: int, dead_retention_days: int) -> dict:
+            return {"done_removed": 0, "dead_removed": 0}
+
+        def claim_next_batch(self, *, limit: int) -> list:
+            self.claim_calls += 1
+            if self.claim_calls == 1:
+                self.error_seen.set()
+                raise RuntimeError("claim failed")
+            return []
+
+    store = FlakyStore()
+    config = _worker_config(temp_dir)
+    stop_event = threading.Event()
+    worker = InventoryWorker(store=store, config=config, stop_event=stop_event)
+
+    worker.start()
+    assert store.error_seen.wait(timeout=2)
+    assert worker.is_alive()
+
+    stop_event.set()
+    worker.join(timeout=3)
+    assert not worker.is_alive()
+
+
 def test_inventory_queue_cleanup_removes_old_done_and_dead_rows(temp_dir):
     store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
     now_ts = int(time.time())
@@ -291,3 +321,40 @@ def test_inventory_app_enqueues_and_reports_health(temp_dir, monkeypatch):
     assert health_response.status_code == 200
     assert health_response.json()["queue_depth"] == 1
     assert health_response.json()["worker_alive"] is True
+
+
+def test_inventory_post_starts_dead_worker_without_lifespan(temp_dir, monkeypatch):
+    class FakeWorker:
+        def __init__(self) -> None:
+            self._alive = False
+            self.start_count = 0
+            self.last_successful_flush_at = None
+
+        def is_alive(self) -> bool:
+            return self._alive
+
+        def start(self) -> None:
+            self.start_count += 1
+            self._alive = True
+
+        def join(self, timeout: float | None = None) -> None:
+            self._alive = False
+
+    fake_store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
+    fake_worker = FakeWorker()
+
+    monkeypatch.setattr(app_module, "store", fake_store)
+    monkeypatch.setattr(app_module, "worker", fake_worker)
+    monkeypatch.setattr(app_module, "stop_event", threading.Event())
+    monkeypatch.setattr(app_module, "_check_agent_key", lambda _: None)
+
+    client = TestClient(app_module.app)
+    try:
+        response = client.post("/api/v1/inventory", json=_payload(timestamp=1_710_100_000))
+    finally:
+        client.close()
+
+    assert response.status_code == 200
+    assert response.json()["queued"] is True
+    assert fake_worker.start_count == 1
+    assert fake_worker.is_alive() is True

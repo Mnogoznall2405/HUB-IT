@@ -2429,6 +2429,11 @@ export const equipmentAPI = {
     return response.data;
   },
 
+  getTransferActJob: async (jobId) => {
+    const response = await apiClient.get(`/equipment/transfer/act-jobs/${encodeURIComponent(jobId)}`);
+    return response.data;
+  },
+
   sendTransferActsEmail: async (payload) => {
     const response = await apiClient.post('/equipment/transfer/email', payload);
     return response.data;
@@ -2600,6 +2605,13 @@ export const scanAPI = {
   getTaskObservations: async (taskId, params = {}) => {
     const response = await apiClient.get(`/scan/tasks/${encodeURIComponent(taskId)}/observations`, { params });
     return response.data;
+  },
+
+  exportScanTaskIncidents: async (taskId) => {
+    const response = await apiClient.get(`/scan/tasks/${encodeURIComponent(taskId)}/incidents/export`, {
+      responseType: 'blob',
+    });
+    return response;
   },
 
   getPatterns: async () => {

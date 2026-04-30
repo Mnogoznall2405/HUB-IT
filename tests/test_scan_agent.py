@@ -61,6 +61,89 @@ def test_read_env_defaults_to_on_demand(monkeypatch):
     assert config["outbox_drain_batch"] == 10
 
 
+def test_send_ingest_uses_multipart_endpoint_for_pdf_slice(monkeypatch):
+    agent = scan_agent.ScanAgent(_make_config())
+    calls = []
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "file_path": r"C:\Docs\slice.pdf",
+        "file_name": "slice.pdf",
+        "file_hash": "hash-1",
+        "source_kind": "pdf_slice",
+        "pdf_slice_b64": "JVBERi0xLjQK",
+    }
+
+    def fake_send(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return _DummyResponse(data={"job_id": "job-1", "deduped": False})
+
+    monkeypatch.setattr(agent, "_send", fake_send)
+
+    result = agent._send_ingest(payload)
+
+    assert result == {"success": True, "deduped": False, "fallback": False}
+    assert len(calls) == 1
+    assert calls[0][1].endswith("/ingest/pdf-slice")
+    assert "json" not in calls[0][2]
+    assert "metadata_json" in calls[0][2]["data"]
+    assert calls[0][2]["files"]["pdf_slice"][1] == b"%PDF-1.4\n"
+
+
+def test_send_ingest_falls_back_to_json_when_pdf_slice_endpoint_is_missing(monkeypatch):
+    agent = scan_agent.ScanAgent(_make_config())
+    calls = []
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "file_path": r"C:\Docs\slice.pdf",
+        "file_name": "slice.pdf",
+        "file_hash": "hash-1",
+        "source_kind": "pdf_slice",
+        "pdf_slice_b64": "JVBERi0xLjQK",
+    }
+
+    def fake_send(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        if url.endswith("/ingest/pdf-slice"):
+            return _DummyResponse(status_code=404)
+        return _DummyResponse(data={"job_id": "job-1", "deduped": True})
+
+    monkeypatch.setattr(agent, "_send", fake_send)
+
+    result = agent._send_ingest(payload)
+
+    assert result == {"success": True, "deduped": True}
+    assert [call[1].rsplit("/", 1)[-1] for call in calls] == ["pdf-slice", "ingest"]
+    assert calls[1][2]["json"] is payload
+
+
+def test_send_ingest_does_not_fallback_to_json_on_backpressure(monkeypatch):
+    agent = scan_agent.ScanAgent(_make_config())
+    calls = []
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "file_path": r"C:\Docs\slice.pdf",
+        "file_name": "slice.pdf",
+        "file_hash": "hash-1",
+        "source_kind": "pdf_slice",
+        "pdf_slice_b64": "JVBERi0xLjQK",
+    }
+
+    def fake_send(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return _DummyResponse(status_code=429)
+
+    monkeypatch.setattr(agent, "_send", fake_send)
+
+    result = agent._send_ingest(payload)
+
+    assert result == {"success": False, "deduped": False, "fallback": False}
+    assert len(calls) == 1
+    assert calls[0][1].endswith("/ingest/pdf-slice")
+
+
 def test_poll_tasks_scan_now_keeps_task_acknowledged_until_server_processing_finishes(monkeypatch):
     agent = scan_agent.ScanAgent(_make_config())
     sent_payloads = []

@@ -1497,6 +1497,7 @@ function Computers() {
 
                 <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Система</Typography>
                 <Paper variant="outlined" sx={{ p: 1.4 }}>
+                  <Typography variant="body2" sx={{ overflowWrap: 'anywhere' }}>Модель ITinvent: {selected.inventory_model_name || '-'}</Typography>
                   <Typography variant="body2">CPU: {selected.cpu_model || '-'}</Typography>
                   <Typography variant="body2">RAM: {selected.ram_gb ? `${selected.ram_gb} ГБ` : '-'}</Typography>
                   <Typography variant="body2">Серийный номер BIOS: {selected.system_serial || '-'}</Typography>

@@ -149,6 +149,7 @@ beforeEach(() => {
         id: 1,
         inv_no: '1001',
         serial_no: 'SN-1001',
+        part_no: 'PN-1001',
         type_name: 'PC',
         model_name: 'OptiPlex',
         employee_name: 'Current Holder',
@@ -194,6 +195,7 @@ beforeEach(() => {
             ID: 1,
             INV_NO: '1001',
             SERIAL_NO: 'SN-1001',
+            PART_NO: 'PN-1001',
             TYPE_NAME: 'ПК',
             MODEL_NAME: 'OptiPlex',
             OWNER_DISPLAY_NAME: 'Иванов И.И.',
@@ -293,6 +295,16 @@ describe('Database equipment row helpers', () => {
     fireEvent.click(screen.getByText('HQ'));
 
     expect(await screen.findByRole('button', { name: 'Свернуть разделы' })).toBeInTheDocument();
+  });
+
+  it('shows equipment part number in the desktop table', async () => {
+    renderDatabase();
+
+    fireEvent.click(await screen.findByText('HQ'));
+    fireEvent.click(await screen.findByText('Office'));
+
+    expect(await screen.findByText('Part Number')).toBeInTheDocument();
+    expect(screen.getByText('PN-1001')).toBeInTheDocument();
   });
 
   it('switches desktop quick action to consumables add button on the consumables tab', async () => {

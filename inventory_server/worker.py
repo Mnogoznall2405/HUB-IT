@@ -89,13 +89,17 @@ class InventoryWorker(threading.Thread):
     def run(self) -> None:
         logger.info("Inventory worker started")
         while not self.stop_event.is_set():
-            self._cleanup_if_due()
-            batch = self.store.claim_next_batch(limit=int(self.config.batch_size))
-            if not batch:
+            try:
+                self._cleanup_if_due()
+                batch = self.store.claim_next_batch(limit=int(self.config.batch_size))
+                if not batch:
+                    self.stop_event.wait(float(self.config.worker_interval_sec))
+                    continue
+                for item in batch:
+                    if self.stop_event.is_set():
+                        break
+                    self._handle_item(item)
+            except Exception as exc:
+                logger.exception("Inventory worker loop failed: %s", exc)
                 self.stop_event.wait(float(self.config.worker_interval_sec))
-                continue
-            for item in batch:
-                if self.stop_event.is_set():
-                    break
-                self._handle_item(item)
         logger.info("Inventory worker stopped")

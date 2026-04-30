@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import logging
 import hashlib
@@ -10,17 +11,20 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
+from io import BytesIO
 from importlib import import_module
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import Cookie, Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
 
 from .config import config
 from .database import ScanStore
 from .patterns import list_patterns
+from .report_export import XLSX_MEDIA_TYPE, build_scan_task_incidents_excel
 from .worker import ScanWorker
 
 # Enable imports from WEB-itinvent backend for shared auth/permission logic.
@@ -112,11 +116,19 @@ store = ScanStore(
     task_ack_timeout_sec=config.task_ack_timeout_sec,
     agent_online_timeout_sec=config.agent_online_timeout_sec,
     resolve_agent_sql_context=config.resolve_agent_sql_context,
+    job_processing_timeout_sec=config.job_processing_timeout_sec,
 )
 stop_event = threading.Event()
 watchdog_stop_event = threading.Event()
-worker = ScanWorker(store=store, config=config, stop_event=stop_event)
+worker: Optional[ScanWorker] = (
+    ScanWorker(store=store, config=config, stop_event=stop_event)
+    if config.scan_worker_enabled
+    else None
+)
 watchdog_thread: Optional[threading.Thread] = None
+startup_maintenance_thread: Optional[threading.Thread] = None
+ingest_semaphore: Optional[asyncio.Semaphore] = None
+ingest_semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
 
 
 def _key_fingerprint(value: Optional[str]) -> str:
@@ -176,7 +188,7 @@ def _load_web_auth_runtime() -> Dict[str, Any]:
 
 
 def require_web_permission(permission: str):
-    async def _dependency(
+    def _dependency(
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
         access_token_cookie: Optional[str] = Cookie(None, alias=AUTH_COOKIE_NAME),
     ) -> Dict[str, Any]:
@@ -242,6 +254,56 @@ def _request_ip(request: Optional[Request]) -> str:
     client = getattr(request, "client", None)
     host = getattr(client, "host", "")
     return str(host or "").strip()
+
+
+def _is_pdf_ingest_payload(data: Dict[str, Any], pdf_bytes: Optional[bytes] = None) -> bool:
+    source_kind = str(data.get("source_kind") or "").strip().lower()
+    return source_kind in {"pdf", "pdf_slice"} or bool(data.get("pdf_slice_b64")) or bool(pdf_bytes)
+
+
+def _backpressure_exception(status_payload: Dict[str, Any]) -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+        detail={
+            "error": "scan_pdf_ingest_backpressure",
+            "message": "PDF scan queue is temporarily overloaded",
+            **status_payload,
+        },
+        headers={"Retry-After": str(config.ingest_retry_after_sec)},
+    )
+
+
+def _queue_ingest_blocking(data: Dict[str, Any], *, request_ip: str, pdf_bytes: Optional[bytes] = None) -> Dict[str, Any]:
+    if _is_pdf_ingest_payload(data, pdf_bytes=pdf_bytes):
+        pressure = store.ingest_backpressure_status(
+            max_pending_pdf_jobs=config.ingest_max_pending_pdf_jobs,
+            transient_max_gb=config.transient_max_gb,
+        )
+        if bool(pressure.get("active")):
+            raise _backpressure_exception(pressure)
+    store.touch_agent_presence(
+        agent_id=str(data.get("agent_id") or "").strip(),
+        hostname=str(data.get("hostname") or "").strip(),
+        branch=str(data.get("branch") or "").strip(),
+        ip_address=request_ip,
+        metadata={"last_source": "ingest"},
+    )
+    queued = store.queue_job(data, pdf_bytes=pdf_bytes)
+    return {"success": True, **queued}
+
+
+def _get_ingest_semaphore() -> asyncio.Semaphore:
+    global ingest_semaphore, ingest_semaphore_loop
+    loop = asyncio.get_running_loop()
+    if ingest_semaphore is None or ingest_semaphore_loop is not loop:
+        ingest_semaphore = asyncio.Semaphore(max(1, int(config.ingest_max_concurrency)))
+        ingest_semaphore_loop = loop
+    return ingest_semaphore
+
+
+async def _run_ingest(data: Dict[str, Any], *, request_ip: str, pdf_bytes: Optional[bytes] = None) -> Dict[str, Any]:
+    async with _get_ingest_semaphore():
+        return await asyncio.to_thread(_queue_ingest_blocking, data, request_ip=request_ip, pdf_bytes=pdf_bytes)
 
 
 def _loop_descriptor() -> str:
@@ -336,27 +398,44 @@ def _listener_watchdog(stop_signal: threading.Event) -> None:
         os._exit(70)
 
 
+def _run_startup_maintenance() -> None:
+    try:
+        purge_result = store.purge_all_artifacts()
+        if any(int(purge_result.get(key) or 0) > 0 for key in ("artifact_rows", "artifact_files", "artifact_dirs")):
+            logger.info(
+                "Scan artifact purge completed: rows=%s files=%s dirs=%s",
+                int(purge_result.get("artifact_rows") or 0),
+                int(purge_result.get("artifact_files") or 0),
+                int(purge_result.get("artifact_dirs") or 0),
+            )
+        spool_result = store.reconcile_job_pdf_spool()
+        if any(int(spool_result.get(key) or 0) > 0 for key in ("removed_orphan_files", "removed_final_files", "failed_jobs")):
+            logger.info(
+                "Transient PDF spool reconcile completed: orphan=%s final=%s failed_jobs=%s",
+                int(spool_result.get("removed_orphan_files") or 0),
+                int(spool_result.get("removed_final_files") or 0),
+                int(spool_result.get("failed_jobs") or 0),
+            )
+    except Exception as exc:
+        logger.exception("Scan startup maintenance failed: %s", exc)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     stop_event.clear()
     watchdog_stop_event.clear()
-    purge_result = store.purge_all_artifacts()
-    if any(int(purge_result.get(key) or 0) > 0 for key in ("artifact_rows", "artifact_files", "artifact_dirs")):
-        logger.info(
-            "Scan artifact purge completed: rows=%s files=%s dirs=%s",
-            int(purge_result.get("artifact_rows") or 0),
-            int(purge_result.get("artifact_files") or 0),
-            int(purge_result.get("artifact_dirs") or 0),
+    global startup_maintenance_thread
+    startup_maintenance_thread = None
+    if worker is None:
+        startup_maintenance_thread = threading.Thread(
+            target=_run_startup_maintenance,
+            daemon=True,
+            name="scan-startup-maintenance",
         )
-    spool_result = store.reconcile_job_pdf_spool()
-    if any(int(spool_result.get(key) or 0) > 0 for key in ("removed_orphan_files", "removed_final_files", "failed_jobs")):
-        logger.info(
-            "Transient PDF spool reconcile completed: orphan=%s final=%s failed_jobs=%s",
-            int(spool_result.get("removed_orphan_files") or 0),
-            int(spool_result.get("removed_final_files") or 0),
-            int(spool_result.get("failed_jobs") or 0),
-        )
-    if not worker.is_alive():
+        startup_maintenance_thread.start()
+    else:
+        _run_startup_maintenance()
+    if worker is not None and not worker.is_alive():
         worker.start()
     global watchdog_thread
     watchdog_thread = None
@@ -379,7 +458,7 @@ async def lifespan(_: FastAPI):
     if watchdog_thread is not None and watchdog_thread.is_alive():
         watchdog_thread.join(timeout=5)
     stop_event.set()
-    if worker.is_alive():
+    if worker is not None and worker.is_alive():
         worker.join(timeout=5)
     logger.info("Scan server stopped")
 
@@ -393,11 +472,25 @@ app = FastAPI(
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
-    return {"status": "ok", "time": _now_ts()}
+    return {
+        "status": "ok",
+        "time": _now_ts(),
+        "ingest": {
+            "max_concurrency": int(config.ingest_max_concurrency),
+            "max_pending_pdf_jobs": int(config.ingest_max_pending_pdf_jobs),
+            "transient_max_gb": float(config.transient_max_gb),
+            "retry_after_sec": int(config.ingest_retry_after_sec),
+        },
+        "watchdog": {
+            "enabled": bool(config.watchdog_enabled),
+            "timeout_sec": int(config.watchdog_timeout_sec),
+            "failures": int(config.watchdog_failures),
+        },
+    }
 
 
 @app.post("/api/v1/scan/heartbeat")
-async def heartbeat(
+def heartbeat(
     payload: HeartbeatPayload,
     request: Request,
     x_api_key: Optional[str] = Header(None),
@@ -419,19 +512,34 @@ async def ingest(
 ) -> Dict[str, Any]:
     _check_agent_key(x_api_key)
     data = _model_dump(payload)
-    store.touch_agent_presence(
-        agent_id=str(data.get("agent_id") or "").strip(),
-        hostname=str(data.get("hostname") or "").strip(),
-        branch=str(data.get("branch") or "").strip(),
-        ip_address=_request_ip(request),
-        metadata={"last_source": "ingest"},
-    )
-    queued = store.queue_job(data)
-    return {"success": True, **queued}
+    return await _run_ingest(data, request_ip=_request_ip(request))
+
+
+@app.post("/api/v1/scan/ingest/pdf-slice")
+async def ingest_pdf_slice(
+    request: Request,
+    metadata_json: str = Form(...),
+    pdf_slice: UploadFile = File(...),
+    x_api_key: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    _check_agent_key(x_api_key)
+    try:
+        raw_metadata = json.loads(str(metadata_json or "{}"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid metadata_json") from exc
+    if not isinstance(raw_metadata, dict):
+        raise HTTPException(status_code=400, detail="metadata_json must be an object")
+    metadata = _model_dump(IngestPayload(**raw_metadata))
+    metadata["source_kind"] = "pdf_slice"
+    metadata["pdf_slice_b64"] = ""
+    pdf_bytes = await pdf_slice.read()
+    if not pdf_bytes:
+        raise HTTPException(status_code=400, detail="pdf_slice is empty")
+    return await _run_ingest(metadata, request_ip=_request_ip(request), pdf_bytes=pdf_bytes)
 
 
 @app.get("/api/v1/scan/tasks/poll")
-async def poll_tasks(
+def poll_tasks(
     request: Request,
     agent_id: str = Query(..., min_length=1),
     limit: int = Query(10, ge=1, le=50),
@@ -448,7 +556,7 @@ async def poll_tasks(
 
 
 @app.post("/api/v1/scan/tasks/{task_id}/result")
-async def task_result(
+def task_result(
     task_id: str,
     payload: TaskResultPayload,
     request: Request,
@@ -476,7 +584,7 @@ async def task_result(
 
 
 @app.post("/api/v1/scan/tasks")
-async def create_task(
+def create_task(
     payload: TaskCreatePayload,
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_TASKS)),
 ) -> Dict[str, Any]:
@@ -494,7 +602,7 @@ async def create_task(
 
 
 @app.get("/api/v1/scan/incidents")
-async def incidents(
+def incidents(
     status_value: Optional[str] = Query(None, alias="status"),
     severity: Optional[str] = Query(None),
     branch: Optional[str] = Query(None),
@@ -528,7 +636,7 @@ async def incidents(
 
 
 @app.post("/api/v1/scan/incidents/{incident_id}/ack")
-async def ack_incident(
+def ack_incident(
     incident_id: str,
     payload: IncidentAckPayload,
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_ACK)),
@@ -540,7 +648,7 @@ async def ack_incident(
 
 
 @app.post("/api/v1/scan/incidents/bulk-ack")
-async def bulk_ack_incidents(
+def bulk_ack_incidents(
     payload: IncidentBulkAckPayload,
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_ACK)),
 ) -> Dict[str, Any]:
@@ -552,7 +660,7 @@ async def bulk_ack_incidents(
 
 
 @app.get("/api/v1/scan/hosts/{hostname}/scan-runs")
-async def host_scan_runs(
+def host_scan_runs(
     hostname: str,
     limit: int = Query(30, ge=1, le=100),
     offset: int = Query(0, ge=0),
@@ -562,7 +670,7 @@ async def host_scan_runs(
 
 
 @app.get("/api/v1/scan/tasks/{task_id}/observations")
-async def task_observations(
+def task_observations(
     task_id: str,
     limit: int = Query(200, ge=1, le=500),
     offset: int = Query(0, ge=0),
@@ -571,15 +679,36 @@ async def task_observations(
     return store.list_task_observations(task_id=task_id, limit=limit, offset=offset)
 
 
+@app.get("/api/v1/scan/tasks/{task_id}/incidents/export")
+def export_task_incidents(
+    task_id: str,
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+):
+    report = store.get_scan_task_incident_report(task_id=task_id)
+    if report is None:
+        raise HTTPException(status_code=404, detail="Scan task not found")
+    file_bytes, filename = build_scan_task_incidents_excel(report)
+    return StreamingResponse(
+        BytesIO(file_bytes),
+        media_type=XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.get("/api/v1/scan/dashboard")
-async def dashboard(
+def dashboard(
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
-    return store.dashboard()
+    payload = store.dashboard()
+    payload["ingest_backpressure"] = store.ingest_backpressure_status(
+        max_pending_pdf_jobs=config.ingest_max_pending_pdf_jobs,
+        transient_max_gb=config.transient_max_gb,
+    )
+    return payload
 
 
 @app.get("/api/v1/scan/patterns")
-async def patterns(
+def patterns(
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
     items = list_patterns()
@@ -587,14 +716,14 @@ async def patterns(
 
 
 @app.get("/api/v1/scan/agents")
-async def agents(
+def agents(
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> List[Dict[str, Any]]:
     return store.list_agents()
 
 
 @app.get("/api/v1/scan/agents/activity")
-async def agents_activity(
+def agents_activity(
     agent_id: List[str] = Query([]),
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
@@ -602,14 +731,14 @@ async def agents_activity(
 
 
 @app.get("/api/v1/scan/branches")
-async def branches(
+def branches(
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> List[str]:
     return store.list_branches()
 
 
 @app.get("/api/v1/scan/agents/table")
-async def agents_table(
+def agents_table(
     q: Optional[str] = Query(None),
     branch: Optional[str] = Query(None),
     online: Optional[str] = Query(None),
@@ -633,7 +762,7 @@ async def agents_table(
 
 
 @app.get("/api/v1/scan/hosts")
-async def hosts(
+def hosts(
     q: Optional[str] = Query(None),
     branch: Optional[str] = Query(None),
     status_value: Optional[str] = Query(None, alias="status"),
@@ -651,7 +780,7 @@ async def hosts(
 
 
 @app.get("/api/v1/scan/hosts/table")
-async def hosts_table(
+def hosts_table(
     q: Optional[str] = Query(None),
     branch: Optional[str] = Query(None),
     status_value: Optional[str] = Query(None, alias="status"),
@@ -675,7 +804,7 @@ async def hosts_table(
 
 
 @app.get("/api/v1/scan/tasks")
-async def tasks(
+def tasks(
     agent_id: Optional[str] = Query(None),
     status_value: Optional[str] = Query(None, alias="status"),
     command: Optional[str] = Query(None),

@@ -126,6 +126,10 @@ def _run_postgres_app_schema_maintenance(connection) -> None:
         'CREATE INDEX IF NOT EXISTS "ix_app_ai_pending_actions_message_id" ON "app"."ai_pending_actions" ("message_id")',
         'CREATE INDEX IF NOT EXISTS "ix_app_ai_pending_actions_run_status" ON "app"."ai_pending_actions" ("run_id", "status")',
         'CREATE INDEX IF NOT EXISTS "ix_app_ai_pending_actions_status_expires_at" ON "app"."ai_pending_actions" ("status", "expires_at")',
+        'CREATE INDEX IF NOT EXISTS "ix_app_transfer_act_jobs_status_created_at" ON "app"."transfer_act_jobs" ("status", "created_at")',
+        'CREATE INDEX IF NOT EXISTS "ix_app_transfer_act_jobs_user_created_at" ON "app"."transfer_act_jobs" ("user_id", "created_at")',
+        'ALTER TABLE IF EXISTS "app"."inventory_host_sql_contexts" ADD COLUMN IF NOT EXISTS "inventory_inv_no" VARCHAR(64)',
+        'ALTER TABLE IF EXISTS "app"."inventory_host_sql_contexts" ADD COLUMN IF NOT EXISTS "inventory_model_name" VARCHAR(255)',
     ]
     for statement in statements:
         try:
@@ -200,6 +204,22 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
                 connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_ai_pending_actions_message_id ON ai_pending_actions(message_id)"))
                 connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_ai_pending_actions_run_status ON ai_pending_actions(run_id, status)"))
                 connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_ai_pending_actions_status_expires_at ON ai_pending_actions(status, expires_at)"))
+            transfer_act_job_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('transfer_act_jobs')"))
+            }
+            if transfer_act_job_columns:
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_transfer_act_jobs_status_created_at ON transfer_act_jobs(status, created_at)"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_transfer_act_jobs_user_created_at ON transfer_act_jobs(user_id, created_at)"))
+            inventory_context_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('inventory_host_sql_contexts')"))
+            }
+            if inventory_context_columns:
+                if "inventory_inv_no" not in inventory_context_columns:
+                    connection.execute(text("ALTER TABLE inventory_host_sql_contexts ADD COLUMN inventory_inv_no VARCHAR(64)"))
+                if "inventory_model_name" not in inventory_context_columns:
+                    connection.execute(text("ALTER TABLE inventory_host_sql_contexts ADD COLUMN inventory_model_name VARCHAR(255)"))
 
 
 def initialize_app_schema(database_url: str | None = None, *, force: bool = False) -> None:

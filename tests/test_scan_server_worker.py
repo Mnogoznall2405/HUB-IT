@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import threading
 from concurrent.futures.process import BrokenProcessPool
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -10,6 +11,7 @@ from types import SimpleNamespace
 import fitz
 
 import scan_server.worker as scan_worker
+from scan_server.config import ScanServerConfig
 from scan_server.worker import ScanWorker
 
 
@@ -25,9 +27,13 @@ def _make_worker(temp_dir: str) -> ScanWorker:
         ocr_timeout_sec=45,
         ocr_dpi=300,
         ocr_max_processes=1,
+        scan_job_max_workers=4,
         retention_days=90,
     )
+    worker._job_pool = None
+    worker._job_futures = {}
     worker._ocr_pool = None
+    worker._ocr_pool_lock = threading.Lock()
     worker._ocr_available = True
     worker.stop_event = SimpleNamespace(is_set=lambda: False)
     worker._last_cleanup_ts = 0
@@ -495,19 +501,193 @@ def test_process_job_fails_when_transient_pdf_payload_is_missing(temp_dir):
     assert calls["deleted"] == "job-missing"
 
 
-def test_tick_drains_all_queued_jobs_without_waiting(temp_dir):
+def test_process_job_requeues_ocr_error_until_attempt_limit(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    calls: dict[str, object] = {}
+
+    class _Store:
+        def read_job_pdf_spool(self, *, job_id):
+            return worker._test_spool_store.get(job_id, b"")
+
+        def delete_job_pdf_spool(self, *, job_id):
+            calls["deleted"] = job_id
+            worker._test_spool_store.pop(job_id, None)
+            return True
+
+        def requeue_job_for_retry(self, **kwargs):
+            calls["retry"] = kwargs
+
+        def finalize_job(self, **kwargs):
+            calls["finalize"] = kwargs
+
+    worker.store = _Store()
+    worker.config.scan_job_max_attempts = 3
+    worker._test_spool_store["job-retry"] = _make_pdf_bytes("x y z")
+    monkeypatch.setattr(
+        worker,
+        "_collect_pdf_matches",
+        lambda *args, **kwargs: {"matches": [], "outcome": "ocr_error", "reason": "OCR execution error"},
+    )
+    job = {
+        "id": "job-retry",
+        "source_kind": "pdf_slice",
+        "attempt_count": 1,
+        "payload_json": json.dumps({"text_excerpt": "", "local_pattern_hits": []}),
+    }
+
+    worker._process_job(job)
+
+    assert calls["retry"] == {
+        "job_id": "job-retry",
+        "error_text": "OCR timeout",
+        "summary": "OCR retry scheduled (1/3)",
+    }
+    assert "finalize" not in calls
+    assert "deleted" not in calls
+    assert "job-retry" in worker._test_spool_store
+
+
+def test_process_job_fails_ocr_error_after_attempt_limit(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    calls: dict[str, object] = {}
+
+    class _Store:
+        def read_job_pdf_spool(self, *, job_id):
+            return worker._test_spool_store.get(job_id, b"")
+
+        def delete_job_pdf_spool(self, *, job_id):
+            calls["deleted"] = job_id
+            worker._test_spool_store.pop(job_id, None)
+            return True
+
+        def requeue_job_for_retry(self, **kwargs):
+            calls["retry"] = kwargs
+
+        def finalize_job(self, **kwargs):
+            calls["finalize"] = kwargs
+
+    worker.store = _Store()
+    worker.config.scan_job_max_attempts = 3
+    worker._test_spool_store["job-final"] = _make_pdf_bytes("x y z")
+    monkeypatch.setattr(
+        worker,
+        "_collect_pdf_matches",
+        lambda *args, **kwargs: {"matches": [], "outcome": "ocr_error", "reason": "OCR execution error"},
+    )
+    job = {
+        "id": "job-final",
+        "source_kind": "pdf_slice",
+        "attempt_count": 3,
+        "payload_json": json.dumps({"text_excerpt": "", "local_pattern_hits": []}),
+    }
+
+    worker._process_job(job)
+
+    assert "retry" not in calls
+    assert calls["finalize"] == {
+        "job_id": "job-final",
+        "status": "failed",
+        "summary": "No matches (ocr_error)",
+        "error_text": "OCR timeout",
+    }
+    assert calls["deleted"] == "job-final"
+
+
+def test_reconcile_transient_pdf_spool_runs_when_store_supports_it(temp_dir):
+    worker = _make_worker(temp_dir)
+    calls: dict[str, object] = {}
+
+    worker.store = SimpleNamespace(
+        reconcile_job_pdf_spool=lambda: calls.setdefault(
+            "result",
+            {"removed_orphan_files": 1, "removed_final_files": 0, "failed_jobs": 2},
+        ),
+    )
+
+    worker._reconcile_transient_pdf_spool()
+
+    assert calls["result"] == {
+        "removed_orphan_files": 1,
+        "removed_final_files": 0,
+        "failed_jobs": 2,
+    }
+
+
+def test_tick_submits_queued_jobs_to_parallel_pool(temp_dir):
     worker = _make_worker(temp_dir)
     jobs = [{"id": "job-1"}, {"id": "job-2"}]
     processed: list[str] = []
 
     worker.store = SimpleNamespace(
         cleanup_retention=lambda retention_days: None,
-        claim_next_job=lambda: jobs.pop(0) if jobs else None,
+        claim_next_jobs=lambda limit: [jobs.pop(0) for _ in range(min(limit, len(jobs)))],
     )
     worker._process_job = lambda job: processed.append(job["id"])
 
     assert worker._tick() is True
+    worker._shutdown_job_pool()
     assert processed == ["job-1", "job-2"]
+
+
+def test_tick_respects_parallel_job_limit(temp_dir):
+    worker = _make_worker(temp_dir)
+    worker.config.scan_job_max_workers = 4
+    jobs = [{"id": f"job-{idx}"} for idx in range(6)]
+    started: list[str] = []
+    started_event = threading.Event()
+    finish_event = threading.Event()
+
+    def claim_next_jobs(limit):
+        return [jobs.pop(0) for _ in range(min(limit, len(jobs)))]
+
+    def process_job(job):
+        started.append(job["id"])
+        if len(started) == 4:
+            started_event.set()
+        finish_event.wait(timeout=2)
+
+    worker.store = SimpleNamespace(
+        cleanup_retention=lambda retention_days: None,
+        claim_next_jobs=claim_next_jobs,
+    )
+    worker._process_job = process_job
+
+    try:
+        assert worker._tick() is True
+        assert started_event.wait(timeout=1)
+        assert sorted(started) == ["job-0", "job-1", "job-2", "job-3"]
+        assert [job["id"] for job in jobs] == ["job-4", "job-5"]
+    finally:
+        finish_event.set()
+        worker._shutdown_job_pool()
+
+
+def test_scan_job_max_workers_allows_twelve_and_clamps_higher_values(
+    monkeypatch,
+    temp_dir,
+):
+    worker = _make_worker(temp_dir)
+
+    worker.config.scan_job_max_workers = 12
+    assert worker._job_max_workers() == 12
+
+    worker.config.scan_job_max_workers = 13
+    assert worker._job_max_workers() == 12
+
+    monkeypatch.setenv("SCAN_JOB_MAX_WORKERS", "12")
+    assert ScanServerConfig.from_env().scan_job_max_workers == 12
+
+    monkeypatch.setenv("SCAN_JOB_MAX_WORKERS", "13")
+    assert ScanServerConfig.from_env().scan_job_max_workers == 12
+
+
+def test_scan_ocr_max_processes_defaults_to_twelve(monkeypatch):
+    monkeypatch.delenv("SCAN_OCR_MAX_PROCESSES", raising=False)
+
+    assert ScanServerConfig.from_env().ocr_max_processes == 12
+
+    monkeypatch.setenv("SCAN_OCR_MAX_PROCESSES", "13")
+    assert ScanServerConfig.from_env().ocr_max_processes == 12
 
 
 def test_ocr_text_recycles_broken_process_pool_and_retries_inline(monkeypatch, temp_dir):

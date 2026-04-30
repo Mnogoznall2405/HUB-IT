@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import base64
 import os
-from concurrent.futures import ProcessPoolExecutor, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import Future, ProcessPoolExecutor, ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from concurrent.futures.process import BrokenProcessPool
 import json
 import logging
@@ -11,7 +11,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from .config import ScanServerConfig
+from .config import SCAN_JOB_MAX_WORKERS_LIMIT, ScanServerConfig
 from .database import ScanStore
 from .ocr import is_tesseract_available, ocr_pdf_bytes
 from .patterns import allowed_pattern_ids, classify_severity, normalize_pattern_filter, scan_text
@@ -35,6 +35,7 @@ BLANK_PDF_NEAR_WHITE_THRESHOLD = 248
 # render with only ~0.63-0.84 near-white coverage, so keep this threshold loose.
 BLANK_PDF_WHITE_RATIO = 0.63
 IS_WINDOWS = os.name == "nt"
+MISSING_TRANSIENT_PDF_PAYLOAD = "Missing transient PDF payload"
 
 
 def _safe_b64decode(value: str) -> bytes:
@@ -132,11 +133,15 @@ class ScanWorker(threading.Thread):
         self.config = config
         self.stop_event = stop_event
         self._last_cleanup_ts = 0
+        self._job_pool: Optional[ThreadPoolExecutor] = None
+        self._job_futures: Dict[Future[None], str] = {}
         self._ocr_pool: Optional[ProcessPoolExecutor | ThreadPoolExecutor] = None
+        self._ocr_pool_lock = threading.Lock()
         self._ocr_available = False
 
     def run(self) -> None:
-        logger.info("Scan worker started")
+        logger.info("Scan worker started job_max_workers=%s", self._job_max_workers())
+        self._reconcile_transient_pdf_spool()
         if self.config.ocr_enabled:
             available = is_tesseract_available(self.config.ocr_tesseract_cmd)
             self._ocr_available = available
@@ -160,8 +165,30 @@ class ScanWorker(threading.Thread):
             if processed:
                 continue
             self.stop_event.wait(self.config.worker_interval_sec)
+        self._shutdown_job_pool()
         self._shutdown_ocr_pool()
         logger.info("Scan worker stopped")
+
+    def _reconcile_transient_pdf_spool(self) -> None:
+        reconcile = getattr(self.store, "reconcile_job_pdf_spool", None)
+        if not callable(reconcile):
+            return
+        try:
+            result = reconcile()
+        except Exception as exc:
+            logger.warning("Transient PDF spool reconcile failed: %s", exc)
+            return
+        if not any(
+            int((result or {}).get(key) or 0) > 0
+            for key in ("removed_orphan_files", "removed_final_files", "failed_jobs")
+        ):
+            return
+        logger.info(
+            "Transient PDF spool reconcile completed: orphan=%s final=%s failed_jobs=%s",
+            int((result or {}).get("removed_orphan_files") or 0),
+            int((result or {}).get("removed_final_files") or 0),
+            int((result or {}).get("failed_jobs") or 0),
+        )
 
     def _tick(self) -> bool:
         now_ts = int(time.time())
@@ -169,14 +196,89 @@ class ScanWorker(threading.Thread):
             self.store.cleanup_retention(retention_days=self.config.retention_days)
             self._last_cleanup_ts = now_ts
 
-        processed = False
-        while not self.stop_event.is_set():
+        requeue_stale = getattr(self.store, "requeue_stale_processing_jobs", None)
+        if callable(requeue_stale):
+            try:
+                stale_count = int(
+                    requeue_stale(timeout_sec=getattr(self.config, "job_processing_timeout_sec", 1800))
+                    or 0
+                )
+                if stale_count:
+                    logger.warning("Requeued %s stale scan job(s) after processing lease timeout", stale_count)
+            except Exception as exc:
+                logger.warning("Failed to requeue stale scan jobs: %s", exc)
+
+        completed = self._collect_finished_jobs()
+        if self.stop_event.is_set():
+            return completed > 0
+
+        free_slots = self._job_max_workers() - len(self._job_futures)
+        if free_slots <= 0:
+            return completed > 0
+
+        jobs = self._claim_next_jobs(free_slots)
+        if not jobs:
+            return completed > 0
+
+        pool = self._get_job_pool()
+        for job in jobs:
+            job_id = str(job.get("id") or "")
+            future = pool.submit(self._process_job, job)
+            self._job_futures[future] = job_id
+        self._collect_finished_jobs()
+        return True
+
+    def _job_max_workers(self) -> int:
+        return max(
+            1,
+            min(
+                SCAN_JOB_MAX_WORKERS_LIMIT,
+                int(getattr(self.config, "scan_job_max_workers", 1) or 1),
+            ),
+        )
+
+    def _get_job_pool(self) -> ThreadPoolExecutor:
+        if self._job_pool is None:
+            self._job_pool = ThreadPoolExecutor(
+                max_workers=self._job_max_workers(),
+                thread_name_prefix="scan-job",
+            )
+        return self._job_pool
+
+    def _shutdown_job_pool(self) -> None:
+        if self._job_pool is None:
+            return
+        try:
+            self._job_pool.shutdown(wait=True, cancel_futures=False)
+        except Exception:
+            pass
+        self._job_pool = None
+        self._job_futures.clear()
+
+    def _collect_finished_jobs(self) -> int:
+        completed = 0
+        for future in list(self._job_futures):
+            if not future.done():
+                continue
+            job_id = self._job_futures.pop(future, "")
+            completed += 1
+            try:
+                future.result()
+            except Exception as exc:
+                logger.exception("Scan job worker failed job_id=%s: %s", job_id, exc)
+        return completed
+
+    def _claim_next_jobs(self, limit: int) -> List[Dict[str, Any]]:
+        claim_batch = getattr(self.store, "claim_next_jobs", None)
+        if callable(claim_batch):
+            return list(claim_batch(limit))
+        jobs: List[Dict[str, Any]] = []
+        for _ in range(max(1, int(limit or 1))):
             job = self.store.claim_next_job()
             if not job:
                 break
-            processed = True
-            self._process_job(job)
-        return processed
+            jobs.append(job)
+        return jobs
 
     def _payload_pdf_bytes(self, payload: Dict[str, Any], *, job_id: str) -> bytes:
         spool_bytes = self.store.read_job_pdf_spool(job_id=job_id)
@@ -237,31 +339,33 @@ class ScanWorker(threading.Thread):
     def _get_ocr_pool(self) -> Optional[ProcessPoolExecutor | ThreadPoolExecutor]:
         if not self.config.ocr_enabled or not self._ocr_available:
             return None
-        if self._ocr_pool is None:
-            try:
-                if IS_WINDOWS:
-                    self._ocr_pool = ThreadPoolExecutor(
-                        max_workers=self.config.ocr_max_processes,
-                        thread_name_prefix="scan-ocr",
-                    )
-                else:
-                    self._ocr_pool = ProcessPoolExecutor(
-                        max_workers=self.config.ocr_max_processes,
-                        initializer=_init_worker_logging,
-                    )
-            except Exception as exc:
-                logger.warning("OCR pool init failed, falling back to inline OCR: %s", exc)
-                return None
-        return self._ocr_pool
+        with self._ocr_pool_lock:
+            if self._ocr_pool is None:
+                try:
+                    if IS_WINDOWS:
+                        self._ocr_pool = ThreadPoolExecutor(
+                            max_workers=self.config.ocr_max_processes,
+                            thread_name_prefix="scan-ocr",
+                        )
+                    else:
+                        self._ocr_pool = ProcessPoolExecutor(
+                            max_workers=self.config.ocr_max_processes,
+                            initializer=_init_worker_logging,
+                        )
+                except Exception as exc:
+                    logger.warning("OCR pool init failed, falling back to inline OCR: %s", exc)
+                    return None
+            return self._ocr_pool
 
     def _shutdown_ocr_pool(self) -> None:
-        if self._ocr_pool is None:
-            return
-        try:
-            self._ocr_pool.shutdown(wait=True, cancel_futures=True)
-        except Exception:
-            pass
-        self._ocr_pool = None
+        with self._ocr_pool_lock:
+            if self._ocr_pool is None:
+                return
+            try:
+                self._ocr_pool.shutdown(wait=True, cancel_futures=True)
+            except Exception:
+                pass
+            self._ocr_pool = None
 
     def _log_pdf_outcome(
         self,
@@ -439,6 +543,7 @@ class ScanWorker(threading.Thread):
     def _process_job(self, job: Dict[str, Any]) -> None:
         job_id = str(job.get("id") or "")
         payload = {}
+        delete_spool = True
         try:
             payload = json.loads(str(job.get("payload_json") or "{}"))
         except Exception:
@@ -458,7 +563,17 @@ class ScanWorker(threading.Thread):
                 matches.extend(self._scan_text_with_filter(text_excerpt, allowed_pattern_ids_filter))
 
             if requires_pdf_payload and not pdf_bytes:
-                raise RuntimeError("Missing transient PDF payload")
+                logger.warning(
+                    "Skipping pdf_slice job with missing transient PDF payload job_id=%s file=%s",
+                    job_id,
+                    str(job.get("file_name") or ""),
+                )
+                self.store.finalize_job(
+                    job_id=job_id,
+                    status="failed",
+                    error_text=MISSING_TRANSIENT_PDF_PAYLOAD,
+                )
+                return
 
             if not matches and pdf_bytes:
                 file_name = str(job.get("file_name") or "unnamed")
@@ -489,6 +604,26 @@ class ScanWorker(threading.Thread):
                     summary=self._pdf_outcome_summary(pdf_outcome, len(matches)),
                 )
             else:
+                if pdf_outcome == "ocr_error":
+                    attempts = int(job.get("attempt_count") or 0)
+                    max_attempts = max(1, int(getattr(self.config, "scan_job_max_attempts", 3) or 3))
+                    if attempts < max_attempts:
+                        requeue_retry = getattr(self.store, "requeue_job_for_retry", None)
+                        if callable(requeue_retry):
+                            requeue_retry(
+                                job_id=job_id,
+                                error_text="OCR timeout",
+                                summary=f"OCR retry scheduled ({attempts}/{max_attempts})",
+                            )
+                            delete_spool = False
+                            return
+                    self.store.finalize_job(
+                        job_id=job_id,
+                        status="failed",
+                        summary=self._pdf_outcome_summary(pdf_outcome, 0),
+                        error_text="OCR timeout",
+                    )
+                    return
                 self.store.finalize_job(
                     job_id=job_id,
                     status="done_clean",
@@ -498,7 +633,8 @@ class ScanWorker(threading.Thread):
             self.store.finalize_job(job_id=job_id, status="failed", error_text=str(exc))
             logger.exception("Job processing failed job_id=%s: %s", job_id, exc)
         finally:
-            self.store.delete_job_pdf_spool(job_id=job_id)
+            if delete_spool:
+                self.store.delete_job_pdf_spool(job_id=job_id)
 
     def _server_pdf_pattern_filter(self, job: Dict[str, Any]) -> Optional[set[str]]:
         task_id = str(job.get("scan_task_id") or "").strip()

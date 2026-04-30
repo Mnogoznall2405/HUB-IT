@@ -5,7 +5,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
-$processNames = @('itinvent-backend', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-bot')
+$processNames = @('itinvent-backend', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
 
 function Resolve-Pm2Command {
     $preferredGlobalPm2Cmd = Join-Path $env:APPDATA 'npm\pm2.cmd'

@@ -257,6 +257,15 @@ class TransferExecuteResponse(BaseModel):
     upload_reminder_warning: Optional[str] = Field(None, description="Reminder creation warning")
     upload_reminder_controller_username: Optional[str] = Field(None, description="Resolved reminder controller username")
     upload_reminder_controller_fallback_used: bool = Field(False, description="Whether controller fallback was used")
+    job_id: Optional[str] = Field(None, description="Background transfer-act job id")
+    job_status: Optional[Literal["queued", "processing", "done", "failed"]] = Field(None, description="Background job status")
+    job_status_text: Optional[str] = Field(None, description="Human-readable background job status")
+    job_error: Optional[str] = Field(None, description="Background job error")
+    job_operation: Optional[str] = Field(None, description="Background job operation type")
+    job_request_count: Optional[int] = Field(None, description="Requested inventory count")
+    job_created_at: Optional[str] = Field(None, description="Background job creation time")
+    job_started_at: Optional[str] = Field(None, description="Background job start time")
+    job_completed_at: Optional[str] = Field(None, description="Background job completion time")
 
 
 class TransferEmailRequest(BaseModel):

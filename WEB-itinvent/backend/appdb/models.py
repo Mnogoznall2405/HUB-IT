@@ -272,6 +272,31 @@ class AppAiBotRun(AppBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppTransferActJob(AppBase):
+    __tablename__ = "transfer_act_jobs"
+    __table_args__ = _table_args(
+        Index("ix_app_transfer_act_jobs_status_created_at", "status", "created_at"),
+        Index("ix_app_transfer_act_jobs_user_created_at", "user_id", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    operation: Mapped[str] = mapped_column(String(32), nullable=False, index=True)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default="queued", index=True)
+    status_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    db_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    user_id: Mapped[int | None] = mapped_column(Integer, nullable=True, index=True)
+    username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    request_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    result_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppAiPendingAction(AppBase):
     __tablename__ = "ai_pending_actions"
     __table_args__ = _table_args(
@@ -441,6 +466,8 @@ class AppInventoryHostSqlContext(AppBase):
     branch_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     location_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     employee_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    inventory_inv_no: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    inventory_model_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     ip_address: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 

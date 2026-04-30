@@ -34,6 +34,30 @@ logger = logging.getLogger("inventory-server")
 store = InventoryQueueStore(db_path=config.db_path)
 stop_event = threading.Event()
 worker = InventoryWorker(store=store, config=config, stop_event=stop_event)
+worker_lock = threading.RLock()
+
+
+def _create_worker() -> InventoryWorker:
+    return InventoryWorker(store=store, config=config, stop_event=stop_event)
+
+
+def ensure_worker_alive() -> InventoryWorker:
+    global worker
+    with worker_lock:
+        if worker.is_alive():
+            return worker
+        stop_event.clear()
+        current_worker = worker
+        if isinstance(current_worker, threading.Thread) and current_worker.ident is not None:
+            current_worker = _create_worker()
+            worker = current_worker
+        try:
+            current_worker.start()
+        except RuntimeError:
+            current_worker = _create_worker()
+            worker = current_worker
+            current_worker.start()
+        return current_worker
 
 
 def _key_fingerprint(value: Optional[str]) -> str:
@@ -52,15 +76,15 @@ def _check_agent_key(x_api_key: Optional[str]) -> None:
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    if not worker.is_alive():
-        stop_event.clear()
-        worker.start()
+    ensure_worker_alive()
     try:
         yield
     finally:
         stop_event.set()
-        if worker.is_alive():
-            worker.join(timeout=5)
+        with worker_lock:
+            current_worker = worker
+        if current_worker.is_alive():
+            current_worker.join(timeout=5)
 
 
 app = FastAPI(title="Inventory Ingest Server", lifespan=lifespan)
@@ -85,6 +109,7 @@ def receive_inventory(
     x_api_key: Optional[str] = Header(None),
 ) -> dict:
     _check_agent_key(x_api_key)
+    ensure_worker_alive()
     payload_dict = inventory_runtime._model_dump(payload)
     dedupe_key = inventory_runtime.build_inventory_dedupe_key(payload_dict)
     queued = store.enqueue(payload_dict, dedupe_key)

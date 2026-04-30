@@ -174,6 +174,21 @@ describe('equipmentAPI.createTransferActOnly', () => {
   });
 });
 
+describe('equipmentAPI.getTransferActJob', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.get.mockResolvedValue({ data: { job_id: 'job-1', job_status: 'done' } });
+  });
+
+  it('polls transfer act background job status', async () => {
+    const { equipmentAPI } = await import('./client');
+
+    await equipmentAPI.getTransferActJob('job-1');
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/equipment/transfer/act-jobs/job-1');
+  });
+});
+
 describe('equipmentAPI.parseUploadedAct', () => {
   beforeEach(() => {
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { draft_id: 'draft-1' } });
@@ -805,5 +820,15 @@ describe('scanAPI table endpoints', () => {
     await scanAPI.getAgentsActivity(['agent-1', 'agent-2']);
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/scan/agents/activity?agent_id=agent-1&agent_id=agent-2');
+  });
+
+  it('requests scan task incident Excel export as a blob', async () => {
+    const { scanAPI } = await import('./client');
+
+    await scanAPI.exportScanTaskIncidents('task-1');
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/scan/tasks/task-1/incidents/export', {
+      responseType: 'blob',
+    });
   });
 });

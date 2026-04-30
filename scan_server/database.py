@@ -222,6 +222,7 @@ class ScanStore:
         task_ack_timeout_sec: int,
         agent_online_timeout_sec: int = 300,
         resolve_agent_sql_context: bool = False,
+        job_processing_timeout_sec: int = 1800,
     ) -> None:
         self.db_path = Path(db_path)
         self.archive_dir = Path(archive_dir)
@@ -229,7 +230,10 @@ class ScanStore:
         self.task_ack_timeout_sec = int(task_ack_timeout_sec)
         self.agent_online_timeout_sec = max(30, int(agent_online_timeout_sec))
         self.resolve_agent_sql_context = bool(resolve_agent_sql_context)
+        self.job_processing_timeout_sec = max(60, int(job_processing_timeout_sec or 1800))
         self._lock = threading.RLock()
+        self._transient_stats_cache_ts = 0.0
+        self._transient_stats_cache: Dict[str, Any] = {}
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.archive_dir.mkdir(parents=True, exist_ok=True)
         self.transient_dir.mkdir(parents=True, exist_ok=True)
@@ -307,6 +311,7 @@ class ScanStore:
                     finished_at INTEGER NULL,
                     error_text TEXT NULL,
                     summary TEXT NULL,
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
                     payload_json TEXT NOT NULL DEFAULT '{}'
                 );
 
@@ -409,13 +414,6 @@ class ScanStore:
                 """
             )
 
-            # Reset stuck scan jobs that were left in 'processing' state (e.g. due to crash/restart)
-            cursor_jobs = conn.execute(
-                "UPDATE scan_jobs SET status='queued', started_at=NULL WHERE status='processing'"
-            )
-            if cursor_jobs.rowcount > 0:
-                logger.info("Found and reset %d stuck scan jobs from 'processing' to 'queued'", cursor_jobs.rowcount)
-
             # Reset stuck scan tasks (commands to agents) that were in transit or active
             cursor_tasks = conn.execute(
                 "UPDATE scan_tasks SET status='queued', delivered_at=NULL WHERE status='delivered'"
@@ -434,6 +432,12 @@ class ScanStore:
                 table_name="scan_jobs",
                 column_name="scan_task_id",
                 ddl="ALTER TABLE scan_jobs ADD COLUMN scan_task_id TEXT NULL",
+            )
+            self._ensure_column(
+                conn,
+                table_name="scan_jobs",
+                column_name="attempt_count",
+                ddl="ALTER TABLE scan_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
             )
             self._ensure_column(
                 conn,
@@ -505,6 +509,99 @@ class ScanStore:
             logger.warning("Failed to delete transient PDF payload for job %s: %s", job_id, exc)
             return False
 
+    def transient_pdf_spool_stats(self, *, cache_ttl_sec: float = 10.0) -> Dict[str, Any]:
+        now = time.time()
+        if (
+            cache_ttl_sec > 0
+            and self._transient_stats_cache
+            and (now - self._transient_stats_cache_ts) <= cache_ttl_sec
+        ):
+            return dict(self._transient_stats_cache)
+        count = 0
+        total_bytes = 0
+        oldest_mtime = 0
+        newest_mtime = 0
+        for path in self.transient_dir.glob("*.pdf"):
+            try:
+                stat = path.stat()
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                logger.debug("Failed to stat transient PDF payload %s: %s", path, exc)
+                continue
+            count += 1
+            total_bytes += int(stat.st_size or 0)
+            mtime = int(stat.st_mtime or 0)
+            if mtime and (oldest_mtime <= 0 or mtime < oldest_mtime):
+                oldest_mtime = mtime
+            if mtime and mtime > newest_mtime:
+                newest_mtime = mtime
+        stats = {
+            "count": count,
+            "bytes": total_bytes,
+            "gb": round(total_bytes / (1024 ** 3), 3),
+            "oldest_mtime": oldest_mtime,
+            "newest_mtime": newest_mtime,
+        }
+        self._transient_stats_cache = dict(stats)
+        self._transient_stats_cache_ts = now
+        return stats
+
+    def pdf_job_status_counts(self) -> Dict[str, int]:
+        counts: Dict[str, int] = {
+            "pdf_queued": 0,
+            "pdf_processing": 0,
+            "pdf_done_clean": 0,
+            "pdf_done_with_incident": 0,
+            "pdf_failed": 0,
+            "pdf_total": 0,
+            "pdf_pending": 0,
+            "pdf_completed": 0,
+        }
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT status, COUNT(*) AS c
+                FROM scan_jobs
+                WHERE source_kind IN ('pdf', 'pdf_slice')
+                GROUP BY status
+                """
+            ).fetchall()
+        for row in rows:
+            status = str(row["status"] or "unknown").strip().lower() or "unknown"
+            count = int(row["c"] or 0)
+            counts[f"pdf_{status}"] = int(counts.get(f"pdf_{status}", 0)) + count
+            counts["pdf_total"] += count
+        counts["pdf_pending"] = int(counts.get("pdf_queued", 0)) + int(counts.get("pdf_processing", 0))
+        counts["pdf_completed"] = int(counts.get("pdf_done_clean", 0)) + int(counts.get("pdf_done_with_incident", 0))
+        return counts
+
+    def ingest_backpressure_status(
+        self,
+        *,
+        max_pending_pdf_jobs: int,
+        transient_max_gb: float,
+    ) -> Dict[str, Any]:
+        counts = self.pdf_job_status_counts()
+        spool = self.transient_pdf_spool_stats()
+        pending_limit = max(1, int(max_pending_pdf_jobs or 1))
+        transient_limit_gb = max(0.1, float(transient_max_gb or 0.1))
+        reasons: List[str] = []
+        if int(counts["pdf_pending"]) >= pending_limit:
+            reasons.append("pdf_pending_limit")
+        if float(spool["gb"]) >= transient_limit_gb:
+            reasons.append("transient_size_limit")
+        return {
+            "active": bool(reasons),
+            "reasons": reasons,
+            "pdf_pending": int(counts["pdf_pending"]),
+            "pdf_queued": int(counts["pdf_queued"]),
+            "pdf_processing": int(counts["pdf_processing"]),
+            "max_pending_pdf_jobs": pending_limit,
+            "transient": spool,
+            "transient_max_gb": transient_limit_gb,
+        }
+
     def reconcile_job_pdf_spool(self) -> Dict[str, int]:
         removed_orphan = 0
         removed_final = 0
@@ -513,7 +610,7 @@ class ScanStore:
         with self._lock, self._connect() as conn:
             rows = conn.execute(
                 """
-                SELECT id, status, source_kind, scan_task_id
+                SELECT id, status, source_kind, scan_task_id, started_at
                 FROM scan_jobs
                 """
             ).fetchall()
@@ -548,10 +645,18 @@ class ScanStore:
                     except Exception as exc:
                         logger.warning("Failed to delete stale transient PDF payload %s: %s", path, exc)
 
-            missing_rows = [
-                row for row in pending_pdf_rows
-                if str(row["id"] or "").strip().lower() not in spool_ids
-            ]
+            missing_rows = []
+            waiting_processing_missing = 0
+            stale_before = now_ts - self.job_processing_timeout_sec
+            for row in pending_pdf_rows:
+                if str(row["id"] or "").strip().lower() in spool_ids:
+                    continue
+                status_value = str(row["status"] or "").strip().lower()
+                started_at = int(row["started_at"] or 0)
+                if status_value == "processing" and started_at > stale_before:
+                    waiting_processing_missing += 1
+                    continue
+                missing_rows.append(row)
             touched_task_ids = set()
             for row in missing_rows:
                 job_id = str(row["id"] or "").strip()
@@ -576,6 +681,7 @@ class ScanStore:
             "removed_orphan_files": removed_orphan,
             "removed_final_files": removed_final,
             "failed_jobs": failed_jobs,
+            "waiting_processing_missing": waiting_processing_missing,
         }
 
     def _normalize_linked_scan_task_id_locked(self, conn: sqlite3.Connection, task_id: Any) -> str:
@@ -1475,6 +1581,41 @@ class ScanStore:
         )
         return observation_id
 
+    def _record_existing_job_observation_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        scan_task_id: str,
+        row: Dict[str, Any],
+        existing: sqlite3.Row,
+        event_id: str,
+        created_at: int,
+        observation_type: str = "found_duplicate",
+    ) -> None:
+        effective_scan_task_id = str(scan_task_id or "").strip()
+        if not effective_scan_task_id:
+            return
+        existing_job_id = str(existing["id"] or "").strip()
+        incident = self._find_incident_for_job_locked(conn, existing_job_id)
+        self._record_scan_observation_locked(
+            conn,
+            scan_task_id=effective_scan_task_id,
+            agent_id=str(row.get("agent_id") or "").strip(),
+            hostname=str(row.get("hostname") or "").strip(),
+            file_path=str(row.get("file_path") or "").strip(),
+            file_hash=str(row.get("file_hash") or "").strip(),
+            event_id=event_id,
+            observation_type=observation_type,
+            linked_job_id=existing_job_id,
+            linked_incident_id=str(incident["id"] or "") if incident is not None else "",
+            source_kind=str(row.get("source_kind") or "").strip(),
+            severity=str(incident["severity"] or "") if incident is not None else "",
+            created_at=created_at,
+        )
+        existing_task_id = str(existing["scan_task_id"] or "").strip()
+        if existing_task_id == effective_scan_task_id:
+            self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=created_at)
+
     def _resolve_incident_from_event_locked(
         self,
         conn: sqlite3.Connection,
@@ -1627,17 +1768,19 @@ class ScanStore:
 
         return stats
 
-    def queue_job(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def queue_job(self, payload: Dict[str, Any], *, pdf_bytes: Optional[bytes] = None) -> Dict[str, Any]:
         now_ts = _now_ts()
         event_id = str(payload.get("event_id") or "").strip()
-        pdf_bytes = b""
+        payload_pdf_bytes = bytes(pdf_bytes or b"")
         raw_pdf_b64 = str(payload.get("pdf_slice_b64") or "").strip()
-        if raw_pdf_b64:
-            pdf_bytes = _safe_b64decode(raw_pdf_b64)
-            if not pdf_bytes:
+        if raw_pdf_b64 and not payload_pdf_bytes:
+            payload_pdf_bytes = _safe_b64decode(raw_pdf_b64)
+            if not payload_pdf_bytes:
                 raise ValueError("Invalid PDF payload")
+
         sanitized_payload = dict(payload or {})
         sanitized_payload.pop("pdf_slice_b64", None)
+        sanitized_payload.pop("_pdf_bytes", None)
         job_id = uuid.uuid4().hex
         row = {
             "id": job_id,
@@ -1657,7 +1800,8 @@ class ScanStore:
             "created_at": now_ts,
             "payload_json": "{}",
         }
-        spool_written = False
+
+        retry_existing: Optional[sqlite3.Row] = None
         with self._lock, self._connect() as conn:
             effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
                 conn,
@@ -1669,7 +1813,7 @@ class ScanStore:
             if event_id:
                 existing = conn.execute(
                     """
-                    SELECT id, status, created_at, scan_task_id
+                    SELECT id, status, created_at, scan_task_id, error_text
                     FROM scan_jobs
                     WHERE event_id=?
                     LIMIT 1
@@ -1677,37 +1821,105 @@ class ScanStore:
                     (event_id,),
                 ).fetchone()
                 if existing is not None:
-                    existing_task_id = str(existing["scan_task_id"] or "").strip()
-                    incident = self._find_incident_for_job_locked(conn, str(existing["id"] or ""))
-                    if effective_scan_task_id:
-                        self._record_scan_observation_locked(
+                    is_retryable_missing_payload = (
+                        str(existing["status"] or "").strip().lower() == "failed"
+                        and str(existing["error_text"] or "").strip() == "Missing transient PDF payload"
+                        and bool(payload_pdf_bytes)
+                    )
+                    if is_retryable_missing_payload:
+                        retry_existing = existing
+                    else:
+                        self._record_existing_job_observation_locked(
                             conn,
                             scan_task_id=effective_scan_task_id,
-                            agent_id=row["agent_id"],
-                            hostname=row["hostname"],
-                            file_path=row["file_path"],
-                            file_hash=row["file_hash"],
+                            row=row,
+                            existing=existing,
                             event_id=event_id,
-                            observation_type="found_duplicate",
-                            linked_job_id=str(existing["id"] or ""),
-                            linked_incident_id=str(incident["id"] or "") if incident is not None else "",
-                            source_kind=row["source_kind"],
-                            severity=str(incident["severity"] or "") if incident is not None else "",
                             created_at=now_ts,
                         )
-                    if effective_scan_task_id and existing_task_id == effective_scan_task_id:
-                        self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
-                    conn.commit()
-                    return {
-                        "job_id": str(existing["id"]),
-                        "status": str(existing["status"] or "queued"),
-                        "deduped": True,
-                    }
+                        conn.commit()
+                        return {
+                            "job_id": str(existing["id"]),
+                            "status": str(existing["status"] or "queued"),
+                            "deduped": True,
+                        }
+            conn.commit()
 
-            if pdf_bytes:
-                self.write_job_pdf_spool(job_id=job_id, pdf_bytes=pdf_bytes)
-                spool_written = True
-            try:
+        if retry_existing is not None:
+            retry_job_id = str(retry_existing["id"] or "").strip()
+            self.write_job_pdf_spool(job_id=retry_job_id, pdf_bytes=payload_pdf_bytes)
+            with self._lock, self._connect() as conn:
+                effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
+                    conn,
+                    sanitized_payload.get("scan_task_id"),
+                )
+                sanitized_payload["scan_task_id"] = effective_scan_task_id
+                row["scan_task_id"] = effective_scan_task_id
+                row["payload_json"] = _json_dumps(sanitized_payload)
+                existing = conn.execute(
+                    """
+                    SELECT id, status, created_at, scan_task_id, error_text
+                    FROM scan_jobs
+                    WHERE id=?
+                    LIMIT 1
+                    """,
+                    (retry_job_id,),
+                ).fetchone()
+                if existing is None:
+                    self.delete_job_pdf_spool(job_id=retry_job_id)
+                    raise ValueError("Retryable scan job disappeared")
+                conn.execute(
+                    """
+                    UPDATE scan_jobs
+                    SET agent_id=?, hostname=?, branch=?, user_login=?, user_full_name=?,
+                        file_path=?, file_name=?, file_hash=?, file_size=?, source_kind=?,
+                        scan_task_id=?, status='queued', started_at=NULL, finished_at=NULL,
+                        error_text=NULL, summary=NULL, payload_json=?
+                    WHERE id=?
+                    """,
+                    (
+                        row["agent_id"],
+                        row["hostname"],
+                        row["branch"],
+                        row["user_login"],
+                        row["user_full_name"],
+                        row["file_path"],
+                        row["file_name"],
+                        row["file_hash"],
+                        row["file_size"],
+                        row["source_kind"],
+                        row["scan_task_id"],
+                        row["payload_json"],
+                        retry_job_id,
+                    ),
+                )
+                self._record_existing_job_observation_locked(
+                    conn,
+                    scan_task_id=effective_scan_task_id,
+                    row=row,
+                    existing=existing,
+                    event_id=event_id,
+                    created_at=now_ts,
+                    observation_type="found_new",
+                )
+                if effective_scan_task_id:
+                    self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
+                conn.commit()
+            return {"job_id": retry_job_id, "status": "queued", "deduped": False, "reopened": True}
+
+        spool_written = False
+        if payload_pdf_bytes:
+            self.write_job_pdf_spool(job_id=job_id, pdf_bytes=payload_pdf_bytes)
+            spool_written = True
+        try:
+            with self._lock, self._connect() as conn:
+                effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
+                    conn,
+                    sanitized_payload.get("scan_task_id"),
+                )
+                sanitized_payload["scan_task_id"] = effective_scan_task_id
+                row["scan_task_id"] = effective_scan_task_id
+                row["payload_json"] = _json_dumps(sanitized_payload)
                 conn.execute(
                     """
                     INSERT INTO scan_jobs(
@@ -1735,88 +1947,167 @@ class ScanStore:
                         row["payload_json"],
                     ),
                 )
-            except sqlite3.IntegrityError:
-                if event_id:
+                if effective_scan_task_id:
+                    self._record_scan_observation_locked(
+                        conn,
+                        scan_task_id=effective_scan_task_id,
+                        agent_id=row["agent_id"],
+                        hostname=row["hostname"],
+                        file_path=row["file_path"],
+                        file_hash=row["file_hash"],
+                        event_id=event_id,
+                        observation_type="found_new",
+                        linked_job_id=job_id,
+                        source_kind=row["source_kind"],
+                        created_at=now_ts,
+                    )
+                    self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
+                conn.commit()
+        except sqlite3.IntegrityError:
+            if spool_written:
+                self.delete_job_pdf_spool(job_id=job_id)
+            if event_id:
+                with self._lock, self._connect() as conn:
                     existing = conn.execute(
-                        "SELECT id, status, scan_task_id FROM scan_jobs WHERE event_id=? LIMIT 1",
+                        "SELECT id, status, scan_task_id, error_text FROM scan_jobs WHERE event_id=? LIMIT 1",
                         (event_id,),
                     ).fetchone()
                     if existing is not None:
-                        if spool_written:
-                            self.delete_job_pdf_spool(job_id=job_id)
-                        conn.rollback()
-                        existing_task_id = str(existing["scan_task_id"] or "").strip()
-                        if effective_scan_task_id:
-                            incident = self._find_incident_for_job_locked(conn, str(existing["id"] or ""))
-                            self._record_scan_observation_locked(
-                                conn,
-                                scan_task_id=effective_scan_task_id,
-                                agent_id=row["agent_id"],
-                                hostname=row["hostname"],
-                                file_path=row["file_path"],
-                                file_hash=row["file_hash"],
-                                event_id=event_id,
-                                observation_type="found_duplicate",
-                                linked_job_id=str(existing["id"] or ""),
-                                linked_incident_id=str(incident["id"] or "") if incident is not None else "",
-                                source_kind=row["source_kind"],
-                                severity=str(incident["severity"] or "") if incident is not None else "",
-                                created_at=now_ts,
-                            )
-                            if existing_task_id == effective_scan_task_id:
-                                self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
-                            conn.commit()
+                        effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
+                            conn,
+                            sanitized_payload.get("scan_task_id"),
+                        )
+                        self._record_existing_job_observation_locked(
+                            conn,
+                            scan_task_id=effective_scan_task_id,
+                            row=row,
+                            existing=existing,
+                            event_id=event_id,
+                            created_at=now_ts,
+                        )
+                        conn.commit()
                         return {
                             "job_id": str(existing["id"]),
                             "status": str(existing["status"] or "queued"),
                             "deduped": True,
                         }
-                raise
-            if effective_scan_task_id:
-                self._record_scan_observation_locked(
-                    conn,
-                    scan_task_id=effective_scan_task_id,
-                    agent_id=row["agent_id"],
-                    hostname=row["hostname"],
-                    file_path=row["file_path"],
-                    file_hash=row["file_hash"],
-                    event_id=event_id,
-                    observation_type="found_new",
-                    linked_job_id=job_id,
-                    source_kind=row["source_kind"],
-                    created_at=now_ts,
-                )
-                self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
-            conn.commit()
+            raise
+        except Exception:
+            if spool_written:
+                self.delete_job_pdf_spool(job_id=job_id)
+            raise
         return {"job_id": job_id, "status": "queued", "deduped": False}
 
-    def claim_next_job(self) -> Optional[Dict[str, Any]]:
+    def requeue_stale_processing_jobs(self, *, timeout_sec: Optional[int] = None) -> int:
+        safe_timeout = max(60, int(timeout_sec or self.job_processing_timeout_sec))
+        stale_before = _now_ts() - safe_timeout
+        with self._lock, self._connect() as conn:
+            touched_task_ids = [
+                str(row["scan_task_id"] or "").strip()
+                for row in conn.execute(
+                    """
+                    SELECT DISTINCT scan_task_id
+                    FROM scan_jobs
+                    WHERE status='processing'
+                      AND COALESCE(started_at, 0) > 0
+                      AND started_at <= ?
+                      AND scan_task_id IS NOT NULL
+                      AND scan_task_id <> ''
+                    """,
+                    (stale_before,),
+                ).fetchall()
+            ]
+            cursor = conn.execute(
+                """
+                UPDATE scan_jobs
+                SET status='queued',
+                    started_at=NULL,
+                    summary='Requeued stale processing job',
+                    error_text=NULL
+                WHERE status='processing'
+                  AND COALESCE(started_at, 0) > 0
+                  AND started_at <= ?
+                """,
+                (stale_before,),
+            )
+            for task_id in touched_task_ids:
+                self._reconcile_scan_task_progress_locked(conn, task_id)
+            conn.commit()
+            return int(cursor.rowcount or 0)
+
+    def requeue_job_for_retry(self, *, job_id: str, error_text: str, summary: str = "") -> None:
+        normalized_job_id = str(job_id or "").strip()
+        if not normalized_job_id:
+            return
         now_ts = _now_ts()
         with self._lock, self._connect() as conn:
-            row = conn.execute(
+            job_row = conn.execute(
+                "SELECT scan_task_id FROM scan_jobs WHERE id=? LIMIT 1",
+                (normalized_job_id,),
+            ).fetchone()
+            conn.execute(
+                """
+                UPDATE scan_jobs
+                SET status='queued',
+                    started_at=NULL,
+                    finished_at=NULL,
+                    error_text=?,
+                    summary=?
+                WHERE id=?
+                """,
+                (
+                    str(error_text or "").strip() or None,
+                    str(summary or "").strip() or None,
+                    normalized_job_id,
+                ),
+            )
+            scan_task_id = str(job_row["scan_task_id"] or "").strip() if job_row is not None else ""
+            if scan_task_id:
+                self._reconcile_scan_task_progress_locked(conn, scan_task_id, now_ts=now_ts)
+            conn.commit()
+
+    def claim_next_jobs(self, limit: int) -> List[Dict[str, Any]]:
+        batch_limit = max(1, min(100, int(limit or 1)))
+        now_ts = _now_ts()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
                 """
                 SELECT *
                 FROM scan_jobs
                 WHERE status='queued'
                 ORDER BY created_at ASC
-                LIMIT 1
-                """
-            ).fetchone()
-            if row is None:
-                return None
-            conn.execute(
-                """
-                UPDATE scan_jobs
-                SET status='processing', started_at=?, error_text=NULL
-                WHERE id=?
+                LIMIT ?
                 """,
-                (now_ts, row["id"]),
-            )
+                (batch_limit,),
+            ).fetchall()
+            if not rows:
+                return []
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE scan_jobs
+                    SET status='processing',
+                        started_at=?,
+                        finished_at=NULL,
+                        error_text=NULL,
+                        attempt_count=COALESCE(attempt_count, 0) + 1
+                    WHERE id=?
+                    """,
+                    (now_ts, row["id"]),
+                )
             conn.commit()
-        out = dict(row)
-        out["status"] = "processing"
-        out["started_at"] = now_ts
+        out: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            item["status"] = "processing"
+            item["started_at"] = now_ts
+            item["attempt_count"] = int(item.get("attempt_count") or 0) + 1
+            out.append(item)
         return out
+
+    def claim_next_job(self) -> Optional[Dict[str, Any]]:
+        jobs = self.claim_next_jobs(1)
+        return jobs[0] if jobs else None
 
     def get_task_payload(self, task_id: str) -> Dict[str, Any]:
         tid = str(task_id or "").strip()
@@ -2473,6 +2764,8 @@ class ScanStore:
                 SELECT
                     t.*,
                     COALESCE(NULLIF(a.hostname, ''), ?) AS hostname,
+                    COALESCE(jf.failed_jobs_count, 0) AS failed_jobs_count,
+                    COALESCE(jf.failed_job_errors, '') AS failed_job_errors,
                     SUM(CASE WHEN o.observation_type='found_new' THEN 1 ELSE 0 END) AS found_new,
                     SUM(CASE WHEN o.observation_type='found_duplicate' THEN 1 ELSE 0 END) AS found_duplicate,
                     SUM(CASE WHEN o.observation_type='deleted' THEN 1 ELSE 0 END) AS deleted_count,
@@ -2482,6 +2775,22 @@ class ScanStore:
                 FROM scan_tasks t
                 LEFT JOIN scan_agents a ON a.agent_id = t.agent_id
                 LEFT JOIN scan_task_file_observations o ON o.scan_task_id = t.id
+                LEFT JOIN (
+                    SELECT
+                        scan_task_id,
+                        SUM(error_count) AS failed_jobs_count,
+                        GROUP_CONCAT(error_text || ' (' || error_count || ')', '; ') AS failed_job_errors
+                    FROM (
+                        SELECT
+                            scan_task_id,
+                            COALESCE(NULLIF(error_text, ''), 'Ошибка без текста') AS error_text,
+                            COUNT(*) AS error_count
+                        FROM scan_jobs
+                        WHERE status='failed'
+                        GROUP BY scan_task_id, COALESCE(NULLIF(error_text, ''), 'Ошибка без текста')
+                    )
+                    GROUP BY scan_task_id
+                ) jf ON jf.scan_task_id = t.id
                 {where_clause}
                 GROUP BY t.id
                 ORDER BY COALESCE(t.completed_at, t.updated_at, t.created_at) DESC
@@ -2493,6 +2802,8 @@ class ScanStore:
         for row in rows:
             item = self._serialize_task_row(row, now_ts=now_ts)
             item["hostname"] = str(row["hostname"] or normalized_host).strip()
+            item["failed_jobs_count"] = int(row["failed_jobs_count"] or 0)
+            item["failed_job_errors"] = str(row["failed_job_errors"] or "").strip()
             item["observation_counts"] = {
                 "found_new": int(row["found_new"] or 0),
                 "found_duplicate": int(row["found_duplicate"] or 0),
@@ -2550,6 +2861,171 @@ class ScanStore:
             "has_more": next_offset < int(total or 0),
             "next_offset": next_offset if next_offset < int(total or 0) else None,
         }
+
+    def get_scan_task_incident_report(self, *, task_id: str) -> Optional[Dict[str, Any]]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            return None
+        now_ts = _now_ts()
+        with self._lock, self._connect() as conn:
+            task_row = conn.execute(
+                """
+                SELECT
+                    t.*,
+                    COALESCE(
+                        NULLIF(a.hostname, ''),
+                        (
+                            SELECT j.hostname
+                            FROM scan_jobs j
+                            WHERE j.scan_task_id=t.id AND j.hostname <> ''
+                            ORDER BY j.created_at DESC
+                            LIMIT 1
+                        ),
+                        (
+                            SELECT o.hostname
+                            FROM scan_task_file_observations o
+                            WHERE o.scan_task_id=t.id AND o.hostname <> ''
+                            ORDER BY o.created_at DESC
+                            LIMIT 1
+                        ),
+                        ''
+                    ) AS hostname
+                FROM scan_tasks t
+                LEFT JOIN scan_agents a ON a.agent_id=t.agent_id
+                WHERE t.id=? AND t.command='scan_now'
+                LIMIT 1
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            if task_row is None:
+                return None
+
+            job_counts_row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS jobs_total,
+                    SUM(CASE WHEN status IN ('queued', 'processing') THEN 1 ELSE 0 END) AS jobs_pending,
+                    SUM(CASE WHEN status='done_clean' THEN 1 ELSE 0 END) AS jobs_done_clean,
+                    SUM(CASE WHEN status='done_with_incident' THEN 1 ELSE 0 END) AS jobs_done_with_incident,
+                    SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS jobs_failed
+                FROM scan_jobs
+                WHERE scan_task_id=?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            observation_counts_row = conn.execute(
+                """
+                SELECT
+                    SUM(CASE WHEN observation_type='found_new' THEN 1 ELSE 0 END) AS found_new,
+                    SUM(CASE WHEN observation_type='found_duplicate' THEN 1 ELSE 0 END) AS found_duplicate,
+                    SUM(CASE WHEN observation_type='deleted' THEN 1 ELSE 0 END) AS deleted_count,
+                    SUM(CASE WHEN observation_type='cleaned' THEN 1 ELSE 0 END) AS cleaned_count,
+                    SUM(CASE WHEN observation_type='moved' THEN 1 ELSE 0 END) AS moved_count,
+                    COUNT(*) AS observations_total
+                FROM scan_task_file_observations
+                WHERE scan_task_id=?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            observation_rows = conn.execute(
+                """
+                SELECT linked_incident_id, observation_type, created_at
+                FROM scan_task_file_observations
+                WHERE scan_task_id=? AND linked_incident_id <> ''
+                ORDER BY created_at DESC
+                """,
+                (normalized_task_id,),
+            ).fetchall()
+            observation_map: Dict[str, Dict[str, Any]] = {}
+            for row in observation_rows:
+                incident_id = str(row["linked_incident_id"] or "").strip()
+                if not incident_id:
+                    continue
+                entry = observation_map.setdefault(
+                    incident_id,
+                    {"types": [], "created_at": 0},
+                )
+                obs_type = str(row["observation_type"] or "").strip()
+                if obs_type and obs_type not in entry["types"]:
+                    entry["types"].append(obs_type)
+                entry["created_at"] = max(int(entry["created_at"] or 0), int(row["created_at"] or 0))
+
+            incident_rows = conn.execute(
+                """
+                SELECT
+                    i.*,
+                    f.category,
+                    f.short_reason,
+                    f.matched_patterns_json,
+                    j.source_kind,
+                    j.file_name,
+                    j.file_hash,
+                    j.file_size,
+                    j.event_id,
+                    j.scan_task_id,
+                    j.status AS job_status,
+                    j.created_at AS job_created_at,
+                    j.started_at AS job_started_at,
+                    j.finished_at AS job_finished_at
+                FROM scan_incidents i
+                LEFT JOIN scan_findings f ON f.id=i.finding_id
+                LEFT JOIN scan_jobs j ON j.id=i.job_id
+                WHERE
+                    j.scan_task_id=?
+                    OR i.id IN (
+                        SELECT linked_incident_id
+                        FROM scan_task_file_observations
+                        WHERE scan_task_id=? AND linked_incident_id <> ''
+                    )
+                ORDER BY i.created_at DESC
+                """,
+                (normalized_task_id, normalized_task_id),
+            ).fetchall()
+
+        task = self._serialize_task_row(task_row, now_ts=now_ts)
+        task["hostname"] = str(task_row["hostname"] or "").strip()
+
+        incidents: List[Dict[str, Any]] = []
+        severity_counts: Dict[str, int] = {}
+        status_counts: Dict[str, int] = {}
+        seen_incident_ids = set()
+        for row in incident_rows:
+            item = dict(row)
+            incident_id = str(item.get("id") or "").strip()
+            if incident_id in seen_incident_ids:
+                continue
+            seen_incident_ids.add(incident_id)
+            observation_entry = observation_map.get(incident_id, {})
+            observation_types = ", ".join(observation_entry.get("types") or [])
+            item["matched_patterns"] = _json_loads(item.pop("matched_patterns_json", "[]"), [])
+            item["file_ext"] = _file_ext_from_values(item.get("file_name"), item.get("file_path"))
+            item["observation_types"] = observation_types or ("found_new" if str(item.get("scan_task_id") or "") == normalized_task_id else "")
+            item["observation_created_at"] = int(observation_entry.get("created_at") or item.get("created_at") or 0)
+            severity = str(item.get("severity") or "none").strip().lower() or "none"
+            status_value = str(item.get("status") or "").strip().lower()
+            severity_counts[severity] = int(severity_counts.get(severity, 0) + 1)
+            status_counts[status_value] = int(status_counts.get(status_value, 0) + 1)
+            incidents.append(item)
+
+        result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        summary = {
+            "hostname": task.get("hostname") or "",
+            "jobs_total": int((job_counts_row or {})["jobs_total"] or result.get("jobs_total") or 0),
+            "jobs_pending": int((job_counts_row or {})["jobs_pending"] or result.get("jobs_pending") or 0),
+            "jobs_done_clean": int((job_counts_row or {})["jobs_done_clean"] or result.get("jobs_done_clean") or 0),
+            "jobs_done_with_incident": int((job_counts_row or {})["jobs_done_with_incident"] or result.get("jobs_done_with_incident") or 0),
+            "jobs_failed": int((job_counts_row or {})["jobs_failed"] or result.get("jobs_failed") or 0),
+            "found_new": int((observation_counts_row or {})["found_new"] or 0),
+            "found_duplicate": int((observation_counts_row or {})["found_duplicate"] or 0),
+            "deleted": int((observation_counts_row or {})["deleted_count"] or 0),
+            "cleaned": int((observation_counts_row or {})["cleaned_count"] or 0),
+            "moved": int((observation_counts_row or {})["moved_count"] or 0),
+            "observations_total": int((observation_counts_row or {})["observations_total"] or 0),
+            "incidents_total": len(incidents),
+            "severity_counts": severity_counts,
+            "status_counts": status_counts,
+        }
+        return {"task": task, "summary": summary, "incidents": incidents}
 
     def list_agents(self) -> List[Dict[str, Any]]:
         now_ts = _now_ts()
@@ -3073,6 +3549,13 @@ class ScanStore:
             queue_expired = conn.execute(
                 "SELECT COUNT(*) as c FROM scan_tasks WHERE status='expired'",
             ).fetchone()["c"]
+            job_rows = conn.execute(
+                """
+                SELECT status, source_kind, COUNT(*) as c
+                FROM scan_jobs
+                GROUP BY status, source_kind
+                """,
+            ).fetchall()
             sev_rows = conn.execute(
                 """
                 SELECT severity, COUNT(*) as c
@@ -3113,7 +3596,15 @@ class ScanStore:
                 LIMIT 12
                 """
             ).fetchall()
+            ocr_timeout_jobs = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM scan_jobs
+                WHERE error_text='OCR timeout'
+                """
+            ).fetchone()["c"]
 
+        transient_stats = self.transient_pdf_spool_stats()
         daily_map = {str(row["day_key"]): int(row["c"] or 0) for row in day_rows}
         daily: List[Dict[str, Any]] = []
         start_day = window_start - (window_start % day_seconds)
@@ -3121,6 +3612,41 @@ class ScanStore:
             day_ts = start_day + idx * day_seconds
             day_key = time.strftime("%Y-%m-%d", time.gmtime(day_ts))
             daily.append({"date": day_key, "count": int(daily_map.get(day_key, 0))})
+
+        job_counts: Dict[str, int] = {
+            "queued": 0,
+            "processing": 0,
+            "done_clean": 0,
+            "done_with_incident": 0,
+            "failed": 0,
+            "total": 0,
+            "pdf_queued": 0,
+            "pdf_processing": 0,
+            "pdf_done_clean": 0,
+            "pdf_done_with_incident": 0,
+            "pdf_failed": 0,
+            "pdf_total": 0,
+            "text_queued": 0,
+            "text_processing": 0,
+        }
+        for row in job_rows:
+            status = str(row["status"] or "unknown").strip().lower() or "unknown"
+            source_kind = str(row["source_kind"] or "unknown").strip().lower() or "unknown"
+            count = int(row["c"] or 0)
+            job_counts[status] = int(job_counts.get(status, 0)) + count
+            job_counts["total"] += count
+            if source_kind in {"pdf", "pdf_slice"}:
+                key = f"pdf_{status}"
+                job_counts[key] = int(job_counts.get(key, 0)) + count
+                job_counts["pdf_total"] += count
+            elif source_kind == "text":
+                key = f"text_{status}"
+                job_counts[key] = int(job_counts.get(key, 0)) + count
+
+        job_counts["pending"] = int(job_counts.get("queued", 0)) + int(job_counts.get("processing", 0))
+        job_counts["completed"] = int(job_counts.get("done_clean", 0)) + int(job_counts.get("done_with_incident", 0))
+        job_counts["pdf_pending"] = int(job_counts.get("pdf_queued", 0)) + int(job_counts.get("pdf_processing", 0))
+        job_counts["pdf_completed"] = int(job_counts.get("pdf_done_clean", 0)) + int(job_counts.get("pdf_done_with_incident", 0))
 
         return {
             "totals": {
@@ -3131,7 +3657,24 @@ class ScanStore:
                 "incidents_new": int(incidents_new),
                 "queue_active": int(queue_active),
                 "queue_expired": int(queue_expired),
+                "server_queue_pending": int(job_counts["pending"]),
+                "server_queue_queued": int(job_counts["queued"]),
+                "server_queue_processing": int(job_counts["processing"]),
+                "server_pdf_pending": int(job_counts["pdf_pending"]),
+                "server_pdf_queued": int(job_counts["pdf_queued"]),
+                "server_pdf_processing": int(job_counts["pdf_processing"]),
+                "server_pdf_processed": int(job_counts["pdf_completed"]),
+                "server_pdf_done_clean": int(job_counts["pdf_done_clean"]),
+                "server_pdf_done_with_incident": int(job_counts["pdf_done_with_incident"]),
+                "server_pdf_failed": int(job_counts["pdf_failed"]),
+                "server_jobs_processed": int(job_counts["completed"]),
+                "server_jobs_failed": int(job_counts["failed"]),
+                "transient_pdf_count": int(transient_stats["count"]),
+                "transient_pdf_gb": float(transient_stats["gb"]),
+                "ocr_timeout_jobs": int(ocr_timeout_jobs or 0),
             },
+            "job_queue": job_counts,
+            "transient_pdf_spool": transient_stats,
             "by_severity": [{"severity": str(row["severity"] or "unknown"), "count": int(row["c"] or 0)} for row in sev_rows],
             "by_branch": [{"branch": str(row["branch"] or "Без филиала"), "count": int(row["c"] or 0)} for row in branch_rows],
             "daily": daily,

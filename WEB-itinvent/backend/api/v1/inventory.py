@@ -925,15 +925,19 @@ def _resolve_sql_context_cached(
     normalized_db_id = _normalize_text(db_id)
     if not normalized_db_id:
         return None
+    cached: Optional[Dict[str, Any]] = None
     if app_store is not None:
         try:
             cached = app_store.get_sql_context(mac_address=mac_address, hostname=hostname, db_id=normalized_db_id)
-            if isinstance(cached, dict):
+            if isinstance(cached, dict) and (_normalize_text(cached.get("inv_no")) or _normalize_text(cached.get("model_name"))):
                 return cached
         except Exception as exc:
             logger.debug("Inventory SQL context cache read skipped: %s", exc)
+            cached = None
 
     resolved = _resolve_sql_context(mac_address, hostname, normalized_db_id)
+    if not isinstance(resolved, dict) and isinstance(cached, dict):
+        return cached
     if app_store is not None and isinstance(resolved, dict):
         try:
             app_store.upsert_sql_context(
@@ -1443,6 +1447,8 @@ def _build_computers_search_payload(
             record["branch_name"] = _normalize_text(sql_context.get("branch_name"))
             record["location_name"] = _normalize_text(sql_context.get("location_name"))
             record["branch_source"] = "sql"
+            record["inventory_inv_no"] = _normalize_text(sql_context.get("inv_no"))
+            record["inventory_model_name"] = _normalize_text(sql_context.get("model_name"))
             record["database_id"] = _normalize_text(sql_context.get("database_id"))
             record["database_name"] = _normalize_text(sql_context.get("database_name")) or record["database_id"]
             if not record.get("user_full_name"):

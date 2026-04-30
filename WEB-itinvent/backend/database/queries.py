@@ -1020,6 +1020,81 @@ def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = No
     return db.execute_query(query, tuple(params))
 
 
+def get_transfer_act_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = None) -> List[dict]:
+    """
+    Resolve equipment records for transfer-act generation in one query.
+
+    This intentionally avoids get_equipment_by_inv() because that helper performs
+    per-call metadata discovery and would turn a multi-select act into N+1 SQL.
+    """
+    normalized_tokens: List[str] = []
+    for raw in inv_nos or []:
+        token = _normalize_inv_no_token(raw)
+        if token and token not in normalized_tokens:
+            normalized_tokens.append(token)
+
+    if not normalized_tokens:
+        return []
+
+    numeric_tokens: List[int] = []
+    for token in normalized_tokens:
+        if re.fullmatch(r"\d+", token):
+            numeric = int(token)
+            if numeric not in numeric_tokens:
+                numeric_tokens.append(numeric)
+
+    where_parts: List[str] = []
+    params: List[Any] = []
+
+    placeholders = ", ".join(["?"] * len(normalized_tokens))
+    where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
+    params.extend([token.upper() for token in normalized_tokens])
+
+    if numeric_tokens:
+        placeholders = ", ".join(["?"] * len(numeric_tokens))
+        where_parts.append(f"TRY_CONVERT(BIGINT, i.INV_NO) IN ({placeholders})")
+        params.extend(numeric_tokens)
+
+    query = f"""
+        SELECT
+            i.ID AS id,
+            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
+            i.SERIAL_NO AS serial_no,
+            i.HW_SERIAL_NO AS hw_serial_no,
+            i.PART_NO AS part_no,
+            i.CI_TYPE AS ci_type,
+            i.TYPE_NO AS type_no,
+            i.MODEL_NO AS model_no,
+            i.STATUS_NO AS status_no,
+            i.EMPL_NO AS empl_no,
+            i.BRANCH_NO AS branch_no,
+            i.LOC_NO AS loc_no,
+            t.TYPE_NAME AS type_name,
+            m.MODEL_NAME AS model_name,
+            v.VENDOR_NAME AS vendor_name,
+            s.DESCR AS status,
+            o.OWNER_DISPLAY_NAME AS employee_name,
+            o.OWNER_DEPT AS employee_dept,
+            o.OWNER_EMAIL AS employee_email,
+            b.BRANCH_NAME AS branch_name,
+            l.DESCR AS location,
+            i.DESCR AS DESCRIPTION
+        FROM ITEMS i
+        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+        LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
+        LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
+        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+        WHERE i.CI_TYPE = 1
+          AND ({' OR '.join(where_parts)})
+        ORDER BY TRY_CONVERT(BIGINT, i.INV_NO), i.ID
+    """
+    db = get_db(db_id)
+    return db.execute_query(query, tuple(params))
+
+
 def find_duplicate_uploaded_act(
     document_title: str,
     file_name: str,
@@ -3756,6 +3831,7 @@ def resolve_pc_context_by_mac_or_hostname(
                 i.MAC_ADDRESS as mac_address,
                 i.NETBIOS_NAME as network_name,
                 i.IP_ADDRESS as ip_address,
+                m.MODEL_NAME as model_name,
                 i.BRANCH_NO as branch_no,
                 i.LOC_NO as loc_no,
                 b.BRANCH_NAME as branch_name,
@@ -3763,6 +3839,7 @@ def resolve_pc_context_by_mac_or_hostname(
                 i.EMPL_NO as empl_no,
                 o.OWNER_DISPLAY_NAME as employee_name
             FROM ITEMS i
+            LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
             LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
             LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
             LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
@@ -3790,6 +3867,7 @@ def resolve_pc_context_by_mac_or_hostname(
                 i.MAC_ADDRESS as mac_address,
                 i.NETBIOS_NAME as network_name,
                 i.IP_ADDRESS as ip_address,
+                m.MODEL_NAME as model_name,
                 i.BRANCH_NO as branch_no,
                 i.LOC_NO as loc_no,
                 b.BRANCH_NAME as branch_name,
@@ -3797,6 +3875,7 @@ def resolve_pc_context_by_mac_or_hostname(
                 i.EMPL_NO as empl_no,
                 o.OWNER_DISPLAY_NAME as employee_name
             FROM ITEMS i
+            LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
             LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
             LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
             LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO

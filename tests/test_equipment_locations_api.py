@@ -16,7 +16,19 @@ from backend.database import queries as db_queries  # noqa: E402
 
 
 def _user():
-    return SimpleNamespace(username="tester")
+    return SimpleNamespace(id=1, username="tester", role="operator", full_name="Tester")
+
+
+class _Background:
+    def __init__(self):
+        self.tasks = []
+
+    def add_task(self, func, **kwargs):
+        self.tasks.append((func, kwargs))
+
+    def run_all(self):
+        for func, kwargs in list(self.tasks):
+            func(**kwargs)
 
 
 def _forbid_branch_location_check(*args, **kwargs):
@@ -54,9 +66,14 @@ async def test_transfer_endpoint_uses_shared_execution_service(monkeypatch):
         new_employee="New Owner",
         new_employee_no=55,
     )
-    result = await equipment_api.transfer_equipment(payload, db_id="main", current_user=_user())
+    background = _Background()
+    result = await equipment_api.transfer_equipment(payload, background_tasks=background, db_id="main", current_user=_user())
 
-    assert result.success_count == 1
+    assert result.job_id
+    assert result.job_status == "queued"
+    background.run_all()
+    completed = equipment_api.transfer_act_job_service.response_payload(result.job_id)
+    assert completed["success_count"] == 1
     assert calls[0]["payload"] is payload
     assert calls[0]["db_id"] == "main"
     assert calls[0]["allow_create_owner"] is True
@@ -276,10 +293,13 @@ async def test_transfer_accepts_existing_location_without_branch_mapping(monkeyp
         loc_no=999,
     )
 
-    result = await equipment_api.transfer_equipment(payload, db_id="main", current_user=_user())
+    background = _Background()
+    result = await equipment_api.transfer_equipment(payload, background_tasks=background, db_id="main", current_user=_user())
+    background.run_all()
+    completed = equipment_api.transfer_act_job_service.response_payload(result.job_id)
 
-    assert result.success_count == 1
-    assert result.failed_count == 0
+    assert completed["success_count"] == 1
+    assert completed["failed_count"] == 0
 
 
 @pytest.mark.asyncio
@@ -298,9 +318,9 @@ async def test_transfer_act_only_uses_current_owner_without_updating_inventory(m
     monkeypatch.setattr(equipment_api.queries, "get_owner_email_by_no", lambda owner_no, db_id=None: "issuer@example.test")
     monkeypatch.setattr(
         equipment_api.queries,
-        "get_equipment_by_inv",
-        lambda inv_no, db_id=None: {
-            "inv_no": inv_no,
+        "get_transfer_act_items_by_inv_nos",
+        lambda inv_no, db_id=None: [{
+            "inv_no": "1001",
             "serial_no": "SN-1",
             "part_no": "PN-1",
             "type_name": "Notebook",
@@ -308,7 +328,7 @@ async def test_transfer_act_only_uses_current_owner_without_updating_inventory(m
             "employee_name": "Current Holder",
             "employee_dept": "Finance",
             "employee_email": "holder@example.test",
-        },
+        }],
     )
 
     def fail_transfer(**kwargs):
@@ -336,12 +356,17 @@ async def test_transfer_act_only_uses_current_owner_without_updating_inventory(m
         issuer_owner_no=77,
     )
 
-    result = await equipment_api.create_transfer_act_without_move(payload, db_id="main", _=_user())
+    background = _Background()
+    result = await equipment_api.create_transfer_act_without_move(payload, background_tasks=background, db_id="main", _=_user())
+    assert result.job_id
+    assert result.job_status == "queued"
+    background.run_all()
+    completed = equipment_api.transfer_act_job_service.response_payload(result.job_id)
 
-    assert result.success_count == 1
-    assert result.failed_count == 0
-    assert result.acts[0].old_employee == "Issuer User"
-    assert result.acts[0].new_employee == "Current Holder"
+    assert completed["success_count"] == 1
+    assert completed["failed_count"] == 0
+    assert completed["acts"][0]["old_employee"] == "Issuer User"
+    assert completed["acts"][0]["new_employee"] == "Current Holder"
     assert captured["issuer_name"] == "Issuer User"
     assert captured["issuer_email"] == "issuer@example.test"
     assert captured["items"][0]["employee_name"] == "Current Holder"

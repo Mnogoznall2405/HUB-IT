@@ -93,6 +93,9 @@ tmp_pytest_*/
 pytest-of-*/
 codex_tmp_*/
 _codex_*/
+iz/Py.txt
+iz/move_log_*.csv
+iz/moved_files/
 WEB-itinvent/.tmp_*/
 WEB-itinvent/backend/.tmp_test_chat_uploads/
 WEB-itinvent/frontend/*_output.txt

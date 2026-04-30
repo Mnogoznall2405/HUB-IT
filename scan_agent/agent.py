@@ -844,7 +844,56 @@ class ScanAgent:
             },
         }
 
+    def _send_pdf_slice_ingest(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        raw_b64 = str(payload.get("pdf_slice_b64") or "").strip()
+        if not raw_b64:
+            return {"success": False, "deduped": False, "fallback": True}
+        try:
+            pdf_bytes = base64.b64decode(raw_b64, validate=False)
+        except Exception as exc:
+            logging.warning("PDF slice payload decode failed: %s", exc)
+            self._last_error = "INGEST_PDF_SLICE_DECODE"
+            return {"success": False, "deduped": False, "fallback": False}
+        if not pdf_bytes:
+            self._last_error = "INGEST_PDF_SLICE_EMPTY"
+            return {"success": False, "deduped": False, "fallback": False}
+
+        metadata = dict(payload or {})
+        metadata.pop("pdf_slice_b64", None)
+        try:
+            response = self._send(
+                "POST",
+                self._url("ingest/pdf-slice"),
+                data={"metadata_json": json.dumps(metadata, ensure_ascii=False)},
+                files={"pdf_slice": ("slice.pdf", pdf_bytes, "application/pdf")},
+            )
+            if response.status_code in {404, 405, 501}:
+                self._last_error = f"INGEST_PDF_SLICE_UNAVAILABLE_{response.status_code}"
+                return {"success": False, "deduped": False, "fallback": True}
+            if response.status_code >= 300:
+                logging.warning("PDF slice ingest failed status=%s body=%s", response.status_code, response.text[:300])
+                self._last_error = f"INGEST_HTTP_{response.status_code}"
+                return {"success": False, "deduped": False, "fallback": False}
+            self._last_ingest_ok_at = int(time.time())
+            self._last_error = ""
+            data = response.json() if response.content else {}
+            if not isinstance(data, dict):
+                data = {}
+            return {"success": True, "deduped": bool(data.get("deduped")), "fallback": False}
+        except Exception as exc:
+            logging.warning("PDF slice ingest request error: %s", exc)
+            self._last_error = f"INGEST_ERR:{type(exc).__name__}"
+            return {"success": False, "deduped": False, "fallback": True}
+
     def _send_ingest(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if (
+            str(payload.get("source_kind") or "").strip().lower() == "pdf_slice"
+            and str(payload.get("pdf_slice_b64") or "").strip()
+        ):
+            pdf_result = self._send_pdf_slice_ingest(payload)
+            if pdf_result.get("success") or not bool(pdf_result.get("fallback")):
+                return pdf_result
+
         try:
             response = self._send("POST", self._url("ingest"), json=payload)
             if response.status_code >= 300:

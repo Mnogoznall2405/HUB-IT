@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import scan_server.app as scan_app
 from scan_server.app import IngestPayload
 from scan_server.database import ScanStore
+from starlette.datastructures import UploadFile
+from fastapi import HTTPException
 
 
 def _make_store(temp_dir: str) -> ScanStore:
@@ -57,6 +61,70 @@ def test_ingest_touches_agent_presence_and_exposes_active_work(temp_dir, monkeyp
     assert item["queue_size"] >= 1
     assert item["active_task"]["command"] == "scan_now"
     assert item["active_task"]["status"] == "queued"
+
+
+def test_ingest_returns_429_when_pdf_backpressure_is_active(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    monkeypatch.setattr(scan_app, "store", store)
+    monkeypatch.setattr(
+        store,
+        "ingest_backpressure_status",
+        lambda **kwargs: {"active": True, "reasons": ["pdf_pending_limit"], "pdf_pending": 25000},
+    )
+
+    payload = IngestPayload(
+        agent_id="agent-1",
+        hostname="HOST-01",
+        file_path=r"C:\Scan\sample.pdf",
+        file_name="sample.pdf",
+        file_hash="hash-1",
+        source_kind="pdf_slice",
+        pdf_slice_b64="JVBERi0xLjQK",
+    )
+
+    try:
+        asyncio.run(
+            scan_app.ingest(
+                payload,
+                _fake_request("10.105.0.18"),
+                x_api_key=scan_app.config.api_keys[0],
+            )
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 429
+        assert exc.headers["Retry-After"] == str(scan_app.config.ingest_retry_after_sec)
+    else:
+        raise AssertionError("Expected HTTPException")
+
+
+def test_ingest_pdf_slice_accepts_multipart_metadata_and_spools_payload(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    monkeypatch.setattr(scan_app, "store", store)
+    metadata = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "branch": "branch",
+        "file_path": r"C:\Scan\multipart.pdf",
+        "file_name": "multipart.pdf",
+        "file_hash": "hash-multipart",
+        "file_size": 2048,
+        "source_kind": "pdf_slice",
+        "event_id": "multipart-event",
+    }
+    upload = UploadFile(filename="multipart.pdf", file=BytesIO(b"%PDF-1.4 multipart"))
+
+    result = asyncio.run(
+        scan_app.ingest_pdf_slice(
+            _fake_request("10.105.0.18"),
+            metadata_json=json.dumps(metadata),
+            pdf_slice=upload,
+            x_api_key=scan_app.config.api_keys[0],
+        )
+    )
+
+    assert result["success"] is True
+    job_id = result["job_id"]
+    assert store.read_job_pdf_spool(job_id=job_id) == b"%PDF-1.4 multipart"
 
 
 def test_lifespan_purges_legacy_artifacts_before_worker_start(monkeypatch):
@@ -111,7 +179,7 @@ def test_agents_activity_returns_batched_runtime_state(temp_dir, monkeypatch):
     )
     store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
 
-    result = asyncio.run(scan_app.agents_activity(agent_id=["agent-1"], _={}))
+    result = scan_app.agents_activity(agent_id=["agent-1"], _={})
 
     assert result["items"][0]["agent_id"] == "agent-1"
     assert result["items"][0]["queue_size"] >= 1
@@ -119,7 +187,7 @@ def test_agents_activity_returns_batched_runtime_state(temp_dir, monkeypatch):
 
 
 def test_patterns_endpoint_returns_yaml_patterns():
-    result = asyncio.run(scan_app.patterns(_={}))
+    result = scan_app.patterns(_={})
 
     assert result["total"] >= 1
     assert any(item["id"] == "loan_keyword" for item in result["items"])

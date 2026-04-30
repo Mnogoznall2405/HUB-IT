@@ -9,7 +9,11 @@ import mimetypes
 import os
 import re
 import smtplib
+import subprocess
+import sys
 import tempfile
+import threading
+import time
 from datetime import datetime
 from email import encoders
 from email.mime.base import MIMEBase
@@ -30,6 +34,7 @@ BOT_ENV_PATH = PROJECT_ROOT / ".env"
 BOT_ENV_VALUES = dotenv_values(str(BOT_ENV_PATH)) if BOT_ENV_PATH.exists() else {}
 
 _ACT_STORE: dict[str, dict[str, Any]] = {}
+_PDF_CONVERT_LOCK = threading.Lock()
 
 
 def _read_env(name: str, default: Optional[str] = None) -> Optional[str]:
@@ -250,8 +255,36 @@ def _try_convert_to_pdf(docx_path: Path) -> tuple[Path, str]:
         return docx_path, "docx"
 
     pdf_path = docx_path.with_suffix(".pdf")
+    timeout_sec = max(5, int(_read_env("TRANSFER_ACT_PDF_TIMEOUT_SEC", "45") or "45"))
+    started = time.monotonic()
     try:
-        convert(str(docx_path), str(pdf_path))
+        code = (
+            "import sys\n"
+            "from docx2pdf import convert\n"
+            "convert(sys.argv[1], sys.argv[2])\n"
+        )
+        with _PDF_CONVERT_LOCK:
+            completed = subprocess.run(
+                [sys.executable, "-c", code, str(docx_path), str(pdf_path)],
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                timeout=timeout_sec,
+                check=False,
+                text=True,
+            )
+        elapsed = time.monotonic() - started
+        if completed.returncode != 0:
+            logger.warning(
+                "DOCX->PDF conversion failed rc=%s elapsed=%.2fs stderr=%s",
+                completed.returncode,
+                elapsed,
+                (completed.stderr or "").strip()[:500],
+            )
+            return docx_path, "docx"
+        logger.info("DOCX->PDF conversion completed elapsed=%.2fs path=%s", elapsed, pdf_path)
+    except subprocess.TimeoutExpired:
+        logger.warning("DOCX->PDF conversion timeout after %ss path=%s", timeout_sec, docx_path)
+        return docx_path, "docx"
     except Exception as exc:
         logger.warning("DOCX->PDF conversion failed: %s", exc)
         return docx_path, "docx"
@@ -269,6 +302,24 @@ def _try_convert_to_pdf(docx_path: Path) -> tuple[Path, str]:
 def get_act_record(act_id: str) -> Optional[dict[str, Any]]:
     """Get act record by ID."""
     return _ACT_STORE.get(str(act_id or "").strip())
+
+
+def register_act_records(records: list[dict[str, Any]]) -> None:
+    """Restore generated act records into the process-local download/email registry."""
+    for record in records or []:
+        act_id = str(record.get("act_id") or "").strip()
+        if act_id:
+            _ACT_STORE[act_id] = dict(record)
+
+
+def get_act_records(act_ids: list[str]) -> list[dict[str, Any]]:
+    """Get process-local generated act records for persistence."""
+    records: list[dict[str, Any]] = []
+    for act_id in act_ids or []:
+        record = get_act_record(str(act_id or "").strip())
+        if record:
+            records.append(dict(record))
+    return records
 
 
 def generate_transfer_acts(
