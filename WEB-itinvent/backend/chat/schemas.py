@@ -42,13 +42,17 @@ class ChatForwardPreview(BaseModel):
 class ChatMessageResponse(BaseModel):
     id: str
     conversation_id: str
-    kind: Literal["text", "task_share", "file"] = "text"
+    kind: Literal["text", "task_share", "file", "system"] = "text"
     body_format: Literal["plain", "markdown"] = "plain"
     client_message_id: Optional[str] = None
     sender: ChatUserSummary
     body: str
     created_at: str
     edited_at: Optional[str] = None
+    is_deleted: bool = False
+    deleted_at: Optional[str] = None
+    deleted_by_user_id: Optional[int] = None
+    deleted_reason: Optional[str] = None
     is_own: bool = False
     delivery_status: Optional[Literal["sent", "read"]] = None
     read_by_count: int = 0
@@ -161,6 +165,29 @@ class GroupConversationRequest(BaseModel):
     @field_validator("title", mode="before")
     @classmethod
     def _normalize_title(cls, value):
+        return str(value or "").strip()
+
+
+class ChatConversationMembersRequest(BaseModel):
+    member_user_ids: list[int] = Field(default_factory=list)
+
+
+class ChatMemberRoleUpdateRequest(BaseModel):
+    member_role: Literal["moderator", "member"]
+
+
+class ChatOwnershipTransferRequest(BaseModel):
+    owner_user_id: int = Field(..., gt=0)
+
+
+class UpdateConversationProfileRequest(BaseModel):
+    title: Optional[str] = Field(default=None, min_length=1, max_length=255)
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def _normalize_title(cls, value):
+        if value is None:
+            return None
         return str(value or "").strip()
 
 

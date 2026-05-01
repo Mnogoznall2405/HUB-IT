@@ -5,8 +5,10 @@ export const CHAT_SOCKET_STATUS_EVENT = 'chat-ws-status';
 export const CHAT_SOCKET_ACTIVITY_EVENT = 'chat-ws-activity';
 export const CHAT_SOCKET_SNAPSHOT_EVENT = 'chat-ws-snapshot';
 export const CHAT_SOCKET_MESSAGE_CREATED_EVENT = 'chat-ws-message-created';
+export const CHAT_SOCKET_MESSAGE_DELETED_EVENT = 'chat-ws-message-deleted';
 export const CHAT_SOCKET_MESSAGE_READ_EVENT = 'chat-ws-message-read';
 export const CHAT_SOCKET_CONVERSATION_UPDATED_EVENT = 'chat-ws-conversation-updated';
+export const CHAT_SOCKET_CONVERSATION_REMOVED_EVENT = 'chat-ws-conversation-removed';
 export const CHAT_SOCKET_UNREAD_SUMMARY_EVENT = 'chat-ws-unread-summary';
 export const CHAT_SOCKET_PRESENCE_UPDATED_EVENT = 'chat-ws-presence-updated';
 export const CHAT_SOCKET_TYPING_EVENT = 'chat-ws-typing';
@@ -369,12 +371,20 @@ class ChatSocketClient {
       dispatchWindowEvent(CHAT_SOCKET_MESSAGE_CREATED_EVENT, envelope);
       return;
     }
+    if (eventType === 'chat.message.deleted') {
+      dispatchWindowEvent(CHAT_SOCKET_MESSAGE_DELETED_EVENT, envelope);
+      return;
+    }
     if (eventType === 'chat.message.read') {
       dispatchWindowEvent(CHAT_SOCKET_MESSAGE_READ_EVENT, envelope);
       return;
     }
     if (eventType === 'chat.conversation.updated') {
       dispatchWindowEvent(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.conversation.removed') {
+      dispatchWindowEvent(CHAT_SOCKET_CONVERSATION_REMOVED_EVENT, envelope);
       return;
     }
     if (eventType === 'chat.unread.summary') {

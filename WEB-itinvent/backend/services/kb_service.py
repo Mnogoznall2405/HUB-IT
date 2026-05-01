@@ -13,6 +13,14 @@ from typing import Any, Optional
 from fastapi import UploadFile
 
 from backend.json_db.manager import JSONDataManager
+from backend.services.access_policy_service import (
+    VISIBILITY_GLOBAL,
+    can_edit_kb_item,
+    can_publish_kb_item,
+    can_view_kb_item,
+    normalize_visibility_scope,
+)
+from backend.services.department_service import department_service
 
 
 KB_ARTICLES_FILE = "kb_articles.json"
@@ -75,6 +83,11 @@ def _normalize_primary_attachment_id(value: Any) -> str | None:
     return normalized or None
 
 
+def _normalize_department_id(value: Any) -> str | None:
+    normalized = str(value or "").strip()
+    return normalized or None
+
+
 class KnowledgeBaseService:
     def __init__(self, data_manager: Optional[JSONDataManager] = None) -> None:
         self.data_manager = data_manager or JSONDataManager()
@@ -90,6 +103,19 @@ class KnowledgeBaseService:
             attachments = []
         normalized["attachments"] = [item for item in attachments if isinstance(item, dict)]
         normalized["primary_attachment_id"] = _normalize_primary_attachment_id(normalized.get("primary_attachment_id"))
+        normalized["department_id"] = _normalize_department_id(normalized.get("department_id"))
+        department = department_service.get_department(normalized["department_id"]) if normalized["department_id"] else None
+        normalized["department_name"] = str((department or {}).get("name") or "").strip()
+        normalized["visibility_scope"] = normalize_visibility_scope(normalized.get("visibility_scope"), default=VISIBILITY_GLOBAL)
+        return normalized
+
+    @staticmethod
+    def _normalize_card_row(row: dict[str, Any]) -> dict[str, Any]:
+        normalized = dict(row or {})
+        normalized["department_id"] = _normalize_department_id(normalized.get("department_id"))
+        department = department_service.get_department(normalized["department_id"]) if normalized["department_id"] else None
+        normalized["department_name"] = str((department or {}).get("name") or "").strip()
+        normalized["visibility_scope"] = normalize_visibility_scope(normalized.get("visibility_scope"), default=VISIBILITY_GLOBAL)
         return normalized
 
     @staticmethod
@@ -229,6 +255,7 @@ class KnowledgeBaseService:
         tags: Optional[list[str]] = None,
         limit: int = 100,
         offset: int = 0,
+        current_user: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         rows = self._load_articles()
         query = str(q or "").strip().lower()
@@ -261,6 +288,8 @@ class KnowledgeBaseService:
             return True
 
         filtered = [self._normalize_article_row(row) for row in rows if _match(row)]
+        if current_user is not None:
+            filtered = [row for row in filtered if can_view_kb_item(current_user, row)]
         filtered.sort(key=lambda row: str(row.get("updated_at") or ""), reverse=True)
 
         safe_offset = max(0, int(offset or 0))
@@ -279,7 +308,7 @@ class KnowledgeBaseService:
             "offset": safe_offset,
         }
 
-    def get_article(self, article_id: str) -> Optional[dict[str, Any]]:
+    def get_article(self, article_id: str, *, current_user: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
         target = str(article_id or "").strip()
         if not target:
             return None
@@ -287,6 +316,8 @@ class KnowledgeBaseService:
             if str(row.get("id") or "").strip() == target:
                 normalized = self._normalize_article_row(row)
                 normalized["primary_attachment_id"] = self._effective_primary_attachment_id(normalized)
+                if current_user is not None and not can_view_kb_item(current_user, normalized):
+                    return None
                 return normalized
         return None
 
@@ -330,6 +361,12 @@ class KnowledgeBaseService:
         now = _utc_now_iso()
         article_id = str(uuid.uuid4())
         owner_name = str(payload.get("owner_name") or "").strip()
+        department_id = _normalize_department_id(payload.get("department_id"))
+        if department_id and not department_service.get_department(department_id):
+            raise ValueError("Department is not available")
+        visibility_scope = normalize_visibility_scope(payload.get("visibility_scope"), default=VISIBILITY_GLOBAL)
+        if not department_id and visibility_scope in {"department", "department_managers"}:
+            visibility_scope = VISIBILITY_GLOBAL
         article = {
             "id": article_id,
             "title": str(payload.get("title") or "").strip(),
@@ -340,6 +377,8 @@ class KnowledgeBaseService:
             "tags": _normalize_tags(payload.get("tags")),
             "owner_user_id": payload.get("owner_user_id"),
             "owner_name": owner_name,
+            "department_id": department_id,
+            "visibility_scope": visibility_scope,
             "version": 1,
             "last_reviewed_at": payload.get("last_reviewed_at"),
             "created_at": now,
@@ -374,6 +413,7 @@ class KnowledgeBaseService:
         article_id: str,
         payload: dict[str, Any],
         actor_username: str,
+        current_user: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         target = str(article_id or "").strip()
         if not target:
@@ -385,6 +425,9 @@ class KnowledgeBaseService:
             for index, row in enumerate(rows):
                 if str(row.get("id") or "") != target:
                     continue
+                normalized_before = self._normalize_article_row(row)
+                if current_user is not None and not can_edit_kb_item(current_user, normalized_before):
+                    raise PermissionError("Article is not available for editing")
 
                 if "title" in payload and payload.get("title") is not None:
                     row["title"] = str(payload.get("title") or "").strip()
@@ -400,6 +443,16 @@ class KnowledgeBaseService:
                     row["owner_user_id"] = payload.get("owner_user_id")
                 if "owner_name" in payload and payload.get("owner_name") is not None:
                     row["owner_name"] = str(payload.get("owner_name") or "").strip()
+                if "department_id" in payload:
+                    department_id = _normalize_department_id(payload.get("department_id"))
+                    if department_id and not department_service.get_department(department_id):
+                        raise ValueError("Department is not available")
+                    row["department_id"] = department_id
+                if "visibility_scope" in payload and payload.get("visibility_scope") is not None:
+                    scope = normalize_visibility_scope(payload.get("visibility_scope"), default=VISIBILITY_GLOBAL)
+                    if not _normalize_department_id(row.get("department_id")) and scope in {"department", "department_managers"}:
+                        scope = VISIBILITY_GLOBAL
+                    row["visibility_scope"] = scope
                 if "last_reviewed_at" in payload:
                     row["last_reviewed_at"] = payload.get("last_reviewed_at")
                 if "content" in payload and payload.get("content") is not None:
@@ -440,6 +493,7 @@ class KnowledgeBaseService:
         status: str,
         actor_username: str,
         change_note: str = "",
+        current_user: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         target = str(article_id or "").strip()
         next_status = str(status or "").strip().lower()
@@ -452,6 +506,9 @@ class KnowledgeBaseService:
             for index, row in enumerate(rows):
                 if str(row.get("id") or "") != target:
                     continue
+                normalized_before = self._normalize_article_row(row)
+                if current_user is not None and not can_publish_kb_item(current_user, normalized_before):
+                    raise PermissionError("Article status is not available for current user")
 
                 current_status = str(row.get("status") or "draft")
                 if current_status == "published" and next_status == "published":
@@ -485,9 +542,12 @@ class KnowledgeBaseService:
                 return normalized
         return None
 
-    def get_feed(self, *, limit: int = 50) -> list[dict[str, Any]]:
+    def get_feed(self, *, limit: int = 50, current_user: Optional[dict[str, Any]] = None) -> list[dict[str, Any]]:
         events: list[dict[str, Any]] = []
         for article in self._load_articles():
+            normalized_article = self._normalize_article_row(article)
+            if current_user is not None and not can_view_kb_item(current_user, normalized_article):
+                continue
             title = str(article.get("title") or "")
             article_id = str(article.get("id") or "")
             for revision in article.get("revisions") or []:
@@ -514,10 +574,16 @@ class KnowledgeBaseService:
         article_id: str,
         upload: UploadFile,
         actor_username: str,
+        current_user: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         target = str(article_id or "").strip()
         if not target:
             return None
+        article = self.get_article(target, current_user=current_user)
+        if not article:
+            return None
+        if current_user is not None and not can_edit_kb_item(current_user, article):
+            raise PermissionError("Article is not available for editing")
 
         raw_name = _safe_file_name(upload.filename or "file.bin")
         attachment_id = str(uuid.uuid4())
@@ -584,8 +650,9 @@ class KnowledgeBaseService:
         *,
         article_id: str,
         attachment_id: str,
+        current_user: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
-        article = self.get_article(article_id)
+        article = self.get_article(article_id, current_user=current_user)
         if not article:
             return None
 
@@ -612,11 +679,17 @@ class KnowledgeBaseService:
         article_id: str,
         attachment_id: str,
         actor_username: str,
+        current_user: Optional[dict[str, Any]] = None,
     ) -> bool:
         target_article = str(article_id or "").strip()
         target_attachment = str(attachment_id or "").strip()
         if not target_article or not target_attachment:
             return False
+        article = self.get_article(target_article, current_user=current_user)
+        if not article:
+            return False
+        if current_user is not None and not can_edit_kb_item(current_user, article):
+            raise PermissionError("Article is not available for editing")
 
         with self._lock:
             rows = self._load_articles()
@@ -852,6 +925,7 @@ class KnowledgeBaseService:
         sort: str = "updated_desc",
         limit: int = 100,
         offset: int = 0,
+        current_user: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         rows = self._load_cards()
         query = str(q or "").strip().lower()
@@ -887,7 +961,9 @@ class KnowledgeBaseService:
                     return False
             return True
 
-        filtered = [row for row in rows if _match(row)]
+        filtered = [self._normalize_card_row(row) for row in rows if _match(row)]
+        if current_user is not None:
+            filtered = [row for row in filtered if can_view_kb_item(current_user, row)]
         sort_key = str(sort or "updated_desc").strip().lower()
         if sort_key == "critical":
             filtered.sort(
@@ -912,13 +988,16 @@ class KnowledgeBaseService:
             "offset": safe_offset,
         }
 
-    def get_card(self, card_id: str) -> Optional[dict[str, Any]]:
+    def get_card(self, card_id: str, *, current_user: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
         target = str(card_id or "").strip()
         if not target:
             return None
         for row in self._load_cards():
             if str(row.get("id") or "").strip() == target:
-                return row
+                normalized = self._normalize_card_row(row)
+                if current_user is not None and not can_view_kb_item(current_user, normalized):
+                    return None
+                return normalized
         return None
 
     def create_card(
@@ -935,6 +1014,12 @@ class KnowledgeBaseService:
         external_url = str(payload.get("external_url") or "").strip()
         if not external_url:
             external_url = "#"
+        department_id = _normalize_department_id(payload.get("department_id"))
+        if department_id and not department_service.get_department(department_id):
+            raise ValueError("Department is not available")
+        visibility_scope = normalize_visibility_scope(payload.get("visibility_scope"), default=VISIBILITY_GLOBAL)
+        if not department_id and visibility_scope in {"department", "department_managers"}:
+            visibility_scope = VISIBILITY_GLOBAL
 
         card = {
             "id": card_id,
@@ -950,6 +1035,8 @@ class KnowledgeBaseService:
             "gallery": self._normalize_gallery(payload.get("gallery")),
             "quick_steps": self._normalize_steps(payload.get("quick_steps")),
             "owner_name": str(payload.get("owner_name") or "").strip(),
+            "department_id": department_id,
+            "visibility_scope": visibility_scope,
             "version": 1,
             "created_at": now,
             "updated_at": now,
@@ -978,6 +1065,7 @@ class KnowledgeBaseService:
         card_id: str,
         payload: dict[str, Any],
         actor_username: str,
+        current_user: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         target = str(card_id or "").strip()
         if not target:
@@ -988,6 +1076,9 @@ class KnowledgeBaseService:
             for index, row in enumerate(rows):
                 if str(row.get("id") or "") != target:
                     continue
+                normalized_before = self._normalize_card_row(row)
+                if current_user is not None and not can_edit_kb_item(current_user, normalized_before):
+                    raise PermissionError("Card is not available for editing")
 
                 if "title" in payload and payload.get("title") is not None:
                     row["title"] = str(payload.get("title") or "").strip()
@@ -1011,6 +1102,16 @@ class KnowledgeBaseService:
                     row["quick_steps"] = self._normalize_steps(payload.get("quick_steps"))
                 if "owner_name" in payload and payload.get("owner_name") is not None:
                     row["owner_name"] = str(payload.get("owner_name") or "").strip()
+                if "department_id" in payload:
+                    department_id = _normalize_department_id(payload.get("department_id"))
+                    if department_id and not department_service.get_department(department_id):
+                        raise ValueError("Department is not available")
+                    row["department_id"] = department_id
+                if "visibility_scope" in payload and payload.get("visibility_scope") is not None:
+                    scope = normalize_visibility_scope(payload.get("visibility_scope"), default=VISIBILITY_GLOBAL)
+                    if not _normalize_department_id(row.get("department_id")) and scope in {"department", "department_managers"}:
+                        scope = VISIBILITY_GLOBAL
+                    row["visibility_scope"] = scope
 
                 row["updated_at"] = _utc_now_iso()
                 row["updated_by"] = actor_username
@@ -1029,7 +1130,7 @@ class KnowledgeBaseService:
                 row["revisions"] = revisions
                 rows[index] = row
                 self._save_cards(rows)
-                return row
+                return self._normalize_card_row(row)
         return None
 
     def set_card_status(
@@ -1039,6 +1140,7 @@ class KnowledgeBaseService:
         status: str,
         actor_username: str,
         change_note: str = "",
+        current_user: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         target = str(card_id or "").strip()
         next_status = str(status or "").strip().lower()
@@ -1050,6 +1152,9 @@ class KnowledgeBaseService:
             for index, row in enumerate(rows):
                 if str(row.get("id") or "") != target:
                     continue
+                normalized_before = self._normalize_card_row(row)
+                if current_user is not None and not can_publish_kb_item(current_user, normalized_before):
+                    raise PermissionError("Card status is not available for current user")
 
                 current_status = str(row.get("status") or "draft").lower()
                 if current_status == "published" and next_status == "published":
@@ -1075,7 +1180,7 @@ class KnowledgeBaseService:
                 row["revisions"] = revisions
                 rows[index] = row
                 self._save_cards(rows)
-                return row
+                return self._normalize_card_row(row)
         return None
 
 

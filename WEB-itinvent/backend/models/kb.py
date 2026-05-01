@@ -11,6 +11,7 @@ from pydantic import AnyHttpUrl, BaseModel, Field
 KbArticleType = Literal["runbook", "faq", "template", "note"]
 KbArticleStatus = Literal["draft", "published", "archived"]
 KbCardPriority = Literal["low", "normal", "high", "critical"]
+KbVisibilityScope = Literal["private", "department", "department_managers", "global"]
 
 
 class KbFaqItem(BaseModel):
@@ -37,6 +38,8 @@ class KbArticleCreateRequest(BaseModel):
     tags: list[str] = Field(default_factory=list)
     owner_user_id: Optional[int] = None
     owner_name: str = Field(default="", max_length=200)
+    department_id: Optional[str] = Field(default=None, max_length=64)
+    visibility_scope: KbVisibilityScope = "global"
     content: KbContentBlock = Field(default_factory=KbContentBlock)
     last_reviewed_at: Optional[str] = None
     primary_attachment_id: Optional[str] = Field(default=None, max_length=128)
@@ -51,6 +54,8 @@ class KbArticleUpdateRequest(BaseModel):
     tags: Optional[list[str]] = None
     owner_user_id: Optional[int] = None
     owner_name: Optional[str] = Field(default=None, max_length=200)
+    department_id: Optional[str] = Field(default=None, max_length=64)
+    visibility_scope: Optional[KbVisibilityScope] = None
     content: Optional[KbContentBlock] = None
     last_reviewed_at: Optional[str] = None
     primary_attachment_id: Optional[str] = Field(default=None, max_length=128)
@@ -91,6 +96,9 @@ class KbArticleResponse(BaseModel):
     tags: list[str] = Field(default_factory=list)
     owner_user_id: Optional[int] = None
     owner_name: str = ""
+    department_id: Optional[str] = None
+    department_name: str = ""
+    visibility_scope: KbVisibilityScope = "global"
     version: int
     last_reviewed_at: Optional[str] = None
     created_at: str
@@ -150,6 +158,8 @@ class KbCardCreateRequest(BaseModel):
     gallery: list[KbCardImage] = Field(default_factory=list, max_length=3)
     quick_steps: list[str] = Field(default_factory=list, max_length=12)
     owner_name: str = Field(default="", max_length=200)
+    department_id: Optional[str] = Field(default=None, max_length=64)
+    visibility_scope: KbVisibilityScope = "global"
     change_note: str = Field(default="", max_length=300)
 
 
@@ -165,6 +175,8 @@ class KbCardUpdateRequest(BaseModel):
     gallery: Optional[list[KbCardImage]] = Field(default=None, max_length=3)
     quick_steps: Optional[list[str]] = Field(default=None, max_length=12)
     owner_name: Optional[str] = Field(default=None, max_length=200)
+    department_id: Optional[str] = Field(default=None, max_length=64)
+    visibility_scope: Optional[KbVisibilityScope] = None
     change_note: str = Field(default="", max_length=300)
 
 
@@ -187,6 +199,9 @@ class KbCardResponse(BaseModel):
     gallery: list[KbCardImage] = Field(default_factory=list)
     quick_steps: list[str] = Field(default_factory=list)
     owner_name: str = ""
+    department_id: Optional[str] = None
+    department_name: str = ""
+    visibility_scope: KbVisibilityScope = "global"
     version: int = 1
     created_at: str
     updated_at: str

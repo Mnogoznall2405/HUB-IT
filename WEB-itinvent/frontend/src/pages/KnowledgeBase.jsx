@@ -34,7 +34,7 @@ import StarOutlineOutlinedIcon from '@mui/icons-material/StarOutlineOutlined';
 import UploadFileOutlinedIcon from '@mui/icons-material/UploadFileOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
-import { kbAPI } from '../api/client';
+import { departmentsAPI, kbAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { buildOfficeUiTokens, getOfficePanelSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
@@ -57,6 +57,12 @@ const STATUS_OPTIONS = [
   { value: 'published', label: 'Опубликовано' },
   { value: 'archived', label: 'Архив' },
 ];
+const VISIBILITY_OPTIONS = [
+  { value: 'global', label: 'Глобальная' },
+  { value: 'department', label: 'Отдел' },
+  { value: 'department_managers', label: 'Начальники отдела' },
+  { value: 'private', label: 'Приватная' },
+];
 const CARD_PRIORITY_OPTIONS = [
   { value: 'low', label: 'Низкий' },
   { value: 'normal', label: 'Обычный' },
@@ -64,6 +70,7 @@ const CARD_PRIORITY_OPTIONS = [
   { value: 'critical', label: 'Критический' },
 ];
 const STATUS_LABELS = Object.fromEntries(STATUS_OPTIONS.map((item) => [item.value, item.label]));
+const VISIBILITY_LABELS = Object.fromEntries(VISIBILITY_OPTIONS.map((item) => [item.value, item.label]));
 const ARTICLE_TYPE_LABELS = Object.fromEntries(ARTICLE_TYPE_OPTIONS.map((item) => [item.value, item.label]));
 const PRIORITY_LABELS = Object.fromEntries(CARD_PRIORITY_OPTIONS.map((item) => [item.value, item.label]));
 const REVISION_ACTION_LABELS = {
@@ -89,6 +96,8 @@ const DEFAULT_ARTICLE_FORM = {
   rollback_steps: '',
   escalation: '',
   faq: '',
+  department_id: '',
+  visibility_scope: 'global',
 };
 const DEFAULT_CARD_FORM = {
   title: '',
@@ -101,7 +110,15 @@ const DEFAULT_CARD_FORM = {
   cover_image_url: '',
   quick_steps: '',
   owner_name: '',
+  department_id: '',
+  visibility_scope: 'global',
 };
+
+const getDepartmentLabel = (department) => String(department?.name || department?.department_name || department?.id || '').trim();
+
+const findDepartmentById = (options, value) => (
+  (Array.isArray(options) ? options : []).find((item) => String(item?.id || '') === String(value || '')) || null
+);
 
 const parseTags = (value) => String(value || '')
   .split(',')
@@ -151,28 +168,36 @@ const buildArticleForm = (article = {}) => {
     rollback_steps: stringifyMultiline(content?.rollback_steps),
     escalation: String(content?.escalation || ''),
     faq: stringifyFaqRows(content?.faq),
+    department_id: String(article?.department_id || ''),
+    visibility_scope: String(article?.visibility_scope || 'global'),
   };
 };
 
-const buildArticlePayload = (form) => ({
-  title: String(form?.title || '').trim(),
-  category: String(form?.category || '').trim().toLowerCase(),
-  article_type: String(form?.article_type || 'runbook').trim().toLowerCase(),
-  summary: String(form?.summary || '').trim(),
-  tags: parseTags(form?.tags),
-  owner_name: String(form?.owner_name || '').trim(),
-  last_reviewed_at: String(form?.last_reviewed_at || '').trim() || null,
-  content: {
-    overview: String(form?.overview || '').trim(),
-    symptoms: String(form?.symptoms || '').trim(),
-    checks: parseMultiline(form?.checks),
-    commands: parseMultiline(form?.commands),
-    resolution_steps: parseMultiline(form?.resolution_steps),
-    rollback_steps: parseMultiline(form?.rollback_steps),
-    escalation: String(form?.escalation || '').trim(),
-    faq: parseFaqRows(form?.faq),
-  },
-});
+const buildArticlePayload = (form) => {
+  const visibilityScope = String(form?.visibility_scope || 'global').trim() || 'global';
+  const scopedToDepartment = ['department', 'department_managers'].includes(visibilityScope);
+  return {
+    title: String(form?.title || '').trim(),
+    category: String(form?.category || '').trim().toLowerCase(),
+    article_type: String(form?.article_type || 'runbook').trim().toLowerCase(),
+    summary: String(form?.summary || '').trim(),
+    tags: parseTags(form?.tags),
+    owner_name: String(form?.owner_name || '').trim(),
+    last_reviewed_at: String(form?.last_reviewed_at || '').trim() || null,
+    department_id: scopedToDepartment ? (String(form?.department_id || '').trim() || null) : null,
+    visibility_scope: visibilityScope,
+    content: {
+      overview: String(form?.overview || '').trim(),
+      symptoms: String(form?.symptoms || '').trim(),
+      checks: parseMultiline(form?.checks),
+      commands: parseMultiline(form?.commands),
+      resolution_steps: parseMultiline(form?.resolution_steps),
+      rollback_steps: parseMultiline(form?.rollback_steps),
+      escalation: String(form?.escalation || '').trim(),
+      faq: parseFaqRows(form?.faq),
+    },
+  };
+};
 
 const buildCardForm = (card = {}) => ({
   title: String(card?.title || ''),
@@ -185,20 +210,28 @@ const buildCardForm = (card = {}) => ({
   cover_image_url: String(card?.cover_image_url || ''),
   quick_steps: stringifyMultiline(card?.quick_steps),
   owner_name: String(card?.owner_name || ''),
+  department_id: String(card?.department_id || ''),
+  visibility_scope: String(card?.visibility_scope || 'global'),
 });
 
-const buildCardPayload = (form) => ({
-  title: String(form?.title || '').trim(),
-  summary_short: String(form?.summary_short || '').trim(),
-  service_key: String(form?.service_key || '').trim().toLowerCase(),
-  external_url: String(form?.external_url || '').trim(),
-  tags: parseTags(form?.tags),
-  priority: String(form?.priority || 'normal').trim().toLowerCase(),
-  is_pinned: Boolean(form?.is_pinned),
-  cover_image_url: String(form?.cover_image_url || '').trim(),
-  quick_steps: parseMultiline(form?.quick_steps),
-  owner_name: String(form?.owner_name || '').trim(),
-});
+const buildCardPayload = (form) => {
+  const visibilityScope = String(form?.visibility_scope || 'global').trim() || 'global';
+  const scopedToDepartment = ['department', 'department_managers'].includes(visibilityScope);
+  return {
+    title: String(form?.title || '').trim(),
+    summary_short: String(form?.summary_short || '').trim(),
+    service_key: String(form?.service_key || '').trim().toLowerCase(),
+    external_url: String(form?.external_url || '').trim(),
+    tags: parseTags(form?.tags),
+    priority: String(form?.priority || 'normal').trim().toLowerCase(),
+    is_pinned: Boolean(form?.is_pinned),
+    cover_image_url: String(form?.cover_image_url || '').trim(),
+    quick_steps: parseMultiline(form?.quick_steps),
+    owner_name: String(form?.owner_name || '').trim(),
+    department_id: scopedToDepartment ? (String(form?.department_id || '').trim() || null) : null,
+    visibility_scope: visibilityScope,
+  };
+};
 
 const formatDateTime = (value) => {
   const raw = String(value || '').trim();
@@ -229,6 +262,7 @@ const resolveTemplateDeliveryState = (article) => {
 const localizeStatus = (value) => STATUS_LABELS[String(value || '').trim().toLowerCase()] || String(value || '').trim() || 'Нет статуса';
 const localizeArticleType = (value) => ARTICLE_TYPE_LABELS[String(value || '').trim().toLowerCase()] || String(value || '').trim() || 'Статья';
 const localizePriority = (value) => PRIORITY_LABELS[String(value || '').trim().toLowerCase()] || String(value || '').trim() || 'Нет приоритета';
+const localizeVisibility = (value) => VISIBILITY_LABELS[String(value || '').trim().toLowerCase()] || String(value || '').trim() || 'Глобальная';
 const localizeRevisionAction = (value) => REVISION_ACTION_LABELS[String(value || '').trim()] || String(value || '').trim() || 'Изменение';
 
 const resolveResponseFileName = (response, fallbackName) => {
@@ -258,11 +292,13 @@ function ArticleEditorDialog({
   open,
   mode,
   form,
+  departments,
   saving,
   onChange,
   onClose,
   onSubmit,
 }) {
+  const selectedDepartment = findDepartmentById(departments, form.department_id);
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
       <DialogTitle>{mode === 'create' ? 'Новая статья KB' : 'Редактировать статью KB'}</DialogTitle>
@@ -283,6 +319,35 @@ function ArticleEditorDialog({
           </Grid>
           <Grid item xs={12} md={8}>
             <TextField label="Краткое описание" fullWidth value={form.summary} onChange={(event) => onChange('summary', event.target.value)} />
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <TextField
+              select
+              label="Видимость"
+              fullWidth
+              value={form.visibility_scope}
+              onChange={(event) => onChange('visibility_scope', event.target.value)}
+            >
+              {VISIBILITY_OPTIONS.map((option) => (
+                <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <TextField
+              select
+              label="Отдел"
+              fullWidth
+              value={selectedDepartment?.id || ''}
+              onChange={(event) => onChange('department_id', event.target.value)}
+              disabled={String(form.visibility_scope || '') === 'global' || String(form.visibility_scope || '') === 'private'}
+              helperText={String(form.visibility_scope || '') === 'global' || String(form.visibility_scope || '') === 'private' ? 'Для глобальной и приватной записи отдел не нужен' : ' '}
+            >
+              <MenuItem value="">Без отдела</MenuItem>
+              {(Array.isArray(departments) ? departments : []).map((department) => (
+                <MenuItem key={department.id} value={department.id}>{getDepartmentLabel(department)}</MenuItem>
+              ))}
+            </TextField>
           </Grid>
           <Grid item xs={12} md={6}>
             <TextField label="Теги" fullWidth value={form.tags} onChange={(event) => onChange('tags', event.target.value)} placeholder="отпуск, hr, шаблон" />
@@ -348,11 +413,13 @@ function CardEditorDialog({
   open,
   mode,
   form,
+  departments,
   saving,
   onChange,
   onClose,
   onSubmit,
 }) {
+  const selectedDepartment = findDepartmentById(departments, form.department_id);
   return (
     <Dialog open={open} onClose={onClose} fullWidth maxWidth="md">
       <DialogTitle>{mode === 'create' ? 'Новая карточка KB' : 'Редактировать карточку KB'}</DialogTitle>
@@ -366,6 +433,35 @@ function CardEditorDialog({
           </Grid>
           <Grid item xs={12}>
             <TextField label="Краткое описание" fullWidth value={form.summary_short} onChange={(event) => onChange('summary_short', event.target.value)} />
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <TextField
+              select
+              label="Видимость"
+              fullWidth
+              value={form.visibility_scope}
+              onChange={(event) => onChange('visibility_scope', event.target.value)}
+            >
+              {VISIBILITY_OPTIONS.map((option) => (
+                <MenuItem key={option.value} value={option.value}>{option.label}</MenuItem>
+              ))}
+            </TextField>
+          </Grid>
+          <Grid item xs={12} md={6}>
+            <TextField
+              select
+              label="Отдел"
+              fullWidth
+              value={selectedDepartment?.id || ''}
+              onChange={(event) => onChange('department_id', event.target.value)}
+              disabled={String(form.visibility_scope || '') === 'global' || String(form.visibility_scope || '') === 'private'}
+              helperText={String(form.visibility_scope || '') === 'global' || String(form.visibility_scope || '') === 'private' ? 'Для глобальной и приватной карточки отдел не нужен' : ' '}
+            >
+              <MenuItem value="">Без отдела</MenuItem>
+              {(Array.isArray(departments) ? departments : []).map((department) => (
+                <MenuItem key={department.id} value={department.id}>{getDepartmentLabel(department)}</MenuItem>
+              ))}
+            </TextField>
           </Grid>
           <Grid item xs={12}>
             <TextField label="Ссылка" fullWidth value={form.external_url} onChange={(event) => onChange('external_url', event.target.value)} placeholder="https://wiki.zsgp.ru/" />
@@ -416,6 +512,7 @@ function KnowledgeBase() {
   const [referenceLoading, setReferenceLoading] = useState(true);
   const [categories, setCategories] = useState([]);
   const [services, setServices] = useState([]);
+  const [departments, setDepartments] = useState([]);
   const [feed, setFeed] = useState([]);
   const [feedLoading, setFeedLoading] = useState(true);
 
@@ -451,12 +548,14 @@ function KnowledgeBase() {
   const loadReferenceData = useCallback(async () => {
     setReferenceLoading(true);
     try {
-      const [categoriesPayload, servicesPayload] = await Promise.all([
+      const [categoriesPayload, servicesPayload, departmentsPayload] = await Promise.all([
         kbAPI.getCategories(),
         kbAPI.getServices(),
+        departmentsAPI.list(),
       ]);
       setCategories(Array.isArray(categoriesPayload) ? categoriesPayload : []);
       setServices(Array.isArray(servicesPayload) ? servicesPayload : []);
+      setDepartments(Array.isArray(departmentsPayload?.items) ? departmentsPayload.items : []);
     } catch (error) {
       notifyApiError(error, 'Не удалось загрузить справочники KB.', { dedupeMode: 'none' });
     } finally {
@@ -634,11 +733,19 @@ function KnowledgeBase() {
   }, []);
 
   const handleArticleDialogChange = useCallback((field, value) => {
-    setArticleForm((current) => ({ ...current, [field]: value }));
+    setArticleForm((current) => ({
+      ...current,
+      [field]: value,
+      ...(field === 'visibility_scope' && ['global', 'private'].includes(String(value || '')) ? { department_id: '' } : {}),
+    }));
   }, []);
 
   const handleCardDialogChange = useCallback((field, value) => {
-    setCardForm((current) => ({ ...current, [field]: value }));
+    setCardForm((current) => ({
+      ...current,
+      [field]: value,
+      ...(field === 'visibility_scope' && ['global', 'private'].includes(String(value || '')) ? { department_id: '' } : {}),
+    }));
   }, []);
 
   const openCreateArticleDialog = useCallback((type = 'runbook') => {
@@ -843,6 +950,8 @@ function KnowledgeBase() {
                       <Chip size="small" label={localizeStatus(item.status)} />
                       {!templateOnly ? <Chip size="small" variant="outlined" label={localizeArticleType(item.article_type)} /> : null}
                       {templateOnly ? <Chip size="small" color={templateState.color} label={templateState.label} /> : null}
+                      <Chip size="small" variant="outlined" label={localizeVisibility(item.visibility_scope)} />
+                      {item.department_name ? <Chip size="small" variant="outlined" label={item.department_name} /> : null}
                     </Stack>
                   )}
                   secondary={(
@@ -888,6 +997,8 @@ function KnowledgeBase() {
                 <Typography variant="h6" sx={{ fontWeight: 800 }}>{article.title}</Typography>
                 <Chip size="small" label={localizeStatus(article.status)} />
                 <Chip size="small" variant="outlined" label={localizeArticleType(article.article_type)} />
+                <Chip size="small" variant="outlined" label={localizeVisibility(article.visibility_scope)} />
+                {article.department_name ? <Chip size="small" variant="outlined" label={article.department_name} /> : null}
                 {String(article.article_type || '') === 'template' ? (
                   <Chip size="small" color={deliveryState.color} label={deliveryState.label} />
                 ) : null}
@@ -1113,6 +1224,8 @@ function KnowledgeBase() {
                           <Typography sx={{ fontWeight: 700 }}>{card.title}</Typography>
                           <Chip size="small" label={localizeStatus(card.status)} />
                           <Chip size="small" color={card.priority === 'critical' ? 'error' : card.priority === 'high' ? 'warning' : 'default'} label={localizePriority(card.priority)} />
+                          <Chip size="small" variant="outlined" label={localizeVisibility(card.visibility_scope)} />
+                          {card.department_name ? <Chip size="small" variant="outlined" label={card.department_name} /> : null}
                           {card.is_pinned ? <Chip size="small" color="primary" label="закреплено" /> : null}
                         </Stack>
                       )}
@@ -1151,6 +1264,8 @@ function KnowledgeBase() {
                     <Typography variant="h6" sx={{ fontWeight: 800 }}>{selectedCard.title}</Typography>
                     <Chip size="small" label={localizeStatus(selectedCard.status)} />
                     <Chip size="small" color={selectedCard.priority === 'critical' ? 'error' : selectedCard.priority === 'high' ? 'warning' : 'default'} label={localizePriority(selectedCard.priority)} />
+                    <Chip size="small" variant="outlined" label={localizeVisibility(selectedCard.visibility_scope)} />
+                    {selectedCard.department_name ? <Chip size="small" variant="outlined" label={selectedCard.department_name} /> : null}
                     {selectedCard.is_pinned ? <Chip size="small" color="primary" label="закреплено" /> : null}
                   </Stack>
                   <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
@@ -1418,6 +1533,7 @@ function KnowledgeBase() {
           open={articleDialogOpen}
           mode={articleDialogMode}
           form={articleForm}
+          departments={departments}
           saving={savingArticle}
           onChange={handleArticleDialogChange}
           onClose={() => setArticleDialogOpen(false)}
@@ -1428,6 +1544,7 @@ function KnowledgeBase() {
           open={cardDialogOpen}
           mode={cardDialogMode}
           form={cardForm}
+          departments={departments}
           saving={savingCard}
           onChange={handleCardDialogChange}
           onClose={() => setCardDialogOpen(false)}

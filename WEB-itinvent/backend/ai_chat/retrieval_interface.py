@@ -8,6 +8,7 @@ from sqlalchemy import cast, func, literal_column, select
 from sqlalchemy.dialects.postgresql import JSONB
 
 from backend.ai_chat.retrieval import AiKbRetrievalService
+from backend.services.access_policy_service import can_view_kb_item
 from backend.appdb.db import app_session
 from backend.appdb.models import AppAiKbChunk
 
@@ -36,7 +37,7 @@ class AiKbRetrievalBackend(Protocol):
     def ensure_index_fresh(self, *, image_extractor=None, max_age_sec: float | None = None) -> None:
         ...
 
-    def retrieve(self, *, query: str, allowed_scope: list[str] | None = None, limit: int = 5) -> list[dict[str, Any]]:
+    def retrieve(self, *, query: str, allowed_scope: list[str] | None = None, limit: int = 5, current_user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         ...
 
     def retrieve_template_candidates(
@@ -45,6 +46,7 @@ class AiKbRetrievalBackend(Protocol):
         query: str,
         allowed_scope: list[str] | None = None,
         limit: int = 5,
+        current_user: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         ...
 
@@ -67,14 +69,14 @@ class PostgresFtsAiKbRetrievalAdapter:
         except Exception:
             return False
 
-    def retrieve(self, *, query: str, allowed_scope: list[str] | None = None, limit: int = 5) -> list[dict[str, Any]]:
+    def retrieve(self, *, query: str, allowed_scope: list[str] | None = None, limit: int = 5, current_user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         if not self._is_postgres_available():
-            return self._fallback.retrieve(query=query, allowed_scope=allowed_scope, limit=limit)
+            return self._fallback.retrieve(query=query, allowed_scope=allowed_scope, limit=limit, current_user=current_user)
         try:
-            return self._retrieve_postgres_fts(query=query, allowed_scope=allowed_scope, limit=limit)
+            return self._retrieve_postgres_fts(query=query, allowed_scope=allowed_scope, limit=limit, current_user=current_user)
         except Exception:
             logger.exception("AI KB Postgres FTS retrieval failed; falling back to Python scorer")
-            return self._fallback.retrieve(query=query, allowed_scope=allowed_scope, limit=limit)
+            return self._fallback.retrieve(query=query, allowed_scope=allowed_scope, limit=limit, current_user=current_user)
 
     def _retrieve_postgres_fts(
         self,
@@ -82,6 +84,7 @@ class PostgresFtsAiKbRetrievalAdapter:
         query: str,
         allowed_scope: list[str] | None = None,
         limit: int = 5,
+        current_user: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         statement = self._build_postgres_fts_statement(query=query, allowed_scope=allowed_scope, limit=limit)
         if statement is None:
@@ -91,6 +94,8 @@ class PostgresFtsAiKbRetrievalAdapter:
         payloads: list[dict[str, Any]] = []
         for row, rank_value in rows:
             metadata = _load_json_object(row.metadata_json)
+            if current_user is not None and not can_view_kb_item(current_user, metadata):
+                continue
             payloads.append(
                 {
                     "score": float(rank_value or 0.0),
@@ -149,8 +154,14 @@ class PostgresFtsAiKbRetrievalAdapter:
         query: str,
         allowed_scope: list[str] | None = None,
         limit: int = 5,
+        current_user: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        return self._fallback.retrieve_template_candidates(query=query, allowed_scope=allowed_scope, limit=limit)
+        return self._fallback.retrieve_template_candidates(
+            query=query,
+            allowed_scope=allowed_scope,
+            limit=limit,
+            current_user=current_user,
+        )
 
     def get_metrics(self) -> dict[str, Any]:
         payload = dict(self._fallback.get_metrics())
@@ -165,8 +176,8 @@ class AiKbRetrievalInterface:
     def ensure_index_fresh(self, *, image_extractor=None, max_age_sec: float | None = None) -> None:
         self._backend.ensure_index_fresh(image_extractor=image_extractor, max_age_sec=max_age_sec)
 
-    def retrieve(self, *, query: str, allowed_scope: list[str] | None = None, limit: int = 5) -> list[dict[str, Any]]:
-        return self._backend.retrieve(query=query, allowed_scope=allowed_scope, limit=limit)
+    def retrieve(self, *, query: str, allowed_scope: list[str] | None = None, limit: int = 5, current_user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+        return self._backend.retrieve(query=query, allowed_scope=allowed_scope, limit=limit, current_user=current_user)
 
     def retrieve_template_candidates(
         self,
@@ -174,8 +185,14 @@ class AiKbRetrievalInterface:
         query: str,
         allowed_scope: list[str] | None = None,
         limit: int = 5,
+        current_user: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
-        return self._backend.retrieve_template_candidates(query=query, allowed_scope=allowed_scope, limit=limit)
+        return self._backend.retrieve_template_candidates(
+            query=query,
+            allowed_scope=allowed_scope,
+            limit=limit,
+            current_user=current_user,
+        )
 
     def get_metrics(self) -> dict[str, Any]:
         return self._backend.get_metrics()

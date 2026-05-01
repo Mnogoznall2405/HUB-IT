@@ -3,6 +3,10 @@ import { fireEvent, render, screen, waitFor, within } from '@testing-library/rea
 import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
+const authMocks = vi.hoisted(() => ({
+  hasPermission: vi.fn((permission) => permission !== 'announcements.write'),
+}));
+
 function installMatchMedia({ mobile = false } = {}) {
   window.matchMedia = vi.fn().mockImplementation((query) => ({
     matches: mobile ? query.includes('max-width:599.95px') : false,
@@ -40,7 +44,7 @@ vi.mock('../api/client', () => ({
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
     user: { id: 1, role: 'admin', username: 'admin' },
-    hasPermission: (permission) => permission !== 'announcements.write',
+    hasPermission: authMocks.hasPermission,
   }),
 }));
 
@@ -82,6 +86,11 @@ vi.mock('../components/layout/MainLayout', () => ({
 
 vi.mock('../components/layout/PageShell', () => ({
   default: ({ children }) => <div data-testid="page-shell">{children}</div>,
+}));
+
+vi.mock('../lib/chatFeature', () => ({
+  CHAT_FEATURE_ENABLED: true,
+  CHAT_WS_ENABLED: false,
 }));
 
 vi.mock('../components/hub/MarkdownEditor', () => ({
@@ -131,6 +140,7 @@ const createDashboardPayload = ({ announcements = [], tasks = [baseTask], summar
 
 beforeEach(() => {
   vi.clearAllMocks();
+  authMocks.hasPermission.mockImplementation((permission) => permission !== 'announcements.write');
   installMatchMedia({ mobile: false });
   mockPreferences.dashboard_mobile_sections = ['urgent', 'announcements', 'tasks'];
   savePreferencesMock.mockResolvedValue({
@@ -270,6 +280,25 @@ describe('Dashboard announcement reads helpers', () => {
     expect(screen.queryByText('Нет закреплённых заметок.')).not.toBeInTheDocument();
   });
 
+  it('keeps core quick access as four even tiles and moves announcement action outside the grid', async () => {
+    authMocks.hasPermission.mockReturnValue(true);
+
+    render(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    const quickAccessGrid = await screen.findByTestId('dashboard-quick-access-grid');
+
+    expect(within(quickAccessGrid).getByTestId('dashboard-quick-access-chat')).toBeInTheDocument();
+    expect(within(quickAccessGrid).getByTestId('dashboard-quick-access-mail')).toBeInTheDocument();
+    expect(within(quickAccessGrid).getByTestId('dashboard-quick-access-tasks')).toBeInTheDocument();
+    expect(within(quickAccessGrid).getByTestId('dashboard-quick-access-settings')).toBeInTheDocument();
+    expect(within(quickAccessGrid).queryByTestId('dashboard-quick-access-create-announcement')).not.toBeInTheDocument();
+    expect(screen.getByTestId('dashboard-extra-action-create-announcement')).toBeInTheDocument();
+  });
+
   it('renders mobile dashboard with notifications-only header and the overview as default view', async () => {
     installMatchMedia({ mobile: true });
 
@@ -289,7 +318,81 @@ describe('Dashboard announcement reads helpers', () => {
     fireEvent.click(screen.getByTestId('dashboard-mobile-tab-tasks'));
 
     expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByText('Очередь задач')).toBeInTheDocument();
+    expect(await screen.findByText('Мои задачи')).toBeInTheDocument();
+  });
+
+  it('switches mobile sections with horizontal swipes and keeps tab clicks working', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    const swipeRegion = await screen.findByTestId('dashboard-mobile-swipe-region');
+    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 260, clientY: 120 }] });
+    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 190, clientY: 126 }] });
+    expect(screen.getByTestId('dashboard-mobile-tab-announcements')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 260, clientY: 120 }] });
+    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 185, clientY: 118 }] });
+    expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 120, clientY: 120 }] });
+    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 196, clientY: 116 }] });
+    expect(screen.getByTestId('dashboard-mobile-tab-announcements')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 120, clientY: 120 }] });
+    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 194, clientY: 118 }] });
+    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.click(screen.getByTestId('dashboard-mobile-tab-tasks'));
+    expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+  });
+
+  it('ignores vertical mobile swipes and does not move beyond edge sections', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/dashboard']}>
+        <Dashboard />
+      </MemoryRouter>,
+    );
+
+    const swipeRegion = await screen.findByTestId('dashboard-mobile-swipe-region');
+    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 160, clientY: 80 }] });
+    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 220, clientY: 84 }] });
+    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 220, clientY: 80 }] });
+    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 185, clientY: 162 }] });
+    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 220, clientY: 80 }] });
+    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 181, clientY: 82 }] });
+    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 240, clientY: 100 }] });
+    fireEvent.touchCancel(swipeRegion);
+    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 170, clientY: 102 }] });
+    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.pointerDown(swipeRegion, { pointerType: 'touch', clientX: 240, clientY: 100 });
+    fireEvent.pointerCancel(swipeRegion, { pointerType: 'touch', clientX: 200, clientY: 102 });
+    fireEvent.pointerUp(swipeRegion, { pointerType: 'touch', clientX: 170, clientY: 102 });
+    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.click(screen.getByTestId('dashboard-mobile-tab-tasks'));
+    expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
+
+    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 240, clientY: 120 }] });
+    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 170, clientY: 118 }] });
+    expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
   });
 
   it('respects mobile overview section preferences and saves customization', async () => {
@@ -309,7 +412,7 @@ describe('Dashboard announcement reads helpers', () => {
     expect(overviewSections[0]).toHaveAttribute('data-testid', 'dashboard-mobile-overview-section-urgent');
     expect(overviewSections[1]).toHaveAttribute('data-testid', 'dashboard-mobile-overview-section-tasks');
 
-    fireEvent.click(screen.getByRole('button', { name: 'Действия центра' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Действия главной' }));
     fireEvent.click(await screen.findByText('Настроить экран'));
 
     expect(await screen.findByTestId('dashboard-mobile-customize-dialog')).toBeInTheDocument();
@@ -361,17 +464,17 @@ describe('Dashboard announcement reads helpers', () => {
     await screen.findByTestId('dashboard-mobile-layout');
 
     fireEvent.click(screen.getByTestId('dashboard-mobile-tab-announcements'));
-    fireEvent.click(screen.getByTestId('dashboard-mobile-filters-button'));
+    fireEvent.click(await screen.findByTestId('dashboard-mobile-filters-button'));
     expect(await screen.findByText('Фильтры заметок')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
     await waitFor(() => {
       expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId('dashboard-summary-chip-review'));
+    fireEvent.click(screen.getByTestId('dashboard-mobile-tab-tasks'));
     expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
 
-    fireEvent.click(screen.getByText('Проверить мобильный preview'));
+    fireEvent.click(await screen.findByText('Проверить мобильный preview'));
 
     await waitFor(() => {
       expect(hubAPI.getTask).toHaveBeenCalledWith('task-card-1');

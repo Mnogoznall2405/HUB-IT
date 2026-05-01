@@ -727,6 +727,52 @@ export const chatAPI = {
     return response.data;
   },
 
+  addGroupMembers: async (conversationId, memberUserIds) => {
+    const response = await apiClient.post(`/chat/conversations/${encodeURIComponent(conversationId)}/members`, {
+      member_user_ids: Array.isArray(memberUserIds) ? memberUserIds : [],
+    });
+    return response.data;
+  },
+
+  removeGroupMember: async (conversationId, userId) => {
+    const response = await apiClient.delete(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(userId)}`
+    );
+    return response.data;
+  },
+
+  updateGroupMemberRole: async (conversationId, userId, memberRole) => {
+    const response = await apiClient.patch(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/members/${encodeURIComponent(userId)}/role`,
+      { member_role: memberRole }
+    );
+    return response.data;
+  },
+
+  transferGroupOwnership: async (conversationId, ownerUserId) => {
+    const response = await apiClient.post(`/chat/conversations/${encodeURIComponent(conversationId)}/ownership`, {
+      owner_user_id: ownerUserId,
+    });
+    return response.data;
+  },
+
+  leaveGroup: async (conversationId) => {
+    const response = await apiClient.post(`/chat/conversations/${encodeURIComponent(conversationId)}/leave`);
+    return response.data;
+  },
+
+  updateGroupProfile: async (conversationId, payload) => {
+    const response = await apiClient.patch(`/chat/conversations/${encodeURIComponent(conversationId)}/profile`, payload);
+    return response.data;
+  },
+
+  deleteChatMessage: async (conversationId, messageId) => {
+    const response = await apiClient.delete(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`
+    );
+    return response.data;
+  },
+
   getThreadBootstrap: async (conversationId, params = {}, options = {}) => {
     const response = await apiClient.get(
       `/chat/conversations/${encodeURIComponent(conversationId)}/thread-bootstrap`,
@@ -1228,6 +1274,35 @@ export const kbAPI = {
   },
 };
 
+export const departmentsAPI = {
+  list: async (params = {}) => {
+    const response = await apiClient.get('/departments', { params });
+    return response.data;
+  },
+
+  getMembers: async (departmentId) => {
+    const response = await apiClient.get(`/departments/${encodeURIComponent(departmentId)}/members`);
+    return response.data;
+  },
+
+  setManagers: async (departmentId, managerUserIds = []) => {
+    const response = await apiClient.put(`/departments/${encodeURIComponent(departmentId)}/managers`, {
+      manager_user_ids: Array.isArray(managerUserIds) ? managerUserIds : [],
+    });
+    return response.data;
+  },
+
+  syncFromUsers: async () => {
+    const response = await apiClient.post('/departments/sync-from-users');
+    return response.data;
+  },
+
+  syncFromAD: async () => {
+    const response = await apiClient.post('/departments/sync-from-ad');
+    return response.data;
+  },
+};
+
 export const hubAPI = {
   getDashboard: async (params = {}) => {
     const response = await apiClient.get('/hub/dashboard', { params });
@@ -1310,13 +1385,13 @@ export const hubAPI = {
     return response;
   },
 
-  getAssignees: async () => {
-    const response = await apiClient.get('/hub/users/assignees');
+  getAssignees: async (params = {}) => {
+    const response = await apiClient.get('/hub/users/assignees', { params });
     return response.data;
   },
 
-  getControllers: async () => {
-    const response = await apiClient.get('/hub/users/controllers');
+  getControllers: async (params = {}) => {
+    const response = await apiClient.get('/hub/users/controllers', { params });
     return response.data;
   },
 
@@ -2671,6 +2746,20 @@ export const scanAPI = {
 export const adUsersAPI = {
   getPasswordStatus: async () => {
     const { data } = await apiClient.get('/ad-users/password-status');
+    return data;
+  },
+  getImportCandidates: async () => {
+    const { data } = await apiClient.get('/ad-users/import-candidates');
+    return data;
+  },
+  importToApp: async (login) => {
+    const { data } = await apiClient.post('/ad-users/import-to-app', { login });
+    return data;
+  },
+  syncToApp: async (logins = []) => {
+    const { data } = await apiClient.post('/ad-users/sync-to-app', {
+      logins: Array.isArray(logins) ? logins : [],
+    });
     return data;
   },
   assignBranch: async (payload) => {

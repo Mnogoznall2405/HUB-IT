@@ -100,13 +100,13 @@ import { MainLayoutShellContext } from './MainLayoutShellContext';
 const DRAWER_WIDTH = 240;
 const HUB_POLL_INTERVAL_MS = 20_000;
 const navigationItems = [
-  { path: '/dashboard', label: 'Центр управления', icon: <DashboardIcon />, permission: 'dashboard.read' },
+  { path: '/dashboard', label: 'Главная', icon: <DashboardIcon />, permission: 'dashboard.read' },
   { path: '/tasks', label: 'Задачи', icon: <TaskAltIcon />, permission: 'tasks.read' },
   ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', label: 'Chat', icon: <ForumOutlinedIcon />, permission: 'chat.read' }] : []),
   { path: '/mail', label: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access' },
   { path: '/database', label: 'IT-invent WEB', icon: <StorageIcon />, permission: 'database.read' },
   { path: '/networks', label: 'Сети', icon: <LanIcon />, permission: 'networks.read' },
-  { path: '/ad-users', label: 'Пользователи AD', icon: <GroupIcon />, permission: 'ad_users.read' },
+  { path: '/ad-users', label: 'Пользователи AD', icon: <GroupIcon />, adminOnly: true },
   { path: '/vcs', label: 'ВКС терминалы', icon: <VideocamIcon />, permission: 'vcs.read' },
   { path: '/mfu', label: 'МФУ', icon: <PrintIcon />, permission: 'database.read' },
   { path: '/computers', label: 'Компьютеры', icon: <ComputerIcon />, permission: 'computers.read' },
@@ -231,6 +231,7 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
   const hasTasksPermission = hasPermission('tasks.read');
   const hasChatPermission = CHAT_FEATURE_ENABLED && hasPermission('chat.read');
   const hasMailPermission = hasPermission('mail.access');
+  const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
   const activeChatConversationId = useMemo(
     () => String(new URLSearchParams(location.search).get('conversation') || '').trim(),
     [location.search],
@@ -268,7 +269,7 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
   );
   const unreadBellInboxCount = unreadHubNotificationCount + unreadMailNotificationCount;
   const visibleNavigationItems = navigationItems.filter(
-    (item) => !item.permission || hasPermission(item.permission)
+    (item) => (!item.adminOnly || isAdmin) && (!item.permission || hasPermission(item.permission))
   );
   const showNotificationsButton = hasDashboardPermission || hasTasksPermission || hasMailPermission || toastHistory.length > 0;
   const notificationsBadgeValue = (hasDashboardPermission || hasTasksPermission || hasMailPermission)

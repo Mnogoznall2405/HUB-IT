@@ -71,6 +71,37 @@ class AppUser(AppBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppDepartment(AppBase):
+    __tablename__ = "departments"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppDepartmentMembership(AppBase):
+    __tablename__ = "department_memberships"
+    __table_args__ = _table_args(
+        UniqueConstraint("department_id", "user_id", "role", name="uq_app_department_membership_role"),
+        Index("ix_app_department_memberships_user_active", "user_id", "is_active"),
+        Index("ix_app_department_memberships_department_active", "department_id", "is_active"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    department_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    role: Mapped[str] = mapped_column(String(32), nullable=False, default="member")
+    source: Mapped[str] = mapped_column(String(32), nullable=False, default="manual")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppUserMailbox(AppBase):
     __tablename__ = "user_mailboxes"
     __table_args__ = _table_args(

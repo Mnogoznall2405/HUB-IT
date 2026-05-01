@@ -360,6 +360,7 @@ export default function ChatDialogs({
   ui,
   activeConversation,
   activeConversationId,
+  currentUser,
   threadMenuAnchor,
   onCloseThreadMenu,
   threadInfoOpen = false,
@@ -374,6 +375,7 @@ export default function ChatDialogs({
   onCopyMessageLink,
   onForwardMessageFromMenu,
   onReportMessageFromMenu,
+  onDeleteMessageFromMenu,
   onSelectMessageFromMenu,
   onOpenReadsFromMessageMenu,
   onOpenAttachmentFromMessageMenu,
@@ -447,6 +449,12 @@ export default function ChatDialogs({
   conversationHeaderSubtitle,
   settingsUpdating,
   onUpdateConversationSettings,
+  onAddGroupMembers,
+  onRemoveGroupParticipant,
+  onUpdateGroupMemberRole,
+  onTransferGroupOwnership,
+  onLeaveGroup,
+  onUpdateGroupProfile,
   onOpenTask,
   searchOpen,
   onCloseSearch,
@@ -480,6 +488,8 @@ export default function ChatDialogs({
   const canForwardMessage = Boolean(messageMenuMessage?.id);
   const canReportMessage = Boolean(messageMenuMessage?.id && !messageMenuMessage?.is_own);
   const canSelectMessage = Boolean(messageMenuMessage?.id);
+  const canDeleteMessage = activeConversationKind === 'group'
+    && Boolean(messageMenuMessage?.id && !messageMenuMessage?.is_deleted && messageMenuMessage?.kind !== 'system');
   const forwardConversationItems = useMemo(() => {
     const source = Array.isArray(forwardTargets) ? forwardTargets : [];
     const normalizedQuery = String(forwardConversationQuery || '').trim().toLowerCase();
@@ -776,7 +786,7 @@ export default function ChatDialogs({
           <CheckCircleOutlineRoundedIcon />
           Выбрать
         </MenuItem>
-        {canCopyMessageLink || canOpenReadsFromMessage || canOpenAttachmentFromMessage || canOpenTaskFromMessage || canReportMessage ? <Divider /> : null}
+        {canCopyMessageLink || canOpenReadsFromMessage || canOpenAttachmentFromMessage || canOpenTaskFromMessage || canReportMessage || canDeleteMessage ? <Divider /> : null}
         {canCopyMessageLink ? (
           <MenuItem onClick={() => onCopyMessageLink?.(messageMenuMessage)} disabled={!messageMenuMessage}>
             <LinkRoundedIcon />
@@ -805,6 +815,12 @@ export default function ChatDialogs({
           <MenuItem data-message-menu-tone="danger" onClick={() => onReportMessageFromMenu?.(messageMenuMessage)}>
             <FlagOutlinedIcon />
             Пожаловаться
+          </MenuItem>
+        ) : null}
+        {canDeleteMessage ? (
+          <MenuItem data-message-menu-tone="danger" onClick={() => onDeleteMessageFromMenu?.(messageMenuMessage)}>
+            <DeleteOutlineIcon />
+            Удалить сообщение
           </MenuItem>
         ) : null}
       </Menu>
@@ -1971,6 +1987,7 @@ export default function ChatDialogs({
             ui={ui}
             activeConversation={activeConversation}
             conversationHeaderSubtitle={conversationHeaderSubtitle}
+            currentUser={currentUser}
             messages={messages}
             open={infoOpen}
             embedded
@@ -1981,6 +1998,12 @@ export default function ChatDialogs({
             onOpenShare={onOpenShare}
             onOpenFilePicker={onOpenFilePicker}
             onUpdateConversationSettings={onUpdateConversationSettings}
+            onAddGroupMembers={onAddGroupMembers}
+            onRemoveGroupMember={onRemoveGroupParticipant}
+            onUpdateGroupMemberRole={onUpdateGroupMemberRole}
+            onTransferGroupOwnership={onTransferGroupOwnership}
+            onLeaveGroup={onLeaveGroup}
+            onUpdateGroupProfile={onUpdateGroupProfile}
             settingsUpdating={settingsUpdating}
             onOpenAttachmentPreview={onOpenAttachmentPreview}
             onOpenTask={onOpenTask}

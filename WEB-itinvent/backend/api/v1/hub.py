@@ -19,6 +19,7 @@ from backend.services.authorization_service import (
     PERM_DASHBOARD_READ,
     PERM_MAIL_ACCESS,
     PERM_TASKS_READ,
+    PERM_TASKS_MANAGE_ALL,
     PERM_TASKS_REVIEW,
     PERM_TASKS_WRITE,
 )
@@ -69,6 +70,8 @@ def _actor_dict(user: User) -> dict:
         "username": _normalize_text(user.username),
         "full_name": _normalize_text(getattr(user, "full_name", "")),
         "role": _normalize_text(getattr(user, "role", "")),
+        "department": _normalize_text(getattr(user, "department", "")),
+        "permissions": list(getattr(user, "permissions", []) or []),
     }
 
 
@@ -419,16 +422,18 @@ async def download_announcement_attachment(
 
 @router.get("/users/assignees")
 async def get_assignee_users(
+    department_id: str = Query("", min_length=0),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return {"items": hub_service.list_assignees()}
+    return {"items": hub_service.list_assignees(department_id=_normalize_text(department_id) or None)}
 
 
 @router.get("/users/controllers")
 async def get_controller_users(
+    department_id: str = Query("", min_length=0),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return {"items": hub_service.list_controllers()}
+    return {"items": hub_service.list_controllers(department_id=_normalize_text(department_id) or None)}
 
 
 @router.get("/task-projects")
@@ -553,11 +558,12 @@ async def transform_markdown(
 
 @router.get("/tasks")
 async def get_tasks(
-    scope: str = Query("my", pattern="^(my|all)$"),
+    scope: str = Query("my", pattern="^(my|department|all)$"),
     role_scope: str = Query("both", pattern="^(assignee|creator|controller|both)$"),
     status_filter: str = Query("", alias="status"),
     q: str = Query("", min_length=0),
     assignee_user_id: Optional[int] = Query(None, ge=1),
+    department_id: str = Query("", min_length=0),
     has_attachments: bool = Query(False),
     due_state: str = Query("", pattern="^(|overdue|today|upcoming|none)$"),
     sort_by: str = Query("status", pattern="^(status|updated_at|due_at)$"),
@@ -566,7 +572,7 @@ async def get_tasks(
     offset: int = Query(0, ge=0),
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    allow_all = str(getattr(current_user, "role", "") or "").lower() == "admin"
+    allow_all = str(getattr(current_user, "role", "") or "").lower() == "admin" or _has_permission(current_user, PERM_TASKS_MANAGE_ALL)
     if scope == "all" and not allow_all:
         raise HTTPException(status_code=403, detail="Insufficient permissions: tasks.all")
     payload = hub_service.list_tasks(
@@ -576,6 +582,7 @@ async def get_tasks(
         status_filter=_normalize_text(status_filter).lower(),
         q=_normalize_text(q),
         assignee_user_id=assignee_user_id,
+        department_id=_normalize_text(department_id) or None,
         has_attachments=bool(has_attachments),
         due_state=_normalize_text(due_state).lower(),
         sort_by=_normalize_text(sort_by).lower(),
@@ -676,6 +683,8 @@ async def create_task(
                     object_id=_normalize_text(payload.get("object_id")) or None,
                     protocol_date=_normalize_text(payload.get("protocol_date")) or None,
                     priority=_normalize_text(payload.get("priority"), "normal"),
+                    department_id=_normalize_text(payload.get("department_id")) or None,
+                    visibility_scope=_normalize_text(payload.get("visibility_scope")) or None,
                     actor=_actor_dict(current_user),
                 )
             )
@@ -685,6 +694,8 @@ async def create_task(
         }
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
 
 
 @router.get("/tasks/{task_id}")

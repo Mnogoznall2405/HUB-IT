@@ -3764,6 +3764,104 @@ export default function Chat() {
     }
   }, [activeConversationId, notifyApiError, upsertSearchConversation]);
 
+  const applyGroupConversationUpdate = useCallback((updated) => {
+    const normalizedConversationId = String(updated?.id || '').trim();
+    if (!normalizedConversationId) return updated;
+    setConversations((current) => {
+      const exists = current.some((item) => String(item?.id || '').trim() === normalizedConversationId);
+      const next = exists
+        ? current.map((item) => (String(item?.id || '').trim() === normalizedConversationId ? { ...item, ...updated } : item))
+        : [{ ...updated }, ...current];
+      return next;
+    });
+    upsertConversationDetail(updated);
+    upsertSearchConversation(updated);
+    return updated;
+  }, [upsertConversationDetail, upsertSearchConversation]);
+
+  const handleAddGroupMembers = useCallback(async (memberUserIds) => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return null;
+    try {
+      const updated = await chatAPI.addGroupMembers(conversationId, memberUserIds);
+      return applyGroupConversationUpdate(updated);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось добавить участников.');
+      throw error;
+    }
+  }, [applyGroupConversationUpdate, notifyApiError]);
+
+  const handleRemoveGroupMember = useCallback(async (memberUserId) => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return null;
+    try {
+      const updated = await chatAPI.removeGroupMember(conversationId, memberUserId);
+      return applyGroupConversationUpdate(updated);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось исключить участника.');
+      throw error;
+    }
+  }, [applyGroupConversationUpdate, notifyApiError]);
+
+  const handleUpdateGroupMemberRole = useCallback(async (memberUserId, memberRole) => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return null;
+    try {
+      const updated = await chatAPI.updateGroupMemberRole(conversationId, memberUserId, memberRole);
+      return applyGroupConversationUpdate(updated);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось обновить роль участника.');
+      throw error;
+    }
+  }, [applyGroupConversationUpdate, notifyApiError]);
+
+  const handleTransferGroupOwnership = useCallback(async (ownerUserId) => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return null;
+    try {
+      const updated = await chatAPI.transferGroupOwnership(conversationId, ownerUserId);
+      return applyGroupConversationUpdate(updated);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось передать владельца группы.');
+      throw error;
+    }
+  }, [applyGroupConversationUpdate, notifyApiError]);
+
+  const handleUpdateGroupProfile = useCallback(async (payload) => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return null;
+    try {
+      const updated = await chatAPI.updateGroupProfile(conversationId, payload);
+      return applyGroupConversationUpdate(updated);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось обновить группу.');
+      throw error;
+    }
+  }, [applyGroupConversationUpdate, notifyApiError]);
+
+  const handleLeaveGroup = useCallback(async () => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId) return null;
+    try {
+      const payload = await chatAPI.leaveGroup(conversationId);
+      setConversations((current) => current.filter((item) => String(item?.id || '').trim() !== conversationId));
+      setConversationDetailsById((current) => {
+        const next = { ...current };
+        delete next[conversationId];
+        return next;
+      });
+      clearStoredConversationState({ conversationId, invalidateThread: true });
+      setInfoOpen(false);
+      setContextPanelOpen(false);
+      setActiveConversationId('');
+      if (isMobile) openMobileInboxView();
+      return payload;
+    } catch (error) {
+      notifyApiError(error, 'Не удалось выйти из группы.');
+      throw error;
+    }
+  }, [clearStoredConversationState, isMobile, notifyApiError, openMobileInboxView]);
+
   const loadAiBots = useCallback(async () => {
     if (!canUseAiChat) {
       setAiBots([]);
@@ -4688,6 +4786,20 @@ export default function Chat() {
     setThreadMenuAnchor,
   });
 
+  const handleDeleteMessageFromMenu = useCallback(async (message) => {
+    const conversationId = String(message?.conversation_id || activeConversationIdRef.current || '').trim();
+    const messageId = String(message?.id || '').trim();
+    closeMessageMenu();
+    if (!conversationId || !messageId) return;
+    if (typeof window !== 'undefined' && !window.confirm('Удалить сообщение?')) return;
+    try {
+      const updated = await chatAPI.deleteChatMessage(conversationId, messageId);
+      mergeMessageIntoThread(updated);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось удалить сообщение.');
+    }
+  }, [closeMessageMenu, mergeMessageIntoThread, notifyApiError]);
+
   const {
     copySelectedMessages: selectedCopySelectedMessages,
     openForwardSelectedMessages: selectedOpenForwardSelectedMessages,
@@ -5188,6 +5300,7 @@ export default function Chat() {
                               activeConversation={activeConversation}
                               conversationHeaderSubtitle={conversationMetaSubtitle}
                               socketStatus={socketStatus}
+                              currentUser={user}
                               messages={messages}
                               open={showContextPanel}
                               embedded
@@ -5196,6 +5309,12 @@ export default function Chat() {
                               onOpenShare={openShareDialog}
                               onOpenFilePicker={openFilePicker}
                               onUpdateConversationSettings={updateConversationSettings}
+                              onAddGroupMembers={handleAddGroupMembers}
+                              onRemoveGroupMember={handleRemoveGroupMember}
+                              onUpdateGroupMemberRole={handleUpdateGroupMemberRole}
+                              onTransferGroupOwnership={handleTransferGroupOwnership}
+                              onLeaveGroup={handleLeaveGroup}
+                              onUpdateGroupProfile={handleUpdateGroupProfile}
                               settingsUpdating={settingsUpdating}
                               onOpenAttachmentPreview={openMediaViewer}
                               onOpenTask={openTaskFromChat}
@@ -5217,6 +5336,7 @@ export default function Chat() {
                 ui={ui}
                 activeConversation={activeConversation}
                 activeConversationId={activeConversationId}
+                currentUser={user}
                 threadMenuAnchor={threadMenuAnchor}
                 onCloseThreadMenu={() => setThreadMenuAnchor(null)}
                 threadInfoOpen={isMobile ? infoOpen : showContextPanel}
@@ -5231,6 +5351,7 @@ export default function Chat() {
                 onCopyMessageLink={handleCopyMessageLink}
                 onForwardMessageFromMenu={forwardHookMessageFromMenu}
                 onReportMessageFromMenu={handleReportMessageFromMenu}
+                onDeleteMessageFromMenu={handleDeleteMessageFromMenu}
                 onSelectMessageFromMenu={handleSelectMessageFromMenu}
                 onOpenReadsFromMessageMenu={handleOpenReadsFromMessageMenu}
                 onOpenAttachmentFromMessageMenu={handleOpenAttachmentFromMessageMenu}
@@ -5306,6 +5427,12 @@ export default function Chat() {
                 conversationHeaderSubtitle={conversationMetaSubtitle}
                 settingsUpdating={settingsUpdating}
                 onUpdateConversationSettings={updateConversationSettings}
+                onAddGroupMembers={handleAddGroupMembers}
+                onRemoveGroupParticipant={handleRemoveGroupMember}
+                onUpdateGroupMemberRole={handleUpdateGroupMemberRole}
+                onTransferGroupOwnership={handleTransferGroupOwnership}
+                onLeaveGroup={handleLeaveGroup}
+                onUpdateGroupProfile={handleUpdateGroupProfile}
                 onOpenTask={openTaskFromChat}
                 searchOpen={searchOpen}
                 onCloseSearch={closeSearchDialog}

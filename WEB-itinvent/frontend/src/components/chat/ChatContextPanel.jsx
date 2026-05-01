@@ -64,6 +64,17 @@ const ATTACHMENT_PAGE_SIZE = 12;
 const TASK_PAGE_SIZE = 6;
 const PARTICIPANTS_COLLAPSED_COUNT = 8;
 const PARTICIPANTS_EXPANDED_MAX_HEIGHT = 360;
+const GROUP_ROLE_LABELS = {
+  owner: 'Владелец',
+  moderator: 'Модератор',
+  member: 'Участник',
+};
+
+const normalizeGroupRole = (value) => {
+  const normalized = String(value || '').trim().toLowerCase();
+  if (normalized === 'owner' || normalized === 'moderator' || normalized === 'member') return normalized;
+  return 'member';
+};
 
 const SHEET_COLORS = {
   bg: 'var(--chat-sheet-bg)',
@@ -937,6 +948,7 @@ export default function ChatContextPanel({
   activeConversation,
   conversationHeaderSubtitle,
   socketStatus,
+  currentUser,
   messages = [],
   open,
   embedded = false,
@@ -945,6 +957,12 @@ export default function ChatContextPanel({
   onToggleOpen,
   onOpenSearch,
   onUpdateConversationSettings,
+  onAddGroupMembers,
+  onRemoveGroupMember,
+  onUpdateGroupMemberRole,
+  onTransferGroupOwnership,
+  onLeaveGroup,
+  onUpdateGroupProfile,
   settingsUpdating,
   onOpenAttachmentPreview,
   onOpenTask,
@@ -964,22 +982,56 @@ export default function ChatContextPanel({
   const [taskVisibleCount, setTaskVisibleCount] = useState(TASK_PAGE_SIZE);
   const [participantsExpanded, setParticipantsExpanded] = useState(false);
   const [infoMenuAnchorEl, setInfoMenuAnchorEl] = useState(null);
+  const [memberActionAnchorEl, setMemberActionAnchorEl] = useState(null);
+  const [memberActionTarget, setMemberActionTarget] = useState(null);
+  const [groupActionBusy, setGroupActionBusy] = useState(false);
   const mobileTabTouchStartRef = useRef(null);
   const conversationId = String(activeConversation?.id || '').trim();
   const isDirect = activeConversation?.kind === 'direct';
+  const isGroup = activeConversation?.kind === 'group';
   const subject = isDirect ? (activeConversation?.direct_peer || activeConversation) : activeConversation;
   const panelVisible = Boolean(open);
 
-  const participants = useMemo(() => {
+  const participantMembers = useMemo(() => {
     if (!activeConversation) return [];
     if (isDirect) {
-      return subject ? [subject] : [];
+      return subject ? [{ user: subject, member_role: 'member' }] : [];
     }
     const source = Array.isArray(activeConversation.members)
       ? activeConversation.members
       : (Array.isArray(activeConversation.member_preview) ? activeConversation.member_preview : []);
-    return sortByName(source.map((member) => member?.user || member).filter(Boolean));
+    const normalized = source
+      .map((member) => {
+        const user = member?.user || member;
+        if (!user?.id) return null;
+        return {
+          ...member,
+          user,
+          member_role: normalizeGroupRole(member?.member_role || member?.role),
+        };
+      })
+      .filter(Boolean);
+    const sortedUsers = sortByName(normalized.map((member) => member.user));
+    const orderByUserId = new Map(sortedUsers.map((user, index) => [String(user?.id || ''), index]));
+    return [...normalized].sort((left, right) => {
+      const leftIndex = orderByUserId.get(String(left?.user?.id || '')) ?? 0;
+      const rightIndex = orderByUserId.get(String(right?.user?.id || '')) ?? 0;
+      return leftIndex - rightIndex;
+    });
   }, [activeConversation, isDirect, subject]);
+
+  const participants = useMemo(
+    () => participantMembers.map((member) => member.user).filter(Boolean),
+    [participantMembers],
+  );
+  const currentUserId = Number(currentUser?.id || 0);
+  const currentMember = useMemo(
+    () => participantMembers.find((member) => Number(member?.user?.id || 0) === currentUserId) || null,
+    [currentUserId, participantMembers],
+  );
+  const currentMemberRole = normalizeGroupRole(currentMember?.member_role);
+  const canManageMembers = isGroup && (currentMemberRole === 'owner' || currentMemberRole === 'moderator');
+  const canManageOwners = isGroup && currentMemberRole === 'owner';
 
   const onlineCount = useMemo(
     () => (
@@ -992,13 +1044,13 @@ export default function ChatContextPanel({
     [activeConversation?.online_member_count, isDirect, participants],
   );
   const participantsExpandable = !isDirect && participants.length > PARTICIPANTS_COLLAPSED_COUNT;
-  const visibleParticipants = useMemo(
+  const visibleParticipantMembers = useMemo(
     () => (
       participantsExpanded || !participantsExpandable
-        ? participants
-        : participants.slice(0, PARTICIPANTS_COLLAPSED_COUNT)
+        ? participantMembers
+        : participantMembers.slice(0, PARTICIPANTS_COLLAPSED_COUNT)
     ),
-    [participants, participantsExpandable, participantsExpanded],
+    [participantMembers, participantsExpandable, participantsExpanded],
   );
 
   const taskItems = useMemo(() => (
@@ -1149,10 +1201,13 @@ export default function ChatContextPanel({
       return;
     }
 
-    if (!mobileScreen) return;
+    if (!mobileScreen) {
+      if (isDirect && assetKind === 'member') setAssetKind('image');
+      return;
+    }
     if (mobileTabKeys.includes(assetKind)) return;
     setAssetKind(mobileTabKeys[0] || 'image');
-  }, [assetKind, conversationId, mobileScreen, mobileTabKeys]);
+  }, [assetKind, conversationId, isDirect, mobileScreen, mobileTabKeys]);
 
   useEffect(() => {
     setTaskVisibleCount(TASK_PAGE_SIZE);
@@ -1161,6 +1216,58 @@ export default function ChatContextPanel({
   useEffect(() => {
     setParticipantsExpanded(false);
   }, [conversationId]);
+
+  const closeMemberActionMenu = useCallback(() => {
+    setMemberActionAnchorEl(null);
+    setMemberActionTarget(null);
+  }, []);
+
+  const runGroupAction = useCallback(async (action) => {
+    if (typeof action !== 'function') return;
+    setGroupActionBusy(true);
+    try {
+      await action();
+    } catch (error) {
+      const detail = error?.response?.data?.detail || error?.message || 'Не удалось выполнить действие.';
+      if (typeof window !== 'undefined') window.alert(detail);
+    } finally {
+      setGroupActionBusy(false);
+      closeMemberActionMenu();
+    }
+  }, [closeMemberActionMenu]);
+
+  const handlePromptAddMembers = useCallback(() => {
+    if (!canManageMembers || typeof window === 'undefined') return;
+    const raw = window.prompt('Введите ID пользователей через запятую');
+    const memberUserIds = String(raw || '')
+      .split(',')
+      .map((item) => Number(String(item || '').trim()))
+      .filter((item) => Number.isFinite(item) && item > 0);
+    if (!memberUserIds.length) return;
+    void runGroupAction(() => onAddGroupMembers?.(memberUserIds));
+  }, [canManageMembers, onAddGroupMembers, runGroupAction]);
+
+  const handleRenameGroup = useCallback(() => {
+    if (!canManageOwners || typeof window === 'undefined') return;
+    setInfoMenuAnchorEl(null);
+    const nextTitle = window.prompt('Новое название группы', String(activeConversation?.title || '').trim());
+    const normalizedTitle = String(nextTitle || '').trim();
+    if (!normalizedTitle) return;
+    void runGroupAction(() => onUpdateGroupProfile?.({ title: normalizedTitle }));
+  }, [activeConversation?.title, canManageOwners, onUpdateGroupProfile, runGroupAction]);
+
+  const handleLeaveGroup = useCallback(() => {
+    if (!isGroup || currentMemberRole === 'owner' || typeof window === 'undefined') return;
+    setInfoMenuAnchorEl(null);
+    if (!window.confirm('Выйти из группы?')) return;
+    void runGroupAction(() => onLeaveGroup?.());
+  }, [currentMemberRole, isGroup, onLeaveGroup, runGroupAction]);
+
+  const handleOpenMemberActions = useCallback((event, member) => {
+    event?.stopPropagation?.();
+    setMemberActionAnchorEl(event?.currentTarget || null);
+    setMemberActionTarget(member || null);
+  }, []);
 
   const loadAttachments = useCallback(async ({ append = false, beforeAttachmentId } = {}) => {
     if (!conversationId || assetKind === 'task' || assetKind === 'link' || assetKind === 'member') return;
@@ -1271,9 +1378,88 @@ export default function ChatContextPanel({
   const showArchivedBadge = Boolean(activeConversation?.is_archived);
   const taskBrowserHasMore = taskItems.length > taskVisibleCount;
   const infoMenuOpen = Boolean(infoMenuAnchorEl);
+  const memberActionMenuOpen = Boolean(memberActionAnchorEl && memberActionTarget?.user?.id);
+  const memberActionUser = memberActionTarget?.user || null;
+  const memberActionRole = normalizeGroupRole(memberActionTarget?.member_role);
+  const memberActionUserId = Number(memberActionUser?.id || 0);
+  const canPromoteSelectedMember = canManageOwners && memberActionRole === 'member';
+  const canDemoteSelectedMember = canManageOwners && memberActionRole === 'moderator';
+  const canTransferSelectedOwnership = canManageOwners && memberActionUserId > 0 && memberActionUserId !== currentUserId;
+  const canRemoveSelectedMember = canManageMembers
+    && memberActionUserId > 0
+    && memberActionUserId !== currentUserId
+    && memberActionRole !== 'owner'
+    && (currentMemberRole === 'owner' || memberActionRole === 'member');
   const subjectPhone = String(subject?.phone || '').trim();
   const subjectUsername = String(subject?.username || '').trim();
   const subjectBirthday = String(subject?.birth_date || subject?.birthday || '').trim();
+
+  const memberActionsMenu = (
+    <Menu
+      anchorEl={memberActionAnchorEl}
+      open={memberActionMenuOpen}
+      onClose={closeMemberActionMenu}
+      anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+      transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+      PaperProps={{
+        sx: {
+          mt: 0.5,
+          minWidth: 230,
+          borderRadius: 2.5,
+          bgcolor: 'var(--chat-sheet-panel-menu-bg)',
+          color: 'var(--chat-sheet-panel-text)',
+          border: '1px solid var(--chat-sheet-panel-divider)',
+          boxShadow: 'var(--chat-sheet-panel-menu-shadow)',
+          '& .MuiMenuItem-root': {
+            color: 'var(--chat-sheet-panel-text)',
+          },
+        },
+      }}
+    >
+      {canPromoteSelectedMember ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          onClick={() => { void runGroupAction(() => onUpdateGroupMemberRole?.(memberActionUserId, 'moderator')); }}
+        >
+          Назначить модератором
+        </MenuItem>
+      ) : null}
+      {canDemoteSelectedMember ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          onClick={() => { void runGroupAction(() => onUpdateGroupMemberRole?.(memberActionUserId, 'member')); }}
+        >
+          Снять модератора
+        </MenuItem>
+      ) : null}
+      {canTransferSelectedOwnership ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          onClick={() => {
+            if (typeof window !== 'undefined' && !window.confirm('Передать владельца группы этому участнику?')) return;
+            void runGroupAction(() => onTransferGroupOwnership?.(memberActionUserId));
+          }}
+        >
+          Передать ownership
+        </MenuItem>
+      ) : null}
+      {canRemoveSelectedMember ? (
+        <MenuItem
+          disabled={groupActionBusy}
+          onClick={() => {
+            if (typeof window !== 'undefined' && !window.confirm('Исключить участника из группы?')) return;
+            void runGroupAction(() => onRemoveGroupMember?.(memberActionUserId));
+          }}
+          sx={{ color: 'var(--chat-sheet-warning, #d64b4b) !important' }}
+        >
+          Исключить из группы
+        </MenuItem>
+      ) : null}
+      {!canPromoteSelectedMember && !canDemoteSelectedMember && !canTransferSelectedOwnership && !canRemoveSelectedMember ? (
+        <MenuItem disabled>Нет доступных действий</MenuItem>
+      ) : null}
+    </Menu>
+  );
 
   if (mobileScreen) {
     return (
@@ -1324,7 +1510,8 @@ export default function ChatContextPanel({
           <Stack direction="row" spacing={0.25} alignItems="center">
             <MobileProfileActionButton
               ariaLabel="Редактировать"
-              disabled
+              onClick={handleRenameGroup}
+              disabled={!canManageOwners || groupActionBusy}
             >
               <EditRoundedIcon sx={{ fontSize: 24 }} />
             </MobileProfileActionButton>
@@ -1709,28 +1896,81 @@ export default function ChatContextPanel({
                 </Typography>
               ) : (
                 <Stack spacing={0} sx={{ py: 0.8 }}>
-                  {visibleParticipants.map((person) => (
-                    <Box
-                      key={`${conversationId}-person-${person.id}`}
-                      sx={{
-                        px: 2.6,
-                        py: 1.3,
-                        display: 'flex',
-                        alignItems: 'center',
-                        gap: 1.35,
-                      }}
-                    >
-                      <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={44} />
-                      <Box sx={{ minWidth: 0, flex: 1 }}>
-                        <Typography sx={{ fontSize: '0.96rem', fontWeight: 600 }} noWrap>
-                          {person?.full_name || person?.username || 'Пользователь'}
-                        </Typography>
-                        <Typography sx={{ mt: 0.1, color: 'var(--chat-sheet-panel-soft)', fontSize: '0.83rem' }} noWrap>
-                          {formatPresenceText(person?.presence)}
-                        </Typography>
-                      </Box>
+                  {canManageMembers ? (
+                    <Box sx={{ px: 2.6, py: 1 }}>
+                      <Button
+                        fullWidth
+                        variant="contained"
+                        onClick={handlePromptAddMembers}
+                        disabled={groupActionBusy}
+                        sx={{
+                          borderRadius: 999,
+                          textTransform: 'none',
+                          bgcolor: 'var(--chat-sheet-panel-accent)',
+                          fontWeight: 800,
+                        }}
+                      >
+                        Добавить участника
+                      </Button>
                     </Box>
-                  ))}
+                  ) : null}
+                  {visibleParticipantMembers.map((member) => {
+                    const person = member?.user || {};
+                    const role = normalizeGroupRole(member?.member_role);
+                    const canOpenActions = isGroup && member?.user?.id && Number(member.user.id) !== currentUserId
+                      && (canManageOwners || (canManageMembers && role === 'member'));
+                    return (
+                      <Box
+                        key={`${conversationId}-person-${person.id}`}
+                        sx={{
+                          px: 2.6,
+                          py: 1.3,
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 1.35,
+                        }}
+                      >
+                        <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={44} />
+                        <Box sx={{ minWidth: 0, flex: 1 }}>
+                          <Stack direction="row" alignItems="center" spacing={0.8} sx={{ minWidth: 0 }}>
+                            <Typography sx={{ fontSize: '0.96rem', fontWeight: 600 }} noWrap>
+                              {person?.full_name || person?.username || 'Пользователь'}
+                            </Typography>
+                            {role !== 'member' ? (
+                              <Box
+                                component="span"
+                                sx={{
+                                  px: 0.75,
+                                  py: 0.2,
+                                  borderRadius: 999,
+                                  bgcolor: role === 'owner' ? 'var(--chat-sheet-panel-accent-soft)' : 'var(--chat-sheet-panel-card)',
+                                  color: role === 'owner' ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
+                                  fontSize: '0.68rem',
+                                  fontWeight: 800,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {GROUP_ROLE_LABELS[role]}
+                              </Box>
+                            ) : null}
+                          </Stack>
+                          <Typography sx={{ mt: 0.1, color: 'var(--chat-sheet-panel-soft)', fontSize: '0.83rem' }} noWrap>
+                            {formatPresenceText(person?.presence)}
+                          </Typography>
+                        </Box>
+                        {canOpenActions ? (
+                          <IconButton
+                            size="small"
+                            onClick={(event) => handleOpenMemberActions(event, member)}
+                            disabled={groupActionBusy}
+                            sx={{ color: 'var(--chat-sheet-panel-soft)' }}
+                          >
+                            <MoreVertRoundedIcon fontSize="small" />
+                          </IconButton>
+                        ) : null}
+                      </Box>
+                    );
+                  })}
                   {participantsExpandable ? (
                     <Box sx={{ px: 2.6, py: 1 }}>
                       <Button
@@ -1789,7 +2029,18 @@ export default function ChatContextPanel({
           <MenuItem onClick={() => { setInfoMenuAnchorEl(null); onUpdateConversationSettings?.({ is_archived: !activeConversation?.is_archived }); }}>
             {activeConversation?.is_archived ? 'Вернуть из архива' : 'Переместить в архив'}
           </MenuItem>
+          {canManageOwners ? (
+            <MenuItem onClick={handleRenameGroup}>
+              Переименовать группу
+            </MenuItem>
+          ) : null}
+          {isGroup && currentMemberRole !== 'owner' ? (
+            <MenuItem onClick={handleLeaveGroup} sx={{ color: 'var(--chat-sheet-warning, #d64b4b) !important' }}>
+              Выйти из группы
+            </MenuItem>
+          ) : null}
         </Menu>
+        {memberActionsMenu}
       </Box>
     );
   }
@@ -1831,6 +2082,33 @@ export default function ChatContextPanel({
         <Typography sx={{ color: 'var(--chat-sheet-panel-muted)' }}>
           {conversationHeaderSubtitle || 'был(а) недавно'}
         </Typography>
+        {isGroup && (canManageOwners || currentMemberRole !== 'owner') ? (
+          <Stack direction="row" spacing={1} sx={{ width: '100%', justifyContent: 'center', flexWrap: 'wrap' }}>
+            {canManageOwners ? (
+              <Button
+                size="small"
+                variant="outlined"
+                onClick={handleRenameGroup}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Переименовать
+              </Button>
+            ) : null}
+            {currentMemberRole !== 'owner' ? (
+              <Button
+                size="small"
+                variant="outlined"
+                color="error"
+                onClick={handleLeaveGroup}
+                disabled={groupActionBusy}
+                sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700 }}
+              >
+                Выйти
+              </Button>
+            ) : null}
+          </Stack>
+        ) : null}
       </Box>
 
       {/* Контент */}
@@ -1909,6 +2187,7 @@ export default function ChatContextPanel({
               { key: 'file', label: 'Файлы', count: assetCounts.file },
               { key: 'link', label: 'Ссылки', count: linkItems.length },
               { key: 'task', label: 'Задачи', count: assetCounts.task },
+              ...(!isDirect ? [{ key: 'member', label: 'Участники', count: assetCounts.member }] : []),
             ].map((tab) => (
               <Box
                 key={tab.key}
@@ -2125,10 +2404,96 @@ export default function ChatContextPanel({
                   ))}
                 </Stack>
               )
+            ) : assetKind === 'member' ? (
+              participants.length === 0 ? (
+                <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', textAlign: 'center', py: 4, fontSize: '0.9rem' }}>
+                  Нет участников
+                </Typography>
+              ) : (
+                <Stack spacing={0.5}>
+                  {canManageMembers ? (
+                    <Button
+                      fullWidth
+                      variant="contained"
+                      onClick={handlePromptAddMembers}
+                      disabled={groupActionBusy}
+                      sx={{
+                        mb: 1,
+                        borderRadius: 999,
+                        textTransform: 'none',
+                        bgcolor: 'var(--chat-sheet-panel-accent)',
+                        fontWeight: 800,
+                      }}
+                    >
+                      Добавить участника
+                    </Button>
+                  ) : null}
+                  {visibleParticipantMembers.map((member) => {
+                    const person = member?.user || {};
+                    const role = normalizeGroupRole(member?.member_role);
+                    const canOpenActions = isGroup && member?.user?.id && Number(member.user.id) !== currentUserId
+                      && (canManageOwners || (canManageMembers && role === 'member'));
+                    return (
+                      <Box
+                        key={`${conversationId}-member-${person.id}`}
+                        sx={{
+                          display: 'flex',
+                          alignItems: 'center',
+                          gap: 1.2,
+                          px: 1.5,
+                          py: 1.15,
+                          borderRadius: 1.2,
+                          bgcolor: 'var(--chat-sheet-panel-card)',
+                        }}
+                      >
+                        <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={40} />
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Stack direction="row" alignItems="center" spacing={0.75} sx={{ minWidth: 0 }}>
+                            <Typography sx={{ color: 'var(--chat-sheet-panel-text)', fontSize: '0.9rem', fontWeight: 700 }} noWrap>
+                              {person?.full_name || person?.username || 'Пользователь'}
+                            </Typography>
+                            {role !== 'member' ? (
+                              <Box
+                                component="span"
+                                sx={{
+                                  px: 0.7,
+                                  py: 0.15,
+                                  borderRadius: 999,
+                                  bgcolor: role === 'owner' ? 'var(--chat-sheet-panel-accent-soft)' : 'var(--chat-sheet-panel-bg-strong)',
+                                  color: role === 'owner' ? 'var(--chat-sheet-panel-accent)' : 'var(--chat-sheet-panel-soft)',
+                                  fontSize: '0.66rem',
+                                  fontWeight: 800,
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {GROUP_ROLE_LABELS[role]}
+                              </Box>
+                            ) : null}
+                          </Stack>
+                          <Typography sx={{ color: 'var(--chat-sheet-panel-soft)', fontSize: '0.75rem' }} noWrap>
+                            {formatPresenceText(person?.presence)}
+                          </Typography>
+                        </Box>
+                        {canOpenActions ? (
+                          <IconButton
+                            size="small"
+                            onClick={(event) => handleOpenMemberActions(event, member)}
+                            disabled={groupActionBusy}
+                            sx={{ color: 'var(--chat-sheet-panel-icon)' }}
+                          >
+                            <MoreVertRoundedIcon fontSize="small" />
+                          </IconButton>
+                        ) : null}
+                      </Box>
+                    );
+                  })}
+                </Stack>
+              )
             ) : null}
           </Box>
         </Box>
       </Box>
+      {memberActionsMenu}
     </Box>
   );
 }

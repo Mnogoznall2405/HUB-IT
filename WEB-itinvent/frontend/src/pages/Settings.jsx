@@ -66,7 +66,8 @@ import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import CircularProgress from '@mui/material/CircularProgress';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
-import { authAPI, databaseAPI, mailAPI, settingsAPI } from '../api/client';
+import { useNavigate } from 'react-router-dom';
+import { authAPI, databaseAPI, departmentsAPI, mailAPI, settingsAPI } from '../api/client';
 import OverflowMenu from '../components/common/OverflowMenu';
 import { useAuth } from '../contexts/AuthContext';
 import { usePreferences } from '../contexts/PreferencesContext';
@@ -106,6 +107,7 @@ const SETTINGS_TABS = [
   { value: 'profile', label: 'Профиль', icon: <PersonOutlineIcon fontSize="small" /> },
   { value: 'security', label: 'Безопасность', icon: <ShieldOutlinedIcon fontSize="small" /> },
   { value: 'appearance', label: 'Внешний вид', icon: <PaletteOutlinedIcon fontSize="small" /> },
+  { value: 'departments', label: 'Отделы', icon: <GroupOutlinedIcon fontSize="small" /> },
   { value: 'users', label: 'Пользователи', icon: <GroupOutlinedIcon fontSize="small" />, permission: 'settings.users.manage' },
   { value: 'sessions', label: 'Сессии', icon: <SecurityOutlinedIcon fontSize="small" />, permission: 'settings.sessions.manage' },
   { value: 'env', label: 'Переменные', icon: <SettingsApplicationsOutlinedIcon fontSize="small" />, adminOnly: true },
@@ -191,6 +193,7 @@ const permissionGroups = [
       { value: 'tasks.read', label: 'Задачи: просмотр' },
       { value: 'tasks.write', label: 'Задачи: создание/редактирование' },
       { value: 'tasks.review', label: 'Задачи: проверка' },
+      { value: 'tasks.manage_all', label: 'Задачи: управление всеми отделами' },
     ],
   },
   {
@@ -209,8 +212,6 @@ const permissionGroups = [
     group: 'Интеграции',
     permissions: [
       { value: 'mail.access', label: 'Почта: доступ к Exchange' },
-      { value: 'ad_users.read', label: 'Пользователи AD: просмотр' },
-      { value: 'ad_users.manage', label: 'Пользователи AD: управление' },
     ],
   },
   {
@@ -219,12 +220,14 @@ const permissionGroups = [
       { value: 'kb.read', label: 'База знаний: просмотр' },
       { value: 'kb.write', label: 'База знаний: редактирование' },
       { value: 'kb.publish', label: 'База знаний: публикация' },
+      { value: 'kb.manage_all', label: 'База знаний: управление всеми отделами' },
     ],
   },
   {
     group: 'Настройки',
     permissions: [
       { value: 'settings.read', label: 'Настройки: просмотр' },
+      { value: 'departments.manage', label: 'Отделы: назначение начальников' },
       { value: 'settings.users.manage', label: 'Пользователи: управление' },
       { value: 'settings.sessions.manage', label: 'Сессии: управление' },
     ],
@@ -2458,18 +2461,18 @@ function UserDraftFields({ draft, onChange, dbOptions, linkedSessions, users }) 
 
 function UsersTab({
   currentUserId,
+  isAdmin,
   users,
   sessions,
   dbOptions,
   loading,
-  syncingAD,
   savingUser,
-  onSyncAD,
   onCreateUser,
   onUpdateUser,
   onDeleteUser,
   isVeryWide,
 }) {
+  const navigate = useNavigate();
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [search, setSearch] = useState('');
@@ -2780,16 +2783,17 @@ function UsersTab({
               <Button size="small" variant="outlined" startIcon={<AddOutlinedIcon />} onClick={openCreate}>
                 Новый пользователь
               </Button>
-              <Button
-                size="small"
-                variant="outlined"
-                color="secondary"
-                startIcon={syncingAD ? <CircularProgress size={18} color="inherit" /> : <SyncOutlinedIcon />}
-                onClick={onSyncAD}
-                disabled={syncingAD}
-              >
-                {syncingAD ? 'Синхронизация...' : 'Синхронизировать'}
-              </Button>
+              {isAdmin ? (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="secondary"
+                  startIcon={<SyncOutlinedIcon />}
+                  onClick={() => navigate('/ad-users')}
+                >
+                  Импорт из AD
+                </Button>
+              ) : null}
             </Stack>
           </Stack>
 
@@ -4326,6 +4330,239 @@ export function AiBotsAdminSection({
   );
 }
 
+function DepartmentsTab({ canManageDepartments }) {
+  const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const [departments, setDepartments] = useState([]);
+  const [selectedDepartmentId, setSelectedDepartmentId] = useState('');
+  const [memberships, setMemberships] = useState([]);
+  const [draftManagerIds, setDraftManagerIds] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [membersLoading, setMembersLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState('');
+
+  const loadDepartments = useCallback(async () => {
+    setLoading(true);
+    setError('');
+    try {
+      const payload = await departmentsAPI.list();
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      setDepartments(items);
+      setSelectedDepartmentId((current) => (items.some((item) => String(item.id) === String(current)) ? current : (items[0]?.id || '')));
+    } catch (loadError) {
+      console.error(loadError);
+      setError('Не удалось загрузить отделы.');
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  const loadMembers = useCallback(async (departmentId) => {
+    const normalizedId = String(departmentId || '').trim();
+    if (!normalizedId) {
+      setMemberships([]);
+      setDraftManagerIds([]);
+      return;
+    }
+    setMembersLoading(true);
+    setError('');
+    try {
+      const payload = await departmentsAPI.getMembers(normalizedId);
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      setMemberships(items);
+      setDraftManagerIds(items
+        .filter((item) => String(item?.role || '') === 'manager' && item?.is_active !== false)
+        .map((item) => Number(item?.user_id || 0))
+        .filter((item) => Number.isInteger(item) && item > 0));
+    } catch (loadError) {
+      console.error(loadError);
+      setError('Не удалось загрузить участников отдела.');
+    } finally {
+      setMembersLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadDepartments();
+  }, [loadDepartments]);
+
+  useEffect(() => {
+    void loadMembers(selectedDepartmentId);
+  }, [loadMembers, selectedDepartmentId]);
+
+  const memberRows = useMemo(() => {
+    const byId = new Map();
+    memberships.forEach((membership) => {
+      const userId = Number(membership?.user_id || 0);
+      if (!Number.isInteger(userId) || userId <= 0) return;
+      const current = byId.get(userId) || {
+        user_id: userId,
+        user: membership?.user || null,
+        roles: new Set(),
+      };
+      if (membership?.user && !current.user) current.user = membership.user;
+      if (membership?.is_active !== false) current.roles.add(String(membership?.role || 'member'));
+      byId.set(userId, current);
+    });
+    return Array.from(byId.values())
+      .map((item) => ({
+        ...item,
+        roles: Array.from(item.roles),
+        is_manager: draftManagerIds.includes(item.user_id),
+      }))
+      .sort((a, b) => String(a.user?.full_name || a.user?.username || '').localeCompare(String(b.user?.full_name || b.user?.username || ''), 'ru'));
+  }, [draftManagerIds, memberships]);
+
+  const selectedDepartment = useMemo(
+    () => departments.find((item) => String(item.id) === String(selectedDepartmentId)) || null,
+    [departments, selectedDepartmentId],
+  );
+
+  const toggleManager = useCallback((userId) => {
+    const normalizedUserId = Number(userId || 0);
+    if (!Number.isInteger(normalizedUserId) || normalizedUserId <= 0) return;
+    setDraftManagerIds((current) => (
+      current.includes(normalizedUserId)
+        ? current.filter((item) => item !== normalizedUserId)
+        : [...current, normalizedUserId]
+    ));
+  }, []);
+
+  const handleSaveManagers = useCallback(async () => {
+    if (!selectedDepartmentId || !canManageDepartments) return;
+    setSaving(true);
+    setError('');
+    try {
+      await departmentsAPI.setManagers(selectedDepartmentId, draftManagerIds);
+      await Promise.all([loadDepartments(), loadMembers(selectedDepartmentId)]);
+    } catch (saveError) {
+      console.error(saveError);
+      setError('Не удалось сохранить начальников отдела.');
+    } finally {
+      setSaving(false);
+    }
+  }, [canManageDepartments, draftManagerIds, loadDepartments, loadMembers, selectedDepartmentId]);
+
+  const handleSyncDepartments = useCallback(async () => {
+    if (!canManageDepartments) return;
+    setSaving(true);
+    setError('');
+    try {
+      const payload = await departmentsAPI.syncFromAD();
+      const items = Array.isArray(payload?.items) ? payload.items : [];
+      setDepartments(items);
+      setSelectedDepartmentId((current) => (items.some((item) => String(item.id) === String(current)) ? current : (items[0]?.id || '')));
+    } catch (syncError) {
+      console.error(syncError);
+      setError('Не удалось синхронизировать отделы из AD.');
+    } finally {
+      setSaving(false);
+    }
+  }, [canManageDepartments]);
+
+  return (
+    <Box sx={{ overflowY: { xs: 'visible', md: 'auto' }, minHeight: 0, pr: { md: 0.5 } }}>
+      <Stack spacing={1.2}>
+        {error ? <Alert severity="error" onClose={() => setError('')}>{error}</Alert> : null}
+        <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui, { p: 1.4 }) }}>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between">
+            <FormControl size="small" sx={{ minWidth: { xs: '100%', md: 320 } }}>
+              <InputLabel id="departments-select-label">Отдел</InputLabel>
+              <Select
+                labelId="departments-select-label"
+                label="Отдел"
+                value={selectedDepartmentId}
+                onChange={(event) => setSelectedDepartmentId(String(event.target.value || ''))}
+                disabled={loading || departments.length === 0}
+              >
+                {departments.map((department) => (
+                  <MenuItem key={department.id} value={department.id}>
+                    {department.name}
+                  </MenuItem>
+                ))}
+              </Select>
+            </FormControl>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+              <Button variant="outlined" startIcon={<RefreshOutlinedIcon />} onClick={() => void loadDepartments()} disabled={loading || saving}>
+                Обновить
+              </Button>
+              {canManageDepartments ? (
+                <Button variant="outlined" startIcon={<SyncOutlinedIcon />} onClick={() => void handleSyncDepartments()} disabled={loading || saving}>
+                  Синхронизировать из AD
+                </Button>
+              ) : null}
+              {canManageDepartments ? (
+                <Button variant="contained" startIcon={<SaveOutlinedIcon />} onClick={() => void handleSaveManagers()} disabled={saving || !selectedDepartmentId}>
+                  Сохранить начальников
+                </Button>
+              ) : null}
+            </Stack>
+          </Stack>
+          {selectedDepartment ? (
+            <Stack direction="row" spacing={0.75} flexWrap="wrap" useFlexGap sx={{ mt: 1.2 }}>
+              <Chip label={`Участников: ${selectedDepartment.members_count || 0}`} size="small" />
+              <Chip label={`Начальников: ${selectedDepartment.managers_count || 0}`} size="small" />
+              <Chip label={selectedDepartment.source || 'manual'} size="small" variant="outlined" />
+            </Stack>
+          ) : null}
+        </Paper>
+
+        <Paper variant="outlined" sx={{ overflow: 'hidden' }}>
+          <TableContainer sx={{ maxHeight: { md: 520 } }}>
+            <Table size="small" stickyHeader>
+              <TableHead>
+                <TableRow>
+                  <TableCell>Пользователь</TableCell>
+                  <TableCell>Логин</TableCell>
+                  <TableCell>Должность</TableCell>
+                  <TableCell>Роли отдела</TableCell>
+                  <TableCell align="right">Начальник</TableCell>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {membersLoading ? (
+                  <TableRow>
+                    <TableCell colSpan={5} sx={{ py: 4, textAlign: 'center' }}>
+                      <CircularProgress size={24} />
+                    </TableCell>
+                  </TableRow>
+                ) : memberRows.length === 0 ? (
+                  <TableRow>
+                    <TableCell colSpan={5} sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>
+                      У отдела пока нет участников из AD.department.
+                    </TableCell>
+                  </TableRow>
+                ) : (
+                  memberRows.map((row) => (
+                    <TableRow key={row.user_id} hover>
+                      <TableCell>{row.user?.full_name || row.user?.username || `#${row.user_id}`}</TableCell>
+                      <TableCell>{row.user?.username || '-'}</TableCell>
+                      <TableCell>{row.user?.job_title || '-'}</TableCell>
+                      <TableCell>
+                        <Stack direction="row" spacing={0.5} flexWrap="wrap" useFlexGap>
+                          {row.roles.map((role) => <Chip key={role} size="small" variant="outlined" label={role === 'manager' ? 'начальник' : 'участник'} />)}
+                        </Stack>
+                      </TableCell>
+                      <TableCell align="right">
+                        <Checkbox
+                          checked={row.is_manager}
+                          disabled={!canManageDepartments || saving}
+                          onChange={() => toggleManager(row.user_id)}
+                        />
+                      </TableCell>
+                    </TableRow>
+                  ))
+                )}
+              </TableBody>
+            </Table>
+          </TableContainer>
+        </Paper>
+      </Stack>
+    </Box>
+  );
+}
+
 function Settings() {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -4356,6 +4593,7 @@ function Settings() {
   const canManageUsers = isAdmin || hasPermission('settings.users.manage');
   const canManageSessions = isAdmin || hasPermission('settings.sessions.manage');
   const canManageAiBots = isAdmin || hasPermission('settings.ai.manage');
+  const canManageDepartments = isAdmin || hasPermission('departments.manage');
 
   const availableTabs = useMemo(
     () => resolveAvailableSettingsTabs({ hasPermission, isAdmin }),
@@ -4376,7 +4614,6 @@ function Settings() {
   const [usersLoading, setUsersLoading] = useState(false);
   const [sessionsLoading, setSessionsLoading] = useState(false);
   const [savingUser, setSavingUser] = useState(false);
-  const [syncingAD, setSyncingAD] = useState(false);
   const [cleanupResult, setCleanupResult] = useState({ deactivated: 0, deleted: 0 });
   const [cleaningSessions, setCleaningSessions] = useState(false);
   const [purgingSessions, setPurgingSessions] = useState(false);
@@ -4793,29 +5030,6 @@ function Settings() {
     }
   }, [canManageSessions, loadSessions, loadUsers, notifyApiError, notifySuccess]);
 
-  const handleSyncAD = useCallback(async () => {
-    setSyncingAD(true);
-    try {
-      const result = await authAPI.syncAD();
-      const summary = Object.values(result?.results || {}).reduce((acc, item) => ({
-        added: acc.added + Number(item?.added || 0),
-        updated: acc.updated + Number(item?.updated || 0),
-      }), { added: 0, updated: 0 });
-      await loadUsers();
-      notifySuccess(`Синхронизация AD завершена. Новых: ${summary.added}, обновлено: ${summary.updated}.`, {
-        source: 'settings',
-        dedupeMode: 'none',
-      });
-    } catch (error) {
-      notifyApiError(error, 'Не удалось выполнить синхронизацию с AD.', {
-        source: 'settings',
-        dedupeMode: 'none',
-      });
-    } finally {
-      setSyncingAD(false);
-    }
-  }, [loadUsers, notifyApiError, notifySuccess]);
-
   const handleTerminateSession = useCallback(async (sessionId) => {
     try {
       await authAPI.terminateSession(sessionId);
@@ -5124,16 +5338,19 @@ function Settings() {
               </Box>
             </SettingsTabPanel>
 
+            <SettingsTabPanel active={tab === 'departments'}>
+              <DepartmentsTab canManageDepartments={canManageDepartments} />
+            </SettingsTabPanel>
+
             <SettingsTabPanel active={tab === 'users' && canManageUsers}>
               <UsersTab
                 currentUserId={user?.id}
+                isAdmin={isAdmin}
                 users={users}
                 sessions={sessions}
                 dbOptions={dbOptions}
                 loading={usersLoading}
-                syncingAD={syncingAD}
                 savingUser={savingUser}
-                onSyncAD={handleSyncAD}
                 onCreateUser={handleCreateUser}
                 onUpdateUser={handleUpdateUser}
                 onDeleteUser={handleDeleteUser}

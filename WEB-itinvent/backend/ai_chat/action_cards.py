@@ -88,7 +88,9 @@ def _user_dict(user: Any) -> dict[str, Any]:
         "id": int(_user_attr(user, "id", 0) or 0),
         "username": _normalize_text(_user_attr(user, "username")),
         "full_name": _normalize_text(_user_attr(user, "full_name")),
+        "department": _normalize_text(_user_attr(user, "department")),
         "role": _normalize_text(_user_attr(user, "role"), "viewer"),
+        "permissions": _user_attr(user, "permissions", []) or [],
         "use_custom_permissions": bool(_user_attr(user, "use_custom_permissions", False)),
         "custom_permissions": _user_attr(user, "custom_permissions", []) or [],
     }

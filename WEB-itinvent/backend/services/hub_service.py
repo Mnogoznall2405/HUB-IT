@@ -19,7 +19,17 @@ from backend.appdb.sql_compat import SqlAlchemyCompatConnection
 from backend.db_schema import schema_name
 from local_store import get_local_store
 from backend.services.app_push_service import app_push_service
+from backend.services.access_policy_service import (
+    VISIBILITY_PRIVATE,
+    can_create_task_for_department,
+    can_review_task,
+    can_view_task,
+    normalize_visibility_scope,
+    user_is_department_manager,
+    user_is_department_member,
+)
 from backend.services.authorization_service import PERM_TASKS_REVIEW, authorization_service
+from backend.services.department_service import DEPARTMENT_MANAGER_ROLE, department_service
 from backend.services.notification_preferences_service import notification_preferences_service
 from backend.services.user_service import user_service
 
@@ -223,6 +233,10 @@ class HubService:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN completed_at TEXT NULL")
         if "completed_at_source" not in columns:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN completed_at_source TEXT NULL")
+        if "department_id" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN department_id TEXT NULL")
+        if "visibility_scope" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN visibility_scope TEXT NOT NULL DEFAULT 'private'")
         conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_project ON {self._TASKS_TABLE}(project_id, updated_at DESC)"
         )
@@ -234,6 +248,9 @@ class HubService:
         )
         conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_completed_at ON {self._TASKS_TABLE}(completed_at)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_department ON {self._TASKS_TABLE}(department_id, updated_at DESC)"
         )
         self._backfill_task_completed_tracking(conn)
 
@@ -986,7 +1003,12 @@ class HubService:
         normalized_user_id = self._as_int(user_id)
         if normalized_user_id <= 0:
             return False
-        return normalized_user_id in self._task_participant_user_ids(task, include_delegates=True)
+        user = user_service.get_by_id(normalized_user_id) or {"id": normalized_user_id, "role": "viewer"}
+        return can_view_task(
+            user,
+            task,
+            participant_user_ids=self._task_participant_user_ids(task, include_delegates=True),
+        )
 
     def _task_access_or_raise(
         self,
@@ -1109,6 +1131,10 @@ class HubService:
         item["project_name"] = _normalize_text(project.get("name")) if project else ""
         item["object_id"] = _normalize_text(item.get("object_id")) or None
         item["object_name"] = _normalize_text(task_object.get("name")) if task_object else ""
+        item["department_id"] = _normalize_text(item.get("department_id")) or None
+        department = department_service.get_department(item["department_id"]) if item["department_id"] else None
+        item["department_name"] = _normalize_text((department or {}).get("name"))
+        item["visibility_scope"] = normalize_visibility_scope(item.get("visibility_scope"), default=VISIBILITY_PRIVATE)
         item["protocol_date"] = self._normalize_protocol_date(item.get("protocol_date")) or self._normalize_protocol_date(item.get("created_at"))
         completed_at, completed_at_source = self._derive_completed_tracking(item)
         item["completed_at"] = completed_at
@@ -1474,28 +1500,17 @@ class HubService:
                 conn=conn,
             )
 
-    def list_assignees(self) -> list[dict[str, Any]]:
+    def list_assignees(self, *, department_id: Optional[str] = None) -> list[dict[str, Any]]:
+        normalized_department_id = _normalize_text(department_id)
         users = user_service.list_users()
         out: list[dict[str, Any]] = []
         for row in users:
             if not bool(row.get("is_active", True)):
                 continue
-            out.append(
-                {
-                    "id": self._as_int(row.get("id")),
-                    "username": _normalize_text(row.get("username")),
-                    "full_name": _normalize_text(row.get("full_name")) or _normalize_text(row.get("username")),
-                    "role": _normalize_text(row.get("role"), "viewer"),
-                }
-            )
-        out.sort(key=lambda item: (item.get("full_name") or "", item.get("username") or ""))
-        return out
-
-    def list_controllers(self) -> list[dict[str, Any]]:
-        users = user_service.list_users()
-        out: list[dict[str, Any]] = []
-        for row in users:
-            if not self._user_can_review_tasks(row):
+            if normalized_department_id and not (
+                user_is_department_member(row, normalized_department_id)
+                or user_is_department_manager(row, normalized_department_id)
+            ):
                 continue
             out.append(
                 {
@@ -1503,6 +1518,35 @@ class HubService:
                     "username": _normalize_text(row.get("username")),
                     "full_name": _normalize_text(row.get("full_name")) or _normalize_text(row.get("username")),
                     "role": _normalize_text(row.get("role"), "viewer"),
+                    "department": _normalize_text(row.get("department")),
+                    "department_id": department_service.get_user_primary_department_id(row) or "",
+                }
+            )
+        out.sort(key=lambda item: (item.get("full_name") or "", item.get("username") or ""))
+        return out
+
+    def list_controllers(self, *, department_id: Optional[str] = None) -> list[dict[str, Any]]:
+        normalized_department_id = _normalize_text(department_id)
+        users = user_service.list_users()
+        out: list[dict[str, Any]] = []
+        for row in users:
+            is_any_department_manager = bool(department_service.get_user_department_ids(row, roles=[DEPARTMENT_MANAGER_ROLE]))
+            if not (self._user_can_review_tasks(row) or is_any_department_manager or (normalized_department_id and user_is_department_manager(row, normalized_department_id))):
+                continue
+            if normalized_department_id and not (
+                str(row.get("role") or "").strip().lower() == "admin"
+                or user_is_department_manager(row, normalized_department_id)
+                or self._user_can_review_tasks(row)
+            ):
+                continue
+            out.append(
+                {
+                    "id": self._as_int(row.get("id")),
+                    "username": _normalize_text(row.get("username")),
+                    "full_name": _normalize_text(row.get("full_name")) or _normalize_text(row.get("username")),
+                    "role": _normalize_text(row.get("role"), "viewer"),
+                    "department": _normalize_text(row.get("department")),
+                    "department_id": department_service.get_user_primary_department_id(row) or "",
                 }
             )
         out.sort(key=lambda item: (item.get("full_name") or "", item.get("username") or ""))
@@ -2436,6 +2480,8 @@ class HubService:
         object_id: Optional[str] = None,
         protocol_date: Optional[str] = None,
         priority: Optional[str] = "normal",
+        department_id: Optional[str] = None,
+        visibility_scope: Optional[str] = None,
         actor: dict[str, Any],
         initial_status: str = "new",
     ) -> dict[str, Any]:
@@ -2448,8 +2494,19 @@ class HubService:
         controller = user_service.get_by_id(int(controller_user_id))
         if not controller or not bool(controller.get("is_active", True)):
             raise ValueError("Controller user is not available")
-        if not self._user_can_review_tasks(controller):
-            raise ValueError("Controller must have tasks.review permission")
+        normalized_department_id = _normalize_text(department_id)
+        if not normalized_department_id:
+            normalized_department_id = department_service.get_user_primary_department_id(assignee) or department_service.get_user_primary_department_id(actor) or ""
+        if normalized_department_id and not department_service.get_department(normalized_department_id):
+            raise ValueError("Department is not available")
+        if not (self._user_can_review_tasks(controller) or (normalized_department_id and user_is_department_manager(controller, normalized_department_id))):
+            raise ValueError("Controller must have tasks.review permission or be department manager")
+        if normalized_department_id and not can_create_task_for_department(
+            actor,
+            department_id=normalized_department_id,
+            assignee=assignee,
+        ):
+            raise PermissionError("Task cannot be assigned in the selected department")
 
         now_iso = _utc_now_iso()
         task_id = str(uuid.uuid4())
@@ -2459,6 +2516,9 @@ class HubService:
         initial_status_text = _normalize_text(initial_status, "new").lower()
         if initial_status_text not in self._TASK_STATUSES:
             raise ValueError("Unsupported initial task status")
+        visibility_scope_text = normalize_visibility_scope(visibility_scope, default=VISIBILITY_PRIVATE)
+        if not normalized_department_id:
+            visibility_scope_text = VISIBILITY_PRIVATE
         with self._lock, self._connect() as conn:
             self._ensure_task_status_log_table(conn)
             validated_project_id, validated_object_id = self._validate_task_project_object(
@@ -2473,10 +2533,11 @@ class HubService:
                 f"""
                 INSERT INTO {self._TASKS_TABLE}
                 (id, title, description, status, due_at, priority, project_id, object_id, protocol_date, completed_at, completed_at_source,
+                 department_id, visibility_scope,
                  assignee_user_id, assignee_username, assignee_full_name,
                  controller_user_id, controller_username, controller_full_name,
                  created_by_user_id, created_by_username, created_by_full_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -2490,6 +2551,8 @@ class HubService:
                     normalized_protocol_date,
                     now_iso if initial_status_text == "done" else None,
                     "explicit" if initial_status_text == "done" else None,
+                    normalized_department_id or None,
+                    visibility_scope_text,
                     self._as_int(assignee.get("id")),
                     _normalize_text(assignee.get("username")),
                     _normalize_text(assignee.get("full_name")) or _normalize_text(assignee.get("username")),
@@ -2551,7 +2614,8 @@ class HubService:
         actor_id = self._as_int(actor_user_id)
         with self._lock, self._connect() as conn:
             task = self._task_access_or_raise(conn, task_id=normalized_id, user_id=actor_id, is_admin=is_admin)
-            if not is_admin and self._as_int(task.get("created_by_user_id")) != actor_id:
+            actor = user_service.get_by_id(actor_id) or {"id": actor_id, "role": "viewer"}
+            if not is_admin and self._as_int(task.get("created_by_user_id")) != actor_id and not user_is_department_manager(actor, task.get("department_id")):
                 raise PermissionError("Only task creator or admin can edit task")
             updates: list[str] = []
             params: list[Any] = []
@@ -2569,6 +2633,20 @@ class HubService:
                 if "object_id" in payload or validated_object_id != (_normalize_text(task.get("object_id")) or None):
                     updates.append("object_id = ?")
                     params.append(validated_object_id)
+            if "department_id" in payload:
+                next_department_id = _normalize_text(payload.get("department_id")) or None
+                if next_department_id and not department_service.get_department(next_department_id):
+                    raise ValueError("Department is not available")
+                if next_department_id and not (is_admin or can_create_task_for_department(actor, department_id=next_department_id, assignee=user_service.get_by_id(self._as_int(task.get("assignee_user_id"))) or {})):
+                    raise PermissionError("Task cannot be moved to the selected department")
+                updates.append("department_id = ?")
+                params.append(next_department_id)
+            if "visibility_scope" in payload:
+                next_scope = normalize_visibility_scope(payload.get("visibility_scope"), default=VISIBILITY_PRIVATE)
+                if not (_normalize_text(payload.get("department_id")) or _normalize_text(task.get("department_id"))):
+                    next_scope = VISIBILITY_PRIVATE
+                updates.append("visibility_scope = ?")
+                params.append(next_scope)
             for key in ("title", "description", "due_at", "priority", "assignee_user_id", "controller_user_id", "protocol_date"):
                 if key not in payload:
                     continue
@@ -2576,6 +2654,9 @@ class HubService:
                     assignee = user_service.get_by_id(int(payload.get(key)))
                     if not assignee or not bool(assignee.get("is_active", True)):
                         raise ValueError("Assignee user is not available")
+                    effective_department_id = _normalize_text(payload.get("department_id")) or _normalize_text(task.get("department_id"))
+                    if effective_department_id and not (is_admin or can_create_task_for_department(actor, department_id=effective_department_id, assignee=assignee)):
+                        raise PermissionError("Task cannot be assigned in the selected department")
                     updates.extend(["assignee_user_id = ?", "assignee_username = ?", "assignee_full_name = ?"])
                     params.extend(
                         [
@@ -2588,8 +2669,9 @@ class HubService:
                     controller = user_service.get_by_id(int(payload.get(key)))
                     if not controller or not bool(controller.get("is_active", True)):
                         raise ValueError("Controller user is not available")
-                    if not self._user_can_review_tasks(controller):
-                        raise ValueError("Controller must have tasks.review permission")
+                    effective_department_id = _normalize_text(payload.get("department_id")) or _normalize_text(task.get("department_id"))
+                    if not (self._user_can_review_tasks(controller) or (effective_department_id and user_is_department_manager(controller, effective_department_id))):
+                        raise ValueError("Controller must have tasks.review permission or be department manager")
                     updates.extend(["controller_user_id = ?", "controller_username = ?", "controller_full_name = ?"])
                     params.extend(
                         [
@@ -3017,6 +3099,7 @@ class HubService:
         status_filter: str = "",
         q: str = "",
         assignee_user_id: Optional[int] = None,
+        department_id: Optional[str] = None,
         has_attachments: bool = False,
         due_state: str = "",
         sort_by: str = "status",
@@ -3028,12 +3111,14 @@ class HubService:
         safe_limit = self._coerce_limit(limit, default=100, minimum=1, maximum=500)
         safe_offset = max(0, self._as_int(offset, 0))
         now_iso = _utc_now_iso()
-        normalized_scope = "all" if _normalize_text(scope).lower() == "all" and allow_all_scope else "my"
+        raw_scope = _normalize_text(scope).lower()
+        normalized_scope = "all" if raw_scope == "all" and allow_all_scope else ("department" if raw_scope == "department" else "my")
         normalized_role_scope = _normalize_text(role_scope).lower()
         if normalized_role_scope not in {"assignee", "creator", "controller", "both"}:
             normalized_role_scope = "both"
         normalized_query = _normalize_text(q).lower()
         normalized_due_state = _normalize_text(due_state).lower()
+        normalized_department_id = _normalize_text(department_id)
         normalized_sort_by = _normalize_text(sort_by, "status").lower()
         normalized_sort_dir = "desc" if _normalize_text(sort_dir).lower() == "desc" else "asc"
         where_clauses: list[str] = []
@@ -3067,6 +3152,9 @@ class HubService:
         elif assignee_user_id is not None:
             where_clauses.append("assignee_user_id = ?")
             params.append(self._as_int(assignee_user_id))
+        if normalized_department_id:
+            where_clauses.append("department_id = ?")
+            params.append(normalized_department_id)
         normalized_status = _normalize_text(status_filter).lower()
         if normalized_status:
             where_clauses.append("status = ?")
@@ -3108,6 +3196,11 @@ class HubService:
             tie_breaker = "id DESC"
 
         with self._lock, self._connect() as conn:
+            query_limit = safe_limit
+            query_offset = safe_offset
+            if normalized_scope == "department":
+                query_limit = 2000
+                query_offset = 0
             rows = conn.execute(
                 f"""
                 SELECT *
@@ -3118,20 +3211,30 @@ class HubService:
                   {tie_breaker}
                 LIMIT ? OFFSET ?
                 """,
-                tuple([*params, safe_limit, safe_offset]),
+                tuple([*params, query_limit, query_offset]),
             ).fetchall()
-            total = conn.execute(
-                f"SELECT COUNT(*) AS c FROM {self._TASKS_TABLE}{where_sql}",
-                tuple(params),
-            ).fetchone()
             items = []
             for row in rows:
+                if normalized_scope == "department":
+                    row_dict = dict(row)
+                    user = user_service.get_by_id(int(user_id)) or {"id": int(user_id), "role": "viewer"}
+                    if not can_view_task(user, row_dict, participant_user_ids=self._task_participant_user_ids(row_dict, include_delegates=True)):
+                        continue
                 item = self._task_with_latest_report(conn, row, viewer_user_id=int(user_id))
                 items.append(item)
+            if normalized_scope == "department":
+                total_count = len(items)
+                items = items[safe_offset:safe_offset + safe_limit]
+            else:
+                total = conn.execute(
+                    f"SELECT COUNT(*) AS c FROM {self._TASKS_TABLE}{where_sql}",
+                    tuple(params),
+                ).fetchone()
+                total_count = self._as_int(total["c"] if total else 0)
 
         return {
             "items": items,
-            "total": self._as_int(total["c"] if total else 0),
+            "total": total_count,
             "limit": safe_limit,
             "offset": safe_offset,
             "scope": normalized_scope,
@@ -3140,6 +3243,7 @@ class HubService:
                 "status": normalized_status,
                 "q": normalized_query,
                 "assignee_user_id": self._as_int(assignee_user_id) if assignee_user_id is not None else None,
+                "department_id": normalized_department_id or None,
                 "has_attachments": bool(has_attachments),
                 "due_state": normalized_due_state,
                 "sort_by": normalized_sort_by,
@@ -3320,7 +3424,7 @@ class HubService:
             reviewer_id = self._as_int(reviewer.get("id"))
             creator_id = self._as_int(task.get("created_by_user_id"))
             controller_id = self._as_int(task.get("controller_user_id"))
-            if not (is_admin or reviewer_id == creator_id or reviewer_id == controller_id):
+            if not (is_admin or can_review_task(reviewer, task)):
                 raise PermissionError("Only task creator, controller, or admin can review this task")
             if _normalize_text(task.get("status")).lower() != "review":
                 raise ValueError("Task is not waiting for review")

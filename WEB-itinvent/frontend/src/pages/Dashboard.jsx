@@ -34,6 +34,7 @@ import {
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
+import { AnimatePresence, motion } from 'framer-motion';
 import CampaignIcon from '@mui/icons-material/Campaign';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import AddIcon from '@mui/icons-material/Add';
@@ -56,6 +57,9 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
 import CheckCircleOutlineIcon from '@mui/icons-material/CheckCircleOutline';
 import ArrowBackIcon from '@mui/icons-material/ArrowBack';
+import MailOutlineIcon from '@mui/icons-material/MailOutline';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import SettingsIcon from '@mui/icons-material/Settings';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { hubAPI } from '../api/client';
@@ -74,16 +78,19 @@ import {
   getTransferActUploadUrl,
   isTransferActUploadTask,
 } from '../lib/hubTaskIntegrations';
+import { CHAT_FEATURE_ENABLED } from '../lib/chatFeature';
 import { buildOfficeUiTokens, getOfficeDialogPaperSx, getOfficeEmptyStateSx, getOfficeHeaderBandSx, getOfficeMetricBlockSx, getOfficePanelSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
 
 const DASHBOARD_ANNOUNCEMENTS_LIMIT = 120;
 const DASHBOARD_TASKS_LIMIT = 80;
 const DASHBOARD_MOBILE_TASK_SECTIONS = ['review', 'overdue', 'comments', 'other'];
 const DASHBOARD_MOBILE_VIEW_OPTIONS = [
-  { key: 'overview', label: '\u041c\u043e\u0439 \u0434\u0435\u043d\u044c' },
-  { key: 'announcements', label: '\u0417\u0430\u043c\u0435\u0442\u043a\u0438' },
+  { key: 'overview', label: '\u0421\u0435\u0433\u043e\u0434\u043d\u044f' },
+  { key: 'announcements', label: '\u041b\u0435\u043d\u0442\u0430' },
   { key: 'tasks', label: '\u0417\u0430\u0434\u0430\u0447\u0438' },
 ];
+const DASHBOARD_MOBILE_VIEW_ORDER = DASHBOARD_MOBILE_VIEW_OPTIONS.map((item) => item.key);
+const DASHBOARD_MOBILE_SWIPE_THRESHOLD = 50;
 const DASHBOARD_MOBILE_ANNOUNCEMENT_SEGMENTS = [
   { key: 'all', label: '\u0412\u0441\u0435' },
   { key: 'ack', label: '\u041f\u043e\u0434\u0442\u0432\u0435\u0440\u0434\u0438\u0442\u044c' },
@@ -107,12 +114,12 @@ const DASHBOARD_MOBILE_OVERVIEW_SECTION_META = {
     description: '\u041f\u0440\u043e\u0441\u0440\u043e\u0447\u0435\u043d\u043d\u044b\u0435, \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0438 \u043f\u043e\u0434\u0442\u0432\u0435\u0440\u0436\u0434\u0435\u043d\u0438\u044f.',
   },
   announcements: {
-    title: '\u0417\u0430\u043c\u0435\u0442\u043a\u0438',
-    description: '\u041a\u043e\u0440\u043e\u0442\u043a\u0438\u0439 \u043e\u0431\u0437\u043e\u0440 \u043d\u043e\u0432\u043e\u0441\u0442\u0435\u0439 \u0438 \u043e\u0431\u044f\u0437\u0430\u0442\u0435\u043b\u044c\u043d\u044b\u0445 \u0437\u0430\u043c\u0435\u0442\u043e\u043a.',
+    title: '\u041d\u043e\u0432\u043e\u0441\u0442\u0438 \u0438 \u0437\u0430\u043c\u0435\u0442\u043a\u0438',
+    description: '\u041e\u0431\u0449\u0430\u044f \u043b\u0435\u043d\u0442\u0430 \u043a\u043e\u043c\u043f\u0430\u043d\u0438\u0438, \u0437\u0430\u043a\u0440\u0435\u043f\u043b\u0435\u043d\u043d\u043e\u0435 \u0438 \u0442\u043e, \u0447\u0442\u043e \u043d\u0443\u0436\u043d\u043e \u043f\u0440\u043e\u0447\u0438\u0442\u0430\u0442\u044c.',
   },
   tasks: {
-    title: '\u0417\u0430\u0434\u0430\u0447\u0438',
-    description: '\u0411\u044b\u0441\u0442\u0440\u044b\u0439 triage \u043f\u043e \u0440\u0430\u0431\u043e\u0447\u0435\u0439 \u043e\u0447\u0435\u0440\u0435\u0434\u0438.',
+    title: '\u041c\u043e\u0438 \u0434\u0435\u043b\u0430',
+    description: '\u0417\u0430\u0434\u0430\u0447\u0438, \u043f\u0440\u043e\u0432\u0435\u0440\u043a\u0430 \u0438 \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0438, \u0433\u0434\u0435 \u043d\u0443\u0436\u043d\u0430 \u0440\u0435\u0430\u043a\u0446\u0438\u044f.',
   },
 };
 
@@ -133,6 +140,26 @@ const moveArrayItem = (items, fromIndex, toIndex) => {
   const [moved] = next.splice(fromIndex, 1);
   next.splice(toIndex, 0, moved);
   return next;
+};
+
+const getMobileViewDirection = (fromView, toView) => {
+  const fromIndex = DASHBOARD_MOBILE_VIEW_ORDER.indexOf(fromView);
+  const toIndex = DASHBOARD_MOBILE_VIEW_ORDER.indexOf(toView);
+  if (fromIndex < 0 || toIndex < 0 || fromIndex === toIndex) return 0;
+  return toIndex > fromIndex ? 1 : -1;
+};
+
+const getMobileSwipeTargetView = (currentView, deltaX) => {
+  const currentIndex = DASHBOARD_MOBILE_VIEW_ORDER.indexOf(currentView);
+  if (currentIndex < 0 || Math.abs(deltaX) < DASHBOARD_MOBILE_SWIPE_THRESHOLD) return currentView;
+  const nextIndex = deltaX < 0 ? currentIndex + 1 : currentIndex - 1;
+  if (nextIndex < 0 || nextIndex >= DASHBOARD_MOBILE_VIEW_ORDER.length) return currentView;
+  return DASHBOARD_MOBILE_VIEW_ORDER[nextIndex];
+};
+
+const isMobileSwipeIgnoredTarget = (target) => {
+  if (!target || typeof target.closest !== 'function') return false;
+  return Boolean(target.closest('button, a, input, textarea, select, [role="button"], [role="tab"], .MuiChip-root'));
 };
 
 const announcementPriorityMeta = (priority) => {
@@ -290,7 +317,7 @@ function Dashboard() {
     notifyApiError: pushNotifyApiError,
     notifySuccess: pushNotifySuccess,
   } = useNotification();
-  const hubToastAction = useMemo(() => createNavigateToastAction('/dashboard', 'Открыть центр'), []);
+  const hubToastAction = useMemo(() => createNavigateToastAction('/dashboard', 'Открыть главную'), []);
   const tasksToastAction = useMemo(() => createNavigateToastAction('/tasks', 'Открыть задачи'), []);
   const notifyHubSuccess = useCallback((message, options = {}) => (
     pushNotifySuccess(message, { source: 'hub', action: hubToastAction, ...options })
@@ -352,6 +379,65 @@ function Dashboard() {
   const [taskLoading, setTaskLoading] = useState(false);
   const [taskDetails, setTaskDetails] = useState(null);
   const searchInputRef = useRef(null);
+  const mobileSwipeRef = useRef(null);
+  const mobileViewDirectionRef = useRef(0);
+
+  const setMobileViewWithDirection = useCallback((nextView) => {
+    setMobileView((currentView) => {
+      const resolvedView = DASHBOARD_MOBILE_VIEW_ORDER.includes(nextView) ? nextView : currentView;
+      mobileViewDirectionRef.current = getMobileViewDirection(currentView, resolvedView);
+      return resolvedView;
+    });
+  }, []);
+
+  const beginMobileSwipe = useCallback((point, target) => {
+    if (!point || isMobileSwipeIgnoredTarget(target)) {
+      mobileSwipeRef.current = null;
+      return;
+    }
+    mobileSwipeRef.current = {
+      startX: Number(point.clientX || 0),
+      startY: Number(point.clientY || 0),
+    };
+  }, []);
+
+  const endMobileSwipe = useCallback((point) => {
+    const start = mobileSwipeRef.current;
+    mobileSwipeRef.current = null;
+    if (!start || !point) return;
+
+    const deltaX = Number(point.clientX || 0) - start.startX;
+    const deltaY = Number(point.clientY || 0) - start.startY;
+    if (Math.abs(deltaY) >= Math.abs(deltaX)) return;
+
+    setMobileView((currentView) => {
+      const nextView = getMobileSwipeTargetView(currentView, deltaX);
+      mobileViewDirectionRef.current = getMobileViewDirection(currentView, nextView);
+      return nextView;
+    });
+  }, []);
+
+  const cancelMobileSwipe = useCallback(() => {
+    mobileSwipeRef.current = null;
+  }, []);
+
+  const handleMobileTouchStart = useCallback((event) => {
+    beginMobileSwipe(event.touches?.[0], event.target);
+  }, [beginMobileSwipe]);
+
+  const handleMobileTouchEnd = useCallback((event) => {
+    endMobileSwipe(event.changedTouches?.[0]);
+  }, [endMobileSwipe]);
+
+  const handleMobilePointerDown = useCallback((event) => {
+    if (event.pointerType && event.pointerType !== 'touch' && event.pointerType !== 'pen') return;
+    beginMobileSwipe(event, event.target);
+  }, [beginMobileSwipe]);
+
+  const handleMobilePointerUp = useCallback((event) => {
+    if (event.pointerType && event.pointerType !== 'touch' && event.pointerType !== 'pen') return;
+    endMobileSwipe(event);
+  }, [endMobileSwipe]);
 
   const updateSearch = useCallback((mutate, { replace = true } = {}) => {
     const params = new URLSearchParams(location.search || '');
@@ -562,7 +648,7 @@ function Dashboard() {
 
   const actionStrip = useMemo(() => ([
     { key: 'ack', label: 'Нужно подтвердить', value: Number(summary?.announcements_ack_pending || unreadCounts?.announcements_ack_pending || 0), color: '#2563eb', bg: 'rgba(37,99,235,0.12)', icon: <CheckCircleOutlineIcon sx={{ fontSize: 18 }} /> },
-    { key: 'notes', label: 'Новые и обновленные', value: Number(summary?.announcements_attention || unreadCounts?.announcements_unread || 0), color: '#7c3aed', bg: 'rgba(124,58,237,0.12)', icon: <CampaignIcon sx={{ fontSize: 18 }} /> },
+    { key: 'notes', label: 'Новые новости', value: Number(summary?.announcements_attention || unreadCounts?.announcements_unread || 0), color: '#7c3aed', bg: 'rgba(124,58,237,0.12)', icon: <CampaignIcon sx={{ fontSize: 18 }} /> },
     { key: 'review', label: 'К проверке', value: Number(summary?.tasks_review_required || unreadCounts?.tasks_review_required || 0), color: '#d97706', bg: 'rgba(217,119,6,0.14)', icon: <TaskAltIcon sx={{ fontSize: 18 }} /> },
     { key: 'overdue', label: 'Просрочено', value: Number(summary?.tasks_overdue || unreadCounts?.tasks_overdue || 0), color: '#dc2626', bg: 'rgba(220,38,38,0.12)', icon: <WarningAmberIcon sx={{ fontSize: 18 }} /> },
     { key: 'comments', label: 'Новые комментарии', value: Number(summary?.tasks_with_unread_comments || unreadCounts?.tasks_with_unread_comments || 0), color: '#059669', bg: 'rgba(5,150,105,0.12)', icon: <ModeCommentOutlinedIcon sx={{ fontSize: 18 }} /> },
@@ -678,8 +764,8 @@ function Dashboard() {
 
   useEffect(() => {
     if (!isMobile || !selectedAnnouncementId) return;
-    setMobileView('announcements');
-  }, [isMobile, selectedAnnouncementId]);
+    setMobileViewWithDirection('announcements');
+  }, [isMobile, selectedAnnouncementId, setMobileViewWithDirection]);
 
   const loadAnnouncementReads = useCallback(async (announcementId) => {
     const normalizedId = String(announcementId || '').trim();
@@ -741,7 +827,7 @@ function Dashboard() {
       return;
     }
     if (key === 'filters') {
-      setMobileView('announcements');
+      setMobileViewWithDirection('announcements');
       setMobileFiltersOpen(true);
       return;
     }
@@ -752,7 +838,7 @@ function Dashboard() {
     if (key === 'create') {
       openCreateAnnouncement();
     }
-  }, [loadDashboard, navigate, openCreateAnnouncement, openMobileCustomize]);
+  }, [loadDashboard, navigate, openCreateAnnouncement, openMobileCustomize, setMobileViewWithDirection]);
 
   const openEditAnnouncement = useCallback(async (item) => {
     if (!item?.id) return;
@@ -932,8 +1018,8 @@ function Dashboard() {
 
   useEffect(() => {
     if (!isMobile || !selectedTaskId) return;
-    setMobileView('tasks');
-  }, [isMobile, selectedTaskId]);
+    setMobileViewWithDirection('tasks');
+  }, [isMobile, selectedTaskId, setMobileViewWithDirection]);
 
   useEffect(() => {
     const handleKeyDown = (event) => {
@@ -1256,6 +1342,16 @@ function Dashboard() {
     myTargetedOnly,
   ].filter(Boolean).length, [ackOnly, hasAttachments, myTargetedOnly, pinnedOnly, priority, q, unreadOnly]);
 
+  const filterCheckboxSx = useMemo(() => ({
+    color: ui.subtleText,
+    '&.Mui-checked': {
+      color: ui.textPrimary,
+    },
+    '&.MuiCheckbox-indeterminate': {
+      color: ui.textPrimary,
+    },
+  }), [ui.subtleText, ui.textPrimary]);
+
   const announcementSectionMap = useMemo(() => (
     Object.fromEntries(announcementSections.map((section) => [section.key, section]))
   ), [announcementSections]);
@@ -1358,23 +1454,6 @@ function Dashboard() {
     () => (Array.isArray(activeMobileTaskSection?.items) ? activeMobileTaskSection.items.slice(0, 4) : []),
     [activeMobileTaskSection],
   );
-
-  const handleMobileSummaryShortcut = useCallback((key) => {
-    if (key === 'ack') {
-      setMobileView('announcements');
-      setMobileAnnouncementSection('ack');
-      return;
-    }
-    if (key === 'notes') {
-      setMobileView('announcements');
-      setMobileAnnouncementSection('new');
-      return;
-    }
-    if (DASHBOARD_MOBILE_TASK_SECTIONS.includes(key)) {
-      setMobileView('tasks');
-      setMobileTaskSection(key);
-    }
-  }, []);
 
   const mobileHeaderActions = useMemo(() => {
     const items = [{ key: 'refresh', label: 'Обновить', icon: <RefreshIcon fontSize="small" /> }];
@@ -1666,11 +1745,11 @@ function Dashboard() {
           </Select>
         </FormControl>
       </Grid>
-      <Grid item xs={12} sm={6} md={2}><FormControlLabel control={<Checkbox checked={unreadOnly} onChange={(event) => setUnreadOnly(event.target.checked)} />} label="Непрочитанные" /></Grid>
-      <Grid item xs={12} sm={6} md={2}><FormControlLabel control={<Checkbox checked={ackOnly} onChange={(event) => setAckOnly(event.target.checked)} />} label="Нужно подтвердить" /></Grid>
-      <Grid item xs={12} sm={6} md={2}><FormControlLabel control={<Checkbox checked={pinnedOnly} onChange={(event) => setPinnedOnly(event.target.checked)} />} label="Закреплённые" /></Grid>
-      <Grid item xs={12} sm={6} md={3}><FormControlLabel control={<Checkbox checked={hasAttachments} onChange={(event) => setHasAttachments(event.target.checked)} />} label="С файлами" /></Grid>
-      <Grid item xs={12} sm={6} md={3}><FormControlLabel control={<Checkbox checked={myTargetedOnly} onChange={(event) => setMyTargetedOnly(event.target.checked)} />} label="Мои адресные" /></Grid>
+      <Grid item xs={12} sm={6} md={2}><FormControlLabel control={<Checkbox sx={filterCheckboxSx} checked={unreadOnly} onChange={(event) => setUnreadOnly(event.target.checked)} />} label="Непрочитанные" /></Grid>
+      <Grid item xs={12} sm={6} md={2}><FormControlLabel control={<Checkbox sx={filterCheckboxSx} checked={ackOnly} onChange={(event) => setAckOnly(event.target.checked)} />} label="Нужно подтвердить" /></Grid>
+      <Grid item xs={12} sm={6} md={2}><FormControlLabel control={<Checkbox sx={filterCheckboxSx} checked={pinnedOnly} onChange={(event) => setPinnedOnly(event.target.checked)} />} label="Закреплённые" /></Grid>
+      <Grid item xs={12} sm={6} md={3}><FormControlLabel control={<Checkbox sx={filterCheckboxSx} checked={hasAttachments} onChange={(event) => setHasAttachments(event.target.checked)} />} label="С файлами" /></Grid>
+      <Grid item xs={12} sm={6} md={3}><FormControlLabel control={<Checkbox sx={filterCheckboxSx} checked={myTargetedOnly} onChange={(event) => setMyTargetedOnly(event.target.checked)} />} label="Мои адресные" /></Grid>
       <Grid item xs={12} md={6} sx={{ display: 'flex', justifyContent: { xs: 'stretch', md: 'flex-end' } }}>
         <Button
           variant="outlined"
@@ -1716,6 +1795,152 @@ function Dashboard() {
       setMobileCustomizeSaving(false);
     }
   }, [mobileHiddenSectionsDraft, mobileSectionsDraft, notifyHubApiError, notifyHubSuccess, savePreferences]);
+
+  const coreQuickAccessItems = useMemo(() => {
+    const items = [];
+    if (CHAT_FEATURE_ENABLED && hasPermission('chat.read')) {
+      items.push({
+        key: 'chat',
+        label: 'Чат',
+        description: 'Диалоги и упоминания',
+        to: '/chat',
+        color: '#2563eb',
+        badge: Number(unreadCounts?.chat_messages_unread_total || 0),
+        icon: <ForumOutlinedIcon sx={{ fontSize: 20 }} />,
+      });
+    }
+    if (hasPermission('mail.access')) {
+      items.push({
+        key: 'mail',
+        label: 'Почта',
+        description: 'Входящие письма',
+        to: '/mail',
+        color: '#0f766e',
+        badge: Number(unreadCounts?.mail_unread || 0),
+        icon: <MailOutlineIcon sx={{ fontSize: 20 }} />,
+      });
+    }
+    if (hasPermission('tasks.read')) {
+      items.push({
+        key: 'tasks',
+        label: 'Задачи',
+        description: 'Мои поручения',
+        to: '/tasks',
+        color: '#d97706',
+        badge: Number(summary?.tasks_open_total || unreadCounts?.tasks_open_total || unreadCounts?.tasks_open || 0),
+        icon: <TaskAltIcon sx={{ fontSize: 20 }} />,
+      });
+    }
+    if (hasPermission('settings.read')) {
+      items.push({
+        key: 'settings',
+        label: 'Настройки',
+        description: 'Профиль и уведомления',
+        to: '/settings',
+        color: '#475569',
+        badge: 0,
+        icon: <SettingsIcon sx={{ fontSize: 20 }} />,
+      });
+    }
+    return items;
+  }, [hasPermission, summary?.tasks_open_total, unreadCounts]);
+
+  const extraQuickActions = useMemo(() => {
+    if (!canWriteAnn) return [];
+    return [{
+      key: 'create-announcement',
+      label: 'Объявление',
+      description: 'Опубликовать новость',
+      action: openCreateAnnouncement,
+      color: theme.palette.primary.main,
+      badge: 0,
+      icon: <AddIcon sx={{ fontSize: 20 }} />,
+    }];
+  }, [canWriteAnn, openCreateAnnouncement, theme.palette.primary.main]);
+
+  const renderQuickAccessTile = useCallback((item, { compact = false } = {}) => (
+    <Box
+      key={item.key}
+      data-testid={`dashboard-quick-access-${item.key}`}
+      component={motion.button}
+      type="button"
+      layout
+      whileTap={{ scale: 0.985 }}
+      onClick={() => {
+        if (item.action) item.action();
+        else if (item.to) navigate(item.to);
+      }}
+      sx={{
+        width: '100%',
+        height: '100%',
+        minHeight: compact ? 72 : 80,
+        display: 'flex',
+        alignItems: 'center',
+        gap: compact ? 0.8 : 1,
+        textAlign: 'left',
+        cursor: 'pointer',
+        border: '1px solid',
+        borderColor: compact
+          ? alpha(item.color, theme.palette.mode === 'dark' ? 0.14 : 0.10)
+          : ui.borderSoft,
+        borderRadius: compact ? '13px' : '16px',
+        bgcolor: compact
+          ? alpha(item.color, theme.palette.mode === 'dark' ? 0.055 : 0.035)
+          : ui.panelSolid,
+        color: ui.textPrimary,
+        px: compact ? 1.05 : 1.2,
+        py: compact ? 0.9 : 1,
+        boxShadow: compact
+          ? `inset 0 1px 0 ${alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.035 : 0.55)}`
+          : 'none',
+        font: 'inherit',
+        transition: 'transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.18s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.18s cubic-bezier(0.16, 1, 0.3, 1)',
+        '&:hover': {
+          transform: 'translateY(-1px)',
+          borderColor: alpha(item.color, theme.palette.mode === 'dark' ? 0.42 : 0.28),
+          bgcolor: alpha(item.color, theme.palette.mode === 'dark' ? 0.10 : 0.045),
+        },
+        '&:active': {
+          transform: 'scale(0.985)',
+        },
+        '&:focus-visible': {
+          outline: '2px solid',
+          outlineColor: alpha(item.color, 0.45),
+          outlineOffset: 2,
+        },
+      }}
+    >
+      <Box sx={{
+        width: compact ? 34 : 38,
+        height: compact ? 34 : 38,
+        flexShrink: 0,
+        borderRadius: compact ? '10px' : '12px',
+        display: 'grid',
+        placeItems: 'center',
+        bgcolor: alpha(item.color, theme.palette.mode === 'dark' ? 0.16 : 0.10),
+        color: item.color,
+      }}>
+        {item.icon}
+      </Box>
+      <Box sx={{ minWidth: 0, flex: 1 }}>
+        <Stack direction="row" spacing={0.6} alignItems="center">
+          <Typography sx={{ fontWeight: 900, fontSize: compact ? '0.82rem' : '0.88rem', lineHeight: 1.15, minWidth: 0 }}>
+            {item.label}
+          </Typography>
+          {Number(item.badge || 0) > 0 ? (
+            <Chip
+              size="small"
+              label={item.badge}
+              sx={{ height: 18, minWidth: 18, fontSize: '0.62rem', fontWeight: 900, bgcolor: alpha(item.color, 0.14), color: item.color, border: 'none' }}
+            />
+          ) : null}
+        </Stack>
+        <Typography variant="caption" sx={{ display: 'block', mt: 0.18, color: ui.mutedText, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {item.description}
+        </Typography>
+      </Box>
+    </Box>
+  ), [navigate, theme.palette.mode, ui.borderSoft, ui.mutedText, ui.panelSolid, ui.textPrimary]);
 
   const renderOverviewItemCard = useCallback((entry) => {
     const isTask = entry?.type === 'task';
@@ -1784,6 +2009,34 @@ function Dashboard() {
     </Stack>
   ), [ui.mutedText]);
 
+  const getMobileSegmentChipSx = useCallback((selected) => ({
+    flexShrink: 0,
+    height: 34,
+    borderRadius: '12px',
+    fontWeight: 850,
+    color: selected ? ui.textPrimary : ui.mutedText,
+    bgcolor: selected
+      ? alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.075 : 0.58)
+      : alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.025 : 0.32),
+    borderColor: selected
+      ? alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.18 : 0.72)
+      : ui.borderSoft,
+    boxShadow: selected
+      ? `inset 0 1px 0 ${alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.05 : 0.7)}`
+      : 'none',
+    transition: 'transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.18s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.18s cubic-bezier(0.16, 1, 0.3, 1)',
+    '& .MuiChip-label': {
+      px: 1.15,
+    },
+    '&:hover': {
+      bgcolor: alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.09 : 0.66),
+      borderColor: selected ? alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.24 : 0.78) : ui.selectedBorder,
+    },
+    '&:active': {
+      transform: 'scale(0.98)',
+    },
+  }), [theme.palette.common.white, theme.palette.mode, ui.borderSoft, ui.mutedText, ui.selectedBorder, ui.textPrimary]);
+
   return (
     <MainLayout headerMode={isMobile ? 'notifications-only' : 'default'}>
       <PageShell fullHeight={!isMobile} sx={{ bgcolor: ui.pageBg }}>
@@ -1812,37 +2065,17 @@ function Dashboard() {
                 <Stack spacing={1}>
                   <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
                     <Box sx={{ minWidth: 0 }}>
-                      <Typography sx={{ fontWeight: 900, fontSize: '1rem', lineHeight: 1.15 }}>Центр управления</Typography>
+                      <Typography sx={{ fontWeight: 900, fontSize: '1rem', lineHeight: 1.15 }}>Главная</Typography>
                       <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.25 }}>
-                        Мой день, заметки и быстрый triage задач.
+                        Важное, новости, почта и мои задачи.
                       </Typography>
                     </Box>
-                    <OverflowMenu items={mobileHeaderActions} onSelect={handleMobileActionSelect} label="Действия центра" />
-                  </Stack>
-
-                  <Stack direction="row" spacing={0.7} sx={{ overflowX: 'auto', pb: 0.1 }}>
-                    {actionStrip.map((item) => (
-                      <Chip
-                        key={item.key}
-                        clickable
-                        data-testid={`dashboard-summary-chip-${item.key}`}
-                        onClick={() => handleMobileSummaryShortcut(item.key)}
-                        label={`${item.label}: ${item.value}`}
-                        sx={{
-                          flexShrink: 0,
-                          fontWeight: 800,
-                          bgcolor: alpha(item.color, theme.palette.mode === 'dark' ? 0.18 : 0.09),
-                          color: item.color,
-                          borderRadius: '10px',
-                          '& .MuiChip-label': { px: 1.1 },
-                        }}
-                      />
-                    ))}
+                    <OverflowMenu items={mobileHeaderActions} onSelect={handleMobileActionSelect} label="Действия главной" />
                   </Stack>
 
                   <Tabs
                     value={mobileView}
-                    onChange={(_, nextValue) => setMobileView(nextValue)}
+                    onChange={(_, nextValue) => setMobileViewWithDirection(nextValue)}
                     variant="fullWidth"
                     sx={{ minHeight: 38, '& .MuiTab-root': { minHeight: 38, textTransform: 'none', fontWeight: 800 } }}
                   >
@@ -1853,8 +2086,59 @@ function Dashboard() {
                 </Stack>
               </Card>
 
+              <Box
+                data-testid="dashboard-mobile-swipe-region"
+                onTouchStart={handleMobileTouchStart}
+                onTouchEnd={handleMobileTouchEnd}
+                onTouchCancel={cancelMobileSwipe}
+                onPointerDown={handleMobilePointerDown}
+                onPointerUp={handleMobilePointerUp}
+                onPointerCancel={cancelMobileSwipe}
+                sx={{ touchAction: 'pan-y' }}
+              >
+                <AnimatePresence mode="wait" initial={false}>
+                  <Box
+                    key={mobileView}
+                    component={motion.div}
+                    layout
+                    initial={{ opacity: 0, x: mobileViewDirectionRef.current >= 0 ? 28 : -28, scale: 0.995 }}
+                    animate={{ opacity: 1, x: 0, scale: 1 }}
+                    exit={{ opacity: 0, x: mobileViewDirectionRef.current >= 0 ? -28 : 28, scale: 0.995 }}
+                    transition={{
+                      x: { type: 'spring', stiffness: 420, damping: 38, mass: 0.75 },
+                      opacity: { duration: 0.16, ease: [0.16, 1, 0.3, 1] },
+                      scale: { duration: 0.18, ease: [0.16, 1, 0.3, 1] },
+                    }}
+                    sx={{ willChange: 'transform, opacity' }}
+                  >
               {mobileView === 'overview' ? (
                 <Stack spacing={1}>
+                  {coreQuickAccessItems.length > 0 && (
+                    <Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '16px' }) }}>
+                      <Stack spacing={1}>
+                        {renderMobileSectionHeader(
+                          'Быстрый доступ',
+                          'Общие разделы, которые нужны большинству сотрудников каждый день.',
+                        )}
+                        <Box
+                          data-testid="dashboard-quick-access-grid-mobile"
+                          sx={{
+                            display: 'grid',
+                            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
+                            gap: 0.9,
+                            width: '100%',
+                          }}
+                        >
+                          {coreQuickAccessItems.map((item) => (
+                            <Box key={item.key} sx={{ minWidth: 0, display: 'flex' }}>
+                              {renderQuickAccessTile(item, { compact: true })}
+                            </Box>
+                          ))}
+                        </Box>
+                      </Stack>
+                    </Card>
+                  )}
+
                   {visibleMobileOverviewSections.includes('urgent') && (
                     <Card
                       data-testid="dashboard-mobile-overview-section-urgent"
@@ -1897,10 +2181,10 @@ function Dashboard() {
                               key={section.key}
                               clickable
                               label={`${section.label}: ${announcementSectionMap[section.key]?.items?.length || 0}`}
-                              color={mobileOverviewAnnouncementSection === section.key ? 'primary' : 'default'}
-                              variant={mobileOverviewAnnouncementSection === section.key ? 'filled' : 'outlined'}
+                              color="default"
+                              variant="outlined"
                               onClick={() => setMobileOverviewAnnouncementSection(section.key)}
-                              sx={{ flexShrink: 0, fontWeight: 800 }}
+                              sx={getMobileSegmentChipSx(mobileOverviewAnnouncementSection === section.key)}
                             />
                           ))}
                         </Stack>
@@ -1918,7 +2202,7 @@ function Dashboard() {
                         <Button
                           variant="text"
                           onClick={() => {
-                            setMobileView('announcements');
+                            setMobileViewWithDirection('announcements');
                             setMobileAnnouncementSection(mobileOverviewAnnouncementSection);
                           }}
                           sx={{ alignSelf: 'flex-start', px: 0, textTransform: 'none', fontWeight: 800 }}
@@ -1945,10 +2229,10 @@ function Dashboard() {
                               key={section.key}
                               clickable
                               label={`${section.label}: ${taskQueueMap[section.key]?.items?.length || 0}`}
-                              color={mobileTaskSection === section.key ? 'primary' : 'default'}
-                              variant={mobileTaskSection === section.key ? 'filled' : 'outlined'}
+                              color="default"
+                              variant="outlined"
                               onClick={() => setMobileTaskSection(section.key)}
-                              sx={{ flexShrink: 0, fontWeight: 800 }}
+                              sx={getMobileSegmentChipSx(mobileTaskSection === section.key)}
                             />
                           ))}
                         </Stack>
@@ -1966,7 +2250,7 @@ function Dashboard() {
                         <Stack direction="row" spacing={1} flexWrap="wrap" useFlexGap>
                           <Button
                             variant="text"
-                            onClick={() => setMobileView('tasks')}
+                            onClick={() => setMobileViewWithDirection('tasks')}
                             sx={{ px: 0, textTransform: 'none', fontWeight: 800 }}
                           >
                             Открыть triage
@@ -1986,28 +2270,103 @@ function Dashboard() {
               ) : mobileView === 'announcements' ? (
                 <Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '16px' }) }}>
                   <Stack spacing={1}>
-                    <Stack direction="row" spacing={0.8} alignItems="center">
+                    <Stack direction="row" spacing={0.7} alignItems="center">
                       <TextField
                         fullWidth
                         size="small"
-                        label="Поиск по заметкам"
+                        hiddenLabel
+                        aria-label="Поиск по заметкам"
                         value={q}
                         inputRef={searchInputRef}
                         onChange={(event) => setQ(event.target.value)}
-                        placeholder="Заголовок, текст, автор..."
-                        InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 18, color: ui.subtleText, mr: 0.8 }} /> }}
+                        placeholder="Поиск"
+                        inputProps={{ 'aria-label': 'Поиск по заметкам' }}
+                        InputProps={{
+                          startAdornment: <SearchIcon sx={{ fontSize: 18, color: ui.subtleText, mr: 0.7, flexShrink: 0 }} />,
+                          sx: {
+                            height: 42,
+                            borderRadius: '14px',
+                            bgcolor: alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.025 : 0.58),
+                            color: ui.textPrimary,
+                            '& .MuiOutlinedInput-notchedOutline': {
+                              borderColor: alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.09 : 0.42),
+                            },
+                            '&:hover .MuiOutlinedInput-notchedOutline': {
+                              borderColor: alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.18 : 0.68),
+                            },
+                            '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                              borderWidth: 1,
+                              borderColor: alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.26 : 0.82),
+                            },
+                            '& .MuiInputBase-input': {
+                              py: 0,
+                              fontSize: '0.9rem',
+                              fontWeight: 700,
+                              '&::placeholder': {
+                                color: ui.subtleText,
+                                opacity: 0.85,
+                              },
+                            },
+                          },
+                        }}
                       />
-                      <Button
-                        type="button"
-                        size="small"
-                        variant={activeFilterCount ? 'contained' : 'outlined'}
-                        onClick={() => setMobileFiltersOpen(true)}
-                        startIcon={<FilterListIcon />}
-                        data-testid="dashboard-mobile-filters-button"
-                        sx={{ flexShrink: 0, minWidth: 0, px: 1.1, textTransform: 'none', fontWeight: 800, borderRadius: '10px' }}
-                      >
-                        Фильтры
-                      </Button>
+                      <Tooltip title={activeFilterCount ? `Фильтры: ${activeFilterCount}` : 'Фильтры'}>
+                        <IconButton
+                          type="button"
+                          size="small"
+                          onClick={() => setMobileFiltersOpen(true)}
+                          data-testid="dashboard-mobile-filters-button"
+                          aria-label="Фильтры заметок"
+                          sx={{
+                            position: 'relative',
+                            flexShrink: 0,
+                            width: 42,
+                            height: 42,
+                            borderRadius: '14px',
+                            border: '1px solid',
+                            borderColor: activeFilterCount
+                              ? alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.20 : 0.72)
+                              : alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.10 : 0.42),
+                            color: activeFilterCount ? ui.textPrimary : ui.subtleText,
+                            bgcolor: activeFilterCount
+                              ? alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.075 : 0.58)
+                              : alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.025 : 0.58),
+                            transition: 'transform 0.18s cubic-bezier(0.16, 1, 0.3, 1), border-color 0.18s cubic-bezier(0.16, 1, 0.3, 1), background-color 0.18s cubic-bezier(0.16, 1, 0.3, 1)',
+                            '&:hover': {
+                              bgcolor: alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.09 : 0.66),
+                              borderColor: alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.24 : 0.78),
+                            },
+                            '&:active': {
+                              transform: 'scale(0.97)',
+                            },
+                          }}
+                        >
+                          <FilterListIcon sx={{ fontSize: 20 }} />
+                          {activeFilterCount ? (
+                            <Box
+                              component="span"
+                              sx={{
+                                position: 'absolute',
+                                top: 5,
+                                right: 5,
+                                minWidth: 15,
+                                height: 15,
+                                px: 0.35,
+                                borderRadius: '999px',
+                                display: 'grid',
+                                placeItems: 'center',
+                                bgcolor: ui.textPrimary,
+                                color: ui.panelSolid,
+                                fontSize: '0.58rem',
+                                fontWeight: 900,
+                                lineHeight: 1,
+                              }}
+                            >
+                              {activeFilterCount}
+                            </Box>
+                          ) : null}
+                        </IconButton>
+                      </Tooltip>
                     </Stack>
 
                     <Stack direction="row" spacing={0.65} sx={{ overflowX: 'auto', pb: 0.1 }}>
@@ -2021,10 +2380,10 @@ function Dashboard() {
                           key={section.key}
                           clickable
                           label={`${section.label}: ${announcementSectionMap[section.key]?.items?.length || 0}`}
-                          color={mobileAnnouncementSection === section.key ? 'primary' : 'default'}
-                          variant={mobileAnnouncementSection === section.key ? 'filled' : 'outlined'}
+                          color="default"
+                          variant="outlined"
                           onClick={() => setMobileAnnouncementSection(section.key)}
-                          sx={{ flexShrink: 0, fontWeight: 800 }}
+                          sx={getMobileSegmentChipSx(mobileAnnouncementSection === section.key)}
                         />
                       ))}
                     </Stack>
@@ -2055,7 +2414,7 @@ function Dashboard() {
               ) : (
                 <Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '16px' }) }}>
                   <Stack spacing={1}>
-                    <Typography sx={{ fontWeight: 900, fontSize: '0.94rem' }}>Очередь задач</Typography>
+                    <Typography sx={{ fontWeight: 900, fontSize: '0.94rem' }}>Мои задачи</Typography>
 
                     <Stack direction="row" spacing={0.65} sx={{ overflowX: 'auto', pb: 0.1 }}>
                       {[
@@ -2068,10 +2427,10 @@ function Dashboard() {
                           key={section.key}
                           clickable
                           label={`${section.label}: ${taskQueueMap[section.key]?.items?.length || 0}`}
-                          color={mobileTaskSection === section.key ? 'primary' : 'default'}
-                          variant={mobileTaskSection === section.key ? 'filled' : 'outlined'}
+                          color="default"
+                          variant="outlined"
                           onClick={() => setMobileTaskSection(section.key)}
-                          sx={{ flexShrink: 0, fontWeight: 800 }}
+                          sx={getMobileSegmentChipSx(mobileTaskSection === section.key)}
                         />
                       ))}
                     </Stack>
@@ -2095,6 +2454,9 @@ function Dashboard() {
                   </Stack>
                 </Card>
               )}
+                  </Box>
+                </AnimatePresence>
+              </Box>
             </Stack>
           ) : (
             <>
@@ -2108,9 +2470,9 @@ function Dashboard() {
                       <NotificationsIcon />
                     </Avatar>
                     <Box>
-                      <Typography sx={{ fontWeight: 900, fontSize: '0.98rem', lineHeight: 1.1 }}>Центр управления</Typography>
+                      <Typography sx={{ fontWeight: 900, fontSize: '0.98rem', lineHeight: 1.1 }}>Главная</Typography>
                       <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.2 }}>
-                        Оперативная лента заметок и рабочая очередь задач в одном экране.
+                        Корпоративная лента, мои дела и быстрый доступ к рабочим разделам.
                       </Typography>
                     </Box>
                   </Stack>
@@ -2142,6 +2504,26 @@ function Dashboard() {
                   ))}
                 </Grid>
 
+                {coreQuickAccessItems.length > 0 && (
+                  <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 0.8, borderRadius: '14px' }) }}>
+                    <Stack direction={{ xs: 'column', xl: 'row' }} justifyContent="space-between" spacing={0.8}>
+                      <Box sx={{ minWidth: { xl: 180 }, pt: { xl: 0.35 } }}>
+                        <Typography sx={{ fontWeight: 900, fontSize: '0.86rem', lineHeight: 1.15 }}>Быстрый доступ</Typography>
+                        <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.25 }}>
+                          Общие разделы для всех сотрудников.
+                        </Typography>
+                      </Box>
+                      <Grid container spacing={0.75} data-testid="dashboard-quick-access-grid" alignItems="stretch" sx={{ flex: 1 }}>
+                        {coreQuickAccessItems.map((item) => (
+                          <Grid item xs={6} sm={6} md={3} key={item.key} sx={{ display: 'flex' }}>
+                            {renderQuickAccessTile(item)}
+                          </Grid>
+                        ))}
+                      </Grid>
+                    </Stack>
+                  </Box>
+                )}
+
                 <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={0.8}>
                   <Button size="small" variant="text" startIcon={<FilterListIcon />} onClick={() => setFiltersOpen((prev) => !prev)} sx={{ alignSelf: 'flex-start', textTransform: 'none', fontWeight: 800, py: 0.25 }}>
                     {filtersOpen ? 'Свернуть фильтры' : `Развернуть фильтры${activeFilterCount ? ` (${activeFilterCount})` : ''}`}
@@ -2164,6 +2546,32 @@ function Dashboard() {
             <Grid item xs={12} lg={8} sx={{ display: 'flex', minHeight: 0, height: '100%' }}>
               <Box sx={{ flex: 1, height: '100%', minHeight: 0, overflowY: 'auto', overflowX: 'hidden', pr: 0.3 }}>
                 <Stack spacing={1}>
+                <Box sx={{ ...getOfficeSubtlePanelSx(ui, { px: 1.1, py: 0.9, borderRadius: '14px' }) }}>
+                  <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography sx={{ fontWeight: 900, fontSize: '0.95rem', lineHeight: 1.15 }}>Новости компании</Typography>
+                      <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.2 }}>
+                        Закрепленные объявления, важные изменения и сообщения для сотрудников.
+                      </Typography>
+                    </Box>
+                    <Stack direction="row" spacing={0.6} alignItems="center" sx={{ flexShrink: 0 }}>
+                      <Chip size="small" label={filteredAnnouncements.length} sx={{ fontWeight: 900 }} />
+                      {extraQuickActions.map((item) => (
+                        <Button
+                          key={item.key}
+                          data-testid={`dashboard-extra-action-${item.key}`}
+                          size="small"
+                          variant="contained"
+                          startIcon={item.icon}
+                          onClick={item.action}
+                          sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
+                        >
+                          {item.label}
+                        </Button>
+                      ))}
+                    </Stack>
+                  </Stack>
+                </Box>
                 {loading && announcementItems.length === 0 ? (
                   <Card sx={{ ...getOfficePanelSx(ui, { p: 1.2, borderRadius: '16px' }) }}>
                     <Stack spacing={1}>
@@ -2209,7 +2617,12 @@ function Dashboard() {
                 <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 1 }}>
                   <Stack direction="row" spacing={0.8} alignItems="center">
                     <AssignmentIcon sx={{ fontSize: 18, color: theme.palette.primary.main }} />
-                    <Typography sx={{ fontWeight: 900 }}>Очередь задач</Typography>
+                    <Box>
+                      <Typography sx={{ fontWeight: 900, lineHeight: 1.15 }}>Мои задачи</Typography>
+                      <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.15 }}>
+                        Проверка, сроки и новые комментарии.
+                      </Typography>
+                    </Box>
                   </Stack>
                   <Button size="small" variant="outlined" startIcon={<OpenInNewIcon />} onClick={() => navigate('/tasks')} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
                     Все задачи

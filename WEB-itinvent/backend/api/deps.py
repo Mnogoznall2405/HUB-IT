@@ -296,11 +296,47 @@ def ensure_user_permission(current_user: User, permission: str) -> None:
         )
 
 
+def ensure_user_any_permission(current_user: User, permissions: list[str] | tuple[str, ...] | set[str]) -> None:
+    """Raise HTTP 403 when user does not have any of the required permissions."""
+    if str(getattr(current_user, "role", "") or "").strip().lower() == "admin":
+        return
+    normalized_permissions = [str(item or "").strip() for item in list(permissions or []) if str(item or "").strip()]
+    if not normalized_permissions:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Insufficient permissions",
+        )
+    current_permissions = set(getattr(current_user, "permissions", []) or [])
+    if any(permission in current_permissions for permission in normalized_permissions):
+        return
+    if authorization_service.has_any_permission(
+        current_user.role,
+        normalized_permissions,
+        use_custom_permissions=bool(getattr(current_user, "use_custom_permissions", False)),
+        custom_permissions=getattr(current_user, "custom_permissions", []),
+    ):
+        return
+    raise HTTPException(
+        status_code=status.HTTP_403_FORBIDDEN,
+        detail=f"Insufficient permissions: one of {', '.join(normalized_permissions)}",
+    )
+
+
 def require_permission(permission: str) -> Callable[..., User]:
     """Dependency factory for permission checks."""
 
     async def _dependency(current_user: User = Depends(get_current_active_user)) -> User:
         ensure_user_permission(current_user, permission)
+        return current_user
+
+    return _dependency
+
+
+def require_any_permission(permissions: list[str] | tuple[str, ...] | set[str]) -> Callable[..., User]:
+    """Dependency factory for permission checks where any listed permission is enough."""
+
+    async def _dependency(current_user: User = Depends(get_current_active_user)) -> User:
+        ensure_user_any_permission(current_user, permissions)
         return current_user
 
     return _dependency

@@ -66,6 +66,11 @@ _CHAT_ATTACHMENT_VARIANT_MAX_DIMENSIONS = {
 _CHAT_MENTION_PATTERN = re.compile(r"(?<![\w@])@([0-9A-Za-zА-Яа-яЁё_.-]{1,64})", re.UNICODE)
 
 
+CHAT_DELETED_MESSAGE_BODY = "Сообщение удалено"
+CHAT_GROUP_ROLES = {"owner", "moderator", "member"}
+CHAT_GROUP_MANAGER_ROLES = {"owner", "moderator"}
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -78,6 +83,20 @@ def _normalize_text(value: object, default: str = "") -> str:
 def _normalize_body_format(value: object, default: str = "plain") -> str:
     normalized = _normalize_text(value).lower() or default
     return normalized if normalized in {"plain", "markdown"} else "plain"
+
+
+def _normalize_member_role(value: object) -> str:
+    normalized = _normalize_text(value).lower()
+    return normalized if normalized in CHAT_GROUP_ROLES else "member"
+
+
+def _display_user_name(user: Optional[dict]) -> str:
+    payload = user or {}
+    return (
+        _normalize_text(payload.get("full_name"))
+        or _normalize_text(payload.get("username"))
+        or f"user-{int(payload.get('id', 0) or 0)}"
+    )
 
 
 def _normalize_mention_handle(value: object) -> str:
@@ -3154,6 +3173,326 @@ class ChatService:
         )
         return payload
 
+    def add_group_members(self, *, current_user_id: int, conversation_id: str, member_user_ids: list[int]) -> dict:
+        self._ensure_available()
+        requested_user_ids = sorted({
+            int(item)
+            for item in list(member_user_ids or [])
+            if int(item) > 0 and int(item) != int(current_user_id)
+        })
+        if not requested_user_ids:
+            raise ValueError("member_user_ids is required")
+
+        affected_user_ids: set[int] = {int(current_user_id)}
+        with chat_session() as session:
+            conversation, actor_member = self._require_group_manager(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            actor = self._require_active_user(int(current_user_id))
+            active_member_ids = set(self._conversation_member_ids(session, conversation.id))
+            candidate_user_ids = [user_id for user_id in requested_user_ids if user_id not in active_member_ids]
+            if len(active_member_ids) + len(candidate_user_ids) > self.group_max_members:
+                raise ValueError(f"Group member limit exceeded ({self.group_max_members})")
+
+            existing_rows = list(
+                session.execute(
+                    select(ChatMember).where(
+                        ChatMember.conversation_id == conversation.id,
+                        ChatMember.user_id.in_(requested_user_ids),
+                    )
+                ).scalars()
+            )
+            existing_by_user_id = {int(item.user_id): item for item in existing_rows}
+            added_users: list[dict] = []
+            now = _utc_now()
+            for user_id in candidate_user_ids:
+                user = self._require_active_user(int(user_id))
+                existing_member = existing_by_user_id.get(int(user_id))
+                if existing_member is not None:
+                    existing_member.left_at = None
+                    existing_member.member_role = "member"
+                    existing_member.joined_at = now
+                else:
+                    session.add(
+                        ChatMember(
+                            conversation_id=conversation.id,
+                            user_id=int(user_id),
+                            member_role="member",
+                            joined_at=now,
+                        )
+                    )
+                state = self._get_or_create_conversation_state(
+                    session=session,
+                    conversation_id=conversation.id,
+                    current_user_id=int(user_id),
+                )
+                state.is_archived = False
+                state.updated_at = now
+                added_users.append(user)
+                affected_user_ids.add(int(user_id))
+
+            if added_users:
+                member_ids_after = self._conversation_member_ids(session, conversation.id)
+                added_names = ", ".join(_display_user_name(user) for user in added_users)
+                self._append_system_message(
+                    session=session,
+                    conversation=conversation,
+                    actor_user_id=int(current_user_id),
+                    body=f"{_display_user_name(actor)} добавил(а): {added_names}",
+                    member_user_ids=member_ids_after,
+                    now=now,
+                )
+                affected_user_ids.update(member_ids_after)
+            else:
+                conversation.updated_at = now
+            session.flush()
+            payload = self._build_conversation_detail_payload(session, conversation, int(current_user_id))
+
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=sorted(affected_user_ids),
+        )
+        return payload
+
+    def remove_group_member(self, *, current_user_id: int, conversation_id: str, target_user_id: int) -> dict:
+        self._ensure_available()
+        normalized_target_user_id = int(target_user_id)
+        if normalized_target_user_id <= 0:
+            raise ValueError("target_user_id is required")
+        if normalized_target_user_id == int(current_user_id):
+            raise ValueError("Use leave endpoint to leave group")
+
+        affected_user_ids: set[int] = {int(current_user_id), normalized_target_user_id}
+        with chat_session() as session:
+            conversation, actor_member = self._require_group_manager(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            actor_role = _normalize_member_role(actor_member.member_role)
+            target_member = self._get_active_membership(
+                session=session,
+                conversation_id=conversation.id,
+                user_id=normalized_target_user_id,
+            )
+            if target_member is None:
+                raise LookupError("Group member not found")
+            target_role = _normalize_member_role(target_member.member_role)
+            if target_role == "owner":
+                raise PermissionError("Owner cannot be removed")
+            if target_role == "moderator" and actor_role != "owner":
+                raise PermissionError("Only owner can remove moderators")
+
+            actor = self._require_active_user(int(current_user_id))
+            target = self._require_active_user(normalized_target_user_id)
+            now = _utc_now()
+            target_member.left_at = now
+            member_ids_after = self._conversation_member_ids(session, conversation.id)
+            self._append_system_message(
+                session=session,
+                conversation=conversation,
+                actor_user_id=int(current_user_id),
+                body=f"{_display_user_name(actor)} исключил(а) {_display_user_name(target)}",
+                member_user_ids=member_ids_after,
+                now=now,
+            )
+            affected_user_ids.update(member_ids_after)
+            session.flush()
+            payload = self._build_conversation_detail_payload(session, conversation, int(current_user_id))
+
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=sorted(affected_user_ids),
+        )
+        return payload
+
+    def update_group_member_role(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        target_user_id: int,
+        member_role: str,
+    ) -> dict:
+        self._ensure_available()
+        normalized_target_user_id = int(target_user_id)
+        next_role = _normalize_member_role(member_role)
+        if next_role not in {"moderator", "member"}:
+            raise ValueError("member_role must be moderator or member")
+        if normalized_target_user_id <= 0:
+            raise ValueError("target_user_id is required")
+        if normalized_target_user_id == int(current_user_id):
+            raise PermissionError("Owner role must be transferred through ownership endpoint")
+
+        affected_user_ids: set[int] = {int(current_user_id), normalized_target_user_id}
+        with chat_session() as session:
+            conversation, _ = self._require_group_owner(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            target_member = self._get_active_membership(
+                session=session,
+                conversation_id=conversation.id,
+                user_id=normalized_target_user_id,
+            )
+            if target_member is None:
+                raise LookupError("Group member not found")
+            if _normalize_member_role(target_member.member_role) == "owner":
+                raise PermissionError("Owner role cannot be changed here")
+            if _normalize_member_role(target_member.member_role) == next_role:
+                return self._build_conversation_detail_payload(session, conversation, int(current_user_id))
+
+            actor = self._require_active_user(int(current_user_id))
+            target = self._require_active_user(normalized_target_user_id)
+            now = _utc_now()
+            target_member.member_role = next_role
+            member_ids_after = self._conversation_member_ids(session, conversation.id)
+            action = "назначил(а) модератором" if next_role == "moderator" else "снял(а) модератора"
+            self._append_system_message(
+                session=session,
+                conversation=conversation,
+                actor_user_id=int(current_user_id),
+                body=f"{_display_user_name(actor)} {action}: {_display_user_name(target)}",
+                member_user_ids=member_ids_after,
+                now=now,
+            )
+            affected_user_ids.update(member_ids_after)
+            session.flush()
+            payload = self._build_conversation_detail_payload(session, conversation, int(current_user_id))
+
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=sorted(affected_user_ids),
+        )
+        return payload
+
+    def transfer_group_ownership(self, *, current_user_id: int, conversation_id: str, owner_user_id: int) -> dict:
+        self._ensure_available()
+        next_owner_user_id = int(owner_user_id)
+        if next_owner_user_id <= 0:
+            raise ValueError("owner_user_id is required")
+        if next_owner_user_id == int(current_user_id):
+            raise ValueError("User is already owner")
+
+        affected_user_ids: set[int] = {int(current_user_id), next_owner_user_id}
+        with chat_session() as session:
+            conversation, actor_member = self._require_group_owner(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            next_owner_member = self._get_active_membership(
+                session=session,
+                conversation_id=conversation.id,
+                user_id=next_owner_user_id,
+            )
+            if next_owner_member is None:
+                raise LookupError("New owner must be an active group member")
+
+            actor = self._require_active_user(int(current_user_id))
+            next_owner = self._require_active_user(next_owner_user_id)
+            now = _utc_now()
+            actor_member.member_role = "moderator"
+            next_owner_member.member_role = "owner"
+            member_ids_after = self._conversation_member_ids(session, conversation.id)
+            self._append_system_message(
+                session=session,
+                conversation=conversation,
+                actor_user_id=int(current_user_id),
+                body=f"{_display_user_name(actor)} передал(а) права владельца: {_display_user_name(next_owner)}",
+                member_user_ids=member_ids_after,
+                now=now,
+            )
+            affected_user_ids.update(member_ids_after)
+            session.flush()
+            payload = self._build_conversation_detail_payload(session, conversation, int(current_user_id))
+
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=sorted(affected_user_ids),
+        )
+        return payload
+
+    def leave_group(self, *, current_user_id: int, conversation_id: str) -> dict:
+        self._ensure_available()
+        affected_user_ids: set[int] = {int(current_user_id)}
+        with chat_session() as session:
+            conversation, actor_member = self._require_group_membership(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            if _normalize_member_role(actor_member.member_role) == "owner":
+                raise PermissionError("Transfer ownership before leaving the group")
+
+            actor = self._require_active_user(int(current_user_id))
+            now = _utc_now()
+            actor_member.left_at = now
+            member_ids_after = self._conversation_member_ids(session, conversation.id)
+            self._append_system_message(
+                session=session,
+                conversation=conversation,
+                actor_user_id=int(current_user_id),
+                body=f"{_display_user_name(actor)} вышел(а) из группы",
+                member_user_ids=member_ids_after,
+                now=now,
+            )
+            affected_user_ids.update(member_ids_after)
+            session.flush()
+
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=sorted(affected_user_ids),
+        )
+        return {"conversation_id": _normalize_text(conversation_id), "left": True}
+
+    def update_group_profile(self, *, current_user_id: int, conversation_id: str, title: Optional[str] = None) -> dict:
+        self._ensure_available()
+        normalized_title = _normalize_text(title)
+        if not normalized_title:
+            raise ValueError("Group title is required")
+
+        affected_user_ids: set[int] = {int(current_user_id)}
+        with chat_session() as session:
+            conversation, _ = self._require_group_owner(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            if _normalize_text(conversation.title) == normalized_title:
+                return self._build_conversation_detail_payload(session, conversation, int(current_user_id))
+
+            actor = self._require_active_user(int(current_user_id))
+            now = _utc_now()
+            conversation.title = normalized_title
+            member_ids_after = self._conversation_member_ids(session, conversation.id)
+            self._append_system_message(
+                session=session,
+                conversation=conversation,
+                actor_user_id=int(current_user_id),
+                body=f"{_display_user_name(actor)} переименовал(а) группу: {normalized_title}",
+                member_user_ids=member_ids_after,
+                now=now,
+            )
+            affected_user_ids.update(member_ids_after)
+            session.flush()
+            payload = self._build_conversation_detail_payload(session, conversation, int(current_user_id))
+
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=sorted(affected_user_ids),
+        )
+        return payload
+
     def send_message(
         self,
         *,
@@ -3598,6 +3937,78 @@ class ChatService:
         self._invalidate_user_cache(user_id=int(current_user_id), bucket="conversations")
         return payload
 
+    def delete_message(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        message_id: str,
+    ) -> dict:
+        self._ensure_available()
+        normalized_message_id = _normalize_text(message_id)
+        if not normalized_message_id:
+            raise ValueError("message_id is required")
+
+        affected_user_ids: set[int] = {int(current_user_id)}
+        system_message_id: str | None = None
+        with chat_session() as session:
+            conversation, actor_member = self._require_group_membership(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            message = session.get(ChatMessage, normalized_message_id)
+            if message is None or message.conversation_id != conversation.id:
+                raise LookupError("Message not found")
+            if self._normalize_message_kind(getattr(message, "kind", "text")) == "system":
+                raise ValueError("System messages cannot be deleted")
+
+            actor_role = _normalize_member_role(actor_member.member_role)
+            is_own_message = int(getattr(message, "sender_user_id", 0) or 0) == int(current_user_id)
+            if not is_own_message and actor_role not in CHAT_GROUP_MANAGER_ROLES:
+                raise PermissionError("Message delete access denied")
+
+            now = _utc_now()
+            if not bool(getattr(message, "is_deleted", False)):
+                message.is_deleted = True
+                message.deleted_at = now
+                message.deleted_by_user_id = int(current_user_id)
+                message.deleted_reason = "self" if is_own_message else "moderated"
+
+                actor = self._require_active_user(int(current_user_id))
+                member_user_ids = self._conversation_member_ids(session, conversation.id)
+                system_message = self._append_system_message(
+                    session=session,
+                    conversation=conversation,
+                    actor_user_id=int(current_user_id),
+                    body=f"{_display_user_name(actor)} удалил(а) сообщение",
+                    member_user_ids=member_user_ids,
+                    now=now,
+                )
+                system_message_id = system_message.id
+                affected_user_ids.update(member_user_ids)
+            else:
+                member_user_ids = self._conversation_member_ids(session, conversation.id)
+                affected_user_ids.update(member_user_ids)
+
+            session.flush()
+            payload = self._build_message_payload_for_members(
+                session=session,
+                conversation=conversation,
+                message=message,
+                current_user_id=int(current_user_id),
+                member_user_ids=member_user_ids,
+            )
+
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=sorted(affected_user_ids),
+        )
+        if system_message_id:
+            payload["_system_message_id"] = system_message_id
+        return payload
+
     def mark_read(self, *, current_user_id: int, conversation_id: str, message_id: str) -> dict:
         self._ensure_available()
         normalized_message_id = _normalize_text(message_id)
@@ -3924,9 +4335,11 @@ class ChatService:
             "is_active": True,
             "presence": None,
         }
+        is_deleted = bool(getattr(message, "is_deleted", False))
+        message_kind = self._normalize_message_kind(getattr(message, "kind", "text"))
         attachment_payload = [
             item if isinstance(item, dict) else self._attachment_to_payload(item)
-            for item in list(attachments or [])
+            for item in ([] if is_deleted else list(attachments or []))
         ]
         is_own = int(message.sender_user_id) == int(current_user_id)
         read_receipts = []
@@ -3949,21 +4362,25 @@ class ChatService:
         return {
             "id": message.id,
             "conversation_id": message.conversation_id,
-            "kind": self._normalize_message_kind(getattr(message, "kind", "text")),
+            "kind": message_kind,
             "body_format": _normalize_text(getattr(message, "body_format", None), "plain") or "plain",
             "client_message_id": _normalize_text(getattr(message, "client_message_id", None)) or None,
             "sender": sender,
-            "body": message.body,
+            "body": CHAT_DELETED_MESSAGE_BODY if is_deleted else message.body,
             "created_at": _iso(message.created_at) or "",
             "edited_at": _iso(message.edited_at),
+            "is_deleted": is_deleted,
+            "deleted_at": _iso(getattr(message, "deleted_at", None)),
+            "deleted_by_user_id": int(getattr(message, "deleted_by_user_id", 0) or 0) or None,
+            "deleted_reason": _normalize_text(getattr(message, "deleted_reason", None)) or None,
             "is_own": is_own,
             "delivery_status": ("read" if read_by_count > 0 else "sent") if is_own else None,
             "read_by_count": read_by_count if is_own else 0,
             "reply_preview": dict((reply_previews or {}).get(_normalize_text(getattr(message, "reply_to_message_id", None))) or {}) or None,
             "forward_preview": dict((forward_previews or {}).get(_normalize_text(getattr(message, "forward_from_message_id", None))) or {}) or None,
-            "task_preview": self._deserialize_task_preview(getattr(message, "task_preview_json", None)),
+            "task_preview": None if is_deleted else self._deserialize_task_preview(getattr(message, "task_preview_json", None)),
             "attachments": attachment_payload,
-            "action_card": self._get_message_action_card(message_id=message.id),
+            "action_card": None if is_deleted else self._get_message_action_card(message_id=message.id),
         }
 
     def _get_message_action_card(self, *, message_id: str) -> dict | None:
@@ -3987,9 +4404,11 @@ class ChatService:
         if last_message is None:
             return ""
 
-        preview = _normalize_text(getattr(last_message, "body", ""))[:180]
+        preview = CHAT_DELETED_MESSAGE_BODY if bool(getattr(last_message, "is_deleted", False)) else _normalize_text(getattr(last_message, "body", ""))[:180]
         message_kind = self._normalize_message_kind(getattr(last_message, "kind", "text"))
-        if message_kind == "task_share":
+        if bool(getattr(last_message, "is_deleted", False)):
+            preview = CHAT_DELETED_MESSAGE_BODY
+        elif message_kind == "task_share":
             task_preview = self._deserialize_task_preview(getattr(last_message, "task_preview_json", None))
             task_title = _normalize_text((task_preview or {}).get("title"))
             preview = f"Задача: {task_title}" if task_title else "Поделились задачей"
@@ -4093,10 +4512,17 @@ class ChatService:
         sender = users_by_id.get(int(message.sender_user_id)) or {}
         sender_name = self._get_short_user_name(sender) or f"user-{message.sender_user_id}"
         message_kind = self._normalize_message_kind(getattr(message, "kind", "text"))
-        body = _truncate_text(_strip_markdown_preview(getattr(message, "body", "")), limit=120)
+        is_deleted = bool(getattr(message, "is_deleted", False))
+        body = (
+            CHAT_DELETED_MESSAGE_BODY
+            if is_deleted
+            else _truncate_text(_strip_markdown_preview(getattr(message, "body", "")), limit=120)
+        )
         task_title = None
-        attachments_count = len(list(attachments or []))
-        if message_kind == "task_share":
+        attachments_count = 0 if is_deleted else len(list(attachments or []))
+        if is_deleted:
+            task_title = None
+        elif message_kind == "task_share":
             task_preview = self._deserialize_task_preview(getattr(message, "task_preview_json", None))
             task_title = _normalize_text((task_preview or {}).get("title")) or None
             body = task_title or "Карточка задачи"
@@ -4130,10 +4556,17 @@ class ChatService:
         }
         sender_name = self._get_short_user_name(sender) or f"user-{message.sender_user_id}"
         message_kind = self._normalize_message_kind(getattr(message, "kind", "text"))
-        body = _truncate_text(_strip_markdown_preview(getattr(message, "body", "")), limit=120)
+        is_deleted = bool(getattr(message, "is_deleted", False))
+        body = (
+            CHAT_DELETED_MESSAGE_BODY
+            if is_deleted
+            else _truncate_text(_strip_markdown_preview(getattr(message, "body", "")), limit=120)
+        )
         task_title = None
-        attachments_count = len(list(attachments or []))
-        if message_kind == "task_share":
+        attachments_count = 0 if is_deleted else len(list(attachments or []))
+        if is_deleted:
+            task_title = None
+        elif message_kind == "task_share":
             task_preview = self._deserialize_task_preview(getattr(message, "task_preview_json", None))
             task_title = _normalize_text((task_preview or {}).get("title")) or None
             body = task_title or "Карточка задачи"
@@ -4249,6 +4682,95 @@ class ChatService:
         if membership is None:
             raise PermissionError("Conversation access denied")
         return conversation
+
+    def _get_active_membership(self, *, session, conversation_id: str, user_id: int) -> ChatMember | None:
+        return session.execute(
+            select(ChatMember).where(
+                ChatMember.conversation_id == _normalize_text(conversation_id),
+                ChatMember.user_id == int(user_id),
+                ChatMember.left_at.is_(None),
+            )
+        ).scalar_one_or_none()
+
+    def _require_group_membership(self, *, session, conversation_id: str, current_user_id: int) -> tuple[ChatConversation, ChatMember]:
+        conversation = self._require_membership(
+            session=session,
+            conversation_id=conversation_id,
+            current_user_id=int(current_user_id),
+        )
+        if _normalize_text(conversation.kind) != "group":
+            raise ValueError("Group conversation required")
+        membership = self._get_active_membership(
+            session=session,
+            conversation_id=conversation.id,
+            user_id=int(current_user_id),
+        )
+        if membership is None:
+            raise PermissionError("Conversation access denied")
+        return conversation, membership
+
+    def _require_group_manager(self, *, session, conversation_id: str, current_user_id: int) -> tuple[ChatConversation, ChatMember]:
+        conversation, membership = self._require_group_membership(
+            session=session,
+            conversation_id=conversation_id,
+            current_user_id=int(current_user_id),
+        )
+        if _normalize_member_role(membership.member_role) not in CHAT_GROUP_MANAGER_ROLES:
+            raise PermissionError("Group manager access denied")
+        return conversation, membership
+
+    def _require_group_owner(self, *, session, conversation_id: str, current_user_id: int) -> tuple[ChatConversation, ChatMember]:
+        conversation, membership = self._require_group_membership(
+            session=session,
+            conversation_id=conversation_id,
+            current_user_id=int(current_user_id),
+        )
+        if _normalize_member_role(membership.member_role) != "owner":
+            raise PermissionError("Group owner access denied")
+        return conversation, membership
+
+    def _append_system_message(
+        self,
+        *,
+        session,
+        conversation: ChatConversation,
+        actor_user_id: int,
+        body: str,
+        member_user_ids: list[int],
+        now: datetime,
+    ) -> ChatMessage:
+        next_conversation_seq = int(getattr(conversation, "last_message_seq", 0) or 0) + 1
+        message = ChatMessage(
+            id=str(uuid4()),
+            conversation_id=conversation.id,
+            sender_user_id=int(actor_user_id),
+            kind="system",
+            body_format="plain",
+            body=_normalize_text(body) or "Системное событие",
+            conversation_seq=next_conversation_seq,
+            created_at=now,
+        )
+        session.add(message)
+        conversation.last_message_id = message.id
+        conversation.last_message_seq = next_conversation_seq
+        conversation.last_message_at = now
+        conversation.updated_at = now
+        self._mark_sender_message_seen(
+            session=session,
+            conversation_id=conversation.id,
+            current_user_id=int(actor_user_id),
+            message_id=message.id,
+            conversation_seq=next_conversation_seq,
+            seen_at=now,
+        )
+        self._increment_unread_counters_for_recipients(
+            session=session,
+            conversation_id=conversation.id,
+            sender_user_id=int(actor_user_id),
+            member_user_ids=member_user_ids,
+            seen_at=now,
+        )
+        return message
 
     def _message_before_anchor_condition(self, *, anchor: ChatMessage):
         anchor_seq = int(getattr(anchor, "conversation_seq", 0) or 0)
@@ -4489,6 +5011,8 @@ class ChatService:
             return "task_share"
         if normalized == "file":
             return "file"
+        if normalized == "system":
+            return "system"
         return "text"
 
     def _deserialize_task_preview(self, raw_value: object) -> Optional[dict]:

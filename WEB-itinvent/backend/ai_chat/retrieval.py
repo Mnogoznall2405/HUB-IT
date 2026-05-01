@@ -17,6 +17,7 @@ from backend.ai_chat.document_extractors import extract_text_from_path
 from backend.appdb.db import app_session, ensure_app_schema_initialized
 from backend.appdb.models import AppAiKbChunk, AppAiKbDocument
 from backend.services.kb_service import kb_service
+from backend.services.access_policy_service import VISIBILITY_GLOBAL, can_view_kb_item, normalize_visibility_scope
 
 TOKEN_RE = re.compile(r"[0-9A-Za-zА-Яа-яЁё_]{3,}", flags=re.UNICODE)
 logger = logging.getLogger(__name__)
@@ -107,6 +108,10 @@ def _chunk_metadata_payload(
         "article_type": _normalize_text(article.get("article_type")),
         "summary": _normalize_text(article.get("summary")),
         "tags": _normalize_tags(article.get("tags")),
+        "department_id": _normalize_text(article.get("department_id")),
+        "visibility_scope": normalize_visibility_scope(article.get("visibility_scope"), default=VISIBILITY_GLOBAL),
+        "owner_user_id": article.get("owner_user_id"),
+        "created_by": _normalize_text(article.get("created_by")),
         "primary_attachment_id": _normalize_text((primary_attachment or {}).get("id")),
         "primary_attachment_name": _normalize_text((primary_attachment or {}).get("file_name")),
         "primary_attachment_content_type": _normalize_text((primary_attachment or {}).get("content_type")),
@@ -162,6 +167,8 @@ class AiKbRetrievalService:
                             "title": article.get("title"),
                             "summary": article.get("summary"),
                             "article_type": article.get("article_type"),
+                            "department_id": article.get("department_id"),
+                            "visibility_scope": article.get("visibility_scope"),
                             "primary_attachment_id": _normalize_text((primary_attachment or {}).get("id")),
                             "content": article.get("content"),
                             "attachments": [
@@ -200,6 +207,10 @@ class AiKbRetrievalService:
                         "category": article.get("category"),
                         "article_type": article.get("article_type"),
                         "tags": list(article.get("tags") or []),
+                        "department_id": article.get("department_id"),
+                        "visibility_scope": article.get("visibility_scope"),
+                        "owner_user_id": article.get("owner_user_id"),
+                        "created_by": article.get("created_by"),
                         "primary_attachment_id": _normalize_text((primary_attachment or {}).get("id")),
                         "primary_attachment_name": _normalize_text((primary_attachment or {}).get("file_name")),
                         "primary_attachment_content_type": _normalize_text((primary_attachment or {}).get("content_type")),
@@ -254,7 +265,7 @@ class AiKbRetrievalService:
             "freshness_ttl_sec": round(float(self._sync_interval_sec), 1),
         }
 
-    def retrieve(self, *, query: str, allowed_scope: list[str] | None = None, limit: int = 5) -> list[dict[str, Any]]:
+    def retrieve(self, *, query: str, allowed_scope: list[str] | None = None, limit: int = 5, current_user: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         ensure_app_schema_initialized()
         tokens = _tokenize(query)
         if not tokens:
@@ -267,6 +278,8 @@ class AiKbRetrievalService:
             metadata = _load_json_object(row.metadata_json)
             category = str(metadata.get("category") or "").strip().lower()
             if allowed and category not in allowed:
+                continue
+            if current_user is not None and not can_view_kb_item(current_user, metadata):
                 continue
             haystack = f"{row.title}\n{row.content}".lower()
             score = 0
@@ -304,6 +317,7 @@ class AiKbRetrievalService:
         query: str,
         allowed_scope: list[str] | None = None,
         limit: int = 5,
+        current_user: dict[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         ensure_app_schema_initialized()
         tokens = _tokenize(query)
@@ -322,6 +336,8 @@ class AiKbRetrievalService:
                 continue
             category = _normalize_text(metadata.get("category")).lower()
             if allowed and category not in allowed:
+                continue
+            if current_user is not None and not can_view_kb_item(current_user, metadata):
                 continue
             primary_attachment_id = _normalize_text(metadata.get("primary_attachment_id"))
             if not primary_attachment_id:

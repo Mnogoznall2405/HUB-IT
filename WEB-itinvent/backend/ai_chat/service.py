@@ -1646,6 +1646,7 @@ class AiChatService:
             trigger_message_id=run_payload["trigger_message_id"],
             bot_user_id=int(bot.bot_user_id or 0),
             bot_title=bot.title,
+            user_payload=user_payload,
             allow_files=bool(bot.allow_file_input),
             can_read_kb=_user_has_permission(user_payload, PERM_KB_READ),
             allowed_kb_scope=_json_loads(bot.allowed_kb_scope_json, []),
@@ -2106,6 +2107,7 @@ class AiChatService:
         trigger_message_id: str,
         bot_user_id: int,
         bot_title: str,
+        user_payload: dict[str, Any],
         allow_files: bool,
         can_read_kb: bool,
         allowed_kb_scope: list[str],
@@ -2194,6 +2196,7 @@ class AiChatService:
                     query=kb_query,
                     allowed_scope=allowed_kb_scope,
                     limit=5,
+                    current_user=user_payload,
                 )
                 if kb_chunks:
                     kb_context = "\n\n".join(
@@ -2205,6 +2208,7 @@ class AiChatService:
                         query=kb_query,
                         allowed_scope=allowed_kb_scope,
                         limit=5,
+                        current_user=user_payload,
                     )
         return {
             "conversation_text": "\n".join(conversation_lines[-AI_CONTEXT_RENDERED_MESSAGE_WINDOW:]),

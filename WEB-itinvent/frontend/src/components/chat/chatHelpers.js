@@ -212,6 +212,8 @@ export const formatFileSize = (value) => {
 
 export const getMessagePreview = (message) => {
   if (!message) return 'Сообщение';
+  if (message?.is_deleted) return 'Сообщение удалено';
+  if (message.kind === 'system') return normalizeTrimmedChatText(message.body, 'Системное событие');
   if (message.kind === 'task_share') return 'Поделились задачей';
   const body = normalizeTrimmedChatText(message.body);
   if (message.kind === 'file' && body) return body;
@@ -345,6 +347,7 @@ export const buildChatPinnedMessageKey = (userId, conversationId) => {
 
 export const getReplyPreviewText = (replyPreview) => {
   if (!replyPreview || typeof replyPreview !== 'object') return '';
+  if (replyPreview?.is_deleted) return 'Сообщение удалено';
   const markdownPreview = stripChatMarkdownPreview(replyPreview.task_title || replyPreview.body);
   if (markdownPreview) return markdownPreview;
   if (replyPreview.kind === 'task_share') {
@@ -361,6 +364,8 @@ export const getReplyPreviewText = (replyPreview) => {
 
 export const getSearchResultPreview = (message) => {
   if (!message) return 'Сообщение';
+  if (message?.is_deleted) return '��������� �������';
+  if (message.kind === 'system') return normalizeTrimmedChatText(message.body, '��������� �������');
   if (message.kind === 'task_share') {
     return normalizeTrimmedChatText(message?.task_preview?.title, 'Карточка задачи');
   }

@@ -4,7 +4,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Tasks from './Tasks';
-import { hubAPI } from '../api/client';
+import { departmentsAPI, hubAPI } from '../api/client';
 
 function installMatchMedia({ mobile = false } = {}) {
   window.matchMedia = vi.fn().mockImplementation((query) => ({
@@ -20,6 +20,9 @@ function installMatchMedia({ mobile = false } = {}) {
 }
 
 vi.mock('../api/client', () => ({
+  departmentsAPI: {
+    list: vi.fn(),
+  },
   hubAPI: {
     getAssignees: vi.fn(),
     getControllers: vi.fn(),
@@ -191,6 +194,7 @@ beforeEach(() => {
   hubAPI.getTaskObjects.mockResolvedValue({
     items: [{ id: 'object-1', project_id: 'project-1', name: 'Объект 17', is_active: true }],
   });
+  departmentsAPI.list.mockResolvedValue({ items: [] });
   hubAPI.getTaskAnalytics.mockResolvedValue({
     summary: {
       total: 5,

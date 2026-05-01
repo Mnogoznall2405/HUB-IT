@@ -53,24 +53,37 @@ const Vcs = lazy(loadVcsRoute);
 const KnowledgeBase = lazy(loadKnowledgeBaseRoute);
 
 const routePermissions = [
-  { path: '/dashboard', permission: 'dashboard.read' },
-  { path: '/tasks', permission: 'tasks.read' },
-  ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', permission: 'chat.read' }] : []),
-  { path: '/database', permission: 'database.read' },
-  { path: '/networks', permission: 'networks.read' },
-  { path: '/mfu', permission: 'database.read' },
-  { path: '/computers', permission: 'computers.read' },
-  { path: '/scan-center', permission: 'scan.read' },
-  { path: '/statistics', permission: 'statistics.read' },
-  { path: '/kb', permission: 'kb.read' },
-  { path: '/settings', permission: 'settings.read' },
-  { path: '/ad-users', permission: 'ad_users.read' },
-  { path: '/vcs', permission: 'vcs.read' },
-  { path: '/mail', permission: 'mail.access' },
+  { path: '/dashboard', permissions: ['dashboard.read'] },
+  { path: '/tasks', permissions: ['tasks.read'] },
+  ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', permissions: ['chat.read'] }] : []),
+  { path: '/database', permissions: ['database.read'] },
+  { path: '/networks', permissions: ['networks.read'] },
+  { path: '/mfu', permissions: ['database.read'] },
+  { path: '/computers', permissions: ['computers.read'] },
+  { path: '/scan-center', permissions: ['scan.read'] },
+  { path: '/statistics', permissions: ['statistics.read'] },
+  { path: '/kb', permissions: ['kb.read'] },
+  { path: '/settings', permissions: ['settings.read'] },
+  { path: '/ad-users', adminOnly: true },
+  { path: '/vcs', permissions: ['vcs.read'] },
+  { path: '/mail', permissions: ['mail.access'] },
 ];
 
-const resolveFirstAccessiblePath = (hasPermission) => {
-  const match = routePermissions.find((item) => hasPermission(item.permission));
+const canAccessAny = (hasPermission, permissions = []) => (
+  permissions.some((permission) => hasPermission(permission))
+);
+
+const isAdminUser = (user) => String(user?.role || '').trim().toLowerCase() === 'admin';
+
+const canAccessRoute = (hasPermission, user, route) => {
+  if (route?.adminOnly) {
+    return isAdminUser(user);
+  }
+  return canAccessAny(hasPermission, route?.permissions || []);
+};
+
+const resolveFirstAccessiblePath = (hasPermission, user) => {
+  const match = routePermissions.find((item) => canAccessRoute(hasPermission, user, item));
   return match ? match.path : '/login';
 };
 
@@ -92,18 +105,23 @@ const ProtectedRoute = ({ children }) => {
 };
 
 const HomeRedirect = () => {
-  const { hasPermission } = useAuth();
-  return <Navigate to={resolveFirstAccessiblePath(hasPermission)} replace />;
+  const { hasPermission, user } = useAuth();
+  return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
 };
 
-const PermissionRoute = ({ permission, children }) => {
-  const { hasPermission } = useAuth();
+const PermissionRoute = ({ permission, permissions, adminOnly = false, children }) => {
+  const { hasPermission, user } = useAuth();
+  const requiredPermissions = Array.isArray(permissions) ? permissions : (permission ? [permission] : []);
 
-  if (!permission || hasPermission(permission)) {
+  if (adminOnly) {
+    return isAdminUser(user) ? (children || <Outlet />) : <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
+  }
+
+  if (requiredPermissions.length === 0 || canAccessAny(hasPermission, requiredPermissions)) {
     return children || <Outlet />;
   }
 
-  return <Navigate to={resolveFirstAccessiblePath(hasPermission)} replace />;
+  return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
 };
 
 const AppPushBootstrap = () => {
@@ -389,7 +407,7 @@ function App() {
                 />
                 <Route
                   path="/ad-users"
-                  element={<PermissionRoute permission="ad_users.read"><AdUsers /></PermissionRoute>}
+                  element={<PermissionRoute adminOnly><AdUsers /></PermissionRoute>}
                 />
                 <Route
                   path="/vcs"

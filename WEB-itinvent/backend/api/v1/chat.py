@@ -23,6 +23,7 @@ from backend.chat.schemas import (
     ChatConversationAttachmentsResponse,
     ChatConversationDetailResponse,
     ChatConversationListResponse,
+    ChatConversationMembersRequest,
     ChatConversationSummary,
     ChatHealthResponse,
     ChatMessageSearchResponse,
@@ -39,6 +40,8 @@ from backend.chat.schemas import (
     ChatMessageReadsResponse,
     ChatMessageListResponse,
     ChatMessageResponse,
+    ChatMemberRoleUpdateRequest,
+    ChatOwnershipTransferRequest,
     ChatShareableTasksResponse,
     ChatUsersResponse,
     DirectConversationRequest,
@@ -48,6 +51,7 @@ from backend.chat.schemas import (
     SendMessageRequest,
     TaskShareMessageRequest,
     UpdateConversationSettingsRequest,
+    UpdateConversationProfileRequest,
 )
 from backend.chat.service import chat_service
 from backend.models.auth import User
@@ -401,6 +405,154 @@ async def _publish_message_created(
         await asyncio.gather(*publish_tasks)
 
 
+async def _publish_group_conversation_change(
+    *,
+    conversation_id: str,
+    reason: str,
+    removed_user_ids: Optional[list[int]] = None,
+) -> None:
+    member_user_ids = await _run_chat_call(
+        chat_service.get_conversation_member_ids,
+        conversation_id=conversation_id,
+    )
+    member_ids = sorted({
+        int(item)
+        for item in list(member_user_ids or [])
+        if int(item) > 0
+    })
+    removed_ids = sorted({
+        int(item)
+        for item in list(removed_user_ids or [])
+        if int(item) > 0 and int(item) not in member_ids
+    })
+    conversation_updates_by_user, unread_summaries_by_user = await asyncio.gather(
+        _get_conversation_updates_for_users(
+            conversation_id=conversation_id,
+            user_ids=member_ids,
+            reason=reason,
+        ),
+        _get_unread_summaries([*member_ids, *removed_ids]),
+    )
+
+    async def _publish_for_member(member_user_id: int, payload: dict) -> None:
+        await chat_realtime.publish_inbox_event(
+            user_id=int(member_user_id),
+            event_type="chat.conversation.updated",
+            conversation_id=conversation_id,
+            payload=payload,
+        )
+        if (unread_payload := unread_summaries_by_user.get(int(member_user_id))) is not None:
+            await chat_realtime.publish_inbox_event(
+                user_id=int(member_user_id),
+                event_type="chat.unread.summary",
+                payload=unread_payload,
+            )
+
+    publish_tasks = [
+        _publish_for_member(int(member_user_id), payload)
+        for member_user_id in member_ids
+        if (payload := conversation_updates_by_user.get(int(member_user_id))) is not None
+    ]
+    for removed_user_id in removed_ids:
+        publish_tasks.append(
+            chat_realtime.publish_inbox_event(
+                user_id=int(removed_user_id),
+                event_type="chat.conversation.removed",
+                conversation_id=conversation_id,
+                payload={
+                    "conversation_id": conversation_id,
+                    "reason": str(reason or "").strip() or "removed",
+                },
+            )
+        )
+        if (unread_payload := unread_summaries_by_user.get(int(removed_user_id))) is not None:
+            publish_tasks.append(
+                chat_realtime.publish_inbox_event(
+                    user_id=int(removed_user_id),
+                    event_type="chat.unread.summary",
+                    payload=unread_payload,
+                )
+            )
+    if publish_tasks:
+        await asyncio.gather(*publish_tasks)
+
+
+async def _publish_message_deleted(
+    *,
+    conversation_id: str,
+    message_id: str,
+    member_user_ids: list[int],
+) -> None:
+    member_ids = sorted({
+        int(item)
+        for item in list(member_user_ids or [])
+        if int(item) > 0
+    })
+    if not member_ids:
+        return
+
+    messages_by_user = await _run_chat_call(
+        chat_service.get_messages_for_users,
+        message_id=message_id,
+        user_ids=member_ids,
+    )
+    conversation_updates_by_user, unread_summaries_by_user = await asyncio.gather(
+        _get_conversation_updates_for_users(
+            conversation_id=conversation_id,
+            user_ids=member_ids,
+            reason="message_deleted",
+        ),
+        _get_unread_summaries(member_ids),
+    )
+
+    async def _publish_for_member(member_user_id: int, payload: dict) -> None:
+        await chat_realtime.publish_inbox_event(
+            user_id=int(member_user_id),
+            event_type="chat.message.deleted",
+            conversation_id=conversation_id,
+            payload=payload,
+        )
+        await chat_realtime.publish_conversation_event(
+            user_id=int(member_user_id),
+            conversation_id=conversation_id,
+            event_type="chat.message.deleted",
+            payload=payload,
+        )
+        if (conversation_payload := conversation_updates_by_user.get(int(member_user_id))) is not None:
+            await chat_realtime.publish_inbox_event(
+                user_id=int(member_user_id),
+                event_type="chat.conversation.updated",
+                conversation_id=conversation_id,
+                payload=conversation_payload,
+            )
+        if (unread_payload := unread_summaries_by_user.get(int(member_user_id))) is not None:
+            await chat_realtime.publish_inbox_event(
+                user_id=int(member_user_id),
+                event_type="chat.unread.summary",
+                payload=unread_payload,
+            )
+
+    publish_tasks = [
+        _publish_for_member(int(member_user_id), payload)
+        for member_user_id in member_ids
+        if (payload := messages_by_user.get(member_user_id)) is not None
+    ]
+    if publish_tasks:
+        await asyncio.gather(*publish_tasks)
+
+
+async def _publish_message_deleted_after_soft_delete(*, conversation_id: str, message_id: str) -> None:
+    member_user_ids = await _run_chat_call(
+        chat_service.get_conversation_member_ids,
+        conversation_id=conversation_id,
+    )
+    await _publish_message_deleted(
+        conversation_id=conversation_id,
+        message_id=message_id,
+        member_user_ids=member_user_ids,
+    )
+
+
 async def _publish_message_read(
     *,
     conversation_id: str,
@@ -729,6 +881,158 @@ async def create_group_conversation(
         _raise_chat_http_error(exc)
 
 
+@router.post("/conversations/{conversation_id}/members", response_model=ChatConversationDetailResponse)
+async def add_chat_group_members(
+    conversation_id: str,
+    payload: ChatConversationMembersRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        conversation = await _run_chat_call(
+            chat_service.add_group_members,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            member_user_ids=payload.member_user_ids,
+        )
+        _schedule_chat_background_task(
+            _publish_group_conversation_change(
+                conversation_id=conversation_id,
+                reason="member_added",
+            ),
+            label="publish_group_members_added",
+        )
+        return conversation
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.delete("/conversations/{conversation_id}/members/{user_id}", response_model=ChatConversationDetailResponse)
+async def remove_chat_group_member(
+    conversation_id: str,
+    user_id: int,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        conversation = await _run_chat_call(
+            chat_service.remove_group_member,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            target_user_id=int(user_id),
+        )
+        _schedule_chat_background_task(
+            _publish_group_conversation_change(
+                conversation_id=conversation_id,
+                reason="member_removed",
+                removed_user_ids=[int(user_id)],
+            ),
+            label="publish_group_member_removed",
+        )
+        return conversation
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.patch("/conversations/{conversation_id}/members/{user_id}/role", response_model=ChatConversationDetailResponse)
+async def update_chat_group_member_role(
+    conversation_id: str,
+    user_id: int,
+    payload: ChatMemberRoleUpdateRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        conversation = await _run_chat_call(
+            chat_service.update_group_member_role,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            target_user_id=int(user_id),
+            member_role=payload.member_role,
+        )
+        _schedule_chat_background_task(
+            _publish_group_conversation_change(
+                conversation_id=conversation_id,
+                reason="member_role_updated",
+            ),
+            label="publish_group_member_role_updated",
+        )
+        return conversation
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.post("/conversations/{conversation_id}/ownership", response_model=ChatConversationDetailResponse)
+async def transfer_chat_group_ownership(
+    conversation_id: str,
+    payload: ChatOwnershipTransferRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        conversation = await _run_chat_call(
+            chat_service.transfer_group_ownership,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            owner_user_id=int(payload.owner_user_id),
+        )
+        _schedule_chat_background_task(
+            _publish_group_conversation_change(
+                conversation_id=conversation_id,
+                reason="ownership_transferred",
+            ),
+            label="publish_group_ownership_transferred",
+        )
+        return conversation
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.post("/conversations/{conversation_id}/leave")
+async def leave_chat_group(
+    conversation_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        payload = await _run_chat_call(
+            chat_service.leave_group,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+        )
+        _schedule_chat_background_task(
+            _publish_group_conversation_change(
+                conversation_id=conversation_id,
+                reason="member_left",
+                removed_user_ids=[int(current_user.id)],
+            ),
+            label="publish_group_member_left",
+        )
+        return payload
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.patch("/conversations/{conversation_id}/profile", response_model=ChatConversationDetailResponse)
+async def update_chat_group_profile(
+    conversation_id: str,
+    payload: UpdateConversationProfileRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        conversation = await _run_chat_call(
+            chat_service.update_group_profile,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            title=payload.title,
+        )
+        _schedule_chat_background_task(
+            _publish_group_conversation_change(
+                conversation_id=conversation_id,
+                reason="profile_updated",
+            ),
+            label="publish_group_profile_updated",
+        )
+        return conversation
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
 @router.get("/conversations/{conversation_id}", response_model=ChatConversationDetailResponse)
 async def get_chat_conversation(
     conversation_id: str,
@@ -740,6 +1044,40 @@ async def get_chat_conversation(
             current_user_id=int(current_user.id),
             conversation_id=conversation_id,
         )
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.delete("/conversations/{conversation_id}/messages/{message_id}", response_model=ChatMessageResponse)
+async def delete_chat_message(
+    conversation_id: str,
+    message_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        message = await _run_chat_call(
+            chat_service.delete_message,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        system_message_id = str((message or {}).pop("_system_message_id", "") or "").strip()
+        _schedule_chat_background_task(
+            _publish_message_deleted_after_soft_delete(
+                conversation_id=conversation_id,
+                message_id=message_id,
+            ),
+            label="publish_message_deleted",
+        )
+        if system_message_id:
+            _schedule_chat_background_task(
+                _publish_message_created_after_send(
+                    conversation_id=conversation_id,
+                    message_id=system_message_id,
+                ),
+                label="publish_message_deleted_system_event",
+            )
+        return message
     except Exception as exc:
         _raise_chat_http_error(exc)
 

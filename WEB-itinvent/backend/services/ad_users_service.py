@@ -260,3 +260,10 @@ def set_ad_user_branch(login: str, branch_no: int | None) -> bool:
     except Exception as e:
         logger.error(f"Failed to save local branch mapping for AD user {login}: {e}")
         return False
+
+
+def import_ad_user_to_app_user(login: str) -> dict:
+    """Create or update an LDAP web user from AD attributes."""
+    from backend.services.ad_app_user_import_service import ad_app_user_import_service
+
+    return ad_app_user_import_service.import_user(login)

@@ -189,6 +189,48 @@ describe('equipmentAPI.getTransferActJob', () => {
   });
 });
 
+describe('adUsersAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.get.mockResolvedValue({ data: [] });
+    window.localStorage.clear();
+  });
+
+  it('loads AD import candidates for web-user import', async () => {
+    const { adUsersAPI } = await import('./client');
+
+    await adUsersAPI.getImportCandidates();
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/ad-users/import-candidates');
+  });
+
+  it('syncs selected AD logins into web users', async () => {
+    const { adUsersAPI } = await import('./client');
+
+    await adUsersAPI.syncToApp(['petrov', 'ivanov']);
+
+    expect(apiClientMock.post).toHaveBeenCalledWith('/ad-users/sync-to-app', {
+      logins: ['petrov', 'ivanov'],
+    });
+  });
+});
+
+describe('departmentsAPI', () => {
+  beforeEach(() => {
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { items: [] } });
+    window.localStorage.clear();
+  });
+
+  it('syncs department directory directly from AD departments', async () => {
+    const { departmentsAPI } = await import('./client');
+
+    await departmentsAPI.syncFromAD();
+
+    expect(apiClientMock.post).toHaveBeenCalledWith('/departments/sync-from-ad');
+  });
+});
+
 describe('equipmentAPI.parseUploadedAct', () => {
   beforeEach(() => {
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { draft_id: 'draft-1' } });
