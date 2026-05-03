@@ -81,10 +81,6 @@ vi.mock('../../api/client', () => ({
     get: mockApiGet,
     post: mockApiPost,
   },
-  databaseAPI: {
-    getAvailableDatabases: async () => (await mockApiGet('/database/list')).data,
-    getCurrentDatabase: async () => (await mockApiGet('/database/current')).data,
-  },
   chatAPI: {
     getUnreadSummary: mockGetChatUnreadSummary,
   },
@@ -94,6 +90,14 @@ vi.mock('../../api/client', () => ({
     getMessages: mockGetMessages,
     markAsRead: mockMarkMailAsRead,
     markAllRead: mockMarkAllMailRead,
+  },
+}));
+
+vi.mock('../../api/database', () => ({
+  databaseAPI: {
+    getAvailableDatabases: async () => (await mockApiGet('/database/list')).data,
+    getCurrentDatabase: async () => (await mockApiGet('/database/current')).data,
+    switchDatabase: async (databaseId) => (await mockApiPost('/database/switch', { database_id: databaseId })).data,
   },
 }));
 

@@ -12,8 +12,11 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
+from sqlalchemy import inspect
+
 from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
 from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.config import config
 from backend.db_schema import schema_name
 from local_store import get_local_store
 
@@ -80,6 +83,196 @@ def _mac_normalized(v: Any) -> str:
         return ""
     raw = raw.upper()
     return ":".join(raw[i:i + 2] for i in range(0, 12, 2))
+
+
+_SQLITE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SQLITE_COLUMN_TYPE_RE = re.compile(
+    r"^[A-Za-z][A-Za-z0-9_]*(?:\s+(?:NOT\s+NULL|NULL|DEFAULT\s+(?:\d+|'[^']*')))*$",
+    re.IGNORECASE,
+)
+_NETWORK_TABLE_NAMES = frozenset(
+    {
+        "network_branches",
+        "network_sites",
+        "network_devices",
+        "network_ports",
+        "network_socket_profiles",
+        "network_panels",
+        "network_sockets",
+        "network_branch_db_map",
+        "network_maps",
+        "network_map_points",
+        "network_import_jobs",
+        "network_audit_log",
+    }
+)
+_NETWORK_REQUIRED_COLUMNS = {
+    "network_branches": {
+        "id",
+        "city_code",
+        "branch_code",
+        "name",
+        "is_active",
+        "created_at",
+        "updated_at",
+        "default_site_code",
+    },
+    "network_sites": {"id", "branch_id", "site_code", "name", "sort_order", "created_at", "updated_at"},
+    "network_devices": {
+        "id",
+        "branch_id",
+        "site_id",
+        "device_code",
+        "device_type",
+        "vendor",
+        "model",
+        "sheet_name",
+        "mgmt_ip",
+        "notes",
+        "created_at",
+        "updated_at",
+    },
+    "network_ports": {
+        "id",
+        "device_id",
+        "port_name",
+        "patch_panel_port",
+        "location_code",
+        "vlan_raw",
+        "vlan_normalized_json",
+        "endpoint_name_raw",
+        "endpoint_ip_raw",
+        "endpoint_mac_raw",
+        "endpoint_count",
+        "is_occupied",
+        "row_source_hash",
+        "created_at",
+        "updated_at",
+    },
+    "network_socket_profiles": {
+        "id",
+        "branch_id",
+        "panel_count",
+        "ports_per_panel",
+        "is_uniform",
+        "created_at",
+        "updated_at",
+    },
+    "network_panels": {
+        "id",
+        "branch_id",
+        "panel_index",
+        "port_count",
+        "sort_order",
+        "created_at",
+        "updated_at",
+    },
+    "network_sockets": {
+        "id",
+        "branch_id",
+        "site_id",
+        "socket_code",
+        "panel_no",
+        "port_no",
+        "port_id",
+        "device_id",
+        "mac_address",
+        "fio",
+        "fio_source_db",
+        "fio_resolved_at",
+        "created_at",
+        "updated_at",
+    },
+    "network_branch_db_map": {"id", "branch_id", "db_id", "updated_at", "updated_by"},
+    "network_maps": {
+        "id",
+        "branch_id",
+        "site_id",
+        "title",
+        "floor_label",
+        "file_name",
+        "mime_type",
+        "file_blob",
+        "file_size",
+        "checksum_sha256",
+        "source_path",
+        "created_at",
+        "updated_at",
+    },
+    "network_map_points": {
+        "id",
+        "branch_id",
+        "map_id",
+        "site_id",
+        "device_id",
+        "port_id",
+        "socket_id",
+        "x_ratio",
+        "y_ratio",
+        "label",
+        "note",
+        "color",
+        "created_at",
+        "updated_at",
+    },
+    "network_import_jobs": {
+        "id",
+        "city_code",
+        "branch_id",
+        "status",
+        "started_at",
+        "finished_at",
+        "summary_json",
+        "error_text",
+    },
+    "network_audit_log": {
+        "id",
+        "branch_id",
+        "entity_type",
+        "entity_id",
+        "action",
+        "diff_json",
+        "actor_user_id",
+        "actor_role",
+        "created_at",
+    },
+}
+_NETWORK_REQUIRED_INDEXES = {
+    "network_branches": {"idx_network_branches_city"},
+    "network_devices": {"idx_network_devices_branch"},
+    "network_ports": {"idx_network_ports_device"},
+    "network_sockets": {"idx_network_sockets_branch_code", "idx_network_sockets_port"},
+    "network_panels": {"idx_network_panels_branch"},
+    "network_maps": {"idx_network_maps_branch"},
+    "network_map_points": {
+        "idx_network_map_points_map",
+        "idx_network_map_points_device",
+        "idx_network_map_points_branch",
+        "idx_network_map_points_socket",
+    },
+    "network_audit_log": {"idx_network_audit_branch"},
+}
+
+
+def _require_sqlite_identifier(value: Any, *, kind: str = "identifier") -> str:
+    normalized = _s(value)
+    if not _SQLITE_IDENTIFIER_RE.fullmatch(normalized):
+        raise ValueError(f"Invalid SQLite {kind}: {normalized!r}")
+    return normalized
+
+
+def _require_network_table_name(value: Any) -> str:
+    normalized = _require_sqlite_identifier(value, kind="table name")
+    if normalized not in _NETWORK_TABLE_NAMES:
+        raise ValueError(f"Unsupported network table: {normalized!r}")
+    return normalized
+
+
+def _require_sqlite_column_type(value: Any) -> str:
+    normalized = _s(value)
+    if not _SQLITE_COLUMN_TYPE_RE.fullmatch(normalized):
+        raise ValueError(f"Invalid SQLite column type: {normalized!r}")
+    return normalized
 
 
 def _extract_mac_candidates(v: Any) -> list[str]:
@@ -273,6 +466,10 @@ class NetworkConflictError(ValueError):
     """Domain conflict (e.g. duplicate socket on the same map)."""
 
 
+class NetworkSchemaConfigurationError(RuntimeError):
+    """Raised when production network schema is not migration-ready."""
+
+
 @dataclass
 class ImportSummary:
     sheets_total: int = 0
@@ -323,35 +520,86 @@ class NetworkService:
         return c
 
     def _network_table_names(self) -> set[str]:
-        return {
-            "network_branches",
-            "network_sites",
-            "network_devices",
-            "network_ports",
-            "network_socket_profiles",
-            "network_panels",
-            "network_sockets",
-            "network_branch_db_map",
-            "network_maps",
-            "network_map_points",
-            "network_import_jobs",
-            "network_audit_log",
-        }
+        return set(_NETWORK_TABLE_NAMES)
 
     def _network_autoincrement_tables(self) -> set[str]:
         return set(self._network_table_names())
 
     @staticmethod
     def _has_column(conn: sqlite3.Connection, table_name: str, column_name: str) -> bool:
-        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
-        return any(_s(row["name"]).lower() == _s(column_name).lower() for row in rows)
+        safe_table_name = _require_network_table_name(table_name)
+        safe_column_name = _require_sqlite_identifier(column_name, kind="column name")
+        rows = conn.execute(f"PRAGMA table_info({safe_table_name})").fetchall()
+        return any(_s(row["name"]).lower() == safe_column_name.lower() for row in rows)
 
     def _ensure_column(self, conn: sqlite3.Connection, table_name: str, column_name: str, ddl_type: str) -> None:
-        if self._has_column(conn, table_name, column_name):
+        safe_table_name = _require_network_table_name(table_name)
+        safe_column_name = _require_sqlite_identifier(column_name, kind="column name")
+        safe_ddl_type = _require_sqlite_column_type(ddl_type)
+        if self._has_column(conn, safe_table_name, safe_column_name):
             return
-        conn.execute(f"ALTER TABLE {table_name} ADD COLUMN {column_name} {ddl_type}")
+        conn.execute(f"ALTER TABLE {safe_table_name} ADD COLUMN {safe_column_name} {safe_ddl_type}")
+
+    def _verify_production_schema(self, engine) -> None:
+        try:
+            inspector = inspect(engine)
+            schema = self._app_schema
+            missing_tables = sorted(
+                table_name
+                for table_name in _NETWORK_TABLE_NAMES
+                if not inspector.has_table(table_name, schema=schema)
+            )
+            missing_columns: list[str] = []
+            missing_indexes: list[str] = []
+            for table_name, required_columns in _NETWORK_REQUIRED_COLUMNS.items():
+                if table_name in missing_tables:
+                    continue
+                existing_columns = {
+                    _s(column.get("name")).lower()
+                    for column in inspector.get_columns(table_name, schema=schema)
+                }
+                for column_name in sorted(required_columns):
+                    if column_name.lower() not in existing_columns:
+                        missing_columns.append(f"{table_name}.{column_name}")
+            for table_name, required_indexes in _NETWORK_REQUIRED_INDEXES.items():
+                if table_name in missing_tables:
+                    continue
+                existing_indexes = {
+                    _s(index.get("name")).lower()
+                    for index in inspector.get_indexes(table_name, schema=schema)
+                }
+                for index_name in sorted(required_indexes):
+                    if index_name.lower() not in existing_indexes:
+                        missing_indexes.append(f"{table_name}.{index_name}")
+        except NetworkSchemaConfigurationError:
+            raise
+        except Exception as exc:
+            raise NetworkSchemaConfigurationError(
+                "Production network schema could not be inspected; "
+                "verify APP_DATABASE_URL and backend Alembic migrations."
+            ) from exc
+
+        if missing_tables or missing_columns or missing_indexes:
+            details: list[str] = []
+            if missing_tables:
+                details.append("missing tables: " + ", ".join(missing_tables))
+            if missing_columns:
+                details.append("missing columns: " + ", ".join(missing_columns))
+            if missing_indexes:
+                details.append("missing indexes: " + ", ".join(missing_indexes))
+            raise NetworkSchemaConfigurationError(
+                "Production network schema is incomplete; "
+                "run backend Alembic migrations before startup. "
+                + "; ".join(details)
+            )
 
     def _ensure_schema(self) -> None:
+        if self._use_app_db and self._database_url:
+            engine = get_app_engine(self._database_url)
+            if config.app.is_production and engine.dialect.name == "postgresql":
+                self._verify_production_schema(engine)
+                return
+
         with self._lock, self._connect() as conn:
             conn.executescript(
                 """

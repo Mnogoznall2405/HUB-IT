@@ -2,6 +2,8 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const apiClientMock = {
   get: vi.fn(),
+  post: vi.fn(),
+  request: vi.fn(),
   interceptors: {
     request: { use: vi.fn() },
     response: { use: vi.fn() },
@@ -22,6 +24,58 @@ vi.mock('axios', () => ({
     CanceledError: MockCanceledError,
   },
 }));
+
+describe('apiClient auth response interceptor', () => {
+  beforeEach(async () => {
+    window.localStorage.clear();
+    apiClientMock.post = vi.fn();
+    apiClientMock.request = vi.fn();
+    await import('./client');
+  });
+
+  const getRejectedHandler = () => {
+    const call = apiClientMock.interceptors.response.use.mock.calls.at(-1);
+    return call?.[1];
+  };
+
+  it('keeps the cached user when the retried scan service request still returns 401', async () => {
+    const onAuthRequired = vi.fn();
+    window.addEventListener('auth-required', onAuthRequired);
+    window.localStorage.setItem('user', JSON.stringify({ id: 1, username: 'user' }));
+
+    const rejectedHandler = getRejectedHandler();
+    const error = {
+      response: { status: 401 },
+      config: { url: '/scan/patterns', _retry: true },
+    };
+
+    await expect(rejectedHandler(error)).rejects.toBe(error);
+
+    expect(window.localStorage.getItem('user')).toBe(JSON.stringify({ id: 1, username: 'user' }));
+    expect(onAuthRequired).not.toHaveBeenCalled();
+    window.removeEventListener('auth-required', onAuthRequired);
+  });
+
+  it('still requires auth when refresh fails for an initial scan service 401', async () => {
+    const onAuthRequired = vi.fn();
+    window.addEventListener('auth-required', onAuthRequired);
+    window.localStorage.setItem('user', JSON.stringify({ id: 1, username: 'user' }));
+    apiClientMock.post.mockRejectedValueOnce(new Error('refresh failed'));
+
+    const rejectedHandler = getRejectedHandler();
+    const error = {
+      response: { status: 401 },
+      config: { url: '/scan/patterns' },
+    };
+
+    await expect(rejectedHandler(error)).rejects.toBe(error);
+
+    expect(window.localStorage.getItem('user')).toBeNull();
+    expect(onAuthRequired).toHaveBeenCalledTimes(1);
+    expect(onAuthRequired.mock.calls[0][0].detail).toEqual({ requestUrl: '/scan/patterns' });
+    window.removeEventListener('auth-required', onAuthRequired);
+  });
+});
 
 describe('equipmentAPI.getAgentComputers', () => {
   beforeEach(() => {
@@ -56,6 +110,68 @@ describe('equipmentAPI.getAgentComputers', () => {
         sort_dir: 'desc',
       },
     });
+  });
+});
+
+describe('databaseAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn();
+    window.localStorage.clear();
+  });
+
+  it('loads current database through the dedicated database module', async () => {
+    apiClientMock.get.mockResolvedValueOnce({ data: { id: 'ITINVENT' } });
+    const { databaseAPI } = await import('./database');
+
+    const result = await databaseAPI.getCurrentDatabase({ force: true });
+
+    expect(result).toEqual({ id: 'ITINVENT' });
+    expect(apiClientMock.get).toHaveBeenCalledWith('/database/current');
+  });
+
+  it('switches database through the server-owned selection contract', async () => {
+    apiClientMock.post.mockResolvedValueOnce({ data: { success: true } });
+    const { databaseAPI } = await import('./database');
+
+    const result = await databaseAPI.switchDatabase(' OBJ-ITINVENT ');
+
+    expect(result).toEqual({ success: true });
+    expect(apiClientMock.post).toHaveBeenCalledWith('/database/switch', {
+      database_id: 'OBJ-ITINVENT',
+    });
+  });
+});
+
+describe('kbAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn();
+    apiClientMock.patch = vi.fn();
+    apiClientMock.delete = vi.fn();
+    window.localStorage.clear();
+  });
+
+  it('loads cards through the dedicated KB module', async () => {
+    apiClientMock.get.mockResolvedValueOnce({ data: { items: [], total: 0 } });
+    const { kbAPI } = await import('./kb');
+
+    const result = await kbAPI.getCards({ q: 'vpn', limit: 25 });
+
+    expect(result).toEqual({ items: [], total: 0 });
+    expect(apiClientMock.get).toHaveBeenCalledWith('/kb/cards', {
+      params: { q: 'vpn', limit: 25 },
+    });
+  });
+
+  it('updates cards with encoded identifiers through the dedicated KB module', async () => {
+    apiClientMock.patch.mockResolvedValueOnce({ data: { id: 'card 1', title: 'Updated' } });
+    const { kbAPI } = await import('./kb');
+
+    const result = await kbAPI.updateCard('card 1', { title: 'Updated' });
+
+    expect(result).toEqual({ id: 'card 1', title: 'Updated' });
+    expect(apiClientMock.patch).toHaveBeenCalledWith('/kb/cards/card%201', { title: 'Updated' });
   });
 });
 
@@ -218,12 +334,35 @@ describe('adUsersAPI', () => {
 
 describe('departmentsAPI', () => {
   beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.get.mockResolvedValue({ data: { items: [] } });
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { items: [] } });
+    apiClientMock.put = vi.fn().mockResolvedValue({ data: { ok: true } });
     window.localStorage.clear();
   });
 
+  it('loads departments through the dedicated departments module', async () => {
+    const { departmentsAPI } = await import('./departments');
+
+    await departmentsAPI.list({ search: 'ops' });
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/departments', {
+      params: { search: 'ops' },
+    });
+  });
+
+  it('updates department managers with encoded identifiers through the dedicated departments module', async () => {
+    const { departmentsAPI } = await import('./departments');
+
+    await departmentsAPI.setManagers('ops team', [1, 2]);
+
+    expect(apiClientMock.put).toHaveBeenCalledWith('/departments/ops%20team/managers', {
+      manager_user_ids: [1, 2],
+    });
+  });
+
   it('syncs department directory directly from AD departments', async () => {
-    const { departmentsAPI } = await import('./client');
+    const { departmentsAPI } = await import('./departments');
 
     await departmentsAPI.syncFromAD();
 

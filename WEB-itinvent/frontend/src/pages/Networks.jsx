@@ -58,7 +58,8 @@ import MapDialog from '../components/networks/MapDialog';
 
 import { CreateBranchDialog, EditBranchDialog, DeleteBranchDialog } from '../components/networks/BranchDialogs';
 
-import { networksAPI, databaseAPI } from '../api/client';
+import { networksAPI } from '../api/client';
+import { databaseAPI } from '../api/database';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { buildCacheKey, getOrFetchSWR, invalidateSWRCacheByPrefix } from '../lib/swrCache';

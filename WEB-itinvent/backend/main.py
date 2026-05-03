@@ -32,6 +32,7 @@ from backend.services.ad_sync_service import background_ad_sync_loop
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
+from backend.json_db.manager import validate_json_runtime_storage
 from backend.rate_limit import limiter, rate_limit_exception, rate_limit_exception_handler, internal_ip_bypass_middleware
 from local_store import get_local_store
 
@@ -166,8 +167,6 @@ async def lifespan(app: FastAPI):
         f" mail_notifications={MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED}"
     )
     print(f"AnyIO thread tokens: {thread_tokens}")
-    if config.jwt.secret_key == "your-secret-key-change-in-production":
-        print("WARNING: insecure default JWT secret is configured. Set JWT_SECRET_KEYS or JWT_SECRET_KEY.")
     print(
         "Auth security:"
         f" 2fa_enforced={config.security.twofa_enforced}"
@@ -175,6 +174,7 @@ async def lifespan(app: FastAPI):
         f" runtime_store={auth_runtime_store_service.backend_name}"
         f" rate_limit_storage={(config.security.rate_limit_storage_url or 'memory://')}"
     )
+    validate_json_runtime_storage()
     if str(config.app_db.database_url or "").strip():
         try:
             from backend.appdb.db import initialize_app_schema, ping_app_database

@@ -3,18 +3,31 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('react-quill', () => ({
-  default: React.forwardRef(({ value, onChange, placeholder, onFocus, onBlur }, ref) => (
-    <textarea
-      ref={ref}
-      data-testid="mock-quill"
-      value={value}
-      placeholder={placeholder}
-      onChange={(event) => onChange?.(event.target.value)}
-      onFocus={onFocus}
-      onBlur={onBlur}
-    />
-  )),
+vi.mock('./MailRichTextEditor', () => ({
+  default: React.forwardRef(({ value, onChange, placeholder, onFocus, onBlur }, ref) => {
+    const textareaRef = React.useRef(null);
+    React.useImperativeHandle(ref, () => ({
+      focus: () => textareaRef.current?.focus(),
+      getEditor: () => ({
+        focus: () => textareaRef.current?.focus(),
+        getSelection: () => ({ index: 0, length: 0 }),
+        getLength: () => String(value || '').length,
+        getFormat: () => ({}),
+        format: () => {},
+      }),
+    }), [value]);
+    return (
+      <textarea
+        ref={textareaRef}
+        data-testid="mock-quill"
+        value={value}
+        placeholder={placeholder}
+        onChange={(event) => onChange?.(event.target.value)}
+        onFocus={onFocus}
+        onBlur={onBlur}
+      />
+    );
+  }),
 }));
 
 import MailComposeDialog from './MailComposeDialog';
@@ -165,6 +178,22 @@ describe('MailComposeDialog', () => {
     const quotedOriginal = screen.getByTestId('mail-compose-quoted-original');
     expect(quotedOriginal).toBeTruthy();
     expect(within(quotedOriginal).getByText('Older quote')).toBeTruthy();
+  });
+
+  it('sanitizes expanded quoted original html before rendering it', () => {
+    renderWithTheme(<MailComposeDialog {...buildProps({
+      quotedOriginalHtml: '<blockquote><p>Older quote</p></blockquote><img src="x" onerror="alert(1)"><script>alert(2)</script><iframe srcdoc="<script>alert(3)</script>"></iframe>',
+    })} />);
+
+    fireEvent.click(screen.getByTestId('mail-compose-quote-toggle'));
+    const quotedOriginal = screen.getByTestId('mail-compose-quoted-original');
+    const quotedHtml = quotedOriginal.innerHTML.toLowerCase();
+
+    expect(within(quotedOriginal).getByText('Older quote')).toBeTruthy();
+    expect(quotedHtml).not.toContain('onerror');
+    expect(quotedHtml).not.toContain('<script');
+    expect(quotedHtml).not.toContain('<iframe');
+    expect(quotedHtml).not.toContain('srcdoc');
   });
 
   it('renders the final preview without a forced outgoing background and with signature before quoted history', () => {

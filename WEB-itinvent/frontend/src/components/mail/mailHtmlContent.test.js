@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { buildRenderedMailHtml, filterVisibleMailAttachments } from './mailHtmlContent';
+import { buildRenderedMailHtml, filterVisibleMailAttachments, sanitizeMailHtmlFragment } from './mailHtmlContent';
 
 describe('mailHtmlContent', () => {
   it('resolves inline cid images and hides used inline attachments', () => {
@@ -95,6 +95,25 @@ describe('mailHtmlContent', () => {
     expect(result.html).toMatch(/style="[^"]*padding:\s*12px/i);
     expect(result.html).not.toContain('onclick=');
     expect(result.html).not.toContain('<script');
+  });
+
+  it('sanitizes reusable mail fragments while preserving outgoing mail markers', () => {
+    const html = sanitizeMailHtmlFragment(
+      '<div data-mail-outgoing="true" style="color:#333" onclick="alert(1)">'
+      + '<p>Safe text</p><a href="javascript:alert(2)">bad link</a>'
+      + '<iframe srcdoc="<script>alert(3)</script>"></iframe>'
+      + '</div>'
+    );
+    const lowerHtml = html.toLowerCase();
+
+    expect(html).toContain('data-mail-outgoing="true"');
+    expect(html).toContain('Safe text');
+    expect(html).toMatch(/style="[^"]*color:\s*#333/i);
+    expect(lowerHtml).not.toContain('onclick');
+    expect(lowerHtml).not.toContain('javascript:');
+    expect(lowerHtml).not.toContain('<iframe');
+    expect(lowerHtml).not.toContain('srcdoc');
+    expect(lowerHtml).not.toContain('<script');
   });
 
   it('adapts low-contrast blue text for dark mode readability', () => {

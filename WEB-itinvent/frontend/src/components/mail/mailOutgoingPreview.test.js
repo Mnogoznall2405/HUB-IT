@@ -72,6 +72,24 @@ describe('mailOutgoingPreview', () => {
     expect(html).not.toMatch(/color:\s*(#ffffff|rgb\(255,\s*255,\s*255\))/i);
   });
 
+  it('sanitizes compose, signature, and quoted html before building preview', () => {
+    const html = buildComposeMailPreviewHtml({
+      composeBody: '<p>Hello</p><img src="x" onerror="alert(1)"><script>alert(2)</script>',
+      quotedOriginalHtml: '<blockquote><p>Older quote</p><iframe srcdoc="<script>alert(3)</script>"></iframe></blockquote>',
+      signatureHtml: '<p>Signature <a href="javascript:alert(4)">link</a></p>',
+    });
+    const lowerHtml = html.toLowerCase();
+
+    expect(html).toContain('Hello');
+    expect(html).toContain('Signature');
+    expect(html).toContain('Older quote');
+    expect(lowerHtml).not.toContain('onerror');
+    expect(lowerHtml).not.toContain('<script');
+    expect(lowerHtml).not.toContain('<iframe');
+    expect(lowerHtml).not.toContain('srcdoc');
+    expect(lowerHtml).not.toContain('javascript:');
+  });
+
   it('builds the signature dialog preview with quoted history after the signature', () => {
     const html = buildSignaturePreviewHtml('<p>--<br>Signature</p>');
 

@@ -5,7 +5,7 @@
 ## Запуск локально
 
 ```powershell
-pip install -r scan_server/requirements.txt
+python -m pip install -r scan_server/requirements.txt -c scan_server/constraints.txt
 python -m uvicorn scan_server.app:app --host 127.0.0.1 --port 8011
 ```
 

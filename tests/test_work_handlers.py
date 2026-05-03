@@ -11,9 +11,6 @@
 """
 import pytest
 from unittest.mock import Mock, AsyncMock, patch, MagicMock
-from datetime import datetime
-from pathlib import Path
-import json
 
 # Настройка пути для импортов
 import sys
@@ -34,6 +31,7 @@ def update():
     update.effective_user.id = 123456
     update.message = AsyncMock()
     update.message.photo = None
+    update.message.document = None
     update.message.text = ""
     return update
 
@@ -63,12 +61,6 @@ def equipment_mock():
     }
 
 
-@pytest.fixture
-def temp_json_file(tmp_path):
-    """Временный JSON файл для тестов"""
-    return tmp_path / "test_component_replacements.json"
-
-
 # ============================================================================
 # ТЕСТЫ ДЛЯ work_component_serial_input
 # ============================================================================
@@ -82,6 +74,7 @@ async def test_work_component_serial_input_valid_serial(update, context):
     # Мокаем текстовый ввод
     update.message.text = "PF12345"
     update.message.photo = None
+    update.message.document = None
 
     # Патчим на уровне модуля, где импортируется database_manager
     with patch('bot.handlers.work.database_manager') as mock_db:
@@ -115,8 +108,9 @@ async def test_work_component_serial_input_invalid_serial(update, context):
     # Неверный формат (слишком короткий)
     update.message.text = "ABC"
     update.message.photo = None
+    update.message.document = None
 
-    with patch('bot.services.ocr_service.validate_serial_format', return_value=False):
+    with patch('bot.handlers.work.validate_serial_number', return_value=False):
         result = await work_component_serial_input(update, context)
 
         # Должна остаться в том же состоянии
@@ -181,7 +175,7 @@ async def test_show_component_selection_pc_message(update, context, equipment_mo
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_save_component_replacement_pc_new_record(context, equipment_mock, temp_json_file):
+async def test_save_component_replacement_pc_new_record(context, equipment_mock):
     """Тест сохранения новой замены компонента"""
     from bot.handlers.work import save_component_replacement_pc
 
@@ -199,22 +193,22 @@ async def test_save_component_replacement_pc_new_record(context, equipment_mock,
         # Мокаем подключение к БД
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
-        mock_conn.__enter__ = Mock(return_value=mock_cursor)
+        mock_conn.__enter__ = Mock(return_value=mock_conn)
         mock_conn.__exit__ = Mock(return_value=None)
-        mock_conn.cursor.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
 
         with patch('bot.handlers.work.UniversalInventoryDB') as mock_univ_db:
             mock_univ_db.return_value._get_connection.return_value = mock_conn
+            with patch('bot.handlers.work.append_json_data', return_value=True):
 
-            # Выполняем сохранение
-            result = await save_component_replacement_pc(context)
+                # Выполняем сохранение
+                result = await save_component_replacement_pc(context)
 
-            # Проверка результата (JSON будет записан в реальный файл data/component_replacements.json)
-            assert result is True
+                assert result is True
 
 
 @pytest.mark.asyncio
-async def test_save_component_replacement_pc_update_existing(context, equipment_mock, temp_json_file):
+async def test_save_component_replacement_pc_update_existing(context, equipment_mock):
     """Тест обновления существующей записи в описании"""
     from bot.handlers.work import save_component_replacement_pc
 
@@ -232,17 +226,17 @@ async def test_save_component_replacement_pc_update_existing(context, equipment_
 
         mock_conn = MagicMock()
         mock_cursor = MagicMock()
-        mock_conn.__enter__ = Mock(return_value=mock_cursor)
+        mock_conn.__enter__ = Mock(return_value=mock_conn)
         mock_conn.__exit__ = Mock(return_value=None)
-        mock_conn.cursor.return_value = mock_conn
+        mock_conn.cursor.return_value = mock_cursor
 
         with patch('bot.handlers.work.UniversalInventoryDB') as mock_univ_db:
             mock_univ_db.return_value._get_connection.return_value = mock_conn
+            with patch('bot.handlers.work.append_json_data', return_value=True):
 
-            result = await save_component_replacement_pc(context)
+                result = await save_component_replacement_pc(context)
 
-            # Проверка результата (JSON будет записан в реальный файл)
-            assert result is True
+                assert result is True
 
 
 # ============================================================================
@@ -259,23 +253,34 @@ async def test_temp_file_cleanup_on_photo_processing(update, context):
     update.message.photo[-1].file_id = "test_file"
 
     # Мокаем загрузку файла
-    temp_file = "temp_component_replacement_123456.jpg"
+    temp_file = "temp_component_replacement_test_file.jpg"
 
-    with patch('bot.handlers.work.extract_serial_from_image', return_value="PF12345"):
-        with patch('builtins.open', create=True):
-            with patch('os.path.exists', return_value=True):
-                with patch('os.remove') as mock_remove:
-                    update.message.reply_text = AsyncMock()
+    incoming_file = AsyncMock()
+    incoming_file.download_to_drive = AsyncMock()
+    context.bot.get_file = AsyncMock(return_value=incoming_file)
 
-                    # Мокаем удаление статусного сообщения
-                    status_msg = AsyncMock()
-                    update.message.reply_text.return_value = status_msg
-                    status_msg.delete = AsyncMock()
+    with patch(
+        'bot.handlers.work.detect_identifiers_from_image',
+        new=AsyncMock(return_value={"detector": "ocr", "serial_no": "PF12345", "inv_no": None}),
+    ):
+        with patch('bot.handlers.work.database_manager') as mock_db:
+            mock_db.get_user_database = Mock(return_value='ITINVENT')
+            mock_db.get_database_config = Mock(return_value={'host': 'localhost'})
+            with patch('bot.handlers.work.UniversalInventoryDB') as mock_univ_db:
+                mock_univ_db.return_value.find_by_serial_number = Mock(return_value=[{'ID': 123, 'SERIAL_NO': 'PF12345'}])
+                with patch('os.path.exists', return_value=True):
+                    with patch('os.remove') as mock_remove:
+                        update.message.reply_text = AsyncMock()
 
-                    result = await work_component_serial_input(update, context)
+                        # Мокаем удаление статусного сообщения
+                        status_msg = AsyncMock()
+                        update.message.reply_text.return_value = status_msg
+                        status_msg.delete = AsyncMock()
 
-                    # Проверяем что временный файл был удален
-                    mock_remove.assert_called_once_with(temp_file)
+                        await work_component_serial_input(update, context)
+
+                        # Проверяем что временный файл был удален
+                        mock_remove.assert_called_once_with(temp_file)
 
 
 # ============================================================================
@@ -299,7 +304,7 @@ def test_validate_serial_format(serial_number, expected_result):
 # ============================================================================
 
 @pytest.mark.asyncio
-async def test_full_component_replacement_flow(context, equipment_mock, temp_json_file):
+async def test_full_component_replacement_flow(context, equipment_mock):
     """Тест полного потока замены компонента"""
     from bot.handlers.work import (
         work_component_serial_input,
@@ -314,6 +319,8 @@ async def test_full_component_replacement_flow(context, equipment_mock, temp_jso
     update.effective_user.id = 123456
     update.message = AsyncMock()
     update.message.text = "PF12345"
+    update.message.photo = None
+    update.message.document = None
 
     with patch('bot.handlers.work.database_manager') as mock_db:
         mock_db.get_user_database = Mock(return_value='ITINVENT')
@@ -342,17 +349,17 @@ async def test_full_component_replacement_flow(context, equipment_mock, temp_jso
 
             mock_conn = MagicMock()
             mock_cursor = MagicMock()
-            mock_conn.__enter__ = Mock(return_value=mock_cursor)
+            mock_conn.__enter__ = Mock(return_value=mock_conn)
             mock_conn.__exit__ = Mock(return_value=None)
-            mock_conn.cursor.return_value = mock_conn
+            mock_conn.cursor.return_value = mock_cursor
 
             with patch('bot.handlers.work.UniversalInventoryDB') as mock_univ_db2:
                 mock_univ_db2.return_value._get_connection.return_value = mock_conn
+                with patch('bot.handlers.work.append_json_data', return_value=True):
 
-                result = await save_component_replacement_pc(context)
+                    result = await save_component_replacement_pc(context)
 
-                # Проверка успешного сохранения (JSON будет записан в реальный файл)
-                assert result is True
+                    assert result is True
 
 
 # ============================================================================

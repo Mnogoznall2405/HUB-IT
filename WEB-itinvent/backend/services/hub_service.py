@@ -14,8 +14,11 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Optional
 
+from sqlalchemy import inspect
+
 from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
 from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.config import config
 from backend.db_schema import schema_name
 from local_store import get_local_store
 from backend.services.app_push_service import app_push_service
@@ -49,6 +52,157 @@ def _safe_file_name(value: str) -> str:
     base = Path(str(value or "").strip()).name
     base = re.sub(r"[^A-Za-z0-9._\-\u0400-\u04FF ]+", "_", base)
     return base.strip() or "file.bin"
+
+
+_HUB_REQUIRED_COLUMNS = {
+    "hub_announcements": {
+        "id",
+        "title",
+        "preview",
+        "body",
+        "priority",
+        "is_active",
+        "author_user_id",
+        "author_username",
+        "author_full_name",
+        "published_at",
+        "updated_at",
+        "version",
+        "audience_scope",
+        "audience_roles",
+        "audience_user_ids",
+        "requires_ack",
+        "is_pinned",
+        "pinned_until",
+        "published_from",
+        "expires_at",
+    },
+    "hub_announcement_reads": {
+        "announcement_id",
+        "user_id",
+        "username",
+        "full_name",
+        "read_at",
+        "seen_version",
+        "acknowledged_version",
+        "acknowledged_at",
+    },
+    "hub_announcement_attachments": {
+        "id",
+        "announcement_id",
+        "file_name",
+        "file_path",
+        "file_mime",
+        "file_size",
+        "uploaded_by_user_id",
+        "uploaded_by_username",
+        "uploaded_at",
+    },
+    "hub_tasks": {
+        "id",
+        "title",
+        "description",
+        "status",
+        "due_at",
+        "assignee_user_id",
+        "assignee_username",
+        "assignee_full_name",
+        "controller_user_id",
+        "controller_username",
+        "controller_full_name",
+        "created_by_user_id",
+        "created_by_username",
+        "created_by_full_name",
+        "created_at",
+        "updated_at",
+        "submitted_at",
+        "reviewed_at",
+        "reviewer_user_id",
+        "reviewer_username",
+        "reviewer_full_name",
+        "review_comment",
+        "priority",
+        "project_id",
+        "object_id",
+        "protocol_date",
+        "completed_at",
+        "completed_at_source",
+        "department_id",
+        "visibility_scope",
+    },
+    "hub_task_projects": {"id", "name", "code", "description", "is_active", "created_at", "updated_at"},
+    "hub_task_objects": {"id", "project_id", "name", "code", "description", "is_active", "created_at", "updated_at"},
+    "hub_task_reports": {
+        "id",
+        "task_id",
+        "comment",
+        "file_name",
+        "file_path",
+        "file_mime",
+        "file_size",
+        "uploaded_by_user_id",
+        "uploaded_by_username",
+        "uploaded_at",
+    },
+    "hub_task_attachments": {
+        "id",
+        "task_id",
+        "scope",
+        "file_name",
+        "file_path",
+        "file_mime",
+        "file_size",
+        "uploaded_by_user_id",
+        "uploaded_by_username",
+        "uploaded_at",
+    },
+    "hub_task_comment_reads": {"task_id", "user_id", "last_seen_comment_id", "last_seen_at"},
+    "hub_task_comments": {"id", "task_id", "user_id", "username", "full_name", "body", "created_at"},
+    "hub_task_status_log": {
+        "id",
+        "task_id",
+        "old_status",
+        "new_status",
+        "changed_by_user_id",
+        "changed_by_username",
+        "changed_at",
+    },
+    "hub_notifications": {
+        "id",
+        "recipient_user_id",
+        "event_type",
+        "title",
+        "body",
+        "entity_type",
+        "entity_id",
+        "created_at",
+    },
+    "hub_notification_reads": {"notification_id", "user_id", "read_at"},
+}
+_HUB_REQUIRED_INDEXES = {
+    "hub_announcements": {"idx_hub_announcements_published"},
+    "hub_announcement_attachments": {"idx_hub_announcement_attachments_announcement"},
+    "hub_tasks": {
+        "idx_hub_tasks_assignee",
+        "idx_hub_tasks_controller",
+        "idx_hub_tasks_project",
+        "idx_hub_tasks_object",
+        "idx_hub_tasks_protocol_date",
+        "idx_hub_tasks_completed_at",
+        "idx_hub_tasks_department",
+    },
+    "hub_task_projects": {"idx_hub_task_projects_active"},
+    "hub_task_objects": {"idx_hub_task_objects_project"},
+    "hub_task_attachments": {"idx_hub_task_attachments_task"},
+    "hub_task_comment_reads": {"idx_hub_task_comment_reads_task"},
+    "hub_task_comments": {"idx_hub_task_comments_task"},
+    "hub_task_status_log": {"idx_hub_task_status_log_task"},
+    "hub_notifications": {"idx_hub_notifications_recipient"},
+}
+
+
+class HubSchemaConfigurationError(RuntimeError):
+    """Raised when production hub schema is not migration-ready."""
 
 
 class HubService:
@@ -128,6 +282,65 @@ class HubService:
     def _table_columns(self, conn: sqlite3.Connection, table_name: str) -> set[str]:
         rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
         return {str(row["name"]) for row in rows}
+
+    def _is_production_postgres_app_db(self, engine=None) -> bool:
+        if not (self._use_app_db and self._database_url and config.app.is_production):
+            return False
+        resolved_engine = engine or get_app_engine(self._database_url)
+        return str(resolved_engine.dialect.name).lower() == "postgresql"
+
+    def _verify_production_schema(self, engine) -> None:
+        try:
+            inspector = inspect(engine)
+            schema = self._app_schema
+            missing_tables = sorted(
+                table_name
+                for table_name in self._hub_table_names()
+                if not inspector.has_table(table_name, schema=schema)
+            )
+            missing_columns: list[str] = []
+            missing_indexes: list[str] = []
+            for table_name, required_columns in _HUB_REQUIRED_COLUMNS.items():
+                if table_name in missing_tables:
+                    continue
+                existing_columns = {
+                    _normalize_text(column.get("name")).lower()
+                    for column in inspector.get_columns(table_name, schema=schema)
+                }
+                for column_name in sorted(required_columns):
+                    if column_name.lower() not in existing_columns:
+                        missing_columns.append(f"{table_name}.{column_name}")
+            for table_name, required_indexes in _HUB_REQUIRED_INDEXES.items():
+                if table_name in missing_tables:
+                    continue
+                existing_indexes = {
+                    _normalize_text(index.get("name")).lower()
+                    for index in inspector.get_indexes(table_name, schema=schema)
+                }
+                for index_name in sorted(required_indexes):
+                    if index_name.lower() not in existing_indexes:
+                        missing_indexes.append(f"{table_name}.{index_name}")
+        except HubSchemaConfigurationError:
+            raise
+        except Exception as exc:
+            raise HubSchemaConfigurationError(
+                "Production hub schema could not be inspected; "
+                "verify APP_DATABASE_URL and backend Alembic migrations."
+            ) from exc
+
+        if missing_tables or missing_columns or missing_indexes:
+            details: list[str] = []
+            if missing_tables:
+                details.append("missing tables: " + ", ".join(missing_tables))
+            if missing_columns:
+                details.append("missing columns: " + ", ".join(missing_columns))
+            if missing_indexes:
+                details.append("missing indexes: " + ", ".join(missing_indexes))
+            raise HubSchemaConfigurationError(
+                "Production hub schema is incomplete; "
+                "run backend Alembic migrations before startup. "
+                + "; ".join(details)
+            )
 
     def _user_can_review_tasks(self, user: dict[str, Any]) -> bool:
         if not bool(user.get("is_active", True)):
@@ -489,6 +702,8 @@ class HubService:
         """)
 
     def _ensure_task_status_log_table(self, conn: sqlite3.Connection) -> None:
+        if self._is_production_postgres_app_db():
+            return
         conn.execute(f"""
             CREATE TABLE IF NOT EXISTS {self._TASK_STATUS_LOG_TABLE} (
                 id TEXT PRIMARY KEY,
@@ -617,6 +832,12 @@ class HubService:
         return [dict(row) for row in rows]
 
     def _ensure_schema(self) -> None:
+        if self._use_app_db and self._database_url:
+            engine = get_app_engine(self._database_url)
+            if self._is_production_postgres_app_db(engine):
+                self._verify_production_schema(engine)
+                return
+
         with self._lock, self._connect() as conn:
             if self._use_app_db and self._database_url and self._app_schema:
                 self._ensure_task_comments_table(conn)

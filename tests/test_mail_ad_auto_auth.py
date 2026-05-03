@@ -408,6 +408,49 @@ def test_invalidate_saved_password_clears_primary_stored_credentials_for_ldap_us
     assert refreshed_config["mail_requires_relogin"] is False
 
 
+def test_invalidate_saved_password_uses_timestamp_safe_ordering(temp_dir, monkeypatch):
+    service = _build_service(temp_dir, monkeypatch)
+
+    class _FakeResult:
+        def __init__(self, row=None):
+            self._row = row
+
+        def fetchone(self):
+            return self._row
+
+    class _FakeConnection:
+        def __init__(self):
+            self.statements = []
+            self.committed = False
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def execute(self, sql, params=()):
+            statement = str(sql)
+            self.statements.append(statement)
+            if "SELECT id" in statement:
+                return _FakeResult({"id": "mailbox-1"})
+            return _FakeResult()
+
+        def commit(self):
+            self.committed = True
+
+    fake_conn = _FakeConnection()
+    monkeypatch.setattr(service, "_connect", lambda: fake_conn)
+    monkeypatch.setattr(mail_module.user_service, "update_user", lambda _user_id, **_changes: {"id": _user_id})
+
+    service.invalidate_saved_password(user_id=22)
+
+    select_statement = fake_conn.statements[0]
+    assert "COALESCE(last_selected_at, '')" not in select_statement
+    assert "CASE WHEN last_selected_at IS NULL THEN 1 ELSE 0 END" in select_statement
+    assert fake_conn.committed is True
+
+
 def test_mail_test_connection_blocks_foreign_ldap_user_without_session_secret(monkeypatch):
     current_user = _mail_user(user_id=1, role="admin")
 

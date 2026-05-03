@@ -684,7 +684,7 @@ describe('Mail read-state behavior', () => {
 
     const renderedIds = Array.from(document.querySelectorAll('[data-testid^="mail-item-"]'))
       .map((node) => node.getAttribute('data-testid'))
-      .filter(Boolean);
+      .filter((id) => id && !id.startsWith('mail-item-select-'));
     expect(renderedIds.length).toBe(121);
   });
 

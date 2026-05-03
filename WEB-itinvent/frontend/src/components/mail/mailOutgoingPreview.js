@@ -1,4 +1,5 @@
 import { splitQuotedHistoryHtml } from './mailQuotedHistory';
+import { sanitizeMailHtmlFragment } from './mailHtmlContent';
 
 const OUTGOING_MAIL_BODY_STYLE = [
   'margin:0',
@@ -29,7 +30,7 @@ function isEffectivelyEmptyHtml(html) {
 }
 
 function normalizePreviewHtml(html) {
-  const trimmed = String(html || '').trim();
+  const trimmed = sanitizeMailHtmlFragment(html);
   if (!trimmed) return '';
   if (isEffectivelyEmptyHtml(trimmed)) return '';
   return trimmed;
@@ -218,7 +219,7 @@ export function buildOutgoingMailPreviewHtml({
   }
 
   if (parts.length === 0) return '';
-  return `<div data-mail-outgoing="true" style="${OUTGOING_MAIL_BODY_STYLE};">${parts.join('')}</div>`;
+  return sanitizeMailHtmlFragment(`<div data-mail-outgoing="true" style="${OUTGOING_MAIL_BODY_STYLE};">${parts.join('')}</div>`);
 }
 
 export function buildComposeMailPreviewHtml({

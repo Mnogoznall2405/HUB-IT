@@ -14,6 +14,7 @@ import logging
 import os
 import re
 import sqlite3
+import warnings
 from contextlib import contextmanager
 from contextvars import ContextVar
 from datetime import date, datetime, timedelta, timezone
@@ -23,8 +24,11 @@ from threading import Event, RLock
 from typing import Any, Optional
 from urllib.parse import quote
 
+from sqlalchemy import inspect
+
 from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
 from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.config import config
 from backend.db_schema import schema_name
 from local_store import get_local_store
 from backend.services.secret_crypto_service import SecretCryptoError, decrypt_secret, encrypt_secret
@@ -37,6 +41,9 @@ _UNSET = object()
 _MAILBOX_AUTH_MODES = {"stored_credentials", "primary_session", "primary_credentials"}
 _MAIL_REQUEST_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("mail_request_context", default=None)
 _MAIL_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar("mail_request_metrics", default=None)
+_EXCHANGE_HTTP_ADAPTER_LOCK = RLock()
+_EXCHANGE_HTTP_DEFAULT_ADAPTER_CLS: Any = None
+_EXCHANGE_HTTP_ADAPTER_SIGNATURE: tuple[Any, ...] | None = None
 
 
 @dataclass
@@ -528,6 +535,83 @@ class MailPayloadTooLargeError(MailServiceError):
     """Payload is too large (attachments count/size limits)."""
 
 
+class MailSchemaConfigurationError(RuntimeError):
+    """Raised when production mail schema is not migration-ready."""
+
+
+_MAIL_REQUIRED_COLUMNS = {
+    "mail_it_templates": {
+        "id",
+        "code",
+        "title",
+        "category",
+        "subject_template",
+        "body_template_md",
+        "required_fields_json",
+        "is_active",
+        "created_by_user_id",
+        "created_by_username",
+        "updated_by_user_id",
+        "updated_by_username",
+        "created_at",
+        "updated_at",
+    },
+    "mail_messages_log": {
+        "id",
+        "user_id",
+        "username",
+        "direction",
+        "folder_hint",
+        "subject",
+        "recipients_json",
+        "sent_at",
+        "status",
+        "exchange_item_id",
+        "error_text",
+    },
+    "mail_restore_hints": {"user_id", "trash_exchange_id", "restore_folder", "source_exchange_id", "created_at"},
+    "mail_draft_context": {
+        "draft_exchange_id",
+        "user_id",
+        "compose_mode",
+        "reply_to_message_id",
+        "forward_message_id",
+        "updated_at",
+    },
+    "mail_folder_favorites": {"user_id", "folder_id", "created_at"},
+    "mail_visible_custom_folders": {"user_id", "folder_id", "created_at"},
+    "mail_user_preferences": {"user_id", "prefs_json", "updated_at"},
+    "user_mailboxes": {
+        "id",
+        "user_id",
+        "label",
+        "mailbox_email",
+        "mailbox_login",
+        "mailbox_password_enc",
+        "auth_mode",
+        "is_primary",
+        "is_active",
+        "sort_order",
+        "last_selected_at",
+        "created_at",
+        "updated_at",
+    },
+}
+_MAIL_REQUIRED_INDEXES = {
+    "mail_it_templates": {"idx_mail_it_templates_active"},
+    "mail_messages_log": {"idx_mail_messages_log_user_time"},
+    "mail_restore_hints": {"idx_mail_restore_hints_created"},
+    "mail_draft_context": {"idx_mail_draft_context_user_updated"},
+    "mail_folder_favorites": {"idx_mail_folder_favorites_user_created"},
+    "mail_visible_custom_folders": {"idx_mail_visible_custom_folders_user_created"},
+    "user_mailboxes": {
+        "ix_app_user_mailboxes_user_id",
+        "ix_app_user_mailboxes_user_id_is_active",
+        "ix_app_user_mailboxes_user_id_is_primary",
+    },
+}
+
+
 class MailService:
     _USER_MAILBOXES_TABLE = "user_mailboxes"
     _TEMPLATES_TABLE = "mail_it_templates"
@@ -626,9 +710,6 @@ class MailService:
         self._ensure_schema()
         self._migrate_legacy_template_fields()
         self._cleanup_message_log()
-        # Globally disable TLS verification for Exchange connections if configured.
-        if not self.verify_tls:
-            self._disable_tls_verification()
 
     @property
     def mail_cache_ttl_sec(self) -> int:
@@ -1012,18 +1093,79 @@ class MailService:
             require_password=bool(require_password),
         )
 
-    def _disable_tls_verification(self) -> None:
-        """Set NoVerifyHTTPAdapter globally and suppress SSL warnings."""
+    def _resolve_tls_ca_bundle(self) -> str:
+        ca_bundle = self.tls_ca_bundle
+        if not ca_bundle:
+            return ""
+        ca_path = Path(ca_bundle).expanduser()
+        if not ca_path.is_file():
+            raise MailServiceError(
+                f"MAIL_TLS_CA_BUNDLE points to a missing file: {ca_path}"
+            )
+        return str(ca_path)
+
+    @staticmethod
+    def _build_ca_bundle_http_adapter(ca_bundle: str):
+        import requests
+
+        class MailCABundleHTTPAdapter(requests.adapters.HTTPAdapter):
+            def cert_verify(self, conn, url, verify, cert):
+                super().cert_verify(conn=conn, url=url, verify=ca_bundle, cert=cert)
+
+            def get_connection_with_tls_context(self, request, verify, proxies=None, cert=None):
+                return super().get_connection_with_tls_context(
+                    request=request,
+                    verify=ca_bundle,
+                    proxies=proxies,
+                    cert=cert,
+                )
+
+        return MailCABundleHTTPAdapter
+
+    @staticmethod
+    def _get_no_verify_http_adapter():
         try:
-            import urllib3
-            urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+            from exchangelib.protocol import NoVerifyHTTPAdapter
+            return NoVerifyHTTPAdapter
         except Exception:
-            pass
+            return None
+
+    @staticmethod
+    def _suppress_insecure_request_warning() -> None:
         try:
-            from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter
-            BaseProtocol.HTTP_ADAPTER_CLS = NoVerifyHTTPAdapter
+            from urllib3.exceptions import InsecureRequestWarning
         except Exception:
-            pass
+            return
+        warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+
+    def _resolve_exchange_http_adapter(self) -> tuple[tuple[Any, ...], Any | None]:
+        if self.verify_tls:
+            ca_bundle = self._resolve_tls_ca_bundle()
+            if ca_bundle:
+                return ("ca_bundle", ca_bundle), self._build_ca_bundle_http_adapter(ca_bundle)
+            return ("default",), None
+        adapter_cls = self._get_no_verify_http_adapter()
+        if adapter_cls is None:
+            return ("default",), None
+        return ("no_verify",), adapter_cls
+
+    def _configure_exchange_http_adapter_for_runtime(self) -> None:
+        """Apply Exchange HTTP adapter globally for lazy exchangelib requests."""
+        try:
+            from exchangelib.protocol import BaseProtocol
+        except Exception:
+            return
+        signature, adapter_cls = self._resolve_exchange_http_adapter()
+        if signature == ("no_verify",):
+            self._suppress_insecure_request_warning()
+        global _EXCHANGE_HTTP_DEFAULT_ADAPTER_CLS, _EXCHANGE_HTTP_ADAPTER_SIGNATURE
+        with _EXCHANGE_HTTP_ADAPTER_LOCK:
+            if _EXCHANGE_HTTP_DEFAULT_ADAPTER_CLS is None:
+                _EXCHANGE_HTTP_DEFAULT_ADAPTER_CLS = BaseProtocol.HTTP_ADAPTER_CLS
+            target_adapter = adapter_cls or _EXCHANGE_HTTP_DEFAULT_ADAPTER_CLS
+            if _EXCHANGE_HTTP_ADAPTER_SIGNATURE != signature or BaseProtocol.HTTP_ADAPTER_CLS is not target_adapter:
+                BaseProtocol.HTTP_ADAPTER_CLS = target_adapter
+                _EXCHANGE_HTTP_ADAPTER_SIGNATURE = signature
 
     def _connect(self) -> sqlite3.Connection:
         if self._use_app_db and self._database_url:
@@ -1048,7 +1190,72 @@ class MailService:
             self._USER_PREFS_TABLE,
         }
 
+    def _is_production_postgres_app_db(self, engine=None) -> bool:
+        if not (self._use_app_db and self._database_url and config.app.is_production):
+            return False
+        resolved_engine = engine or get_app_engine(self._database_url)
+        return str(resolved_engine.dialect.name).lower() == "postgresql"
+
+    def _verify_production_schema(self, engine) -> None:
+        try:
+            inspector = inspect(engine)
+            schema = self._app_schema
+            missing_tables = sorted(
+                table_name
+                for table_name in self._mail_table_names()
+                if not inspector.has_table(table_name, schema=schema)
+            )
+            missing_columns: list[str] = []
+            missing_indexes: list[str] = []
+            for table_name, required_columns in _MAIL_REQUIRED_COLUMNS.items():
+                if table_name in missing_tables:
+                    continue
+                existing_columns = {
+                    _normalize_text(column.get("name")).lower()
+                    for column in inspector.get_columns(table_name, schema=schema)
+                }
+                for column_name in sorted(required_columns):
+                    if column_name.lower() not in existing_columns:
+                        missing_columns.append(f"{table_name}.{column_name}")
+            for table_name, required_indexes in _MAIL_REQUIRED_INDEXES.items():
+                if table_name in missing_tables:
+                    continue
+                existing_indexes = {
+                    _normalize_text(index.get("name")).lower()
+                    for index in inspector.get_indexes(table_name, schema=schema)
+                }
+                for index_name in sorted(required_indexes):
+                    if index_name.lower() not in existing_indexes:
+                        missing_indexes.append(f"{table_name}.{index_name}")
+        except MailSchemaConfigurationError:
+            raise
+        except Exception as exc:
+            raise MailSchemaConfigurationError(
+                "Production mail schema could not be inspected; "
+                "verify APP_DATABASE_URL and backend Alembic migrations."
+            ) from exc
+
+        if missing_tables or missing_columns or missing_indexes:
+            details: list[str] = []
+            if missing_tables:
+                details.append("missing tables: " + ", ".join(missing_tables))
+            if missing_columns:
+                details.append("missing columns: " + ", ".join(missing_columns))
+            if missing_indexes:
+                details.append("missing indexes: " + ", ".join(missing_indexes))
+            raise MailSchemaConfigurationError(
+                "Production mail schema is incomplete; "
+                "run backend Alembic migrations before startup. "
+                + "; ".join(details)
+            )
+
     def _ensure_schema(self) -> None:
+        if self._use_app_db and self._database_url:
+            engine = get_app_engine(self._database_url)
+            if self._is_production_postgres_app_db(engine):
+                self._verify_production_schema(engine)
+                return
+
         with self._lock, self._connect() as conn:
             conn.executescript(
                 f"""
@@ -1173,7 +1380,15 @@ class MailService:
 
     @property
     def verify_tls(self) -> bool:
-        return _to_bool(os.getenv("MAIL_VERIFY_TLS"), default=False)
+        return _to_bool(os.getenv("MAIL_VERIFY_TLS"), default=True)
+
+    @property
+    def tls_ca_bundle(self) -> str:
+        return _normalize_text(
+            os.getenv("MAIL_TLS_CA_BUNDLE")
+            or os.getenv("MAIL_CA_BUNDLE")
+            or ""
+        )
 
     @property
     def it_request_recipients(self) -> list[str]:
@@ -2583,7 +2798,10 @@ class MailService:
                         SELECT id
                         FROM {self._USER_MAILBOXES_TABLE}
                         WHERE user_id = ? AND auth_mode = 'stored_credentials'
-                        ORDER BY is_primary DESC, COALESCE(last_selected_at, '') DESC, sort_order ASC
+                        ORDER BY is_primary DESC,
+                                 CASE WHEN last_selected_at IS NULL THEN 1 ELSE 0 END,
+                                 last_selected_at DESC,
+                                 sort_order ASC
                         LIMIT 1
                         """,
                         (int(user_id),),
@@ -2634,23 +2852,27 @@ class MailService:
 
     @contextmanager
     def _exchange_protocol_context(self):
-        if self.verify_tls:
+        signature, adapter_cls = self._resolve_exchange_http_adapter()
+        if signature == ("no_verify",):
+            self._suppress_insecure_request_warning()
+        if adapter_cls is None:
             yield
             return
         try:
-            from exchangelib.protocol import BaseProtocol, NoVerifyHTTPAdapter
+            from exchangelib.protocol import BaseProtocol
         except Exception:
             # If exchangelib is unavailable, downstream connection call will fail with explicit error.
             yield
             return
         old_adapter = BaseProtocol.HTTP_ADAPTER_CLS
-        BaseProtocol.HTTP_ADAPTER_CLS = NoVerifyHTTPAdapter
+        BaseProtocol.HTTP_ADAPTER_CLS = adapter_cls
         try:
             yield
         finally:
             BaseProtocol.HTTP_ADAPTER_CLS = old_adapter
 
     def _create_account(self, *, email: str, login: str, password: str):
+        self._configure_exchange_http_adapter_for_runtime()
         try:
             from exchangelib import Account, Configuration, Credentials, DELEGATE, NTLM
         except Exception as exc:

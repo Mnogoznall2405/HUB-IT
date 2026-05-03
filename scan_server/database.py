@@ -3,6 +3,7 @@
 import base64
 import json
 import logging
+import re
 import sqlite3
 import sys
 import threading
@@ -29,6 +30,27 @@ BRANCH_PREFIX_FALLBACKS = {
     "SPB": "Санкт-Петербург",
     "OBJ": "Объекты",
 }
+_SQLITE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+_SCAN_RUNTIME_COLUMNS = {
+    "scan_jobs": {"event_id", "scan_task_id", "attempt_count"},
+    "scan_incidents": {"resolved_at", "resolved_reason", "resolved_by_task_id"},
+}
+
+
+def _quote_sqlite_identifier(identifier: Any) -> str:
+    normalized = str(identifier or "").strip()
+    if not _SQLITE_IDENTIFIER_RE.fullmatch(normalized):
+        raise ValueError(f"Invalid SQLite identifier: {normalized!r}")
+    return f'"{normalized}"'
+
+
+def _require_scan_runtime_column(table_name: Any, column_name: Any) -> tuple[str, str]:
+    normalized_table = str(table_name or "").strip()
+    normalized_column = str(column_name or "").strip()
+    allowed_columns = _SCAN_RUNTIME_COLUMNS.get(normalized_table)
+    if not allowed_columns or normalized_column not in allowed_columns:
+        raise ValueError(f"Unsupported scan runtime schema patch: {normalized_table}.{normalized_column}")
+    return normalized_table, normalized_column
 
 
 def _now_ts() -> int:
@@ -475,9 +497,10 @@ class ScanStore:
             conn.commit()
 
     def _ensure_column(self, conn: sqlite3.Connection, *, table_name: str, column_name: str, ddl: str) -> None:
-        rows = conn.execute(f"PRAGMA table_info({table_name})").fetchall()
+        safe_table_name, safe_column_name = _require_scan_runtime_column(table_name, column_name)
+        rows = conn.execute(f"PRAGMA table_info({_quote_sqlite_identifier(safe_table_name)})").fetchall()
         existing = {str(row["name"] or "").strip().lower() for row in rows}
-        if str(column_name or "").strip().lower() in existing:
+        if safe_column_name.lower() in existing:
             return
         conn.execute(ddl)
 

@@ -59,6 +59,7 @@ import useChatThreadViewport from '../components/chat/useChatThreadViewport';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { useMainLayoutShell } from '../components/layout/MainLayoutShellContext';
+import { sanitizeMailHtmlFragment } from '../components/mail/mailHtmlContent';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../lib/chatFeature';
@@ -294,6 +295,7 @@ function AiMailActionEditDialog({
   const selectedAttachmentKeys = useMemo(() => (
     new Set(normalizeMailAttachmentRefs(draft.attachment_refs).map((item) => `${item.message_id}:${item.attachment_id}`))
   ), [draft.attachment_refs]);
+  const safeSignatureHtml = useMemo(() => sanitizeMailHtmlFragment(signatureHtml), [signatureHtml]);
 
   const toggleAttachment = (attachment) => {
     const ref = {
@@ -380,10 +382,10 @@ function AiMailActionEditDialog({
             )}
           </Box>
           <Alert severity="info">Подпись будет добавлена автоматически при отправке.</Alert>
-          {signatureHtml ? (
+          {safeSignatureHtml ? (
             <Box sx={{ border: '1px solid', borderColor: 'divider', borderRadius: 1, p: 1.2 }}>
               <Typography sx={{ fontSize: 12, fontWeight: 800, mb: 0.5, color: 'text.secondary' }}>Подпись</Typography>
-              <Box sx={{ fontSize: 13, '& img': { maxWidth: '100%' } }} dangerouslySetInnerHTML={{ __html: signatureHtml }} />
+              <Box sx={{ fontSize: 13, '& img': { maxWidth: '100%' } }} dangerouslySetInnerHTML={{ __html: safeSignatureHtml }} />
             </Box>
           ) : null}
         </Stack>

@@ -14,6 +14,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from backend.appdb.models import APP_SCHEMA, AppBase, SYSTEM_SCHEMA
 from backend.config import config
+from backend.db_migrations import upgrade_internal_database
 
 
 class AppDatabaseConfigurationError(RuntimeError):
@@ -138,9 +139,26 @@ def _run_postgres_app_schema_maintenance(connection) -> None:
             logger.warning("Skipped app schema maintenance statement: %s", exc)
 
 
+def _postgres_has_alembic_version(engine) -> bool:
+    try:
+        with engine.connect() as connection:
+            row = connection.execute(text('SELECT version_num FROM "system"."alembic_version" LIMIT 1')).first()
+            return bool(row and str(row[0] or "").strip())
+    except Exception:
+        return False
+
+
 def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
     engine = get_app_engine(database_url)
     if engine.dialect.name == "postgresql":
+        if config.app.is_production:
+            if not _postgres_has_alembic_version(engine):
+                raise AppDatabaseConfigurationError(
+                    "Production APP_DATABASE_URL is not Alembic-initialized; "
+                    "run backend Alembic migrations before startup."
+                )
+            upgrade_internal_database(ensure_app_database_configured(database_url), scope="app")
+            return
         with engine.begin() as connection:
             connection.execute(
                 text("SELECT pg_advisory_xact_lock(:lock_key)"),

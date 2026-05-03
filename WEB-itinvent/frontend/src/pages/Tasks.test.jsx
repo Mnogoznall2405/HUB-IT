@@ -4,7 +4,8 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Tasks from './Tasks';
-import { departmentsAPI, hubAPI } from '../api/client';
+import { hubAPI } from '../api/client';
+import { departmentsAPI } from '../api/departments';
 
 function installMatchMedia({ mobile = false } = {}) {
   window.matchMedia = vi.fn().mockImplementation((query) => ({
@@ -20,9 +21,6 @@ function installMatchMedia({ mobile = false } = {}) {
 }
 
 vi.mock('../api/client', () => ({
-  departmentsAPI: {
-    list: vi.fn(),
-  },
   hubAPI: {
     getAssignees: vi.fn(),
     getControllers: vi.fn(),
@@ -50,6 +48,12 @@ vi.mock('../api/client', () => ({
     updateTaskObject: vi.fn(),
     uploadTaskAttachment: vi.fn(),
     addTaskComment: vi.fn(),
+  },
+}));
+
+vi.mock('../api/departments', () => ({
+  departmentsAPI: {
+    list: vi.fn(),
   },
 }));
 

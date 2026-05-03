@@ -77,6 +77,7 @@ yarn-error.log*
 *.backup
 *.old
 *.restored
+*.corrupt
 temp/
 tmp/
 .tmp/

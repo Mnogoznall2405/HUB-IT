@@ -20,14 +20,18 @@ const mockApi = vi.hoisted(() => ({
   databaseAPI: {
     getCurrentDatabase: vi.fn(),
     getAvailableDatabases: vi.fn(),
+    switchDatabase: vi.fn(),
   },
 }));
 
 vi.mock('../api/client', () => ({
   equipmentAPI: mockApi.equipmentAPI,
-  databaseAPI: mockApi.databaseAPI,
   API_V1_BASE: '/api/v1',
   UPLOADED_ACT_PARSE_TIMEOUT_MS: 180000,
+}));
+
+vi.mock('../api/database', () => ({
+  databaseAPI: mockApi.databaseAPI,
 }));
 
 vi.mock('../api/json_client', () => ({
@@ -137,6 +141,10 @@ beforeEach(() => {
   mockApi.databaseAPI.getAvailableDatabases.mockResolvedValue([
     { id: 'main', name: 'Основная база' },
   ]);
+  mockApi.databaseAPI.switchDatabase.mockImplementation(async (databaseId) => ({
+    success: true,
+    database: { id: databaseId, name: databaseId },
+  }));
   mockApi.equipmentAPI.getTypes.mockResolvedValue([]);
   mockApi.equipmentAPI.getStatuses.mockResolvedValue([]);
   mockApi.equipmentAPI.getBranchesList.mockResolvedValue([
@@ -283,6 +291,15 @@ describe('Database equipment row helpers', () => {
     expect(await screen.findByRole('button', { name: 'QR Сканер' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Загрузить акт' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Добавить оборудование' })).toBeInTheDocument();
+  });
+
+  it('renders the mobile action sheet controller without crashing', async () => {
+    installMatchMedia({ mobile: true });
+
+    renderDatabase();
+
+    expect(await screen.findByRole('button', { name: 'Open actions' })).toBeInTheDocument();
+    expect(screen.getByTestId('main-layout')).toHaveAttribute('data-header-mode', 'hidden');
   });
 
   it('shows the remaining desktop toolbar actions from the mobile FAB', async () => {

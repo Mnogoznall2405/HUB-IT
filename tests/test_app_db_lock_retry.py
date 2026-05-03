@@ -41,6 +41,8 @@ def _configure_app_db_runtime(tmp_path: Path, monkeypatch, name: str) -> str:
     appdb_db = importlib.import_module("backend.appdb.db")
 
     monkeypatch.setenv("APP_DATABASE_URL", database_url)
+    monkeypatch.setattr(backend_config.config.app, "environment", "development", raising=False)
+    monkeypatch.setattr(appdb_db.config.app, "environment", "development", raising=False)
     monkeypatch.setattr(backend_config.config.app_db, "database_url", database_url, raising=False)
     monkeypatch.setattr(appdb_db.config.app_db, "database_url", database_url, raising=False)
     appdb_db._engines.clear()

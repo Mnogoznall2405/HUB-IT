@@ -7,6 +7,8 @@ import sys
 from pathlib import Path
 from datetime import datetime, timezone, timedelta
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
@@ -19,6 +21,90 @@ mfu_module = importlib.import_module("backend.services.mfu_monitor_service")
 
 def _sqlite_url(temp_dir: str) -> str:
     return f"sqlite:///{(Path(temp_dir) / 'mfu_app.db').as_posix()}"
+
+
+class _FakePostgresDialect:
+    name = "postgresql"
+
+
+class _FakePostgresEngine:
+    dialect = _FakePostgresDialect()
+
+
+class _FakeInspector:
+    def __init__(
+        self,
+        *,
+        columns_by_table: dict[str, set[str]],
+        indexes_by_table: dict[str, set[str]] | None = None,
+    ) -> None:
+        self._columns_by_table = columns_by_table
+        self._indexes_by_table = indexes_by_table or {}
+
+    def has_table(self, table_name: str, *, schema: str | None = None) -> bool:
+        return table_name in self._columns_by_table
+
+    def get_columns(self, table_name: str, *, schema: str | None = None) -> list[dict[str, str]]:
+        return [{"name": column_name} for column_name in self._columns_by_table.get(table_name, set())]
+
+    def get_indexes(self, table_name: str, *, schema: str | None = None) -> list[dict[str, str]]:
+        return [{"name": index_name} for index_name in self._indexes_by_table.get(table_name, set())]
+
+
+def _complete_mfu_columns() -> dict[str, set[str]]:
+    return {
+        table_name: set(columns)
+        for table_name, columns in mfu_module._MFU_REQUIRED_COLUMNS.items()
+    }
+
+
+def _complete_mfu_indexes() -> dict[str, set[str]]:
+    return {
+        table_name: set(indexes)
+        for table_name, indexes in mfu_module._MFU_REQUIRED_INDEXES.items()
+    }
+
+
+def _configure_production_mfu_schema_guard(monkeypatch, inspector: _FakeInspector) -> list[str]:
+    init_calls: list[str] = []
+    fake_engine = _FakePostgresEngine()
+    monkeypatch.setattr(mfu_module.config.app, "environment", "production", raising=False)
+    monkeypatch.setattr(mfu_module, "initialize_app_schema", lambda database_url: init_calls.append(database_url))
+    monkeypatch.setattr(mfu_module, "get_app_engine", lambda database_url: fake_engine)
+    monkeypatch.setattr(mfu_module, "inspect", lambda engine: inspector)
+    monkeypatch.setattr(
+        mfu_module.MfuRuntimeMonitor,
+        "_connect_runtime_db",
+        lambda self: pytest.fail("production PostgreSQL MFU startup must not run runtime DDL"),
+    )
+    monkeypatch.setattr(mfu_module.MfuRuntimeMonitor, "_load_runtime_state_seed", lambda self: {})
+    return init_calls
+
+
+def test_mfu_monitor_production_postgres_verifies_migrated_schema(monkeypatch):
+    inspector = _FakeInspector(
+        columns_by_table=_complete_mfu_columns(),
+        indexes_by_table=_complete_mfu_indexes(),
+    )
+    init_calls = _configure_production_mfu_schema_guard(monkeypatch, inspector)
+
+    monitor = mfu_module.MfuRuntimeMonitor(database_url="postgresql://mfu-prod")
+
+    assert monitor._use_app_db is True
+    assert init_calls == ["postgresql://mfu-prod"]
+
+
+def test_mfu_monitor_production_postgres_rejects_incomplete_schema(monkeypatch):
+    columns_by_table = _complete_mfu_columns()
+    columns_by_table["mfu_runtime_state"].remove("runtime_json")
+    inspector = _FakeInspector(
+        columns_by_table=columns_by_table,
+        indexes_by_table=_complete_mfu_indexes(),
+    )
+    _configure_production_mfu_schema_guard(monkeypatch, inspector)
+
+    with pytest.raises(mfu_module.MfuRuntimeSchemaConfigurationError, match="mfu_runtime_state.runtime_json"):
+        mfu_module.MfuRuntimeMonitor(database_url="postgresql://mfu-prod")
 
 
 def test_mfu_monitor_supports_app_db_runtime_persistence(temp_dir):

@@ -13,8 +13,11 @@ from threading import RLock
 from typing import Any, Optional
 from urllib.parse import urlencode
 
+from sqlalchemy import inspect
+
 from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
 from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.config import config
 from backend.db_schema import schema_name
 from local_store import get_local_store
 
@@ -48,6 +51,51 @@ def _normalize_inv_nos(values: Any) -> list[str]:
 
 def _normalized_inv_signature(values: Any) -> tuple[str, ...]:
     return tuple(sorted(_normalize_inv_nos(values), key=lambda item: item.lower()))
+
+
+_REMINDER_REQUIRED_COLUMNS = {
+    "equipment_transfer_act_reminders": {
+        "reminder_id",
+        "task_id",
+        "db_id",
+        "assignee_user_id",
+        "controller_user_id",
+        "created_by_user_id",
+        "new_employee_no",
+        "new_employee_name",
+        "status",
+        "created_at",
+        "updated_at",
+        "completed_at",
+    },
+    "equipment_transfer_act_reminder_groups": {
+        "id",
+        "reminder_id",
+        "generated_act_id",
+        "old_employee_name",
+        "inv_nos_json",
+        "equipment_count",
+        "matched_doc_no",
+        "matched_doc_number",
+        "completed_at",
+    },
+}
+
+
+_REMINDER_REQUIRED_INDEXES = {
+    "equipment_transfer_act_reminders": {
+        "idx_equipment_transfer_act_reminders_task_id",
+        "idx_equipment_transfer_act_reminders_assignee_status",
+        "idx_equipment_transfer_act_reminders_db_status",
+    },
+    "equipment_transfer_act_reminder_groups": {
+        "idx_equipment_transfer_act_reminder_groups_reminder",
+    },
+}
+
+
+class TransferActReminderSchemaConfigurationError(RuntimeError):
+    """Raised when production transfer reminder schema is not migration-ready."""
 
 
 class TransferActReminderService:
@@ -88,7 +136,72 @@ class TransferActReminderService:
             self._GROUPS_TABLE,
         }
 
+    def _is_production_postgres_app_db(self, engine=None) -> bool:
+        if not (self._use_app_db and self._database_url and config.app.is_production):
+            return False
+        resolved_engine = engine or get_app_engine(self._database_url)
+        return str(resolved_engine.dialect.name).lower() == "postgresql"
+
+    def _verify_production_schema(self, engine) -> None:
+        try:
+            inspector = inspect(engine)
+            schema = self._app_schema
+            missing_tables = sorted(
+                table_name
+                for table_name in self._reminder_table_names()
+                if not inspector.has_table(table_name, schema=schema)
+            )
+            missing_columns: list[str] = []
+            missing_indexes: list[str] = []
+            for table_name, required_columns in _REMINDER_REQUIRED_COLUMNS.items():
+                if table_name in missing_tables:
+                    continue
+                existing_columns = {
+                    _normalize_text(column.get("name")).lower()
+                    for column in inspector.get_columns(table_name, schema=schema)
+                }
+                for column_name in sorted(required_columns):
+                    if column_name.lower() not in existing_columns:
+                        missing_columns.append(f"{table_name}.{column_name}")
+            for table_name, required_indexes in _REMINDER_REQUIRED_INDEXES.items():
+                if table_name in missing_tables:
+                    continue
+                existing_indexes = {
+                    _normalize_text(index.get("name")).lower()
+                    for index in inspector.get_indexes(table_name, schema=schema)
+                }
+                for index_name in sorted(required_indexes):
+                    if index_name.lower() not in existing_indexes:
+                        missing_indexes.append(f"{table_name}.{index_name}")
+        except TransferActReminderSchemaConfigurationError:
+            raise
+        except Exception as exc:
+            raise TransferActReminderSchemaConfigurationError(
+                "Production transfer act reminder schema could not be inspected; "
+                "verify APP_DATABASE_URL and backend Alembic migrations."
+            ) from exc
+
+        if missing_tables or missing_columns or missing_indexes:
+            details: list[str] = []
+            if missing_tables:
+                details.append("missing tables: " + ", ".join(missing_tables))
+            if missing_columns:
+                details.append("missing columns: " + ", ".join(missing_columns))
+            if missing_indexes:
+                details.append("missing indexes: " + ", ".join(missing_indexes))
+            raise TransferActReminderSchemaConfigurationError(
+                "Production transfer act reminder schema is incomplete; "
+                "run backend Alembic migrations before startup. "
+                + "; ".join(details)
+            )
+
     def _ensure_schema(self) -> None:
+        if self._use_app_db and self._database_url:
+            engine = get_app_engine(self._database_url)
+            if self._is_production_postgres_app_db(engine):
+                self._verify_production_schema(engine)
+                return
+
         with self._lock, self._connect() as conn:
             conn.executescript(
                 f"""

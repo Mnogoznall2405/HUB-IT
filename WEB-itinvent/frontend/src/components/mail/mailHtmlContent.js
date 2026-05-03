@@ -58,15 +58,18 @@ const MAIL_LAYOUT_NODE_SELECTOR = [
   'li',
 ].join(',');
 
-const sanitizeIncomingMailHtml = (html) => {
+export const sanitizeMailHtmlFragment = (html) => {
   const source = String(html || '').trim();
   if (!source) return '';
   return DOMPurify.sanitize(source, {
     USE_PROFILES: { html: true },
     FORBID_TAGS: ['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta'],
+    FORBID_ATTR: ['srcdoc'],
     ADD_ATTR: MAIL_PRESENTATION_ATTRS,
   });
 };
+
+const sanitizeIncomingMailHtml = sanitizeMailHtmlFragment;
 
 const normalizeInlineContentId = (value) => {
   let normalized = String(value || '').trim();

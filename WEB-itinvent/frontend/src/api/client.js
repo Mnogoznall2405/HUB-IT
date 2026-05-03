@@ -19,7 +19,6 @@ export const UPLOADED_ACT_PARSE_TIMEOUT_MS = 180_000;
 const SCAN_HOSTS_404_KEY = 'itinvent_scan_hosts_404';
 const SCAN_HOSTS_404_TTL_MS = 6 * 60 * 60 * 1000;
 const SYSTEM_GET_STALE_TIME_MS = 30_000;
-const DATABASE_META_STALE_TIME_MS = 5 * 60 * 1000;
 const PUSH_CONFIG_STALE_TIME_MS = 60_000;
 const MAIL_UNREAD_COUNT_STALE_TIME_MS = 60_000;
 
@@ -142,6 +141,20 @@ const markScanHostsUnavailable = (value) => {
   }
 };
 
+const isScanApiRequestUrl = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return false;
+  const path = raw.replace(/^https?:\/\/[^/]+/i, '');
+  return (
+    path === '/scan'
+    || path.startsWith('/scan/')
+    || path.startsWith('/scan?')
+    || path === '/api/v1/scan'
+    || path.startsWith('/api/v1/scan/')
+    || path.startsWith('/api/v1/scan?')
+  );
+};
+
 /**
  * Create axios instance with default configuration
  */
@@ -253,6 +266,13 @@ apiClient.interceptors.response.use(
         } finally {
           refreshInFlight = null;
         }
+      }
+
+      // Scan Center is served by a separate scan service. If the main backend
+      // refresh succeeds but the retried scan request still gets 401, keep the
+      // web session intact and let the page show its own scan loading error.
+      if (error.config?._retry && isScanApiRequestUrl(requestUrl)) {
+        return Promise.reject(error);
       }
 
       // Session expired or invalid - clear cached user and notify app state.
@@ -1166,139 +1186,6 @@ export const settingsAPI = {
   },
   getAiBotRuns: async (botId) => {
     const response = await apiClient.get(`/ai-bots/${encodeURIComponent(botId)}/runs`);
-    return response.data;
-  },
-};
-
-export const databaseAPI = {
-  getAvailableDatabases: async (options = {}) => (
-    getCachedGet('database-list', '/database/list', {
-      staleTimeMs: DATABASE_META_STALE_TIME_MS,
-      force: Boolean(options?.force),
-    })
-  ),
-  getCurrentDatabase: async (options = {}) => (
-    getCachedGet('database-current', '/database/current', {
-      staleTimeMs: DATABASE_META_STALE_TIME_MS,
-      force: Boolean(options?.force),
-    })
-  ),
-};
-
-export const kbAPI = {
-  getServices: async () => {
-    const response = await apiClient.get('/kb/services');
-    return response.data;
-  },
-
-  getCards: async (params = {}) => {
-    const response = await apiClient.get('/kb/cards', { params });
-    return response.data;
-  },
-
-  getCard: async (cardId) => {
-    const response = await apiClient.get(`/kb/cards/${encodeURIComponent(cardId)}`);
-    return response.data;
-  },
-
-  createCard: async (payload) => {
-    const response = await apiClient.post('/kb/cards', payload);
-    return response.data;
-  },
-
-  updateCard: async (cardId, payload) => {
-    const response = await apiClient.patch(`/kb/cards/${encodeURIComponent(cardId)}`, payload);
-    return response.data;
-  },
-
-  setCardStatus: async (cardId, payload) => {
-    const response = await apiClient.post(`/kb/cards/${encodeURIComponent(cardId)}/status`, payload);
-    return response.data;
-  },
-
-  getCategories: async () => {
-    const response = await apiClient.get('/kb/categories');
-    return response.data;
-  },
-
-  getArticles: async (params = {}) => {
-    const response = await apiClient.get('/kb/articles', { params });
-    return response.data;
-  },
-
-  getArticle: async (articleId) => {
-    const response = await apiClient.get(`/kb/articles/${encodeURIComponent(articleId)}`);
-    return response.data;
-  },
-
-  createArticle: async (payload) => {
-    const response = await apiClient.post('/kb/articles', payload);
-    return response.data;
-  },
-
-  updateArticle: async (articleId, payload) => {
-    const response = await apiClient.patch(`/kb/articles/${encodeURIComponent(articleId)}`, payload);
-    return response.data;
-  },
-
-  setArticleStatus: async (articleId, payload) => {
-    const response = await apiClient.post(`/kb/articles/${encodeURIComponent(articleId)}/status`, payload);
-    return response.data;
-  },
-
-  getFeed: async (params = {}) => {
-    const response = await apiClient.get('/kb/feed', { params });
-    return response.data;
-  },
-
-  uploadAttachment: async (articleId, file) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const response = await apiClient.post(`/kb/articles/${encodeURIComponent(articleId)}/attachments`, formData);
-    return response.data;
-  },
-
-  downloadAttachment: async (articleId, attachmentId) => {
-    const response = await apiClient.get(
-      `/kb/articles/${encodeURIComponent(articleId)}/attachments/${encodeURIComponent(attachmentId)}`,
-      { responseType: 'blob' },
-    );
-    return response;
-  },
-
-  removeAttachment: async (articleId, attachmentId) => {
-    const response = await apiClient.delete(
-      `/kb/articles/${encodeURIComponent(articleId)}/attachments/${encodeURIComponent(attachmentId)}`
-    );
-    return response.data;
-  },
-};
-
-export const departmentsAPI = {
-  list: async (params = {}) => {
-    const response = await apiClient.get('/departments', { params });
-    return response.data;
-  },
-
-  getMembers: async (departmentId) => {
-    const response = await apiClient.get(`/departments/${encodeURIComponent(departmentId)}/members`);
-    return response.data;
-  },
-
-  setManagers: async (departmentId, managerUserIds = []) => {
-    const response = await apiClient.put(`/departments/${encodeURIComponent(departmentId)}/managers`, {
-      manager_user_ids: Array.isArray(managerUserIds) ? managerUserIds : [],
-    });
-    return response.data;
-  },
-
-  syncFromUsers: async () => {
-    const response = await apiClient.post('/departments/sync-from-users');
-    return response.data;
-  },
-
-  syncFromAD: async () => {
-    const response = await apiClient.post('/departments/sync-from-ad');
     return response.data;
   },
 };

@@ -12,6 +12,7 @@ from backend.database.connection import get_database_config, set_user_database, 
 from backend.models.auth import User
 from backend.services.settings_service import settings_service
 from backend.services.user_db_selection_service import user_db_selection_service
+from backend.config import config
 
 logger = logging.getLogger(__name__)
 
@@ -62,6 +63,64 @@ def _get_assigned_db(current_user: Optional[User]) -> Optional[str]:
     return user_db_selection_service.get_assigned_database(current_user.telegram_id)
 
 
+def normalize_database_id(database_id: object) -> Optional[str]:
+    """Return a known database ID or None for empty/unknown values."""
+    normalized = str(database_id or "").strip()
+    if not normalized:
+        return None
+    allowed = {
+        str(item.get("id") or "").strip()
+        for item in get_all_db_configs()
+        if str(item.get("id") or "").strip()
+    }
+    if allowed and normalized not in allowed:
+        return None
+    return normalized
+
+
+def _get_persisted_user_database(current_user: Optional[User]) -> Optional[str]:
+    if not current_user:
+        return None
+    user_db = normalize_database_id(get_user_database(current_user.id, current_user.username))
+    if user_db:
+        return user_db
+    settings = settings_service.get_user_settings(current_user.id)
+    return normalize_database_id(settings.get("pinned_database"))
+
+
+def resolve_current_database_id(
+    current_user: Optional[User],
+    *,
+    request_hint: Optional[str] = None,
+    legacy_cookie: Optional[str] = None,
+    include_default: bool = True,
+) -> tuple[Optional[str], str]:
+    """Resolve the effective database using server-owned selection first.
+
+    Client values are request hints only. They cannot override a persisted
+    server-side selection or a non-admin fixed assignment.
+    """
+    assigned_db = normalize_database_id(_get_assigned_db(current_user))
+    if assigned_db and current_user and current_user.role != "admin":
+        return assigned_db, "assigned"
+
+    persisted_db = _get_persisted_user_database(current_user)
+    if persisted_db:
+        return persisted_db, "user_selection"
+
+    hint_db = normalize_database_id(request_hint)
+    if hint_db:
+        return hint_db, "request_hint"
+
+    cookie_db = normalize_database_id(legacy_cookie)
+    if cookie_db:
+        return cookie_db, "legacy_cookie"
+
+    if include_default:
+        return config.database.database, "default"
+    return None, "default"
+
+
 @router.get("/list")
 async def get_available_databases(current_user: User = Depends(get_current_active_user)) -> List[DatabaseInfo]:
     """
@@ -71,7 +130,7 @@ async def get_available_databases(current_user: User = Depends(get_current_activ
         List of available databases
     """
     databases = get_all_db_configs()
-    assigned_db = _get_assigned_db(current_user)
+    assigned_db = normalize_database_id(_get_assigned_db(current_user))
     if assigned_db and current_user and current_user.role != "admin":
         filtered = [db for db in databases if db["id"] == assigned_db]
         if filtered:
@@ -91,41 +150,19 @@ async def get_current_database(
     Returns:
         Current database information
     """
-    assigned_db = _get_assigned_db(current_user)
-    if assigned_db and current_user and current_user.role != "admin":
-        db_config = get_database_config(assigned_db)
-        return {
-            "id": assigned_db,
-            "name": db_config["database"],
-            "host": db_config["host"],
-            "locked": "true",
-        }
-
-    # Try to get from header, user selection first (id/username), settings, then cookie fallback.
-    header_db = (x_database_id or "").strip() or None
-    user_db: Optional[str] = None
-    if current_user:
-        user_db = get_user_database(current_user.id, current_user.username)
-        if not user_db:
-            settings = settings_service.get_user_settings(current_user.id)
-            user_db = (settings.get("pinned_database") or "").strip() or None
-
-    cookie_db = (selected_database or "").strip() or None
-    active_db = header_db or user_db or cookie_db
-    if active_db:
-        db_config = get_database_config(active_db)
-        return {
-            "id": active_db,
-            "name": db_config["database"],
-            "host": db_config["host"],
-        }
-
-    # Default database
-    from backend.config import config
+    active_db, source = resolve_current_database_id(
+        current_user,
+        request_hint=x_database_id,
+        legacy_cookie=selected_database,
+        include_default=True,
+    )
+    db_config = get_database_config(active_db)
     return {
-        "id": config.database.database,
-        "name": config.database.database,
-        "host": config.database.host,
+        "id": active_db or config.database.database,
+        "name": db_config["database"],
+        "host": db_config["host"],
+        "source": source,
+        "locked": "true" if source == "assigned" else "false",
     }
 
 
@@ -151,29 +188,32 @@ async def switch_database(
     Returns:
         Success message
     """
+    requested_db = normalize_database_id(request.database_id)
     logger.info(f"Switch database request: {request.database_id}, user: {current_user}")
 
     # Check if database exists
     all_dbs = get_all_db_configs()
-    db_info = next((db for db in all_dbs if db["id"] == request.database_id), None)
-    if not db_info:
+    db_info = next((db for db in all_dbs if db["id"] == requested_db), None)
+    if not requested_db or not db_info:
         raise HTTPException(status_code=404, detail="Database not found")
 
-    assigned_db = _get_assigned_db(current_user)
-    if assigned_db and current_user and current_user.role != "admin" and request.database_id != assigned_db:
+    assigned_db = normalize_database_id(_get_assigned_db(current_user))
+    if assigned_db and current_user and current_user.role != "admin" and requested_db != assigned_db:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=f"Database is fixed for this user: {assigned_db}",
         )
 
-    # Store user's database selection in memory (if authenticated by id or username)
+    # Persist the selection as the server-owned contract; the in-memory map
+    # remains only a fast compatibility cache for older call sites.
     user_id = current_user.id
     username = current_user.username
-    set_user_database(user_id, request.database_id, username)
-    logger.info(f"Set database {request.database_id} for user id={user_id}, username={username}")
+    settings_service.update_user_settings(user_id, {"pinned_database": requested_db})
+    set_user_database(user_id, requested_db, username)
+    logger.info(f"Set database {requested_db} for user id={user_id}, username={username}")
 
     # Get database config to verify connection
-    db_config = get_database_config(request.database_id)
+    db_config = get_database_config(requested_db)
 
     payload = {
         "success": True,
@@ -182,11 +222,8 @@ async def switch_database(
         "user_id": user_id
     }
     response = JSONResponse(content=payload)
-    response.set_cookie(
+    response.delete_cookie(
         key="selected_database",
-        value=request.database_id,
-        max_age=60 * 60 * 24 * 30,  # 30 days
         samesite="lax",
-        httponly=True,
     )
     return response

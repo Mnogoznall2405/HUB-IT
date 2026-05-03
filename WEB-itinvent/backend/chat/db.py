@@ -15,10 +15,53 @@ class ChatConfigurationError(RuntimeError):
     """Raised when chat runtime is disabled or misconfigured."""
 
 
+class ChatSchemaConfigurationError(ChatConfigurationError):
+    """Raised when production chat schema is not migration-ready."""
+
+
 _engine = None
 _session_factory = None
 _engines: dict[str, object] = {}
 _session_factories: dict[str, object] = {}
+
+
+_CHAT_REQUIRED_COLUMNS = {
+    table.name: {column.name for column in table.columns}
+    for table in Base.metadata.sorted_tables
+}
+
+
+_CHAT_REQUIRED_INDEX_ALIASES = {
+    "chat_conversations": {
+        "last_message_seq": {"idx_chat_conversations_last_message_seq"},
+    },
+    "chat_messages": {
+        "task_id": {"ix_chat_messages_task_id", "idx_chat_messages_task_id", "ix_chat_chat_messages_task_id"},
+        "body_format": {"ix_chat_messages_body_format", "idx_chat_messages_body_format", "ix_chat_chat_messages_body_format"},
+        "client_message_id": {"idx_chat_messages_client_message_id", "ix_chat_chat_messages_client_message_id"},
+        "conversation_seq": {
+            "idx_chat_messages_conversation_id_conversation_seq",
+            "ix_chat_messages_conversation_id_conversation_seq",
+        },
+        "reply_to_message_id": {
+            "ix_chat_messages_reply_to_message_id",
+            "idx_chat_messages_reply_to_message_id",
+            "ix_chat_chat_messages_reply_to_message_id",
+        },
+        "forward_from_message_id": {
+            "ix_chat_messages_forward_from_message_id",
+            "idx_chat_messages_forward_from_message_id",
+            "ix_chat_chat_messages_forward_from_message_id",
+        },
+        "is_deleted": {"ix_chat_messages_is_deleted", "ix_chat_chat_messages_is_deleted"},
+        "deleted_by_user_id": {"ix_chat_messages_deleted_by_user_id", "ix_chat_chat_messages_deleted_by_user_id"},
+    },
+    "chat_conversation_user_state": {
+        "is_archived": {"idx_chat_conversation_user_state_is_archived"},
+        "last_read_seq": {"idx_chat_conversation_user_state_last_read_seq"},
+        "unread_count": {"idx_chat_conversation_user_state_unread_count"},
+    },
+}
 
 
 def is_chat_enabled() -> bool:
@@ -120,6 +163,9 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
     engine = get_chat_engine(database_url)
     if engine.dialect.name == "postgresql":
         if _uses_legacy_public_chat_schema(engine):
+            if config.app.is_production:
+                _verify_production_schema(engine)
+                return
             Base.metadata.create_all(bind=engine, tables=[ChatPushOutbox.__table__, ChatEventOutbox.__table__])
             _ensure_chat_message_columns(engine)
             _ensure_chat_conversation_columns(engine)
@@ -127,6 +173,9 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
             _ensure_chat_attachment_columns(engine)
             return
         upgrade_internal_database(ensure_chat_configured(database_url), scope="chat")
+        if config.app.is_production:
+            _verify_production_schema(engine)
+            return
         Base.metadata.create_all(bind=engine, tables=[ChatEventOutbox.__table__])
         return
     Base.metadata.create_all(bind=engine)
@@ -134,6 +183,60 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
     _ensure_chat_conversation_columns(engine)
     _ensure_chat_user_state_columns(engine)
     _ensure_chat_attachment_columns(engine)
+
+
+def _verify_production_schema(engine) -> None:
+    try:
+        inspector = inspect(engine)
+        schema = _runtime_schema(engine)
+        missing_tables = sorted(
+            table_name
+            for table_name in _CHAT_REQUIRED_COLUMNS
+            if not inspector.has_table(table_name, schema=schema)
+        )
+        missing_columns: list[str] = []
+        missing_indexes: list[str] = []
+        for table_name, required_columns in _CHAT_REQUIRED_COLUMNS.items():
+            if table_name in missing_tables:
+                continue
+            existing_columns = {
+                str(column.get("name") or "").strip().lower()
+                for column in inspector.get_columns(table_name, schema=schema)
+            }
+            for column_name in sorted(required_columns):
+                if column_name.lower() not in existing_columns:
+                    missing_columns.append(f"{table_name}.{column_name}")
+        for table_name, required_indexes in _CHAT_REQUIRED_INDEX_ALIASES.items():
+            if table_name in missing_tables:
+                continue
+            existing_indexes = {
+                str(index.get("name") or "").strip().lower()
+                for index in inspector.get_indexes(table_name, schema=schema)
+            }
+            for logical_name, accepted_names in sorted(required_indexes.items()):
+                if not {item.lower() for item in accepted_names}.intersection(existing_indexes):
+                    missing_indexes.append(f"{table_name}.{logical_name}")
+    except ChatSchemaConfigurationError:
+        raise
+    except Exception as exc:
+        raise ChatSchemaConfigurationError(
+            "Production chat schema could not be inspected; "
+            "verify CHAT_DATABASE_URL/APP_DATABASE_URL and backend Alembic migrations."
+        ) from exc
+
+    if missing_tables or missing_columns or missing_indexes:
+        details: list[str] = []
+        if missing_tables:
+            details.append("missing tables: " + ", ".join(missing_tables))
+        if missing_columns:
+            details.append("missing columns: " + ", ".join(missing_columns))
+        if missing_indexes:
+            details.append("missing indexes: " + ", ".join(missing_indexes))
+        raise ChatSchemaConfigurationError(
+            "Production chat schema is incomplete; "
+            "run backend Alembic migrations before startup. "
+            + "; ".join(details)
+        )
 
 
 def _ensure_chat_conversation_columns(engine) -> None:

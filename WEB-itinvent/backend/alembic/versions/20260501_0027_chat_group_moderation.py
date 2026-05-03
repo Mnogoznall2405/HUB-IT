@@ -11,6 +11,10 @@ branch_labels = None
 depends_on = None
 
 
+def _scope() -> str:
+    return str(op.get_context().config.attributes.get("itinvent_scope", "all") or "all").strip().lower()
+
+
 def _chat_messages_schema() -> str | None:
     inspector = sa.inspect(op.get_bind())
     for schema in (None, "public", "chat"):
@@ -34,7 +38,11 @@ def _index_names(schema: str | None) -> set[str]:
 
 
 def upgrade() -> None:
+    if _scope() == "app":
+        return
     chat_schema = _chat_messages_schema()
+    if chat_schema is None:
+        return
     columns = _column_names(chat_schema)
     if "is_deleted" not in columns:
         op.add_column(
@@ -57,7 +65,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
+    if _scope() == "app":
+        return
     chat_schema = _chat_messages_schema()
+    if chat_schema is None:
+        return
     indexes = _index_names(chat_schema)
     if "ix_chat_messages_deleted_by_user_id" in indexes:
         op.drop_index("ix_chat_messages_deleted_by_user_id", table_name="chat_messages", schema=chat_schema)

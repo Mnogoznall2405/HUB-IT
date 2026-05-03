@@ -1588,4 +1588,5 @@ async def get_mail_health(
         "exchange_host": mail_service.exchange_host,
         "ews_url": mail_service.exchange_ews_url,
         "verify_tls": mail_service.verify_tls,
+        "tls_ca_bundle_configured": bool(mail_service.tls_ca_bundle),
     }

@@ -124,12 +124,12 @@ def test_send_chat_message_notification_uses_android_friendly_ttl_and_high_urgen
     payload = captured["payload"]
     assert payload["channel"] == "chat"
     assert payload["tag"] == "chat:msg-1"
-    assert payload["data"]["route"] == "/chat?conversation=conv-1"
+    assert payload["data"]["route"] == "/chat?conversation=conv-1&message=msg-1"
     assert payload["renotify"] is True
     assert payload["require_interaction"] is True
     assert payload["silent"] is False
     assert payload["vibrate"] == [260, 120, 260, 120, 360]
     assert payload["actions"][0]["action"] == "open-chat"
-    assert payload["actions"][0]["route"] == "/chat?conversation=conv-1"
+    assert payload["actions"][0]["route"] == "/chat?conversation=conv-1&message=msg-1"
     assert payload["actions"][1]["action"] == "dismiss"
     assert isinstance(payload["timestamp"], int)

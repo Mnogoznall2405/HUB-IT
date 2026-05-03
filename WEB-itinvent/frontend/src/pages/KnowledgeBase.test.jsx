@@ -11,6 +11,9 @@ const hoisted = vi.hoisted(() => ({
   notifyInfo: vi.fn(),
   notifySuccess: vi.fn(),
   mockHasPermission: vi.fn(),
+  departmentsAPIMock: {
+    list: vi.fn(),
+  },
   kbAPIMock: {
     getCategories: vi.fn(),
     getServices: vi.fn(),
@@ -35,6 +38,7 @@ const {
   notifyInfo,
   notifySuccess,
   mockHasPermission,
+  departmentsAPIMock,
   kbAPIMock,
 } = hoisted;
 
@@ -43,7 +47,11 @@ let templateArticle;
 
 const clone = (value) => JSON.parse(JSON.stringify(value));
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/departments', () => ({
+  departmentsAPI: hoisted.departmentsAPIMock,
+}));
+
+vi.mock('../api/kb', () => ({
   kbAPI: hoisted.kbAPIMock,
 }));
 
@@ -151,6 +159,7 @@ describe('KnowledgeBase', () => {
 
     mockHasPermission.mockImplementation((permission) => permission === 'kb.read');
 
+    departmentsAPIMock.list.mockResolvedValue({ items: [] });
     kbAPIMock.getCategories.mockResolvedValue([
       { id: 'hr', title: 'HR', total_articles: 2, published_articles: 2 },
     ]);

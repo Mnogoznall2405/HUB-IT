@@ -1,18 +1,20 @@
+# Install with constraints for reproducible backend environments:
+#   python -m pip install -r requirements.txt -c constraints.txt
 fastapi
 uvicorn[standard]
 pyodbc
 python-jose
 pydantic[email]
-python-dotenv
+python-dotenv>=1.2.2
 python-docx
 docx2pdf
 openpyxl
 openai
-pypdf
+pypdf>=6.10.2
 reportlab
-PyMuPDF
+PyMuPDF>=1.26.7
 pysnmp
-cryptography
+cryptography>=46.0.7
 exchangelib
 sqlalchemy
 alembic

@@ -12,6 +12,14 @@ import os
 from backend.database.connection import get_db
 
 
+def _quote_sqlserver_identifier(identifier: Any) -> str:
+    """Bracket-quote a SQL Server identifier; values must still use parameters."""
+    normalized = str(identifier or "").strip()
+    if not normalized or any(char in normalized for char in "\x00\r\n"):
+        raise ValueError("Invalid SQL Server identifier")
+    return f"[{normalized.replace(']', ']]')}]"
+
+
 # SQL Queries
 QUERY_SEARCH_BY_SERIAL = """
     SELECT
@@ -588,16 +596,19 @@ def _resolve_doc_type_names(type_nos: List[Any], db_id: Optional[str] = None) ->
     ) -> dict[int, str]:
         if not table_name or not type_column or not name_column:
             return {}
-        safe_table_name = table_name.replace("]", "]]")
-        safe_type_column = type_column.replace("]", "]]")
-        safe_name_column = name_column.replace("]", "]]")
+        try:
+            safe_table_name = _quote_sqlserver_identifier(table_name)
+            safe_type_column = _quote_sqlserver_identifier(type_column)
+            safe_name_column = _quote_sqlserver_identifier(name_column)
+        except ValueError:
+            return {}
         placeholders = ", ".join(["?"] * len(normalized_type_nos))
         query = f"""
             SELECT
-                t.[{safe_type_column}] AS type_no,
-                t.[{safe_name_column}] AS type_name
-            FROM [{safe_table_name}] t
-            WHERE t.[{safe_type_column}] IN ({placeholders})
+                t.{safe_type_column} AS type_no,
+                t.{safe_name_column} AS type_name
+            FROM {safe_table_name} t
+            WHERE t.{safe_type_column} IN ({placeholders})
         """
         try:
             rows = db.execute_query(query, tuple(sorted(normalized_type_nos)))
@@ -1916,6 +1927,16 @@ def get_equipment_act_file(
 
         db = get_db(db_id)
         names = {str(c.get("column_name") or "").upper(): str(c.get("column_name") or "") for c in columns}
+        try:
+            safe_table_name = _quote_sqlserver_identifier(table_name)
+        except ValueError:
+            return None
+        safe_names = {}
+        for key, value in names.items():
+            try:
+                safe_names[key] = _quote_sqlserver_identifier(value)
+            except ValueError:
+                continue
         file_name_col = names.get("FILE_NAME")
         file_descr_col = names.get("FILE_DESCR")
 
@@ -1924,34 +1945,34 @@ def get_equipment_act_file(
 
         # Pass 0 (FILES-specific): strict lookup by DOC token in ITEM_ID.
         # In production snapshots act files are stored as FILES.ITEM_ID = DOC_NO.
-        if table_upper == "FILES" and "ITEM_ID" in names and doc_tokens_int:
+        if table_upper == "FILES" and "ITEM_ID" in safe_names and doc_tokens_int:
             try:
                 exact_doc_ids = list(dict.fromkeys(doc_tokens_int))
                 cond_item = ""
                 params_item: List[Any] = []
                 if len(exact_doc_ids) == 1:
-                    cond_item = f"[{names['ITEM_ID']}] = ?"
+                    cond_item = f"{safe_names['ITEM_ID']} = ?"
                     params_item.append(exact_doc_ids[0])
                 else:
                     placeholders = ", ".join(["?"] * len(exact_doc_ids))
-                    cond_item = f"[{names['ITEM_ID']}] IN ({placeholders})"
+                    cond_item = f"{safe_names['ITEM_ID']} IN ({placeholders})"
                     params_item.extend(exact_doc_ids)
 
                 conds = [cond_item]
-                if "CI_TYPE" in names:
+                if "CI_TYPE" in safe_names:
                     # Prefer documents bucket to avoid collisions with equipment attachments.
-                    conds.append(f"[{names['CI_TYPE']}] = 10")
+                    conds.append(f"{safe_names['CI_TYPE']} = 10")
                 where_exact = " AND ".join(conds)
 
                 order_cols: List[str] = []
-                if "CREATE_DATE" in names:
-                    order_cols.append(f"[{names['CREATE_DATE']}] DESC")
-                if "FILE_NO" in names:
-                    order_cols.append(f"[{names['FILE_NO']}] DESC")
+                if "CREATE_DATE" in safe_names:
+                    order_cols.append(f"{safe_names['CREATE_DATE']} DESC")
+                if "FILE_NO" in safe_names:
+                    order_cols.append(f"{safe_names['FILE_NO']} DESC")
                 order_clause = f" ORDER BY {', '.join(order_cols)}" if order_cols else ""
 
                 rows = db.execute_query(
-                    f"SELECT TOP 50 * FROM {table_name} WHERE {where_exact}{order_clause}",
+                    f"SELECT TOP 50 * FROM {safe_table_name} WHERE {where_exact}{order_clause}",
                     tuple(params_item),
                 )
             except Exception:
@@ -1965,25 +1986,26 @@ def get_equipment_act_file(
                 for token in doc_tokens_text:
                     if not token:
                         continue
-                    if file_name_col:
-                        conds.append(f"[{file_name_col}] LIKE ?")
+                    if file_name_col and "FILE_NAME" in safe_names:
+                        conds.append(f"{safe_names['FILE_NAME']} LIKE ?")
                         ps.append(f"%{token}%")
-                    if file_descr_col:
-                        conds.append(f"[{file_descr_col}] LIKE ?")
+                    if file_descr_col and "FILE_DESCR" in safe_names:
+                        conds.append(f"{safe_names['FILE_DESCR']} LIKE ?")
                         ps.append(f"%{token}%")
                 where_meta = f"({' OR '.join(conds)})"
                 # If possible, keep metadata search in DOC-related ITEM_ID subset only.
-                if "ITEM_ID" in names and doc_tokens_int:
+                if "ITEM_ID" in safe_names and doc_tokens_int:
                     exact_doc_ids = list(dict.fromkeys(doc_tokens_int))
                     if len(exact_doc_ids) == 1:
-                        where_meta += f" AND [{names['ITEM_ID']}] = ?"
+                        where_meta += f" AND {safe_names['ITEM_ID']} = ?"
                         ps.append(exact_doc_ids[0])
                     else:
                         placeholders = ", ".join(["?"] * len(exact_doc_ids))
-                        where_meta += f" AND [{names['ITEM_ID']}] IN ({placeholders})"
+                        where_meta += f" AND {safe_names['ITEM_ID']} IN ({placeholders})"
                         ps.extend(exact_doc_ids)
+                order_meta = f" ORDER BY {safe_names['CREATE_DATE']} DESC" if "CREATE_DATE" in safe_names else ""
                 rows = db.execute_query(
-                    f"SELECT TOP 50 * FROM {table_name} WHERE {where_meta} ORDER BY CREATE_DATE DESC",
+                    f"SELECT TOP 50 * FROM {safe_table_name} WHERE {where_meta}{order_meta}",
                     tuple(ps),
                 )
             except Exception:
@@ -2001,23 +2023,23 @@ def get_equipment_act_file(
                 if raw_id not in item_ids_for_lookup:
                     item_ids_for_lookup.append(raw_id)
 
-            if item_ids_for_lookup and "ITEM_ID" in names:
+            if item_ids_for_lookup and "ITEM_ID" in safe_names:
                 if len(item_ids_for_lookup) == 1:
-                    conditions.append(f"[{names['ITEM_ID']}] = ?")
+                    conditions.append(f"{safe_names['ITEM_ID']} = ?")
                     params.append(item_ids_for_lookup[0])
                 else:
                     placeholders = ", ".join(["?"] * len(item_ids_for_lookup))
-                    conditions.append(f"[{names['ITEM_ID']}] IN ({placeholders})")
+                    conditions.append(f"{safe_names['ITEM_ID']} IN ({placeholders})")
                     params.extend(item_ids_for_lookup)
-            if doc_no not in (None, "") and "DOC_NO" in names:
-                conditions.append(f"[{names['DOC_NO']}] = ?")
+            if doc_no not in (None, "") and "DOC_NO" in safe_names:
+                conditions.append(f"{safe_names['DOC_NO']} = ?")
                 params.append(doc_no)
 
             if not conditions:
                 return None
 
             where_clause = " AND ".join(conditions)
-            rows = db.execute_query(f"SELECT TOP 50 * FROM {table_name} WHERE {where_clause}", tuple(params))
+            rows = db.execute_query(f"SELECT TOP 50 * FROM {safe_table_name} WHERE {where_clause}", tuple(params))
 
         if not rows:
             return None
@@ -2397,26 +2419,42 @@ def inspect_equipment_act_storage(
             for col in columns
         }
         names = {str(col.get("column_name") or "").upper(): str(col.get("column_name") or "") for col in columns}
+        try:
+            safe_table_name = _quote_sqlserver_identifier(table_name)
+        except ValueError:
+            return {
+                "table": table_name,
+                "filter_supported": False,
+                "rows_found": 0,
+                "columns": column_list,
+                "rows": [],
+            }
+        safe_names = {}
+        for key, value in names.items():
+            try:
+                safe_names[key] = _quote_sqlserver_identifier(value)
+            except ValueError:
+                continue
 
         conditions: List[str] = []
         params: List[Any] = []
-        if candidate_item_ids and "ITEM_ID" in names:
+        if candidate_item_ids and "ITEM_ID" in safe_names:
             if len(candidate_item_ids) == 1:
-                conditions.append(f"[{names['ITEM_ID']}] = ?")
+                conditions.append(f"{safe_names['ITEM_ID']} = ?")
                 params.append(candidate_item_ids[0])
             else:
                 placeholders = ", ".join(["?"] * len(candidate_item_ids))
-                conditions.append(f"[{names['ITEM_ID']}] IN ({placeholders})")
+                conditions.append(f"{safe_names['ITEM_ID']} IN ({placeholders})")
                 params.extend(candidate_item_ids)
-        if doc_no not in (None, "") and "DOC_NO" in names:
-            conditions.append(f"[{names['DOC_NO']}] = ?")
+        if doc_no not in (None, "") and "DOC_NO" in safe_names:
+            conditions.append(f"{safe_names['DOC_NO']} = ?")
             params.append(doc_no)
 
         if not conditions:
             sample_rows = []
             try:
                 db = get_db(db_id)
-                rows = db.execute_query(f"SELECT TOP 3 * FROM {table_name}", ())
+                rows = db.execute_query(f"SELECT TOP 3 * FROM {safe_table_name}", ())
                 sample_rows = [_sample_row(row, column_types) for row in rows]
             except Exception:
                 sample_rows = []
@@ -2430,7 +2468,7 @@ def inspect_equipment_act_storage(
 
         where_clause = " AND ".join(conditions)
         db = get_db(db_id)
-        rows = db.execute_query(f"SELECT TOP 5 * FROM {table_name} WHERE {where_clause}", tuple(params))
+        rows = db.execute_query(f"SELECT TOP 5 * FROM {safe_table_name} WHERE {where_clause}", tuple(params))
 
         return {
             "table": table_name,

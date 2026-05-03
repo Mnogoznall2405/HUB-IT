@@ -26,15 +26,15 @@ import ImageRoundedIcon from '@mui/icons-material/ImageRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
 import TextFieldsRoundedIcon from '@mui/icons-material/TextFieldsRounded';
 import { AnimatePresence, motion } from 'framer-motion';
-import ReactQuill from 'react-quill';
-import 'react-quill/dist/quill.snow.css';
 import {
   buildMailUiTokens,
   getMailIconButtonSx,
   getMailMetaTextSx,
   getMailTextFieldSx,
 } from './mailUiTokens';
+import MailRichTextEditor from './MailRichTextEditor';
 import { buildComposeMailPreviewHtml } from './mailOutgoingPreview';
+import { sanitizeMailHtmlFragment } from './mailHtmlContent';
 import { hasQuotedHistoryMarkup } from './mailQuotedHistory';
 
 const renderRecipientOptionLabel = (option) => {
@@ -156,6 +156,10 @@ function ComposerContent({
       signatureHtml: composeSignatureHtml,
     }),
     [composeBody, composeSignatureHtml, quotedOriginalHtml],
+  );
+  const safeQuotedOriginalHtml = useMemo(
+    () => sanitizeMailHtmlFragment(quotedOriginalHtml),
+    [quotedOriginalHtml],
   );
   const attachmentCount = composeFiles.length + composeDraftAttachments.length;
   const attachmentSize = useMemo(
@@ -835,9 +839,8 @@ function ComposerContent({
               if (files.length > 0) onComposePasteFiles?.(files);
             }}
           >
-            <ReactQuill
+            <MailRichTextEditor
               ref={quillRef}
-              theme="snow"
               value={composeBody}
               onChange={onComposeBodyChange}
               onFocus={() => setEditorFocused(true)}
@@ -872,7 +875,7 @@ function ComposerContent({
             </Button>
           ) : null}
 
-          {quotedOriginalHtml && quoteExpanded ? (
+          {safeQuotedOriginalHtml && quoteExpanded ? (
             <Box
               data-testid="mail-compose-quoted-original"
               sx={{
@@ -897,7 +900,7 @@ function ComposerContent({
                   color: tokens.textSecondary,
                 },
               }}
-              dangerouslySetInnerHTML={{ __html: quotedOriginalHtml }}
+              dangerouslySetInnerHTML={{ __html: safeQuotedOriginalHtml }}
             />
           ) : null}
 

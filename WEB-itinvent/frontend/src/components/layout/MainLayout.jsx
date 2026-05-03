@@ -50,7 +50,8 @@ import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
-import apiClient, { chatAPI, databaseAPI, mailAPI } from '../../api/client';
+import apiClient, { chatAPI, mailAPI } from '../../api/client';
+import { databaseAPI } from '../../api/database';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { buildOfficeUiTokens, getOfficeEmptyStateSx, getOfficePanelSx, getOfficeQuietActionSx } from '../../theme/officeUiTokens';
 import ToastHistoryList from './ToastHistoryList';
@@ -816,7 +817,7 @@ useEffect(() => {
 
     const currentId = normalizeDbId(currentDb?.id);
     const storedId = normalizeDbId(localStorage.getItem('selected_database'));
-    const preferredId = storedId || currentId;
+    const preferredId = currentId || storedId;
 
     const selectedDb =
       databases.find((db) => normalizeDbId(db.id) === preferredId) ||
@@ -1369,7 +1370,7 @@ useEffect(() => {
 
     if (selectedDb && newDbId !== normalizeDbId(currentDb?.id)) {
       try {
-        await apiClient.post('/database/switch', { database_id: newDbId });
+        await databaseAPI.switchDatabase(newDbId);
         const selectedId = normalizeDbId(selectedDb.id);
         setCurrentDb({ id: selectedId, name: selectedDb.name });
         localStorage.setItem('selected_database', selectedId);

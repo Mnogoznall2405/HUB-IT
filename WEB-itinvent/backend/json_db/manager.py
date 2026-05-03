@@ -11,9 +11,30 @@ from typing import Any
 
 from backend.appdb.db import is_app_database_configured
 from backend.appdb.json_store import AppJsonDataStore
+from backend.config import config
 from local_store import get_local_store
 
 logger = logging.getLogger(__name__)
+
+
+_PRODUCTION_JSON_STORAGE_ERROR = (
+    "Production APP_ENV requires APP_DATABASE_URL for JSON runtime storage; "
+    "migrate legacy JSON datasets with scripts/migrate_json_store_sqlite_to_postgres.py. "
+    "The legacy SQLite JSON store is supported only in development/test."
+)
+
+
+class JsonStorageConfigurationError(RuntimeError):
+    """Raised when JSON runtime storage would use an unsafe backend."""
+
+
+def validate_json_runtime_storage(database_url: str | None = None) -> None:
+    """Validate that JSON runtime storage will not use legacy SQLite in production."""
+    explicit_database_url = str(database_url or "").strip()
+    if explicit_database_url or is_app_database_configured():
+        return
+    if config.app.is_production:
+        raise JsonStorageConfigurationError(_PRODUCTION_JSON_STORAGE_ERROR)
 
 
 class JSONDataManager:
@@ -22,9 +43,11 @@ class JSONDataManager:
             backend_dir = Path(__file__).parent.parent
             data_dir = backend_dir.parent.parent / "data"
         self.data_dir = Path(data_dir)
-        self.data_dir.mkdir(parents=True, exist_ok=True)
         self._database_url = str(database_url or "").strip() or None
         self._use_app_database = bool(self._database_url) or is_app_database_configured()
+        if not self._use_app_database and config.app.is_production:
+            validate_json_runtime_storage(self._database_url)
+        self.data_dir.mkdir(parents=True, exist_ok=True)
         self.store = None if self._use_app_database else get_local_store(data_dir=self.data_dir)
         self._app_store = AppJsonDataStore(database_url=self._database_url) if self._use_app_database else None
         if self._use_app_database:

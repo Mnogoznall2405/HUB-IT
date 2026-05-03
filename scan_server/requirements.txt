@@ -1,8 +1,10 @@
+# Install with constraints for reproducible scan server environments:
+#   python -m pip install -r scan_server/requirements.txt -c scan_server/constraints.txt
 fastapi
 uvicorn[standard]
 pydantic
-PyMuPDF
+PyMuPDF>=1.26.7
 PyYAML
 pytesseract
-Pillow
-python-multipart
+Pillow>=12.2.0
+python-multipart>=0.0.26

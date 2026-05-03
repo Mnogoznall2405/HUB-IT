@@ -11,8 +11,6 @@
 } from '@mui/material';
 import { useMemo } from 'react';
 import { useTheme } from '@mui/material/styles';
-import ReactQuill from 'react-quill';
-import 'react-quill/dist/quill.snow.css';
 import {
   buildMailUiTokens,
   getMailDialogActionsSx,
@@ -21,6 +19,7 @@ import {
   getMailDialogTitleSx,
   getMailMetaTextSx,
 } from './mailUiTokens';
+import MailRichTextEditor from './MailRichTextEditor';
 import { buildSignaturePreviewHtml } from './mailOutgoingPreview';
 
 export default function MailSignatureDialog({
@@ -71,8 +70,7 @@ export default function MailSignatureDialog({
               '& .ql-editor': { minHeight: '220px' },
             }}
           >
-            <ReactQuill
-              theme="snow"
+            <MailRichTextEditor
               value={signatureHtml}
               onChange={onSignatureChange}
               style={{ flex: 1, display: 'flex', flexDirection: 'column' }}

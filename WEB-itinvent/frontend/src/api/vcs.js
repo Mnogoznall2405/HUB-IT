@@ -1,4 +1,11 @@
-import apiClient from './client';
+import apiClient, { API_V1_BASE } from './client';
+
+const getAbsoluteApiBase = () => {
+    if (typeof window === 'undefined') {
+        return API_V1_BASE;
+    }
+    return new URL(API_V1_BASE, window.location.origin).toString().replace(/\/$/, '');
+};
 
 export const vcsAPI = {
     getComputers: async () => {
@@ -31,6 +38,17 @@ export const vcsAPI = {
         return response.data;
     },
 
+    createLaunchToken: async (computerId) => {
+        const response = await apiClient.post(`/vcs/computers/${computerId}/launch-token`);
+        return response.data;
+    },
+
+    getAbsoluteApiBase,
+
+    getLaunchFileUrl: (token) => {
+        return `${getAbsoluteApiBase()}/vcs/launch/${encodeURIComponent(token)}.vnc`;
+    },
+
     getInfo: async () => {
         const response = await apiClient.get('/vcs/info');
         return response.data;
@@ -41,59 +59,14 @@ export const vcsAPI = {
         return response.data;
     },
 
-    // Helper method to download fallback .vnc file
-    downloadVncFile: (ipAddress, name, globalPasswordHex = '') => {
-        const endpoint = String(ipAddress || '').trim();
-        let host = endpoint;
-        let port = '5900';
-        const hostPortMatch = endpoint.match(/^(.*):(\d+)$/);
-        if (hostPortMatch) {
-            host = hostPortMatch[1];
-            port = hostPortMatch[2];
-        }
-
-        const normalizedHex = String(globalPasswordHex || '').trim().toLowerCase();
-        const lines = [
-            '[connection]',
-            'host=' + host,
-            'port=' + port,
-        ];
-        if (/^[0-9a-f]{16}$/.test(normalizedHex)) {
-            lines.push('password=' + normalizedHex);
-        }
-        lines.push(
-            '',
-            '[options]',
-            'use_encoding_1=1',
-            'copyrect=1',
-            'viewonly=0',
-            'fullscreen=0',
-            '8bit=0',
-            'shared=1',
-            'belldeiconify=0',
-            'disableclipboard=0',
-            'swapmouse=0',
-            'fitwindow=1',
-            'cursorshape=1',
-            'noremotecursor=0',
-            'preferred_encoding=7',
-            'compresslevel=-1',
-            'quality=6',
-            'localcursor=1',
-            'scale_den=1',
-            'scale_num=1',
-            'local_cursor_shape=1'
-        );
-        const content = lines.join('\r\n') + '\r\n';
-        const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-        const url = URL.createObjectURL(blob);
+    downloadVncLaunchFile: (token, name) => {
+        const url = vcsAPI.getLaunchFileUrl(token);
         const link = document.createElement('a');
         link.href = url;
-        link.setAttribute('download', (name || host) + '.vnc');
+        link.setAttribute('download', (name || 'vnc') + '.vnc');
         document.body.appendChild(link);
         link.click();
         document.body.removeChild(link);
-        URL.revokeObjectURL(url);
     },
 
     // Downloads a single .bat installer that:
@@ -117,52 +90,31 @@ export const vcsAPI = {
             '$qm = [regex]::Match($uri, \'\\?(.*)$\')',
             'if ($qm.Success) { $query = $qm.Groups[1].Value }',
             '',
-            '$passwordHex = \'\'',
-            '$hm = [regex]::Match($query, \'(?:^|&)password_hex=([^&]+)\')',
-            'if ($hm.Success) { $passwordHex = [System.Uri]::UnescapeDataString($hm.Groups[1].Value).Trim().ToLower() }',
+            '$launchToken = \'\'',
+            '$tm = [regex]::Match($query, \'(?:^|&)launch_token=([^&]+)\')',
+            'if ($tm.Success) { $launchToken = [System.Uri]::UnescapeDataString($tm.Groups[1].Value).Trim() }',
             '',
-            '$password = \'\'',
-            '$pm = [regex]::Match($query, \'(?:^|&)password=([^&]+)\')',
-            'if ($pm.Success) { $password = [System.Uri]::UnescapeDataString($pm.Groups[1].Value) }',
+            '$apiBase = \'\'',
+            '$am = [regex]::Match($query, \'(?:^|&)api_base=([^&]+)\')',
+            'if ($am.Success) { $apiBase = [System.Uri]::UnescapeDataString($am.Groups[1].Value).Trim() }',
             '',
             '$viewer = \'C:\\Program Files\\TightVNC\\tvnviewer.exe\'',
             'if (-not (Test-Path $viewer)) { $viewer = \'C:\\Program Files (x86)\\TightVNC\\tvnviewer.exe\' }',
             'if (-not (Test-Path $viewer)) { Add-Content $logPath "No viewer found"; exit }',
             '',
-            'if ($passwordHex -match \'^[0-9a-f]{16}$\') {',
-            '    $h = $endpoint; $p = \'5900\'',
-            '    if ($endpoint -match \'^(.+):(\\d+)$\') { $h = $Matches[1]; $p = $Matches[2] }',
+            'if ($launchToken -and $apiBase) {',
             '    $tmp = Join-Path $env:TEMP (\'vnc_\' + [guid]::NewGuid().ToString() + \'.vnc\')',
-            '    $lines = @(',
-            '        "[connection]",',
-            '        "host=$h",',
-            '        "port=$p",',
-            '        "password=$passwordHex",',
-            '        "",',
-            '        "[options]",',
-            '        "use_encoding_1=1",',
-            '        "copyrect=1",',
-            '        "viewonly=0",',
-            '        "fullscreen=0",',
-            '        "8bit=0",',
-            '        "shared=1",',
-            '        "belldeiconify=0",',
-            '        "disableclipboard=0",',
-            '        "swapmouse=0",',
-            '        "fitwindow=1",',
-            '        "cursorshape=1",',
-            '        "noremotecursor=0",',
-            '        "preferred_encoding=7",',
-            '        "compresslevel=-1",',
-            '        "quality=6",',
-            '        "localcursor=1",',
-            '        "scale_den=1",',
-            '        "scale_num=1",',
-            '        "local_cursor_shape=1"',
-            '    )',
-            '    Set-Content -Path $tmp -Value $lines -Encoding Ascii',
-            '    Add-Content $logPath ("LAUNCHING AUTOLOGIN: " + $tmp)',
-            '    Start-Process -FilePath $viewer -ArgumentList "-optionsfile=`"$tmp`""',
+            '    $launchUrl = $apiBase.TrimEnd(\'/\') + \'/vcs/launch/\' + [System.Uri]::EscapeDataString($launchToken) + \'.vnc\'',
+            '    try {',
+            '        Add-Content $logPath ("FETCHING LAUNCH FILE: " + $launchUrl)',
+            '        Invoke-WebRequest -UseBasicParsing -Uri $launchUrl -OutFile $tmp',
+            '        Add-Content $logPath ("LAUNCHING TOKEN FILE: " + $tmp)',
+            '        Start-Process -FilePath $viewer -ArgumentList "-optionsfile=`"$tmp`""',
+            '    } catch {',
+            '        Add-Content $logPath ("LAUNCH TOKEN FAILED: " + $_.Exception.Message)',
+            '        if (Test-Path $tmp) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }',
+            '        exit',
+            '    }',
             '    for ($i = 0; $i -lt 30; $i++) {',
             '        Start-Sleep -Milliseconds 500',
             '        try {',
@@ -172,9 +124,6 @@ export const vcsAPI = {
             '        } catch { }',
             '    }',
             '    if (Test-Path $tmp) { Add-Content $logPath ("CLEANUP SKIPPED: " + $tmp) }',
-            '} elseif ($password) {',
-            '    Add-Content $logPath ("LAUNCHING DIRECT: " + $endpoint + " with password")',
-            '    Start-Process $viewer @($endpoint, \'-password\', $password)',
             '} else {',
             '    Add-Content $logPath ("LAUNCHING RAW: " + $endpoint)',
             '    Start-Process $viewer $endpoint',

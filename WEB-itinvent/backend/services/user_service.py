@@ -36,6 +36,10 @@ _UNSET = object()
 SYSTEM_BOT_USERNAME_PREFIX = "__ai_bot__"
 
 
+class UserBootstrapConfigurationError(RuntimeError):
+    """Raised when production user storage is empty and needs explicit bootstrap."""
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -468,10 +472,19 @@ class UserService:
         try:
             users = self._load_users()
         except Exception as exc:
+            if config.app.is_production:
+                raise UserBootstrapConfigurationError(
+                    "Web user store cannot be loaded in production; verify APP_DATABASE_URL or bootstrap storage"
+                ) from exc
             logging.getLogger(__name__).warning("Skipping user defaults bootstrap: %s", exc)
             return
         if users:
             return
+
+        if config.app.is_production:
+            raise UserBootstrapConfigurationError(
+                "Web user store is empty in production; create an administrator before starting the backend"
+            )
 
         now = _utc_now_iso()
         defaults = [

@@ -60,8 +60,39 @@ import MailShortcutHelpDialog from '../components/mail/MailShortcutHelpDialog';
 import MailToolbar from '../components/mail/MailToolbar';
 import MailToolsMenu from '../components/mail/MailToolsMenu';
 import MailViewSettingsDialog from '../components/mail/MailViewSettingsDialog';
+import MailComposeHost, { loadMailComposeDialog } from '../components/mail/MailComposeHost';
+import {
+  getMailErrorCode as resolveMailErrorCode,
+  getMailErrorDetail as resolveMailErrorDetail,
+  getMailErrorDetailAsync as resolveMailErrorDetailAsync,
+  isMissingMailDetailError as resolveIsMissingMailDetailError,
+  isTransientMailRequestError as resolveIsTransientMailRequestError,
+} from '../components/mail/mailErrorModel';
 import { buildRenderedMailHtml, filterVisibleMailAttachments } from '../components/mail/mailHtmlContent';
+import {
+  buildMailMobileHistoryState,
+  getMailMobileHistoryKey as createMailMobileHistoryKey,
+  readMailMobileHistoryState as parseMailMobileHistoryState,
+} from '../components/mail/mailMobileHistory';
+import {
+  buildMailBootstrapCacheKey,
+  buildMailConversationDetailCacheKey,
+  buildMailFolderSummaryCacheKey,
+  buildMailFolderTreeCacheKey,
+  buildMailListCacheKey,
+  buildMailListState,
+  buildMailMessageDetailCacheKey,
+  createEmptyListData,
+  isListItemSame,
+  normalizeMailListResponse,
+} from '../components/mail/mailListModel';
 import { normalizeComposeSubject } from '../components/mail/mailComposeSubject';
+import {
+  createComposeInitialState,
+  normalizeMailRecipient,
+  readStoredComposeState,
+  toRecipientEmails,
+} from '../components/mail/mailComposeState';
 import {
   buildMailUiTokens,
   getMailDialogActionsSx,
@@ -71,10 +102,8 @@ import {
   getMailUiFontScopeSx,
 } from '../components/mail/mailUiTokens';
 import { formatMailPersonWithEmail, getMailPersonDisplay, getMailPersonEmail } from '../components/mail/mailPeople';
-import { mergeQuotedHistoryHtml, splitQuotedHistoryHtml } from '../components/mail/mailQuotedHistory';
+import { splitQuotedHistoryHtml } from '../components/mail/mailQuotedHistory';
 
-const loadMailComposeDialog = () => import('../components/mail/MailComposeDialog');
-const MailComposeDialog = lazy(loadMailComposeDialog);
 const MailAttachmentPreviewDialog = lazy(() => import('../components/mail/MailAttachmentPreviewDialog'));
 const MailAdvancedSearchDialog = lazy(() => import('../components/mail/MailAdvancedSearchDialog'));
 const MailHeadersDialog = lazy(() => import('../components/mail/MailHeadersDialog'));
@@ -215,11 +244,6 @@ const getMailRenderedContentSx = ({ ui, theme, variant = 'message', mine = false
     },
   };
 };
-const MAIL_MOBILE_HISTORY_FLAG = '__hubMailMobileShell';
-const MAIL_MOBILE_HISTORY_VIEW_KEY = '__hubMailMobileShellView';
-const MAIL_MOBILE_HISTORY_DRAWER_KEY = '__hubMailMobileShellDrawer';
-const MAIL_MOBILE_HISTORY_MESSAGE_KEY = '__hubMailMobileShellMessageId';
-const MAIL_MOBILE_HISTORY_MODE_KEY = '__hubMailMobileShellMode';
 const MAX_PREVIEW_FILE_BYTES = 25 * 1024 * 1024;
 const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
 const COMPOSE_DRAFT_STORAGE_KEY = 'mail_compose_draft_v2';
@@ -285,19 +309,6 @@ const shouldBlockMailEdgeGestureTarget = (target, { blockTableScroll = false } =
   if (blockTableScroll && isElementMatchingSelector(target, '[data-mail-table-scroll="true"]')) return true;
   return false;
 };
-
-const createEmptyListData = () => ({
-  items: [],
-  total: 0,
-  offset: 0,
-  limit: 50,
-  has_more: false,
-  next_offset: null,
-  append_offset: null,
-  loaded_pages: 0,
-  search_limited: false,
-  searched_window: 0,
-});
 
 const createSelectedMessagePreviewShell = (item, folder = 'inbox') => {
   if (!item || typeof item !== 'object') return null;
@@ -537,172 +548,11 @@ const readStoredMailListViewState = () => {
   }
 };
 
-const buildMailBootstrapCacheKey = ({ scope, limit = MAIL_BOOTSTRAP_LIMIT }) => ['mail', scope, 'bootstrap', Number(limit || MAIL_BOOTSTRAP_LIMIT)];
-const buildMailFolderSummaryCacheKey = ({ scope }) => ['mail', scope, 'folder-summary'];
-const buildMailFolderTreeCacheKey = ({ scope }) => ['mail', scope, 'folder-tree'];
-
-const buildMailListCacheKey = ({
-  scope,
-  folder,
-  viewMode,
-  q,
-  unreadOnly,
-  hasAttachmentsOnly,
-  dateFrom,
-  dateTo,
-  folderScope,
-  fromFilter,
-  toFilter,
-  subjectFilter,
-  bodyFilter,
-  importance,
-  limit,
-  offset,
-}) => [
-  'mail',
-  scope,
-  'list',
-  normalizeMailViewMode(viewMode),
-  String(folder || 'inbox').trim().toLowerCase() || 'inbox',
-  String(q || ''),
-  unreadOnly ? 1 : 0,
-  hasAttachmentsOnly ? 1 : 0,
-  String(dateFrom || ''),
-  String(dateTo || ''),
-  String(folderScope || 'current'),
-  String(fromFilter || ''),
-  String(toFilter || ''),
-  String(subjectFilter || ''),
-  String(bodyFilter || ''),
-  String(importance || ''),
-  Number(limit || 50),
-  Number(offset || 0),
-];
-
-const buildMailMessageDetailCacheKey = ({ scope, messageId }) => [
-  'mail',
-  scope,
-  'message-detail',
-  String(messageId || ''),
-];
-
-const buildMailConversationDetailCacheKey = ({ scope, conversationId, folder, folderScope }) => [
-  'mail',
-  scope,
-  'conversation-detail',
-  String(conversationId || ''),
-  String(folder || 'inbox').trim().toLowerCase() || 'inbox',
-  String(folderScope || 'current'),
-];
-
-const normalizeMailListResponse = (payload = {}, fallbackItems = []) => ({
-  items: Array.isArray(payload?.items) ? payload.items : fallbackItems,
-  total: Number(payload?.total || fallbackItems.length || 0),
-  offset: Number(payload?.offset || 0),
-  limit: Number(payload?.limit || 50),
-  has_more: Boolean(payload?.has_more),
-  next_offset: payload?.next_offset ?? null,
-  append_offset: payload?.append_offset ?? payload?.next_offset ?? null,
-  loaded_pages: Math.max(
-    0,
-    Number(
-      payload?.loaded_pages
-      || ((Array.isArray(payload?.items) ? payload.items.length : fallbackItems.length) > 0 ? 1 : 0)
-    )
-  ),
-  search_limited: Boolean(payload?.search_limited),
-  searched_window: Number(payload?.searched_window || 0),
-});
-
-const getMailListItemKey = (item, viewMode = 'messages') => String(
-  viewMode === 'conversations'
-    ? (item?.conversation_id || item?.id || '')
-    : (item?.id || '')
-).trim();
-
-const dedupeMailListItems = (items = [], viewMode = 'messages') => {
-  const result = [];
-  const seen = new Set();
-  (Array.isArray(items) ? items : []).forEach((item) => {
-    const key = getMailListItemKey(item, viewMode);
-    if (!key) {
-      result.push(item);
-      return;
-    }
-    if (seen.has(key)) return;
-    seen.add(key);
-    result.push(item);
-  });
-  return result;
-};
-
 const isExpandedMailListData = (value) => {
   const source = value && typeof value === 'object' ? value : {};
   const itemsCount = Array.isArray(source.items) ? source.items.length : 0;
   const limit = Math.max(1, Number(source.limit || 50));
   return Number(source.loaded_pages || 0) > 1 || itemsCount > limit;
-};
-
-const buildMailListState = ({
-  previousListData,
-  nextListData,
-  updateMode = 'replace',
-  selectionMode = 'messages',
-} = {}) => {
-  const previous = normalizeMailListResponse(
-    previousListData,
-    Array.isArray(previousListData?.items) ? previousListData.items : []
-  );
-  const incoming = normalizeMailListResponse(
-    nextListData,
-    Array.isArray(nextListData?.items) ? nextListData.items : []
-  );
-  const limit = Math.max(1, Number(incoming.limit || previous.limit || 50));
-
-  if (updateMode === 'append') {
-    const items = dedupeMailListItems([...(previous.items || []), ...(incoming.items || [])], selectionMode);
-    const total = Math.max(Number(incoming.total || previous.total || items.length), items.length);
-    const loadedPages = Math.max(
-      Number(previous.loaded_pages || 0) + 1,
-      items.length > 0 ? Math.ceil(items.length / limit) : 0
-    );
-    const nextAppendOffset = incoming.append_offset ?? incoming.next_offset ?? previous.append_offset ?? previous.next_offset ?? null;
-    const hasMore = total > items.length && nextAppendOffset !== null;
-    return normalizeMailListResponse({
-      ...incoming,
-      items,
-      total,
-      offset: 0,
-      has_more: hasMore,
-      next_offset: incoming.next_offset ?? null,
-      append_offset: hasMore ? nextAppendOffset : null,
-      loaded_pages: loadedPages,
-    }, items);
-  }
-
-  if (updateMode === 'head-merge') {
-    const total = Math.max(0, Number(incoming.total || previous.total || 0));
-    const mergedItems = dedupeMailListItems([...(incoming.items || []), ...(previous.items || [])], selectionMode);
-    const items = total > 0 && mergedItems.length > total ? mergedItems.slice(0, total) : mergedItems;
-    const loadedPages = Math.max(
-      Number(previous.loaded_pages || 0),
-      items.length > 0 ? Math.ceil(items.length / limit) : 0
-    );
-    const nextAppendOffset = previous.append_offset ?? previous.next_offset ?? incoming.append_offset ?? incoming.next_offset ?? null;
-    const hasMore = Math.max(total, items.length) > items.length && nextAppendOffset !== null;
-    return normalizeMailListResponse({
-      ...incoming,
-      items,
-      total: Math.max(total, items.length),
-      offset: 0,
-      has_more: hasMore,
-      next_offset: incoming.next_offset ?? null,
-      append_offset: hasMore ? nextAppendOffset : null,
-      loaded_pages: loadedPages,
-    }, items);
-  }
-
-  return normalizeMailListResponse(nextListData, Array.isArray(nextListData?.items) ? nextListData.items : []);
 };
 
 const TEMPLATE_FIELD_TYPES = [
@@ -845,21 +695,6 @@ const buildAttachmentContextError = ({ attachment, messageId, mailboxId }) => {
   return error;
 };
 
-const readBlobAsText = (blob) => new Promise((resolve, reject) => {
-  if (!blob || typeof FileReader === 'undefined') {
-    resolve('');
-    return;
-  }
-  try {
-    const reader = new FileReader();
-    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
-    reader.onerror = () => reject(reader.error || new Error('Failed to read blob payload.'));
-    reader.readAsText(blob);
-  } catch (error) {
-    reject(error);
-  }
-});
-
 const getInitials = (email) => {
   const source = String(email || '');
   if (!source) return '?';
@@ -877,22 +712,6 @@ const getAvatarColor = (email) => {
   return colors[Math.abs(hash) % colors.length];
 };
 
-const normalizeRecipient = (value) => {
-  const text = String(value || '').trim();
-  if (!text) return '';
-  const match = text.match(/<([^>]+)>/);
-  return String(match?.[1] || text).trim();
-};
-
-const toRecipientEmails = (values) => (
-  Array.isArray(values)
-    ? values
-      .map((item) => (typeof item === 'string' ? item : item?.email || item?.name || ''))
-      .map(normalizeRecipient)
-      .filter(Boolean)
-    : []
-);
-
 const buildSenderPerson = (value) => (
   value?.sender_person || {
     display: value?.sender_display,
@@ -907,10 +726,8 @@ const getSenderDisplay = (value, fallback = '-') => (
 
 const getSenderEmail = (value) => (
   getMailPersonEmail(buildSenderPerson(value))
-  || normalizeRecipient(value?.sender || '')
+  || normalizeMailRecipient(value?.sender || '')
 );
-
-const isValidEmail = (value) => /^[^\s@]+@[^\s@]+$/.test(String(value || '').trim());
 
 const normalizeTemplateFieldKey = (value) => String(value || '')
   .trim()
@@ -938,623 +755,6 @@ const makeTemplateField = (index = 0) => ({
   default_value: '',
   options: [],
 });
-
-const isListItemSame = (left, right, mode) => {
-  if (mode === 'conversations') {
-    return (
-      String(left?.conversation_id || left?.id || '') === String(right?.conversation_id || right?.id || '')
-      && Number(left?.unread_count || 0) === Number(right?.unread_count || 0)
-      && Number(left?.messages_count || 0) === Number(right?.messages_count || 0)
-      && String(left?.last_received_at || '') === String(right?.last_received_at || '')
-      && Boolean(left?.has_attachments) === Boolean(right?.has_attachments)
-      && String(left?.preview || '') === String(right?.preview || '')
-    );
-  }
-  return (
-    String(left?.id || '') === String(right?.id || '')
-    && Boolean(left?.is_read) === Boolean(right?.is_read)
-    && String(left?.received_at || '') === String(right?.received_at || '')
-    && Boolean(left?.has_attachments) === Boolean(right?.has_attachments)
-    && String(left?.subject || '') === String(right?.subject || '')
-    && String(left?.body_preview || '') === String(right?.body_preview || '')
-  );
-};
-
-const getComposeDialogTitle = (composeMode = 'new') => {
-  if (composeMode === 'reply') return 'Ответ';
-  if (composeMode === 'reply_all') return 'Ответ всем';
-  if (composeMode === 'forward') return 'Пересылка';
-  if (composeMode === 'draft') return 'Черновик';
-  return 'Новое письмо';
-};
-
-const createComposeInitialState = (overrides = {}) => ({
-  composeMode: String(overrides.composeMode || 'new'),
-  composeFromMailboxId: String(overrides.composeFromMailboxId || ''),
-  composeToValues: toRecipientEmails(overrides.composeToValues ?? overrides.to ?? []),
-  composeCcValues: toRecipientEmails(overrides.composeCcValues ?? overrides.cc ?? []),
-  composeBccValues: toRecipientEmails(overrides.composeBccValues ?? overrides.bcc ?? []),
-  composeSubject: String(overrides.composeSubject ?? overrides.subject ?? ''),
-  composeBody: String(overrides.composeBody ?? overrides.body ?? ''),
-  composeQuotedOriginalHtml: String(overrides.composeQuotedOriginalHtml ?? overrides.quotedOriginalHtml ?? ''),
-  composeFiles: Array.isArray(overrides.composeFiles) ? [...overrides.composeFiles] : [],
-  composeDraftAttachments: Array.isArray(overrides.composeDraftAttachments ?? overrides.draftAttachments)
-    ? [...(overrides.composeDraftAttachments ?? overrides.draftAttachments)]
-    : [],
-  composeFieldErrors: { ...(overrides.composeFieldErrors || {}) },
-  composeError: String(overrides.composeError || ''),
-  composeSending: Boolean(overrides.composeSending),
-  composeDraftId: String(overrides.composeDraftId ?? overrides.draftId ?? ''),
-  composeReplyToMessageId: String(overrides.composeReplyToMessageId ?? overrides.replyToMessageId ?? ''),
-  composeForwardMessageId: String(overrides.composeForwardMessageId ?? overrides.forwardMessageId ?? ''),
-  composeUploadProgress: Number(overrides.composeUploadProgress || 0),
-  composeDragActive: Boolean(overrides.composeDragActive),
-  draftSyncState: String(overrides.draftSyncState || 'idle'),
-  draftSavedAt: String(overrides.draftSavedAt || ''),
-  dismissedComposeWarnings: Array.isArray(overrides.dismissedComposeWarnings)
-    ? overrides.dismissedComposeWarnings.map((value) => String(value || '')).filter(Boolean)
-    : [],
-});
-
-const getComposeCombinedBody = (state) => mergeQuotedHistoryHtml(
-  state?.composeBody || '',
-  state?.composeQuotedOriginalHtml || '',
-);
-
-const composeStateHasContent = (state) => Boolean(
-  toRecipientEmails(state?.composeToValues).length
-  || toRecipientEmails(state?.composeCcValues).length
-  || toRecipientEmails(state?.composeBccValues).length
-  || String(state?.composeSubject || '').trim()
-  || String(getComposeCombinedBody(state) || '').replace(/<[^>]*>/g, '').trim()
-  || Array.isArray(state?.composeFiles) && state.composeFiles.length > 0
-  || Array.isArray(state?.composeDraftAttachments) && state.composeDraftAttachments.length > 0
-);
-
-const readStoredComposeState = ({ composeDraftKey, resolveComposeMailboxId }) => {
-  if (typeof window === 'undefined') return null;
-  try {
-    const raw = window.localStorage.getItem(composeDraftKey);
-    if (!raw) return null;
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return null;
-    const quotedOriginalHtml = String(parsed.quoted_original_html || '');
-    const splitBody = quotedOriginalHtml && Object.prototype.hasOwnProperty.call(parsed, 'editor_body')
-      ? {
-          primaryHtml: String(parsed.editor_body || ''),
-          quotedHtml: quotedOriginalHtml,
-        }
-      : splitQuotedHistoryHtml(parsed.body || '');
-    return createComposeInitialState({
-      composeMode: String(parsed.compose_mode || 'draft'),
-      composeFromMailboxId: resolveComposeMailboxId(parsed.from_mailbox_id || ''),
-      to: parsed.to,
-      cc: parsed.cc,
-      bcc: parsed.bcc,
-      subject: String(parsed.subject || ''),
-      composeBody: String(splitBody?.primaryHtml || ''),
-      composeQuotedOriginalHtml: String(splitBody?.quotedHtml || ''),
-      draftAttachments: Array.isArray(parsed.draft_attachments) ? parsed.draft_attachments : [],
-      draftId: String(parsed.draft_id || ''),
-      replyToMessageId: String(parsed.reply_to_message_id || ''),
-      forwardMessageId: String(parsed.forward_message_id || ''),
-      draftSyncState: 'local_only',
-      draftSavedAt: String(parsed.saved_at || ''),
-    });
-  } catch {
-    return null;
-  }
-};
-
-function MailComposeHost({
-  session,
-  layoutMode,
-  activeMailboxId,
-  composeFromOptions,
-  composeDraftKey,
-  resolveComposeMailboxId,
-  mailboxPrimaryDomain,
-  mailboxSignatureHtml,
-  signatureOpen,
-  signatureHtml,
-  signatureMailboxId,
-  formatFullDate,
-  formatFileSize,
-  sumFilesSize,
-  sumAttachmentSize,
-  onOpenSignatureEditor,
-  onCloseSession,
-  onRegisterCloseHandler,
-  onSendSuccess,
-  handleMailCredentialsRequired,
-  getMailErrorDetail,
-}) {
-  const [composeState, setComposeState] = useState(() => createComposeInitialState(session?.initialState));
-  const [composeToSearch, setComposeToSearch] = useState('');
-  const [composeToOptions, setComposeToOptions] = useState([]);
-  const [composeToLoading, setComposeToLoading] = useState(false);
-  const composeStateRef = useRef(composeState);
-  const composeUploadAbortRef = useRef(null);
-  const mountedRef = useRef(true);
-  const debouncedComposeToSearch = useDebounce(composeToSearch, 400);
-
-  useEffect(() => {
-    return () => {
-      mountedRef.current = false;
-      if (composeUploadAbortRef.current) {
-        composeUploadAbortRef.current.abort();
-        composeUploadAbortRef.current = null;
-      }
-    };
-  }, []);
-
-  useEffect(() => {
-    composeStateRef.current = composeState;
-  }, [composeState]);
-
-  useEffect(() => {
-    const nextState = createComposeInitialState(session?.initialState);
-    if (composeUploadAbortRef.current) {
-      composeUploadAbortRef.current.abort();
-      composeUploadAbortRef.current = null;
-    }
-    setComposeState(nextState);
-    setComposeToSearch('');
-    setComposeToOptions([]);
-    setComposeToLoading(false);
-  }, [session?.id]);
-
-  const patchComposeState = useCallback((updater) => {
-    if (!mountedRef.current) return;
-    setComposeState((prev) => {
-      const patch = typeof updater === 'function' ? updater(prev) : updater;
-      if (!patch || typeof patch !== 'object') return prev;
-      return { ...prev, ...patch };
-    });
-  }, []);
-
-  useEffect(() => {
-    if (composeFromOptions.length === 0) return;
-    patchComposeState((current) => {
-      const normalizedCurrent = normalizeMailboxId(current.composeFromMailboxId);
-      if (normalizedCurrent && composeFromOptions.some((item) => getMailboxEntryId(item) === normalizedCurrent)) {
-        return null;
-      }
-      return {
-        composeFromMailboxId: normalizeMailboxId(activeMailboxId || getMailboxEntryId(composeFromOptions[0])),
-      };
-    });
-  }, [activeMailboxId, composeFromOptions, patchComposeState]);
-
-  useEffect(() => {
-    const query = String(debouncedComposeToSearch || '').trim();
-    if (query.length < 2) {
-      setComposeToOptions([]);
-      return;
-    }
-    let active = true;
-    setComposeToLoading(true);
-    mailAPI.searchContacts(query, { mailboxId: activeMailboxId })
-      .then((items) => {
-        if (active) setComposeToOptions(Array.isArray(items) ? items : []);
-      })
-      .finally(() => {
-        if (active) setComposeToLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [activeMailboxId, debouncedComposeToSearch]);
-
-  useEffect(() => {
-    const fieldErrors = composeState.composeFieldErrors || {};
-    if (!fieldErrors.to && !fieldErrors.cc && !fieldErrors.bcc) return;
-    const to = toRecipientEmails(composeState.composeToValues);
-    const cc = toRecipientEmails(composeState.composeCcValues);
-    const bcc = toRecipientEmails(composeState.composeBccValues);
-    const nextErrors = { ...fieldErrors };
-    let changed = false;
-    if (nextErrors.to && to.length > 0 && to.every((value) => isValidEmail(value))) {
-      delete nextErrors.to;
-      changed = true;
-    }
-    if (nextErrors.cc && cc.every((value) => isValidEmail(value))) {
-      delete nextErrors.cc;
-      changed = true;
-    }
-    if (nextErrors.bcc && bcc.every((value) => isValidEmail(value))) {
-      delete nextErrors.bcc;
-      changed = true;
-    }
-    if (changed) {
-      patchComposeState({ composeFieldErrors: nextErrors });
-    }
-  }, [
-    composeState.composeBccValues,
-    composeState.composeCcValues,
-    composeState.composeFieldErrors,
-    composeState.composeToValues,
-    patchComposeState,
-  ]);
-
-  const composeCombinedBody = useMemo(
-    () => getComposeCombinedBody(composeState),
-    [composeState.composeBody, composeState.composeQuotedOriginalHtml]
-  );
-
-  const hasComposeContent = useMemo(
-    () => composeStateHasContent(composeState),
-    [
-      composeState.composeBccValues,
-      composeState.composeBody,
-      composeState.composeCcValues,
-      composeState.composeDraftAttachments,
-      composeState.composeFiles,
-      composeState.composeQuotedOriginalHtml,
-      composeState.composeSubject,
-      composeState.composeToValues,
-    ],
-  );
-
-  const composeSignaturePreviewHtml = useMemo(() => {
-    const composeMailboxId = resolveComposeMailboxId(composeState.composeFromMailboxId || activeMailboxId);
-    const editingMailboxId = resolveComposeMailboxId(signatureMailboxId || composeState.composeFromMailboxId || activeMailboxId);
-    if (signatureOpen && composeMailboxId && composeMailboxId === editingMailboxId) {
-      return String(signatureHtml || '');
-    }
-    return String(mailboxSignatureHtml || '');
-  }, [
-    activeMailboxId,
-    composeState.composeFromMailboxId,
-    mailboxSignatureHtml,
-    resolveComposeMailboxId,
-    signatureHtml,
-    signatureMailboxId,
-    signatureOpen,
-  ]);
-
-  const composeWarnings = useMemo(() => {
-    const recipientValues = [
-      ...toRecipientEmails(composeState.composeToValues),
-      ...toRecipientEmails(composeState.composeCcValues),
-      ...toRecipientEmails(composeState.composeBccValues),
-    ];
-    const warnings = [];
-    if (!String(composeState.composeSubject || '').trim()) {
-      warnings.push({
-        id: 'empty_subject',
-        severity: 'warning',
-        message: 'Тема письма пустая.',
-      });
-    }
-    if (mailboxPrimaryDomain) {
-      const hasExternal = recipientValues.some((email) => {
-        const domain = String(email.split('@')[1] || '').trim().toLowerCase();
-        return domain && domain !== mailboxPrimaryDomain;
-      });
-      if (hasExternal) {
-        warnings.push({
-          id: 'external_recipients',
-          severity: 'info',
-          message: 'В письме есть внешние получатели.',
-        });
-      }
-    }
-    const plainBody = String(composeState.composeBody || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().toLowerCase();
-    const attachmentMentioned = /(влож|прикреп|attach|attachment|файл)/i.test(plainBody);
-    if (attachmentMentioned && composeState.composeFiles.length === 0 && composeState.composeDraftAttachments.length === 0) {
-      warnings.push({
-        id: 'missing_attachment',
-        severity: 'warning',
-        message: 'В тексте упомянуто вложение, но файлы не прикреплены.',
-      });
-    }
-    return warnings.filter((item) => !composeState.dismissedComposeWarnings.includes(item.id));
-  }, [
-    composeState.composeBccValues,
-    composeState.composeBody,
-    composeState.composeCcValues,
-    composeState.composeDraftAttachments,
-    composeState.composeFiles,
-    composeState.composeSubject,
-    composeState.composeToValues,
-    composeState.dismissedComposeWarnings,
-    mailboxPrimaryDomain,
-  ]);
-
-  const clearStoredComposeDraft = useCallback(() => {
-    if (typeof window === 'undefined') return;
-    try {
-      window.localStorage.removeItem(composeDraftKey);
-    } catch {
-      // ignore local storage issues
-    }
-  }, [composeDraftKey]);
-
-  const persistLocalComposeDraft = useCallback((stateOverride = composeStateRef.current) => {
-    if (typeof window === 'undefined') return;
-    const state = stateOverride || composeStateRef.current;
-    const payload = {
-      compose_mode: state.composeMode || 'draft',
-      from_mailbox_id: resolveComposeMailboxId(state.composeFromMailboxId),
-      to: toRecipientEmails(state.composeToValues),
-      cc: toRecipientEmails(state.composeCcValues),
-      bcc: toRecipientEmails(state.composeBccValues),
-      subject: String(state.composeSubject || ''),
-      body: String(getComposeCombinedBody(state) || ''),
-      editor_body: String(state.composeBody || ''),
-      quoted_original_html: String(state.composeQuotedOriginalHtml || ''),
-      draft_id: String(state.composeDraftId || ''),
-      reply_to_message_id: String(state.composeReplyToMessageId || ''),
-      forward_message_id: String(state.composeForwardMessageId || ''),
-      draft_attachments: Array.isArray(state.composeDraftAttachments) ? state.composeDraftAttachments : [],
-      local_attachment_names: (Array.isArray(state.composeFiles) ? state.composeFiles : []).map((file) => String(file?.name || '')).filter(Boolean),
-      saved_at: new Date().toISOString(),
-    };
-    try {
-      window.localStorage.setItem(composeDraftKey, JSON.stringify(payload));
-    } catch {
-      // ignore local storage issues
-    }
-  }, [composeDraftKey, resolveComposeMailboxId]);
-
-  const flushComposeDraft = useCallback(async ({ includeFiles = false } = {}) => {
-    const state = composeStateRef.current;
-    if (!composeStateHasContent(state) && !state.composeDraftId) return null;
-    patchComposeState({ draftSyncState: 'saving' });
-    try {
-      const data = await mailAPI.saveDraftMultipart({
-        fromMailboxId: resolveComposeMailboxId(state.composeFromMailboxId),
-        draftId: state.composeDraftId,
-        composeMode: state.composeMode,
-        to: toRecipientEmails(state.composeToValues),
-        cc: toRecipientEmails(state.composeCcValues),
-        bcc: toRecipientEmails(state.composeBccValues),
-        subject: String(state.composeSubject || ''),
-        body: String(getComposeCombinedBody(state) || ''),
-        isHtml: true,
-        replyToMessageId: state.composeReplyToMessageId,
-        forwardMessageId: state.composeForwardMessageId,
-        retainExistingAttachments: state.composeDraftAttachments.map((item) => item?.download_token || item?.id).filter(Boolean),
-        files: includeFiles ? state.composeFiles : [],
-      });
-      patchComposeState((current) => ({
-        composeDraftId: String(data?.draft_id || current.composeDraftId || ''),
-        composeDraftAttachments: Array.isArray(data?.attachments) ? data.attachments : current.composeDraftAttachments,
-        composeFiles: includeFiles && current.composeFiles.length > 0 ? [] : current.composeFiles,
-        draftSavedAt: String(data?.saved_at || new Date().toISOString()),
-        draftSyncState: 'synced',
-      }));
-      clearStoredComposeDraft();
-      return data;
-    } catch (requestError) {
-      persistLocalComposeDraft(state);
-      patchComposeState({ draftSyncState: 'local_only' });
-      throw requestError;
-    }
-  }, [clearStoredComposeDraft, patchComposeState, persistLocalComposeDraft, resolveComposeMailboxId]);
-
-  useEffect(() => {
-    if (composeState.composeSending || (!hasComposeContent && !composeState.composeDraftId)) return undefined;
-    const timer = setTimeout(() => {
-      flushComposeDraft({ includeFiles: false }).catch(() => {});
-    }, 1500);
-    return () => clearTimeout(timer);
-  }, [composeState, flushComposeDraft, hasComposeContent]);
-
-  const handleCloseCompose = useCallback(async () => {
-    const state = composeStateRef.current;
-    if (state.composeSending) return;
-    if (!composeStateHasContent(state) && state.composeDraftId) {
-      try {
-        await mailAPI.deleteDraft(state.composeDraftId, { mailboxId: resolveComposeMailboxId(state.composeFromMailboxId) });
-      } catch {
-        // ignore draft cleanup errors
-      }
-      clearStoredComposeDraft();
-      onCloseSession?.();
-      return;
-    }
-    if (composeStateHasContent(state) || state.composeDraftId) {
-      try {
-        await flushComposeDraft({ includeFiles: true });
-      } catch {
-        // fallback draft already persisted locally
-      }
-    }
-    onCloseSession?.();
-  }, [clearStoredComposeDraft, flushComposeDraft, onCloseSession, resolveComposeMailboxId]);
-
-  const handleCloseComposeRef = useRef(handleCloseCompose);
-  handleCloseComposeRef.current = handleCloseCompose;
-
-  useEffect(() => {
-    if (!onRegisterCloseHandler) return undefined;
-    onRegisterCloseHandler(() => {
-      void handleCloseComposeRef.current();
-    });
-    return () => onRegisterCloseHandler(null);
-  }, [onRegisterCloseHandler]);
-
-  const handleSendCompose = useCallback(async () => {
-    const state = composeStateRef.current;
-    const to = toRecipientEmails(state.composeToValues);
-    const cc = toRecipientEmails(state.composeCcValues);
-    const bcc = toRecipientEmails(state.composeBccValues);
-    const validationErrors = {};
-    if (to.length === 0) validationErrors.to = 'Укажите хотя бы одного получателя.';
-    if (to.some((value) => !isValidEmail(value))) validationErrors.to = 'Проверьте адреса в поле "Кому".';
-    if (cc.some((value) => !isValidEmail(value))) validationErrors.cc = 'Проверьте адреса в поле "Копия".';
-    if (bcc.some((value) => !isValidEmail(value))) validationErrors.bcc = 'Проверьте адреса в поле "Скрытая копия".';
-    if (Object.keys(validationErrors).length > 0) {
-      patchComposeState({ composeFieldErrors: validationErrors });
-      return;
-    }
-    patchComposeState({
-      composeFieldErrors: {},
-      composeError: '',
-      composeSending: true,
-      composeUploadProgress: 0,
-    });
-    try {
-      if (state.composeFiles.length > 0) {
-        const controller = new AbortController();
-        composeUploadAbortRef.current = controller;
-        await mailAPI.sendMessageMultipart({
-          fromMailboxId: resolveComposeMailboxId(state.composeFromMailboxId),
-          to,
-          cc,
-          bcc,
-          subject: String(state.composeSubject || ''),
-          body: String(getComposeCombinedBody(state) || ''),
-          isHtml: true,
-          replyToMessageId: state.composeReplyToMessageId,
-          forwardMessageId: state.composeForwardMessageId,
-          draftId: state.composeDraftId,
-          files: state.composeFiles,
-          signal: controller.signal,
-          onUploadProgress: (event) => {
-            const total = Number(event?.total || 0);
-            const loaded = Number(event?.loaded || 0);
-            if (total <= 0) return;
-            const nextProgress = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
-            patchComposeState((current) => (
-              current.composeUploadProgress === nextProgress
-                ? null
-                : { composeUploadProgress: nextProgress }
-            ));
-          },
-        });
-      } else {
-        await mailAPI.sendMessage({
-          from_mailbox_id: resolveComposeMailboxId(state.composeFromMailboxId),
-          to,
-          cc,
-          bcc,
-          subject: String(state.composeSubject || ''),
-          body: String(getComposeCombinedBody(state) || ''),
-          is_html: true,
-          reply_to_message_id: state.composeReplyToMessageId,
-          forward_message_id: state.composeForwardMessageId,
-          draft_id: state.composeDraftId,
-        });
-      }
-      clearStoredComposeDraft();
-      await onSendSuccess?.();
-    } catch (requestError) {
-      if (await handleMailCredentialsRequired(requestError, 'Не удалось отправить письмо.')) {
-        patchComposeState({ composeError: '' });
-      } else {
-        patchComposeState({ composeError: getMailErrorDetail(requestError, 'Не удалось отправить письмо.') });
-      }
-    } finally {
-      composeUploadAbortRef.current = null;
-      patchComposeState({
-        composeUploadProgress: 0,
-        composeSending: false,
-      });
-    }
-  }, [
-    clearStoredComposeDraft,
-    getMailErrorDetail,
-    handleMailCredentialsRequired,
-    onSendSuccess,
-    patchComposeState,
-    resolveComposeMailboxId,
-  ]);
-
-  return (
-    <MailComposeDialog
-      open
-      onClose={handleCloseCompose}
-      dialogTitle={getComposeDialogTitle(composeState.composeMode)}
-      composeMode={composeState.composeMode}
-      draftSyncState={composeState.draftSyncState}
-      draftSavedAt={composeState.draftSavedAt}
-      composeError={composeState.composeError}
-      onClearComposeError={() => patchComposeState({ composeError: '' })}
-      formatFullDate={formatFullDate}
-      composeDragActive={composeState.composeDragActive}
-      onDragEnter={(event) => {
-        event.preventDefault();
-        patchComposeState({ composeDragActive: true });
-      }}
-      onDragOver={(event) => {
-        event.preventDefault();
-        patchComposeState({ composeDragActive: true });
-      }}
-      onDragLeave={(event) => {
-        event.preventDefault();
-        patchComposeState({ composeDragActive: false });
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        patchComposeState((current) => ({
-          composeDragActive: false,
-          composeFiles: Array.from(event.dataTransfer?.files || []).length > 0
-            ? [...current.composeFiles, ...Array.from(event.dataTransfer?.files || [])]
-            : current.composeFiles,
-        }));
-      }}
-      onFileChange={(event) => {
-        const files = Array.from(event.target.files || []);
-        patchComposeState((current) => ({
-          composeFiles: files.length > 0 ? [...current.composeFiles, ...files] : current.composeFiles,
-        }));
-        event.target.value = '';
-      }}
-      composeToOptions={composeToOptions}
-      composeToLoading={composeToLoading}
-      composeFromOptions={composeFromOptions}
-      composeFromMailboxId={composeState.composeFromMailboxId}
-      onComposeFromMailboxIdChange={(value) => patchComposeState({ composeFromMailboxId: String(value || '') })}
-      composeToValues={composeState.composeToValues}
-      onComposeToValuesChange={(value) => patchComposeState({ composeToValues: Array.isArray(value) ? value : [] })}
-      onComposeToSearchChange={setComposeToSearch}
-      composeFieldErrors={composeState.composeFieldErrors}
-      composeCcValues={composeState.composeCcValues}
-      onComposeCcValuesChange={(value) => patchComposeState({ composeCcValues: Array.isArray(value) ? value : [] })}
-      composeBccValues={composeState.composeBccValues}
-      onComposeBccValuesChange={(value) => patchComposeState({ composeBccValues: Array.isArray(value) ? value : [] })}
-      composeSubject={composeState.composeSubject}
-      onComposeSubjectChange={(value) => patchComposeState({ composeSubject: String(value || '') })}
-      composeBody={composeState.composeBody}
-      onComposeBodyChange={(value) => patchComposeState({ composeBody: String(value || '') })}
-      quotedOriginalHtml={composeState.composeQuotedOriginalHtml}
-      composeSignatureHtml={composeSignaturePreviewHtml}
-      composeDraftAttachments={composeState.composeDraftAttachments}
-      composeFiles={composeState.composeFiles}
-      composeWarnings={composeWarnings}
-      onDismissComposeWarning={(warningId) => patchComposeState((current) => ({
-        dismissedComposeWarnings: [...new Set([...(current.dismissedComposeWarnings || []), String(warningId || '')])],
-      }))}
-      onComposePasteFiles={(files) => {
-        const incoming = Array.isArray(files) ? files : Array.from(files || []);
-        patchComposeState((current) => ({
-          composeFiles: incoming.length > 0 ? [...current.composeFiles, ...incoming] : current.composeFiles,
-        }));
-      }}
-      onSendComposeShortcut={handleSendCompose}
-      formatFileSize={formatFileSize}
-      sumFilesSize={sumFilesSize}
-      sumAttachmentSize={sumAttachmentSize}
-      onRemoveDraftAttachment={(id) => patchComposeState((current) => ({
-        composeDraftAttachments: current.composeDraftAttachments.filter((item) => String(item.id) !== String(id)),
-      }))}
-      onRemoveComposeFile={(indexToRemove) => patchComposeState((current) => ({
-        composeFiles: current.composeFiles.filter((_, index) => index !== indexToRemove),
-      }))}
-      composeSending={composeState.composeSending}
-      composeUploadProgress={composeState.composeUploadProgress}
-      onCancelComposeUpload={() => {
-        if (composeUploadAbortRef.current) composeUploadAbortRef.current.abort();
-      }}
-      onOpenSignatureEditor={() => onOpenSignatureEditor?.(composeState.composeFromMailboxId)}
-      onSendCompose={handleSendCompose}
-      layoutMode={layoutMode}
-    />
-  );
-}
 
 function Mail() {
   const theme = useTheme();
@@ -2084,151 +1284,27 @@ function Mail() {
   );
   const hasMobileSelection = isMobile && Boolean(selectedId);
   const isMobileFullscreenPreview = hasMobileSelection;
-  const getMailMobileHistoryKey = useCallback((state = {}) => {
-    const view = String(state?.view || '').trim() === 'preview' ? 'preview' : 'list';
-    const drawerKey = view === 'list' && Boolean(state?.drawerOpen) ? 'open' : 'closed';
-    const selectionMode = String(state?.selectionMode || '').trim() === 'conversations' ? 'conversations' : 'messages';
-    const previewId = view === 'preview' ? (String(state?.selectedId || '').trim() || 'none') : 'none';
-    return `${view}:${drawerKey}:${previewId}:${selectionMode}`;
-  }, []);
+  const getMailMobileHistoryKey = useCallback(createMailMobileHistoryKey, []);
   const readMailMobileHistoryState = useCallback((state = typeof window !== 'undefined' ? window.history.state : null) => {
-    if (!state || typeof state !== 'object' || state[MAIL_MOBILE_HISTORY_FLAG] !== true) return null;
-    const view = String(state[MAIL_MOBILE_HISTORY_VIEW_KEY] || '').trim() === 'preview' ? 'preview' : 'list';
-    const selectionMode = String(state[MAIL_MOBILE_HISTORY_MODE_KEY] || '').trim() === 'conversations' ? 'conversations' : 'messages';
-    return {
-      view,
-      drawerOpen: view === 'list' && Boolean(state[MAIL_MOBILE_HISTORY_DRAWER_KEY]),
-      selectedId: view === 'preview' ? String(state[MAIL_MOBILE_HISTORY_MESSAGE_KEY] || '').trim() : '',
-      selectionMode,
-    };
+    return parseMailMobileHistoryState(state);
   }, []);
   const writeMailMobileHistoryState = useCallback((nextState, strategy = 'push') => {
     if (!isMobile || typeof window === 'undefined') return;
-    const view = String(nextState?.view || '').trim() === 'preview' ? 'preview' : 'list';
-    const selectionMode = String(nextState?.selectionMode || '').trim() === 'conversations' ? 'conversations' : 'messages';
-    const selectedPreviewId = view === 'preview' ? String(nextState?.selectedId || '').trim() : '';
-    const nextHistoryState = {
-      ...(window.history.state && typeof window.history.state === 'object' ? window.history.state : {}),
-      [MAIL_MOBILE_HISTORY_FLAG]: true,
-      [MAIL_MOBILE_HISTORY_VIEW_KEY]: view,
-      [MAIL_MOBILE_HISTORY_DRAWER_KEY]: view === 'list' ? Boolean(nextState?.drawerOpen) : false,
-      [MAIL_MOBILE_HISTORY_MESSAGE_KEY]: selectedPreviewId,
-      [MAIL_MOBILE_HISTORY_MODE_KEY]: selectionMode,
-    };
+    const { nextHistoryState, key } = buildMailMobileHistoryState(window.history.state, nextState);
     const nextUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
     if (strategy === 'replace') {
       window.history.replaceState(nextHistoryState, '', nextUrl);
     } else {
       window.history.pushState(nextHistoryState, '', nextUrl);
     }
-    mobileHistoryModeRef.current = getMailMobileHistoryKey({
-      view,
-      drawerOpen: view === 'list' ? Boolean(nextState?.drawerOpen) : false,
-      selectedId: selectedPreviewId,
-      selectionMode,
-    });
-  }, [getMailMobileHistoryKey, isMobile]);
+    mobileHistoryModeRef.current = key;
+  }, [isMobile]);
 
-  const getMailErrorDetail = useCallback((requestError, fallbackMessage = '') => {
-    const detail = requestError?.response?.data?.detail;
-    if (typeof detail === 'string' && detail.trim()) return detail;
-    if (detail && typeof detail?.message === 'string' && detail.message.trim()) return detail.message;
-    if (typeof requestError?.message === 'string' && requestError.message.trim()) return requestError.message.trim();
-    return String(fallbackMessage || '').trim();
-  }, []);
-  const getMailErrorDetailAsync = useCallback(async (requestError, fallbackMessage = '') => {
-    const responseData = requestError?.response?.data;
-    const blobTag = Object.prototype.toString.call(responseData);
-    const isBlobLike = Boolean(
-      responseData
-      && typeof responseData === 'object'
-      && (
-        typeof responseData.text === 'function'
-        || typeof responseData.arrayBuffer === 'function'
-        || blobTag === '[object Blob]'
-      )
-    );
-    if (isBlobLike) {
-      try {
-        let rawText = '';
-        if (typeof responseData.text === 'function') {
-          rawText = await responseData.text();
-        } else if (typeof responseData.arrayBuffer === 'function' && typeof TextDecoder !== 'undefined') {
-          rawText = new TextDecoder().decode(await responseData.arrayBuffer());
-        } else if (blobTag === '[object Blob]') {
-          rawText = await readBlobAsText(responseData);
-        } else if (typeof Response !== 'undefined') {
-          rawText = await new Response(responseData).text();
-        }
-        const text = String(rawText || '').trim();
-        if (text && text !== '[object Blob]') {
-          const contentType = String(
-            requestError?.response?.headers?.['content-type']
-            || responseData.type
-            || ''
-          ).toLowerCase();
-          if (contentType.includes('json') || text.startsWith('{') || text.startsWith('[')) {
-            try {
-              const parsed = JSON.parse(text);
-              const detail = parsed?.detail;
-              if (typeof detail === 'string' && detail.trim()) return detail.trim();
-              if (detail && typeof detail?.message === 'string' && detail.message.trim()) {
-                return detail.message.trim();
-              }
-              if (typeof parsed?.message === 'string' && parsed.message.trim()) {
-                return parsed.message.trim();
-              }
-            } catch {
-              // Fall through to plain-text handling below.
-            }
-          }
-          if (!/^<!doctype html/i.test(text) && !/^<html/i.test(text)) {
-            return text;
-          }
-        }
-      } catch {
-        // Fall through to the normal mail error detail extraction.
-      }
-    }
-    return getMailErrorDetail(requestError, fallbackMessage);
-  }, [getMailErrorDetail]);
-  const isMissingMailDetailError = useCallback((requestError, detailText = '') => {
-    const statusCode = Number(requestError?.response?.status || 0);
-    if (statusCode === 404) return true;
-    if (statusCode !== 400) return false;
-    const normalizedDetail = String(detailText || '').trim().toLowerCase();
-    return normalizedDetail.includes('message not found')
-      || normalizedDetail.includes('invalid message id')
-      || normalizedDetail.includes('message id is required');
-  }, []);
-
-  const getMailErrorCode = useCallback((requestError) => String(
-    requestError?.response?.headers?.['x-mail-error-code']
-    || requestError?.response?.headers?.['X-Mail-Error-Code']
-    || ''
-  ).trim(), []);
-  const isTransientMailRequestError = useCallback((requestError) => {
-    const statusCode = Number(requestError?.response?.status || 0);
-    if ([408, 425, 429, 500, 502, 503, 504].includes(statusCode)) return true;
-    const errorCode = String(requestError?.code || '').trim().toUpperCase();
-    if (['ERR_NETWORK', 'ECONNABORTED', 'ETIMEDOUT', 'ECONNRESET', 'EAI_AGAIN'].includes(errorCode)) {
-      return true;
-    }
-    const detailText = String(
-      requestError?.message
-      || requestError?.response?.data?.detail
-      || ''
-    ).trim().toLowerCase();
-    if (!statusCode && (
-      detailText.includes('network error')
-      || detailText.includes('failed to fetch')
-      || detailText.includes('load failed')
-      || detailText.includes('timeout')
-    )) {
-      return true;
-    }
-    return false;
-  }, []);
+  const getMailErrorDetail = useCallback(resolveMailErrorDetail, []);
+  const getMailErrorDetailAsync = useCallback(resolveMailErrorDetailAsync, []);
+  const isMissingMailDetailError = useCallback(resolveIsMissingMailDetailError, []);
+  const getMailErrorCode = useCallback(resolveMailErrorCode, []);
+  const isTransientMailRequestError = useCallback(resolveIsTransientMailRequestError, []);
 
   const openMailCredentialsDialog = useCallback((config, { reason = 'missing', errorText = '' } = {}) => {
     const nextLogin = String(

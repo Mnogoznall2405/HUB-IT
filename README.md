@@ -108,7 +108,7 @@ Image_scan/
 cd C:\Project\Image_scan
 python -m venv .venv
 .venv\Scripts\activate
-pip install -r requirements.txt
+python -m pip install -r requirements.txt -c constraints.txt
 ```
 
 Для web-frontend отдельно нужен Node.js 18+.
@@ -232,7 +232,23 @@ python agent.py --once
 
 ```powershell
 cd C:\Project\Image_scan
-pytest -q -o addopts="" --basetemp=.pytest-tmp tests
+pytest -q tests
+```
+
+Проверка текущего baseline-покрытия Telegram bot отдельно:
+
+```powershell
+pytest -q -c pytest.bot.ini
+```
+
+Python dependency audit:
+
+```powershell
+python -m pip install pip-audit
+powershell -File scripts\check-python-deps.ps1 -Audit
+
+# optional: checks this interpreter's full installed environment
+powershell -File scripts\check-python-deps.ps1 -Environment
 ```
 
 Отдельно frontend:

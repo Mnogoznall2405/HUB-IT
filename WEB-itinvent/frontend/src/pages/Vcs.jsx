@@ -69,6 +69,7 @@ const Vcs = () => {
     // Global Config State
     const [configDialogOpen, setConfigDialogOpen] = useState(false);
     const [configData, setConfigData] = useState({ password_hex: '' });
+    const [configPasswordConfigured, setConfigPasswordConfigured] = useState(false);
     const [savingConfig, setSavingConfig] = useState(false);
 
     // Info Block State
@@ -116,15 +117,16 @@ const Vcs = () => {
         return hostMatch ? cleaned : '';
     };
 
-    const buildVncUri = (ipAddress, globalPasswordHex = '') => {
+    const buildVncUri = (ipAddress, launchToken = '') => {
         const host = normalizeEndpoint(ipAddress);
         if (!host) return null;
 
         const params = new URLSearchParams();
-        const hexPassword = String(globalPasswordHex || '').trim();
+        const token = String(launchToken || '').trim();
 
-        if (hexPassword) {
-            params.set('password_hex', hexPassword);
+        if (token) {
+            params.set('launch_token', token);
+            params.set('api_base', vcsAPI.getAbsoluteApiBase());
         }
 
         const query = params.toString();
@@ -158,7 +160,8 @@ const Vcs = () => {
         setConfigDialogOpen(true);
         try {
             const data = await vcsAPI.getConfig();
-            setConfigData({ password_hex: data.password_hex || '' });
+            setConfigData({ password_hex: '' });
+            setConfigPasswordConfigured(Boolean(data.password_configured));
         } catch (err) {
             console.error('Failed to fetch config', err);
             setError('Ошибка загрузки настроек VNC');
@@ -169,7 +172,9 @@ const Vcs = () => {
         e.preventDefault();
         setSavingConfig(true);
         try {
-            await vcsAPI.updateConfig(configData);
+            const data = await vcsAPI.updateConfig(configData);
+            setConfigData({ password_hex: '' });
+            setConfigPasswordConfigured(Boolean(data.password_configured));
             setConfigDialogOpen(false);
             setError('');
         } catch (err) {
@@ -252,8 +257,8 @@ const Vcs = () => {
 
     const handleConnectClick = async (comp) => {
         try {
-            const config = await vcsAPI.getConfig();
-            const uri = buildVncUri(comp.ip_address, config.password_hex);
+            const launch = await vcsAPI.createLaunchToken(comp.id);
+            const uri = buildVncUri(comp.ip_address, launch.token);
             if (!uri) return;
 
             let f = document.getElementById('vnc-frame');
@@ -272,8 +277,8 @@ const Vcs = () => {
 
     const handleDownloadClick = async (comp) => {
         try {
-            const config = await vcsAPI.getConfig();
-            vcsAPI.downloadVncFile(comp.ip_address, comp.name, config.password_hex);
+            const launch = await vcsAPI.createLaunchToken(comp.id);
+            vcsAPI.downloadVncLaunchFile(launch.token, comp.name);
         } catch (err) {
             console.error("Download error", err);
             setError('Ошибка получения VNC конфигурации');
@@ -509,7 +514,7 @@ const Vcs = () => {
                                                 <TableCell sx={{ fontWeight: 'bold' }}>Контрагент</TableCell>
                                                 <TableCell sx={{ fontWeight: 'bold' }}>Адрес сервера</TableCell>
                                                 <TableCell sx={{ fontWeight: 'bold' }}>Логин</TableCell>
-                                                <TableCell sx={{ fontWeight: 'bold' }}>Пароль</TableCell>
+                                                {canManageVcs && <TableCell sx={{ fontWeight: 'bold' }}>Пароль</TableCell>}
                                                 <TableCell sx={{ fontWeight: 'bold', minWidth: 200 }}>Контакт 1</TableCell>
                                                 <TableCell sx={{ fontWeight: 'bold', minWidth: 200 }}>Контакт 2</TableCell>
                                             </TableRow>
@@ -520,7 +525,7 @@ const Vcs = () => {
                                                     <TableCell><b>{row.agent}</b></TableCell>
                                                     <TableCell sx={{ fontFamily: 'monospace' }}>{row.server}</TableCell>
                                                     <TableCell sx={{ fontFamily: 'monospace' }}>{row.login}</TableCell>
-                                                    <TableCell sx={{ fontFamily: 'monospace' }}>{row.password}</TableCell>
+                                                    {canManageVcs && <TableCell sx={{ fontFamily: 'monospace' }}>{row.password}</TableCell>}
                                                     <TableCell>{renderCellText(row.contact1)}</TableCell>
                                                     <TableCell>{renderCellText(row.contact2)}</TableCell>
                                                 </TableRow>
@@ -731,7 +736,7 @@ const Vcs = () => {
                                     fullWidth
                                     variant="outlined"
                                     placeholder="Например: 6e4114ad4dc9c9d7"
-                                    helperText="16 символов, шестнадцатеричный код"
+                                    helperText={configPasswordConfigured ? 'Password is configured. Enter a new 16-char HEX value to replace it, or save empty to clear.' : '16 символов, шестнадцатеричный код'}
                                 />
                             </DialogContent>
                             <DialogActions sx={{ p: 3 }}>

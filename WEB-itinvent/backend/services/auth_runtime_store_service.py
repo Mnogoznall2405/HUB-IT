@@ -18,6 +18,10 @@ from backend.config import config
 logger = logging.getLogger(__name__)
 
 
+class AuthRuntimeConfigurationError(RuntimeError):
+    """Raised when auth runtime state storage is unsafe for the current environment."""
+
+
 def _utc_ts() -> float:
     return time.time()
 
@@ -63,12 +67,20 @@ class AuthRuntimeStoreService:
                 self._backend = "app_db"
                 return
             except Exception as exc:  # pragma: no cover - depends on deployment DB
+                if config.app.is_production:
+                    raise AuthRuntimeConfigurationError(
+                        "Auth runtime store requires a reachable APP_DATABASE_URL in production"
+                    ) from exc
                 logger.warning(
                     "Auth runtime store: APP_DATABASE_URL unavailable, using in-memory fallback for dev/test only: %s",
                     exc,
                 )
                 self._backend = "memory"
                 return
+        if config.app.is_production:
+            raise AuthRuntimeConfigurationError(
+                "Auth runtime store requires APP_DATABASE_URL in production"
+            )
         logger.warning(
             "Auth runtime store: APP_DATABASE_URL is not configured, using in-memory fallback for dev/test only"
         )

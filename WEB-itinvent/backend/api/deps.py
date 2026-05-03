@@ -11,14 +11,11 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from backend.config import config
 from backend.models.auth import User
 from backend.utils.security import decode_access_token
-from backend.database.connection import get_user_database
 from backend.utils.request_network import build_request_network_context
 from backend.services.app_settings_service import app_settings_service
 from backend.services.authorization_service import authorization_service
 from backend.services.session_service import session_service
-from backend.services.settings_service import settings_service
 from backend.services.session_auth_context_service import session_auth_context_service
-from backend.services.user_db_selection_service import user_db_selection_service
 from backend.services.user_service import user_service
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.trusted_device_service import trusted_device_service
@@ -379,49 +376,12 @@ async def get_current_database_id(
     Returns:
         Database ID (e.g., "ITINVENT", "MSK-ITINVENT") or None
     """
-    def _normalize_database_id(value: object) -> Optional[str]:
-        normalized = str(value or "").strip()
-        if not normalized:
-            return None
-        try:
-            from backend.api.v1.database import get_all_db_configs
+    from backend.api.v1.database import resolve_current_database_id
 
-            available_ids = {
-                str(item.get("id") or "").strip()
-                for item in list(get_all_db_configs() or [])
-                if str(item.get("id") or "").strip()
-            }
-        except Exception:
-            available_ids = set()
-        if available_ids and normalized not in available_ids:
-            return None
-        return normalized
-
-    user_assigned_db = _normalize_database_id(current_user.assigned_database)
-    # If user is linked to Telegram and has assigned DB in bot mapping:
-    # non-admin users are strictly pinned to that DB.
-    assigned_db = user_assigned_db or _normalize_database_id(user_db_selection_service.get_assigned_database(current_user.telegram_id))
-    if assigned_db and current_user.role != "admin":
-        return assigned_db
-
-    # Allow explicit request-scoped override.
-    header_db = _normalize_database_id(x_database_id)
-    if header_db:
-        return header_db
-
-    user_db = _normalize_database_id(get_user_database(current_user.id, current_user.username))
-    if user_db:
-        return user_db
-
-    # Fallback to user settings pinned DB.
-    settings = settings_service.get_user_settings(current_user.id)
-    pinned = _normalize_database_id(settings.get("pinned_database"))
-    if pinned:
-        return pinned
-
-    # Cookie fallback.
-    cookie_db = _normalize_database_id(selected_database)
-    if cookie_db:
-        return cookie_db
-
-    return None
+    database_id, _source = resolve_current_database_id(
+        current_user,
+        request_hint=x_database_id,
+        legacy_cookie=selected_database,
+        include_default=False,
+    )
+    return database_id

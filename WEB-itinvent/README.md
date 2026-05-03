@@ -46,8 +46,8 @@ cd backend
 python -m venv venv
 source venv/bin/activate  # Windows: venv\Scripts\activate
 
-# Install dependencies
-pip install fastapi uvicorn[standard] pyodbc python-jose[cryptography] passlib[bcrypt] pydantic[email] python-dotenv
+# Install dependencies with pinned constraints
+python -m pip install -r requirements.txt -c constraints.txt
 
 # Configure single env in project root
 cd ..
@@ -65,7 +65,9 @@ Backend will be available at:
 
 ### Internal PostgreSQL Migration
 
-To enable unified internal storage for users/sessions/settings/chat, configure `APP_DATABASE_URL` in the root `.env`.
+To enable unified internal storage for users/sessions/settings/chat and `/api/v1/json/*` runtime data, configure `APP_DATABASE_URL` in the root `.env`.
+
+Production boundary: when `APP_ENV=production`, `WEB-itinvent` must use `APP_DATABASE_URL` for JSON runtime storage. The legacy SQLite JSON store is supported only for development/test compatibility and is not used as a production fallback.
 
 To migrate current identity/settings data from the internal SQLite store:
 
@@ -145,6 +147,8 @@ To migrate `/api/v1/json/*` runtime datasets from the internal SQLite database i
 ```bash
 python scripts/migrate_json_store_sqlite_to_postgres.py --source-db-path data/local_store.unified.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
 ```
+
+Run `alembic -c backend/alembic.ini upgrade head` and the JSON migration above before enabling `APP_ENV=production` on a host that previously used SQLite JSON runtime data.
 
 For a full `WEB-itinvent` SQLite runtime cutover, keep `Scan Center` out of scope and configure `APP_DATABASE_URL` in the root `.env`. Chat may continue using `CHAT_DATABASE_URL`; it is already PostgreSQL-backed and does not block removal of SQLite from `WEB-itinvent` runtime.
 

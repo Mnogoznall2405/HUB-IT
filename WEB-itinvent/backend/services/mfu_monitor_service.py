@@ -17,8 +17,11 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import logging
+from sqlalchemy import inspect
+
 from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
 from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.config import config
 from backend.db_schema import schema_name
 from local_store import get_local_store
 
@@ -77,6 +80,41 @@ def _to_bool(value: Any, default: bool) -> bool:
     if not text:
         return default
     return text in {"1", "true", "yes", "on", "y"}
+
+
+_MFU_REQUIRED_COLUMNS = {
+    "mfu_runtime_state": {
+        "device_key",
+        "ip_address",
+        "timeout_total",
+        "timeout_streak",
+        "next_retry_at",
+        "runtime_json",
+        "updated_at",
+    },
+    "mfu_page_snapshots": {
+        "device_key",
+        "snapshot_date",
+        "page_total",
+        "page_oid",
+        "snmp_checked_at",
+        "created_at",
+        "updated_at",
+    },
+    "mfu_page_baseline": {"device_key", "baseline_date", "created_at", "updated_at"},
+}
+_MFU_REQUIRED_INDEXES = {
+    "mfu_runtime_state": {"idx_mfu_runtime_state_updated_at"},
+    "mfu_page_snapshots": {
+        "idx_mfu_page_snapshots_snapshot_date",
+        "idx_mfu_page_snapshots_device_date",
+    },
+    "mfu_page_baseline": {"idx_mfu_page_baseline_baseline_date"},
+}
+
+
+class MfuRuntimeSchemaConfigurationError(RuntimeError):
+    """Raised when production MFU runtime schema is not migration-ready."""
 
 
 class MfuRuntimeMonitor:
@@ -233,12 +271,75 @@ class MfuRuntimeMonitor:
             self._PAGE_BASELINE_TABLE,
         }
 
+    def _is_production_postgres_app_db(self, engine=None) -> bool:
+        if not (self._use_app_db and self._database_url and config.app.is_production):
+            return False
+        resolved_engine = engine or get_app_engine(self._database_url)
+        return str(resolved_engine.dialect.name).lower() == "postgresql"
+
+    def _verify_production_schema(self, engine) -> None:
+        try:
+            inspector = inspect(engine)
+            schema = self._system_schema
+            missing_tables = sorted(
+                table_name
+                for table_name in self._runtime_table_names()
+                if not inspector.has_table(table_name, schema=schema)
+            )
+            missing_columns: list[str] = []
+            missing_indexes: list[str] = []
+            for table_name, required_columns in _MFU_REQUIRED_COLUMNS.items():
+                if table_name in missing_tables:
+                    continue
+                existing_columns = {
+                    str(column.get("name") or "").strip().lower()
+                    for column in inspector.get_columns(table_name, schema=schema)
+                }
+                for column_name in sorted(required_columns):
+                    if column_name.lower() not in existing_columns:
+                        missing_columns.append(f"{table_name}.{column_name}")
+            for table_name, required_indexes in _MFU_REQUIRED_INDEXES.items():
+                if table_name in missing_tables:
+                    continue
+                existing_indexes = {
+                    str(index.get("name") or "").strip().lower()
+                    for index in inspector.get_indexes(table_name, schema=schema)
+                }
+                for index_name in sorted(required_indexes):
+                    if index_name.lower() not in existing_indexes:
+                        missing_indexes.append(f"{table_name}.{index_name}")
+        except MfuRuntimeSchemaConfigurationError:
+            raise
+        except Exception as exc:
+            raise MfuRuntimeSchemaConfigurationError(
+                "Production MFU runtime schema could not be inspected; "
+                "verify APP_DATABASE_URL and backend Alembic migrations."
+            ) from exc
+
+        if missing_tables or missing_columns or missing_indexes:
+            details: list[str] = []
+            if missing_tables:
+                details.append("missing tables: " + ", ".join(missing_tables))
+            if missing_columns:
+                details.append("missing columns: " + ", ".join(missing_columns))
+            if missing_indexes:
+                details.append("missing indexes: " + ", ".join(missing_indexes))
+            raise MfuRuntimeSchemaConfigurationError(
+                "Production MFU runtime schema is incomplete; "
+                "run backend Alembic migrations before startup. "
+                + "; ".join(details)
+            )
+
     def _init_runtime_persistence(self) -> None:
         conn: Optional[sqlite3.Connection] = None
         try:
             if self._use_app_db and self._database_url:
                 initialize_app_schema(self._database_url)
                 self._runtime_db_path = None
+                engine = get_app_engine(self._database_url)
+                if self._is_production_postgres_app_db(engine):
+                    self._verify_production_schema(engine)
+                    return
             else:
                 store = get_local_store()
                 self._runtime_db_path = Path(store.db_path)
@@ -303,7 +404,13 @@ class MfuRuntimeMonitor:
                 )
                 conn.commit()
                 self._cleanup_old_page_snapshots(conn=conn, force=True)
+        except MfuRuntimeSchemaConfigurationError:
+            raise
         except Exception as exc:
+            if self._use_app_db and config.app.is_production:
+                raise MfuRuntimeSchemaConfigurationError(
+                    "Production MFU runtime persistence requires a reachable, migrated APP_DATABASE_URL."
+                ) from exc
             logger.warning("MFU runtime persistence init failed: %s", exc)
             self._runtime_db_path = None
             self.persist_runtime_state = False

@@ -40,6 +40,34 @@ else:
         )
 
 
+class ConfigurationError(RuntimeError):
+    """Raised when runtime configuration is unsafe or invalid."""
+
+
+def _normalize_environment(value: object) -> str:
+    normalized = str(value or "").strip().lower()
+    return normalized or "development"
+
+
+def _is_production_environment(value: object) -> bool:
+    return _normalize_environment(value) in {"prod", "production"}
+
+
+def _is_placeholder_jwt_secret(value: object) -> bool:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return True
+    placeholder_fragments = (
+        "your-secret-key",
+        "change-this",
+        "new_secret",
+        "old_secret",
+        "new-secret",
+        "old-secret",
+    )
+    return any(fragment in normalized for fragment in placeholder_fragments)
+
+
 @dataclass
 class DatabaseConfig:
     """Database connection configuration."""
@@ -87,6 +115,7 @@ class AppConfig:
     """Application configuration."""
     app_name: str = "IT-invent Web API"
     version: str = "1.0.0"
+    environment: str = "development"
     debug: bool = False
     cors_origins: List[str] = None
     auth_cookie_name: str = "itinvent_access_token"
@@ -98,8 +127,13 @@ class AppConfig:
     ldap_domain: Optional[str] = None
 
     def __post_init__(self):
+        self.environment = _normalize_environment(self.environment)
         if self.cors_origins is None:
             self.cors_origins = ["http://localhost:5173", "http://localhost:3000"]
+
+    @property
+    def is_production(self) -> bool:
+        return _is_production_environment(self.environment)
 
 
 @dataclass
@@ -194,6 +228,7 @@ class Config:
     @classmethod
     def from_env(cls) -> "Config":
         """Load configuration from environment variables."""
+        environment = _normalize_environment(os.getenv("APP_ENV", os.getenv("ENVIRONMENT", "development")))
         jwt_secret_keys_raw = str(os.getenv("JWT_SECRET_KEYS", "") or "").strip()
         jwt_previous_keys_raw = str(os.getenv("JWT_PREVIOUS_SECRET_KEYS", "") or "").strip()
 
@@ -211,7 +246,7 @@ class Config:
         if cookie_samesite not in {"lax", "strict", "none"}:
             cookie_samesite = "strict"
 
-        return cls(
+        loaded = cls(
             database=DatabaseConfig(
                 host=os.getenv("SQL_SERVER_HOST", "10.103.0.213"),
                 database=os.getenv("SQL_SERVER_DATABASE", "ITINVENT"),
@@ -238,6 +273,7 @@ class Config:
             app=AppConfig(
                 app_name="IT-invent Web API",
                 version="1.0.0",
+                environment=environment,
                 debug=os.getenv("DEBUG", "false").lower() == "true",
                 cors_origins=os.getenv("CORS_ORIGINS", "").split(",") if os.getenv("CORS_ORIGINS") else None,
                 auth_cookie_name=str(os.getenv("AUTH_COOKIE_NAME", "itinvent_access_token")).strip() or "itinvent_access_token",
@@ -295,6 +331,20 @@ class Config:
                 rate_limit_storage_url=(str(os.getenv("RATE_LIMIT_STORAGE_URL", "") or "").strip() or None),
             ),
         )
+        loaded.validate()
+        return loaded
+
+    def validate(self) -> None:
+        """Validate hard security invariants for production runtime."""
+        if not self.app.is_production:
+            return
+        jwt_keys = [self.jwt.secret_key, *self.jwt.previous_secret_keys]
+        if any(_is_placeholder_jwt_secret(item) for item in jwt_keys):
+            raise ConfigurationError(
+                "Production APP_ENV requires non-empty, non-placeholder JWT_SECRET_KEYS or JWT_SECRET_KEY"
+            )
+        if not bool(self.app.auth_cookie_secure):
+            raise ConfigurationError("Production APP_ENV requires AUTH_COOKIE_SECURE=true")
 
 
 # Global config instance

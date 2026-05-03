@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import importlib
+import pytest
 
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -43,6 +44,89 @@ def _raw_user(user_id: int, username: str, full_name: str, role: str, permission
 
 def _sqlite_url(temp_dir: str) -> str:
     return f"sqlite:///{(Path(temp_dir) / 'hub_app.db').as_posix()}"
+
+
+class _FakePostgresDialect:
+    name = "postgresql"
+
+
+class _FakePostgresEngine:
+    dialect = _FakePostgresDialect()
+
+
+class _FakeInspector:
+    def __init__(
+        self,
+        *,
+        columns_by_table: dict[str, set[str]],
+        indexes_by_table: dict[str, set[str]] | None = None,
+    ) -> None:
+        self._columns_by_table = columns_by_table
+        self._indexes_by_table = indexes_by_table or {}
+
+    def has_table(self, table_name: str, *, schema: str | None = None) -> bool:
+        return table_name in self._columns_by_table
+
+    def get_columns(self, table_name: str, *, schema: str | None = None) -> list[dict[str, str]]:
+        return [{"name": column_name} for column_name in self._columns_by_table.get(table_name, set())]
+
+    def get_indexes(self, table_name: str, *, schema: str | None = None) -> list[dict[str, str]]:
+        return [{"name": index_name} for index_name in self._indexes_by_table.get(table_name, set())]
+
+
+def _complete_hub_columns() -> dict[str, set[str]]:
+    return {
+        table_name: set(columns)
+        for table_name, columns in hub_service_module._HUB_REQUIRED_COLUMNS.items()
+    }
+
+
+def _complete_hub_indexes() -> dict[str, set[str]]:
+    return {
+        table_name: set(indexes)
+        for table_name, indexes in hub_service_module._HUB_REQUIRED_INDEXES.items()
+    }
+
+
+def _configure_production_hub_schema_guard(monkeypatch, inspector: _FakeInspector) -> list[str]:
+    init_calls: list[str] = []
+    fake_engine = _FakePostgresEngine()
+    monkeypatch.setattr(hub_service_module.config.app, "environment", "production", raising=False)
+    monkeypatch.setattr(hub_service_module, "initialize_app_schema", lambda database_url: init_calls.append(database_url))
+    monkeypatch.setattr(hub_service_module, "get_app_engine", lambda database_url: fake_engine)
+    monkeypatch.setattr(hub_service_module, "inspect", lambda engine: inspector)
+    monkeypatch.setattr(
+        hub_service_module.HubService,
+        "_connect",
+        lambda self: pytest.fail("production PostgreSQL hub startup must not run runtime DDL"),
+    )
+    return init_calls
+
+
+def test_hub_service_production_postgres_verifies_migrated_schema(monkeypatch):
+    inspector = _FakeInspector(
+        columns_by_table=_complete_hub_columns(),
+        indexes_by_table=_complete_hub_indexes(),
+    )
+    init_calls = _configure_production_hub_schema_guard(monkeypatch, inspector)
+
+    service = hub_service_module.HubService(database_url="postgresql://hub-prod")
+
+    assert service._use_app_db is True
+    assert init_calls == ["postgresql://hub-prod"]
+
+
+def test_hub_service_production_postgres_rejects_incomplete_schema(monkeypatch):
+    columns_by_table = _complete_hub_columns()
+    columns_by_table["hub_tasks"].remove("visibility_scope")
+    inspector = _FakeInspector(
+        columns_by_table=columns_by_table,
+        indexes_by_table=_complete_hub_indexes(),
+    )
+    _configure_production_hub_schema_guard(monkeypatch, inspector)
+
+    with pytest.raises(hub_service_module.HubSchemaConfigurationError, match="hub_tasks.visibility_scope"):
+        hub_service_module.HubService(database_url="postgresql://hub-prod")
 
 
 def test_hub_service_supports_app_db_backend(temp_dir, monkeypatch):

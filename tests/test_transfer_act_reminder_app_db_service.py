@@ -5,6 +5,8 @@ import sys
 from pathlib import Path
 from types import SimpleNamespace
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
@@ -27,6 +29,108 @@ def _make_store(base_dir: Path) -> SimpleNamespace:
         db_path=str(base_dir / "local_store.sqlite3"),
         data_dir=str(data_dir),
     )
+
+
+class _FakePostgresDialect:
+    name = "postgresql"
+
+
+class _FakePostgresEngine:
+    dialect = _FakePostgresDialect()
+
+
+class _FakeInspector:
+    def __init__(
+        self,
+        *,
+        columns_by_table: dict[str, set[str]],
+        indexes_by_table: dict[str, set[str]] | None = None,
+    ) -> None:
+        self._columns_by_table = columns_by_table
+        self._indexes_by_table = indexes_by_table or {}
+
+    def has_table(self, table_name: str, *, schema: str | None = None) -> bool:
+        return table_name in self._columns_by_table
+
+    def get_columns(self, table_name: str, *, schema: str | None = None) -> list[dict[str, str]]:
+        return [{"name": column_name} for column_name in self._columns_by_table.get(table_name, set())]
+
+    def get_indexes(self, table_name: str, *, schema: str | None = None) -> list[dict[str, str]]:
+        return [{"name": index_name} for index_name in self._indexes_by_table.get(table_name, set())]
+
+
+def _complete_reminder_columns() -> dict[str, set[str]]:
+    return {
+        table_name: set(columns)
+        for table_name, columns in reminder_module._REMINDER_REQUIRED_COLUMNS.items()
+    }
+
+
+def _complete_reminder_indexes() -> dict[str, set[str]]:
+    return {
+        table_name: set(indexes)
+        for table_name, indexes in reminder_module._REMINDER_REQUIRED_INDEXES.items()
+    }
+
+
+def _configure_production_reminder_schema_guard(monkeypatch, inspector: _FakeInspector) -> list[str]:
+    init_calls: list[str] = []
+    fake_engine = _FakePostgresEngine()
+    monkeypatch.setattr(reminder_module.config.app, "environment", "production", raising=False)
+    monkeypatch.setattr(reminder_module, "initialize_app_schema", lambda database_url: init_calls.append(database_url))
+    monkeypatch.setattr(reminder_module, "get_app_engine", lambda database_url: fake_engine)
+    monkeypatch.setattr(reminder_module, "inspect", lambda engine: inspector)
+    monkeypatch.setattr(
+        reminder_module.TransferActReminderService,
+        "_connect",
+        lambda self: pytest.fail("production PostgreSQL reminder startup must not run runtime DDL"),
+    )
+    return init_calls
+
+
+def test_transfer_act_reminder_service_production_postgres_verifies_migrated_schema(monkeypatch):
+    inspector = _FakeInspector(
+        columns_by_table=_complete_reminder_columns(),
+        indexes_by_table=_complete_reminder_indexes(),
+    )
+    init_calls = _configure_production_reminder_schema_guard(monkeypatch, inspector)
+
+    service = reminder_module.TransferActReminderService(database_url="postgresql://reminder-prod")
+
+    assert service._use_app_db is True
+    assert init_calls == ["postgresql://reminder-prod"]
+
+
+def test_transfer_act_reminder_service_production_postgres_rejects_incomplete_schema(monkeypatch):
+    columns_by_table = _complete_reminder_columns()
+    columns_by_table["equipment_transfer_act_reminder_groups"].remove("completed_at")
+    inspector = _FakeInspector(
+        columns_by_table=columns_by_table,
+        indexes_by_table=_complete_reminder_indexes(),
+    )
+    _configure_production_reminder_schema_guard(monkeypatch, inspector)
+
+    with pytest.raises(
+        reminder_module.TransferActReminderSchemaConfigurationError,
+        match="equipment_transfer_act_reminder_groups.completed_at",
+    ):
+        reminder_module.TransferActReminderService(database_url="postgresql://reminder-prod")
+
+
+def test_transfer_act_reminder_service_production_postgres_rejects_missing_index(monkeypatch):
+    indexes_by_table = _complete_reminder_indexes()
+    indexes_by_table["equipment_transfer_act_reminders"].remove("idx_equipment_transfer_act_reminders_db_status")
+    inspector = _FakeInspector(
+        columns_by_table=_complete_reminder_columns(),
+        indexes_by_table=indexes_by_table,
+    )
+    _configure_production_reminder_schema_guard(monkeypatch, inspector)
+
+    with pytest.raises(
+        reminder_module.TransferActReminderSchemaConfigurationError,
+        match="equipment_transfer_act_reminders.idx_equipment_transfer_act_reminders_db_status",
+    ):
+        reminder_module.TransferActReminderService(database_url="postgresql://reminder-prod")
 
 
 def test_transfer_act_reminder_service_supports_app_db_backend(temp_dir, monkeypatch):

@@ -10,8 +10,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from sqlalchemy import inspect
+
 from backend.appdb.db import get_app_database_url, get_app_engine, initialize_app_schema, is_app_database_configured
 from backend.appdb.sql_compat import SqlAlchemyCompatConnection
+from backend.config import config
 from backend.db_schema import schema_name
 
 
@@ -31,6 +34,23 @@ _SENSITIVE_MARKERS = (
     "PRIVATE_KEY",
     "MAIL_CREDENTIALS_KEY",
 )
+_AUDIT_TABLE = "env_settings_audit"
+_AUDIT_REQUIRED_COLUMNS = {
+    _AUDIT_TABLE: {
+        "id",
+        "key",
+        "old_value_masked",
+        "new_value_masked",
+        "actor_user_id",
+        "actor_username",
+        "changed_at",
+        "apply_targets",
+        "requires_frontend_build",
+    },
+}
+_AUDIT_REQUIRED_INDEXES = {
+    _AUDIT_TABLE: {"idx_env_settings_audit_key_changed_at"},
+}
 _DIRECT_DESCRIPTIONS = {
     "MAIL_NOTIFICATION_MAX_CONCURRENCY": ("Почта Exchange", "Лимит параллельных опросов mail notification poller."),
     "TELEGRAM_BOT_TOKEN": ("Telegram bot", "Токен Telegram-бота для подключения к Bot API."),
@@ -55,6 +75,7 @@ _DIRECT_DESCRIPTIONS = {
     "MAIL_EXCHANGE_HOST": ("Почта Exchange", "Хост Exchange для почтового модуля."),
     "MAIL_EWS_URL": ("Почта Exchange", "Полный URL EWS Exchange."),
     "MAIL_VERIFY_TLS": ("Почта Exchange", "Проверять ли TLS-сертификат при подключении к Exchange."),
+    "MAIL_TLS_CA_BUNDLE": ("Почта Exchange", "Путь к PEM-файлу внутреннего CA для Exchange при MAIL_VERIFY_TLS=1."),
     "MAIL_IT_RECIPIENTS": ("Почта Exchange", "Список IT-получателей уведомлений."),
     "MAIL_LOG_RETENTION_DAYS": ("Почта Exchange", "Сколько дней хранить журнал почтовых операций."),
     "MAIL_SEARCH_WINDOW_LIMIT": ("Почта Exchange", "Лимит окна поиска писем."),
@@ -206,6 +227,10 @@ class _EnvEntry:
     value: Optional[str] = None
 
 
+class EnvSettingsAuditSchemaConfigurationError(RuntimeError):
+    """Raised when production env settings audit schema is not migration-ready."""
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
 
@@ -312,6 +337,11 @@ class EnvSettingsService:
         self._database_url = get_app_database_url(explicit_database_url) if (explicit_database_url or is_app_database_configured()) else None
         self._use_app_db = bool(self._database_url)
         self._system_schema = schema_name("system", self._database_url)
+        if not self._use_app_db and config.app.is_production:
+            raise EnvSettingsAuditSchemaConfigurationError(
+                "Production env settings audit requires APP_DATABASE_URL; "
+                "legacy SQLite audit storage is development/test only."
+            )
         self.env_path.parent.mkdir(parents=True, exist_ok=True)
         self.audit_db_path.parent.mkdir(parents=True, exist_ok=True)
         if not self.env_path.exists():
@@ -324,13 +354,78 @@ class EnvSettingsService:
         if self._use_app_db and self._database_url:
             return SqlAlchemyCompatConnection(
                 get_app_engine(self._database_url),
-                table_names={"env_settings_audit"},
+                table_names={_AUDIT_TABLE},
                 schema=self._system_schema,
-                returning_id_tables={"env_settings_audit"},
+                returning_id_tables={_AUDIT_TABLE},
             )
         return sqlite3.connect(self.audit_db_path)
 
+    def _is_production_postgres_app_db(self, engine=None) -> bool:
+        if not (self._use_app_db and self._database_url and config.app.is_production):
+            return False
+        resolved_engine = engine or get_app_engine(self._database_url)
+        return str(resolved_engine.dialect.name).lower() == "postgresql"
+
+    def _verify_production_audit_schema(self, engine) -> None:
+        try:
+            inspector = inspect(engine)
+            schema = self._system_schema
+            missing_tables = sorted(
+                table_name
+                for table_name in _AUDIT_REQUIRED_COLUMNS
+                if not inspector.has_table(table_name, schema=schema)
+            )
+            missing_columns: list[str] = []
+            missing_indexes: list[str] = []
+            for table_name, required_columns in _AUDIT_REQUIRED_COLUMNS.items():
+                if table_name in missing_tables:
+                    continue
+                existing_columns = {
+                    str(column.get("name") or "").strip().lower()
+                    for column in inspector.get_columns(table_name, schema=schema)
+                }
+                for column_name in sorted(required_columns):
+                    if column_name.lower() not in existing_columns:
+                        missing_columns.append(f"{table_name}.{column_name}")
+            for table_name, required_indexes in _AUDIT_REQUIRED_INDEXES.items():
+                if table_name in missing_tables:
+                    continue
+                existing_indexes = {
+                    str(index.get("name") or "").strip().lower()
+                    for index in inspector.get_indexes(table_name, schema=schema)
+                }
+                for index_name in sorted(required_indexes):
+                    if index_name.lower() not in existing_indexes:
+                        missing_indexes.append(f"{table_name}.{index_name}")
+        except EnvSettingsAuditSchemaConfigurationError:
+            raise
+        except Exception as exc:
+            raise EnvSettingsAuditSchemaConfigurationError(
+                "Production env settings audit schema could not be inspected; "
+                "verify APP_DATABASE_URL and backend Alembic migrations."
+            ) from exc
+
+        if missing_tables or missing_columns or missing_indexes:
+            details: list[str] = []
+            if missing_tables:
+                details.append("missing tables: " + ", ".join(missing_tables))
+            if missing_columns:
+                details.append("missing columns: " + ", ".join(missing_columns))
+            if missing_indexes:
+                details.append("missing indexes: " + ", ".join(missing_indexes))
+            raise EnvSettingsAuditSchemaConfigurationError(
+                "Production env settings audit schema is incomplete; "
+                "run backend Alembic migrations before startup. "
+                + "; ".join(details)
+            )
+
     def _ensure_audit_schema(self) -> None:
+        if self._use_app_db and self._database_url:
+            engine = get_app_engine(self._database_url)
+            if self._is_production_postgres_app_db(engine):
+                self._verify_production_audit_schema(engine)
+                return
+
         with self._connect_audit() as conn:
             conn.execute(
                 """

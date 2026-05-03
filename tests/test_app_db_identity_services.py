@@ -4,6 +4,8 @@ import importlib
 import sys
 from pathlib import Path
 
+import pytest
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
@@ -16,6 +18,12 @@ from backend.services.session_service import SessionService
 from backend.services.settings_service import SettingsService
 from backend.services.user_db_selection_service import UserDBSelectionService
 from backend.services.user_service import UserService
+
+
+@pytest.fixture(autouse=True)
+def _development_app_environment(monkeypatch):
+    user_module = importlib.import_module("backend.services.user_service")
+    monkeypatch.setattr(user_module.config.app, "environment", "development", raising=False)
 
 
 def _sqlite_url(temp_dir: str) -> str:
