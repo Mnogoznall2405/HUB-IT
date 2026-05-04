@@ -4,6 +4,16 @@
 
 import axios from 'axios';
 import { buildCacheKey, getOrFetchSWR } from '../lib/swrCache';
+import { equipmentTransferActsAPI, UPLOADED_ACT_PARSE_TIMEOUT_MS } from './equipmentTransferActs';
+import { hubAnnouncementsAPI } from './hubAnnouncements';
+import { hubDashboardAPI } from './hubDashboard';
+import { hubMarkdownAPI } from './hubMarkdown';
+import { hubNotificationsAPI } from './hubNotifications';
+import { hubTaskActivityAPI } from './hubTaskActivity';
+import { hubTaskAnalyticsAPI } from './hubTaskAnalytics';
+import { hubTaskFilesAPI } from './hubTaskFiles';
+import { hubTaskSupportAPI } from './hubTaskSupport';
+import { hubTasksAPI } from './hubTasks';
 
 const rawBase = String(import.meta.env.BASE_URL || '/');
 const normalizedBase = rawBase === './' || rawBase === '.' ? '/' : rawBase;
@@ -15,11 +25,9 @@ const basePrefix = normalizedBase.endsWith('/') && normalizedBase.length > 1
 const derivedApiBase = basePrefix === '/' ? '/api' : `${basePrefix}/api`;
 const API_BASE_URL = import.meta.env.VITE_API_URL || derivedApiBase;
 export const API_V1_BASE = `${API_BASE_URL}/v1`;
-export const UPLOADED_ACT_PARSE_TIMEOUT_MS = 180_000;
 const SCAN_HOSTS_404_KEY = 'itinvent_scan_hosts_404';
 const SCAN_HOSTS_404_TTL_MS = 6 * 60 * 60 * 1000;
 const SYSTEM_GET_STALE_TIME_MS = 30_000;
-const PUSH_CONFIG_STALE_TIME_MS = 60_000;
 const MAIL_UNREAD_COUNT_STALE_TIME_MS = 60_000;
 
 const normalizeDbId = (value) => String(value ?? '').trim();
@@ -480,7 +488,7 @@ export const authAPI = {
   },
 };
 
-const getCachedGet = async (
+export const getCachedGet = async (
   cacheScope,
   url,
   {
@@ -1117,343 +1125,187 @@ export const chatAPI = {
   },
 };
 
-export const settingsAPI = {
-  getMySettings: async (options = {}) => {
-    const response = await apiClient.get('/settings/me', {
-      suppressAuthRequired: Boolean(options?.suppressAuthRequired),
-    });
-    return response.data;
-  },
-  updateMySettings: async (payload) => {
-    const response = await apiClient.patch('/settings/me', payload);
-    return response.data;
-  },
-  getAppSettings: async () => {
-    const response = await apiClient.get('/settings/app');
-    return response.data;
-  },
-  updateAppSettings: async (payload) => {
-    const response = await apiClient.patch('/settings/app', payload);
-    return response.data;
-  },
-  getEnvSettings: async () => {
-    const response = await apiClient.get('/settings/env');
-    return response.data;
-  },
-  updateEnvSettings: async (items) => {
-    const response = await apiClient.patch('/settings/env', { items });
-    return response.data;
-  },
-  getNotificationPushConfig: async (options = {}) => {
-    return getCachedGet(
-      'settings-notification-push-config',
-      '/settings/notifications/push-config',
-      {
-        staleTimeMs: PUSH_CONFIG_STALE_TIME_MS,
-        force: Boolean(options?.force),
-      },
-    );
-  },
-  upsertNotificationPushSubscription: async (payload) => {
-    const response = await apiClient.put('/settings/notifications/push-subscription', payload);
-    return response.data;
-  },
-  deleteNotificationPushSubscription: async (endpoint) => {
-    const response = await apiClient.delete('/settings/notifications/push-subscription', {
-      data: { endpoint },
-    });
-    return response.data;
-  },
-  getNotificationPreferences: async () => {
-    const response = await apiClient.get('/settings/notifications/preferences');
-    return response.data;
-  },
-  updateNotificationPreferences: async (payload) => {
-    const response = await apiClient.patch('/settings/notifications/preferences', payload);
-    return response.data;
-  },
-  getAiBots: async () => {
-    const response = await apiClient.get('/ai-bots');
-    return response.data;
-  },
-  createAiBot: async (payload) => {
-    const response = await apiClient.post('/ai-bots', payload);
-    return response.data;
-  },
-  updateAiBot: async (botId, payload) => {
-    const response = await apiClient.patch(`/ai-bots/${encodeURIComponent(botId)}`, payload);
-    return response.data;
-  },
-  getAiBotRuns: async (botId) => {
-    const response = await apiClient.get(`/ai-bots/${encodeURIComponent(botId)}/runs`);
-    return response.data;
-  },
-};
+export { settingsAPI } from './settings';
 
 export const hubAPI = {
-  getDashboard: async (params = {}) => {
-    const response = await apiClient.get('/hub/dashboard', { params });
-    return response.data;
+  get getDashboard() {
+    return hubDashboardAPI.getDashboard;
   },
 
-  getAnnouncements: async (params = {}) => {
-    const response = await apiClient.get('/hub/announcements', { params });
-    return response.data;
+  get pollNotifications() {
+    return hubNotificationsAPI.pollNotifications;
   },
 
-  getAnnouncement: async (announcementId) => {
-    const response = await apiClient.get(`/hub/announcements/${encodeURIComponent(announcementId)}`);
-    return response.data;
+  get getUnreadCounts() {
+    return hubNotificationsAPI.getUnreadCounts;
   },
 
-  createAnnouncement: async (payload, files = []) => {
-    const hasFiles = Array.isArray(files) && files.length > 0;
-    if (!hasFiles) {
-      const response = await apiClient.post('/hub/announcements', payload);
-      return response.data;
-    }
-    const formData = new FormData();
-    formData.append('title', String(payload?.title || ''));
-    formData.append('preview', String(payload?.preview || ''));
-    formData.append('body', String(payload?.body || ''));
-    formData.append('priority', String(payload?.priority || 'normal'));
-    formData.append('audience_scope', String(payload?.audience_scope || 'all'));
-    formData.append('audience_roles', JSON.stringify(Array.isArray(payload?.audience_roles) ? payload.audience_roles : []));
-    formData.append('audience_user_ids', JSON.stringify(Array.isArray(payload?.audience_user_ids) ? payload.audience_user_ids : []));
-    formData.append('requires_ack', payload?.requires_ack ? '1' : '0');
-    formData.append('is_pinned', payload?.is_pinned ? '1' : '0');
-    formData.append('pinned_until', String(payload?.pinned_until || ''));
-    formData.append('published_from', String(payload?.published_from || ''));
-    formData.append('expires_at', String(payload?.expires_at || ''));
-    formData.append('is_active', payload?.is_active === false ? '0' : '1');
-    files.forEach((file) => {
-      if (file) {
-        formData.append('files', file);
-      }
-    });
-    const response = await apiClient.post('/hub/announcements', formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-    return response.data;
+  get markNotificationRead() {
+    return hubNotificationsAPI.markNotificationRead;
   },
 
-  updateAnnouncement: async (announcementId, payload) => {
-    const response = await apiClient.patch(`/hub/announcements/${encodeURIComponent(announcementId)}`, payload);
-    return response.data;
+  get markAllNotificationsRead() {
+    return hubNotificationsAPI.markAllNotificationsRead;
   },
 
-  deleteAnnouncement: async (announcementId) => {
-    const response = await apiClient.delete(`/hub/announcements/${encodeURIComponent(announcementId)}`);
-    return response.data;
+  get getAnnouncements() {
+    return hubAnnouncementsAPI.getAnnouncements;
   },
 
-  markAnnouncementRead: async (announcementId) => {
-    const response = await apiClient.post(`/hub/announcements/${encodeURIComponent(announcementId)}/mark-as-read`);
-    return response.data;
+  get getAnnouncement() {
+    return hubAnnouncementsAPI.getAnnouncement;
   },
 
-  acknowledgeAnnouncement: async (announcementId) => {
-    const response = await apiClient.post(`/hub/announcements/${encodeURIComponent(announcementId)}/ack`);
-    return response.data;
+  get createAnnouncement() {
+    return hubAnnouncementsAPI.createAnnouncement;
   },
 
-  getAnnouncementReads: async (announcementId) => {
-    const response = await apiClient.get(`/hub/announcements/${encodeURIComponent(announcementId)}/reads`);
-    return response.data;
+  get updateAnnouncement() {
+    return hubAnnouncementsAPI.updateAnnouncement;
   },
 
-  downloadAnnouncementAttachment: async (announcementId, attachmentId) => {
-    const response = await apiClient.get(
-      `/hub/announcements/${encodeURIComponent(announcementId)}/attachments/${encodeURIComponent(attachmentId)}/file`,
-      { responseType: 'blob' },
-    );
-    return response;
+  get deleteAnnouncement() {
+    return hubAnnouncementsAPI.deleteAnnouncement;
   },
 
-  getAssignees: async (params = {}) => {
-    const response = await apiClient.get('/hub/users/assignees', { params });
-    return response.data;
+  get markAnnouncementRead() {
+    return hubAnnouncementsAPI.markAnnouncementRead;
   },
 
-  getControllers: async (params = {}) => {
-    const response = await apiClient.get('/hub/users/controllers', { params });
-    return response.data;
+  get acknowledgeAnnouncement() {
+    return hubAnnouncementsAPI.acknowledgeAnnouncement;
   },
 
-  getTaskProjects: async (params = {}) => {
-    const response = await apiClient.get('/hub/task-projects', { params });
-    return response.data;
+  get getAnnouncementReads() {
+    return hubAnnouncementsAPI.getAnnouncementReads;
   },
 
-  createTaskProject: async (payload) => {
-    const response = await apiClient.post('/hub/task-projects', payload);
-    return response.data;
+  get downloadAnnouncementAttachment() {
+    return hubAnnouncementsAPI.downloadAnnouncementAttachment;
   },
 
-  updateTaskProject: async (projectId, payload) => {
-    const response = await apiClient.patch(`/hub/task-projects/${encodeURIComponent(projectId)}`, payload);
-    return response.data;
+  get getAssignees() {
+    return hubTaskSupportAPI.getAssignees;
   },
 
-  getTaskObjects: async (params = {}) => {
-    const response = await apiClient.get('/hub/task-objects', { params });
-    return response.data;
+  get getControllers() {
+    return hubTaskSupportAPI.getControllers;
   },
 
-  createTaskObject: async (payload) => {
-    const response = await apiClient.post('/hub/task-objects', payload);
-    return response.data;
+  get getTaskProjects() {
+    return hubTaskSupportAPI.getTaskProjects;
   },
 
-  updateTaskObject: async (objectId, payload) => {
-    const response = await apiClient.patch(`/hub/task-objects/${encodeURIComponent(objectId)}`, payload);
-    return response.data;
+  get createTaskProject() {
+    return hubTaskSupportAPI.createTaskProject;
   },
 
-  getAnnouncementRecipients: async () => {
-    const response = await apiClient.get('/hub/users/announcement-recipients');
-    return response.data;
+  get updateTaskProject() {
+    return hubTaskSupportAPI.updateTaskProject;
   },
 
-  transformMarkdown: async ({ text, context }) => {
-    const response = await apiClient.post('/hub/markdown/transform', {
-      text: String(text || ''),
-      context: String(context || ''),
-    });
-    return response.data;
+  get getTaskObjects() {
+    return hubTaskSupportAPI.getTaskObjects;
   },
 
-  getTasks: async (params = {}) => {
-    const response = await apiClient.get('/hub/tasks', { params });
-    return response.data;
+  get createTaskObject() {
+    return hubTaskSupportAPI.createTaskObject;
   },
 
-  getTaskAnalytics: async (params = {}) => {
-    const response = await apiClient.get('/hub/tasks/analytics', { params });
-    return response.data;
+  get updateTaskObject() {
+    return hubTaskSupportAPI.updateTaskObject;
   },
 
-  exportTaskAnalyticsExcel: async (params = {}) => {
-    const response = await apiClient.get('/hub/tasks/analytics/export', {
-      params,
-      responseType: 'blob',
-    });
-    return response;
+  get getAnnouncementRecipients() {
+    return hubAnnouncementsAPI.getAnnouncementRecipients;
   },
 
-  getTask: async (taskId) => {
-    const response = await apiClient.get(`/hub/tasks/${encodeURIComponent(taskId)}`);
-    return response.data;
+  get transformMarkdown() {
+    return hubMarkdownAPI.transformMarkdown;
   },
 
-  createTask: async (payload) => {
-    const response = await apiClient.post('/hub/tasks', payload);
-    return response.data;
+  get getTasks() {
+    return hubTasksAPI.getTasks;
   },
 
-  updateTask: async (taskId, payload) => {
-    const response = await apiClient.patch(`/hub/tasks/${encodeURIComponent(taskId)}`, payload);
-    return response.data;
+  get getTaskAnalytics() {
+    return hubTaskAnalyticsAPI.getTaskAnalytics;
   },
 
-  deleteTask: async (taskId) => {
-    const response = await apiClient.delete(`/hub/tasks/${encodeURIComponent(taskId)}`);
-    return response.data;
+  get exportTaskAnalyticsExcel() {
+    return hubTaskAnalyticsAPI.exportTaskAnalyticsExcel;
   },
 
-  startTask: async (taskId) => {
-    const response = await apiClient.post(`/hub/tasks/${encodeURIComponent(taskId)}/start`);
-    return response.data;
+  get getTask() {
+    return hubTasksAPI.getTask;
   },
 
-  submitTask: async ({ taskId, comment = '', file = null }) => {
-    const formData = new FormData();
-    formData.append('comment', String(comment || ''));
-    if (file) {
-      formData.append('file', file);
-    }
-    const response = await apiClient.post(`/hub/tasks/${encodeURIComponent(taskId)}/submit`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-    return response.data;
+  get createTask() {
+    return hubTasksAPI.createTask;
   },
 
-  uploadTaskAttachment: async ({ taskId, file }) => {
-    const formData = new FormData();
-    if (file) {
-      formData.append('file', file);
-    }
-    const response = await apiClient.post(`/hub/tasks/${encodeURIComponent(taskId)}/attachments`, formData, {
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-    });
-    return response.data;
+  get updateTask() {
+    return hubTasksAPI.updateTask;
   },
 
-  reviewTask: async (taskId, payload) => {
-    const response = await apiClient.post(`/hub/tasks/${encodeURIComponent(taskId)}/review`, payload);
-    return response.data;
+  get deleteTask() {
+    return hubTasksAPI.deleteTask;
   },
 
-  downloadTaskAttachment: async ({ taskId, attachmentId }) => {
-    const response = await apiClient.get(
-      `/hub/tasks/${encodeURIComponent(taskId)}/attachments/${encodeURIComponent(attachmentId)}/file`,
-      { responseType: 'blob' },
-    );
-    return response;
+  get startTask() {
+    return hubTasksAPI.startTask;
   },
 
-  downloadTaskReport: async (reportId) => {
-    const response = await apiClient.get(`/hub/tasks/reports/${encodeURIComponent(reportId)}/file`, {
-      responseType: 'blob',
-    });
-    return response;
+  get submitTask() {
+    return hubTasksAPI.submitTask;
   },
 
-  getTaskComments: async (taskId) => {
-    const response = await apiClient.get(`/hub/tasks/${encodeURIComponent(taskId)}/comments`);
-    return response.data;
+  get uploadTaskAttachment() {
+    return hubTaskFilesAPI.uploadTaskAttachment;
   },
 
-  addTaskComment: async (taskId, body) => {
-    const response = await apiClient.post(`/hub/tasks/${encodeURIComponent(taskId)}/comments`, { body });
-    return response.data;
+  get reviewTask() {
+    return hubTasksAPI.reviewTask;
   },
 
-  markTaskCommentsSeen: async (taskId) => {
-    const response = await apiClient.post(`/hub/tasks/${encodeURIComponent(taskId)}/comments/mark-seen`);
-    return response.data;
+  get downloadTaskAttachment() {
+    return hubTaskFilesAPI.downloadTaskAttachment;
   },
 
-  getTaskStatusLog: async (taskId) => {
-    const response = await apiClient.get(`/hub/tasks/${encodeURIComponent(taskId)}/status-log`);
-    return response.data;
+  get downloadTaskReport() {
+    return hubTaskFilesAPI.downloadTaskReport;
   },
 
-  pollNotifications: async (params = {}) => {
-    const response = await apiClient.get('/hub/notifications/poll', { params });
-    return response.data;
+  get getTaskComments() {
+    return hubTaskActivityAPI.getTaskComments;
   },
 
-  getUnreadCounts: async () => {
-    const response = await apiClient.get('/hub/notifications/unread-counts');
-    return response.data;
+  get addTaskComment() {
+    return hubTaskActivityAPI.addTaskComment;
   },
 
-  markNotificationRead: async (notificationId) => {
-    const response = await apiClient.post(`/hub/notifications/${encodeURIComponent(notificationId)}/read`);
-    return response.data;
+  get markTaskCommentsSeen() {
+    return hubTaskActivityAPI.markTaskCommentsSeen;
   },
 
-  markAllNotificationsRead: async () => {
-    const response = await apiClient.post('/hub/notifications/read-all');
-    return response.data;
+  get getTaskStatusLog() {
+    return hubTaskActivityAPI.getTaskStatusLog;
   },
+
+};
+
+export {
+  equipmentTransferActsAPI,
+  hubAnnouncementsAPI,
+  hubDashboardAPI,
+  hubMarkdownAPI,
+  hubNotificationsAPI,
+  hubTaskActivityAPI,
+  hubTaskAnalyticsAPI,
+  hubTaskFilesAPI,
+  hubTaskSupportAPI,
+  hubTasksAPI,
+  UPLOADED_ACT_PARSE_TIMEOUT_MS,
 };
 
 const normalizeMailboxId = (value) => {
@@ -1881,205 +1733,7 @@ export const mailAPI = {
   },
 };
 
-export const networksAPI = {
-  getBranches: async (city = 'tmn') => {
-    const response = await apiClient.get('/networks/branches', { params: { city } });
-    return response.data;
-  },
-
-  createBranch: async (payload) => {
-    const response = await apiClient.post('/networks/branches', payload);
-    return response.data;
-  },
-
-  updateBranch: async (branchId, data) => {
-    const response = await apiClient.patch(`/networks/branches/${branchId}`, data);
-    return response.data;
-  },
-
-  deleteBranch: async (branchId) => {
-    const response = await apiClient.delete(`/networks/branches/${branchId}`);
-    return response.data;
-  },
-
-  getBranchOverview: async (branchId) => {
-    const response = await apiClient.get(`/networks/branches/${branchId}/overview`);
-    return response.data;
-  },
-
-  getDevices: async (branchId) => {
-    const response = await apiClient.get(`/networks/branches/${branchId}/devices`);
-    return response.data;
-  },
-
-  getPorts: async (deviceId, params = {}) => {
-    const response = await apiClient.get(`/networks/devices/${deviceId}/ports`, { params });
-    return response.data;
-  },
-
-  getBranchPorts: async (branchId, params = {}) => {
-    const response = await apiClient.get(`/networks/branches/${branchId}/ports`, { params });
-    return response.data;
-  },
-
-  getBranchSockets: async (branchId, params = {}) => {
-    const response = await apiClient.get(`/networks/branches/${branchId}/sockets`, { params });
-    return response.data;
-  },
-
-  createSocket: async (branchId, payload) => {
-    const response = await apiClient.post(`/networks/branches/${branchId}/sockets`, payload);
-    return response.data;
-  },
-
-  updateSocket: async (socketId, payload) => {
-    const response = await apiClient.patch(`/networks/sockets/${socketId}`, payload);
-    return response.data;
-  },
-
-  deleteSocket: async (socketId) => {
-    const response = await apiClient.delete(`/networks/sockets/${socketId}`);
-    return response.data;
-  },
-
-  bootstrapSockets: async (branchId, payload = {}) => {
-    const response = await apiClient.post(`/networks/branches/${branchId}/sockets/bootstrap`, payload);
-    return response.data;
-  },
-
-  importSocketsTemplate: async (branchId, formData) => {
-    const response = await apiClient.post(`/networks/branches/${branchId}/sockets/import`, formData);
-    return response.data;
-  },
-
-  importEquipment: async (branchId, formData) => {
-    const response = await apiClient.post(`/networks/branches/${branchId}/equipment/import`, formData);
-    return response.data;
-  },
-
-  getBranchDbMapping: async (branchId) => {
-    const response = await apiClient.get(`/networks/branches/${branchId}/db-mapping`);
-    return response.data;
-  },
-
-  updateBranchDbMapping: async (branchId, payload) => {
-    const response = await apiClient.patch(`/networks/branches/${branchId}/db-mapping`, payload);
-    return response.data;
-  },
-
-  syncSocketHostContext: async (branchId, payload = {}) => {
-    const response = await apiClient.post(`/networks/branches/${branchId}/sockets/sync-host-context`, payload);
-    return response.data;
-  },
-
-  resolveSocketFio: async (branchId, payload = {}) => {
-    // Backward compatibility alias; prefer syncSocketHostContext in new code.
-    return networksAPI.syncSocketHostContext(branchId, payload);
-  },
-
-  getMaps: async (branchId) => {
-    const response = await apiClient.get(`/networks/branches/${branchId}/maps`);
-    return response.data;
-  },
-
-  getMapPoints: async (branchId, mapId = null) => {
-    const response = await apiClient.get(`/networks/branches/${branchId}/map-points`, {
-      params: { map_id: mapId || undefined },
-    });
-    return response.data;
-  },
-
-  getAudit: async (params = {}) => {
-    const response = await apiClient.get('/networks/audit', { params });
-    return response.data;
-  },
-
-  importData: async (formData) => {
-    const response = await apiClient.post('/networks/import', formData);
-    return response.data;
-  },
-
-  createDevice: async (payload) => {
-    const response = await apiClient.post('/networks/devices', payload);
-    return response.data;
-  },
-
-  updateDevice: async (deviceId, payload) => {
-    const response = await apiClient.patch(`/networks/devices/${deviceId}`, payload);
-    return response.data;
-  },
-
-  deleteDevice: async (deviceId) => {
-    const response = await apiClient.delete(`/networks/devices/${deviceId}`);
-    return response.data;
-  },
-
-  bootstrapDevicePorts: async (deviceId, payload) => {
-    const response = await apiClient.post(`/networks/devices/${deviceId}/bootstrap-ports`, payload);
-    return response.data;
-  },
-
-  createPort: async (payload) => {
-    const response = await apiClient.post('/networks/ports', payload);
-    return response.data;
-  },
-
-  updatePort: async (portId, payload) => {
-    const response = await apiClient.patch(`/networks/ports/${portId}`, payload);
-    return response.data;
-  },
-
-  deletePort: async (portId) => {
-    const response = await apiClient.delete(`/networks/ports/${portId}`);
-    return response.data;
-  },
-
-  uploadMap: async (formData) => {
-    const response = await apiClient.post('/networks/maps/upload', formData);
-    return response.data;
-  },
-
-  updateMap: async (mapId, payload) => {
-    const response = await apiClient.patch(`/networks/maps/${mapId}`, payload);
-    return response.data;
-  },
-
-  deleteMap: async (mapId) => {
-    const response = await apiClient.delete(`/networks/maps/${mapId}`);
-    return response.data;
-  },
-
-  createMapPoint: async (payload) => {
-    const response = await apiClient.post('/networks/map-points', payload);
-    return response.data;
-  },
-
-  updateMapPoint: async (pointId, payload) => {
-    const response = await apiClient.patch(`/networks/map-points/${pointId}`, payload);
-    return response.data;
-  },
-
-  deleteMapPoint: async (pointId) => {
-    const response = await apiClient.delete(`/networks/map-points/${pointId}`);
-    return response.data;
-  },
-
-  downloadMapFile: async (mapId, params = {}) => {
-    const response = await apiClient.get(`/networks/maps/${mapId}/file`, {
-      params,
-      responseType: 'blob',
-    });
-    return response;
-  },
-
-  exportMapPdf: async (mapId, params = {}) => {
-    const response = await apiClient.get(`/networks/maps/${mapId}/export-pdf`, {
-      params,
-      responseType: 'blob',
-    });
-    return response;
-  },
-};
+export { networksAPI } from './networks';
 
 /**
  * Equipment API methods
@@ -2210,9 +1864,8 @@ export const equipmentAPI = {
     return response.data;
   },
 
-  getEquipmentActs: async (invNo) => {
-    const response = await apiClient.get(`/equipment/${invNo}/acts`);
-    return response.data;
+  get getEquipmentActs() {
+    return equipmentTransferActsAPI.getEquipmentActs;
   },
 
   getEquipmentHistory: async (invNo) => {
@@ -2220,46 +1873,28 @@ export const equipmentAPI = {
     return response.data;
   },
 
-  downloadEquipmentActFile: async (docNo, params = {}) => {
-    const response = await apiClient.get(`/equipment/acts/${docNo}/file`, {
-      params,
-      responseType: 'blob',
-    });
-    return response;
+  get downloadEquipmentActFile() {
+    return equipmentTransferActsAPI.downloadEquipmentActFile;
   },
 
-  parseUploadedAct: async (file, options = {}) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    const manualMode = Boolean(options?.manualMode);
-    const response = await apiClient.post('/equipment/acts/upload/parse', formData, {
-      params: manualMode ? { manual_mode: true } : undefined,
-      headers: {
-        'Content-Type': 'multipart/form-data',
-      },
-      timeout: UPLOADED_ACT_PARSE_TIMEOUT_MS,
-    });
-    return response.data;
+  get parseUploadedAct() {
+    return equipmentTransferActsAPI.parseUploadedAct;
   },
 
-  getUploadedActDraft: async (draftId) => {
-    const response = await apiClient.get(`/equipment/acts/upload/draft/${encodeURIComponent(draftId)}`);
-    return response.data;
+  get getUploadedActDraft() {
+    return equipmentTransferActsAPI.getUploadedActDraft;
   },
 
-  getTransferReminder: async (reminderId) => {
-    const response = await apiClient.get(`/equipment/transfer/reminders/${encodeURIComponent(reminderId)}`);
-    return response.data;
+  get getTransferReminder() {
+    return equipmentTransferActsAPI.getTransferReminder;
   },
 
-  commitUploadedActDraft: async (payload) => {
-    const response = await apiClient.post('/equipment/acts/upload/commit', payload);
-    return response.data;
+  get commitUploadedActDraft() {
+    return equipmentTransferActsAPI.commitUploadedActDraft;
   },
 
-  sendUploadedActEmail: async (payload) => {
-    const response = await apiClient.post('/equipment/acts/upload/email', payload);
-    return response.data;
+  get sendUploadedActEmail() {
+    return equipmentTransferActsAPI.sendUploadedActEmail;
   },
 
   getAllEquipment: async (page = 1, limit = 50) => {
@@ -2381,31 +2016,24 @@ export const equipmentAPI = {
     return response.data;
   },
 
-  transfer: async (payload) => {
-    const response = await apiClient.post('/equipment/transfer', payload);
-    return response.data;
+  get transfer() {
+    return equipmentTransferActsAPI.transfer;
   },
 
-  createTransferActOnly: async (payload) => {
-    const response = await apiClient.post('/equipment/transfer/act-only', payload);
-    return response.data;
+  get createTransferActOnly() {
+    return equipmentTransferActsAPI.createTransferActOnly;
   },
 
-  getTransferActJob: async (jobId) => {
-    const response = await apiClient.get(`/equipment/transfer/act-jobs/${encodeURIComponent(jobId)}`);
-    return response.data;
+  get getTransferActJob() {
+    return equipmentTransferActsAPI.getTransferActJob;
   },
 
-  sendTransferActsEmail: async (payload) => {
-    const response = await apiClient.post('/equipment/transfer/email', payload);
-    return response.data;
+  get sendTransferActsEmail() {
+    return equipmentTransferActsAPI.sendTransferActsEmail;
   },
 
-  downloadTransferAct: async (actId) => {
-    const response = await apiClient.get(`/equipment/transfer/act/${actId}`, {
-      responseType: 'blob',
-    });
-    return response;
+  get downloadTransferAct() {
+    return equipmentTransferActsAPI.downloadTransferAct;
   },
 };
 
@@ -2627,30 +2255,4 @@ export const scanAPI = {
   },
 };
 
-/**
- * AD Users API
- */
-export const adUsersAPI = {
-  getPasswordStatus: async () => {
-    const { data } = await apiClient.get('/ad-users/password-status');
-    return data;
-  },
-  getImportCandidates: async () => {
-    const { data } = await apiClient.get('/ad-users/import-candidates');
-    return data;
-  },
-  importToApp: async (login) => {
-    const { data } = await apiClient.post('/ad-users/import-to-app', { login });
-    return data;
-  },
-  syncToApp: async (logins = []) => {
-    const { data } = await apiClient.post('/ad-users/sync-to-app', {
-      logins: Array.isArray(logins) ? logins : [],
-    });
-    return data;
-  },
-  assignBranch: async (payload) => {
-    const { data } = await apiClient.post('/ad-users/assign-branch', payload);
-    return data;
-  }
-};
+export { adUsersAPI } from './adUsers';

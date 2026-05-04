@@ -6,6 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import select
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
@@ -14,6 +15,7 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 chat_db_module = importlib.import_module("backend.chat.db")
+chat_models_module = importlib.import_module("backend.chat.models")
 chat_service_module = importlib.import_module("backend.chat.service")
 hub_service_module = importlib.import_module("backend.services.hub_service")
 
@@ -175,6 +177,56 @@ def test_forward_message_repeat_keeps_original_attribution(chat_env):
     assert forwarded_once["forward_preview"]["id"] == original["id"]
     assert forwarded_twice["forward_preview"]["id"] == original["id"]
     assert forwarded_twice["body"] == original["body"]
+
+
+def test_forward_message_persistence_advances_sequence_and_read_counters(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    original = service.send_message(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        body="Original message",
+        defer_push_notifications=True,
+    )
+    forwarded = service.forward_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        source_message_id=original["id"],
+        defer_push_notifications=True,
+    )
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == conversation["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        forwarding_user_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 1,
+            )
+        ).scalar_one()
+        recipient_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+
+    assert [item.id for item in messages] == [original["id"], forwarded["id"]]
+    assert [int(item.conversation_seq) for item in messages] == [1, 2]
+    assert messages[1].forward_from_message_id == original["id"]
+    assert conversation_row.last_message_id == forwarded["id"]
+    assert int(conversation_row.last_message_seq) == 2
+    assert forwarding_user_state.last_read_message_id == forwarded["id"]
+    assert int(forwarding_user_state.last_read_seq) == 2
+    assert int(forwarding_user_state.unread_count) == 0
+    assert int(recipient_state.unread_count) == 1
 
 
 def test_message_reference_preview_payloads_share_body_rules(chat_env):

@@ -274,6 +274,33 @@ def test_upload_session_complete_requires_all_chunks(chat_env):
         )
 
 
+def test_upload_session_complete_rejects_corrupt_received_chunk_range(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+    session_id = created["session_id"]
+    file_id = created["files"][0]["file_id"]
+    part_path = service._upload_session_part_path(session_id, file_id)
+    part_path.write_bytes(payload)
+
+    manifest = service._load_upload_session_manifest(session_id)
+    manifest["files"][0]["received_bytes"] = len(payload)
+    manifest["files"][0]["received_chunks"] = [1]
+    service._write_upload_session_manifest(manifest)
+
+    with pytest.raises(ValueError):
+        service.complete_upload_session(
+            current_user_id=1,
+            session_id=session_id,
+        )
+
+
 def test_upload_session_chunk_rejects_unexpected_offset(chat_env):
     service = chat_env["service"]
     conversation = chat_env["direct"]
@@ -283,6 +310,36 @@ def test_upload_session_chunk_rejects_unexpected_offset(chat_env):
         current_user_id=1,
         conversation_id=conversation["id"],
         files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+
+    with pytest.raises(ValueError):
+        service.upload_session_chunk(
+            current_user_id=1,
+            session_id=created["session_id"],
+            file_id=created["files"][0]["file_id"],
+            chunk_index=0,
+            offset=3,
+            payload=payload,
+        )
+
+
+def test_upload_session_duplicate_chunk_rejects_wrong_offset(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"%PDF-1.4 demo"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        files=[{"file_name": "report.pdf", "mime_type": "application/pdf", "size": len(payload)}],
+    )
+    service.upload_session_chunk(
+        current_user_id=1,
+        session_id=created["session_id"],
+        file_id=created["files"][0]["file_id"],
+        chunk_index=0,
+        offset=0,
+        payload=payload,
     )
 
     with pytest.raises(ValueError):
@@ -750,3 +807,223 @@ def test_send_message_client_message_id_is_idempotent_for_same_sender(chat_env):
 
     assert int(message_count) == 1
     assert int(outbox_count) == 1
+
+
+def test_send_message_persistence_advances_sequence_and_read_counters(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    first = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="First persisted message",
+        defer_push_notifications=True,
+    )
+    second = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Second persisted message",
+        defer_push_notifications=True,
+    )
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == conversation["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        sender_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 1,
+            )
+        ).scalar_one()
+        recipient_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+
+    assert [item.id for item in messages] == [first["id"], second["id"]]
+    assert [int(item.conversation_seq) for item in messages] == [1, 2]
+    assert conversation_row.last_message_id == second["id"]
+    assert int(conversation_row.last_message_seq) == 2
+    assert sender_state.last_read_message_id == second["id"]
+    assert int(sender_state.last_read_seq) == 2
+    assert int(sender_state.unread_count) == 0
+    assert int(recipient_state.unread_count) == 2
+
+
+def test_send_files_persistence_advances_sequence_and_read_counters(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    first = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="First file",
+        uploads=[_upload("first.pdf", b"%PDF-1.4 first", "application/pdf")],
+        defer_push_notifications=True,
+    )
+    second = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Second file",
+        uploads=[_upload("second.pdf", b"%PDF-1.4 second", "application/pdf")],
+        defer_push_notifications=True,
+    )
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == conversation["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        attachment_count = session.execute(
+            select(func.count()).select_from(chat_models_module.ChatMessageAttachment).where(
+                chat_models_module.ChatMessageAttachment.conversation_id == conversation["id"],
+            )
+        ).scalar_one()
+        sender_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 1,
+            )
+        ).scalar_one()
+        recipient_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+
+    assert [item.id for item in messages] == [first["id"], second["id"]]
+    assert [item.kind for item in messages] == ["file", "file"]
+    assert [int(item.conversation_seq) for item in messages] == [1, 2]
+    assert int(attachment_count) == 2
+    assert conversation_row.last_message_id == second["id"]
+    assert int(conversation_row.last_message_seq) == 2
+    assert sender_state.last_read_message_id == second["id"]
+    assert int(sender_state.last_read_seq) == 2
+    assert int(sender_state.unread_count) == 0
+    assert int(recipient_state.unread_count) == 2
+
+
+def test_forward_file_persistence_copies_attachment_and_advances_read_counters(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+
+    original = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Forward me",
+        uploads=[_upload("forward.pdf", b"%PDF-1.4 forward", "application/pdf")],
+        defer_push_notifications=True,
+    )
+    forwarded = service.forward_message(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+        source_message_id=original["id"],
+        defer_push_notifications=True,
+    )
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == conversation["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        attachment_count = session.execute(
+            select(func.count()).select_from(chat_models_module.ChatMessageAttachment).where(
+                chat_models_module.ChatMessageAttachment.conversation_id == conversation["id"],
+            )
+        ).scalar_one()
+        forwarding_user_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+        recipient_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 1,
+            )
+        ).scalar_one()
+
+    assert forwarded["kind"] == "file"
+    assert forwarded["forward_preview"]["id"] == original["id"]
+    assert [item["file_name"] for item in forwarded["attachments"]] == ["forward.pdf"]
+    assert [item.id for item in messages] == [original["id"], forwarded["id"]]
+    assert [int(item.conversation_seq) for item in messages] == [1, 2]
+    assert messages[1].forward_from_message_id == original["id"]
+    assert int(attachment_count) == 2
+    assert conversation_row.last_message_id == forwarded["id"]
+    assert int(conversation_row.last_message_seq) == 2
+    assert forwarding_user_state.last_read_message_id == forwarded["id"]
+    assert int(forwarding_user_state.last_read_seq) == 2
+    assert int(forwarding_user_state.unread_count) == 0
+    assert int(recipient_state.unread_count) == 1
+
+    download = service.get_attachment_for_download(
+        current_user_id=1,
+        message_id=forwarded["id"],
+        attachment_id=forwarded["attachments"][0]["id"],
+    )
+    assert Path(download["path"]).read_bytes() == b"%PDF-1.4 forward"
+
+
+def test_system_message_persistence_advances_sequence_and_read_counters(chat_env):
+    service = chat_env["service"]
+    group = service.create_group_conversation(
+        current_user_id=1,
+        title="System persistence",
+        member_user_ids=[2],
+    )
+
+    service.add_group_members(
+        current_user_id=1,
+        conversation_id=group["id"],
+        member_user_ids=[3],
+    )
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, group["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == group["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        states = {
+            int(item.user_id): item
+            for item in session.execute(
+                select(chat_models_module.ChatConversationUserState).where(
+                    chat_models_module.ChatConversationUserState.conversation_id == group["id"],
+                )
+            ).scalars()
+        }
+
+    assert len(messages) == 1
+    system_message = messages[0]
+    assert system_message.kind == "system"
+    assert int(system_message.conversation_seq) == 1
+    assert "добавил" in system_message.body
+    assert conversation_row.last_message_id == system_message.id
+    assert int(conversation_row.last_message_seq) == 1
+    assert states[1].last_read_message_id == system_message.id
+    assert int(states[1].last_read_seq) == 1
+    assert int(states[1].unread_count) == 0
+    assert int(states[2].unread_count) == 1
+    assert int(states[3].unread_count) == 0

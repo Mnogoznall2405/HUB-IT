@@ -936,6 +936,48 @@ describe('ChatBubble', () => {
     expect(screen.getByTestId('chat-unread-separator')).toBeInTheDocument();
   });
 
+  it('forwards message-list load older and jump-to-latest actions', () => {
+    const onLoadOlder = vi.fn();
+    const onJumpToLatest = vi.fn();
+
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          activeConversation: {
+            ...buildThreadProps().activeConversation,
+            unread_count: 2,
+          },
+          messages: [
+            {
+              id: 'msg-list-action',
+              conversation_id: 'conv-1',
+              kind: 'text',
+              body: 'List action anchor',
+              created_at: '2026-03-21T10:00:00Z',
+              is_own: false,
+              sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+            },
+          ],
+          messagesHasMore: true,
+          showJumpToLatest: true,
+          onLoadOlder,
+          onJumpToLatest,
+        })}
+      />,
+    );
+
+    const messageListActionButtons = screen.getAllByRole('button')
+      .filter((button) => !button.getAttribute('aria-label') && String(button.textContent || '').trim());
+
+    expect(messageListActionButtons).toHaveLength(2);
+
+    fireEvent.click(messageListActionButtons[0]);
+    expect(onLoadOlder).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(messageListActionButtons[1]);
+    expect(onJumpToLatest).toHaveBeenCalledTimes(1);
+  });
+
   it('does not rescan date markers on every sticky-date scroll frame', async () => {
     renderWithTheme(
       <ChatThread
@@ -1357,6 +1399,54 @@ describe('ChatThread composer', () => {
     expect(screen.getByTestId('chat-mention-suggestions')).toBeInTheDocument();
     fireEvent.click(screen.getByTestId('chat-mention-option-assignee'));
     expect(composer).toHaveValue('@assignee ');
+  });
+
+  it('renders selected files and forwards composer submit interactions', () => {
+    const onOpenFileDialog = vi.fn();
+    const onClearSelectedFiles = vi.fn();
+    const onComposerKeyDown = vi.fn();
+    const onSendMessage = vi.fn();
+
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          messageText: 'ready',
+          selectedFiles: [
+            new File(['one'], 'report.pdf', { type: 'application/pdf' }),
+            new File(['two'], 'photo.png', { type: 'image/png' }),
+            new File(['three'], 'archive.zip', { type: 'application/zip' }),
+            new File(['four'], 'notes.txt', { type: 'text/plain' }),
+          ],
+          selectedFilesSummary: {
+            finalTotalBytes: 4096,
+            originalTotalBytes: 8192,
+          },
+          fileCaption: 'caption',
+          onOpenFileDialog,
+          onClearSelectedFiles,
+          onComposerKeyDown,
+          onSendMessage,
+        })}
+      />,
+    );
+
+    expect(screen.getByText('report.pdf')).toBeInTheDocument();
+    expect(screen.getByText('photo.png')).toBeInTheDocument();
+    expect(screen.getByText('archive.zip')).toBeInTheDocument();
+    expect(screen.getByText('+1')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Изменить'));
+    fireEvent.click(screen.getByText('Очистить'));
+    expect(onOpenFileDialog).toHaveBeenCalledTimes(1);
+    expect(onClearSelectedFiles).toHaveBeenCalledTimes(1);
+
+    fireEvent.keyDown(screen.getByTestId('chat-composer-textarea'), { key: 'Enter', code: 'Enter' });
+    expect(onComposerKeyDown).toHaveBeenCalledTimes(1);
+
+    const sendButton = screen.getByTestId('chat-composer-send-button');
+    expect(sendButton).not.toBeDisabled();
+    fireEvent.click(sendButton);
+    expect(onSendMessage).toHaveBeenCalledTimes(1);
   });
 
   it('renders Telegram-style file drop panel during drag over', () => {

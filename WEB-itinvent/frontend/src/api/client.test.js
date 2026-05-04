@@ -25,6 +25,23 @@ vi.mock('axios', () => ({
   },
 }));
 
+const HUB_ANNOUNCEMENTS_MODULE = './hubAnnouncements.js';
+const importHubAnnouncementsAPI = () => import(HUB_ANNOUNCEMENTS_MODULE);
+const HUB_TASKS_MODULE = './hubTasks.js';
+const importHubTasksAPI = () => import(HUB_TASKS_MODULE);
+const HUB_TASK_SUPPORT_MODULE = './hubTaskSupport.js';
+const importHubTaskSupportAPI = () => import(HUB_TASK_SUPPORT_MODULE);
+const HUB_TASK_ANALYTICS_MODULE = './hubTaskAnalytics.js';
+const importHubTaskAnalyticsAPI = () => import(HUB_TASK_ANALYTICS_MODULE);
+const HUB_TASK_ACTIVITY_MODULE = './hubTaskActivity.js';
+const importHubTaskActivityAPI = () => import(HUB_TASK_ACTIVITY_MODULE);
+const HUB_TASK_FILES_MODULE = './hubTaskFiles.js';
+const importHubTaskFilesAPI = () => import(HUB_TASK_FILES_MODULE);
+const HUB_MARKDOWN_MODULE = './hubMarkdown.js';
+const importHubMarkdownAPI = () => import(HUB_MARKDOWN_MODULE);
+const EQUIPMENT_TRANSFER_ACTS_MODULE = './equipmentTransferActs.js';
+const importEquipmentTransferActsAPI = () => import(EQUIPMENT_TRANSFER_ACTS_MODULE);
+
 describe('apiClient auth response interceptor', () => {
   beforeEach(async () => {
     window.localStorage.clear();
@@ -305,12 +322,153 @@ describe('equipmentAPI.getTransferActJob', () => {
   });
 });
 
+describe('equipmentTransferActsAPI contract', () => {
+  const transferActMethods = [
+    'getEquipmentActs',
+    'downloadEquipmentActFile',
+    'parseUploadedAct',
+    'getUploadedActDraft',
+    'getTransferReminder',
+    'commitUploadedActDraft',
+    'sendUploadedActEmail',
+    'transfer',
+    'createTransferActOnly',
+    'getTransferActJob',
+    'sendTransferActsEmail',
+    'downloadTransferAct',
+  ];
+
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.get.mockResolvedValue({ data: { ok: true } });
+    window.localStorage.clear();
+  });
+
+  it('parses uploaded acts as multipart FormData with optional manual_mode and the long timeout', async () => {
+    const { equipmentTransferActsAPI } = await importEquipmentTransferActsAPI();
+    const { UPLOADED_ACT_PARSE_TIMEOUT_MS } = await import('./client');
+    const file = new File(['pdf'], 'act.pdf', { type: 'application/pdf' });
+
+    await equipmentTransferActsAPI.parseUploadedAct(file);
+    await equipmentTransferActsAPI.parseUploadedAct(file, { manualMode: true });
+
+    expect(apiClientMock.post).toHaveBeenCalledTimes(2);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(
+      1,
+      '/equipment/acts/upload/parse',
+      expect.any(FormData),
+      {
+        params: undefined,
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+        timeout: UPLOADED_ACT_PARSE_TIMEOUT_MS,
+      },
+    );
+    expect(apiClientMock.post.mock.calls[0][1].get('file')).toBe(file);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(
+      2,
+      '/equipment/acts/upload/parse',
+      expect.any(FormData),
+      expect.objectContaining({
+        params: { manual_mode: true },
+        timeout: UPLOADED_ACT_PARSE_TIMEOUT_MS,
+      }),
+    );
+    expect(apiClientMock.post.mock.calls[1][1].get('file')).toBe(file);
+    expect(UPLOADED_ACT_PARSE_TIMEOUT_MS).toBe(180000);
+  });
+
+  it('returns raw blob responses for downloads and preserves current unencoded download ids', async () => {
+    const { equipmentTransferActsAPI } = await importEquipmentTransferActsAPI();
+    const actFileResponse = { data: new Blob(['act']), headers: { 'content-type': 'application/pdf' } };
+    const transferActResponse = { data: new Blob(['transfer']), headers: { 'content-type': 'application/pdf' } };
+    apiClientMock.get
+      .mockResolvedValueOnce(actFileResponse)
+      .mockResolvedValueOnce(transferActResponse);
+
+    await expect(equipmentTransferActsAPI.downloadEquipmentActFile('DOC/1 A', { preview: true }))
+      .resolves.toBe(actFileResponse);
+    await expect(equipmentTransferActsAPI.downloadTransferAct('act/1 A'))
+      .resolves.toBe(transferActResponse);
+
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/equipment/acts/DOC/1 A/file', {
+      params: { preview: true },
+      responseType: 'blob',
+    });
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/equipment/transfer/act/act/1 A', {
+      responseType: 'blob',
+    });
+  });
+
+  it('returns response.data and preserves current route id encoding for read endpoints', async () => {
+    const { equipmentTransferActsAPI } = await importEquipmentTransferActsAPI();
+    apiClientMock.get
+      .mockResolvedValueOnce({ data: { acts: [] } })
+      .mockResolvedValueOnce({ data: { draft_id: 'draft/1 A' } })
+      .mockResolvedValueOnce({ data: { reminder_id: 'rem/1 A' } })
+      .mockResolvedValueOnce({ data: { job_id: 'job/1 A' } });
+
+    await expect(equipmentTransferActsAPI.getEquipmentActs('INV/1 A')).resolves.toEqual({ acts: [] });
+    await expect(equipmentTransferActsAPI.getUploadedActDraft('draft/1 A'))
+      .resolves.toEqual({ draft_id: 'draft/1 A' });
+    await expect(equipmentTransferActsAPI.getTransferReminder('rem/1 A'))
+      .resolves.toEqual({ reminder_id: 'rem/1 A' });
+    await expect(equipmentTransferActsAPI.getTransferActJob('job/1 A'))
+      .resolves.toEqual({ job_id: 'job/1 A' });
+
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/equipment/INV/1 A/acts');
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/equipment/acts/upload/draft/draft%2F1%20A');
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(3, '/equipment/transfer/reminders/rem%2F1%20A');
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(4, '/equipment/transfer/act-jobs/job%2F1%20A');
+  });
+
+  it('posts transfer and uploaded-act mutations to the existing endpoints', async () => {
+    const { equipmentTransferActsAPI } = await importEquipmentTransferActsAPI();
+    const payload = { inv_nos: ['1001'], target_owner: 'owner-2' };
+
+    await equipmentTransferActsAPI.commitUploadedActDraft(payload);
+    await equipmentTransferActsAPI.sendUploadedActEmail(payload);
+    await equipmentTransferActsAPI.transfer(payload);
+    await equipmentTransferActsAPI.createTransferActOnly(payload);
+    await equipmentTransferActsAPI.sendTransferActsEmail(payload);
+
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/equipment/acts/upload/commit', payload);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/equipment/acts/upload/email', payload);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(3, '/equipment/transfer', payload);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(4, '/equipment/transfer/act-only', payload);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(5, '/equipment/transfer/email', payload);
+  });
+
+  it('keeps client equipmentAPI methods compatible with the dedicated module and re-export', async () => {
+    const { equipmentTransferActsAPI } = await importEquipmentTransferActsAPI();
+    const {
+      equipmentAPI,
+      equipmentTransferActsAPI: clientEquipmentTransferActsAPI,
+    } = await import('./client');
+
+    expect(clientEquipmentTransferActsAPI).toBe(equipmentTransferActsAPI);
+    transferActMethods.forEach((methodName) => {
+      expect(equipmentAPI[methodName]).toBe(equipmentTransferActsAPI[methodName]);
+    });
+  });
+});
+
 describe('adUsersAPI', () => {
   beforeEach(() => {
     apiClientMock.get.mockReset();
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
     apiClientMock.get.mockResolvedValue({ data: [] });
     window.localStorage.clear();
+  });
+
+  it('loads AD import candidates through the dedicated AD users module', async () => {
+    const { adUsersAPI } = await import('./adUsers');
+
+    await adUsersAPI.getImportCandidates();
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/ad-users/import-candidates');
   });
 
   it('loads AD import candidates for web-user import', async () => {
@@ -758,6 +916,541 @@ describe('chatAPI task share endpoints', () => {
   });
 });
 
+describe('hubNotificationsAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.get.mockResolvedValue({ data: { items: [], latest_id: 'notif-1' } });
+    window.localStorage.clear();
+  });
+
+  it('polls hub notifications through the dedicated hub notifications module', async () => {
+    const { hubNotificationsAPI } = await import('./hubNotifications');
+
+    const result = await hubNotificationsAPI.pollNotifications({
+      since_id: 'notif-0',
+      limit: 20,
+    });
+
+    expect(result).toEqual({ items: [], latest_id: 'notif-1' });
+    expect(apiClientMock.get).toHaveBeenCalledWith('/hub/notifications/poll', {
+      params: {
+        since_id: 'notif-0',
+        limit: 20,
+      },
+    });
+  });
+
+  it('loads unread counts and marks notifications through the dedicated module', async () => {
+    const { hubNotificationsAPI } = await import('./hubNotifications');
+
+    await hubNotificationsAPI.getUnreadCounts();
+    await hubNotificationsAPI.markNotificationRead('notif/read 1');
+    await hubNotificationsAPI.markAllNotificationsRead();
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/hub/notifications/unread-counts');
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/hub/notifications/notif%2Fread%201/read');
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/hub/notifications/read-all');
+  });
+
+  it('keeps the client hubAPI notification methods compatible with the dedicated module', async () => {
+    const { hubNotificationsAPI } = await import('./hubNotifications');
+    const { hubAPI } = await import('./client');
+
+    expect(hubAPI.pollNotifications).toBe(hubNotificationsAPI.pollNotifications);
+    expect(hubAPI.getUnreadCounts).toBe(hubNotificationsAPI.getUnreadCounts);
+    expect(hubAPI.markNotificationRead).toBe(hubNotificationsAPI.markNotificationRead);
+    expect(hubAPI.markAllNotificationsRead).toBe(hubNotificationsAPI.markAllNotificationsRead);
+  });
+});
+
+describe('hubDashboardAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.get.mockResolvedValue({
+      data: {
+        announcements: [],
+        tasks: [],
+        counters: { unread_announcements: 0 },
+      },
+    });
+    window.localStorage.clear();
+  });
+
+  it('loads dashboard data through the dedicated hub dashboard module', async () => {
+    const { hubDashboardAPI } = await import('./hubDashboard');
+
+    const result = await hubDashboardAPI.getDashboard({
+      limit: 5,
+      include_completed: false,
+    });
+
+    expect(result).toEqual({
+      announcements: [],
+      tasks: [],
+      counters: { unread_announcements: 0 },
+    });
+    expect(apiClientMock.get).toHaveBeenCalledWith('/hub/dashboard', {
+      params: {
+        limit: 5,
+        include_completed: false,
+      },
+    });
+  });
+
+  it('keeps the client hubAPI dashboard method compatible with the dedicated module', async () => {
+    const { hubDashboardAPI } = await import('./hubDashboard');
+    const { hubAPI } = await import('./client');
+
+    expect(hubAPI.getDashboard).toBe(hubDashboardAPI.getDashboard);
+  });
+});
+
+describe('hubAnnouncementsAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { id: 'ann-1' } });
+    apiClientMock.get.mockResolvedValue({ data: { id: 'ann-1' } });
+    window.localStorage.clear();
+  });
+
+  it('creates announcements with JSON through the dedicated hub announcements module', async () => {
+    const { hubAnnouncementsAPI } = await importHubAnnouncementsAPI();
+    const payload = {
+      title: 'Maintenance',
+      preview: 'Short preview',
+      body: 'Full body',
+      priority: 'high',
+      audience_scope: 'all',
+    };
+
+    const result = await hubAnnouncementsAPI.createAnnouncement(payload);
+
+    expect(result).toEqual({ id: 'ann-1' });
+    expect(apiClientMock.post).toHaveBeenCalledWith('/hub/announcements', payload);
+  });
+
+  it('creates announcements with files as multipart FormData', async () => {
+    const { hubAnnouncementsAPI } = await importHubAnnouncementsAPI();
+    const attachment = new Blob(['hello'], { type: 'text/plain' });
+
+    await hubAnnouncementsAPI.createAnnouncement(
+      {
+        title: 'With file',
+        body: 'Body',
+        requires_ack: true,
+        is_pinned: true,
+      },
+      [attachment],
+    );
+
+    expect(apiClientMock.post).toHaveBeenCalledTimes(1);
+    const [url, body, config] = apiClientMock.post.mock.calls[0];
+    expect(url).toBe('/hub/announcements');
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.get('title')).toBe('With file');
+    expect(body.get('requires_ack')).toBe('1');
+    expect(body.get('is_pinned')).toBe('1');
+    expect(body.getAll('files')).toHaveLength(1);
+    expect(body.getAll('files')[0]).toBeInstanceOf(Blob);
+    expect(config).toEqual({
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  });
+
+  it('returns the raw blob response when downloading announcement attachments', async () => {
+    const { hubAnnouncementsAPI } = await importHubAnnouncementsAPI();
+    const blobResponse = { data: new Blob(['file']), headers: { 'content-type': 'text/plain' } };
+    apiClientMock.get.mockResolvedValueOnce(blobResponse);
+
+    const result = await hubAnnouncementsAPI.downloadAnnouncementAttachment('ann/1', 'file 1');
+
+    expect(result).toBe(blobResponse);
+    expect(apiClientMock.get).toHaveBeenCalledWith(
+      '/hub/announcements/ann%2F1/attachments/file%201/file',
+      { responseType: 'blob' },
+    );
+  });
+
+  it('keeps the client hubAPI announcement methods compatible with the dedicated module', async () => {
+    const { hubAnnouncementsAPI } = await importHubAnnouncementsAPI();
+    const { hubAPI } = await import('./client');
+
+    expect(hubAPI.createAnnouncement).toBe(hubAnnouncementsAPI.createAnnouncement);
+    expect(hubAPI.downloadAnnouncementAttachment).toBe(hubAnnouncementsAPI.downloadAnnouncementAttachment);
+  });
+});
+
+describe('hubTasksAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.patch = vi.fn().mockResolvedValue({ data: { id: 'task/1', title: 'Updated' } });
+    apiClientMock.delete = vi.fn().mockResolvedValue({ data: { deleted: true } });
+    apiClientMock.get.mockResolvedValue({ data: { items: [], total: 0 } });
+    window.localStorage.clear();
+  });
+
+  it('loads, creates, updates, deletes, starts, and reviews tasks through the dedicated module', async () => {
+    const { hubTasksAPI } = await importHubTasksAPI();
+    const filters = {
+      q: 'printer',
+      status: 'open',
+      project_id: 'project 1',
+      assignee_id: 'user/1',
+      limit: 20,
+      offset: 40,
+    };
+    const createPayload = { title: 'Replace toner', project_id: 'project 1' };
+    const updatePayload = { title: 'Replace toner cartridge', priority: 'high' };
+    const reviewPayload = { decision: 'approve', comment: 'Looks good' };
+
+    const listResult = await hubTasksAPI.getTasks(filters);
+    apiClientMock.get.mockResolvedValueOnce({ data: { id: 'task/1', title: 'Replace toner' } });
+    const detailResult = await hubTasksAPI.getTask('task/1');
+    apiClientMock.post.mockResolvedValueOnce({ data: { id: 'task-new' } });
+    const createResult = await hubTasksAPI.createTask(createPayload);
+    const updateResult = await hubTasksAPI.updateTask('task/1', updatePayload);
+    const deleteResult = await hubTasksAPI.deleteTask('task/1');
+    apiClientMock.post.mockResolvedValueOnce({ data: { id: 'task/1', status: 'in_progress' } });
+    const startResult = await hubTasksAPI.startTask('task/1');
+    apiClientMock.post.mockResolvedValueOnce({ data: { id: 'task/1', status: 'approved' } });
+    const reviewResult = await hubTasksAPI.reviewTask('task/1', reviewPayload);
+
+    expect(listResult).toEqual({ items: [], total: 0 });
+    expect(detailResult).toEqual({ id: 'task/1', title: 'Replace toner' });
+    expect(createResult).toEqual({ id: 'task-new' });
+    expect(updateResult).toEqual({ id: 'task/1', title: 'Updated' });
+    expect(deleteResult).toEqual({ deleted: true });
+    expect(startResult).toEqual({ id: 'task/1', status: 'in_progress' });
+    expect(reviewResult).toEqual({ id: 'task/1', status: 'approved' });
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/hub/tasks', { params: filters });
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/hub/tasks/task%2F1');
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/hub/tasks', createPayload);
+    expect(apiClientMock.patch).toHaveBeenCalledWith('/hub/tasks/task%2F1', updatePayload);
+    expect(apiClientMock.delete).toHaveBeenCalledWith('/hub/tasks/task%2F1');
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/hub/tasks/task%2F1/start');
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(3, '/hub/tasks/task%2F1/review', reviewPayload);
+  });
+
+  it('submits tasks as multipart FormData with optional comment and file', async () => {
+    const { hubTasksAPI } = await importHubTasksAPI();
+    const file = new File(['report'], 'report.txt', { type: 'text/plain' });
+    apiClientMock.post.mockResolvedValueOnce({ data: { id: 'task/1', status: 'submitted' } });
+
+    const result = await hubTasksAPI.submitTask({
+      taskId: 'task/1',
+      comment: 'Ready for review',
+      file,
+    });
+
+    expect(result).toEqual({ id: 'task/1', status: 'submitted' });
+    expect(apiClientMock.post).toHaveBeenCalledTimes(1);
+    const [url, body, config] = apiClientMock.post.mock.calls[0];
+    expect(url).toBe('/hub/tasks/task%2F1/submit');
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.get('comment')).toBe('Ready for review');
+    expect(body.getAll('file')).toEqual([file]);
+    expect(config).toEqual({
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  });
+
+  it('keeps client hubAPI task methods compatible with the dedicated module', async () => {
+    const { hubTasksAPI } = await importHubTasksAPI();
+    const { hubAPI, hubTasksAPI: clientHubTasksAPI } = await import('./client');
+
+    expect(clientHubTasksAPI).toBe(hubTasksAPI);
+    expect(hubAPI.getTasks).toBe(hubTasksAPI.getTasks);
+    expect(hubAPI.getTask).toBe(hubTasksAPI.getTask);
+    expect(hubAPI.createTask).toBe(hubTasksAPI.createTask);
+    expect(hubAPI.updateTask).toBe(hubTasksAPI.updateTask);
+    expect(hubAPI.deleteTask).toBe(hubTasksAPI.deleteTask);
+    expect(hubAPI.startTask).toBe(hubTasksAPI.startTask);
+    expect(hubAPI.submitTask).toBe(hubTasksAPI.submitTask);
+    expect(hubAPI.reviewTask).toBe(hubTasksAPI.reviewTask);
+  });
+});
+
+describe('hubTaskSupportAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { id: 'created' } });
+    apiClientMock.patch = vi.fn().mockResolvedValue({ data: { id: 'updated' } });
+    apiClientMock.get.mockResolvedValue({ data: [] });
+    window.localStorage.clear();
+  });
+
+  it('loads task support directories with route params through the dedicated module', async () => {
+    const { hubTaskSupportAPI } = await importHubTaskSupportAPI();
+
+    await hubTaskSupportAPI.getAssignees({ q: 'ivan', role: 'assignee' });
+    await hubTaskSupportAPI.getControllers({ q: 'petrov', active: true });
+    await hubTaskSupportAPI.getTaskProjects({ q: 'infra', include_archived: false });
+    await hubTaskSupportAPI.getTaskObjects({ project_id: 'project 1', q: 'printer' });
+
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/hub/users/assignees', {
+      params: { q: 'ivan', role: 'assignee' },
+    });
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/hub/users/controllers', {
+      params: { q: 'petrov', active: true },
+    });
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(3, '/hub/task-projects', {
+      params: { q: 'infra', include_archived: false },
+    });
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(4, '/hub/task-objects', {
+      params: { project_id: 'project 1', q: 'printer' },
+    });
+  });
+
+  it('creates and updates task projects and objects through the dedicated module', async () => {
+    const { hubTaskSupportAPI } = await importHubTaskSupportAPI();
+    const projectPayload = { name: 'Infra', description: 'Core systems' };
+    const objectPayload = { name: 'Printer', project_id: 'project 1' };
+
+    await hubTaskSupportAPI.createTaskProject(projectPayload);
+    await hubTaskSupportAPI.createTaskObject(objectPayload);
+    await hubTaskSupportAPI.updateTaskProject('project/1', { name: 'Infra updated' });
+    await hubTaskSupportAPI.updateTaskObject('object 1', { name: 'Printer updated' });
+
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/hub/task-projects', projectPayload);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/hub/task-objects', objectPayload);
+    expect(apiClientMock.patch).toHaveBeenNthCalledWith(1, '/hub/task-projects/project%2F1', {
+      name: 'Infra updated',
+    });
+    expect(apiClientMock.patch).toHaveBeenNthCalledWith(2, '/hub/task-objects/object%201', {
+      name: 'Printer updated',
+    });
+  });
+
+  it('keeps client hubAPI task support methods compatible with the dedicated module', async () => {
+    const { hubTaskSupportAPI } = await importHubTaskSupportAPI();
+    const { hubAPI, hubTaskSupportAPI: clientHubTaskSupportAPI } = await import('./client');
+
+    expect(clientHubTaskSupportAPI).toBe(hubTaskSupportAPI);
+    expect(hubAPI.getAssignees).toBe(hubTaskSupportAPI.getAssignees);
+    expect(hubAPI.getControllers).toBe(hubTaskSupportAPI.getControllers);
+    expect(hubAPI.getTaskProjects).toBe(hubTaskSupportAPI.getTaskProjects);
+    expect(hubAPI.createTaskProject).toBe(hubTaskSupportAPI.createTaskProject);
+    expect(hubAPI.updateTaskProject).toBe(hubTaskSupportAPI.updateTaskProject);
+    expect(hubAPI.getTaskObjects).toBe(hubTaskSupportAPI.getTaskObjects);
+    expect(hubAPI.createTaskObject).toBe(hubTaskSupportAPI.createTaskObject);
+    expect(hubAPI.updateTaskObject).toBe(hubTaskSupportAPI.updateTaskObject);
+  });
+});
+
+describe('hubTaskAnalyticsAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.get.mockResolvedValue({ data: { totals: { open: 2 }, by_status: [] } });
+    window.localStorage.clear();
+  });
+
+  it('loads task analytics with params through the dedicated module', async () => {
+    const { hubTaskAnalyticsAPI } = await importHubTaskAnalyticsAPI();
+
+    const result = await hubTaskAnalyticsAPI.getTaskAnalytics({
+      project_id: 'project 1',
+      date_from: '2026-05-01',
+      date_to: '2026-05-31',
+      group_by: 'assignee',
+    });
+
+    expect(result).toEqual({ totals: { open: 2 }, by_status: [] });
+    expect(apiClientMock.get).toHaveBeenCalledWith('/hub/tasks/analytics', {
+      params: {
+        project_id: 'project 1',
+        date_from: '2026-05-01',
+        date_to: '2026-05-31',
+        group_by: 'assignee',
+      },
+    });
+  });
+
+  it('returns the raw blob response when exporting task analytics Excel', async () => {
+    const { hubTaskAnalyticsAPI } = await importHubTaskAnalyticsAPI();
+    const blobResponse = {
+      data: new Blob(['xlsx']),
+      headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+    };
+    apiClientMock.get.mockResolvedValueOnce(blobResponse);
+
+    const result = await hubTaskAnalyticsAPI.exportTaskAnalyticsExcel({
+      date_from: '2026-05-01',
+      date_to: '2026-05-31',
+    });
+
+    expect(result).toBe(blobResponse);
+    expect(apiClientMock.get).toHaveBeenCalledWith('/hub/tasks/analytics/export', {
+      params: {
+        date_from: '2026-05-01',
+        date_to: '2026-05-31',
+      },
+      responseType: 'blob',
+    });
+  });
+
+  it('keeps client hubAPI task analytics methods compatible with the dedicated module', async () => {
+    const { hubTaskAnalyticsAPI } = await importHubTaskAnalyticsAPI();
+    const { hubAPI, hubTaskAnalyticsAPI: clientHubTaskAnalyticsAPI } = await import('./client');
+
+    expect(clientHubTaskAnalyticsAPI).toBe(hubTaskAnalyticsAPI);
+    expect(hubAPI.getTaskAnalytics).toBe(hubTaskAnalyticsAPI.getTaskAnalytics);
+    expect(hubAPI.exportTaskAnalyticsExcel).toBe(hubTaskAnalyticsAPI.exportTaskAnalyticsExcel);
+  });
+});
+
+describe('hubTaskFilesAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { id: 'attachment-1' } });
+    apiClientMock.get.mockResolvedValue({
+      data: new Blob(['file']),
+      headers: { 'content-type': 'application/octet-stream' },
+    });
+    window.localStorage.clear();
+  });
+
+  it('uploads task attachments as multipart FormData through the dedicated module', async () => {
+    const { hubTaskFilesAPI } = await importHubTaskFilesAPI();
+    const file = new File(['hello'], 'evidence.txt', { type: 'text/plain' });
+
+    const result = await hubTaskFilesAPI.uploadTaskAttachment({ taskId: 'task/1', file });
+
+    expect(result).toEqual({ id: 'attachment-1' });
+    expect(apiClientMock.post).toHaveBeenCalledTimes(1);
+    const [url, body, config] = apiClientMock.post.mock.calls[0];
+    expect(url).toBe('/hub/tasks/task%2F1/attachments');
+    expect(body).toBeInstanceOf(FormData);
+    expect(body.getAll('file')).toHaveLength(1);
+    expect(body.get('file')).toBe(file);
+    expect(config).toEqual({
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  });
+
+  it('returns the raw blob response when downloading task attachments', async () => {
+    const { hubTaskFilesAPI } = await importHubTaskFilesAPI();
+    const blobResponse = { data: new Blob(['attachment']), headers: { 'content-type': 'text/plain' } };
+    apiClientMock.get.mockResolvedValueOnce(blobResponse);
+
+    const result = await hubTaskFilesAPI.downloadTaskAttachment({
+      taskId: 'task/1',
+      attachmentId: 'file 1',
+    });
+
+    expect(result).toBe(blobResponse);
+    expect(apiClientMock.get).toHaveBeenCalledWith(
+      '/hub/tasks/task%2F1/attachments/file%201/file',
+      { responseType: 'blob' },
+    );
+  });
+
+  it('returns the raw blob response when downloading task reports', async () => {
+    const { hubTaskFilesAPI } = await importHubTaskFilesAPI();
+    const blobResponse = { data: new Blob(['report']), headers: { 'content-type': 'application/pdf' } };
+    apiClientMock.get.mockResolvedValueOnce(blobResponse);
+
+    const result = await hubTaskFilesAPI.downloadTaskReport('report/1');
+
+    expect(result).toBe(blobResponse);
+    expect(apiClientMock.get).toHaveBeenCalledWith('/hub/tasks/reports/report%2F1/file', {
+      responseType: 'blob',
+    });
+  });
+
+  it('keeps client hubAPI task file methods compatible with the dedicated module', async () => {
+    const { hubTaskFilesAPI } = await importHubTaskFilesAPI();
+    const { hubAPI, hubTaskFilesAPI: clientHubTaskFilesAPI } = await import('./client');
+
+    expect(clientHubTaskFilesAPI).toBe(hubTaskFilesAPI);
+    expect(hubAPI.uploadTaskAttachment).toBe(hubTaskFilesAPI.uploadTaskAttachment);
+    expect(hubAPI.downloadTaskAttachment).toBe(hubTaskFilesAPI.downloadTaskAttachment);
+    expect(hubAPI.downloadTaskReport).toBe(hubTaskFilesAPI.downloadTaskReport);
+  });
+});
+
+describe('hubMarkdownAPI', () => {
+  beforeEach(() => {
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { html: '<p>ok</p>' } });
+    window.localStorage.clear();
+  });
+
+  it('transforms markdown through the dedicated module with normalized text and context', async () => {
+    const { hubMarkdownAPI } = await importHubMarkdownAPI();
+
+    const result = await hubMarkdownAPI.transformMarkdown({ text: 42, context: true });
+    apiClientMock.post.mockResolvedValueOnce({ data: { html: '' } });
+    await hubMarkdownAPI.transformMarkdown({ text: 0, context: null });
+
+    expect(result).toEqual({ html: '<p>ok</p>' });
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/hub/markdown/transform', {
+      text: '42',
+      context: 'true',
+    });
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/hub/markdown/transform', {
+      text: '',
+      context: '',
+    });
+  });
+
+  it('keeps client hubAPI markdown method compatible with the dedicated module', async () => {
+    const { hubMarkdownAPI } = await importHubMarkdownAPI();
+    const { hubAPI, hubMarkdownAPI: clientHubMarkdownAPI } = await import('./client');
+
+    expect(clientHubMarkdownAPI).toBe(hubMarkdownAPI);
+    expect(hubAPI.transformMarkdown).toBe(hubMarkdownAPI.transformMarkdown);
+  });
+});
+
+describe('hubTaskActivityAPI', () => {
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.get.mockResolvedValue({ data: { items: [] } });
+    window.localStorage.clear();
+  });
+
+  it('loads task comments and status log through the dedicated module', async () => {
+    const { hubTaskActivityAPI } = await importHubTaskActivityAPI();
+
+    await hubTaskActivityAPI.getTaskComments('task/1');
+    await hubTaskActivityAPI.getTaskStatusLog('task 1');
+
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(1, '/hub/tasks/task%2F1/comments');
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/hub/tasks/task%201/status-log');
+  });
+
+  it('adds comments and marks comments seen through the dedicated module', async () => {
+    const { hubTaskActivityAPI } = await importHubTaskActivityAPI();
+
+    await hubTaskActivityAPI.addTaskComment('task/1', 'Ready for review');
+    await hubTaskActivityAPI.markTaskCommentsSeen('task 1');
+
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/hub/tasks/task%2F1/comments', {
+      body: 'Ready for review',
+    });
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/hub/tasks/task%201/comments/mark-seen');
+  });
+
+  it('keeps client hubAPI task activity methods compatible with the dedicated module', async () => {
+    const { hubTaskActivityAPI } = await importHubTaskActivityAPI();
+    const { hubAPI, hubTaskActivityAPI: clientHubTaskActivityAPI } = await import('./client');
+
+    expect(clientHubTaskActivityAPI).toBe(hubTaskActivityAPI);
+    expect(hubAPI.getTaskComments).toBe(hubTaskActivityAPI.getTaskComments);
+    expect(hubAPI.addTaskComment).toBe(hubTaskActivityAPI.addTaskComment);
+    expect(hubAPI.markTaskCommentsSeen).toBe(hubTaskActivityAPI.markTaskCommentsSeen);
+    expect(hubAPI.getTaskStatusLog).toBe(hubTaskActivityAPI.getTaskStatusLog);
+  });
+});
+
 describe('authAPI trusted device registration options', () => {
   beforeEach(() => {
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
@@ -847,6 +1540,21 @@ describe('settingsAPI app settings endpoints', () => {
     });
   });
 
+  it('loads global app settings through the dedicated settings module', async () => {
+    const { settingsAPI } = await import('./settings');
+
+    await settingsAPI.getAppSettings();
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/settings/app');
+  });
+
+  it('keeps the client settingsAPI export compatible with the dedicated module', async () => {
+    const { settingsAPI: directSettingsAPI } = await import('./settings');
+    const { settingsAPI: clientSettingsAPI } = await import('./client');
+
+    expect(clientSettingsAPI).toBe(directSettingsAPI);
+  });
+
   it('loads global app settings for reminder controller', async () => {
     const { settingsAPI } = await import('./client');
 
@@ -883,9 +1591,38 @@ describe('settingsAPI app settings endpoints', () => {
 describe('networksAPI.exportMapPdf', () => {
   beforeEach(() => {
     apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
     apiClientMock.get.mockResolvedValue({
       data: new Blob([]),
       headers: { 'content-type': 'application/pdf' },
+    });
+  });
+
+  it('requests backend PDF export through the dedicated networks module', async () => {
+    const { networksAPI } = await import('./networks');
+
+    await networksAPI.exportMapPdf(17);
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/networks/maps/17/export-pdf', {
+      params: {},
+      responseType: 'blob',
+    });
+  });
+
+  it('keeps the client networksAPI export compatible with the dedicated module', async () => {
+    const { networksAPI: directNetworksAPI } = await import('./networks');
+    const { networksAPI: clientNetworksAPI } = await import('./client');
+
+    expect(clientNetworksAPI).toBe(directNetworksAPI);
+  });
+
+  it('keeps resolveSocketFio as a local alias for host context sync', async () => {
+    const { networksAPI } = await import('./networks');
+
+    await networksAPI.resolveSocketFio(12, { dry_run: true });
+
+    expect(apiClientMock.post).toHaveBeenCalledWith('/networks/branches/12/sockets/sync-host-context', {
+      dry_run: true,
     });
   });
 

@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import importlib
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from sqlalchemy import func, select
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
@@ -14,6 +16,7 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 chat_db_module = importlib.import_module("backend.chat.db")
+chat_models_module = importlib.import_module("backend.chat.models")
 chat_service_module = importlib.import_module("backend.chat.service")
 hub_service_module = importlib.import_module("backend.services.hub_service")
 
@@ -126,6 +129,59 @@ def test_task_share_lists_and_persists_snapshot(chat_env):
     assert chat_env["hub_db_path"].exists()
 
 
+def test_task_share_persistence_advances_sequence_and_read_counters(chat_env):
+    service = chat_env["service"]
+    task = chat_env["task"]
+    conversation = chat_env["direct"]
+
+    first = service.send_task_share(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        task_id=task["id"],
+        defer_push_notifications=True,
+    )
+    second = service.send_task_share(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        task_id=task["id"],
+        defer_push_notifications=True,
+    )
+
+    with chat_db_module.chat_session() as session:
+        conversation_row = session.get(chat_models_module.ChatConversation, conversation["id"])
+        messages = list(
+            session.execute(
+                select(chat_models_module.ChatMessage)
+                .where(chat_models_module.ChatMessage.conversation_id == conversation["id"])
+                .order_by(chat_models_module.ChatMessage.conversation_seq.asc())
+            ).scalars()
+        )
+        sender_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 1,
+            )
+        ).scalar_one()
+        recipient_state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+
+    assert [item.id for item in messages] == [first["id"], second["id"]]
+    assert [item.kind for item in messages] == ["task_share", "task_share"]
+    assert [int(item.conversation_seq) for item in messages] == [1, 2]
+    assert [item.task_id for item in messages] == [task["id"], task["id"]]
+    assert json.loads(messages[0].task_preview_json)["id"] == task["id"]
+    assert conversation_row.last_message_id == second["id"]
+    assert int(conversation_row.last_message_seq) == 2
+    assert sender_state.last_read_message_id == second["id"]
+    assert int(sender_state.last_read_seq) == 2
+    assert int(sender_state.unread_count) == 0
+    assert int(recipient_state.unread_count) == 2
+
+
 def test_task_share_is_blocked_when_other_chat_member_has_no_task_access(chat_env):
     service = chat_env["service"]
     task = chat_env["task"]
@@ -144,3 +200,13 @@ def test_task_share_is_blocked_when_other_chat_member_has_no_task_access(chat_en
             conversation_id=conversation["id"],
             task_id=task["id"],
         )
+
+    with chat_db_module.chat_session() as session:
+        message_count = session.execute(
+            select(func.count()).select_from(chat_models_module.ChatMessage).where(
+                chat_models_module.ChatMessage.conversation_id == conversation["id"],
+                chat_models_module.ChatMessage.kind == "task_share",
+            )
+        ).scalar_one()
+
+    assert int(message_count) == 0

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-from contextlib import ExitStack
 import gzip
 import json
 import logging
@@ -23,7 +22,6 @@ from uuid import uuid4
 from fastapi import UploadFile
 from PIL import UnidentifiedImageError
 from sqlalchemy import and_, func, or_, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 
 from backend.chat.attachment_media import ChatAttachmentMedia
@@ -42,10 +40,22 @@ from backend.chat.models import (
     ChatMessage,
     ChatMessageAttachment,
     ChatMessageRead,
-    ChatPushOutbox,
 )
+from backend.chat.message_persistence import (
+    ChatFileMessagePersistence,
+    ChatForwardMessagePersistence,
+    ChatSystemMessagePersistence,
+    ChatTaskShareMessagePersistence,
+    ChatTextMessagePersistence,
+    ForwardMessageSnapshot,
+    TaskShareSnapshot,
+)
+from backend.chat.notification_dispatcher import ChatNotificationDispatcher
 from backend.chat.notification_planner import build_chat_notification_recipient_plans
 from backend.chat.push_service import chat_push_service
+from backend.chat.upload_session_completion import UploadSessionCompletionMaterializer
+from backend.chat.upload_sessions import ChatUploadSessionStore
+from backend.chat.upload_session_transfer import plan_upload_session_chunk
 from backend.services.hub_service import hub_service
 from backend.services.session_service import session_service
 from backend.services.user_service import user_service
@@ -335,15 +345,70 @@ class ChatService:
             attachments_root=lambda: self._attachments_root,
             logger=logger,
         )
+        self._notification_dispatcher = ChatNotificationDispatcher(
+            hub_service=hub_service,
+            push_service=chat_push_service,
+        )
+        self._text_message_persistence = ChatTextMessagePersistence(
+            session_factory=lambda: chat_session(),
+            require_membership=lambda **kwargs: self._require_membership(**kwargs),
+            lock_conversation_for_write=lambda **kwargs: self._lock_conversation_for_write(**kwargs),
+            conversation_member_ids=lambda session, conversation_id: self._conversation_member_ids(session, conversation_id),
+            resolve_reply_message=lambda **kwargs: self._resolve_reply_message(**kwargs),
+            find_existing_client_message=lambda **kwargs: self._find_existing_client_message(**kwargs),
+            build_message_payload_for_members=lambda **kwargs: self._build_message_payload_for_members(**kwargs),
+            now=_utc_now,
+        )
+        self._file_message_persistence = ChatFileMessagePersistence(
+            session_factory=lambda: chat_session(),
+            require_membership=lambda **kwargs: self._require_membership(**kwargs),
+            lock_conversation_for_write=lambda **kwargs: self._lock_conversation_for_write(**kwargs),
+            conversation_member_ids=lambda session, conversation_id: self._conversation_member_ids(session, conversation_id),
+            resolve_reply_message=lambda **kwargs: self._resolve_reply_message(**kwargs),
+            build_message_payload_for_members=lambda **kwargs: self._build_message_payload_for_members(**kwargs),
+            now=_utc_now,
+        )
+        self._forward_message_persistence = ChatForwardMessagePersistence(
+            session_factory=lambda: chat_session(),
+            require_membership=lambda **kwargs: self._require_membership(**kwargs),
+            lock_conversation_for_write=lambda **kwargs: self._lock_conversation_for_write(**kwargs),
+            conversation_member_ids=lambda session, conversation_id: self._conversation_member_ids(session, conversation_id),
+            resolve_reply_message=lambda **kwargs: self._resolve_reply_message(**kwargs),
+            build_message_payload_for_members=lambda **kwargs: self._build_message_payload_for_members(**kwargs),
+            now=_utc_now,
+        )
+        self._system_message_persistence = ChatSystemMessagePersistence()
+        self._task_share_message_persistence = ChatTaskShareMessagePersistence(
+            session_factory=lambda: chat_session(),
+            require_membership=lambda **kwargs: self._require_membership(**kwargs),
+            lock_conversation_for_write=lambda **kwargs: self._lock_conversation_for_write(**kwargs),
+            conversation_member_ids=lambda session, conversation_id: self._conversation_member_ids(session, conversation_id),
+            resolve_reply_message=lambda **kwargs: self._resolve_reply_message(**kwargs),
+            authorize_task_share=lambda **kwargs: self._authorize_task_share_for_members(**kwargs),
+            build_message_payload_for_members=lambda **kwargs: self._build_message_payload_for_members(**kwargs),
+            now=_utc_now,
+        )
         self._upload_sessions_root = Path(hub_service.data_dir) / "chat_upload_sessions"
         self._upload_sessions_root.mkdir(parents=True, exist_ok=True)
+        self._upload_sessions = ChatUploadSessionStore(
+            upload_sessions_root=lambda: self._upload_sessions_root,
+            chunk_size_bytes=lambda: self.upload_session_chunk_size_bytes,
+            ttl_sec=lambda: self.upload_session_ttl_sec,
+            cleanup_interval_sec=lambda: self.upload_session_cleanup_interval_sec,
+            normalize_transfer_encoding=lambda value: self._normalize_transfer_encoding(value),
+            now=_utc_now,
+        )
+        self._upload_session_completion = UploadSessionCompletionMaterializer(
+            attachments_root=lambda: self._attachments_root,
+            part_path=lambda session_id, file_id: self._upload_session_part_path(session_id, file_id),
+            normalize_transfer_encoding=lambda value: self._normalize_transfer_encoding(value),
+            write_decoded_transfer_payload=self._write_decoded_transfer_payload,
+            probe_image_dimensions=_probe_image_dimensions,
+        )
         self._cache_lock = RLock()
         self._runtime_cache: dict[str, tuple[datetime, Any]] = {}
-        self._upload_session_locks_lock = RLock()
-        self._upload_session_locks: dict[str, RLock] = {}
         self._upload_cleanup_task: asyncio.Task | None = None
         self._upload_cleanup_stop_event: asyncio.Event | None = None
-        self._last_upload_session_cleanup_at: datetime | None = None
 
     @property
     def chat_cache_ttl_sec(self) -> int:
@@ -608,106 +673,34 @@ class ChatService:
         }
 
     def _get_upload_session_lock(self, session_id: str) -> RLock:
-        normalized_session_id = _normalize_text(session_id)
-        if not normalized_session_id:
-            raise ValueError("session_id is required")
-        with self._upload_session_locks_lock:
-            lock = self._upload_session_locks.get(normalized_session_id)
-            if lock is None:
-                lock = RLock()
-                self._upload_session_locks[normalized_session_id] = lock
-            return lock
+        return self._upload_sessions.lock_for(session_id)
 
     def _release_upload_session_lock(self, session_id: str) -> None:
-        normalized_session_id = _normalize_text(session_id)
-        if not normalized_session_id:
-            return
-        with self._upload_session_locks_lock:
-            self._upload_session_locks.pop(normalized_session_id, None)
+        self._upload_sessions.release_lock(session_id)
 
     def _upload_session_dir(self, session_id: str) -> Path:
-        normalized_session_id = _normalize_text(session_id)
-        if not normalized_session_id:
-            raise ValueError("session_id is required")
-        session_dir = (self._upload_sessions_root / normalized_session_id).resolve()
-        try:
-            session_dir.relative_to(self._upload_sessions_root.resolve())
-        except ValueError as exc:
-            raise ValueError("Invalid upload session path") from exc
-        return session_dir
+        return self._upload_sessions.session_dir(session_id)
 
     def _upload_session_manifest_path(self, session_id: str) -> Path:
-        return self._upload_session_dir(session_id) / "manifest.json"
+        return self._upload_sessions.manifest_path(session_id)
 
     def _upload_session_part_path(self, session_id: str, file_id: str) -> Path:
-        return self._upload_session_dir(session_id) / f"{_normalize_text(file_id)}.part"
+        return self._upload_sessions.part_path(session_id, file_id)
 
     def _load_upload_session_manifest(self, session_id: str) -> dict[str, Any]:
-        manifest_path = self._upload_session_manifest_path(session_id)
-        if not manifest_path.exists() or not manifest_path.is_file():
-            raise LookupError("Upload session not found")
-        try:
-            payload = json.loads(manifest_path.read_text(encoding="utf-8"))
-        except Exception as exc:
-            raise LookupError("Upload session not found") from exc
-        if not isinstance(payload, dict):
-            raise LookupError("Upload session not found")
-        return payload
+        return self._upload_sessions.load_manifest(session_id)
 
     def _write_upload_session_manifest(self, manifest: dict[str, Any]) -> None:
-        session_id = _normalize_text(manifest.get("session_id"))
-        if not session_id:
-            raise ValueError("Upload session manifest is missing session_id")
-        session_dir = self._upload_session_dir(session_id)
-        session_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = session_dir / "manifest.json"
-        temp_path = session_dir / "manifest.json.tmp"
-        temp_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, separators=(",", ":")),
-            encoding="utf-8",
-        )
-        temp_path.replace(manifest_path)
+        self._upload_sessions.write_manifest(manifest)
 
     def _delete_upload_session_dir(self, session_id: str) -> None:
-        session_dir = self._upload_session_dir(session_id)
-        shutil.rmtree(session_dir, ignore_errors=True)
-        self._release_upload_session_lock(session_id)
+        self._upload_sessions.delete_session_dir(session_id)
 
     def _maybe_cleanup_upload_sessions(self, *, force: bool = False) -> None:
-        now = _utc_now()
-        if not force and self._last_upload_session_cleanup_at is not None:
-            elapsed = (now - self._last_upload_session_cleanup_at).total_seconds()
-            if elapsed < self.upload_session_cleanup_interval_sec:
-                return
-        self.cleanup_expired_upload_sessions(force=True, now=now)
+        self._upload_sessions.maybe_cleanup(force=force)
 
     def cleanup_expired_upload_sessions(self, *, force: bool = False, now: datetime | None = None) -> dict[str, int]:
-        current_now = now or _utc_now()
-        deleted = 0
-        if not force and self._last_upload_session_cleanup_at is not None:
-            elapsed = (current_now - self._last_upload_session_cleanup_at).total_seconds()
-            if elapsed < self.upload_session_cleanup_interval_sec:
-                return {"deleted": 0}
-        self._upload_sessions_root.mkdir(parents=True, exist_ok=True)
-        for session_dir in list(self._upload_sessions_root.iterdir()):
-            if not session_dir.is_dir():
-                continue
-            session_id = _normalize_text(session_dir.name)
-            lock = self._get_upload_session_lock(session_id)
-            with lock:
-                try:
-                    manifest = self._load_upload_session_manifest(session_id)
-                except LookupError:
-                    self._delete_upload_session_dir(session_id)
-                    deleted += 1
-                    continue
-                status = _normalize_text(manifest.get("status")).lower() or "pending"
-                expires_at = _parse_dt(manifest.get("expires_at"))
-                if status == "pending" and expires_at and expires_at <= current_now:
-                    self._delete_upload_session_dir(session_id)
-                    deleted += 1
-        self._last_upload_session_cleanup_at = current_now
-        return {"deleted": deleted}
+        return self._upload_sessions.cleanup_expired(force=force, now=now)
 
     def _require_upload_session_access(self, manifest: dict[str, Any], *, current_user_id: int) -> None:
         session_owner_id = int(manifest.get("current_user_id", 0) or 0)
@@ -724,53 +717,16 @@ class ChatService:
             )
 
     def _ensure_upload_session_active(self, manifest: dict[str, Any]) -> None:
-        if _normalize_text(manifest.get("status")).lower() == "completed":
-            return
-        session_id = _normalize_text(manifest.get("session_id"))
-        expires_at = _parse_dt(manifest.get("expires_at"))
-        if expires_at is None or expires_at > _utc_now():
-            return
-        self._delete_upload_session_dir(session_id)
-        raise LookupError("Upload session not found")
+        self._upload_sessions.ensure_active(manifest)
 
     def _serialize_upload_session_file(self, file_payload: dict[str, Any]) -> dict[str, Any]:
-        received_chunks = sorted({
-            int(item)
-            for item in list(file_payload.get("received_chunks") or [])
-            if isinstance(item, int) or str(item).strip().isdigit()
-        })
-        return {
-            "file_id": _normalize_text(file_payload.get("file_id")),
-            "file_name": _normalize_text(file_payload.get("file_name")),
-            "mime_type": _normalize_text(file_payload.get("mime_type")) or None,
-            "size": int(file_payload.get("size", 0) or 0),
-            "original_size": int(file_payload.get("original_size", 0) or 0),
-            "transfer_encoding": self._normalize_transfer_encoding(file_payload.get("transfer_encoding")),
-            "chunk_count": int(file_payload.get("chunk_count", 0) or 0),
-            "received_bytes": int(file_payload.get("received_bytes", 0) or 0),
-            "received_chunks": received_chunks,
-        }
+        return self._upload_sessions.serialize_file(file_payload)
 
     def _serialize_upload_session(self, manifest: dict[str, Any]) -> dict[str, Any]:
-        return {
-            "session_id": _normalize_text(manifest.get("session_id")),
-            "chunk_size_bytes": int(manifest.get("chunk_size_bytes", self.upload_session_chunk_size_bytes) or self.upload_session_chunk_size_bytes),
-            "expires_at": _normalize_text(manifest.get("expires_at")),
-            "status": "completed" if _normalize_text(manifest.get("status")).lower() == "completed" else "pending",
-            "message_id": _normalize_text(manifest.get("message_id")) or None,
-            "files": [
-                self._serialize_upload_session_file(item)
-                for item in list(manifest.get("files") or [])
-                if isinstance(item, dict)
-            ],
-        }
+        return self._upload_sessions.serialize_manifest(manifest)
 
     def _find_upload_session_file(self, manifest: dict[str, Any], *, file_id: str) -> dict[str, Any]:
-        normalized_file_id = _normalize_text(file_id)
-        for item in list(manifest.get("files") or []):
-            if _normalize_text(item.get("file_id")) == normalized_file_id:
-                return item
-        raise LookupError("Upload session file not found")
+        return self._upload_sessions.find_file(manifest, file_id=file_id)
 
     def _normalize_transfer_encoding(self, value: object) -> str:
         normalized = _normalize_text(value, "identity").lower()
@@ -2382,81 +2338,14 @@ class ChatService:
         if not normalized_task_id:
             raise ValueError("task_id is required")
 
-        with chat_session() as session:
-            conversation = self._require_membership(
-                session=session,
-                conversation_id=conversation_id,
-                current_user_id=int(current_user_id),
-            )
-            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
-            participant_ids = self._conversation_member_ids(session, conversation.id)
-            member_user_ids = [int(item) for item in participant_ids if int(item) > 0]
-
-            task = self._get_hub_task_for_user(task_id=normalized_task_id, user_id=int(current_user_id))
-            if task is None:
-                raise LookupError("Task not found")
-            if not self._task_is_shareable_to_members(task_id=normalized_task_id, member_ids=participant_ids):
-                raise PermissionError("Task is not available to all chat participants")
-            reply_to_message = self._resolve_reply_message(
-                session=session,
-                conversation_id=conversation.id,
-                reply_to_message_id=reply_to_message_id,
-            )
-
-            task_preview = self._build_task_preview(task)
-            now = _utc_now()
-            next_conversation_seq = int(getattr(conversation, "last_message_seq", 0) or 0) + 1
-            message = ChatMessage(
-                id=str(uuid4()),
-                conversation_id=conversation.id,
-                sender_user_id=int(current_user_id),
-                kind="task_share",
-                body=task_preview["title"],
-                conversation_seq=next_conversation_seq,
-                reply_to_message_id=getattr(reply_to_message, "id", None),
-                task_id=normalized_task_id,
-                task_preview_json=json.dumps(task_preview, ensure_ascii=False),
-                created_at=now,
-            )
-            session.add(message)
-            conversation.last_message_id = message.id
-            conversation.last_message_seq = next_conversation_seq
-            conversation.last_message_at = now
-            conversation.updated_at = now
-            self._mark_sender_message_seen(
-                session=session,
-                conversation_id=conversation.id,
-                current_user_id=int(current_user_id),
-                message_id=message.id,
-                conversation_seq=next_conversation_seq,
-                seen_at=now,
-            )
-            self._increment_unread_counters_for_recipients(
-                session=session,
-                conversation_id=conversation.id,
-                sender_user_id=int(current_user_id),
-                member_user_ids=member_user_ids,
-                seen_at=now,
-            )
-            session.flush()
-            presence_map = self._get_presence_map(user_ids=member_user_ids)
-            users_by_id = self._get_users_map(presence_map=presence_map, user_ids=member_user_ids)
-            payload = self._serialize_message(
-                conversation_kind=conversation.kind,
-                message=message,
-                current_user_id=int(current_user_id),
-                users_by_id=users_by_id,
-                member_ids=member_user_ids,
-                reply_previews=self._build_reply_previews(
-                    session=session,
-                    reply_to_message_ids=[getattr(message, "reply_to_message_id", None)],
-                    users_by_id=users_by_id,
-                ),
-                forward_previews=self._build_forward_previews(
-                    session=session,
-                    forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
-                ),
-            )
+        persisted_task = self._task_share_message_persistence.persist_task_share_message(
+            current_user_id=int(current_user_id),
+            conversation_id=conversation_id,
+            task_id=normalized_task_id,
+            reply_to_message_id=reply_to_message_id,
+        )
+        payload = persisted_task.payload
+        task_preview = persisted_task.task_preview
         notification_stats = self._create_chat_notifications(
             sender_user_id=int(current_user_id),
             conversation_id=_normalize_text(payload.get("conversation_id")),
@@ -2505,13 +2394,14 @@ class ChatService:
                 for item in prepared
                 if isinstance(item.get("path"), Path)
             )
-            payload = self._create_file_message_from_prepared(
+            persisted_file = self._file_message_persistence.persist_file_message(
                 current_user_id=int(current_user_id),
                 conversation_id=normalized_conversation_id,
                 body=normalized_body,
                 prepared=prepared,
                 reply_to_message_id=reply_to_message_id,
             )
+            payload = persisted_file.payload
         except Exception:
             for path in written_paths:
                 try:
@@ -2528,114 +2418,6 @@ class ChatService:
             defer_push_notifications=defer_push_notifications,
         )
         return payload
-
-    def _create_file_message_from_prepared(
-        self,
-        *,
-        current_user_id: int,
-        conversation_id: str,
-        body: str,
-        prepared: list[dict[str, Any]],
-        reply_to_message_id: Optional[str] = None,
-        forward_from_message_id: Optional[str] = None,
-    ) -> dict[str, Any]:
-        normalized_body = _normalize_text(body)
-        member_user_ids: list[int] = []
-        with chat_session() as session:
-            conversation = self._require_membership(
-                session=session,
-                conversation_id=conversation_id,
-                current_user_id=int(current_user_id),
-            )
-            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
-            member_user_ids = self._conversation_member_ids(session, conversation.id)
-            reply_to_message = self._resolve_reply_message(
-                session=session,
-                conversation_id=conversation.id,
-                reply_to_message_id=reply_to_message_id,
-            )
-            now = _utc_now()
-            next_conversation_seq = int(getattr(conversation, "last_message_seq", 0) or 0) + 1
-            message = ChatMessage(
-                id=str(uuid4()),
-                conversation_id=conversation.id,
-                sender_user_id=int(current_user_id),
-                kind="file",
-                body=normalized_body,
-                conversation_seq=next_conversation_seq,
-                reply_to_message_id=getattr(reply_to_message, "id", None),
-                forward_from_message_id=_normalize_text(forward_from_message_id) or None,
-                created_at=now,
-            )
-            session.add(message)
-
-            for item in prepared:
-                session.add(
-                    ChatMessageAttachment(
-                        id=item["attachment_id"],
-                        message_id=message.id,
-                        conversation_id=conversation.id,
-                        storage_name=item["storage_name"],
-                        file_name=item["file_name"],
-                        mime_type=item["mime_type"],
-                        file_size=int(item["file_size"]),
-                        width=int(item["width"]) if item.get("width") is not None else None,
-                        height=int(item["height"]) if item.get("height") is not None else None,
-                        uploaded_by_user_id=int(current_user_id),
-                        created_at=now,
-                    )
-                )
-
-            conversation.last_message_id = message.id
-            conversation.last_message_seq = next_conversation_seq
-            conversation.last_message_at = now
-            conversation.updated_at = now
-            self._mark_sender_message_seen(
-                session=session,
-                conversation_id=conversation.id,
-                current_user_id=int(current_user_id),
-                message_id=message.id,
-                conversation_seq=next_conversation_seq,
-                seen_at=now,
-            )
-            self._increment_unread_counters_for_recipients(
-                session=session,
-                conversation_id=conversation.id,
-                sender_user_id=int(current_user_id),
-                member_user_ids=member_user_ids,
-                seen_at=now,
-            )
-            session.flush()
-            presence_map = self._get_presence_map(user_ids=member_user_ids)
-            users_by_id = self._get_users_map(presence_map=presence_map, user_ids=member_user_ids)
-            return self._serialize_message(
-                conversation_kind=conversation.kind,
-                message=message,
-                current_user_id=int(current_user_id),
-                users_by_id=users_by_id,
-                member_ids=member_user_ids,
-                reply_previews=self._build_reply_previews(
-                    session=session,
-                    reply_to_message_ids=[getattr(message, "reply_to_message_id", None)],
-                    users_by_id=users_by_id,
-                ),
-                forward_previews=self._build_forward_previews(
-                    session=session,
-                    forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
-                ),
-                attachments=[
-                    {
-                        "id": item["attachment_id"],
-                        "file_name": item["file_name"],
-                        "mime_type": item["mime_type"],
-                        "file_size": int(item["file_size"]),
-                        "width": int(item["width"]) if item.get("width") is not None else None,
-                        "height": int(item["height"]) if item.get("height") is not None else None,
-                        "created_at": _iso(now) or "",
-                    }
-                    for item in prepared
-                ],
-            )
 
     def _postprocess_file_message(
         self,
@@ -2769,14 +2551,6 @@ class ChatService:
         self._ensure_available()
         self._maybe_cleanup_upload_sessions()
         normalized_payload = bytes(payload or b"")
-        if not normalized_payload:
-            raise ValueError("Chunk payload is required")
-        if len(normalized_payload) > self.upload_session_chunk_size_bytes:
-            raise ValueError("Chunk payload exceeds session chunk size")
-        if int(chunk_index) < 0:
-            raise ValueError("chunk_index must be non-negative")
-        if int(offset) < 0:
-            raise ValueError("offset must be non-negative")
 
         lock = self._get_upload_session_lock(session_id)
         with lock:
@@ -2787,64 +2561,43 @@ class ChatService:
                 raise ValueError("Upload session is already completed")
 
             file_payload = self._find_upload_session_file(manifest, file_id=file_id)
-            expected_size = int(file_payload.get("size", 0) or 0)
-            received_chunks = sorted({
-                int(item)
-                for item in list(file_payload.get("received_chunks") or [])
-                if isinstance(item, int) or str(item).strip().isdigit()
-            })
-            received_bytes = int(file_payload.get("received_bytes", 0) or 0)
-            normalized_chunk_index = int(chunk_index)
-            normalized_offset = int(offset)
-            chunk_count = int(file_payload.get("chunk_count", 0) or 0)
-            if normalized_chunk_index >= chunk_count:
-                raise ValueError("chunk_index is out of range")
-
-            expected_chunk_size = min(
-                self.upload_session_chunk_size_bytes,
-                max(0, expected_size - (normalized_chunk_index * self.upload_session_chunk_size_bytes)),
+            chunk_plan = plan_upload_session_chunk(
+                file_payload=file_payload,
+                chunk_index=int(chunk_index),
+                offset=int(offset),
+                payload_size=len(normalized_payload),
+                chunk_size_bytes=self.upload_session_chunk_size_bytes,
             )
-            if expected_chunk_size <= 0:
-                raise ValueError("Chunk does not match file size")
-            if len(normalized_payload) != expected_chunk_size:
-                raise ValueError("Chunk payload size does not match the expected size")
-
-            if normalized_chunk_index in received_chunks:
+            if chunk_plan.already_present:
                 return {
                     "session_id": _normalize_text(manifest.get("session_id")),
-                    "file_id": _normalize_text(file_payload.get("file_id")),
-                    "chunk_index": normalized_chunk_index,
+                    "file_id": chunk_plan.file_id,
+                    "chunk_index": chunk_plan.chunk_index,
                     "already_present": True,
-                    "received_bytes": received_bytes,
-                    "received_chunks": received_chunks,
-                    "file_complete": received_bytes >= expected_size,
+                    "received_bytes": chunk_plan.received_bytes,
+                    "received_chunks": chunk_plan.received_chunks,
+                    "file_complete": chunk_plan.file_complete,
                 }
-
-            if normalized_chunk_index != len(received_chunks):
-                raise ValueError("Unexpected chunk_index for upload session file")
-            if normalized_offset != received_bytes:
-                raise ValueError("Unexpected chunk offset for upload session file")
 
             part_path = self._upload_session_part_path(session_id, _normalize_text(file_payload.get("file_id")))
             part_path.parent.mkdir(parents=True, exist_ok=True)
             with part_path.open("ab") as target:
                 target.write(normalized_payload)
 
-            next_received_bytes = received_bytes + len(normalized_payload)
-            file_payload["received_bytes"] = next_received_bytes
-            file_payload["received_chunks"] = received_chunks + [normalized_chunk_index]
+            file_payload["received_bytes"] = chunk_plan.next_received_bytes
+            file_payload["received_chunks"] = chunk_plan.next_received_chunks
             now = _utc_now()
             manifest["updated_at"] = _iso(now) or ""
             manifest["expires_at"] = _iso(now + timedelta(seconds=self.upload_session_ttl_sec)) or ""
             self._write_upload_session_manifest(manifest)
             return {
                 "session_id": _normalize_text(manifest.get("session_id")),
-                "file_id": _normalize_text(file_payload.get("file_id")),
-                "chunk_index": normalized_chunk_index,
+                "file_id": chunk_plan.file_id,
+                "chunk_index": chunk_plan.chunk_index,
                 "already_present": False,
-                "received_bytes": next_received_bytes,
+                "received_bytes": chunk_plan.next_received_bytes,
                 "received_chunks": list(file_payload.get("received_chunks") or []),
-                "file_complete": next_received_bytes >= expected_size,
+                "file_complete": chunk_plan.file_complete,
             }
 
     def complete_upload_session(
@@ -2878,79 +2631,15 @@ class ChatService:
                 return self.get_message(current_user_id=int(current_user_id), message_id=existing_message_id)
 
             conversation_id = _normalize_text(manifest.get("conversation_id"))
-            conversation_dir = self._attachments_root / conversation_id
-            conversation_dir.mkdir(parents=True, exist_ok=True)
-            prepared: list[dict[str, Any]] = []
-            moved_paths: list[Path] = []
-            total_decoded_size = 0
-            try:
-                for file_payload in list(manifest.get("files") or []):
-                    expected_size = int(file_payload.get("size", 0) or 0)
-                    original_size = int(file_payload.get("original_size", 0) or 0)
-                    received_bytes = int(file_payload.get("received_bytes", 0) or 0)
-                    chunk_count = int(file_payload.get("chunk_count", 0) or 0)
-                    received_chunks = list(file_payload.get("received_chunks") or [])
-                    transfer_encoding = self._normalize_transfer_encoding(file_payload.get("transfer_encoding"))
-                    if received_bytes != expected_size or len(received_chunks) != chunk_count:
-                        raise ValueError("Upload session is incomplete")
-
-                    part_path = self._upload_session_part_path(session_id, _normalize_text(file_payload.get("file_id")))
-                    if not part_path.exists() or not part_path.is_file():
-                        raise ValueError("Upload session file is missing")
-                    if int(part_path.stat().st_size) != expected_size:
-                        raise ValueError("Upload session file size mismatch")
-
-                    storage_name = _normalize_text(file_payload.get("storage_name"))
-                    final_path = conversation_dir / Path(storage_name).name
-                    if final_path.exists():
-                        final_path.unlink(missing_ok=True)
-
-                    try:
-                        with part_path.open("rb") as source:
-                            file_size, probe_bytes, total_decoded_size = self._write_decoded_transfer_payload(
-                                source_stream=source,
-                                target_path=final_path,
-                                transfer_encoding=transfer_encoding,
-                                expected_original_size=original_size,
-                                total_size=total_decoded_size,
-                            )
-                    except Exception:
-                        final_path.unlink(missing_ok=True)
-                        raise
-
-                    width, height = _probe_image_dimensions(
-                        probe_bytes,
-                        _normalize_text(file_payload.get("mime_type")),
-                    )
-                    part_path.unlink(missing_ok=True)
-                    moved_paths.append(final_path)
-                    prepared.append(
-                        {
-                            "attachment_id": _normalize_text(file_payload.get("attachment_id") or file_payload.get("file_id")),
-                            "file_name": _normalize_text(file_payload.get("file_name")),
-                            "mime_type": _normalize_text(file_payload.get("mime_type")),
-                            "file_size": file_size,
-                            "width": width,
-                            "height": height,
-                            "storage_name": storage_name,
-                            "path": final_path,
-                        }
-                    )
-
-                payload = self._create_file_message_from_prepared(
+            with self._upload_session_completion.materialize(manifest) as prepared:
+                persisted_file = self._file_message_persistence.persist_file_message(
                     current_user_id=int(current_user_id),
                     conversation_id=conversation_id,
                     body=_normalize_text(manifest.get("body")),
                     prepared=prepared,
                     reply_to_message_id=_normalize_text(manifest.get("reply_to_message_id")) or None,
                 )
-            except Exception:
-                for path in moved_paths:
-                    try:
-                        path.unlink(missing_ok=True)
-                    except Exception:
-                        pass
-                raise
+                payload = persisted_file.payload
 
             manifest["status"] = "completed"
             manifest["message_id"] = _normalize_text(payload.get("id"))
@@ -3521,122 +3210,19 @@ class ChatService:
         stage_metrics: dict[str, float] = {}
         message_id = ""
         notification_stats: dict[str, Any] = {}
-        dedup_hit = False
-        with chat_session() as session:
-            stage_started_at = time.perf_counter()
-            conversation = self._require_membership(
-                session=session,
-                conversation_id=conversation_id,
-                current_user_id=int(current_user_id),
-            )
-            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
-            member_user_ids = self._conversation_member_ids(session, conversation.id)
-            reply_to_message = self._resolve_reply_message(
-                session=session,
-                conversation_id=conversation.id,
-                reply_to_message_id=reply_to_message_id,
-            )
-            stage_metrics["membership_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
-
-            existing_message = self._find_existing_client_message(
-                session=session,
-                conversation_id=conversation.id,
-                current_user_id=int(current_user_id),
-                client_message_id=normalized_client_message_id or "",
-            )
-            if existing_message is not None:
-                dedup_hit = True
-                message_id = existing_message.id
-                stage_started_at = time.perf_counter()
-                payload = self._build_message_payload_for_members(
-                    session=session,
-                    conversation=conversation,
-                    message=existing_message,
-                    current_user_id=int(current_user_id),
-                    member_user_ids=member_user_ids,
-                )
-                stage_metrics["serialize_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
-            else:
-                stage_started_at = time.perf_counter()
-                now = _utc_now()
-                next_conversation_seq = int(getattr(conversation, "last_message_seq", 0) or 0) + 1
-                message = ChatMessage(
-                    id=str(uuid4()),
-                    conversation_id=conversation.id,
-                    sender_user_id=int(current_user_id),
-                    body_format=normalized_body_format,
-                    body=normalized_body,
-                    conversation_seq=next_conversation_seq,
-                    client_message_id=normalized_client_message_id,
-                    reply_to_message_id=getattr(reply_to_message, "id", None),
-                    created_at=now,
-                )
-                session.add(message)
-                conversation.last_message_id = message.id
-                conversation.last_message_seq = next_conversation_seq
-                conversation.last_message_at = now
-                conversation.updated_at = now
-                self._mark_sender_message_seen(
-                    session=session,
-                    conversation_id=conversation.id,
-                    current_user_id=int(current_user_id),
-                    message_id=message.id,
-                    conversation_seq=next_conversation_seq,
-                    seen_at=now,
-                )
-                self._increment_unread_counters_for_recipients(
-                    session=session,
-                    conversation_id=conversation.id,
-                    sender_user_id=int(current_user_id),
-                    member_user_ids=member_user_ids,
-                    seen_at=now,
-                )
-                stage_metrics["prepare_write_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
-
-                stage_started_at = time.perf_counter()
-                try:
-                    session.flush()
-                except IntegrityError:
-                    session.rollback()
-                    dedup_hit = True
-                    with chat_session() as dedup_session:
-                        dedup_conversation = self._require_membership(
-                            session=dedup_session,
-                            conversation_id=conversation_id,
-                            current_user_id=int(current_user_id),
-                        )
-                        member_user_ids = self._conversation_member_ids(dedup_session, dedup_conversation.id)
-                        existing_message = self._find_existing_client_message(
-                            session=dedup_session,
-                            conversation_id=dedup_conversation.id,
-                            current_user_id=int(current_user_id),
-                            client_message_id=normalized_client_message_id or "",
-                        )
-                        if existing_message is None:
-                            raise
-                        message_id = existing_message.id
-                        payload = self._build_message_payload_for_members(
-                            session=dedup_session,
-                            conversation=dedup_conversation,
-                            message=existing_message,
-                            current_user_id=int(current_user_id),
-                            member_user_ids=member_user_ids,
-                        )
-                    stage_metrics["flush_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
-                    stage_metrics["serialize_ms"] = stage_metrics.get("serialize_ms", 0.0)
-                else:
-                    stage_metrics["flush_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
-                    message_id = message.id
-
-                    stage_started_at = time.perf_counter()
-                    payload = self._build_message_payload_for_members(
-                        session=session,
-                        conversation=conversation,
-                        message=message,
-                        current_user_id=int(current_user_id),
-                        member_user_ids=member_user_ids,
-                    )
-                    stage_metrics["serialize_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
+        persisted = self._text_message_persistence.persist_text_message(
+            current_user_id=int(current_user_id),
+            conversation_id=conversation_id,
+            body=normalized_body,
+            body_format=normalized_body_format,
+            client_message_id=normalized_client_message_id,
+            reply_to_message_id=reply_to_message_id,
+        )
+        payload = persisted.payload
+        message_id = persisted.message_id
+        member_user_ids = persisted.member_user_ids
+        dedup_hit = persisted.dedup_hit
+        stage_metrics.update(persisted.stage_metrics)
 
         stage_started_at = time.perf_counter()
         self._invalidate_conversation_views_for_users(
@@ -3711,6 +3297,9 @@ class ChatService:
         source_attachments: list[ChatMessageAttachment] = []
         source_task_preview: dict | None = None
         payload: dict[str, Any] | None = None
+        prepared_attachments: list[dict[str, Any]] = []
+        source_snapshot: ForwardMessageSnapshot | None = None
+        task_id: str | None = None
 
         try:
             with chat_session() as session:
@@ -3718,10 +3307,6 @@ class ChatService:
                     session=session,
                     conversation_id=conversation_id,
                     current_user_id=int(current_user_id),
-                )
-                target_conversation = self._lock_conversation_for_write(
-                    session=session,
-                    conversation_id=target_conversation.id,
                 )
                 source_message = session.get(ChatMessage, normalized_source_message_id)
                 if source_message is None:
@@ -3733,7 +3318,7 @@ class ChatService:
                 )
 
                 member_user_ids = self._conversation_member_ids(session, target_conversation.id)
-                reply_to_message = self._resolve_reply_message(
+                self._resolve_reply_message(
                     session=session,
                     conversation_id=target_conversation.id,
                     reply_to_message_id=reply_to_message_id,
@@ -3756,34 +3341,27 @@ class ChatService:
                     or source_message.id
                 )
                 task_id = _normalize_text(getattr(source_message, "task_id", None)) or None
+                task_preview_json = None
                 if source_kind == "task_share":
                     if not task_id:
                         raise ValueError("Forward source task is missing")
                     if not self._task_is_shareable_to_members(task_id=task_id, member_ids=member_user_ids):
                         raise PermissionError("Task is not available to all chat participants")
-                    source_task_preview = self._deserialize_task_preview(getattr(source_message, "task_preview_json", None))
+                    task_preview_json = getattr(source_message, "task_preview_json", None)
+                    source_task_preview = self._deserialize_task_preview(task_preview_json)
 
-                now = _utc_now()
-                next_conversation_seq = int(getattr(target_conversation, "last_message_seq", 0) or 0) + 1
-                message = ChatMessage(
-                    id=str(uuid4()),
-                    conversation_id=target_conversation.id,
-                    sender_user_id=int(current_user_id),
+                source_snapshot = ForwardMessageSnapshot(
+                    source_message_id=source_message.id,
                     kind=source_kind,
-                    body_format=message_body_format,
                     body=source_body,
-                    conversation_seq=next_conversation_seq,
-                    reply_to_message_id=getattr(reply_to_message, "id", None),
+                    body_format=message_body_format,
                     forward_from_message_id=forward_from_message_id,
                     task_id=task_id if source_kind == "task_share" else None,
-                    task_preview_json=getattr(source_message, "task_preview_json", None) if source_kind == "task_share" else None,
-                    created_at=now,
+                    task_preview_json=task_preview_json,
                 )
-                session.add(message)
 
                 target_dir = self._attachments_root / target_conversation.id
                 target_dir.mkdir(parents=True, exist_ok=True)
-                attachment_payload: list[dict[str, Any]] = []
                 for source_attachment in source_attachments:
                     attachment_id = str(uuid4())
                     file_name = _safe_file_name(getattr(source_attachment, "file_name", None) or "file.bin")
@@ -3801,73 +3379,36 @@ class ChatService:
                         raise ValueError("Invalid attachment path") from exc
                     shutil.copy2(source_path, target_path)
                     written_paths.append(target_path)
-                    session.add(
-                        ChatMessageAttachment(
-                            id=attachment_id,
-                            message_id=message.id,
-                            conversation_id=target_conversation.id,
-                            storage_name=storage_name,
-                            file_name=file_name,
-                            mime_type=_normalize_text(getattr(source_attachment, "mime_type", None)) or None,
-                            file_size=int(source_attachment.file_size or 0),
-                            width=int(source_attachment.width) if source_attachment.width is not None else None,
-                            height=int(source_attachment.height) if source_attachment.height is not None else None,
-                            uploaded_by_user_id=int(current_user_id),
-                            created_at=now,
-                        )
-                    )
-                    attachment_payload.append(
+                    prepared_attachments.append(
                         {
-                            "id": attachment_id,
+                            "attachment_id": attachment_id,
+                            "storage_name": storage_name,
                             "file_name": file_name,
                             "mime_type": _normalize_text(getattr(source_attachment, "mime_type", None)) or None,
                             "file_size": int(source_attachment.file_size or 0),
                             "width": int(source_attachment.width) if source_attachment.width is not None else None,
                             "height": int(source_attachment.height) if source_attachment.height is not None else None,
-                            "created_at": _iso(now) or "",
                         }
                     )
 
-                target_conversation.last_message_id = message.id
-                target_conversation.last_message_seq = next_conversation_seq
-                target_conversation.last_message_at = now
-                target_conversation.updated_at = now
-                self._mark_sender_message_seen(
-                    session=session,
-                    conversation_id=target_conversation.id,
-                    current_user_id=int(current_user_id),
-                    message_id=message.id,
-                    conversation_seq=next_conversation_seq,
-                    seen_at=now,
-                )
-                self._increment_unread_counters_for_recipients(
-                    session=session,
-                    conversation_id=target_conversation.id,
-                    sender_user_id=int(current_user_id),
-                    member_user_ids=member_user_ids,
-                    seen_at=now,
-                )
-                session.flush()
+            if source_snapshot is None:
+                raise ValueError("Forward source snapshot is missing")
 
-                presence_map = self._get_presence_map(user_ids=member_user_ids)
-                users_by_id = self._get_users_map(presence_map=presence_map, user_ids=member_user_ids)
-                payload = self._serialize_message(
-                    conversation_kind=target_conversation.kind,
-                    message=message,
-                    current_user_id=int(current_user_id),
-                    users_by_id=users_by_id,
-                    member_ids=member_user_ids,
-                    reply_previews=self._build_reply_previews(
-                        session=session,
-                        reply_to_message_ids=[getattr(message, "reply_to_message_id", None)],
-                        users_by_id=users_by_id,
-                    ),
-                    forward_previews=self._build_forward_previews(
-                        session=session,
-                        forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
-                    ),
-                    attachments=attachment_payload,
-                )
+            def _validate_forward_member_access(member_user_ids: list[int]) -> None:
+                if source_kind != "task_share" or not task_id:
+                    return
+                if not self._task_is_shareable_to_members(task_id=task_id, member_ids=member_user_ids):
+                    raise PermissionError("Task is not available to all chat participants")
+
+            persisted = self._forward_message_persistence.persist_forward_message(
+                current_user_id=int(current_user_id),
+                conversation_id=conversation_id,
+                source=source_snapshot,
+                prepared_attachments=prepared_attachments,
+                reply_to_message_id=reply_to_message_id,
+                validate_member_user_ids=_validate_forward_member_access,
+            )
+            payload = persisted.payload
         except Exception:
             for path in written_paths:
                 try:
@@ -4733,38 +4274,14 @@ class ChatService:
         member_user_ids: list[int],
         now: datetime,
     ) -> ChatMessage:
-        next_conversation_seq = int(getattr(conversation, "last_message_seq", 0) or 0) + 1
-        message = ChatMessage(
-            id=str(uuid4()),
-            conversation_id=conversation.id,
-            sender_user_id=int(actor_user_id),
-            kind="system",
-            body_format="plain",
-            body=_normalize_text(body) or "Системное событие",
-            conversation_seq=next_conversation_seq,
-            created_at=now,
-        )
-        session.add(message)
-        conversation.last_message_id = message.id
-        conversation.last_message_seq = next_conversation_seq
-        conversation.last_message_at = now
-        conversation.updated_at = now
-        self._mark_sender_message_seen(
+        return self._system_message_persistence.append_system_message(
             session=session,
-            conversation_id=conversation.id,
-            current_user_id=int(actor_user_id),
-            message_id=message.id,
-            conversation_seq=next_conversation_seq,
-            seen_at=now,
-        )
-        self._increment_unread_counters_for_recipients(
-            session=session,
-            conversation_id=conversation.id,
-            sender_user_id=int(actor_user_id),
+            conversation=conversation,
+            actor_user_id=int(actor_user_id),
+            body=body,
             member_user_ids=member_user_ids,
-            seen_at=now,
+            now=now,
         )
-        return message
 
     def _message_before_anchor_condition(self, *, anchor: ChatMessage):
         anchor_seq = int(getattr(anchor, "conversation_seq", 0) or 0)
@@ -4976,6 +4493,24 @@ class ChatService:
             )
         except (LookupError, PermissionError):
             return None
+
+    def _authorize_task_share_for_members(
+        self,
+        *,
+        task_id: str,
+        current_user_id: int,
+        member_user_ids: list[int],
+    ) -> TaskShareSnapshot:
+        normalized_task_id = _normalize_text(task_id)
+        task = self._get_hub_task_for_user(task_id=normalized_task_id, user_id=int(current_user_id))
+        if task is None:
+            raise LookupError("Task not found")
+        if not self._task_is_shareable_to_members(task_id=normalized_task_id, member_ids=member_user_ids):
+            raise PermissionError("Task is not available to all chat participants")
+        return TaskShareSnapshot(
+            task_id=normalized_task_id,
+            preview=self._build_task_preview(task),
+        )
 
     def _task_is_shareable_to_members(self, *, task_id: str, member_ids: list[int]) -> bool:
         normalized_task_id = _normalize_text(task_id)
@@ -5319,6 +4854,7 @@ class ChatService:
         message: ChatMessage,
         current_user_id: int,
         member_user_ids: list[int],
+        attachments: Optional[list[dict] | list[ChatMessageAttachment]] = None,
     ) -> dict[str, Any]:
         payload_user_ids = self._collect_message_payload_user_ids(
             session=session,
@@ -5342,6 +4878,7 @@ class ChatService:
                 session=session,
                 forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
             ),
+            attachments=attachments,
         )
 
     def _upsert_chat_push_outbox_job(
@@ -5356,33 +4893,16 @@ class ChatService:
         body: str,
         now: datetime,
     ) -> bool:
-        normalized_channel = _normalize_text(channel) or "chat"
-        existing = session.execute(
-            select(ChatPushOutbox).where(
-                ChatPushOutbox.message_id == _normalize_text(message_id),
-                ChatPushOutbox.recipient_user_id == int(recipient_user_id),
-                ChatPushOutbox.channel == normalized_channel,
-            )
-        ).scalar_one_or_none()
-        if existing is not None:
-            return False
-        session.add(
-            ChatPushOutbox(
-                message_id=_normalize_text(message_id),
-                conversation_id=_normalize_text(conversation_id),
-                recipient_user_id=int(recipient_user_id),
-                channel=normalized_channel,
-                title=_normalize_text(title) or "Новое сообщение в чате",
-                body=_normalize_text(body) or "Откройте чат, чтобы посмотреть сообщение.",
-                status="queued",
-                attempt_count=0,
-                next_attempt_at=now,
-                last_error=None,
-                created_at=now,
-                updated_at=now,
-            )
+        return self._notification_dispatcher.upsert_push_outbox_job(
+            session=session,
+            recipient_user_id=int(recipient_user_id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+            channel=channel,
+            title=title,
+            body=body,
+            now=now,
         )
-        return True
 
     def _create_chat_notifications(
         self,
@@ -5460,18 +4980,7 @@ class ChatService:
                 outbox_now = _utc_now()
 
                 loop_started_at = time.perf_counter()
-                with ExitStack() as exit_stack:
-                    hub_conn = None
-                    hub_lock = getattr(hub_service, "_lock", None)
-                    hub_connect = getattr(hub_service, "_connect", None)
-                    if hub_lock is not None:
-                        exit_stack.enter_context(hub_lock)
-                    if callable(hub_connect):
-                        try:
-                            hub_conn = exit_stack.enter_context(hub_connect())
-                        except Exception:
-                            hub_conn = None
-
+                with self._notification_dispatcher.open_hub_connection() as hub_conn:
                     for member_id in member_ids:
                         if int(member_id) <= 0 or int(member_id) == int(sender_user_id):
                             continue
@@ -5503,55 +5012,32 @@ class ChatService:
                                 current_title = f"{mention_prefix}: {current_title}"
                                 current_body = f"{sender_name}: {base_body}"
 
-                        try:
-                            notification_started_at = time.perf_counter()
-                            hub_service._create_notification(
-                                recipient_user_id=int(member_id),
-                                event_type=current_event_type,
-                                title=current_title,
-                                body=current_body,
-                                entity_type="chat",
-                                entity_id=normalized_conversation_id,
-                                conn=hub_conn,
-                            )
+                        dispatch_result = self._notification_dispatcher.dispatch(
+                            session=session,
+                            hub_conn=hub_conn,
+                            recipient_user_id=int(member_id),
+                            conversation_id=normalized_conversation_id,
+                            message_id=normalized_message_id,
+                            event_type=current_event_type,
+                            title=current_title,
+                            body=current_body,
+                            defer_push_notifications=defer_push_notifications,
+                            outbox_now=outbox_now,
+                        )
+                        if dispatch_result.hub_created:
                             stats["hub_notifications_ms"] = round(
-                                float(stats["hub_notifications_ms"]) + ((time.perf_counter() - notification_started_at) * 1000.0),
+                                float(stats["hub_notifications_ms"]) + float(dispatch_result.hub_notifications_ms),
                                 1,
                             )
                             stats["hub_count"] += 1
-                        except Exception:
+                        else:
                             continue
-
-                        if defer_push_notifications:
-                            if self._upsert_chat_push_outbox_job(
-                                session=session,
-                                recipient_user_id=int(member_id),
-                                conversation_id=normalized_conversation_id,
-                                message_id=normalized_message_id,
-                                channel="chat",
-                                title=current_title,
-                                body=current_body,
-                                now=outbox_now,
-                            ):
-                                stats["push_count"] += 1
-                            continue
-
-                        try:
-                            push_started_at = time.perf_counter()
-                            chat_push_service.send_chat_message_notification(
-                                recipient_user_id=int(member_id),
-                                conversation_id=normalized_conversation_id,
-                                message_id=normalized_message_id,
-                                title=current_title,
-                                body=current_body,
-                            )
+                        if dispatch_result.push_created:
                             stats["push_notifications_ms"] = round(
-                                float(stats["push_notifications_ms"]) + ((time.perf_counter() - push_started_at) * 1000.0),
+                                float(stats["push_notifications_ms"]) + float(dispatch_result.push_notifications_ms),
                                 1,
                             )
                             stats["push_count"] += 1
-                        except Exception:
-                            continue
                 stats["loop_ms"] = round((time.perf_counter() - loop_started_at) * 1000.0, 1)
         except Exception:
             stats["prep_ms"] = round((time.perf_counter() - started_at) * 1000.0, 1)
