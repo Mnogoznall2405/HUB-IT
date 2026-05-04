@@ -545,6 +545,66 @@ def test_verify_twofa_login_sets_auth_and_refresh_cookies(monkeypatch):
     assert response.json()["status"] == "authenticated"
 
 
+def test_auth_security_complete_login_saves_ldap_password_to_primary_mailbox(monkeypatch):
+    mail_module = importlib.import_module("backend.services.mail_service")
+    service = auth_security_module.AuthSecurityService()
+    user_payload = _sample_public_user(
+        id=44,
+        username="petrov_pp",
+        auth_source="ldap",
+        mailbox_email="petrov.pp@zsgp.ru",
+    )
+    challenge = {
+        "challenge_id": "challenge-mail-sync",
+        "user_id": 44,
+        "username": "petrov_pp",
+        "request_username": "ZSGP\\petrov_pp",
+        "role": "viewer",
+        "auth_source": "ldap",
+        "ip_address": "10.12.13.14",
+        "user_agent": "pytest",
+        "network_zone": "internal",
+        "twofa_policy": "external_only",
+        "twofa_required_for_current_request": False,
+        "password_enc": auth_security_module.encrypt_secret("DomainPass123!"),
+    }
+    saved_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(auth_security_module.session_service, "create_session", lambda **kwargs: None)
+    monkeypatch.setattr(auth_security_module.session_service, "close_session", lambda session_id: None)
+    monkeypatch.setattr(auth_security_module.session_auth_context_service, "store_session_context", lambda **kwargs: None)
+    monkeypatch.setattr(auth_security_module.security_email_service, "send_new_login_alert", lambda **kwargs: None)
+    monkeypatch.setattr(auth_security_module.auth_runtime_store_service, "delete_login_challenge", lambda challenge_id: None)
+    monkeypatch.setattr(service, "issue_tokens", lambda **kwargs: {
+        "access_token": "access-token",
+        "refresh_token": "refresh-token",
+        "access_ttl_seconds": 900,
+        "refresh_ttl_seconds": 86400,
+    })
+    monkeypatch.setattr(service, "_build_public_user", lambda user, **kwargs: dict(user))
+    monkeypatch.setattr(
+        mail_module.mail_service,
+        "ensure_primary_ad_mailbox_credentials",
+        lambda **kwargs: saved_calls.append(kwargs),
+    )
+
+    result = service._complete_login(
+        challenge=challenge,
+        user=user_payload,
+        auth_method="totp",
+        device_id=None,
+    )
+
+    assert result["status"] == "authenticated"
+    assert saved_calls == [
+        {
+            "user": user_payload,
+            "exchange_login": "petrov_pp@zsgp.corp",
+            "mailbox_password": "DomainPass123!",
+        }
+    ]
+
+
 def test_verify_twofa_login_consumes_challenge_on_invalid_totp(monkeypatch):
     challenge = {
         "challenge_id": "challenge-1",

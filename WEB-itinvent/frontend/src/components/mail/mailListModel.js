@@ -2,6 +2,7 @@ const DEFAULT_MAIL_BOOTSTRAP_LIMIT = 20;
 const DEFAULT_MAIL_LIST_LIMIT = 50;
 
 const normalizeMailViewMode = (value) => (value === 'conversations' ? 'conversations' : 'messages');
+const normalizeMailFolder = (value) => String(value || 'inbox').trim().toLowerCase() || 'inbox';
 
 export const createEmptyListData = () => ({
   items: [],
@@ -49,7 +50,7 @@ export const buildMailListCacheKey = ({
   scope,
   'list',
   normalizeMailViewMode(viewMode),
-  String(folder || 'inbox').trim().toLowerCase() || 'inbox',
+  normalizeMailFolder(folder),
   String(q || ''),
   unreadOnly ? 1 : 0,
   hasAttachmentsOnly ? 1 : 0,
@@ -64,6 +65,89 @@ export const buildMailListCacheKey = ({
   Number(limit || DEFAULT_MAIL_LIST_LIMIT),
   Number(offset || 0),
 ];
+
+export const buildMailListRequestContext = ({
+  scope = '',
+  folder = 'inbox',
+  viewMode = 'messages',
+  search,
+  q,
+  unreadOnly = false,
+  hasAttachmentsOnly = false,
+  dateFrom = '',
+  dateTo = '',
+  advancedFilters = {},
+  limit = DEFAULT_MAIL_LIST_LIMIT,
+  offset = 0,
+} = {}) => {
+  const normalizedFolder = normalizeMailFolder(folder);
+  const normalizedMode = normalizeMailViewMode(viewMode);
+  const query = String(search ?? q ?? '');
+  const folderScope = String(advancedFilters?.folder_scope || 'current');
+  const fromFilter = advancedFilters?.from_filter || '';
+  const toFilter = advancedFilters?.to_filter || '';
+  const subjectFilter = advancedFilters?.subject_filter || '';
+  const bodyFilter = advancedFilters?.body_filter || '';
+  const importance = advancedFilters?.importance || '';
+  const normalizedLimit = Number(limit || DEFAULT_MAIL_LIST_LIMIT);
+  const normalizedOffset = Number(offset || 0);
+  const params = {
+    folder: normalizedFolder,
+    q: query || undefined,
+    unread_only: unreadOnly || undefined,
+    has_attachments: hasAttachmentsOnly || undefined,
+    date_from: dateFrom || undefined,
+    date_to: dateTo || undefined,
+    folder_scope: folderScope || undefined,
+    from_filter: fromFilter || undefined,
+    to_filter: toFilter || undefined,
+    subject_filter: subjectFilter || undefined,
+    body_filter: bodyFilter || undefined,
+    importance: importance || undefined,
+    limit: normalizedLimit,
+    offset: normalizedOffset,
+  };
+  const cacheKey = buildMailListCacheKey({
+    scope,
+    folder: normalizedFolder,
+    viewMode: normalizedMode,
+    q: query,
+    unreadOnly,
+    hasAttachmentsOnly,
+    dateFrom,
+    dateTo,
+    folderScope,
+    fromFilter,
+    toFilter,
+    subjectFilter,
+    bodyFilter,
+    importance,
+    limit: normalizedLimit,
+    offset: normalizedOffset,
+  });
+  return {
+    folder: normalizedFolder,
+    viewMode: normalizedMode,
+    query,
+    folderScope,
+    params,
+    cacheKey,
+    contextKey: JSON.stringify(cacheKey),
+    usesBootstrapList: normalizedFolder === 'inbox'
+      && normalizedMode === 'messages'
+      && !query
+      && !unreadOnly
+      && !hasAttachmentsOnly
+      && !dateFrom
+      && !dateTo
+      && !fromFilter
+      && !toFilter
+      && !subjectFilter
+      && !bodyFilter
+      && !importance
+      && folderScope === 'current',
+  };
+};
 
 export const buildMailMessageDetailCacheKey = ({ scope, messageId }) => [
   'mail',
@@ -99,6 +183,13 @@ export const normalizeMailListResponse = (payload = {}, fallbackItems = []) => (
   search_limited: Boolean(payload?.search_limited),
   searched_window: Number(payload?.searched_window || 0),
 });
+
+export const isExpandedMailListData = (value) => {
+  const source = value && typeof value === 'object' ? value : {};
+  const itemsCount = Array.isArray(source.items) ? source.items.length : 0;
+  const limit = Math.max(1, Number(source.limit || DEFAULT_MAIL_LIST_LIMIT));
+  return Number(source.loaded_pages || 0) > 1 || itemsCount > limit;
+};
 
 const getMailListItemKey = (item, viewMode = 'messages') => String(
   viewMode === 'conversations'

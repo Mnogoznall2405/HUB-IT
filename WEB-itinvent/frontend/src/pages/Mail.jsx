@@ -9,12 +9,8 @@ import {
   DialogContent,
   DialogTitle,
   Drawer,
-  FormControl,
   IconButton,
-  InputLabel,
-  MenuItem,
   Paper,
-  Select,
   Skeleton,
   Stack,
   TextField,
@@ -45,22 +41,41 @@ import {
 import {
   clearMailRecentCacheForScope,
   getMailRecentHydration,
-  getMailRecentMessageDetail,
-  writeMailRecentBootstrap,
-  writeMailRecentList,
-  writeMailRecentMessageDetail,
 } from '../lib/mailRecentCache';
 import MailBulkActionBar from '../components/mail/MailBulkActionBar';
-import MailAttachmentCard from '../components/mail/MailAttachmentCard';
+import MailConversationReader from '../components/mail/MailConversationReader';
 import MailFolderRail from '../components/mail/MailFolderRail';
 import MailInitialLoadingState from '../components/mail/MailInitialLoadingState';
 import MailMessageList from '../components/mail/MailMessageList';
+import MailMessageReader from '../components/mail/MailMessageReader';
 import MailPreviewHeader from '../components/mail/MailPreviewHeader';
 import MailShortcutHelpDialog from '../components/mail/MailShortcutHelpDialog';
 import MailToolbar from '../components/mail/MailToolbar';
 import MailToolsMenu from '../components/mail/MailToolsMenu';
 import MailViewSettingsDialog from '../components/mail/MailViewSettingsDialog';
 import MailComposeHost, { loadMailComposeDialog } from '../components/mail/MailComposeHost';
+import MailItRequestDialog from '../components/mail/MailItRequestDialog';
+import useMailMobileShell from '../components/mail/useMailMobileShell';
+import useMailAdvancedSearch, { DEFAULT_ADVANCED_FILTERS } from '../components/mail/useMailAdvancedSearch';
+import useMailBulkActions from '../components/mail/useMailBulkActions';
+import useMailFolderMutations from '../components/mail/useMailFolderMutations';
+import useMailItRequest from '../components/mail/useMailItRequest';
+import useMailAsyncTaskGate from '../components/mail/useMailAsyncTaskGate';
+import useMailAutoReadGuard from '../components/mail/useMailAutoReadGuard';
+import useMailListDataController from '../components/mail/useMailListDataController';
+import useMailListItemActions from '../components/mail/useMailListItemActions';
+import useMailMailboxUnreadCounts from '../components/mail/useMailMailboxUnreadCounts';
+import useMailMessageFileActions from '../components/mail/useMailMessageFileActions';
+import useMailMessageRenderState from '../components/mail/useMailMessageRenderState';
+import useMailQuickReply from '../components/mail/useMailQuickReply';
+import useMailReadMutations from '../components/mail/useMailReadMutations';
+import useMailRecentSnapshots from '../components/mail/useMailRecentSnapshots';
+import useMailRemoteImages from '../components/mail/useMailRemoteImages';
+import useMailSelectedDetailLifecycle from '../components/mail/useMailSelectedDetailLifecycle';
+import useMailSelectedDetailState from '../components/mail/useMailSelectedDetailState';
+import useMailSelectedPreviewActions from '../components/mail/useMailSelectedPreviewActions';
+import useMailSignatureSettings from '../components/mail/useMailSignatureSettings';
+import useMailTemplateEditor from '../components/mail/useMailTemplateEditor';
 import {
   getMailErrorCode as resolveMailErrorCode,
   getMailErrorDetail as resolveMailErrorDetail,
@@ -68,30 +83,48 @@ import {
   isMissingMailDetailError as resolveIsMissingMailDetailError,
   isTransientMailRequestError as resolveIsTransientMailRequestError,
 } from '../components/mail/mailErrorModel';
-import { buildRenderedMailHtml, filterVisibleMailAttachments } from '../components/mail/mailHtmlContent';
 import {
-  buildMailMobileHistoryState,
-  getMailMobileHistoryKey as createMailMobileHistoryKey,
-  readMailMobileHistoryState as parseMailMobileHistoryState,
-} from '../components/mail/mailMobileHistory';
-import {
-  buildMailBootstrapCacheKey,
-  buildMailConversationDetailCacheKey,
   buildMailFolderSummaryCacheKey,
   buildMailFolderTreeCacheKey,
   buildMailListCacheKey,
-  buildMailListState,
-  buildMailMessageDetailCacheKey,
+  buildMailListRequestContext,
   createEmptyListData,
-  isListItemSame,
   normalizeMailListResponse,
 } from '../components/mail/mailListModel';
+import {
+  buildMailRoute,
+  normalizeMailListViewContextState,
+  normalizeMailViewMode,
+  readStoredMailListViewState,
+  readStoredMailViewState,
+  writeStoredMailListViewState,
+  writeStoredMailViewState,
+} from '../components/mail/mailViewStateModel';
+import {
+  buildFallbackMailboxEntry,
+  getMailboxEntryId,
+  mergeMailboxEntries,
+  normalizeMailboxId,
+  resolveComposeMailboxId as resolveMailboxComposeMailboxId,
+  resolveItemMailboxId as resolveMailboxItemMailboxId,
+  withMailboxParams,
+  withMailboxPayload,
+} from '../components/mail/mailMailboxModel';
+import {
+  buildMailDetailCacheKey,
+  createSelectedMessagePreviewShell,
+} from '../components/mail/mailDetailModel';
+import {
+  applyReadStateOverridesToConversationDetail,
+  applyReadStateOverridesToListData,
+  applyReadStateOverridesToMessageDetail,
+  pruneLocalReadStateOverrides,
+} from '../components/mail/mailReadStateModel';
 import { normalizeComposeSubject } from '../components/mail/mailComposeSubject';
 import {
   createComposeInitialState,
   normalizeMailRecipient,
   readStoredComposeState,
-  toRecipientEmails,
 } from '../components/mail/mailComposeState';
 import {
   buildMailUiTokens,
@@ -101,7 +134,7 @@ import {
   getMailDialogTitleSx,
   getMailUiFontScopeSx,
 } from '../components/mail/mailUiTokens';
-import { formatMailPersonWithEmail, getMailPersonDisplay, getMailPersonEmail } from '../components/mail/mailPeople';
+import { getMailPersonDisplay, getMailPersonEmail } from '../components/mail/mailPeople';
 import { splitQuotedHistoryHtml } from '../components/mail/mailQuotedHistory';
 
 const MailAttachmentPreviewDialog = lazy(() => import('../components/mail/MailAttachmentPreviewDialog'));
@@ -118,11 +151,6 @@ const MAIL_FOLDER_SUMMARY_REFRESH_COOLDOWN_MS = 120000;
 const MAIL_AUTO_READ_GUARD_TTL_MS = 120000;
 const MAIL_DETAIL_PREFETCH_LIMIT = 0;
 const MAIL_DETAIL_PREFETCH_COOLDOWN_MS = 600000;
-const MAIL_MOBILE_EDGE_SWIPE_ZONE_PX = 24;
-const MAIL_MOBILE_EDGE_SWIPE_LOCK_PX = 10;
-const MAIL_MOBILE_EDGE_SWIPE_CLOSE_THRESHOLD_PX = 72;
-const MAIL_MOBILE_EDGE_SWIPE_FLING_VELOCITY_PX_MS = 0.35;
-const MAIL_MOBILE_EDGE_SWIPE_ANIMATION_MS = 180;
 const MAIL_RENDERED_CONTENT_LAYOUT_SX = {
   width: '100%',
   maxWidth: '100%',
@@ -244,12 +272,7 @@ const getMailRenderedContentSx = ({ ui, theme, variant = 'message', mine = false
     },
   };
 };
-const MAX_PREVIEW_FILE_BYTES = 25 * 1024 * 1024;
-const MAX_TEXT_PREVIEW_BYTES = 1024 * 1024;
 const COMPOSE_DRAFT_STORAGE_KEY = 'mail_compose_draft_v2';
-const MAIL_RECENT_SEARCHES_KEY = 'mail_recent_searches_v1';
-const MAIL_VIEW_STATE_STORAGE_KEY = 'mail_view_state_v1';
-const MAIL_LIST_VIEW_STATE_STORAGE_KEY = 'mail_list_view_state_v1';
 const MAIL_BOOTSTRAP_LIMIT = 20;
 const MAIL_STANDARD_PREFETCH_FOLDERS = ['inbox'];
 
@@ -276,310 +299,6 @@ const DEFAULT_MAIL_PREFERENCES = {
   show_favorites_first: true,
 };
 
-const DEFAULT_ADVANCED_FILTERS = {
-  q: '',
-  from_filter: '',
-  to_filter: '',
-  subject_filter: '',
-  body_filter: '',
-  importance: '',
-  folder_scope: 'current',
-};
-
-const EDGE_GESTURE_INTERACTIVE_SELECTOR = [
-  'a',
-  'button',
-  'input',
-  'textarea',
-  'select',
-  'label',
-  '[role="button"]',
-  '[role="link"]',
-  '[contenteditable="true"]',
-].join(', ');
-
-const isElementMatchingSelector = (element, selector) => {
-  if (!element || typeof element.closest !== 'function') return false;
-  return Boolean(element.closest(selector));
-};
-
-const shouldBlockMailEdgeGestureTarget = (target, { blockTableScroll = false } = {}) => {
-  if (!target || typeof target !== 'object') return false;
-  if (isElementMatchingSelector(target, EDGE_GESTURE_INTERACTIVE_SELECTOR)) return true;
-  if (blockTableScroll && isElementMatchingSelector(target, '[data-mail-table-scroll="true"]')) return true;
-  return false;
-};
-
-const createSelectedMessagePreviewShell = (item, folder = 'inbox') => {
-  if (!item || typeof item !== 'object') return null;
-  const messageId = String(item?.id || '').trim();
-  if (!messageId) return null;
-  const bodyPreview = String(item?.body_preview || '').trim();
-  return {
-    id: messageId,
-    exchange_id: String(item?.exchange_id || ''),
-    folder: String(item?.folder || folder || 'inbox'),
-    subject: String(item?.subject || ''),
-    sender: String(item?.sender || ''),
-    sender_person: item?.sender_person || null,
-    sender_name: item?.sender_name || '',
-    sender_email: item?.sender_email || '',
-    sender_display: item?.sender_display || '',
-    to: [],
-    to_people: [],
-    cc: [],
-    cc_people: [],
-    bcc: [],
-    bcc_people: [],
-    received_at: item?.received_at || null,
-    is_read: Boolean(item?.is_read),
-    body_html: '',
-    body_text: bodyPreview,
-    importance: String(item?.importance || 'normal'),
-    categories: Array.isArray(item?.categories) ? item.categories : [],
-    reminder_is_set: false,
-    reminder_due_by: null,
-    internet_message_id: null,
-    conversation_id: String(item?.conversation_id || ''),
-    restore_hint_folder: null,
-    attachments: [],
-    compose_context: null,
-    draft_context: null,
-    has_external_images: false,
-    can_archive: String(item?.folder || folder || 'inbox') !== 'archive',
-    can_move: true,
-    __previewOnly: true,
-  };
-};
-
-const escapeMailPlainText = (value) => String(value || '')
-  .replace(/&/g, '&amp;')
-  .replace(/</g, '&lt;')
-  .replace(/>/g, '&gt;')
-  .replace(/"/g, '&quot;')
-  .replace(/'/g, '&#39;');
-
-const mailPlainTextToHtml = (value) => {
-  const text = String(value || '').trim();
-  if (!text) return '';
-  return `<div>${escapeMailPlainText(text).replace(/\r\n|\r|\n/g, '<br />')}</div>`;
-};
-
-const getMessageBodyHtmlSource = (message) => {
-  const bodyHtml = String(message?.body_html || '').trim();
-  if (bodyHtml) return bodyHtml;
-  return mailPlainTextToHtml(message?.body_text);
-};
-
-const hasMessageBodyContent = (message) => Boolean(
-  String(message?.body_html || '').trim()
-  || String(message?.body_text || '').trim()
-);
-
-const mergeMessageDetailPreservingBody = (nextMessage, previousMessage) => {
-  if (!nextMessage || typeof nextMessage !== 'object') return nextMessage;
-  if (!previousMessage || typeof previousMessage !== 'object') return nextMessage;
-  if (String(nextMessage?.id || '') !== String(previousMessage?.id || '')) return nextMessage;
-  if (hasMessageBodyContent(nextMessage) || !hasMessageBodyContent(previousMessage)) return nextMessage;
-  return {
-    ...nextMessage,
-    body_html: previousMessage.body_html || '',
-    body_text: previousMessage.body_text || '',
-    attachments: Array.isArray(nextMessage.attachments) && nextMessage.attachments.length > 0
-      ? nextMessage.attachments
-      : (Array.isArray(previousMessage.attachments) ? previousMessage.attachments : []),
-  };
-};
-
-const normalizeMailViewMode = (value) => (value === 'conversations' ? 'conversations' : 'messages');
-const normalizeMailboxId = (value) => String(value || '').trim();
-const getMailboxEntryId = (value) => normalizeMailboxId(value?.id || value?.mailbox_id);
-
-const normalizeMailViewState = (value = {}) => ({
-  folder: String(value?.folder || 'inbox').trim().toLowerCase() || 'inbox',
-  viewMode: normalizeMailViewMode(value?.viewMode),
-  search: String(value?.search || ''),
-  unreadOnly: Boolean(value?.unreadOnly),
-  hasAttachmentsOnly: Boolean(value?.hasAttachmentsOnly),
-  filterDateFrom: String(value?.filterDateFrom || ''),
-  filterDateTo: String(value?.filterDateTo || ''),
-  advancedFiltersApplied: {
-    ...DEFAULT_ADVANCED_FILTERS,
-    ...((value?.advancedFiltersApplied && typeof value.advancedFiltersApplied === 'object')
-      ? value.advancedFiltersApplied
-      : {}),
-  },
-});
-
-const buildMailViewStateStorageKey = (mailboxId = '') => (
-  `${MAIL_VIEW_STATE_STORAGE_KEY}:${normalizeMailboxId(mailboxId) || 'default'}`
-);
-
-const readStoredMailViewState = (mailboxId = '') => {
-  if (typeof window === 'undefined') return normalizeMailViewState();
-  const normalizedMailboxId = normalizeMailboxId(mailboxId);
-  const candidateKeys = normalizedMailboxId
-    ? [
-        buildMailViewStateStorageKey(normalizedMailboxId),
-        MAIL_VIEW_STATE_STORAGE_KEY,
-        buildMailViewStateStorageKey('default'),
-      ]
-    : [
-        MAIL_VIEW_STATE_STORAGE_KEY,
-        buildMailViewStateStorageKey('default'),
-      ];
-  try {
-    for (const storageKey of candidateKeys) {
-      const raw = window.sessionStorage.getItem(storageKey);
-      if (!raw) continue;
-      return normalizeMailViewState(JSON.parse(raw));
-    }
-    return normalizeMailViewState();
-  } catch {
-    return normalizeMailViewState();
-  }
-};
-
-const buildMailRoute = ({ folder = 'inbox', messageId = '', mailboxId = '' } = {}) => {
-  const params = new URLSearchParams();
-  const normalizedFolder = String(folder || 'inbox').trim().toLowerCase() || 'inbox';
-  params.set('folder', normalizedFolder);
-  const normalizedMessageId = String(messageId || '').trim();
-  const normalizedMailboxId = normalizeMailboxId(mailboxId);
-  if (normalizedMessageId) params.set('message', normalizedMessageId);
-  if (normalizedMailboxId) params.set('mailbox_id', normalizedMailboxId);
-  return `/mail?${params.toString()}`;
-};
-
-const buildFallbackMailboxEntry = (mailbox) => {
-  if (!mailbox || typeof mailbox !== 'object') return null;
-  const mailboxId = getMailboxEntryId(mailbox);
-  if (!mailboxId) return null;
-  return {
-    id: mailboxId,
-    label: mailbox?.label || mailbox?.mailbox_email || mailbox?.effective_mailbox_login || 'Почтовый ящик',
-    mailbox_email: mailbox?.mailbox_email || '',
-    mailbox_login: mailbox?.mailbox_login || '',
-    effective_mailbox_login: mailbox?.effective_mailbox_login || '',
-    auth_mode: mailbox?.auth_mode || mailbox?.mail_auth_mode || 'stored_credentials',
-    is_primary: Boolean(mailbox?.is_primary),
-    is_active: mailbox?.is_active !== false,
-    unread_count: Number(mailbox?.unread_count || 0),
-    unread_count_state: normalizeUnreadCountState(mailbox?.unread_count_state || 'deferred'),
-    last_selected_at: mailbox?.last_selected_at || null,
-    selected: true,
-  };
-};
-
-const normalizeUnreadCountState = (value) => {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'fresh' || normalized === 'stale') return normalized;
-  return 'deferred';
-};
-
-const mergeMailboxEntries = (entries, selectedMailbox = null, existingEntries = []) => {
-  const existingById = new Map(
-    (Array.isArray(existingEntries) ? existingEntries : [])
-      .map((entry) => [getMailboxEntryId(entry), entry])
-      .filter(([mailboxId]) => Boolean(mailboxId))
-  );
-  const result = [];
-  const seen = new Set();
-  (Array.isArray(entries) ? entries : []).forEach((entry) => {
-    const mailboxId = getMailboxEntryId(entry);
-    if (!mailboxId || seen.has(mailboxId)) return;
-    seen.add(mailboxId);
-    const existingEntry = existingById.get(mailboxId) || null;
-    const nextUnreadState = normalizeUnreadCountState(entry?.unread_count_state);
-    const existingUnreadState = normalizeUnreadCountState(existingEntry?.unread_count_state);
-    const preserveFreshUnread = existingUnreadState === 'fresh' && nextUnreadState !== 'fresh';
-    result.push({
-      ...(existingEntry || {}),
-      ...entry,
-      id: mailboxId,
-      unread_count: preserveFreshUnread
-        ? Number(existingEntry?.unread_count || 0)
-        : Number((entry?.unread_count ?? existingEntry?.unread_count) || 0),
-      unread_count_state: preserveFreshUnread ? existingUnreadState : nextUnreadState,
-      is_active: entry?.is_active !== false,
-      is_primary: Boolean(entry?.is_primary),
-    });
-  });
-  const fallback = buildFallbackMailboxEntry(selectedMailbox);
-  if (fallback && !seen.has(fallback.id)) {
-    const existingFallback = existingById.get(fallback.id) || null;
-    const existingUnreadState = normalizeUnreadCountState(existingFallback?.unread_count_state);
-    const preserveFreshUnread = existingUnreadState === 'fresh'
-      && normalizeUnreadCountState(fallback?.unread_count_state) !== 'fresh';
-    result.unshift({
-      ...(existingFallback || {}),
-      ...fallback,
-      unread_count: preserveFreshUnread
-        ? Number(existingFallback?.unread_count || 0)
-        : Number((fallback?.unread_count ?? existingFallback?.unread_count) || 0),
-      unread_count_state: preserveFreshUnread
-        ? existingUnreadState
-        : normalizeUnreadCountState(fallback?.unread_count_state),
-    });
-  }
-  return result;
-};
-
-const normalizeMailListViewContextState = (value) => ({
-  scrollTop: Math.max(0, Number(value?.scrollTop || 0)),
-  selectedMessageIdAtOpen: String(value?.selectedMessageIdAtOpen || ''),
-});
-
-const readStoredMailListViewState = () => {
-  if (typeof window === 'undefined') return {};
-  try {
-    const raw = window.sessionStorage.getItem(MAIL_LIST_VIEW_STATE_STORAGE_KEY);
-    if (!raw) return {};
-    const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return {};
-    return Object.entries(parsed).reduce((acc, [key, value]) => {
-      const normalizedKey = String(key || '');
-      if (!normalizedKey) return acc;
-      acc[normalizedKey] = normalizeMailListViewContextState(value);
-      return acc;
-    }, {});
-  } catch {
-    return {};
-  }
-};
-
-const isExpandedMailListData = (value) => {
-  const source = value && typeof value === 'object' ? value : {};
-  const itemsCount = Array.isArray(source.items) ? source.items.length : 0;
-  const limit = Math.max(1, Number(source.limit || 50));
-  return Number(source.loaded_pages || 0) > 1 || itemsCount > limit;
-};
-
-const TEMPLATE_FIELD_TYPES = [
-  { value: 'text', label: 'Текст' },
-  { value: 'textarea', label: 'Многострочный текст' },
-  { value: 'select', label: 'Список' },
-  { value: 'multiselect', label: 'Множественный список' },
-  { value: 'date', label: 'Дата' },
-  { value: 'checkbox', label: 'Флаг' },
-  { value: 'email', label: 'Email' },
-  { value: 'tel', label: 'Телефон' },
-];
-
-const createEmptyAttachmentPreview = () => ({
-  open: false,
-  loading: false,
-  error: '',
-  filename: '',
-  contentType: '',
-  kind: 'unsupported',
-  objectUrl: '',
-  textContent: '',
-  textTruncated: false,
-  tooLargeForPreview: false,
-  blob: null,
-});
-
 const formatTime = (isoStr) => {
   if (!isoStr) return '';
   const date = new Date(isoStr);
@@ -601,15 +320,6 @@ const formatFullDate = (isoStr) => {
   });
 };
 
-const formatConversationDay = (isoStr) => {
-  if (!isoStr) return '';
-  return new Date(isoStr).toLocaleDateString('ru-RU', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  });
-};
-
 const formatFileSize = (bytes) => {
   const value = Number(bytes);
   if (!Number.isFinite(value) || value <= 0) return '0 Б';
@@ -625,75 +335,6 @@ const formatFileSize = (bytes) => {
 
 const sumFilesSize = (files) => (Array.isArray(files) ? files.reduce((acc, file) => acc + Number(file?.size || 0), 0) : 0);
 const sumAttachmentSize = (attachments) => (Array.isArray(attachments) ? attachments.reduce((acc, item) => acc + Number(item?.size || 0), 0) : 0);
-
-const parseDownloadFilename = (contentDisposition, fallbackName = 'attachment.bin') => {
-  const source = String(contentDisposition || '');
-  const utf8Match = source.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utf8Match?.[1]) {
-    try {
-      return decodeURIComponent(utf8Match[1]);
-    } catch {
-      // ignore
-    }
-  }
-  const simpleMatch = source.match(/filename=\"([^\"]+)\"/i) || source.match(/filename=([^;]+)/i);
-  return simpleMatch?.[1] ? String(simpleMatch[1]).trim() : String(fallbackName || 'attachment.bin');
-};
-
-const shouldPreferBlobOpenFallback = () => {
-  if (typeof window === 'undefined' || typeof navigator === 'undefined') return false;
-  const displayModeStandalone = typeof window.matchMedia === 'function'
-    ? Boolean(window.matchMedia('(display-mode: standalone)').matches)
-    : false;
-  const iosStandalone = Boolean(window.navigator?.standalone);
-  const userAgent = String(window.navigator?.userAgent || '');
-  const isiOS = /iPad|iPhone|iPod/.test(userAgent)
-    || (window.navigator?.platform === 'MacIntel' && Number(window.navigator?.maxTouchPoints || 0) > 1);
-  return Boolean((displayModeStandalone || iosStandalone) && isiOS);
-};
-
-const downloadBlobFile = (blob, filename, { preferOpenFallback = false } = {}) => {
-  const url = window.URL.createObjectURL(blob);
-  const useOpenFallback = Boolean(preferOpenFallback) && shouldPreferBlobOpenFallback();
-  if (useOpenFallback) {
-    const popup = window.open(url, '_blank', 'noopener,noreferrer');
-    if (popup) {
-      window.setTimeout(() => {
-        window.URL.revokeObjectURL(url);
-      }, 60_000);
-      return;
-    }
-  }
-  const link = document.createElement('a');
-  link.href = url;
-  link.download = String(filename || 'attachment.bin');
-  document.body.appendChild(link);
-  link.click();
-  window.URL.revokeObjectURL(url);
-  document.body.removeChild(link);
-};
-
-const MAIL_ATTACHMENT_CONTEXT_MISSING_CODE = 'MAIL_ATTACHMENT_CONTEXT_MISSING';
-
-const buildAttachmentContextError = ({ attachment, messageId, mailboxId }) => {
-  const attachmentName = String(attachment?.name || 'вложение').trim() || 'вложение';
-  const error = new Error(
-    !messageId
-      ? 'Не удалось определить письмо для скачивания вложения.'
-      : `Вложение "${attachmentName}" пришло без идентификатора для скачивания.`
-  );
-  error.code = MAIL_ATTACHMENT_CONTEXT_MISSING_CODE;
-  error.attachment = {
-    name: attachmentName,
-    content_type: String(attachment?.content_type || '').trim(),
-    size: Number(attachment?.size || 0),
-    id: String(attachment?.id || '').trim(),
-    download_token: String(attachment?.download_token || '').trim(),
-    mailbox_id: String(mailboxId || '').trim(),
-    message_id: String(messageId || '').trim(),
-  };
-  return error;
-};
 
 const getInitials = (email) => {
   const source = String(email || '');
@@ -729,33 +370,6 @@ const getSenderEmail = (value) => (
   || normalizeMailRecipient(value?.sender || '')
 );
 
-const normalizeTemplateFieldKey = (value) => String(value || '')
-  .trim()
-  .toLowerCase()
-  .replace(/[^a-z0-9_.-]/g, '_')
-  .replace(/_+/g, '_')
-  .replace(/^_+|_+$/g, '');
-
-const normalizeTemplateFieldOptions = (value) => {
-  const raw = Array.isArray(value) ? value : String(value || '').split(/\r?\n|;/);
-  const dedup = new Set();
-  raw.forEach((item) => {
-    const normalized = String(item || '').trim();
-    if (normalized) dedup.add(normalized);
-  });
-  return Array.from(dedup);
-};
-
-const makeTemplateField = (index = 0) => ({
-  key: `field_${index + 1}`,
-  label: `Поле ${index + 1}`,
-  type: 'text',
-  required: true,
-  placeholder: '',
-  default_value: '',
-  options: [],
-});
-
 function Mail() {
   const theme = useTheme();
   const ui = useMemo(() => buildMailUiTokens(theme), [theme]);
@@ -768,29 +382,27 @@ function Mail() {
     () => normalizeMailboxId(new URLSearchParams(location.search || '').get('mailbox_id')),
     [location.search]
   );
-  const initialMailViewState = useMemo(() => readStoredMailViewState(initialRouteMailboxId), [initialRouteMailboxId]);
+  const initialMailViewState = useMemo(
+    () => readStoredMailViewState(initialRouteMailboxId, { defaultAdvancedFilters: DEFAULT_ADVANCED_FILTERS }),
+    [initialRouteMailboxId],
+  );
   const initialMailCacheScope = useMemo(
     () => initialRouteMailboxId || String(user?.id || 'anonymous'),
     [initialRouteMailboxId, user?.id]
   );
-  const initialMailRecentContextKey = useMemo(() => JSON.stringify(buildMailListCacheKey({
+  const initialMailRecentContextKey = useMemo(() => buildMailListRequestContext({
     scope: initialMailCacheScope,
     folder: initialMailViewState.folder,
     viewMode: initialMailViewState.viewMode,
-    q: initialMailViewState.search,
+    search: initialMailViewState.search,
     unreadOnly: initialMailViewState.unreadOnly,
     hasAttachmentsOnly: initialMailViewState.hasAttachmentsOnly,
     dateFrom: initialMailViewState.filterDateFrom,
     dateTo: initialMailViewState.filterDateTo,
-    folderScope: initialMailViewState?.advancedFiltersApplied?.folder_scope || 'current',
-    fromFilter: initialMailViewState?.advancedFiltersApplied?.from_filter,
-    toFilter: initialMailViewState?.advancedFiltersApplied?.to_filter,
-    subjectFilter: initialMailViewState?.advancedFiltersApplied?.subject_filter,
-    bodyFilter: initialMailViewState?.advancedFiltersApplied?.body_filter,
-    importance: initialMailViewState?.advancedFiltersApplied?.importance,
+    advancedFilters: initialMailViewState?.advancedFiltersApplied,
     limit: 50,
     offset: 0,
-  })), [initialMailCacheScope, initialMailViewState]);
+  }).contextKey, [initialMailCacheScope, initialMailViewState]);
   const initialMailRecentHydration = useMemo(
     () => getMailRecentHydration({ scope: initialMailCacheScope, contextKey: initialMailRecentContextKey }),
     [initialMailCacheScope, initialMailRecentContextKey]
@@ -799,8 +411,6 @@ function Mail() {
 
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [detailLoading, setDetailLoading] = useState(false);
-  const [messageActionLoading, setMessageActionLoading] = useState(false);
   const [error, setError] = useState('');
   const [message, setMessage] = useState('');
 
@@ -840,64 +450,65 @@ function Mail() {
   const [pageVisible, setPageVisible] = useState(() => (
     typeof document === 'undefined' ? true : document.visibilityState === 'visible'
   ));
-  const [selectedId, setSelectedId] = useState('');
-  const [selectedMessage, setSelectedMessage] = useState(null);
-  const [selectedConversation, setSelectedConversation] = useState(null);
   const [selectedItems, setSelectedItems] = useState([]);
-  const [selectedByMode, setSelectedByMode] = useState({ messages: '', conversations: '' });
   const [moveTarget, setMoveTarget] = useState('');
-  const [bulkActionLoading, setBulkActionLoading] = useState(false);
+  const queueListScrollRestoreRef = useRef(null);
+  const queueListScrollRestoreProxy = useCallback((...args) => {
+    queueListScrollRestoreRef.current?.(...args);
+  }, []);
 
-  const [advancedSearchOpen, setAdvancedSearchOpen] = useState(false);
-  const [advancedFiltersDraft, setAdvancedFiltersDraft] = useState(initialMailViewState.advancedFiltersApplied);
-  const [advancedFiltersApplied, setAdvancedFiltersApplied] = useState(initialMailViewState.advancedFiltersApplied);
-  const [recentSearches, setRecentSearches] = useState([]);
+  const {
+    detailLoading,
+    setDetailLoading,
+    selectedId,
+    setSelectedId,
+    selectedMessage,
+    setSelectedMessage,
+    selectedConversation,
+    setSelectedConversation,
+    selectedByMode,
+    setSelectedByMode,
+    detailRequestAbortRef,
+    selectedIdRef,
+    selectedMessageRef,
+    selectedConversationRef,
+    detailContextRef,
+    suppressNextAutoReadRef,
+    clearSelection,
+    restoreMobileHistorySelection,
+  } = useMailSelectedDetailState({
+    viewMode,
+    setSelectedItems,
+    setMoveTarget,
+    queueListScrollRestore: queueListScrollRestoreProxy,
+  });
+
+  const {
+    advancedSearchOpen,
+    setAdvancedSearchOpen,
+    advancedFiltersDraft,
+    setAdvancedFiltersDraft,
+    advancedFiltersApplied,
+    setAdvancedFiltersApplied,
+    recentSearches,
+    handleApplyAdvancedSearch,
+    handleResetAdvancedSearch,
+    handleApplyRecentSearch,
+  } = useMailAdvancedSearch({
+    initialFilters: initialMailViewState.advancedFiltersApplied,
+    onSearchChange: setSearch,
+  });
   const [shortcutsOpen, setShortcutsOpen] = useState(false);
-  const [headersOpen, setHeadersOpen] = useState(false);
-  const [headersLoading, setHeadersLoading] = useState(false);
-  const [messageHeaders, setMessageHeaders] = useState({ items: [] });
 
-  const [folderDialogOpen, setFolderDialogOpen] = useState(false);
-  const [folderDialogMode, setFolderDialogMode] = useState('create');
-  const [folderDialogParentId, setFolderDialogParentId] = useState('');
-  const [folderDialogScope, setFolderDialogScope] = useState('mailbox');
-  const [folderDialogTarget, setFolderDialogTarget] = useState(null);
-  const [folderDialogName, setFolderDialogName] = useState('');
-  const [folderDialogSaving, setFolderDialogSaving] = useState(false);
-
-  const [attachmentPreview, setAttachmentPreview] = useState(createEmptyAttachmentPreview);
   const [toolsAnchorEl, setToolsAnchorEl] = useState(null);
-  const [mobileNavigationOpen, setMobileNavigationOpen] = useState(false);
 
   const [composeSession, setComposeSession] = useState(null);
 
-  const [quickReplyBody, setQuickReplyBody] = useState('');
-  const [quickReplySending, setQuickReplySending] = useState(false);
-  const [showQuotedHistory, setShowQuotedHistory] = useState(false);
+  const {
+    revealedRemoteImagesByMessageId,
+    revealRemoteImagesForMessage,
+  } = useMailRemoteImages();
 
-  const [signatureOpen, setSignatureOpen] = useState(false);
-  const [signatureSaving, setSignatureSaving] = useState(false);
-  const [signatureHtml, setSignatureHtml] = useState('');
-  const [signatureMailboxId, setSignatureMailboxId] = useState('');
-
-  const [templates, setTemplates] = useState([]);
-  const [itOpen, setItOpen] = useState(false);
-  const [itTemplateId, setItTemplateId] = useState('');
-  const [itFieldValues, setItFieldValues] = useState({});
-  const [revealedRemoteImagesByMessageId, setRevealedRemoteImagesByMessageId] = useState({});
-
-  const [templatesOpen, setTemplatesOpen] = useState(false);
-  const [templateEditId, setTemplateEditId] = useState('');
-  const [templateCode, setTemplateCode] = useState('');
-  const [templateTitle, setTemplateTitle] = useState('');
-  const [templateCategory, setTemplateCategory] = useState('');
-  const [templateSubject, setTemplateSubject] = useState('');
-  const [templateBody, setTemplateBody] = useState('');
-  const [templateFields, setTemplateFields] = useState([]);
-  const [templateSaving, setTemplateSaving] = useState(false);
-  const [templateDeleting, setTemplateDeleting] = useState(false);
-  const [mobilePreviewSwipeOffset, setMobilePreviewSwipeOffset] = useState(0);
-  const [mobilePreviewSwipeTransition, setMobilePreviewSwipeTransition] = useState(false);
   const composeOpen = Boolean(composeSession);
 
   const messageListRef = useRef(null);
@@ -906,23 +517,12 @@ function Mail() {
   const searchInputRef = useRef(null);
   const composeSessionCounterRef = useRef(0);
   const composeCloseRequestRef = useRef(null);
-  const dragMessageIdsRef = useRef([]);
-  const detailRequestAbortRef = useRef(null);
-  const templatesInitRef = useRef(false);
-  const templatesLoadedRef = useRef(false);
   const listDataRef = useRef(listData);
-  const selectedIdRef = useRef(selectedId);
   const viewModeRef = useRef(viewMode);
   const folderSummaryRef = useRef(folderSummary);
   const folderTreeRef = useRef(folderTree);
   const mailboxesRef = useRef(mailboxes);
-  const selectedMessageRef = useRef(selectedMessage);
-  const selectedConversationRef = useRef(selectedConversation);
-  const detailContextRef = useRef('');
   const deepLinkKeyRef = useRef('');
-  const suppressNextAutoReadRef = useRef('');
-  const autoReadInFlightRef = useRef(new Set());
-  const autoReadCompletedAtRef = useRef(new Map());
   const localReadStateOverridesRef = useRef(new Map());
   const detailPrefetchInFlightRef = useRef(new Set());
   const detailPrefetchCompletedAtRef = useRef(new Map());
@@ -936,20 +536,19 @@ function Mail() {
   const pendingListScrollRestoreRef = useRef(null);
   const previousMailCacheScopeRef = useRef(initialMailCacheScope);
   const lastAppliedMailboxViewStateRef = useRef('');
-  const mailViewRefreshInFlightRef = useRef(new Map());
-  const mailViewRefreshCompletedAtRef = useRef(new Map());
   const folderSummaryRefreshCompletedAtRef = useRef(0);
-  const mailboxUnreadRefreshInFlightRef = useRef(new Set());
-  const attachmentDownloadInFlightRef = useRef(new Set());
-  const mobilePreviewSwipeRef = useRef(null);
-  const mobilePreviewSwipeTimeoutRef = useRef(null);
-  const mobileHistoryReadyRef = useRef(false);
-  const mobileHistoryModeRef = useRef('list:closed:none:messages');
 
   const activeMailboxId = useMemo(
     () => normalizeMailboxId(selectedMailboxId || mailboxInfo?.mailbox_id || initialRouteMailboxId),
     [initialRouteMailboxId, mailboxInfo?.mailbox_id, selectedMailboxId]
   );
+  const {
+    begin: beginAutoReadGuard,
+    settle: settleAutoReadGuard,
+  } = useMailAutoReadGuard({ ttlMs: MAIL_AUTO_READ_GUARD_TTL_MS });
+  const {
+    run: runMailViewRefreshGate,
+  } = useMailAsyncTaskGate({ cooldownMs: MAIL_VIEW_REFRESH_COOLDOWN_MS });
   useEffect(() => {
     let cancelled = false;
     let timeoutId = null;
@@ -982,85 +581,14 @@ function Mail() {
     () => `${COMPOSE_DRAFT_STORAGE_KEY}:${activeMailboxId || 'default'}`,
     [activeMailboxId]
   );
-  const activeTemplate = useMemo(() => templates.find((item) => String(item.id) === String(itTemplateId)) || null, [templates, itTemplateId]);
-  const templateVariableHints = useMemo(() => {
-    const seen = new Set();
-    const values = [];
-    (Array.isArray(templateFields) ? templateFields : []).forEach((field) => {
-      const key = normalizeTemplateFieldKey(field?.key);
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      values.push(key);
-    });
-    return values;
-  }, [templateFields]);
-  const templateEditorPreview = useMemo(() => {
-    const values = {};
-    templateVariableHints.forEach((key) => { values[key] = `{{${key}}}`; });
-    (Array.isArray(templateFields) ? templateFields : []).forEach((field) => {
-      const key = normalizeTemplateFieldKey(field?.key);
-      if (!key) return;
-      const fallback = Array.isArray(field?.default_value)
-        ? field.default_value.join(', ')
-        : String(field?.default_value || '');
-      if (fallback) values[key] = fallback;
-    });
-    const render = (text) => String(text || '').replace(/\{\{\s*([a-z0-9_.-]+)\s*\}\}/gi, (match, key) => values[String(key || '').toLowerCase()] || match);
-    const subjectPreview = render(templateSubject);
-    const bodyPreview = render(templateBody);
-    return `Тема: ${subjectPreview || '(без темы)'}\n\n${bodyPreview || '(пустой текст)'}`;
-  }, [templateSubject, templateBody, templateFields, templateVariableHints]);
-  const selectedMessageAllowsExternalImages = Boolean(
-    selectedMessage?.id && revealedRemoteImagesByMessageId?.[String(selectedMessage.id)]
-  );
-  const selectedMessageAllAttachments = useMemo(
-    () => (Array.isArray(selectedMessage?.attachments) ? selectedMessage.attachments : []),
-    [selectedMessage?.attachments]
-  );
-  const selectedMessageBodyHtmlSource = useMemo(
-    () => getMessageBodyHtmlSource(selectedMessage),
-    [selectedMessage?.body_html, selectedMessage?.body_text]
-  );
-  const selectedMessageRenderResult = useMemo(
-    () => buildRenderedMailHtml(
-      selectedMessageBodyHtmlSource,
-      selectedMessageAllAttachments,
-      { allowExternalImages: selectedMessageAllowsExternalImages, colorScheme: mailRenderColorScheme }
-    ),
-    [selectedMessageBodyHtmlSource, selectedMessageAllAttachments, selectedMessageAllowsExternalImages, mailRenderColorScheme]
-  );
-  const selectedMessageAttachments = useMemo(
-    () => filterVisibleMailAttachments(selectedMessageAllAttachments, selectedMessageRenderResult.usedInlineAttachmentIds),
-    [selectedMessageAllAttachments, selectedMessageRenderResult.usedInlineAttachmentIds]
-  );
-  const selectedMessageAttachmentTotalSize = useMemo(
-    () => formatFileSize(sumAttachmentSize(selectedMessageAttachments)),
-    [selectedMessageAttachments]
-  );
-  const selectedMessageQuotedHistory = useMemo(
-    () => splitQuotedHistoryHtml(selectedMessageRenderResult?.html),
-    [selectedMessageRenderResult?.html]
-  );
-  const selectedMessageHasQuotedHistory = useMemo(
-    () => Boolean(selectedMessageQuotedHistory?.hasQuotedHistory),
-    [selectedMessageQuotedHistory]
-  );
-  const selectedMessagePrimaryHtml = useMemo(
-    () => (
-      selectedMessageQuotedHistory?.quotedHtml
-        ? selectedMessageQuotedHistory.primaryHtml
-        : selectedMessageRenderResult.html
-    ),
-    [selectedMessageQuotedHistory, selectedMessageRenderResult.html]
-  );
-  const selectedMessageQuotedHtml = useMemo(
-    () => String(selectedMessageQuotedHistory?.quotedHtml || ''),
-    [selectedMessageQuotedHistory]
-  );
-  const selectedMessageUsesQuoteFallback = useMemo(
-    () => Boolean(selectedMessageHasQuotedHistory && !selectedMessageQuotedHtml),
-    [selectedMessageHasQuotedHistory, selectedMessageQuotedHtml]
-  );
+  const selectedMessageRenderState = useMailMessageRenderState(selectedMessage, {
+    revealedRemoteImagesByMessageId,
+    colorScheme: mailRenderColorScheme,
+    formatFileSize,
+    sumAttachmentSize,
+    resetKey: `${selectedMessage?.id || ''}:${selectedConversation?.conversation_id || ''}`,
+  });
+  const { renderResult: selectedMessageRenderResult } = selectedMessageRenderState;
   const mailboxEmails = useMemo(() => {
     const values = [mailboxInfo?.mailbox_email, mailboxInfo?.mailbox_login, mailboxInfo?.effective_mailbox_login];
     const set = new Set();
@@ -1100,170 +628,49 @@ function Mail() {
     const fallback = buildFallbackMailboxEntry(mailboxInfo);
     return fallback ? [fallback] : [];
   }, [activeMailboxes, mailboxInfo]);
-  const refreshMailboxUnreadCounts = useCallback(async ({ mailboxIds = null, force = false } = {}) => {
-    const requestedIds = Array.isArray(mailboxIds)
-      ? mailboxIds.map((value) => normalizeMailboxId(value)).filter(Boolean)
-      : null;
-    const requestedIdSet = requestedIds ? new Set(requestedIds) : null;
-    const currentMailboxes = Array.isArray(mailboxesRef.current) ? mailboxesRef.current : [];
-    const targets = currentMailboxes
-      .filter((entry) => {
-        const mailboxId = getMailboxEntryId(entry);
-        if (!mailboxId || entry?.is_active === false) return false;
-        if (mailboxId === activeMailboxId) return false;
-        if (requestedIdSet && !requestedIdSet.has(mailboxId)) return false;
-        if (mailboxUnreadRefreshInFlightRef.current.has(mailboxId)) return false;
-        if (force) return true;
-        return normalizeUnreadCountState(entry?.unread_count_state) !== 'fresh';
-      })
-      .map((entry) => getMailboxEntryId(entry))
-      .filter(Boolean);
-    if (targets.length === 0) return;
-
-    const results = await Promise.allSettled(targets.map(async (mailboxId) => {
-      mailboxUnreadRefreshInFlightRef.current.add(mailboxId);
-      try {
-        const response = await mailAPI.getUnreadCount({ mailboxId });
-        return {
-          mailboxId,
-          unreadCount: Number(response?.unread_count || 0),
-        };
-      } finally {
-        mailboxUnreadRefreshInFlightRef.current.delete(mailboxId);
-      }
-    }));
-
-    const nextCounts = new Map();
-    results.forEach((result) => {
-      if (result.status !== 'fulfilled') return;
-      nextCounts.set(result.value.mailboxId, result.value.unreadCount);
-    });
-    if (nextCounts.size === 0) return;
-
-    setMailboxes((prev) => (Array.isArray(prev) ? prev.map((entry) => {
-      const mailboxId = getMailboxEntryId(entry);
-      if (!mailboxId || !nextCounts.has(mailboxId)) return entry;
-      return {
-        ...entry,
-        unread_count: Number(nextCounts.get(mailboxId) || 0),
-        unread_count_state: 'fresh',
-      };
-    }) : prev));
-  }, [activeMailboxId]);
-  const handleOpenMailboxList = useCallback(() => {
-    void refreshMailboxUnreadCounts();
-  }, [refreshMailboxUnreadCounts]);
-  const withActiveMailboxParams = useCallback((params = {}) => (
-    activeMailboxId
-      ? { ...(params || {}), mailbox_id: activeMailboxId }
-      : { ...(params || {}) }
-  ), [activeMailboxId]);
-  const withActiveMailboxPayload = useCallback((payload = {}) => (
-    activeMailboxId
-      ? { ...(payload || {}), mailbox_id: activeMailboxId }
-      : { ...(payload || {}) }
-  ), [activeMailboxId]);
+  const {
+    refreshMailboxUnreadCounts,
+    handleOpenMailboxList,
+  } = useMailMailboxUnreadCounts({
+    mailAPI,
+    mailboxes,
+    activeMailboxId,
+    setMailboxes,
+  });
+  const withActiveMailboxParams = useCallback((params = {}) => withMailboxParams(activeMailboxId, params), [activeMailboxId]);
+  const withActiveMailboxPayload = useCallback((payload = {}) => withMailboxPayload(activeMailboxId, payload), [activeMailboxId]);
   const resolveItemMailboxId = useCallback((item) => (
-    normalizeMailboxId(
-      item?.mailbox_id
-      || item?.compose_context?.mailbox_id
-      || item?.draft_context?.mailbox_id
-      || activeMailboxId
-    )
+    resolveMailboxItemMailboxId({ item, activeMailboxId })
   ), [activeMailboxId]);
-  const resolveAttachmentRequestContext = useCallback((messageOrId, attachment, fallbackMessage = null) => {
-    const message = messageOrId && typeof messageOrId === 'object'
-      ? messageOrId
-      : (fallbackMessage && typeof fallbackMessage === 'object' ? fallbackMessage : null);
-    const messageId = String(
-      (messageOrId && typeof messageOrId === 'object' ? messageOrId?.id : messageOrId)
-      || message?.id
-      || ''
-    ).trim();
-    const attachmentRef = String(attachment?.download_token || attachment?.id || attachment?.attachment_ref || '').trim();
-    const mailboxId = resolveItemMailboxId(message);
-    return { messageId, attachmentRef, mailboxId };
-  }, [resolveItemMailboxId]);
   const resolveComposeMailboxId = useCallback((candidate = '') => {
-    const normalizedCandidate = normalizeMailboxId(candidate);
-    if (normalizedCandidate) return normalizedCandidate;
-    if (activeMailboxId) return activeMailboxId;
-    return getMailboxEntryId(composeFromOptions[0]);
+    return resolveMailboxComposeMailboxId({ candidate, activeMailboxId, composeFromOptions });
   }, [activeMailboxId, composeFromOptions]);
   const mailCacheScope = useMemo(
     () => activeMailboxId || initialMailCacheScope || 'mailbox:pending',
     [activeMailboxId, initialMailCacheScope]
   );
-  const currentContextUsesBootstrapList = useMemo(() => (
-    folder === 'inbox'
-    && viewMode === 'messages'
-    && !debouncedSearch
-    && !unreadOnly
-    && !hasAttachmentsOnly
-    && !filterDateFrom
-    && !filterDateTo
-    && !advancedFiltersApplied?.from_filter
-    && !advancedFiltersApplied?.to_filter
-    && !advancedFiltersApplied?.subject_filter
-    && !advancedFiltersApplied?.body_filter
-    && !advancedFiltersApplied?.importance
-    && String(advancedFiltersApplied?.folder_scope || 'current') === 'current'
-  ), [
-    advancedFiltersApplied,
-    debouncedSearch,
-    filterDateFrom,
-    filterDateTo,
-    folder,
-    hasAttachmentsOnly,
-    unreadOnly,
-    viewMode,
-  ]);
-  const currentFolderScope = String(advancedFiltersApplied?.folder_scope || 'current');
-  const currentListParams = useMemo(() => ({
-    folder,
-    q: debouncedSearch || undefined,
-    unread_only: unreadOnly || undefined,
-    has_attachments: hasAttachmentsOnly || undefined,
-    date_from: filterDateFrom || undefined,
-    date_to: filterDateTo || undefined,
-    folder_scope: currentFolderScope || undefined,
-    from_filter: advancedFiltersApplied?.from_filter || undefined,
-    to_filter: advancedFiltersApplied?.to_filter || undefined,
-    subject_filter: advancedFiltersApplied?.subject_filter || undefined,
-    body_filter: advancedFiltersApplied?.body_filter || undefined,
-    importance: advancedFiltersApplied?.importance || undefined,
-    limit: 50,
-    offset: 0,
-  }), [
-    advancedFiltersApplied,
-    currentFolderScope,
-    debouncedSearch,
-    filterDateFrom,
-    filterDateTo,
-    folder,
-    hasAttachmentsOnly,
-    unreadOnly,
-  ]);
-  const currentListCacheKey = useMemo(() => buildMailListCacheKey({
+  const {
+    persistBootstrapSnapshot: persistRecentBootstrapSnapshot,
+    persistListSnapshot: persistRecentListSnapshot,
+    persistMessageDetailSnapshot: persistRecentMessageDetailSnapshot,
+    getMessageDetailSnapshot: getRecentMessageDetailSnapshot,
+  } = useMailRecentSnapshots({
+    scope: mailCacheScope,
+    initialScope: initialMailCacheScope,
+  });
+  const currentListRequestContext = useMemo(() => buildMailListRequestContext({
     scope: mailCacheScope,
     folder,
     viewMode,
-    q: debouncedSearch,
+    search: debouncedSearch,
     unreadOnly,
     hasAttachmentsOnly,
     dateFrom: filterDateFrom,
     dateTo: filterDateTo,
-    folderScope: currentFolderScope,
-    fromFilter: advancedFiltersApplied?.from_filter,
-    toFilter: advancedFiltersApplied?.to_filter,
-    subjectFilter: advancedFiltersApplied?.subject_filter,
-    bodyFilter: advancedFiltersApplied?.body_filter,
-    importance: advancedFiltersApplied?.importance,
+    advancedFilters: advancedFiltersApplied,
     limit: 50,
     offset: 0,
   }), [
-    advancedFiltersApplied,
-    currentFolderScope,
     debouncedSearch,
     filterDateFrom,
     filterDateTo,
@@ -1272,8 +679,13 @@ function Mail() {
     mailCacheScope,
     unreadOnly,
     viewMode,
+    advancedFiltersApplied,
   ]);
-  const currentListContextKey = useMemo(() => JSON.stringify(currentListCacheKey), [currentListCacheKey]);
+  const currentContextUsesBootstrapList = currentListRequestContext.usesBootstrapList;
+  const currentFolderScope = currentListRequestContext.folderScope;
+  const currentListParams = currentListRequestContext.params;
+  const currentListCacheKey = currentListRequestContext.cacheKey;
+  const currentListContextKey = currentListRequestContext.contextKey;
   const currentFolderSummaryCacheKey = useMemo(
     () => buildMailFolderSummaryCacheKey({ scope: mailCacheScope }),
     [mailCacheScope]
@@ -1284,21 +696,6 @@ function Mail() {
   );
   const hasMobileSelection = isMobile && Boolean(selectedId);
   const isMobileFullscreenPreview = hasMobileSelection;
-  const getMailMobileHistoryKey = useCallback(createMailMobileHistoryKey, []);
-  const readMailMobileHistoryState = useCallback((state = typeof window !== 'undefined' ? window.history.state : null) => {
-    return parseMailMobileHistoryState(state);
-  }, []);
-  const writeMailMobileHistoryState = useCallback((nextState, strategy = 'push') => {
-    if (!isMobile || typeof window === 'undefined') return;
-    const { nextHistoryState, key } = buildMailMobileHistoryState(window.history.state, nextState);
-    const nextUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
-    if (strategy === 'replace') {
-      window.history.replaceState(nextHistoryState, '', nextUrl);
-    } else {
-      window.history.pushState(nextHistoryState, '', nextUrl);
-    }
-    mobileHistoryModeRef.current = key;
-  }, [isMobile]);
 
   const getMailErrorDetail = useCallback(resolveMailErrorDetail, []);
   const getMailErrorDetailAsync = useCallback(resolveMailErrorDetailAsync, []);
@@ -1324,11 +721,8 @@ function Mail() {
   }, [mailboxInfo?.effective_mailbox_login, mailboxInfo?.mailbox_email, mailboxInfo?.mailbox_login]);
 
   useEffect(() => { listDataRef.current = listData; }, [listData]);
-  useEffect(() => { selectedIdRef.current = selectedId; }, [selectedId]);
   useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
   useEffect(() => { mailboxesRef.current = mailboxes; }, [mailboxes]);
-  useEffect(() => { selectedMessageRef.current = selectedMessage; }, [selectedMessage]);
-  useEffect(() => { selectedConversationRef.current = selectedConversation; }, [selectedConversation]);
   useEffect(() => { folderSummaryRef.current = folderSummary; }, [folderSummary]);
   useEffect(() => { folderTreeRef.current = folderTree; }, [folderTree]);
   useEffect(() => {
@@ -1357,7 +751,7 @@ function Mail() {
     const searchParams = new URLSearchParams(location.search || '');
     const routeFolder = String(searchParams.get('folder') || '').trim().toLowerCase();
     const routeMessageId = String(searchParams.get('message') || '').trim();
-    const storedState = readStoredMailViewState(activeMailboxId);
+    const storedState = readStoredMailViewState(activeMailboxId, { defaultAdvancedFilters: DEFAULT_ADVANCED_FILTERS });
     lastAppliedMailboxViewStateRef.current = activeMailboxId;
     setFolder(routeFolder || storedState.folder);
     setViewMode(routeMessageId ? 'messages' : storedState.viewMode);
@@ -1383,17 +777,10 @@ function Mail() {
       filterDateTo,
       advancedFiltersApplied,
     };
-    try {
-      if (activeMailboxId) {
-        window.sessionStorage.setItem(
-          buildMailViewStateStorageKey(activeMailboxId),
-          JSON.stringify(nextState),
-        );
-      }
-      window.sessionStorage.setItem(MAIL_VIEW_STATE_STORAGE_KEY, JSON.stringify(nextState));
-    } catch {
-      // ignore session storage errors
-    }
+    writeStoredMailViewState(nextState, {
+      mailboxId: activeMailboxId,
+      defaultAdvancedFilters: DEFAULT_ADVANCED_FILTERS,
+    });
   }, [
     activeMailboxId,
     advancedFiltersApplied,
@@ -1405,12 +792,6 @@ function Mail() {
     unreadOnly,
     viewMode,
   ]);
-  useEffect(() => {
-    if (!isMobile) setMobileNavigationOpen(false);
-  }, [isMobile]);
-  useEffect(() => {
-    if (isMobile && selectedId) setMobileNavigationOpen(false);
-  }, [isMobile, selectedId]);
   const persistMailListViewState = useCallback((contextKey, updater) => {
     const normalizedContextKey = String(contextKey || '').trim();
     if (!normalizedContextKey) return;
@@ -1424,12 +805,7 @@ function Mail() {
       [normalizedContextKey]: nextEntry,
     };
     listViewStateRef.current = nextState;
-    if (typeof window === 'undefined') return;
-    try {
-      window.sessionStorage.setItem(MAIL_LIST_VIEW_STATE_STORAGE_KEY, JSON.stringify(nextState));
-    } catch {
-      // ignore session storage errors
-    }
+    writeStoredMailListViewState(nextState);
   }, []);
   const saveCurrentListScrollPosition = useCallback(({ contextKey, selectedMessageIdAtOpen } = {}) => {
     const resolvedContextKey = String(contextKey || currentListKeyRef.current || currentListContextKey || '').trim();
@@ -1452,178 +828,50 @@ function Mail() {
       ...normalizeMailListViewContextState(listViewStateRef.current?.[resolvedContextKey]),
     };
   }, [currentListContextKey]);
-  const revealRemoteImagesForMessage = useCallback((messageId) => {
-    const normalizedMessageId = String(messageId || '').trim();
-    if (!normalizedMessageId) return;
-    setRevealedRemoteImagesByMessageId((prev) => {
-      if (prev?.[normalizedMessageId]) return prev;
-      return {
-        ...(prev || {}),
-        [normalizedMessageId]: true,
-      };
+  queueListScrollRestoreRef.current = queueListScrollRestore;
+  const pruneReadStateOverridesRef = useCallback(() => {
+    localReadStateOverridesRef.current = pruneLocalReadStateOverrides({
+      overrides: localReadStateOverridesRef.current,
+      now: Date.now(),
+      ttlMs: MAIL_AUTO_READ_GUARD_TTL_MS,
     });
+    return localReadStateOverridesRef.current;
   }, []);
-  const persistRecentBootstrapSnapshot = useCallback((nextFolderSummary, nextFolderTree, scope = mailCacheScope) => {
-    writeMailRecentBootstrap({
-      scope: scope || mailCacheScope,
-      folderSummary: nextFolderSummary,
-      folderTree: nextFolderTree,
+  const resolveListDataReadStateOverrides = useCallback((nextListData, selectionMode = viewMode) => {
+    const overrides = pruneReadStateOverridesRef();
+    return applyReadStateOverridesToListData({
+      listData: nextListData,
+      selectionMode,
+      overrides,
     });
-  }, [mailCacheScope]);
-  const persistRecentListSnapshot = useCallback((contextKey, nextListData, scope = mailCacheScope) => {
-    const normalizedContextKey = String(contextKey || '').trim();
-    if (!normalizedContextKey) return;
-    writeMailRecentList({
-      scope: scope || mailCacheScope,
-      contextKey: normalizedContextKey,
-      listData: normalizeMailListResponse(nextListData),
+  }, [pruneReadStateOverridesRef, viewMode]);
+  const resolveMessageReadStateOverrides = useCallback((message) => {
+    const overrides = pruneReadStateOverridesRef();
+    return applyReadStateOverridesToMessageDetail({
+      message,
+      overrides,
     });
-  }, [mailCacheScope]);
-  const persistRecentMessageDetailSnapshot = useCallback((detailPayload) => {
-    if (!detailPayload || typeof detailPayload !== 'object') return;
-    const normalizedMessageId = String(detailPayload?.id || '').trim();
-    if (!normalizedMessageId) return;
-    writeMailRecentMessageDetail({
-      scope: mailCacheScope,
-      message: detailPayload,
+  }, [pruneReadStateOverridesRef]);
+  const resolveConversationReadStateOverrides = useCallback((conversation) => {
+    const overrides = pruneReadStateOverridesRef();
+    return applyReadStateOverridesToConversationDetail({
+      conversation,
+      overrides,
     });
-  }, [mailCacheScope]);
-  const getRecentMessageDetailSnapshot = useCallback((messageId) => {
-    const fromCurrentScope = getMailRecentMessageDetail({
-      scope: mailCacheScope,
-      messageId,
-    });
-    if (fromCurrentScope) return fromCurrentScope;
-    if (initialMailCacheScope && initialMailCacheScope !== mailCacheScope) {
-      return getMailRecentMessageDetail({
-        scope: initialMailCacheScope,
-        messageId,
-      });
-    }
-    return null;
-  }, [initialMailCacheScope, mailCacheScope]);
-  const beginAutoReadGuard = useCallback((guardKey) => {
-    const normalizedGuardKey = String(guardKey || '').trim();
-    if (!normalizedGuardKey) return false;
-    const now = Date.now();
-    for (const [key, value] of autoReadCompletedAtRef.current.entries()) {
-      if ((now - Number(value || 0)) >= MAIL_AUTO_READ_GUARD_TTL_MS) {
-        autoReadCompletedAtRef.current.delete(key);
-      }
-    }
-    if (autoReadInFlightRef.current.has(normalizedGuardKey)) {
-      return false;
-    }
-    const completedAt = Number(autoReadCompletedAtRef.current.get(normalizedGuardKey) || 0);
-    if (completedAt > 0 && (now - completedAt) < MAIL_AUTO_READ_GUARD_TTL_MS) {
-      return false;
-    }
-    autoReadInFlightRef.current.add(normalizedGuardKey);
-    return true;
-  }, []);
-  const settleAutoReadGuard = useCallback((guardKey, succeeded) => {
-    const normalizedGuardKey = String(guardKey || '').trim();
-    if (!normalizedGuardKey) return;
-    autoReadInFlightRef.current.delete(normalizedGuardKey);
-    if (succeeded) {
-      autoReadCompletedAtRef.current.set(normalizedGuardKey, Date.now());
-    }
-  }, []);
-  const getReadStateOverrideKey = useCallback((mode, targetId) => {
-    const normalizedMode = normalizeMailViewMode(mode);
-    const normalizedTargetId = String(targetId || '').trim();
-    return normalizedTargetId ? `${normalizedMode}:${normalizedTargetId}` : '';
-  }, []);
-  const pruneLocalReadStateOverrides = useCallback(() => {
-    const now = Date.now();
-    const overrides = localReadStateOverridesRef.current || new Map();
-    for (const [key, entry] of overrides.entries()) {
-      if ((now - Number(entry?.updatedAt || 0)) >= MAIL_AUTO_READ_GUARD_TTL_MS) {
-        overrides.delete(key);
-      }
-    }
-    localReadStateOverridesRef.current = overrides;
-  }, []);
-  const setLocalReadStateOverride = useCallback((mode, targetId, isRead) => {
-    const key = getReadStateOverrideKey(mode, targetId);
-    if (!key) return;
-    pruneLocalReadStateOverrides();
-    localReadStateOverridesRef.current.set(key, {
-      isRead: Boolean(isRead),
-      updatedAt: Date.now(),
-    });
-  }, [getReadStateOverrideKey, pruneLocalReadStateOverrides]);
-  const clearLocalReadStateOverride = useCallback((mode, targetId) => {
-    const key = getReadStateOverrideKey(mode, targetId);
-    if (!key) return;
-    localReadStateOverridesRef.current.delete(key);
-  }, [getReadStateOverrideKey]);
-  const getLocalReadStateOverride = useCallback((mode, targetId) => {
-    const key = getReadStateOverrideKey(mode, targetId);
-    if (!key) return null;
-    pruneLocalReadStateOverrides();
-    const entry = localReadStateOverridesRef.current.get(key);
-    return entry ? Boolean(entry.isRead) : null;
-  }, [getReadStateOverrideKey, pruneLocalReadStateOverrides]);
-  const applyReadStateOverridesToListData = useCallback((nextListData, selectionMode = viewMode) => {
-    const normalized = normalizeMailListResponse(nextListData);
-    const normalizedMode = normalizeMailViewMode(selectionMode);
-    const items = (Array.isArray(normalized.items) ? normalized.items : []).map((item) => {
-      if (normalizedMode === 'conversations') {
-        const conversationId = String(item?.conversation_id || item?.id || '').trim();
-        const override = getLocalReadStateOverride('conversations', conversationId);
-        if (override === null) return item;
-        return {
-          ...item,
-          unread_count: override ? 0 : Math.max(1, Number(item?.unread_count || 0)),
-        };
-      }
-      const messageId = String(item?.id || '').trim();
-      const override = getLocalReadStateOverride('messages', messageId);
-      return override === null ? item : { ...item, is_read: override };
-    });
-    return {
-      ...normalized,
-      items,
-    };
-  }, [getLocalReadStateOverride, viewMode]);
-  const applyReadStateOverridesToMessageDetail = useCallback((message) => {
-    if (!message || typeof message !== 'object') return message;
-    const messageId = String(message?.id || '').trim();
-    const override = getLocalReadStateOverride('messages', messageId);
-    return override === null ? message : { ...message, is_read: override };
-  }, [getLocalReadStateOverride]);
-  const applyReadStateOverridesToConversationDetail = useCallback((conversation) => {
-    if (!conversation || typeof conversation !== 'object') return conversation;
-    const conversationId = String(conversation?.conversation_id || conversation?.id || '').trim();
-    const override = getLocalReadStateOverride('conversations', conversationId);
-    if (override === null) return conversation;
-    return {
-      ...conversation,
-      unread_count: override ? 0 : Math.max(1, Number(conversation?.unread_count || 0)),
-      items: (Array.isArray(conversation?.items) ? conversation.items : []).map((item) => ({
-        ...item,
-        is_read: override,
-      })),
-    };
-  }, [getLocalReadStateOverride]);
+  }, [pruneReadStateOverridesRef]);
   const prefetchMailDetail = useCallback((targetId, { mode = viewMode } = {}) => {
     if (!mailAccessReady) return;
     const normalizedId = String(targetId || '').trim();
     const normalizedMode = normalizeMailViewMode(mode);
     if (!normalizedId) return;
     const folderScope = advancedFiltersApplied?.folder_scope || 'current';
-    const detailCacheKey = normalizedMode === 'conversations'
-      ? buildMailConversationDetailCacheKey({
-          scope: mailCacheScope,
-          conversationId: normalizedId,
-          folder,
-          folderScope,
-        })
-      : buildMailMessageDetailCacheKey({
-          scope: mailCacheScope,
-          messageId: normalizedId,
-        });
+    const detailCacheKey = buildMailDetailCacheKey({
+      viewMode: normalizedMode,
+      scope: mailCacheScope,
+      selectedId: normalizedId,
+      folder,
+      folderScope,
+    });
     const detailKey = JSON.stringify(detailCacheKey);
     if (normalizedMode === 'messages') {
       const recentDetail = getRecentMessageDetailSnapshot(normalizedId);
@@ -1682,17 +930,13 @@ function Mail() {
     if (!normalizedId) return false;
     const normalizedMode = normalizeMailViewMode(mode);
     const folderScope = advancedFiltersApplied?.folder_scope || 'current';
-    const detailCacheKey = normalizedMode === 'conversations'
-      ? buildMailConversationDetailCacheKey({
-          scope: mailCacheScope,
-          conversationId: normalizedId,
-          folder,
-          folderScope,
-        })
-      : buildMailMessageDetailCacheKey({
-          scope: mailCacheScope,
-          messageId: normalizedId,
-        });
+    const detailCacheKey = buildMailDetailCacheKey({
+      viewMode: normalizedMode,
+      scope: mailCacheScope,
+      selectedId: normalizedId,
+      folder,
+      folderScope,
+    });
     const cachedDetail = peekSWRCache(detailCacheKey, { staleTimeMs: MAIL_DETAIL_SWR_STALE_TIME_MS });
     return Boolean(cachedDetail?.data && cachedDetail?.isFresh);
   }, [
@@ -1874,243 +1118,31 @@ function Mail() {
     setSelectedId(nextMessageId);
   }, [activeMailboxId, folder, location.search, viewMode]);
 
-  const clearSelection = useCallback(({ mode = viewMode, allModes = false, restoreListState = false } = {}) => {
-    if (detailRequestAbortRef.current) {
-      detailRequestAbortRef.current.abort();
-      detailRequestAbortRef.current = null;
+  const restoreMobileHistorySelectionWithMode = useCallback((nextState) => {
+    if (!nextState?.selectedId) return;
+    if (viewModeRef.current !== nextState.selectionMode) {
+      setViewMode(nextState.selectionMode);
     }
-    const targetMode = mode === 'conversations' ? 'conversations' : 'messages';
-    if (restoreListState && targetMode === 'messages') {
-      queueListScrollRestore();
-    }
-    detailContextRef.current = '';
-    selectedIdRef.current = '';
-    setDetailLoading(false);
-    setMoveTarget('');
-    setSelectedId('');
-    setSelectedByMode((prev) => {
-      const current = prev || {};
-      if (allModes) {
-        if (!current.messages && !current.conversations) return current;
-        return { ...current, messages: '', conversations: '' };
-      }
-      if (!current[targetMode]) return current;
-      return { ...current, [targetMode]: '' };
-    });
-    setSelectedMessage(null);
-    setSelectedConversation(null);
-  }, [queueListScrollRestore, viewMode]);
-  const handleBackToList = useCallback(() => {
-    if (isMobile && mobileHistoryReadyRef.current && typeof window !== 'undefined') {
-      const currentState = readMailMobileHistoryState();
-      if (currentState?.view === 'preview') {
-        window.history.back();
-        return;
-      }
-    }
-    clearSelection({ mode: viewMode, restoreListState: isMobile && viewMode === 'messages' });
-  }, [clearSelection, isMobile, readMailMobileHistoryState, viewMode]);
-  const clearMobilePreviewSwipeTimeout = useCallback(() => {
-    if (!mobilePreviewSwipeTimeoutRef.current || typeof window === 'undefined') return;
-    window.clearTimeout(mobilePreviewSwipeTimeoutRef.current);
-    mobilePreviewSwipeTimeoutRef.current = null;
-  }, []);
-  const resetMobilePreviewSwipe = useCallback(({ animate = false } = {}) => {
-    clearMobilePreviewSwipeTimeout();
-    mobilePreviewSwipeRef.current = null;
-    if (!animate) {
-      setMobilePreviewSwipeTransition(false);
-      setMobilePreviewSwipeOffset(0);
-      return;
-    }
-    setMobilePreviewSwipeTransition(true);
-    setMobilePreviewSwipeOffset(0);
-    if (typeof window !== 'undefined') {
-      mobilePreviewSwipeTimeoutRef.current = window.setTimeout(() => {
-        setMobilePreviewSwipeTransition(false);
-        mobilePreviewSwipeTimeoutRef.current = null;
-      }, MAIL_MOBILE_EDGE_SWIPE_ANIMATION_MS);
-    }
-  }, [clearMobilePreviewSwipeTimeout]);
-  const commitMobilePreviewSwipeClose = useCallback((screenWidth = 0) => {
-    clearMobilePreviewSwipeTimeout();
-    mobilePreviewSwipeRef.current = null;
-    const targetOffset = Math.max(
-      Number(screenWidth || 0),
-      Number(typeof window !== 'undefined' ? window.innerWidth : 0),
-      MAIL_MOBILE_EDGE_SWIPE_CLOSE_THRESHOLD_PX,
-    );
-    setMobilePreviewSwipeTransition(true);
-    setMobilePreviewSwipeOffset(targetOffset);
-    if (typeof window !== 'undefined') {
-      mobilePreviewSwipeTimeoutRef.current = window.setTimeout(() => {
-        setMobilePreviewSwipeTransition(false);
-        setMobilePreviewSwipeOffset(0);
-        mobilePreviewSwipeTimeoutRef.current = null;
-        handleBackToList();
-      }, MAIL_MOBILE_EDGE_SWIPE_ANIMATION_MS);
-    } else {
-      setMobilePreviewSwipeTransition(false);
-      setMobilePreviewSwipeOffset(0);
-      handleBackToList();
-    }
-  }, [clearMobilePreviewSwipeTimeout, handleBackToList]);
-  const handlePreviewEdgeTouchStart = useCallback((event) => {
-    if (!isMobileFullscreenPreview) return;
-    const firstTouch = event.touches?.[0];
-    if (!firstTouch || firstTouch.clientX > MAIL_MOBILE_EDGE_SWIPE_ZONE_PX) return;
-    if (shouldBlockMailEdgeGestureTarget(event.target, { blockTableScroll: true })) return;
-    clearMobilePreviewSwipeTimeout();
-    setMobilePreviewSwipeTransition(false);
-    mobilePreviewSwipeRef.current = {
-      startX: firstTouch.clientX,
-      startY: firstTouch.clientY,
-      lastX: firstTouch.clientX,
-      startTime: Date.now(),
-      locked: false,
-      width: Math.max(
-        Number(event.currentTarget?.clientWidth || 0),
-        Number(typeof window !== 'undefined' ? window.innerWidth : 0),
-      ),
-    };
-  }, [clearMobilePreviewSwipeTimeout, isMobileFullscreenPreview]);
-  const handlePreviewEdgeTouchMove = useCallback((event) => {
-    const gesture = mobilePreviewSwipeRef.current;
-    if (!gesture) return;
-    const firstTouch = event.touches?.[0];
-    if (!firstTouch) return;
-    const deltaX = firstTouch.clientX - gesture.startX;
-    const deltaY = firstTouch.clientY - gesture.startY;
-    if (!gesture.locked) {
-      if (Math.abs(deltaX) < MAIL_MOBILE_EDGE_SWIPE_LOCK_PX && Math.abs(deltaY) < MAIL_MOBILE_EDGE_SWIPE_LOCK_PX) {
-        return;
-      }
-      if (deltaX <= 0 || Math.abs(deltaY) > Math.abs(deltaX)) {
-        resetMobilePreviewSwipe();
-        return;
-      }
-      gesture.locked = true;
-    }
-    gesture.lastX = firstTouch.clientX;
-    const nextOffset = Math.max(0, Math.min(deltaX, gesture.width || deltaX));
-    setMobilePreviewSwipeTransition(false);
-    setMobilePreviewSwipeOffset(nextOffset);
-    if (event.cancelable) {
-      event.preventDefault();
-    }
-  }, [resetMobilePreviewSwipe]);
-  const handlePreviewEdgeTouchEnd = useCallback((event) => {
-    const gesture = mobilePreviewSwipeRef.current;
-    mobilePreviewSwipeRef.current = null;
-    if (!gesture?.locked) {
-      resetMobilePreviewSwipe();
-      return;
-    }
-    const changedTouch = event.changedTouches?.[0];
-    const finalX = changedTouch?.clientX ?? gesture.lastX;
-    const deltaX = Math.max(0, finalX - gesture.startX);
-    const durationMs = Math.max(1, Date.now() - gesture.startTime);
-    const velocity = deltaX / durationMs;
-    if (deltaX >= MAIL_MOBILE_EDGE_SWIPE_CLOSE_THRESHOLD_PX || velocity >= MAIL_MOBILE_EDGE_SWIPE_FLING_VELOCITY_PX_MS) {
-      commitMobilePreviewSwipeClose(gesture.width);
-      return;
-    }
-    resetMobilePreviewSwipe({ animate: deltaX > 0 });
-  }, [commitMobilePreviewSwipeClose, resetMobilePreviewSwipe]);
-  useEffect(() => {
-    if (!isMobileFullscreenPreview) {
-      resetMobilePreviewSwipe();
-    }
-  }, [isMobileFullscreenPreview, resetMobilePreviewSwipe]);
-  useEffect(() => {
-    if (!isMobile) {
-      mobileHistoryReadyRef.current = false;
-      mobileHistoryModeRef.current = 'list:closed:none:messages';
-      return;
-    }
-    if (typeof window === 'undefined') return;
-    const existingState = readMailMobileHistoryState();
-    if (existingState) {
-      mobileHistoryReadyRef.current = true;
-      mobileHistoryModeRef.current = getMailMobileHistoryKey(existingState);
-      return;
-    }
-    writeMailMobileHistoryState({
-      view: 'list',
-      drawerOpen: false,
-      selectedId: '',
-      selectionMode: viewModeRef.current,
-    }, 'replace');
-    if (selectedIdRef.current) {
-      writeMailMobileHistoryState({
-        view: 'preview',
-        drawerOpen: false,
-        selectedId: selectedIdRef.current,
-        selectionMode: viewModeRef.current,
-      }, 'push');
-    }
-    mobileHistoryReadyRef.current = true;
-  }, [getMailMobileHistoryKey, isMobile, readMailMobileHistoryState, writeMailMobileHistoryState]);
-  useEffect(() => {
-    if (!isMobile || !mobileHistoryReadyRef.current || typeof window === 'undefined') return;
-    const nextState = selectedId
-      ? {
-          view: 'preview',
-          drawerOpen: false,
-          selectedId,
-          selectionMode: viewMode,
-        }
-      : {
-          view: 'list',
-          drawerOpen: Boolean(mobileNavigationOpen),
-          selectedId: '',
-          selectionMode: viewMode,
-        };
-    const currentState = readMailMobileHistoryState();
-    const currentKey = currentState ? getMailMobileHistoryKey(currentState) : mobileHistoryModeRef.current;
-    const nextKey = getMailMobileHistoryKey(nextState);
-    if (currentKey === nextKey) return;
-    writeMailMobileHistoryState(nextState, 'push');
-  }, [
-    getMailMobileHistoryKey,
-    isMobile,
+    restoreMobileHistorySelection(nextState);
+  }, [restoreMobileHistorySelection]);
+
+  const {
+    closeMobileNavigationIfNeeded,
+    handleBackToList,
     mobileNavigationOpen,
-    readMailMobileHistoryState,
+    mobilePreviewSwipeAnimationMs,
+    mobilePreviewSwipeOffset,
+    mobilePreviewSwipeTransition,
+    previewEdgeTouchHandlers,
+    setMobileNavigationOpen,
+  } = useMailMobileShell({
+    isMobile,
     selectedId,
     viewMode,
-    writeMailMobileHistoryState,
-  ]);
-  useEffect(() => {
-    if (!isMobile || !mobileHistoryReadyRef.current || typeof window === 'undefined') return undefined;
-    const handlePopState = (event) => {
-      const nextState = readMailMobileHistoryState(event.state);
-      if (!nextState) return;
-      mobileHistoryModeRef.current = getMailMobileHistoryKey(nextState);
-      if (nextState.view === 'preview' && nextState.selectedId) {
-        setMobileNavigationOpen(false);
-        if (viewModeRef.current !== nextState.selectionMode) {
-          setViewMode(nextState.selectionMode);
-        }
-        setSelectedItems([]);
-        setSelectedByMode((prev) => ({ ...(prev || {}), [nextState.selectionMode]: nextState.selectedId }));
-        selectedIdRef.current = nextState.selectedId;
-        setSelectedId(nextState.selectedId);
-        return;
-      }
-      setMobileNavigationOpen(Boolean(nextState.drawerOpen));
-      if (selectedIdRef.current) {
-        clearSelection({
-          mode: viewModeRef.current,
-          restoreListState: viewModeRef.current === 'messages',
-        });
-      }
-    };
-    window.addEventListener('popstate', handlePopState);
-    return () => window.removeEventListener('popstate', handlePopState);
-  }, [clearSelection, getMailMobileHistoryKey, isMobile, readMailMobileHistoryState]);
-  useEffect(() => () => {
-    clearMobilePreviewSwipeTimeout();
-  }, [clearMobilePreviewSwipeTimeout]);
+    isPreviewOpen: isMobileFullscreenPreview,
+    onClearSelection: clearSelection,
+    onRestoreSelection: restoreMobileHistorySelectionWithMode,
+  });
 
   const handleManageMailboxes = useCallback(() => {
     navigate('/settings');
@@ -2120,7 +1152,7 @@ function Mail() {
     const normalizedMailboxId = normalizeMailboxId(nextMailboxId);
     if (!normalizedMailboxId || normalizedMailboxId === activeMailboxId) return;
     void refreshMailboxUnreadCounts({ mailboxIds: [normalizedMailboxId], force: true });
-    const storedState = readStoredMailViewState(normalizedMailboxId);
+    const storedState = readStoredMailViewState(normalizedMailboxId, { defaultAdvancedFilters: DEFAULT_ADVANCED_FILTERS });
     lastAppliedMailboxViewStateRef.current = normalizedMailboxId;
     if (detailRequestAbortRef.current) {
       detailRequestAbortRef.current.abort();
@@ -2153,106 +1185,6 @@ function Mail() {
     }), { replace: true });
   }, [activeMailboxId, clearSelection, navigate, refreshMailboxUnreadCounts]);
 
-  const applyBootstrapPayload = useCallback((payload, { applyList = true } = {}) => {
-    const configPayload = payload?.selected_mailbox || payload?.mailboxInfo || null;
-    const nextMailboxEntries = mergeMailboxEntries(payload?.mailboxes, configPayload, mailboxesRef.current);
-    const resolvedMailboxId = getMailboxEntryId(configPayload) || activeMailboxId;
-    const resolvedScope = resolvedMailboxId || mailCacheScope;
-    const resolvedFolderSummaryCacheKey = buildMailFolderSummaryCacheKey({ scope: resolvedScope });
-    const resolvedFolderTreeCacheKey = buildMailFolderTreeCacheKey({ scope: resolvedScope });
-    const resolvedListCacheKey = buildMailListCacheKey({
-      scope: resolvedScope,
-      folder,
-      viewMode,
-      q: debouncedSearch,
-      unreadOnly,
-      hasAttachmentsOnly,
-      dateFrom: filterDateFrom,
-      dateTo: filterDateTo,
-      folderScope: currentFolderScope,
-      fromFilter: advancedFiltersApplied?.from_filter,
-      toFilter: advancedFiltersApplied?.to_filter,
-      subjectFilter: advancedFiltersApplied?.subject_filter,
-      bodyFilter: advancedFiltersApplied?.body_filter,
-      importance: advancedFiltersApplied?.importance,
-      limit: 50,
-      offset: 0,
-    });
-    const resolvedListContextKey = JSON.stringify(resolvedListCacheKey);
-    const preferencesPayload = payload?.preferences?.preferences || payload?.preferences || {};
-    const folderSummaryPayload = payload?.folder_summary && typeof payload.folder_summary === 'object'
-      ? payload.folder_summary
-      : {};
-    const folderTreePayload = Array.isArray(payload?.folder_tree?.items) ? payload.folder_tree.items : [];
-    const messagesPayload = payload?.messages || {};
-    setMailboxInfo(configPayload);
-    setMailboxes(nextMailboxEntries);
-    if (resolvedMailboxId) {
-      setSelectedMailboxId(resolvedMailboxId);
-    }
-    const nextPreferences = { ...DEFAULT_MAIL_PREFERENCES, ...(preferencesPayload || {}) };
-    setMailPreferences(nextPreferences);
-    setMailPreferencesDraft(nextPreferences);
-    setFolderSummary(folderSummaryPayload);
-    folderSummaryRefreshCompletedAtRef.current = Date.now();
-    setFolderTree(folderTreePayload);
-    setSWRCache(resolvedFolderSummaryCacheKey, { items: folderSummaryPayload });
-    setSWRCache(resolvedFolderTreeCacheKey, { items: folderTreePayload });
-    persistRecentBootstrapSnapshot(folderSummaryPayload, folderTreePayload, resolvedScope);
-    if (applyList) {
-      const previousListData = listDataRef.current || createEmptyListData();
-      const normalizedMessagesPayload = normalizeMailListResponse(messagesPayload);
-      const bootstrapHasVisibleMessages = Array.isArray(normalizedMessagesPayload.items)
-        && normalizedMessagesPayload.items.length > 0;
-      skipNextListRefreshRef.current = bootstrapHasVisibleMessages;
-      const resolvedListData = applyReadStateOverridesToListData(buildMailListState({
-        previousListData,
-        nextListData: normalizedMessagesPayload,
-        updateMode: currentListKeyRef.current === resolvedListContextKey && isExpandedMailListData(previousListData)
-          ? 'head-merge'
-          : 'replace',
-        selectionMode: viewMode,
-      }), viewMode);
-      listDataRef.current = resolvedListData;
-      setListData((prev) => {
-        const prevItems = Array.isArray(prev?.items) ? prev.items : [];
-        const nextItems = Array.isArray(resolvedListData.items) ? resolvedListData.items : [];
-        const sameItems = prevItems.length === nextItems.length
-          && prevItems.every((item, index) => isListItemSame(item, nextItems[index], viewMode));
-        const sameMeta = Number(prev?.total || 0) === Number(resolvedListData.total || 0)
-          && Number(prev?.offset || 0) === Number(resolvedListData.offset || 0)
-          && Number(prev?.limit || 0) === Number(resolvedListData.limit || 0)
-          && Boolean(prev?.has_more) === Boolean(resolvedListData.has_more)
-          && String(prev?.next_offset ?? '') === String(resolvedListData.next_offset ?? '')
-          && String(prev?.append_offset ?? '') === String(resolvedListData.append_offset ?? '')
-          && Number(prev?.loaded_pages || 0) === Number(resolvedListData.loaded_pages || 0)
-          && Boolean(prev?.search_limited) === Boolean(resolvedListData.search_limited)
-          && Number(prev?.searched_window || 0) === Number(resolvedListData.searched_window || 0);
-        if (sameItems && sameMeta) return prev;
-        return resolvedListData;
-      });
-      if (bootstrapHasVisibleMessages) {
-        setSWRCache(resolvedListCacheKey, resolvedListData);
-        persistRecentListSnapshot(resolvedListContextKey, resolvedListData, resolvedScope);
-      }
-    }
-  }, [
-    activeMailboxId,
-    advancedFiltersApplied,
-    applyReadStateOverridesToListData,
-    currentFolderScope,
-    debouncedSearch,
-    filterDateFrom,
-    filterDateTo,
-    folder,
-    hasAttachmentsOnly,
-    mailCacheScope,
-    persistRecentBootstrapSnapshot,
-    persistRecentListSnapshot,
-    unreadOnly,
-    viewMode,
-  ]);
-
   const refreshConfig = useCallback(async () => {
     setMailConfigLoading(true);
     try {
@@ -2272,74 +1204,6 @@ function Mail() {
       setMailConfigLoading(false);
     }
   }, [activeMailboxId, getMailErrorDetail]);
-
-  const refreshBootstrap = useCallback(async ({ force = false } = {}) => {
-    const bootstrapCacheKey = buildMailBootstrapCacheKey({ scope: mailCacheScope, limit: MAIL_BOOTSTRAP_LIMIT });
-    const shouldApplyBootstrapList = currentContextUsesBootstrapList;
-    const cachedBootstrap = peekSWRCache(bootstrapCacheKey, { staleTimeMs: MAIL_SWR_STALE_TIME_MS });
-    const hasRecentHydration = recentHydratedScope === mailCacheScope;
-    if (cachedBootstrap?.data) {
-      applyBootstrapPayload(cachedBootstrap.data || {}, { applyList: shouldApplyBootstrapList });
-      setMailConfigLoading(false);
-    } else {
-      setMailConfigLoading(true);
-    }
-    if (hasRecentHydration) {
-      setMailBackgroundRefreshing(true);
-    }
-    try {
-      const fetcher = () => mailAPI.getBootstrap({ limit: MAIL_BOOTSTRAP_LIMIT, mailbox_id: activeMailboxId || undefined });
-      const result = await getOrFetchSWR(
-        bootstrapCacheKey,
-        fetcher,
-        {
-          staleTimeMs: MAIL_SWR_STALE_TIME_MS,
-          force,
-          revalidateStale: false,
-        }
-      );
-      if (result?.data) {
-        applyBootstrapPayload(result.data || {}, { applyList: shouldApplyBootstrapList });
-      }
-      if (result?.fromCache && !result?.isFresh) {
-        void getOrFetchSWR(
-          bootstrapCacheKey,
-          fetcher,
-          {
-            staleTimeMs: MAIL_SWR_STALE_TIME_MS,
-            force: true,
-            revalidateStale: false,
-          }
-        ).then((freshResult) => {
-          if (freshResult?.data) {
-            applyBootstrapPayload(freshResult.data || {}, { applyList: shouldApplyBootstrapList });
-          }
-        }).catch(() => {});
-      }
-      return result?.data || null;
-    } catch (requestError) {
-      if (!cachedBootstrap?.data && !hasRecentHydration) {
-        setMailboxInfo(null);
-        setFolderSummary({});
-        setFolderTree([]);
-        setListData(createEmptyListData());
-        setError(getMailErrorDetail(requestError, 'Не удалось загрузить почтовый экран.'));
-      }
-      return null;
-    } finally {
-      setMailConfigLoading(false);
-      if (hasRecentHydration) {
-        setMailBackgroundRefreshing(false);
-      }
-    }
-  }, [
-    activeMailboxId,
-    applyBootstrapPayload,
-    currentContextUsesBootstrapList,
-    getMailErrorDetail,
-    mailCacheScope,
-    recentHydratedScope,
-  ]);
 
   const handleMailCredentialsRequired = useCallback(async (requestError, fallbackMessage = '') => {
     const errorCode = getMailErrorCode(requestError);
@@ -2395,90 +1259,41 @@ function Mail() {
     return true;
   }, [getMailErrorCode, mailboxInfo, openMailCredentialsDialog, refreshConfig]);
 
-  const refreshTemplates = useCallback(async () => {
-    try {
-      const data = await mailAPI.getTemplates({ include_inactive: canManageUsers ? true : undefined });
-      setTemplates(Array.isArray(data?.items) ? data.items : []);
-      templatesLoadedRef.current = true;
-    } catch (requestError) {
-      setError(requestError?.response?.data?.detail || 'Не удалось загрузить шаблоны IT-заявок.');
-    }
-  }, [canManageUsers]);
+  const templateEditor = useMailTemplateEditor({
+    mailAPI,
+    canManageTemplates: canManageUsers,
+    onError: setError,
+    onMessage: setMessage,
+  });
+  const {
+    templates,
+    templatesOpen,
+    dialogProps: templateDialogProps,
+    ensureTemplatesLoaded: ensureTemplatesLoadedForItRequest,
+    openTemplatesDialog,
+  } = templateEditor;
 
-  const refreshFolderSummary = useCallback(async ({ force = false } = {}) => {
-    if (!mailAccessReady) {
-      setFolderSummary({});
-      return {};
-    }
-    try {
-      const result = await getOrFetchSWR(
-        currentFolderSummaryCacheKey,
-        () => mailAPI.getFolderSummary({ mailbox_id: activeMailboxId || undefined }),
-        {
-          staleTimeMs: MAIL_SWR_STALE_TIME_MS,
-          force,
-          revalidateStale: false,
-        }
-      );
-      const data = result?.data || {};
-      const nextItems = data?.items && typeof data.items === 'object' ? data.items : {};
-      setFolderSummary(nextItems);
-      folderSummaryRefreshCompletedAtRef.current = Date.now();
-      persistRecentBootstrapSnapshot(nextItems, folderTreeRef.current, activeMailboxId || mailCacheScope);
-      return nextItems;
-    } catch (requestError) {
-      if (await handleMailCredentialsRequired(requestError)) {
-        setFolderSummary({});
-        return {};
-      }
-      setFolderSummary({});
-      return {};
-    }
-  }, [
-    activeMailboxId,
-    currentFolderSummaryCacheKey,
+  const {
+    itOpen,
+    itTemplateId,
+    itFieldValues,
+    itSending,
+    activeTemplate,
+    openItRequest,
+    closeItRequest,
+    clearItRequest,
+    selectItTemplate,
+    updateItFieldValue,
+    submitItRequest,
+  } = useMailItRequest({
+    templates,
+    ensureTemplatesLoaded: ensureTemplatesLoadedForItRequest,
+    sendItRequest: mailAPI.sendItRequest,
     handleMailCredentialsRequired,
-    mailAccessReady,
-    mailCacheScope,
-    persistRecentBootstrapSnapshot,
-  ]);
-
-  const refreshFolderTree = useCallback(async ({ force = false } = {}) => {
-    if (!mailAccessReady) {
-      setFolderTree([]);
-      return [];
-    }
-    try {
-      const result = await getOrFetchSWR(
-        currentFolderTreeCacheKey,
-        () => mailAPI.getFolderTree({ mailbox_id: activeMailboxId || undefined }),
-        {
-          staleTimeMs: MAIL_SWR_STALE_TIME_MS,
-          force,
-          revalidateStale: false,
-        }
-      );
-      const data = result?.data || {};
-      const nextItems = Array.isArray(data?.items) ? data.items : [];
-      setFolderTree(nextItems);
-      persistRecentBootstrapSnapshot(folderSummaryRef.current, nextItems, activeMailboxId || mailCacheScope);
-      return nextItems;
-    } catch (requestError) {
-      if (await handleMailCredentialsRequired(requestError)) {
-        setFolderTree([]);
-        return [];
-      }
-      setFolderTree([]);
-      return [];
-    }
-  }, [
-    activeMailboxId,
-    currentFolderTreeCacheKey,
-    handleMailCredentialsRequired,
-    mailAccessReady,
-    mailCacheScope,
-    persistRecentBootstrapSnapshot,
-  ]);
+    getMailErrorDetail,
+    onError: setError,
+    onMessage: setMessage,
+  });
 
   const refreshMailPreferences = useCallback(async () => {
     try {
@@ -2492,234 +1307,6 @@ function Mail() {
     }
   }, []);
 
-  const startCreateTemplate = useCallback(() => {
-    setTemplateEditId('');
-    setTemplateCode('');
-    setTemplateTitle('');
-    setTemplateCategory('');
-    setTemplateSubject('');
-    setTemplateBody('');
-    setTemplateFields([]);
-  }, []);
-
-  const startEditTemplate = useCallback((template) => {
-    if (!template || typeof template !== 'object') {
-      startCreateTemplate();
-      return;
-    }
-    const fields = Array.isArray(template.fields) ? template.fields : [];
-    setTemplateEditId(String(template.id || ''));
-    setTemplateCode(String(template.code || ''));
-    setTemplateTitle(String(template.title || ''));
-    setTemplateCategory(String(template.category || ''));
-    setTemplateSubject(String(template.subject_template || ''));
-    setTemplateBody(String(template.body_template_md || ''));
-    setTemplateFields(fields.map((field, index) => ({
-      key: normalizeTemplateFieldKey(field?.key) || `field_${index + 1}`,
-      label: String(field?.label || `Поле ${index + 1}`),
-      type: String(field?.type || 'text'),
-      required: Boolean(field?.required ?? true),
-      placeholder: String(field?.placeholder || ''),
-      default_value: Array.isArray(field?.default_value)
-        ? field.default_value.join(', ')
-        : String(field?.default_value ?? ''),
-      options: normalizeTemplateFieldOptions(field?.options),
-    })));
-  }, [startCreateTemplate]);
-
-  const addTemplateField = useCallback(() => {
-    setTemplateFields((prev) => [...prev, makeTemplateField(prev.length)]);
-  }, []);
-
-  const moveTemplateField = useCallback((index, direction) => {
-    setTemplateFields((prev) => {
-      const from = Number(index);
-      const delta = Number(direction);
-      const to = from + delta;
-      if (from < 0 || to < 0 || from >= prev.length || to >= prev.length) return prev;
-      const next = [...prev];
-      [next[from], next[to]] = [next[to], next[from]];
-      return next;
-    });
-  }, []);
-
-  const removeTemplateField = useCallback((index) => {
-    setTemplateFields((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
-  }, []);
-
-  const updateTemplateField = useCallback((index, patch) => {
-    setTemplateFields((prev) => prev.map((field, itemIndex) => {
-      if (itemIndex !== index) return field;
-      return {
-        ...field,
-        ...(patch || {}),
-      };
-    }));
-  }, []);
-
-  const saveTemplate = useCallback(async () => {
-    const code = String(templateCode || '').trim().toLowerCase();
-    const title = String(templateTitle || '').trim();
-    const subject = String(templateSubject || '').trim();
-    if (!code) {
-      setError('Укажите код шаблона.');
-      return;
-    }
-    if (!title) {
-      setError('Укажите название шаблона.');
-      return;
-    }
-    if (!subject) {
-      setError('Укажите тему шаблона.');
-      return;
-    }
-
-    const seenKeys = new Set();
-    const fieldsPayload = (Array.isArray(templateFields) ? templateFields : []).map((field, index) => {
-      let key = normalizeTemplateFieldKey(field?.key) || `field_${index + 1}`;
-      if (seenKeys.has(key)) {
-        let suffix = 2;
-        while (seenKeys.has(`${key}_${suffix}`)) suffix += 1;
-        key = `${key}_${suffix}`;
-      }
-      seenKeys.add(key);
-      const type = String(field?.type || 'text');
-      const options = normalizeTemplateFieldOptions(field?.options);
-      let defaultValue = field?.default_value ?? '';
-      if (type === 'multiselect') {
-        defaultValue = normalizeTemplateFieldOptions(defaultValue);
-      } else if (type === 'checkbox') {
-        const normalized = String(defaultValue).trim().toLowerCase();
-        defaultValue = ['1', 'true', 'yes', 'on', 'да'].includes(normalized);
-      } else {
-        defaultValue = String(defaultValue || '');
-      }
-      return {
-        key,
-        label: String(field?.label || key),
-        type,
-        required: Boolean(field?.required ?? true),
-        placeholder: String(field?.placeholder || ''),
-        default_value: defaultValue,
-        options,
-      };
-    });
-
-    const payload = {
-      code,
-      title,
-      category: String(templateCategory || '').trim(),
-      subject_template: subject,
-      body_template_md: String(templateBody || ''),
-      fields: fieldsPayload,
-    };
-
-    setTemplateSaving(true);
-    try {
-      const saved = templateEditId
-        ? await mailAPI.updateTemplate(templateEditId, payload)
-        : await mailAPI.createTemplate(payload);
-      await refreshTemplates();
-      startEditTemplate(saved);
-      setMessage(templateEditId ? 'Шаблон обновлен.' : 'Шаблон создан.');
-    } catch (requestError) {
-      setError(requestError?.response?.data?.detail || 'Не удалось сохранить шаблон.');
-    } finally {
-      setTemplateSaving(false);
-    }
-  }, [
-    templateCode,
-    templateTitle,
-    templateSubject,
-    templateFields,
-    templateCategory,
-    templateBody,
-    templateEditId,
-    refreshTemplates,
-    startEditTemplate,
-  ]);
-
-  const deleteTemplate = useCallback(async () => {
-    if (!templateEditId) return;
-    setTemplateDeleting(true);
-    try {
-      await mailAPI.deleteTemplate(templateEditId);
-      await refreshTemplates();
-      startCreateTemplate();
-      setMessage('Шаблон деактивирован.');
-    } catch (requestError) {
-      setError(requestError?.response?.data?.detail || 'Не удалось удалить шаблон.');
-    } finally {
-      setTemplateDeleting(false);
-    }
-  }, [templateEditId, refreshTemplates, startCreateTemplate]);
-
-  const applyResolvedListData = useCallback((nextListData, {
-    reset = true,
-    selectionMode = viewMode,
-    selectFirstIfSelectionMissing = false,
-    updateMode = reset ? 'replace' : 'append',
-  } = {}) => {
-    const normalizedMode = normalizeMailViewMode(selectionMode);
-    const previousListData = listDataRef.current || createEmptyListData();
-    const resolvedListData = applyReadStateOverridesToListData(buildMailListState({
-      previousListData,
-      nextListData,
-      updateMode,
-      selectionMode: normalizedMode,
-    }), normalizedMode);
-    const incomingItems = Array.isArray(resolvedListData?.items) ? resolvedListData.items : [];
-    listDataRef.current = resolvedListData;
-    setListData((prev) => {
-      const prevItems = Array.isArray(prev?.items) ? prev.items : [];
-      const sameItems = prevItems.length === incomingItems.length
-        && prevItems.every((item, index) => isListItemSame(item, incomingItems[index], normalizedMode));
-      const sameMeta = Number(prev?.total || 0) === Number(resolvedListData.total || 0)
-        && Number(prev?.offset || 0) === Number(resolvedListData.offset || 0)
-        && Number(prev?.limit || 0) === Number(resolvedListData.limit || 0)
-        && Boolean(prev?.has_more) === Boolean(resolvedListData.has_more)
-        && String(prev?.next_offset ?? '') === String(resolvedListData.next_offset ?? '')
-        && String(prev?.append_offset ?? '') === String(resolvedListData.append_offset ?? '')
-        && Number(prev?.loaded_pages || 0) === Number(resolvedListData.loaded_pages || 0)
-        && Boolean(prev?.search_limited) === Boolean(resolvedListData.search_limited)
-        && Number(prev?.searched_window || 0) === Number(resolvedListData.searched_window || 0);
-      if (sameItems && sameMeta) return prev;
-      return resolvedListData;
-    });
-    setSWRCache(currentListCacheKey, resolvedListData);
-    if (reset) {
-      const currentSelectedId = String(selectedIdRef.current || '');
-      const exists = incomingItems.some((item) => String(normalizedMode === 'conversations' ? item.conversation_id : item.id) === currentSelectedId);
-      if (currentSelectedId && !exists) {
-        const firstItem = incomingItems[0] || null;
-        const nextSelectedId = firstItem
-          ? String(normalizedMode === 'conversations' ? (firstItem.conversation_id || firstItem.id || '') : (firstItem.id || ''))
-          : '';
-        if (selectFirstIfSelectionMissing && nextSelectedId) {
-          suppressNextAutoReadRef.current = `${normalizedMode}:${folder}:${nextSelectedId}`;
-          selectedIdRef.current = nextSelectedId;
-          setSelectedId(nextSelectedId);
-          setSelectedByMode((prev) => ({ ...(prev || {}), [normalizedMode]: nextSelectedId }));
-        } else {
-          const selectedDetail = normalizedMode === 'conversations'
-            ? selectedConversationRef.current
-            : selectedMessageRef.current;
-          const selectedDetailId = normalizedMode === 'conversations'
-            ? String(selectedDetail?.conversation_id || selectedDetail?.id || '')
-            : String(selectedDetail?.id || '');
-          if (selectedDetailId !== currentSelectedId) {
-            clearSelection({
-              mode: normalizedMode,
-              restoreListState: isMobile && normalizedMode === 'messages',
-            });
-          }
-        }
-      }
-    }
-    persistRecentListSnapshot(currentListContextKey, resolvedListData);
-    return resolvedListData;
-  }, [applyReadStateOverridesToListData, clearSelection, currentListCacheKey, currentListContextKey, folder, isMobile, persistRecentListSnapshot, viewMode]);
-
   const invalidateMailClientCache = useCallback((prefixes = ['bootstrap', 'folder-summary', 'folder-tree', 'list', 'message-detail', 'conversation-detail']) => {
     (Array.isArray(prefixes) ? prefixes : []).forEach((prefix) => {
       invalidateSWRCacheByPrefix('mail', mailCacheScope, prefix);
@@ -2727,225 +1314,170 @@ function Mail() {
     clearMailRecentCacheForScope(mailCacheScope);
   }, [mailCacheScope]);
 
-  const fetchList = useCallback(async ({
-    reset = true,
-    silent = false,
-    selectFirstIfSelectionMissing = false,
-    force = false,
-  } = {}) => {
-    if (!mailAccessReady) {
-      if (reset) {
-        setListData(createEmptyListData());
-      }
-      return null;
-    }
-    const currentListData = listDataRef.current || {};
-    const currentOffset = reset ? 0 : Number(currentListData.append_offset ?? currentListData.next_offset ?? currentListData.offset ?? 0);
-    const cachedList = reset ? peekSWRCache(currentListCacheKey, { staleTimeMs: MAIL_SWR_STALE_TIME_MS }) : null;
-    const nextContextKey = JSON.stringify(currentListCacheKey);
-    const shouldForceHydratedRefresh = reset && recentHydratedListContextsRef.current.has(nextContextKey);
-    const forceNetwork = force || shouldForceHydratedRefresh;
-    const isContextSwitchWithoutCache = reset
-      && String(currentListKeyRef.current || '') !== nextContextKey
-      && !cachedList?.data;
-    if (reset) {
-      currentListKeyRef.current = nextContextKey;
-    } else {
-      setLoadingMore(true);
-    }
-    try {
-      const fetcher = (params) => (
-        viewMode === 'conversations'
-          ? mailAPI.getConversations(withActiveMailboxParams(params))
-          : mailAPI.getMessages(withActiveMailboxParams(params))
-      );
-      if (reset) {
-        const contextKey = nextContextKey;
-        if (cachedList?.data) {
-          applyResolvedListData(cachedList.data, {
-            reset: true,
-            selectionMode: viewMode,
-            selectFirstIfSelectionMissing,
-          });
-          setLoading(false);
-        } else if (!silent) {
-          if (isContextSwitchWithoutCache) {
-            const emptyList = createEmptyListData();
-            listDataRef.current = emptyList;
-            setListData(emptyList);
-          }
-          setLoading(true);
-        }
-
-        const result = await getOrFetchSWR(
-          currentListCacheKey,
-          () => fetcher(currentListParams),
-          {
-            staleTimeMs: MAIL_SWR_STALE_TIME_MS,
-            force: forceNetwork,
-            revalidateStale: false,
-          }
-        );
-        if (shouldForceHydratedRefresh) {
-          recentHydratedListContextsRef.current.delete(contextKey);
-        }
-        if (currentListKeyRef.current === contextKey && result?.data) {
-          const nextUpdateMode = !result?.fromCache && isExpandedMailListData(listDataRef.current)
-            ? 'head-merge'
-            : 'replace';
-          applyResolvedListData(result.data, {
-            reset: true,
-            selectionMode: viewMode,
-            selectFirstIfSelectionMissing,
-            updateMode: nextUpdateMode,
-          });
-        }
-        if (result?.fromCache && !result?.isFresh) {
-          void getOrFetchSWR(
-            currentListCacheKey,
-            () => fetcher(currentListParams),
-            {
-              staleTimeMs: MAIL_SWR_STALE_TIME_MS,
-              force: true,
-              revalidateStale: false,
-            }
-          ).then((freshResult) => {
-            if (currentListKeyRef.current !== contextKey || !freshResult?.data) return;
-            applyResolvedListData(freshResult.data, {
-              reset: true,
-              selectionMode: viewMode,
-              selectFirstIfSelectionMissing,
-              updateMode: isExpandedMailListData(listDataRef.current) ? 'head-merge' : 'replace',
-            });
-          }).catch(() => {});
-        }
-        return normalizeMailListResponse(result?.data);
-      }
-
-      const params = {
-        ...currentListParams,
-        offset: currentOffset,
-      };
-      const data = await fetcher(params);
-      return applyResolvedListData(data, { reset: false, selectionMode: viewMode, updateMode: 'append' });
-    } catch (requestError) {
-      if (await handleMailCredentialsRequired(requestError)) {
-        if (reset) setListData((prev) => ({ ...prev, items: [] }));
-        return null;
-      }
-      const currentVisibleList = listDataRef.current;
-      const hasVisibleItems = Array.isArray(currentVisibleList?.items) && currentVisibleList.items.length > 0;
-      if (silent && isTransientMailRequestError(requestError) && (hasVisibleItems || cachedList?.data)) {
-        return normalizeMailListResponse(hasVisibleItems ? currentVisibleList : cachedList?.data);
-      }
-      setError(getMailErrorDetail(requestError, 'Не удалось загрузить список писем.'));
-      if (reset && !cachedList?.data && recentHydratedScope !== mailCacheScope) {
-        setListData((prev) => ({ ...prev, items: [] }));
-      }
-      return null;
-    } finally {
-      if (reset) setLoading(false); else setLoadingMore(false);
-    }
-  }, [
+  const {
+    loadMoreMessages,
+    refreshBootstrap,
+    refreshFolderSummary,
+    refreshFolderTree,
+    refreshList,
+  } = useMailListDataController({
     activeMailboxId,
-    applyResolvedListData,
+    advancedFiltersApplied,
+    clearSelection,
+    currentContextUsesBootstrapList,
+    currentFolderScope,
+    currentFolderSummaryCacheKey,
+    currentFolderTreeCacheKey,
     currentListCacheKey,
+    currentListContextKey,
     currentListParams,
+    debouncedSearch,
+    defaultMailPreferences: DEFAULT_MAIL_PREFERENCES,
+    filterDateFrom,
+    filterDateTo,
+    folder,
     getMailErrorDetail,
     handleMailCredentialsRequired,
+    hasAttachmentsOnly,
+    isMobile,
     isTransientMailRequestError,
+    listData,
+    loadingMore,
     mailAccessReady,
+    mailAPI,
+    mailBootstrapLimit: MAIL_BOOTSTRAP_LIMIT,
     mailCacheScope,
+    mailSwrStaleTimeMs: MAIL_SWR_STALE_TIME_MS,
+    persistRecentBootstrapSnapshot,
+    persistRecentListSnapshot,
     recentHydratedScope,
-    withActiveMailboxParams,
+    refs: {
+      currentListKeyRef,
+      folderSummaryRef,
+      folderSummaryRefreshCompletedAtRef,
+      folderTreeRef,
+      listDataRef,
+      mailboxesRef,
+      recentHydratedListContextsRef,
+      selectedConversationRef,
+      selectedIdRef,
+      selectedMessageRef,
+      skipNextListRefreshRef,
+      suppressNextAutoReadRef,
+    },
+    resolveListDataReadStateOverrides,
+    setError,
+    setFolderSummary,
+    setFolderTree,
+    setListData,
+    setLoading,
+    setLoadingMore,
+    setMailBackgroundRefreshing,
+    setMailConfigLoading,
+    setMailPreferences,
+    setMailPreferencesDraft,
+    setMailboxInfo,
+    setMailboxes,
+    setSelectedByMode,
+    setSelectedId,
+    setSelectedMailboxId,
+    unreadOnly,
     viewMode,
-  ]);
+    withActiveMailboxParams,
+  });
 
-  const refreshList = useCallback(async ({
-    silent = false,
-    selectFirstIfSelectionMissing = false,
-    force = false,
-  } = {}) => {
-    return fetchList({ reset: true, silent, selectFirstIfSelectionMissing, force });
-  }, [fetchList]);
+  const {
+    quickReplyBody,
+    setQuickReplyBody,
+    quickReplySending,
+    sendQuickReply,
+  } = useMailQuickReply({
+    mailAPI,
+    resolveComposeMailboxId,
+    invalidateMailClientCache,
+    refreshList,
+    refreshFolderSummary,
+    handleMailCredentialsRequired,
+    getMailErrorDetail,
+    onError: setError,
+  });
 
-  const loadMoreMessages = useCallback(async () => {
-    if (loadingMore || !listData.has_more || listData.append_offset === null) return;
-    await fetchList({ reset: false, silent: true });
-  }, [loadingMore, listData.append_offset, listData.has_more, fetchList]);
-  const revalidateSelectedMailDetail = useCallback(async ({ force = false } = {}) => {
-    if (!mailAccessReady || !selectedId) return null;
-    const folderScope = advancedFiltersApplied?.folder_scope || 'current';
-    const currentSelectionKey = `${viewMode}:${folder}:${selectedId}`;
-    const detailCacheKey = viewMode === 'conversations'
-      ? buildMailConversationDetailCacheKey({
-          scope: mailCacheScope,
-          conversationId: selectedId,
-          folder,
-          folderScope,
-        })
-      : buildMailMessageDetailCacheKey({
-          scope: mailCacheScope,
-          messageId: selectedId,
-        });
-    const cachedDetail = peekSWRCache(detailCacheKey, { staleTimeMs: MAIL_DETAIL_SWR_STALE_TIME_MS });
-    if (!force && cachedDetail?.data && cachedDetail?.isFresh) {
-      return cachedDetail.data;
-    }
-    const fetcher = () => (
-      viewMode === 'conversations'
-        ? mailAPI.getConversation(selectedId, withActiveMailboxParams({ folder, folder_scope: folderScope }))
-        : mailAPI.getMessage(selectedId, { mailboxId: activeMailboxId })
-    );
-    const result = await getOrFetchSWR(
-      detailCacheKey,
-      fetcher,
-      {
-        staleTimeMs: MAIL_DETAIL_SWR_STALE_TIME_MS,
-        force: force || Boolean(cachedDetail?.data),
-        revalidateStale: false,
-      }
-    );
-    if (!result?.data || detailContextRef.current !== currentSelectionKey) return result?.data || null;
-    if (viewMode === 'conversations') {
-      const nextConversation = applyReadStateOverridesToConversationDetail(result.data);
-      const items = Array.isArray(nextConversation?.items) ? nextConversation.items : [];
-      setSelectedConversation(nextConversation || null);
-      setSelectedMessage(items.length > 0 ? items[items.length - 1] : null);
-      return nextConversation || result.data;
-    }
-    const nextMessage = applyReadStateOverridesToMessageDetail(
-      mergeMessageDetailPreservingBody(result.data, selectedMessageRef.current)
-    );
-    setSWRCache(detailCacheKey, nextMessage);
-    persistRecentMessageDetailSnapshot(nextMessage);
-    setSelectedConversation(null);
-    setSelectedMessage(nextMessage || null);
-    return nextMessage || result.data;
-  }, [
+  const {
+    applyConversationReadStateLocally,
+    applyMessageReadStateLocally,
+    performMailReadMutation,
+  } = useMailReadMutations({
     activeMailboxId,
-    advancedFiltersApplied?.folder_scope,
-    applyReadStateOverridesToConversationDetail,
-    applyReadStateOverridesToMessageDetail,
+    advancedFiltersApplied,
     folder,
+    getMailErrorDetail,
+    getRecentMessageDetailSnapshot,
+    handleMailCredentialsRequired,
+    invalidateMailClientCache,
+    mailAPI,
+    persistRecentMessageDetailSnapshot,
+    readStateOverrideTtlMs: MAIL_AUTO_READ_GUARD_TTL_MS,
+    refreshFolderSummary,
+    refreshList,
+    refs: {
+      listDataRef,
+      selectedMessageRef,
+      selectedConversationRef,
+      localReadStateOverridesRef,
+    },
+    setError,
+    setFolderSummary,
+    setListData,
+    setSelectedConversation,
+    setSelectedMessage,
+    settleAutoReadGuard,
+    unreadOnly,
+    withActiveMailboxPayload,
+  });
+  const {
+    revalidateSelectedMailDetail,
+  } = useMailSelectedDetailLifecycle({
+    activeMailboxId,
+    advancedFiltersApplied,
+    beginAutoReadGuard,
+    clearSelection,
+    folder,
+    getMailErrorDetail,
+    getRecentMessageDetailSnapshot,
+    handleMailCredentialsRequired,
+    invalidateMailClientCache,
+    isMissingMailDetailError,
+    isTransientMailRequestError,
+    mailAPI,
     mailAccessReady,
     mailCacheScope,
+    mailDetailStaleTimeMs: MAIL_DETAIL_SWR_STALE_TIME_MS,
+    navigate,
+    performMailReadMutation,
     persistRecentMessageDetailSnapshot,
+    refreshList,
+    refs: {
+      selectedIdRef,
+      selectedMessageRef,
+      selectedConversationRef,
+      detailContextRef,
+      detailRequestAbortRef,
+      suppressNextAutoReadRef,
+    },
+    resolveConversationReadStateOverrides,
+    resolveMessageReadStateOverrides,
     selectedId,
-    withActiveMailboxParams,
+    setDetailLoading,
+    setError,
+    setSelectedConversation,
+    setSelectedMessage,
     viewMode,
-  ]);
+    withActiveMailboxParams,
+  });
   const silentRevalidateCurrentMailView = useCallback(async ({ reason = 'auto', force = false } = {}) => {
     if (!mailAccessReady) return;
     const refreshKey = `${mailCacheScope}:${currentListContextKey}:${viewMode}:${folder}`;
-    const inFlight = mailViewRefreshInFlightRef.current.get(refreshKey);
-    if (inFlight) return inFlight;
-    const now = Date.now();
-    const lastCompletedAt = Number(mailViewRefreshCompletedAtRef.current.get(refreshKey) || 0);
-    if (!force && reason !== 'mail-needs-refresh' && (now - lastCompletedAt) < MAIL_VIEW_REFRESH_COOLDOWN_MS) {
-      return null;
-    }
-    const refreshPromise = (async () => {
+    return runMailViewRefreshGate(refreshKey, async () => {
       setMailBackgroundRefreshing(true);
       try {
         const shouldFallbackToBootstrap = !mailboxInfo
@@ -2970,13 +1502,12 @@ function Mail() {
         }
         await Promise.allSettled(tasks);
       } finally {
-        mailViewRefreshCompletedAtRef.current.set(refreshKey, Date.now());
-        mailViewRefreshInFlightRef.current.delete(refreshKey);
         setMailBackgroundRefreshing(false);
       }
-    })();
-    mailViewRefreshInFlightRef.current.set(refreshKey, refreshPromise);
-    return refreshPromise;
+    }, {
+      force,
+      bypassCooldown: reason === 'mail-needs-refresh',
+    });
   }, [
     currentListContextKey,
     folder,
@@ -2988,229 +1519,8 @@ function Mail() {
     refreshList,
     hasFreshSelectedMailDetail,
     revalidateSelectedMailDetail,
+    runMailViewRefreshGate,
     viewMode,
-  ]);
-
-  const emitMailUnreadRefresh = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('mail-read'));
-  }, []);
-
-  const updateCurrentFolderUnread = useCallback((delta) => {
-    if (!delta) return;
-    setFolderSummary((prev) => {
-      const current = prev?.[folder];
-      if (!current) return prev;
-      return {
-        ...(prev || {}),
-        [folder]: {
-          ...(current || {}),
-          unread: Math.max(0, Number(current?.unread || 0) + Number(delta || 0)),
-        },
-      };
-    });
-  }, [folder]);
-
-  const applyMessageReadStateLocally = useCallback(({ messageId, isRead, unreadDelta = 0 }) => {
-    const normalizedMessageId = String(messageId || '');
-    if (!normalizedMessageId) return;
-    const applyToList = (source) => ({
-      ...(source || {}),
-      items: (Array.isArray(source?.items) ? source.items : []).map((item) => (
-        String(item?.id || '') === normalizedMessageId ? { ...item, is_read: Boolean(isRead) } : item
-      )),
-    });
-    listDataRef.current = applyToList(listDataRef.current);
-    setListData((prev) => applyToList(prev));
-    setSelectedMessage((prev) => {
-      if (String(prev?.id || '') !== normalizedMessageId) return prev;
-      const nextMessage = { ...(prev || {}), is_read: Boolean(isRead) };
-      selectedMessageRef.current = nextMessage;
-      return nextMessage;
-    });
-    if (String(selectedMessageRef.current?.id || '') === normalizedMessageId) {
-      selectedMessageRef.current = {
-        ...(selectedMessageRef.current || {}),
-        is_read: Boolean(isRead),
-      };
-    }
-    const recentDetail = getRecentMessageDetailSnapshot(normalizedMessageId);
-    if (recentDetail) {
-      persistRecentMessageDetailSnapshot({
-        ...recentDetail,
-        is_read: Boolean(isRead),
-      });
-    }
-    updateCurrentFolderUnread(unreadDelta);
-  }, [mailCacheScope, persistRecentMessageDetailSnapshot, updateCurrentFolderUnread]);
-
-  const applyConversationReadStateLocally = useCallback(({
-    conversationId,
-    isRead,
-    unreadCount = 0,
-    messageCount = 0,
-    unreadDelta = 0,
-  }) => {
-    const normalizedConversationId = String(conversationId || '');
-    if (!normalizedConversationId) return;
-    const finalUnreadCount = Boolean(isRead)
-      ? 0
-      : Math.max(
-          1,
-          Number(messageCount || 0),
-          Number(unreadCount || 0),
-        );
-    const applyToList = (source) => ({
-      ...(source || {}),
-      items: (Array.isArray(source?.items) ? source.items : []).map((item) => (
-        String(item?.conversation_id || item?.id || '') === normalizedConversationId
-          ? { ...item, unread_count: finalUnreadCount }
-          : item
-      )),
-    });
-    listDataRef.current = applyToList(listDataRef.current);
-    setListData((prev) => applyToList(prev));
-    setSelectedConversation((prev) => {
-      if (String(prev?.conversation_id || '') !== normalizedConversationId) return prev;
-      const nextConversation = {
-        ...(prev || {}),
-        unread_count: finalUnreadCount,
-        items: (Array.isArray(prev?.items) ? prev.items : []).map((item) => ({
-          ...item,
-          is_read: Boolean(isRead),
-        })),
-      };
-      selectedConversationRef.current = nextConversation;
-      return nextConversation;
-    });
-    if (String(selectedConversationRef.current?.conversation_id || '') === normalizedConversationId) {
-      selectedConversationRef.current = {
-        ...(selectedConversationRef.current || {}),
-        unread_count: finalUnreadCount,
-        items: (Array.isArray(selectedConversationRef.current?.items) ? selectedConversationRef.current.items : []).map((item) => ({
-          ...item,
-          is_read: Boolean(isRead),
-        })),
-      };
-    }
-    setSelectedMessage((prev) => {
-      if (!prev) return prev;
-      if (String(prev?.conversation_id || '') !== normalizedConversationId) return prev;
-      const nextMessage = { ...(prev || {}), is_read: Boolean(isRead) };
-      selectedMessageRef.current = nextMessage;
-      return nextMessage;
-    });
-    if (String(selectedMessageRef.current?.conversation_id || '') === normalizedConversationId) {
-      selectedMessageRef.current = {
-        ...(selectedMessageRef.current || {}),
-        is_read: Boolean(isRead),
-      };
-    }
-    updateCurrentFolderUnread(unreadDelta);
-  }, [updateCurrentFolderUnread]);
-
-  const performMailReadMutation = useCallback(async ({
-    mode,
-    targetId,
-    nextIsRead,
-    currentUnreadCount = 0,
-    currentMessageCount = 1,
-    errorMessage = 'Не удалось изменить статус письма.',
-    autoReadGuardKey = '',
-  }) => {
-    const normalizedMode = mode === 'conversations' ? 'conversations' : 'messages';
-    const normalizedTargetId = String(targetId || '');
-    if (!normalizedTargetId) return false;
-    const normalizedUnreadCount = Math.max(0, Number(currentUnreadCount || 0));
-    const normalizedMessageCount = Math.max(1, Number(currentMessageCount || 1));
-    const unreadDelta = normalizedMode === 'conversations'
-      ? (nextIsRead ? -normalizedUnreadCount : Math.max(0, normalizedMessageCount - normalizedUnreadCount))
-      : (nextIsRead ? (normalizedUnreadCount > 0 ? -1 : 0) : (normalizedUnreadCount > 0 ? 0 : 1));
-
-    setLocalReadStateOverride(normalizedMode, normalizedTargetId, nextIsRead);
-    if (normalizedMode === 'conversations') {
-      applyConversationReadStateLocally({
-        conversationId: normalizedTargetId,
-        isRead: nextIsRead,
-        unreadCount: normalizedUnreadCount,
-        messageCount: normalizedMessageCount,
-        unreadDelta,
-      });
-    } else {
-      applyMessageReadStateLocally({
-        messageId: normalizedTargetId,
-        isRead: nextIsRead,
-        unreadDelta,
-      });
-    }
-
-    let mutationSucceeded = false;
-    try {
-      if (normalizedMode === 'conversations') {
-        const payload = withActiveMailboxPayload({
-          folder,
-          folder_scope: advancedFiltersApplied?.folder_scope || 'current',
-        });
-        if (nextIsRead) {
-          await mailAPI.markConversationAsRead(normalizedTargetId, payload);
-        } else {
-          await mailAPI.markConversationAsUnread(normalizedTargetId, payload);
-        }
-      } else if (nextIsRead) {
-        if (activeMailboxId) await mailAPI.markAsRead(normalizedTargetId, activeMailboxId);
-        else await mailAPI.markAsRead(normalizedTargetId);
-      } else {
-        if (activeMailboxId) await mailAPI.markAsUnread(normalizedTargetId, activeMailboxId);
-        else await mailAPI.markAsUnread(normalizedTargetId);
-      }
-
-      invalidateMailClientCache(['bootstrap', 'list', 'notification-feed']);
-      emitMailUnreadRefresh();
-      const refreshTasks = [];
-      if (unreadOnly) {
-        refreshTasks.unshift(
-          refreshList({
-            silent: true,
-            selectFirstIfSelectionMissing: Boolean(nextIsRead && unreadOnly),
-            force: true,
-          })
-        );
-      }
-      if (refreshTasks.length > 0) {
-        await Promise.all(refreshTasks);
-      }
-      mutationSucceeded = true;
-      return true;
-    } catch (requestError) {
-      clearLocalReadStateOverride(normalizedMode, normalizedTargetId);
-      await Promise.allSettled([
-        refreshList({ silent: true, force: true }),
-        refreshFolderSummary({ force: true }),
-      ]);
-      if (await handleMailCredentialsRequired(requestError, errorMessage)) {
-        return false;
-      }
-      setError(getMailErrorDetail(requestError, errorMessage));
-      return false;
-    } finally {
-      settleAutoReadGuard(autoReadGuardKey, mutationSucceeded);
-    }
-  }, [
-    advancedFiltersApplied,
-    applyConversationReadStateLocally,
-    applyMessageReadStateLocally,
-    clearLocalReadStateOverride,
-    emitMailUnreadRefresh,
-    folder,
-    getMailErrorDetail,
-    handleMailCredentialsRequired,
-    invalidateMailClientCache,
-    refreshFolderSummary,
-    refreshList,
-    settleAutoReadGuard,
-    setLocalReadStateOverride,
-    withActiveMailboxPayload,
-    activeMailboxId,
-    unreadOnly,
   ]);
 
   useEffect(() => {
@@ -3224,33 +1534,6 @@ function Mail() {
       return;
     }
   }, [mailAccessReady]);
-
-  useEffect(() => {
-    try {
-      const raw = window.localStorage.getItem(MAIL_RECENT_SEARCHES_KEY);
-      const parsed = raw ? JSON.parse(raw) : [];
-      setRecentSearches(Array.isArray(parsed) ? parsed : []);
-    } catch {
-      setRecentSearches([]);
-    }
-  }, []);
-
-  useEffect(() => {
-    if (!templatesOpen) {
-      templatesInitRef.current = false;
-      return;
-    }
-    if (!templatesLoadedRef.current) {
-      refreshTemplates();
-      return;
-    }
-    if (templatesInitRef.current) return;
-    templatesInitRef.current = true;
-    if (!templateEditId) {
-      if (templates.length > 0) startEditTemplate(templates[0]);
-      else startCreateTemplate();
-    }
-  }, [templatesOpen, templateEditId, templates, startEditTemplate, startCreateTemplate, refreshTemplates]);
 
   useEffect(() => {
     if (!mailAccessReady) return;
@@ -3439,234 +1722,6 @@ function Mail() {
   }, [selectedId, viewMode, listData?.items, clearSelection]);
 
   useEffect(() => {
-    if (!mailAccessReady || !selectedId) {
-      if (detailRequestAbortRef.current) {
-        detailRequestAbortRef.current.abort();
-        detailRequestAbortRef.current = null;
-      }
-      detailContextRef.current = '';
-      setDetailLoading(false);
-      setSelectedMessage(null);
-      setSelectedConversation(null);
-      return;
-    }
-    const detailContextKey = `${viewMode}:${folder}:${selectedId}`;
-    const shouldShowSkeleton = detailContextRef.current !== detailContextKey;
-    detailContextRef.current = detailContextKey;
-    const controller = new AbortController();
-    if (detailRequestAbortRef.current) {
-      detailRequestAbortRef.current.abort();
-    }
-    detailRequestAbortRef.current = controller;
-    let cancelled = false;
-    const folderScope = advancedFiltersApplied?.folder_scope || 'current';
-    const detailCacheKey = viewMode === 'conversations'
-      ? buildMailConversationDetailCacheKey({
-          scope: mailCacheScope,
-          conversationId: selectedId,
-          folder,
-          folderScope,
-        })
-      : buildMailMessageDetailCacheKey({
-          scope: mailCacheScope,
-          messageId: selectedId,
-        });
-    const applyDetailPayload = (data, { suppressAutoRead = false } = {}) => {
-      if (!data) return;
-      if (viewMode === 'conversations') {
-        const nextConversation = applyReadStateOverridesToConversationDetail(data);
-        const items = Array.isArray(nextConversation?.items) ? nextConversation.items : [];
-        setSelectedConversation(nextConversation || null);
-        setSelectedMessage(items.length > 0 ? items[items.length - 1] : null);
-        const autoReadGuardKey = `${detailContextKey}:auto-read`;
-        if (!suppressAutoRead && Number(nextConversation?.unread_count || 0) > 0 && beginAutoReadGuard(autoReadGuardKey)) {
-          void performMailReadMutation({
-            mode: 'conversations',
-            targetId: String(nextConversation?.conversation_id || selectedId),
-            nextIsRead: true,
-            currentUnreadCount: Number(nextConversation?.unread_count || 0),
-            currentMessageCount: Number(nextConversation?.messages_count || items.length || 1),
-            errorMessage: 'Не удалось отметить диалог как прочитанный.',
-            autoReadGuardKey,
-          });
-        }
-      } else {
-        const nextMessage = applyReadStateOverridesToMessageDetail(
-          mergeMessageDetailPreservingBody(data, selectedMessageRef.current)
-        );
-        setSelectedConversation(null);
-        setSelectedMessage(nextMessage || null);
-        const autoReadGuardKey = `${detailContextKey}:auto-read`;
-        if (!suppressAutoRead && nextMessage?.id && nextMessage?.is_read === false && beginAutoReadGuard(autoReadGuardKey)) {
-          void performMailReadMutation({
-            mode: 'messages',
-            targetId: String(nextMessage.id),
-            nextIsRead: true,
-            currentUnreadCount: 1,
-            currentMessageCount: 1,
-            errorMessage: 'Не удалось отметить письмо как прочитанное.',
-            autoReadGuardKey,
-          });
-        }
-      }
-    };
-    const loadDetails = async () => {
-      const cachedDetail = peekSWRCache(detailCacheKey, { staleTimeMs: MAIL_DETAIL_SWR_STALE_TIME_MS });
-      const recentDetail = viewMode === 'messages'
-        ? getRecentMessageDetailSnapshot(selectedId)
-        : null;
-      const preferRecentDetail = Boolean(
-        viewMode === 'messages'
-        && recentDetail
-        && (!cachedDetail?.data || (!hasMessageBodyContent(cachedDetail.data) && hasMessageBodyContent(recentDetail)))
-      );
-      if (cachedDetail?.data && !preferRecentDetail) {
-        const suppressAutoReadForSelection = suppressNextAutoReadRef.current === detailContextKey;
-        if (suppressAutoReadForSelection) {
-          suppressNextAutoReadRef.current = '';
-        }
-        applyDetailPayload(cachedDetail.data, { suppressAutoRead: suppressAutoReadForSelection });
-        setDetailLoading(false);
-      } else if (recentDetail) {
-        const suppressAutoReadForSelection = suppressNextAutoReadRef.current === detailContextKey;
-        if (suppressAutoReadForSelection) {
-          suppressNextAutoReadRef.current = '';
-        }
-        applyDetailPayload(recentDetail, { suppressAutoRead: suppressAutoReadForSelection });
-        setDetailLoading(false);
-      } else if (shouldShowSkeleton) {
-        setDetailLoading(true);
-      }
-      try {
-        const suppressAutoReadForSelection = suppressNextAutoReadRef.current === detailContextKey;
-        if (suppressAutoReadForSelection) {
-          suppressNextAutoReadRef.current = '';
-        }
-        const fetcher = () => (
-          viewMode === 'conversations'
-            ? mailAPI.getConversation(
-                selectedId,
-                withActiveMailboxParams({ folder, folder_scope: folderScope }),
-                { signal: controller.signal }
-              )
-            : mailAPI.getMessage(selectedId, { signal: controller.signal, mailboxId: activeMailboxId })
-        );
-        const result = await getOrFetchSWR(
-          detailCacheKey,
-          fetcher,
-          {
-            staleTimeMs: MAIL_DETAIL_SWR_STALE_TIME_MS,
-            revalidateStale: false,
-          }
-        );
-        if (cancelled || controller.signal.aborted) return;
-        if (result?.data && detailContextRef.current === detailContextKey) {
-          const nextDetail = viewMode === 'messages'
-            ? applyReadStateOverridesToMessageDetail(
-                mergeMessageDetailPreservingBody(result.data, selectedMessageRef.current)
-              )
-            : applyReadStateOverridesToConversationDetail(result.data);
-          if (viewMode === 'messages') {
-            setSWRCache(detailCacheKey, nextDetail);
-            persistRecentMessageDetailSnapshot(nextDetail);
-          }
-          applyDetailPayload(nextDetail, { suppressAutoRead: suppressAutoReadForSelection });
-        }
-        if (result?.fromCache && !result?.isFresh) {
-          void getOrFetchSWR(
-            detailCacheKey,
-            fetcher,
-            {
-              staleTimeMs: MAIL_DETAIL_SWR_STALE_TIME_MS,
-              force: true,
-              revalidateStale: false,
-            }
-          ).then((freshResult) => {
-            if (cancelled || controller.signal.aborted || detailContextRef.current !== detailContextKey) return;
-            if (freshResult?.data) {
-              const nextDetail = viewMode === 'messages'
-                ? applyReadStateOverridesToMessageDetail(
-                    mergeMessageDetailPreservingBody(freshResult.data, selectedMessageRef.current)
-                  )
-                : applyReadStateOverridesToConversationDetail(freshResult.data);
-              if (viewMode === 'messages') {
-                setSWRCache(detailCacheKey, nextDetail);
-                persistRecentMessageDetailSnapshot(nextDetail);
-              }
-              applyDetailPayload(nextDetail, { suppressAutoRead: suppressAutoReadForSelection });
-            }
-          }).catch(() => {});
-        }
-      } catch (requestError) {
-        if (cancelled || controller.signal.aborted || requestError?.code === 'ERR_CANCELED') return;
-        const errorDetail = getMailErrorDetail(requestError, 'Не удалось загрузить письмо.');
-        const statusCode = Number(requestError?.response?.status || 0);
-        if (viewMode === 'conversations' && statusCode === 404) {
-          clearSelection({ mode: 'conversations' });
-          return;
-        }
-        if (viewMode === 'messages' && isMissingMailDetailError(requestError, errorDetail)) {
-          invalidateMailClientCache(['bootstrap', 'list', 'message-detail']);
-          navigate(buildMailRoute({
-            folder,
-            mailboxId: activeMailboxId,
-          }), { replace: true });
-          clearSelection({ mode: 'messages' });
-          void refreshList({ silent: true, force: true });
-          setError('Выбранное письмо больше недоступно. Список обновлен.');
-          return;
-        }
-        if (await handleMailCredentialsRequired(requestError)) return;
-        const selectedMessageSnapshot = selectedMessageRef.current;
-        const hasStableSelectedMessageBody = Boolean(
-          selectedMessageSnapshot
-          && !selectedMessageSnapshot?.__previewOnly
-          && hasMessageBodyContent(selectedMessageSnapshot)
-        );
-        if (viewMode === 'messages' && hasStableSelectedMessageBody && isTransientMailRequestError(requestError)) {
-          return;
-        }
-        setError(errorDetail);
-      } finally {
-        if (detailRequestAbortRef.current === controller) {
-          detailRequestAbortRef.current = null;
-        }
-        if (!cancelled) setDetailLoading(false);
-      }
-    };
-    loadDetails();
-    return () => {
-      cancelled = true;
-      controller.abort();
-      if (detailRequestAbortRef.current === controller) {
-        detailRequestAbortRef.current = null;
-      }
-    };
-  }, [
-    activeMailboxId,
-    advancedFiltersApplied,
-    applyReadStateOverridesToConversationDetail,
-    applyReadStateOverridesToMessageDetail,
-    clearSelection,
-    folder,
-    getMailErrorDetail,
-    handleMailCredentialsRequired,
-    invalidateMailClientCache,
-    isTransientMailRequestError,
-    isMissingMailDetailError,
-    mailAccessReady,
-    mailCacheScope,
-    navigate,
-    beginAutoReadGuard,
-    persistRecentMessageDetailSnapshot,
-    performMailReadMutation,
-    refreshList,
-    selectedId,
-    withActiveMailboxParams,
-    viewMode,
-  ]);
-
-  useEffect(() => {
     if (!loadMoreSentinelRef.current || !listData.has_more) return undefined;
     const observer = new IntersectionObserver((entries) => {
       if (entries[0]?.isIntersecting) loadMoreMessages();
@@ -3760,28 +1815,29 @@ function Mail() {
     await refreshFolderSummary();
   }, [invalidateMailClientCache, refreshFolderSummary, refreshList]);
 
-  const openSignatureEditor = useCallback(async (mailboxIdOverride = '') => {
-    const targetMailboxId = resolveComposeMailboxId(mailboxIdOverride || activeMailboxId);
-    try {
-      const shouldUseActiveMailbox = !targetMailboxId || String(targetMailboxId) === String(activeMailboxId || '');
-      const config = shouldUseActiveMailbox
-        ? mailboxInfo
-        : await mailAPI.getMyConfig({ mailbox_id: targetMailboxId || undefined });
-      setSignatureMailboxId(targetMailboxId);
-      setSignatureHtml(String(config?.mail_signature_html || ''));
-      setSignatureOpen(true);
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось загрузить подпись.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось загрузить подпись.'));
-      }
-    }
-  }, [
+  const {
+    signatureOpen,
+    signatureSaving,
+    signatureHtml,
+    signatureMailboxId,
+    setSignatureHtml,
+    openSignatureEditor,
+    closeSignatureEditor,
+    clearSignature,
+    handleSaveSignature,
+  } = useMailSignatureSettings({
+    mailAPI,
     activeMailboxId,
-    getMailErrorDetail,
-    handleMailCredentialsRequired,
     mailboxInfo,
     resolveComposeMailboxId,
-  ]);
+    mergeMailboxEntries,
+    setMailboxInfo,
+    setMailboxes,
+    handleMailCredentialsRequired,
+    getMailErrorDetail,
+    onError: setError,
+    onMessage: setMessage,
+  });
 
   const handleSaveMailCredentials = useCallback(async () => {
     const login = String(mailCredentialsLogin || '').trim();
@@ -3823,277 +1879,33 @@ function Mail() {
     refreshBootstrap,
   ]);
 
-  const handleSaveSignature = useCallback(async () => {
-    const targetMailboxId = resolveComposeMailboxId(signatureMailboxId || activeMailboxId);
-    setSignatureSaving(true);
-    try {
-      const data = await mailAPI.updateMyConfig({
-        mailbox_id: targetMailboxId || undefined,
-        mail_signature_html: String(signatureHtml || ''),
-      });
-      if (String(targetMailboxId || '') === String(activeMailboxId || '')) {
-        setMailboxInfo(data || null);
-      } else {
-        setMailboxInfo((prev) => (
-          prev
-            ? { ...prev, mail_signature_html: String(data?.mail_signature_html || '') }
-            : prev
-        ));
-      }
-      setMailboxes((prev) => mergeMailboxEntries(prev, data || null));
-      setSignatureOpen(false);
-      setMessage('Подпись сохранена.');
-    } catch (requestError) {
-      setError(requestError?.response?.data?.detail || 'Не удалось сохранить подпись.');
-    } finally {
-      setSignatureSaving(false);
-    }
-  }, [activeMailboxId, resolveComposeMailboxId, signatureHtml, signatureMailboxId]);
-
-  const rememberRecentSearch = useCallback((filters) => {
-    const nextEntry = {
-      ...DEFAULT_ADVANCED_FILTERS,
-      ...(filters || {}),
-    };
-    const labelParts = [];
-    if (nextEntry.q) labelParts.push(nextEntry.q);
-    if (nextEntry.from_filter) labelParts.push(`от:${nextEntry.from_filter}`);
-    if (nextEntry.to_filter) labelParts.push(`кому:${nextEntry.to_filter}`);
-    if (nextEntry.subject_filter) labelParts.push(`тема:${nextEntry.subject_filter}`);
-    if (nextEntry.importance) labelParts.push(`важность:${nextEntry.importance}`);
-    const label = labelParts.join(' • ') || 'Фильтр';
-    const payload = { ...nextEntry, label };
-
-    setRecentSearches((prev) => {
-      const current = Array.isArray(prev) ? prev : [];
-      const deduped = current.filter((item) => JSON.stringify({ ...item, label: undefined }) !== JSON.stringify({ ...payload, label: undefined }));
-      const next = [payload, ...deduped].slice(0, 8);
-      try {
-        window.localStorage.setItem(MAIL_RECENT_SEARCHES_KEY, JSON.stringify(next));
-      } catch {
-        // ignore local storage issues
-      }
-      return next;
-    });
-  }, []);
-
-  const handleApplyAdvancedSearch = useCallback(() => {
-    const nextFilters = { ...DEFAULT_ADVANCED_FILTERS, ...(advancedFiltersDraft || {}) };
-    setAdvancedFiltersApplied(nextFilters);
-    setSearch(String(nextFilters.q || ''));
-    if (
-      nextFilters.q
-      || nextFilters.from_filter
-      || nextFilters.to_filter
-      || nextFilters.subject_filter
-      || nextFilters.body_filter
-      || nextFilters.importance
-      || (nextFilters.folder_scope && nextFilters.folder_scope !== 'current')
-    ) {
-      rememberRecentSearch(nextFilters);
-    }
-    setAdvancedSearchOpen(false);
-  }, [advancedFiltersDraft, rememberRecentSearch]);
-
-  const handleResetAdvancedSearch = useCallback(() => {
-    setAdvancedFiltersDraft(DEFAULT_ADVANCED_FILTERS);
-    setAdvancedFiltersApplied(DEFAULT_ADVANCED_FILTERS);
-    setSearch('');
-  }, []);
-
-  const handleApplyRecentSearch = useCallback((item) => {
-    const nextFilters = { ...DEFAULT_ADVANCED_FILTERS, ...(item || {}) };
-    setAdvancedFiltersDraft(nextFilters);
-    setAdvancedFiltersApplied(nextFilters);
-    setSearch(String(nextFilters.q || ''));
-    setAdvancedSearchOpen(false);
-  }, []);
-
-  const printMailMessage = useCallback((messageDetail, renderedHtml = '') => {
-    if (!messageDetail) return false;
-    const senderLine = formatMailPersonWithEmail(
-      messageDetail?.sender_person || {
-        display: messageDetail?.sender_display,
-        name: messageDetail?.sender_name,
-        email: messageDetail?.sender_email,
-      },
-      String(messageDetail?.sender || '-'),
-    );
-    const html = String(
-      renderedHtml
-      || buildRenderedMailHtml(
-        getMessageBodyHtmlSource(messageDetail),
-        Array.isArray(messageDetail?.attachments) ? messageDetail.attachments : [],
-        { allowExternalImages: true, colorScheme: 'light' },
-      ).html
-      || '<p>Нет содержимого</p>',
-    );
-    const printWindow = window.open('', '_blank', 'noopener,noreferrer,width=920,height=720');
-    if (!printWindow) {
-      setError('Не удалось открыть окно печати.');
-      return false;
-    }
-    printWindow.document.write(`
-      <html>
-        <head>
-          <title>${String(messageDetail?.subject || 'Письмо')}</title>
-          <style>
-            body { font-family: Aptos, Calibri, "Segoe UI", Arial, sans-serif; margin: 24px; line-height: 1.5; color: #111827; }
-            h1 { font-size: 20px; margin-bottom: 8px; }
-            .meta { color: #6b7280; font-size: 12px; margin-bottom: 20px; }
-            img { max-width: 100%; }
-            blockquote { margin-left: 0; padding-left: 12px; border-left: 3px solid #cbd5e1; color: #475569; }
-          </style>
-        </head>
-        <body>
-          <h1>${String(messageDetail?.subject || '(без темы)')}</h1>
-          <div class="meta">От: ${senderLine}<br/>Дата: ${formatFullDate(messageDetail?.received_at)}</div>
-          <div>${html}</div>
-        </body>
-      </html>
-    `);
-    printWindow.document.close();
-    printWindow.focus();
-    printWindow.print();
-    return true;
-  }, [formatFullDate]);
-
-  const handleOpenHeaders = useCallback(async () => {
-    if (!selectedMessage?.id) return;
-    setHeadersOpen(true);
-    setHeadersLoading(true);
-    setMessageHeaders({ items: [] });
-    try {
-      const data = await mailAPI.getMessageHeaders(selectedMessage.id, {
-        mailboxId: resolveItemMailboxId(selectedMessage),
-      });
-      setMessageHeaders(data?.items ? data : { items: [] });
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось загрузить заголовки письма.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось загрузить заголовки письма.'));
-      }
-      setMessageHeaders({ items: [] });
-    } finally {
-      setHeadersLoading(false);
-    }
-  }, [resolveItemMailboxId, selectedMessage]);
-
-  const handleDownloadMessageSource = useCallback(async () => {
-    if (!selectedMessage?.id) return;
-    try {
-      const response = await mailAPI.downloadMessageSource(selectedMessage.id, {
-        mailboxId: resolveItemMailboxId(selectedMessage),
-      });
-      const contentDisposition = response.headers['content-disposition'];
-      const filename = parseDownloadFilename(contentDisposition, `${selectedMessage.subject || 'message'}.eml`);
-      const blob = new Blob([response.data], { type: response.headers['content-type'] || 'message/rfc822' });
-      downloadBlobFile(blob, filename, { preferOpenFallback: true });
-    } catch (requestError) {
-      const errorDetail = await getMailErrorDetailAsync(requestError, 'Не удалось скачать исходник письма.');
-      if (!(await handleMailCredentialsRequired(requestError, errorDetail))) {
-        setError(errorDetail);
-      }
-    }
-  }, [getMailErrorDetailAsync, handleMailCredentialsRequired, resolveItemMailboxId, selectedMessage]);
-
-  const handlePrintSelectedMessage = useCallback(() => {
-    if (!selectedMessage) return;
-    printMailMessage(selectedMessage, selectedMessageRenderResult.html);
-  }, [printMailMessage, selectedMessage, selectedMessageRenderResult.html]);
-
-  const handleOpenCreateFolderDialog = useCallback((target) => {
-    const token = String(target || 'mailbox');
-    const isScopeOnly = token === 'mailbox' || token === 'archive';
-    setFolderDialogMode('create');
-    setFolderDialogParentId(isScopeOnly ? '' : token);
-    setFolderDialogScope(isScopeOnly ? token : 'mailbox');
-    setFolderDialogTarget(isScopeOnly ? null : (Array.isArray(folderTree) ? folderTree.find((item) => String(item?.id || '') === token) || null : null));
-    setFolderDialogName('');
-    setFolderDialogOpen(true);
-  }, [folderTree]);
-
-  const handleOpenRenameFolderDialog = useCallback((item) => {
-    if (!item) return;
-    setFolderDialogMode('rename');
-    setFolderDialogParentId(String(item.id || ''));
-    setFolderDialogScope(String(item.scope || 'mailbox'));
-    setFolderDialogTarget(item);
-    setFolderDialogName(String(item.label || item.name || ''));
-    setFolderDialogOpen(true);
-  }, []);
-
-  const handleSubmitFolderDialog = useCallback(async () => {
-    const name = String(folderDialogName || '').trim();
-    if (!name) {
-      setError('Укажите название папки.');
-      return;
-    }
-    setFolderDialogSaving(true);
-    try {
-      if (folderDialogMode === 'rename' && folderDialogTarget?.id) {
-        await mailAPI.renameFolder(folderDialogTarget.id, { name, mailbox_id: activeMailboxId || undefined });
-        setMessage('Папка переименована.');
-      } else {
-        await mailAPI.createFolder({
-          mailbox_id: activeMailboxId || undefined,
-          name,
-          parent_folder_id: folderDialogParentId || '',
-          scope: folderDialogScope || 'mailbox',
-        });
-        setMessage('Папка создана.');
-      }
-      setFolderDialogOpen(false);
-      invalidateMailClientCache(['bootstrap', 'folder-tree']);
-      await refreshFolderTree({ force: true });
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось сохранить папку.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось сохранить папку.'));
-      }
-    } finally {
-      setFolderDialogSaving(false);
-    }
-  }, [
+  const {
+    folderDialogOpen,
+    closeFolderDialog,
     folderDialogMode,
+    folderDialogTarget,
     folderDialogName,
-    folderDialogTarget?.id,
-    folderDialogParentId,
-    folderDialogScope,
+    setFolderDialogName,
+    folderDialogSaving,
+    handleOpenCreateFolderDialog,
+    handleOpenRenameFolderDialog,
+    handleSubmitFolderDialog,
+    handleDeleteFolder,
+    handleToggleFavoriteFolder,
+  } = useMailFolderMutations({
+    mailAPI,
     activeMailboxId,
+    folder,
+    folderTree,
+    setFolder,
+    clearSelection,
     invalidateMailClientCache,
     refreshFolderTree,
-  ]);
-
-  const handleDeleteFolder = useCallback(async (item) => {
-    if (!item?.id) return;
-    if (!window.confirm(`Удалить папку "${item.label || item.name || 'без названия'}"?`)) return;
-    try {
-      await mailAPI.deleteFolder(item.id, activeMailboxId);
-      if (String(folder) === String(item.id)) {
-        clearSelection({ allModes: true });
-        setFolder('inbox');
-      }
-      invalidateMailClientCache(['bootstrap', 'folder-tree']);
-      await refreshFolderTree({ force: true });
-      setMessage('Папка удалена.');
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось удалить папку.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось удалить папку.'));
-      }
-    }
-  }, [activeMailboxId, folder, clearSelection, invalidateMailClientCache, refreshFolderTree]);
-
-  const handleToggleFavoriteFolder = useCallback(async (item) => {
-    if (!item?.id) return;
-    try {
-      await mailAPI.setFolderFavorite(item.id, !Boolean(item?.is_favorite), activeMailboxId);
-      invalidateMailClientCache(['bootstrap', 'folder-tree']);
-      await refreshFolderTree({ force: true });
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось обновить избранные папки.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось обновить избранные папки.'));
-      }
-    }
-  }, [activeMailboxId, invalidateMailClientCache, refreshFolderTree]);
+    handleMailCredentialsRequired,
+    getMailErrorDetail,
+    onError: setError,
+    onMessage: setMessage,
+  });
 
   const handleSaveMailPreferences = useCallback(async () => {
     setMailPreferencesSaving(true);
@@ -4111,46 +1923,55 @@ function Mail() {
     }
   }, [mailPreferencesDraft]);
 
-  const selectedMessageIds = useMemo(
-    () => Array.from(new Set((Array.isArray(selectedItems) ? selectedItems : []).map((item) => String(item || '')).filter(Boolean))),
-    [selectedItems]
-  );
+  const {
+    selectedMessageIds,
+    bulkActionLoading,
+    clearBulkSelection,
+    afterListMutation,
+    runBulkAction,
+    handleStartDragItems,
+    handleDropMessagesToFolder,
+  } = useMailBulkActions({
+    mailAPI,
+    activeMailboxId,
+    folder,
+    selectedItems,
+    setSelectedItems,
+    setMoveTarget,
+    selectedMessage,
+    viewMode,
+    clearSelection,
+    invalidateMailClientCache,
+    refreshList,
+    refreshFolderSummary,
+    withActiveMailboxPayload,
+    handleMailCredentialsRequired,
+    getMailErrorDetail,
+    onError: setError,
+    onMessage: setMessage,
+  });
 
-  const afterListMutation = useCallback(async ({ clearBulkSelection = true } = {}) => {
-    if (clearBulkSelection) setSelectedItems([]);
-    dragMessageIdsRef.current = [];
-    invalidateMailClientCache();
-    await Promise.all([
-      refreshList({ silent: true, force: true }),
-      refreshFolderSummary({ force: true }),
-    ]);
-    window.dispatchEvent(new CustomEvent('mail-list-refreshed'));
-  }, [invalidateMailClientCache, refreshList, refreshFolderSummary]);
-
-  const runBulkAction = useCallback(async ({ action, targetFolder = '', permanent = false, successMessage = '' }) => {
-    if (selectedMessageIds.length === 0) return;
-    setBulkActionLoading(true);
-    try {
-      await mailAPI.bulkMessageAction({
-        mailbox_id: activeMailboxId || undefined,
-        message_ids: selectedMessageIds,
-        action,
-        target_folder: targetFolder || undefined,
-        permanent,
-      });
-      if (selectedMessage?.id && selectedMessageIds.includes(String(selectedMessage.id))) {
-        clearSelection({ mode: viewMode });
-      }
-      await afterListMutation();
-      if (successMessage) setMessage(successMessage);
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось выполнить массовое действие.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось выполнить массовое действие.'));
-      }
-    } finally {
-      setBulkActionLoading(false);
-    }
-  }, [activeMailboxId, afterListMutation, clearSelection, selectedMessage?.id, selectedMessageIds, viewMode]);
+  const {
+    messageActionLoading,
+    handleArchiveSelectedMessage,
+    handleDeleteSelectedMessage,
+    handleMoveSelectedMessage,
+    handleRestoreSelectedMessage,
+    handleToggleReadState,
+  } = useMailSelectedPreviewActions({
+    afterListMutation,
+    clearSelection,
+    getMailErrorDetail,
+    handleMailCredentialsRequired,
+    mailAPI,
+    moveTarget,
+    performMailReadMutation,
+    selectedConversation,
+    selectedMessage,
+    setError,
+    viewMode,
+    withActiveMailboxPayload,
+  });
 
   const handleMarkAllRead = useCallback(async () => {
     try {
@@ -4193,274 +2014,59 @@ function Mail() {
     viewMode,
   ]);
 
-  const handleArchiveSelectedMessage = useCallback(async () => {
-    if (!selectedMessage?.id) return;
-    setMessageActionLoading(true);
-    try {
-      await mailAPI.moveMessage(selectedMessage.id, withActiveMailboxPayload({ target_folder: 'archive' }));
-      clearSelection({ mode: viewMode });
-      await afterListMutation();
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось отправить письмо в архив.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось отправить письмо в архив.'));
-      }
-    } finally {
-      setMessageActionLoading(false);
-    }
-  }, [afterListMutation, clearSelection, selectedMessage?.id, viewMode, withActiveMailboxPayload]);
-
-  const getMessageDetailForListAction = useCallback(async (item) => {
-    const messageId = String(item?.id || '').trim();
-    if (!messageId) return null;
-    if (String(selectedMessage?.id || '') === messageId && selectedMessage?.body_html) {
-      return selectedMessage;
-    }
-    const recentDetail = getRecentMessageDetailSnapshot(messageId);
-    if (recentDetail?.body_html) {
-      return recentDetail;
-    }
-    const data = await mailAPI.getMessage(messageId, {
-      mailboxId: resolveItemMailboxId(item),
-    });
-    if (data) {
-      persistRecentMessageDetailSnapshot(data);
-    }
-    return data || null;
-  }, [
+  const {
+    getMessageDetailForListAction,
+    handleSwipeRead,
+    handleSwipeDelete,
+    handleListRestoreMessage,
+    handleListArchiveMessage,
+    handleListMoveMessage,
+  } = useMailListItemActions({
+    mailAPI,
+    viewMode,
+    folder,
+    selectedMessage,
+    performMailReadMutation,
+    afterListMutation,
+    clearSelection,
+    handleMailCredentialsRequired,
+    getMailErrorDetail,
     getRecentMessageDetailSnapshot,
     persistRecentMessageDetailSnapshot,
     resolveItemMailboxId,
+    withActiveMailboxPayload,
+    setError,
+  });
+
+  const {
+    headersOpen,
+    headersForDialog,
+    closeHeadersDialog,
+    attachmentPreview,
+    closeAttachmentPreview,
+    downloadAttachmentPreview,
+    handleOpenHeaders,
+    handleDownloadMessageSource,
+    handlePrintSelectedMessage,
+    handleListOpenHeaders,
+    handleListDownloadMessageSource,
+    handleListPrintMessage,
+    openAttachmentPreview,
+    downloadAttachmentFile,
+    maxPreviewFileBytes,
+  } = useMailMessageFileActions({
+    mailAPI,
     selectedMessage,
-  ]);
-
-  const handleSwipeRead = useCallback(async (item) => {
-    if (!item) return;
-    if (viewMode === 'conversations') {
-      await performMailReadMutation({
-        mode: 'conversations',
-        targetId: String(item?.conversation_id || item?.id || ''),
-        nextIsRead: Number(item?.unread_count || 0) > 0,
-        currentUnreadCount: Number(item?.unread_count || 0),
-        currentMessageCount: Number(item?.messages_count || item?.items?.length || 1),
-        errorMessage: 'Не удалось изменить статус диалога.',
-      });
-      return;
-    }
-
-    await performMailReadMutation({
-      mode: 'messages',
-      targetId: String(item?.id || ''),
-      nextIsRead: !Boolean(item?.is_read),
-      currentUnreadCount: item?.is_read ? 0 : 1,
-      currentMessageCount: 1,
-      errorMessage: 'Не удалось изменить статус письма.',
-    });
-  }, [performMailReadMutation, viewMode]);
-
-  const handleSwipeDelete = useCallback(async (item, options = {}) => {
-    if (!item?.id || viewMode !== 'messages') return;
-    const permanent = typeof options?.permanent === 'boolean'
-      ? options.permanent
-      : folder === 'trash';
-    try {
-      await mailAPI.deleteMessage(item.id, withActiveMailboxPayload({ permanent }));
-      if (selectedMessage?.id && String(selectedMessage.id) === String(item.id)) {
-        clearSelection({ mode: viewMode });
-      }
-      await afterListMutation();
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось удалить письмо.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось удалить письмо.'));
-      }
-    }
-  }, [
-    afterListMutation,
-    clearSelection,
-    folder,
-    getMailErrorDetail,
-    handleMailCredentialsRequired,
-    selectedMessage?.id,
+    selectedRenderedHtml: selectedMessageRenderResult.html,
     viewMode,
-    withActiveMailboxPayload,
-  ]);
-
-  const handleListRestoreMessage = useCallback(async (item) => {
-    if (!item?.id || viewMode !== 'messages') return;
-    try {
-      await mailAPI.restoreMessage(
-        item.id,
-        withActiveMailboxPayload({ target_folder: String(item?.restore_hint_folder || 'inbox') }),
-      );
-      if (selectedMessage?.id && String(selectedMessage.id) === String(item.id)) {
-        clearSelection({ mode: viewMode });
-      }
-      await afterListMutation();
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось восстановить письмо.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось восстановить письмо.'));
-      }
-    }
-  }, [
-    afterListMutation,
-    clearSelection,
-    getMailErrorDetail,
-    handleMailCredentialsRequired,
-    selectedMessage?.id,
-    viewMode,
-    withActiveMailboxPayload,
-  ]);
-
-  const handleListArchiveMessage = useCallback(async (item) => {
-    if (!item?.id || viewMode !== 'messages') return;
-    try {
-      await mailAPI.moveMessage(item.id, withActiveMailboxPayload({ target_folder: 'archive' }));
-      if (selectedMessage?.id && String(selectedMessage.id) === String(item.id)) {
-        clearSelection({ mode: viewMode });
-      }
-      await afterListMutation();
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось отправить письмо в архив.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось отправить письмо в архив.'));
-      }
-    }
-  }, [
-    afterListMutation,
-    clearSelection,
-    getMailErrorDetail,
-    handleMailCredentialsRequired,
-    selectedMessage?.id,
-    viewMode,
-    withActiveMailboxPayload,
-  ]);
-
-  const handleListMoveMessage = useCallback(async (item, targetFolderId) => {
-    const messageId = String(item?.id || '').trim();
-    const targetFolder = String(targetFolderId || '').trim();
-    if (!messageId || !targetFolder || viewMode !== 'messages') return;
-    try {
-      await mailAPI.moveMessage(messageId, withActiveMailboxPayload({ target_folder: targetFolder }));
-      if (selectedMessage?.id && String(selectedMessage.id) === messageId) {
-        clearSelection({ mode: viewMode });
-      }
-      await afterListMutation();
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось переместить письмо.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось переместить письмо.'));
-      }
-    }
-  }, [
-    afterListMutation,
-    clearSelection,
-    getMailErrorDetail,
-    handleMailCredentialsRequired,
-    selectedMessage?.id,
-    viewMode,
-    withActiveMailboxPayload,
-  ]);
-
-  const handleListOpenHeaders = useCallback(async (item) => {
-    if (!item?.id || viewMode !== 'messages') return;
-    setHeadersOpen(true);
-    setHeadersLoading(true);
-    setMessageHeaders({ items: [] });
-    try {
-      const data = await mailAPI.getMessageHeaders(item.id, {
-        mailboxId: resolveItemMailboxId(item),
-      });
-      setMessageHeaders(data?.items ? data : { items: [] });
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось загрузить заголовки письма.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось загрузить заголовки письма.'));
-      }
-      setMessageHeaders({ items: [] });
-    } finally {
-      setHeadersLoading(false);
-    }
-  }, [
-    getMailErrorDetail,
-    handleMailCredentialsRequired,
     resolveItemMailboxId,
-    viewMode,
-  ]);
-
-  const handleListDownloadMessageSource = useCallback(async (item) => {
-    if (!item?.id || viewMode !== 'messages') return;
-    try {
-      const response = await mailAPI.downloadMessageSource(item.id, {
-        mailboxId: resolveItemMailboxId(item),
-      });
-      const contentDisposition = response.headers['content-disposition'];
-      const filename = parseDownloadFilename(contentDisposition, `${item.subject || 'message'}.eml`);
-      const blob = new Blob([response.data], { type: response.headers['content-type'] || 'message/rfc822' });
-      downloadBlobFile(blob, filename, { preferOpenFallback: true });
-    } catch (requestError) {
-      const errorDetail = await getMailErrorDetailAsync(requestError, 'Не удалось скачать исходник письма.');
-      if (!(await handleMailCredentialsRequired(requestError, errorDetail))) {
-        setError(errorDetail);
-      }
-    }
-  }, [
-    getMailErrorDetailAsync,
-    handleMailCredentialsRequired,
-    resolveItemMailboxId,
-    viewMode,
-  ]);
-
-  const handleListPrintMessage = useCallback(async (item) => {
-    if (!item?.id || viewMode !== 'messages') return;
-    try {
-      const detail = await getMessageDetailForListAction(item);
-      if (!detail) {
-        setError('Не удалось загрузить письмо для печати.');
-        return;
-      }
-      printMailMessage(detail);
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось подготовить письмо к печати.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось подготовить письмо к печати.'));
-      }
-    }
-  }, [
-    getMailErrorDetail,
     getMessageDetailForListAction,
     handleMailCredentialsRequired,
-    printMailMessage,
-    viewMode,
-  ]);
-
-  const handleStartDragItems = useCallback((ids) => {
-    dragMessageIdsRef.current = Array.isArray(ids) ? ids.map((item) => String(item || '')).filter(Boolean) : [];
-  }, []);
-
-  const handleDropMessagesToFolder = useCallback(async (targetFolderId) => {
-    const targetFolder = String(targetFolderId || '');
-    const ids = dragMessageIdsRef.current.length > 0
-      ? dragMessageIdsRef.current
-      : (selectedMessageIds.length > 0 ? selectedMessageIds : [String(selectedMessage?.id || '')].filter(Boolean));
-    if (!targetFolder || ids.length === 0) return;
-    if (targetFolder === folder) return;
-
-    try {
-      if (ids.length === 1) {
-        await mailAPI.moveMessage(ids[0], withActiveMailboxPayload({ target_folder: targetFolder }));
-      } else {
-        await mailAPI.bulkMessageAction({
-          mailbox_id: activeMailboxId || undefined,
-          message_ids: ids,
-          action: 'move',
-          target_folder: targetFolder,
-        });
-      }
-      if (selectedMessage?.id && ids.includes(String(selectedMessage.id))) {
-        clearSelection({ mode: viewMode });
-      }
-      await afterListMutation();
-    } catch (requestError) {
-      if (!(await handleMailCredentialsRequired(requestError, 'Не удалось переместить письма.'))) {
-        setError(getMailErrorDetail(requestError, 'Не удалось переместить письма.'));
-      }
-    }
-  }, [activeMailboxId, afterListMutation, clearSelection, folder, selectedMessage?.id, selectedMessageIds, viewMode, withActiveMailboxPayload]);
+    getMailErrorDetail,
+    getMailErrorDetailAsync,
+    setError,
+    formatFullDate,
+  });
 
   useEffect(() => {
     const isTypingTarget = (target) => {
@@ -4543,7 +2149,7 @@ function Mail() {
         }
         if (headersOpen) {
           event.preventDefault();
-          setHeadersOpen(false);
+          closeHeadersDialog();
           return;
         }
         if (shortcutsOpen) {
@@ -4562,6 +2168,7 @@ function Mail() {
     clearSelection,
     composeOpen,
     composeCloseRequestRef,
+    closeHeadersDialog,
     folder,
     headersOpen,
     mailPreferencesOpen,
@@ -4583,93 +2190,6 @@ function Mail() {
     return false;
   }, [mailboxEmails, folder]);
 
-  const fetchAttachmentBlob = useCallback(async (messageOrId, attachment, fallbackMessage = null) => {
-    const { messageId, attachmentRef, mailboxId } = resolveAttachmentRequestContext(messageOrId, attachment, fallbackMessage);
-    if (!messageId || !attachmentRef) {
-      const contextError = buildAttachmentContextError({ attachment, messageId, mailboxId });
-      if (typeof console !== 'undefined' && typeof console.warn === 'function') {
-        console.warn('Mail attachment download skipped because request context is incomplete', contextError.attachment);
-      }
-      throw contextError;
-    }
-    return mailAPI.downloadAttachment(messageId, attachmentRef, { mailboxId });
-  }, [resolveAttachmentRequestContext]);
-
-  const openAttachmentPreview = useCallback(async (messageOrId, attachment, fallbackMessage = null) => {
-    try {
-      const response = await fetchAttachmentBlob(messageOrId, attachment, fallbackMessage);
-      const contentDisposition = response.headers['content-disposition'];
-      const filename = parseDownloadFilename(contentDisposition, attachment?.name || 'attachment.bin');
-      const contentType = String(response.headers['content-type'] || attachment?.content_type || 'application/octet-stream');
-      const blob = new Blob([response.data], { type: contentType });
-      const kind = contentType.includes('pdf') ? 'pdf' : (contentType.startsWith('image/') ? 'image' : 'text');
-      let objectUrl = '';
-      let textContent = '';
-      let textTruncated = false;
-      if (kind === 'image' || kind === 'pdf') objectUrl = window.URL.createObjectURL(blob);
-      if (kind === 'text') {
-        const chunk = blob.slice(0, MAX_TEXT_PREVIEW_BYTES);
-        textContent = await chunk.text();
-        textTruncated = blob.size > MAX_TEXT_PREVIEW_BYTES;
-      }
-      setAttachmentPreview({
-        open: true,
-        loading: false,
-        error: '',
-        filename,
-        contentType,
-        kind,
-        objectUrl,
-        textContent,
-        textTruncated,
-        tooLargeForPreview: blob.size > MAX_PREVIEW_FILE_BYTES,
-        blob,
-      });
-    } catch (requestError) {
-      const errorDetail = await getMailErrorDetailAsync(requestError, 'Не удалось открыть вложение.');
-      if (!(await handleMailCredentialsRequired(requestError, errorDetail))) {
-        setError(errorDetail);
-      }
-    }
-  }, [fetchAttachmentBlob, getMailErrorDetailAsync, handleMailCredentialsRequired]);
-
-  const downloadAttachmentFile = useCallback(async (messageOrId, attachment, fallbackMessage = null) => {
-    const { messageId, attachmentRef, mailboxId } = resolveAttachmentRequestContext(messageOrId, attachment, fallbackMessage);
-    if (!messageId || !attachmentRef) {
-      const contextError = buildAttachmentContextError({ attachment, messageId, mailboxId });
-      if (typeof console !== 'undefined' && typeof console.warn === 'function') {
-        console.warn('Mail attachment download skipped because request context is incomplete', contextError.attachment);
-      }
-      setError(contextError.message);
-      return;
-    }
-    const downloadKey = `${messageId}::${attachmentRef}::${mailboxId || ''}`;
-    if (attachmentDownloadInFlightRef.current.has(downloadKey)) {
-      return;
-    }
-    attachmentDownloadInFlightRef.current.add(downloadKey);
-    try {
-      const response = await mailAPI.downloadAttachment(messageId, attachmentRef, { mailboxId });
-      const contentDisposition = response.headers['content-disposition'];
-      const filename = parseDownloadFilename(contentDisposition, attachment?.name || 'attachment.bin');
-      const blob = new Blob([response.data], { type: response.headers['content-type'] || attachment?.content_type || 'application/octet-stream' });
-      downloadBlobFile(blob, filename, { preferOpenFallback: true });
-    } catch (requestError) {
-      const errorDetail = await getMailErrorDetailAsync(requestError, 'Не удалось скачать вложение.');
-      if (!(await handleMailCredentialsRequired(requestError, errorDetail))) {
-        setError(errorDetail);
-      }
-    } finally {
-      attachmentDownloadInFlightRef.current.delete(downloadKey);
-    }
-  }, [getMailErrorDetailAsync, handleMailCredentialsRequired, resolveAttachmentRequestContext]);
-  const selectedMessageHtml = useMemo(
-    () => selectedMessagePrimaryHtml,
-    [selectedMessagePrimaryHtml]
-  );
-  useEffect(() => {
-    setShowQuotedHistory(false);
-  }, [selectedMessage?.id, selectedConversation?.conversation_id]);
   const fallbackFolderTreeItems = useMemo(() => Object.entries(FOLDER_LABELS).map(([id, label]) => ({
     id,
     label,
@@ -4726,9 +2246,6 @@ function Mail() {
     const primary = Array.from(mailboxEmails)[0] || '';
     return String(primary.split('@')[1] || '').trim().toLowerCase();
   }, [mailboxEmails]);
-  const closeMobileNavigationIfNeeded = useCallback(() => {
-    if (isMobile) setMobileNavigationOpen(false);
-  }, [isMobile]);
   const folderRailUtilityItems = useMemo(() => {
     const items = [
       {
@@ -4736,7 +2253,7 @@ function Mail() {
         label: 'IT-заявка',
         onClick: () => {
           closeMobileNavigationIfNeeded();
-          setItOpen(true);
+          openItRequest();
         },
       },
     ];
@@ -4746,12 +2263,12 @@ function Mail() {
         label: 'Шаблоны',
         onClick: () => {
           closeMobileNavigationIfNeeded();
-          setTemplatesOpen(true);
+          openTemplatesDialog();
         },
       });
     }
     return items;
-  }, [canManageUsers, closeMobileNavigationIfNeeded]);
+  }, [canManageUsers, closeMobileNavigationIfNeeded, openTemplatesDialog]);
   const handleRefreshMailView = useCallback(() => {
     invalidateMailClientCache();
     refreshList({ force: true });
@@ -4859,11 +2376,7 @@ function Mail() {
             permanent: folder === 'trash',
             successMessage: folder === 'trash' ? 'Выбранные письма удалены навсегда.' : 'Выбранные письма перемещены в удаленные.',
           })}
-          onClear={() => {
-            setSelectedItems([]);
-            setMoveTarget('');
-            dragMessageIdsRef.current = [];
-          }}
+          onClear={clearBulkSelection}
           isMobile={isMobile}
         />
       ) : null}
@@ -5072,82 +2585,13 @@ function Mail() {
         messageActionLoading={messageActionLoading}
         onOpenComposeFromDraft={openComposeFromDraft}
         onOpenComposeFromMessage={openComposeFromMessage}
-        onToggleReadState={async () => {
-          setMessageActionLoading(true);
-          try {
-            if (viewMode === 'conversations') {
-              await performMailReadMutation({
-                mode: 'conversations',
-                targetId: String(selectedConversation?.conversation_id || ''),
-                nextIsRead: Number(selectedConversation?.unread_count || 0) > 0,
-                currentUnreadCount: Number(selectedConversation?.unread_count || 0),
-                currentMessageCount: Number(selectedConversation?.messages_count || selectedConversation?.items?.length || 1),
-                errorMessage: 'Не удалось изменить статус диалога.',
-              });
-            } else {
-              await performMailReadMutation({
-                mode: 'messages',
-                targetId: String(selectedMessage?.id || ''),
-                nextIsRead: !Boolean(selectedMessage?.is_read),
-                currentUnreadCount: selectedMessage?.is_read ? 0 : 1,
-                currentMessageCount: 1,
-                errorMessage: 'Не удалось изменить статус письма.',
-              });
-            }
-          } finally {
-            setMessageActionLoading(false);
-          }
-        }}
-        onRestoreSelectedMessage={async () => {
-          setMessageActionLoading(true);
-          try {
-            await mailAPI.restoreMessage(
-              selectedMessage.id,
-              withActiveMailboxPayload({ target_folder: String(selectedMessage?.restore_hint_folder || 'inbox') }),
-            );
-            clearSelection({ mode: viewMode });
-            await afterListMutation();
-          } catch (requestError) {
-            if (!(await handleMailCredentialsRequired(requestError, 'Не удалось восстановить письмо.'))) {
-              setError(getMailErrorDetail(requestError, 'Не удалось восстановить письмо.'));
-            }
-          } finally {
-            setMessageActionLoading(false);
-          }
-        }}
-        onDeleteSelectedMessage={async (permanent) => {
-          setMessageActionLoading(true);
-          try {
-            await mailAPI.deleteMessage(selectedMessage.id, withActiveMailboxPayload({ permanent: Boolean(permanent) }));
-            clearSelection({ mode: viewMode });
-            await afterListMutation();
-          } catch (requestError) {
-            if (!(await handleMailCredentialsRequired(requestError, 'Не удалось удалить письмо.'))) {
-              setError(getMailErrorDetail(requestError, 'Не удалось удалить письмо.'));
-            }
-          } finally {
-            setMessageActionLoading(false);
-          }
-        }}
+        onToggleReadState={handleToggleReadState}
+        onRestoreSelectedMessage={handleRestoreSelectedMessage}
+        onDeleteSelectedMessage={handleDeleteSelectedMessage}
         onArchiveSelectedMessage={handleArchiveSelectedMessage}
         moveTarget={moveTarget}
         onMoveTargetChange={setMoveTarget}
-        onMoveSelectedMessage={async (targetOverride = '') => {
-          const resolvedTarget = String(targetOverride || moveTarget || '');
-          if (!resolvedTarget) return;
-          setMessageActionLoading(true);
-          try {
-            await mailAPI.moveMessage(selectedMessage.id, withActiveMailboxPayload({ target_folder: resolvedTarget }));
-            clearSelection({ mode: viewMode });
-            await afterListMutation();
-          } catch (requestError) {
-            if (!(await handleMailCredentialsRequired(requestError, 'Не удалось переместить письмо.'))) {
-              setError(getMailErrorDetail(requestError, 'Не удалось переместить письмо.'));
-            }
-          } finally {
-            setMessageActionLoading(false);
-          }
-        }}
+        onMoveSelectedMessage={handleMoveSelectedMessage}
         moveTargets={moveTargets}
         onOpenHeaders={handleOpenHeaders}
         onDownloadSource={handleDownloadMessageSource}
@@ -5160,338 +2604,42 @@ function Mail() {
         onBackToList={handleBackToList}
       />
       {viewMode === 'conversations' ? (
-        <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          <Box
-            ref={conversationScrollRef}
-            sx={{
-              flex: 1,
-              minHeight: 0,
-              overflowY: 'auto',
-              overflowX: 'hidden',
-              WebkitOverflowScrolling: 'touch',
-              px: 1.2,
-              py: 1,
-              pb: isMobile ? 1 : { xs: 9, sm: 1.4 },
-              bgcolor: ui.panelBg,
-            }}
-          >
-            <Stack spacing={1}>
-              {(selectedConversation?.items || []).map((item, index, arr) => {
-                const itemDateValue = item?.received_at || item?.created_at || Date.now();
-                const currentDay = formatConversationDay(itemDateValue);
-                const previous = arr[index - 1];
-                const previousDay = previous ? formatConversationDay(previous?.received_at || previous?.created_at || Date.now()) : '';
-                const showDaySeparator = currentDay !== previousDay;
-                const mine = isOwnConversationMessage(item);
-                const senderLine = getSenderDisplay(item, item?.sender || '-');
-                const itemAllowsExternalImages = Boolean(
-                  item?.id && revealedRemoteImagesByMessageId?.[String(item.id)]
-                );
-                const itemAttachments = Array.isArray(item?.attachments) ? item.attachments : [];
-                const conversationBodyHtmlSource = getMessageBodyHtmlSource(item);
-                const renderedConversationBody = buildRenderedMailHtml(
-                  conversationBodyHtmlSource,
-                  itemAttachments,
-                  { allowExternalImages: itemAllowsExternalImages, colorScheme: mailRenderColorScheme }
-                );
-                const visibleConversationAttachments = filterVisibleMailAttachments(
-                  itemAttachments,
-                  renderedConversationBody.usedInlineAttachmentIds
-                );
-                return (
-                  <Box key={item?.id || index}>
-                    {showDaySeparator ? (
-                      <Box sx={{ display: 'flex', justifyContent: 'center', py: 0.2 }}>
-                        <Chip
-                          size="small"
-                          label={currentDay}
-                          sx={{
-                            height: 22,
-                            fontSize: ui.fontSizeFine,
-                            borderRadius: ui.chipRadius,
-                            bgcolor: ui.actionBg,
-                            color: ui.mutedText,
-                            border: '1px solid',
-                            borderColor: ui.borderSoft,
-                            fontWeight: 600,
-                          }}
-                        />
-                      </Box>
-                    ) : null}
-                    <Stack direction="row" justifyContent={mine ? 'flex-end' : 'flex-start'} alignItems="flex-end" spacing={0.7}>
-                      {!mine ? (
-                        <Box
-                          sx={{
-                            width: 24,
-                            height: 24,
-                            borderRadius: '50%',
-                            bgcolor: getAvatarColor(senderLine),
-                            color: 'common.white',
-                            fontSize: ui.fontSizeFine,
-                            fontWeight: 700,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                          }}
-                        >
-                          {getInitials(senderLine)}
-                        </Box>
-                      ) : null}
-                      <Paper
-                        variant="outlined"
-                        sx={{
-                          px: 1.1,
-                          py: 0.9,
-                          maxWidth: { xs: '92%', md: '78%' },
-                          borderRadius: mine ? `${ui.radiusLg} ${ui.radiusLg} ${ui.radiusXs} ${ui.radiusLg}` : `${ui.radiusLg} ${ui.radiusLg} ${ui.radiusLg} ${ui.radiusXs}`,
-                          borderColor: mine
-                            ? alpha(theme.palette.primary.main, ui.isDark ? 0.46 : 0.28)
-                            : (String(selectedMessage?.id) === String(item?.id) ? ui.selectedBorder : ui.borderSoft),
-                          bgcolor: mine
-                            ? alpha(theme.palette.primary.main, ui.isDark ? 0.22 : 0.10)
-                            : ui.panelSolid,
-                          color: mine
-                            ? (ui.isDark ? alpha(theme.palette.common.white, 0.96) : theme.palette.text.primary)
-                            : 'text.primary',
-                          cursor: 'pointer',
-                          boxShadow: 'none',
-                        }}
-                        onClick={() => setSelectedMessage(item)}
-                      >
-                        <Stack direction="row" justifyContent="space-between" spacing={1} alignItems="center">
-                          <Typography variant="caption" sx={{ fontWeight: 700, color: mine ? 'inherit' : 'text.secondary' }}>
-                            {mine ? 'Вы' : senderLine}
-                          </Typography>
-                          <Typography variant="caption" sx={{ opacity: mine ? 0.85 : 0.7 }}>
-                            {formatTime(itemDateValue)}
-                          </Typography>
-                        </Stack>
-                        {renderedConversationBody.hasBlockedExternalImages ? (
-                          <Box sx={{ mt: 0.55 }}>
-                            <Button
-                              size="small"
-                              variant="text"
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                revealRemoteImagesForMessage(item?.id);
-                              }}
-                              sx={{
-                                minWidth: 0,
-                                px: 0,
-                                textTransform: 'none',
-                                color: mine ? 'inherit' : 'primary.main',
-                              }}
-                            >
-                              Показать изображения
-                            </Button>
-                          </Box>
-                        ) : null}
-                        <Box
-                          sx={getMailRenderedContentSx({ ui, theme, variant: 'conversation', mine })}
-                          dangerouslySetInnerHTML={{ __html: renderedConversationBody.html || '<p style="color:#999">Нет содержимого</p>' }}
-                        />
-                        {visibleConversationAttachments.length > 0 ? (
-                          <Stack spacing={0.8} sx={{ mt: 0.9 }}>
-                            {visibleConversationAttachments.map((attachment, attachmentIndex) => (
-                              <MailAttachmentCard
-                                key={`${attachment?.id || attachment?.name || attachmentIndex}`}
-                                attachment={attachment}
-                                mine={mine}
-                                formatFileSize={formatFileSize}
-                                onOpen={(event) => {
-                                  event?.stopPropagation?.();
-                                  openAttachmentPreview(item, attachment);
-                                }}
-                                onDownload={(event) => {
-                                  event?.stopPropagation?.();
-                                  downloadAttachmentFile(item, attachment);
-                                }}
-                              />
-                            ))}
-                          </Stack>
-                        ) : null}
-                      </Paper>
-                      {mine ? (
-                        <Box
-                          sx={{
-                            width: 24,
-                            height: 24,
-                            borderRadius: '50%',
-                            bgcolor: 'primary.main',
-                            color: 'primary.contrastText',
-                            fontSize: ui.fontSizeFine,
-                            fontWeight: 700,
-                            display: 'flex',
-                            alignItems: 'center',
-                            justifyContent: 'center',
-                            flexShrink: 0,
-                          }}
-                        >
-                          Я
-                        </Box>
-                      ) : null}
-                    </Stack>
-                  </Box>
-                );
-              })}
-            </Stack>
-          </Box>
-          {!isMobile ? (
-            <Box
-              sx={{
-                p: 1,
-                pb: 'calc(8px + env(safe-area-inset-bottom, 0px))',
-                borderTop: '1px solid',
-                borderColor: ui.borderSoft,
-                bgcolor: ui.panelSolid,
-                position: 'sticky',
-                bottom: 0,
-                zIndex: 1,
-              }}
-            >
-              <Stack spacing={0.7}>
-                <TextField
-                  multiline
-                  minRows={2}
-                  maxRows={6}
-                  size="small"
-                  label="Быстрый ответ"
-                  placeholder="Напишите сообщение..."
-                  value={quickReplyBody}
-                  onChange={(event) => setQuickReplyBody(event.target.value)}
-                  InputProps={{ sx: { borderRadius: ui.inputRadius } }}
-                />
-                <Stack
-                  direction={{ xs: 'column', sm: 'row' }}
-                  justifyContent="space-between"
-                  alignItems={{ xs: 'stretch', sm: 'center' }}
-                  flexWrap="wrap"
-                  useFlexGap
-                  gap={0.6}
-                >
-                  <Stack direction="row" spacing={0.4} flexWrap="wrap" useFlexGap>
-                    <Button size="small" variant="text" onClick={() => openComposeFromMessage('reply')} sx={{ textTransform: 'none', minWidth: 0, px: 0.7 }}>
-                      Ответить
-                    </Button>
-                    <Button size="small" variant="text" onClick={() => openComposeFromMessage('reply_all')} sx={{ textTransform: 'none', minWidth: 0, px: 0.7 }}>
-                      Всем
-                    </Button>
-                    <Button size="small" variant="text" onClick={() => openComposeFromMessage('forward')} sx={{ textTransform: 'none', minWidth: 0, px: 0.7 }}>
-                      Переслать
-                    </Button>
-                  </Stack>
-                  <Typography variant="caption" color="text.secondary" sx={{ maxWidth: { xs: '100%', sm: 280 } }}>
-                    Ответ отправляется отправителю выбранного сообщения.
-                  </Typography>
-                  <Button
-                    size="small"
-                    variant="contained"
-                    disabled={quickReplySending || !String(quickReplyBody || '').trim()}
-                    sx={{ alignSelf: { xs: 'stretch', sm: 'center' } }}
-                    onClick={async () => {
-                      if (!selectedMessage?.id) return;
-                      setQuickReplySending(true);
-                      try {
-                        const context = selectedMessage?.compose_context?.reply || {};
-                        const to = toRecipientEmails(context?.to);
-                        await mailAPI.sendMessage({
-                          from_mailbox_id: resolveComposeMailboxId(context?.mailbox_id || selectedMessage?.mailbox_id),
-                          to: to.length > 0 ? to : toRecipientEmails([getSenderEmail(selectedMessage)]),
-                          cc: toRecipientEmails(context?.cc),
-                          bcc: [],
-                          subject: normalizeComposeSubject('reply', context?.subject || selectedMessage.subject || ''),
-                          body: `<p>${String(quickReplyBody || '').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/\n/g, '<br/>')}</p>`,
-                          is_html: true,
-                          reply_to_message_id: selectedMessage.id,
-                        });
-                        setQuickReplyBody('');
-                        invalidateMailClientCache();
-                        await refreshList({ silent: true, force: true });
-                        await refreshFolderSummary();
-                      } catch (requestError) {
-                        if (!(await handleMailCredentialsRequired(requestError, 'Не удалось отправить быстрый ответ.'))) {
-                          setError(getMailErrorDetail(requestError, 'Не удалось отправить быстрый ответ.'));
-                        }
-                      } finally {
-                        setQuickReplySending(false);
-                      }
-                    }}
-                  >
-                    {quickReplySending ? 'Отправка...' : 'Отправить'}
-                  </Button>
-                </Stack>
-              </Stack>
-            </Box>
-          ) : null}
-        </Box>
+        <MailConversationReader
+          conversation={selectedConversation}
+          selectedMessage={selectedMessage}
+          scrollRef={conversationScrollRef}
+          ui={ui}
+          isMobile={isMobile}
+          quickReplyBody={quickReplyBody}
+          quickReplySending={quickReplySending}
+          onQuickReplyBodyChange={setQuickReplyBody}
+          onSendQuickReply={() => sendQuickReply(selectedMessage)}
+          onOpenComposeFromMessage={openComposeFromMessage}
+          onSelectMessage={setSelectedMessage}
+          isOwnMessage={isOwnConversationMessage}
+          getSenderDisplay={getSenderDisplay}
+          getAvatarColor={getAvatarColor}
+          getInitials={getInitials}
+          formatTime={formatTime}
+          formatFileSize={formatFileSize}
+          revealedRemoteImagesByMessageId={revealedRemoteImagesByMessageId}
+          mailRenderColorScheme={mailRenderColorScheme}
+          getRenderedContentSx={(options = {}) => getMailRenderedContentSx({ ...options, theme })}
+          onRevealRemoteImages={revealRemoteImagesForMessage}
+          onOpenAttachment={openAttachmentPreview}
+          onDownloadAttachment={downloadAttachmentFile}
+        />
       ) : (
-        <Box className="mail-scroll-hidden mail-safe-bottom" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', p: { xs: 1.35, md: 2 } }}>
-          {selectedMessageRenderResult.hasBlockedExternalImages ? (
-            <Alert
-              severity="info"
-              sx={{ mb: 1.2, borderRadius: ui.radiusMd }}
-              action={(
-                <Button
-                  color="inherit"
-                  size="small"
-                  onClick={() => revealRemoteImagesForMessage(selectedMessage?.id)}
-                >
-                  Показать изображения
-                </Button>
-              )}
-            >
-              В письме есть внешние изображения. Они скрыты до вашего разрешения.
-            </Alert>
-          ) : null}
-          {selectedMessageAttachments.length > 0 ? (
-            <Stack spacing={0.6} sx={{ mb: 1.2 }}>
-              <Typography variant="caption" color="text.secondary">{`${selectedMessageAttachments.length} вложений • ${selectedMessageAttachmentTotalSize}`}</Typography>
-              <Stack spacing={0.85}>
-                {selectedMessageAttachments.map((attachment, index) => {
-                  return (
-                    <MailAttachmentCard
-                      key={`${attachment?.id || attachment?.name || index}`}
-                      attachment={attachment}
-                      formatFileSize={formatFileSize}
-                      onOpen={() => openAttachmentPreview(selectedMessage, attachment)}
-                      onDownload={(event) => {
-                        event?.stopPropagation?.();
-                        downloadAttachmentFile(selectedMessage, attachment);
-                      }}
-                    />
-                  );
-                })}
-              </Stack>
-            </Stack>
-          ) : null}
-          {selectedMessageHasQuotedHistory ? (
-            <Button
-              onClick={() => setShowQuotedHistory((prev) => !prev)}
-              sx={{
-                mb: 1.1,
-                px: 0.2,
-                minWidth: 0,
-                textTransform: 'none',
-                color: ui.mutedText,
-                fontWeight: 700,
-              }}
-            >
-              {showQuotedHistory ? 'Скрыть историю переписки' : 'Показать историю переписки'}
-            </Button>
-          ) : null}
-          <Box
-            className={!selectedMessageQuotedHtml && selectedMessageUsesQuoteFallback && !showQuotedHistory ? 'mail-quote-collapsed' : ''}
-            sx={getMailRenderedContentSx({ ui, theme })}
-            dangerouslySetInnerHTML={{ __html: selectedMessageHtml || '<p style="color:#999">Нет содержимого</p>' }}
-          />
-          {selectedMessageQuotedHtml && showQuotedHistory ? (
-            <Box
-              sx={getMailRenderedContentSx({ ui, theme, quoted: true })}
-              dangerouslySetInnerHTML={{ __html: selectedMessageQuotedHtml }}
-            />
-          ) : null}
-        </Box>
+        <MailMessageReader
+          message={selectedMessage}
+          renderState={selectedMessageRenderState}
+          ui={ui}
+          formatFileSize={formatFileSize}
+          getRenderedContentSx={(options = {}) => getMailRenderedContentSx({ ...options, theme })}
+          onRevealRemoteImages={revealRemoteImagesForMessage}
+          onOpenAttachment={openAttachmentPreview}
+          onDownloadAttachment={downloadAttachmentFile}
+        />
       )}
     </>
   );
@@ -5618,10 +2766,7 @@ function Mail() {
   const mobilePreviewScreen = isMobileFullscreenPreview ? (
     <Box
       data-testid="mail-mobile-preview-screen"
-      onTouchStartCapture={handlePreviewEdgeTouchStart}
-      onTouchMoveCapture={handlePreviewEdgeTouchMove}
-      onTouchEndCapture={handlePreviewEdgeTouchEnd}
-      onTouchCancelCapture={handlePreviewEdgeTouchEnd}
+      {...previewEdgeTouchHandlers}
       sx={{
         position: 'fixed',
         top: 0,
@@ -5643,7 +2788,7 @@ function Mail() {
         overscrollBehaviorY: 'contain',
         transform: `translateX(${Math.max(0, Number(mobilePreviewSwipeOffset || 0))}px)`,
         transition: mobilePreviewSwipeTransition
-          ? `transform ${MAIL_MOBILE_EDGE_SWIPE_ANIMATION_MS}ms ease-out, box-shadow ${MAIL_MOBILE_EDGE_SWIPE_ANIMATION_MS}ms ease-out`
+          ? `transform ${mobilePreviewSwipeAnimationMs}ms ease-out, box-shadow ${mobilePreviewSwipeAnimationMs}ms ease-out`
           : 'none',
         boxShadow: mobilePreviewSwipeOffset > 0
           ? `-12px 0 28px ${alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.34 : 0.16)}`
@@ -5978,13 +3123,13 @@ function Mail() {
           <Suspense fallback={null}>
             <MailHeadersDialog
               open={headersOpen}
-              onClose={() => setHeadersOpen(false)}
-              headers={headersLoading ? { items: [{ name: 'Статус', value: 'Загрузка заголовков...' }] } : messageHeaders}
+              onClose={closeHeadersDialog}
+              headers={headersForDialog}
             />
           </Suspense>
         ) : null}
 
-        <Dialog open={folderDialogOpen} onClose={() => setFolderDialogOpen(false)} maxWidth="xs" fullWidth PaperProps={{ sx: getMailDialogPaperSx(ui) }}>
+        <Dialog open={folderDialogOpen} onClose={closeFolderDialog} maxWidth="xs" fullWidth PaperProps={{ sx: getMailDialogPaperSx(ui) }}>
           <DialogTitle sx={getMailDialogTitleSx(ui)}>{folderDialogMode === 'rename' ? 'Переименовать папку' : 'Новая папка'}</DialogTitle>
           <DialogContent dividers sx={getMailDialogContentSx(ui)}>
             <Stack spacing={1.2} sx={{ mt: 0.5 }}>
@@ -6004,7 +3149,7 @@ function Mail() {
             </Stack>
           </DialogContent>
           <DialogActions sx={getMailDialogActionsSx(ui)}>
-            <Button onClick={() => setFolderDialogOpen(false)}>Отмена</Button>
+            <Button onClick={closeFolderDialog}>Отмена</Button>
             <Button variant="contained" onClick={handleSubmitFolderDialog} disabled={folderDialogSaving}>
               {folderDialogSaving ? 'Сохранение...' : 'Сохранить'}
             </Button>
@@ -6067,10 +3212,10 @@ function Mail() {
           <Suspense fallback={null}>
             <MailAttachmentPreviewDialog
               attachmentPreview={attachmentPreview}
-              onClose={() => setAttachmentPreview(createEmptyAttachmentPreview())}
-              onDownload={() => { if (attachmentPreview?.blob) downloadBlobFile(attachmentPreview.blob, attachmentPreview.filename || 'attachment.bin', { preferOpenFallback: true }); }}
+              onClose={closeAttachmentPreview}
+              onDownload={downloadAttachmentPreview}
               formatFileSize={formatFileSize}
-              maxPreviewFileBytes={MAX_PREVIEW_FILE_BYTES}
+              maxPreviewFileBytes={maxPreviewFileBytes}
             />
           </Suspense>
         ) : null}
@@ -6079,11 +3224,11 @@ function Mail() {
           <Suspense fallback={null}>
             <MailSignatureDialog
               open={signatureOpen}
-              onClose={() => setSignatureOpen(false)}
+              onClose={closeSignatureEditor}
               signatureHtml={signatureHtml}
               onSignatureChange={setSignatureHtml}
               signatureSaving={signatureSaving}
-              onClear={() => setSignatureHtml('')}
+              onClear={clearSignature}
               onSave={handleSaveSignature}
             />
           </Suspense>
@@ -6117,98 +3262,24 @@ function Mail() {
           </Suspense>
         ) : null}
 
-        <Dialog open={itOpen} onClose={() => setItOpen(false)} maxWidth="md" fullWidth PaperProps={{ sx: getMailDialogPaperSx(ui) }}>
-          <DialogTitle sx={getMailDialogTitleSx(ui, { fontWeight: 700 })}>Заявка в IT</DialogTitle>
-          <DialogContent dividers sx={getMailDialogContentSx(ui)}>
-            <Stack spacing={1.1} sx={{ mt: 0.5 }}>
-              <FormControl size="small" fullWidth>
-                <InputLabel>Шаблон</InputLabel>
-                <Select
-                  label="Шаблон"
-                  value={itTemplateId}
-                  onChange={(event) => {
-                    const value = String(event.target.value || '');
-                    setItTemplateId(value);
-                    const found = templates.find((item) => String(item.id) === value);
-                    const defaults = {};
-                    (Array.isArray(found?.fields) ? found.fields : []).forEach((field) => { defaults[String(field?.key || '')] = String(field?.default_value || ''); });
-                    setItFieldValues(defaults);
-                  }}
-                >
-                  <MenuItem value="">Выберите шаблон</MenuItem>
-                  {templates.map((item) => <MenuItem key={item.id} value={String(item.id)}>{item.title || item.code}</MenuItem>)}
-                </Select>
-              </FormControl>
-              {Array.isArray(activeTemplate?.fields) ? activeTemplate.fields.map((field) => (
-                <TextField
-                  key={String(field?.key || '')}
-                  size="small"
-                  label={String(field?.label || field?.key || 'Поле')}
-                  value={String(itFieldValues[String(field?.key || '')] || '')}
-                  onChange={(event) => setItFieldValues((prev) => ({ ...prev, [String(field?.key || '')]: event.target.value }))}
-                  fullWidth
-                />
-              )) : null}
-            </Stack>
-          </DialogContent>
-          <DialogActions sx={getMailDialogActionsSx(ui)}>
-            <Button onClick={() => { setItTemplateId(''); setItFieldValues({}); }} sx={{ textTransform: 'none' }}>Очистить</Button>
-            <Button onClick={() => setItOpen(false)} sx={{ textTransform: 'none' }}>Отмена</Button>
-            <Button
-              variant="contained"
-              onClick={async () => {
-                if (!itTemplateId) { setError('Выберите шаблон IT-заявки.'); return; }
-                try {
-                  await mailAPI.sendItRequest({ template_id: itTemplateId, fields: itFieldValues || {} });
-                  setItOpen(false);
-                  setMessage('IT-заявка отправлена.');
-                } catch (requestError) {
-                  if (!(await handleMailCredentialsRequired(requestError, 'Не удалось отправить IT-заявку.'))) {
-                    setError(getMailErrorDetail(requestError, 'Не удалось отправить IT-заявку.'));
-                  }
-                }
-              }}
-              sx={{ textTransform: 'none', borderRadius: '8px', fontWeight: 600 }}
-            >
-              Отправить
-            </Button>
-          </DialogActions>
-        </Dialog>
+        <MailItRequestDialog
+          open={itOpen}
+          ui={ui}
+          templates={templates}
+          templateId={itTemplateId}
+          fieldValues={itFieldValues}
+          activeTemplate={activeTemplate}
+          sending={itSending}
+          onClose={closeItRequest}
+          onClear={clearItRequest}
+          onTemplateChange={selectItTemplate}
+          onFieldValueChange={updateItFieldValue}
+          onSubmit={submitItRequest}
+        />
 
         {templatesOpen ? (
           <Suspense fallback={null}>
-            <MailTemplatesDialog
-              open={templatesOpen}
-              onClose={() => setTemplatesOpen(false)}
-              templates={templates}
-              startCreateTemplate={startCreateTemplate}
-              templateEditId={templateEditId}
-              startEditTemplate={startEditTemplate}
-              templateCode={templateCode}
-              setTemplateCode={setTemplateCode}
-              templateTitle={templateTitle}
-              setTemplateTitle={setTemplateTitle}
-              templateCategory={templateCategory}
-              setTemplateCategory={setTemplateCategory}
-              templateSubject={templateSubject}
-              setTemplateSubject={setTemplateSubject}
-              templateBody={templateBody}
-              setTemplateBody={setTemplateBody}
-              addTemplateField={addTemplateField}
-              templateFields={templateFields}
-              moveTemplateField={moveTemplateField}
-              removeTemplateField={removeTemplateField}
-              updateTemplateField={updateTemplateField}
-              normalizeFieldKey={normalizeTemplateFieldKey}
-              normalizeFieldOptions={normalizeTemplateFieldOptions}
-              fieldTypes={TEMPLATE_FIELD_TYPES}
-              templateVariableHints={templateVariableHints}
-              templateEditorPreview={templateEditorPreview}
-              saveTemplate={saveTemplate}
-              templateSaving={templateSaving}
-              deleteTemplate={deleteTemplate}
-              templateDeleting={templateDeleting}
-            />
+            <MailTemplatesDialog {...templateDialogProps} />
           </Suspense>
         ) : null}
       </PageShell>

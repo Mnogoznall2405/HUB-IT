@@ -67,7 +67,7 @@ Backend will be available at:
 
 To enable unified internal storage for users/sessions/settings/chat and `/api/v1/json/*` runtime data, configure `APP_DATABASE_URL` in the root `.env`.
 
-Production boundary: when `APP_ENV=production`, `WEB-itinvent` must use `APP_DATABASE_URL` for JSON runtime storage. The legacy SQLite JSON store is supported only for development/test compatibility and is not used as a production fallback.
+Production boundary: when `APP_ENV=production`, `WEB-itinvent` must use `APP_DATABASE_URL` for JSON and Mail runtime storage. The legacy SQLite JSON and Mail stores are supported only for development/test compatibility and are not used as production fallbacks.
 
 To migrate current identity/settings data from the internal SQLite store:
 
@@ -112,11 +112,18 @@ To migrate env settings audit history from the legacy SQLite audit file into Pos
 python scripts/migrate_env_audit_sqlite_to_postgres.py --source-db-path data/env_settings_audit.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
 ```
 
-To migrate mail metadata from the internal SQLite database into PostgreSQL:
+To migrate mail runtime metadata from the internal SQLite database into `APP_DATABASE_URL`, back up the current SQLite file and PostgreSQL database first, then run Alembic, dry-run the migration, execute it, and restart the backend:
 
 ```bash
-python scripts/migrate_mail_sqlite_to_postgres.py --source-db-path data/local_store.db --target-database-url postgresql+psycopg://user:pass@host:5432/itinvent
+cd backend
+alembic -c alembic.ini upgrade head
+python scripts/migrate_mail_sqlite_to_app_db.py --database-url postgresql+psycopg://user:pass@host:5432/itinvent --dry-run
+python scripts/migrate_mail_sqlite_to_app_db.py --database-url postgresql+psycopg://user:pass@host:5432/itinvent --execute
+pm2 restart itinvent-backend --update-env
+curl http://127.0.0.1:8001/health
 ```
+
+The mail migration copies only runtime metadata tables: mailbox settings, templates, favorites, draft context, restore hints, preferences, read-state/logs. Exchange remains the source for actual messages, and encrypted mailbox passwords are moved as ciphertext.
 
 To migrate MFU runtime/page snapshot state from the internal SQLite database into PostgreSQL:
 

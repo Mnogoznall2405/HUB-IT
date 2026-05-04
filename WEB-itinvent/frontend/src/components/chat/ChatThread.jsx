@@ -879,6 +879,106 @@ const ChatMarkdownBody = memo(function ChatMarkdownBody({
   );
 });
 
+function ChatBubbleMeta({
+  layout = 'bottom',
+  message,
+  ui,
+  receiptColor,
+  deliveryStatus,
+  isSending,
+  isOwnDirect,
+  isOwnGroup,
+  readByCount,
+  compactMobile,
+  onOpenReads,
+  onReplyMessage,
+  showUploadProgress = false,
+  bottomOffset,
+}) {
+  const isInlineLayout = layout === 'inline';
+  const isMediaLayout = layout === 'media';
+  const uploadProgress = Number(message?.uploadProgress || 0);
+  const shouldShowUploadProgress = showUploadProgress
+    && isSending
+    && Number.isFinite(uploadProgress)
+    && uploadProgress > 0
+    && uploadProgress < 100;
+
+  return (
+    <Stack
+      data-testid={isInlineLayout ? 'chat-bubble-meta-inline' : isMediaLayout ? 'chat-bubble-meta-media' : 'chat-bubble-meta-bottom'}
+      data-chat-meta-layout={layout}
+      direction="row"
+      spacing={0.3}
+      justifyContent="flex-end"
+      alignItems="center"
+      sx={{
+        position: 'absolute',
+        right: isMediaLayout ? 10 : (isInlineLayout ? 10 : 12),
+        bottom: bottomOffset ?? (isMediaLayout ? 10 : (isInlineLayout ? 4 : 5)),
+        px: isMediaLayout ? 0.8 : 0,
+        py: isMediaLayout ? 0.45 : 0,
+        borderRadius: isMediaLayout ? 999 : 0,
+        bgcolor: isMediaLayout ? 'rgba(2, 6, 23, 0.62)' : 'transparent',
+        backdropFilter: isMediaLayout ? 'blur(12px)' : 'none',
+        boxShadow: isMediaLayout ? '0 6px 18px rgba(2, 6, 23, 0.24)' : 'none',
+        pointerEvents: isInlineLayout ? 'none' : 'auto',
+      }}
+    >
+      {false && !isInlineLayout && !isMediaLayout && isOwnGroup && readByCount > 0 ? (
+        <Typography
+          component="button"
+          type="button"
+          onClick={() => onOpenReads?.(message)}
+          sx={{
+            appearance: 'none',
+            border: 'none',
+            bgcolor: 'transparent',
+            p: 0,
+            mr: 0.3,
+            cursor: 'pointer',
+            fontSize: CHAT_FONT_SIZES.meta,
+            fontWeight: 700,
+            color: message?.is_own ? alpha('#fff', 0.92) : ui.accentText,
+            lineHeight: 1,
+            fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+          }}
+        >
+          {`Просмотрели: ${readByCount}`}
+        </Typography>
+      ) : null}
+
+      {false && !compactMobile && !isInlineLayout && !isMediaLayout ? (
+        <Tooltip title="Ответить">
+          <span>
+            <IconButton size="small" aria-label="Ответить" onClick={() => onReplyMessage?.(message)} sx={{ p: 0, width: 18, height: 18, color: receiptColor }}>
+              <ReplyRoundedIcon sx={{ fontSize: 15 }} />
+            </IconButton>
+          </span>
+        </Tooltip>
+      ) : null}
+
+      <Typography variant="caption" title={formatFullDate(message?.created_at)} sx={{ color: receiptColor, fontSize: CHAT_FONT_SIZES.meta, lineHeight: 1, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+        {formatShortTime(message?.created_at)}
+      </Typography>
+
+      {shouldShowUploadProgress ? (
+        <Typography variant="caption" sx={{ color: receiptColor, fontSize: CHAT_FONT_SIZES.meta, lineHeight: 1, fontWeight: 700, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+          {`${uploadProgress}%`}
+        </Typography>
+      ) : null}
+
+      {isOwnDirect ? (
+        isSending
+          ? <CircularProgress size={13} thickness={5} sx={{ color: receiptColor }} />
+          : deliveryStatus === 'read'
+            ? <DoneAllRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
+            : <DoneRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
+      ) : null}
+    </Stack>
+  );
+}
+
 export function ChatBubble({
   conversationKind,
   message,
@@ -1144,85 +1244,23 @@ export function ChatBubble({
     : { xs: emojiOnlyCount ? '100%' : '85vw', md: emojiOnlyCount ? '100%' : '65%' };
   const bubbleWidth = hasMarkdownTable ? { xs: 'calc(100vw - 22px)', md: 'auto' } : 'auto';
 
-  const renderMessageMeta = (layout = 'bottom') => {
-    const isInlineLayout = layout === 'inline';
-    const isMediaLayout = layout === 'media';
-    const uploadProgress = Number(message?.uploadProgress || 0);
-    const showUploadProgress = isSending && Number.isFinite(uploadProgress) && uploadProgress > 0 && uploadProgress < 100;
-    return (
-      <Stack
-        data-testid={isInlineLayout ? 'chat-bubble-meta-inline' : isMediaLayout ? 'chat-bubble-meta-media' : 'chat-bubble-meta-bottom'}
-        data-chat-meta-layout={layout}
-        direction="row"
-        spacing={0.3}
-        justifyContent="flex-end"
-        alignItems="center"
-        sx={{
-          position: 'absolute',
-          right: isMediaLayout ? 10 : (isInlineLayout ? 10 : 12),
-          bottom: isMediaLayout ? 10 : (isInlineLayout ? 4 : 5),
-          px: isMediaLayout ? 0.8 : 0,
-          py: isMediaLayout ? 0.45 : 0,
-          borderRadius: isMediaLayout ? 999 : 0,
-          bgcolor: isMediaLayout ? 'rgba(2, 6, 23, 0.62)' : 'transparent',
-          backdropFilter: isMediaLayout ? 'blur(12px)' : 'none',
-          boxShadow: isMediaLayout ? '0 6px 18px rgba(2, 6, 23, 0.24)' : 'none',
-          pointerEvents: isInlineLayout ? 'none' : 'auto',
-        }}
-      >
-        {false && !isInlineLayout && !isMediaLayout && isOwnGroup && readByCount > 0 ? (
-          <Typography
-            component="button"
-            type="button"
-            onClick={() => onOpenReads?.(message)}
-            sx={{
-              appearance: 'none',
-              border: 'none',
-              bgcolor: 'transparent',
-              p: 0,
-              mr: 0.3,
-              cursor: 'pointer',
-              fontSize: CHAT_FONT_SIZES.meta,
-              fontWeight: 700,
-              color: message?.is_own ? alpha('#fff', 0.92) : ui.accentText,
-              lineHeight: 1,
-              fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-            }}
-          >
-            {`Просмотрели: ${readByCount}`}
-          </Typography>
-        ) : null}
-
-        {false && !compactMobile && !isInlineLayout && !isMediaLayout ? (
-          <Tooltip title="Ответить">
-            <span>
-              <IconButton size="small" aria-label="Ответить" onClick={() => onReplyMessage?.(message)} sx={{ p: 0, width: 18, height: 18, color: receiptColor }}>
-                <ReplyRoundedIcon sx={{ fontSize: 15 }} />
-              </IconButton>
-            </span>
-          </Tooltip>
-        ) : null}
-
-        <Typography variant="caption" title={formatFullDate(message?.created_at)} sx={{ color: receiptColor, fontSize: CHAT_FONT_SIZES.meta, lineHeight: 1, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
-          {formatShortTime(message?.created_at)}
-        </Typography>
-
-        {showUploadProgress ? (
-          <Typography variant="caption" sx={{ color: receiptColor, fontSize: CHAT_FONT_SIZES.meta, lineHeight: 1, fontWeight: 700, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
-            {`${uploadProgress}%`}
-          </Typography>
-        ) : null}
-
-        {isOwnDirect ? (
-          isSending
-            ? <CircularProgress size={13} thickness={5} sx={{ color: receiptColor }} />
-            : deliveryStatus === 'read'
-              ? <DoneAllRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
-              : <DoneRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
-        ) : null}
-      </Stack>
-    );
-  };
+  const renderMessageMeta = (layout = 'bottom') => (
+    <ChatBubbleMeta
+      layout={layout}
+      message={message}
+      ui={ui}
+      receiptColor={receiptColor}
+      deliveryStatus={deliveryStatus}
+      isSending={isSending}
+      isOwnDirect={isOwnDirect}
+      isOwnGroup={isOwnGroup}
+      readByCount={readByCount}
+      compactMobile={compactMobile}
+      onOpenReads={onOpenReads}
+      onReplyMessage={onReplyMessage}
+      showUploadProgress
+    />
+  );
 
   return (
     <Box
@@ -1603,65 +1641,21 @@ export function ChatBubble({
         />
 
         {!showMediaMetaOverlay ? (
-        <Stack
-          data-testid={inlineMeta ? 'chat-bubble-meta-inline' : 'chat-bubble-meta-bottom'}
-          data-chat-meta-layout={inlineMeta ? 'inline' : 'bottom'}
-          direction="row"
-          spacing={0.3}
-          justifyContent="flex-end"
-          alignItems="center"
-          sx={{
-            position: 'absolute',
-            right: inlineMeta ? 10 : 12,
-            bottom: 7,
-            pointerEvents: inlineMeta ? 'none' : 'auto',
-          }}
-        >
-          {false && !inlineMeta && isOwnGroup && readByCount > 0 ? (
-            <Typography
-              component="button"
-              type="button"
-              onClick={() => onOpenReads?.(message)}
-              sx={{
-                appearance: 'none',
-                border: 'none',
-                bgcolor: 'transparent',
-                p: 0,
-                mr: 0.3,
-                cursor: 'pointer',
-                fontSize: CHAT_FONT_SIZES.meta,
-                fontWeight: 700,
-                color: message?.is_own ? alpha('#fff', 0.92) : ui.accentText,
-                lineHeight: 1,
-                fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-              }}
-            >
-              {`Просмотрели: ${readByCount}`}
-            </Typography>
-          ) : null}
-
-          {false && !compactMobile && !inlineMeta ? (
-            <Tooltip title="Ответить">
-              <span>
-                <IconButton size="small" aria-label="Ответить" onClick={() => onReplyMessage?.(message)} sx={{ p: 0, width: 18, height: 18, color: receiptColor }}>
-                  <ReplyRoundedIcon sx={{ fontSize: 15 }} />
-                </IconButton>
-              </span>
-            </Tooltip>
-          ) : null}
-
-          <Typography variant="caption" title={formatFullDate(message?.created_at)} sx={{ color: receiptColor, fontSize: CHAT_FONT_SIZES.meta, lineHeight: 1, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
-            {formatShortTime(message?.created_at)}
-          </Typography>
-
-          {isOwnDirect ? (
-            isSending
-              ? <CircularProgress size={13} thickness={5} sx={{ color: receiptColor }} />
-              : deliveryStatus === 'read'
-                ? <DoneAllRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
-                : <DoneRoundedIcon sx={{ fontSize: 15, color: receiptColor }} />
-          ) : null}
-        </Stack>
+          <ChatBubbleMeta
+            layout={inlineMeta ? 'inline' : 'bottom'}
+            message={message}
+            ui={ui}
+            receiptColor={receiptColor}
+            deliveryStatus={deliveryStatus}
+            isSending={isSending}
+            isOwnDirect={isOwnDirect}
+            isOwnGroup={isOwnGroup}
+            readByCount={readByCount}
+            compactMobile={compactMobile}
+            onOpenReads={onOpenReads}
+            onReplyMessage={onReplyMessage}
+            bottomOffset={7}
+          />
         ) : null}
       </Box>
     </Box>

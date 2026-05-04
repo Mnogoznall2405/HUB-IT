@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from contextlib import ExitStack
 import gzip
-import io
 import json
 import logging
 import mimetypes
@@ -22,11 +21,12 @@ from typing import Any, Optional
 from uuid import uuid4
 
 from fastapi import UploadFile
-from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
+from PIL import UnidentifiedImageError
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 
+from backend.chat.attachment_media import ChatAttachmentMedia
 from backend.chat.db import (
     ChatConfigurationError,
     chat_session,
@@ -44,6 +44,7 @@ from backend.chat.models import (
     ChatMessageRead,
     ChatPushOutbox,
 )
+from backend.chat.notification_planner import build_chat_notification_recipient_plans
 from backend.chat.push_service import chat_push_service
 from backend.services.hub_service import hub_service
 from backend.services.session_service import session_service
@@ -330,6 +331,10 @@ class ChatService:
         self._runtime_status: Optional[ChatRuntimeStatus] = None
         self._attachments_root = Path(hub_service.data_dir) / "chat_message_attachments"
         self._attachments_root.mkdir(parents=True, exist_ok=True)
+        self._attachment_media = ChatAttachmentMedia(
+            attachments_root=lambda: self._attachments_root,
+            logger=logger,
+        )
         self._upload_sessions_root = Path(hub_service.data_dir) / "chat_upload_sessions"
         self._upload_sessions_root.mkdir(parents=True, exist_ok=True)
         self._cache_lock = RLock()
@@ -4509,38 +4514,12 @@ class ChatService:
         attachments: list[ChatMessageAttachment],
         users_by_id: dict[int, dict],
     ) -> dict:
-        sender = users_by_id.get(int(message.sender_user_id)) or {}
-        sender_name = self._get_short_user_name(sender) or f"user-{message.sender_user_id}"
-        message_kind = self._normalize_message_kind(getattr(message, "kind", "text"))
-        is_deleted = bool(getattr(message, "is_deleted", False))
-        body = (
-            CHAT_DELETED_MESSAGE_BODY
-            if is_deleted
-            else _truncate_text(_strip_markdown_preview(getattr(message, "body", "")), limit=120)
+        return self._message_reference_preview_payload(
+            message=message,
+            attachments=attachments,
+            users_by_id=users_by_id,
+            sender_fallback={},
         )
-        task_title = None
-        attachments_count = 0 if is_deleted else len(list(attachments or []))
-        if is_deleted:
-            task_title = None
-        elif message_kind == "task_share":
-            task_preview = self._deserialize_task_preview(getattr(message, "task_preview_json", None))
-            task_title = _normalize_text((task_preview or {}).get("title")) or None
-            body = task_title or "Карточка задачи"
-        elif message_kind == "file" and not body:
-            if attachments_count == 1:
-                body = _normalize_text(attachments[0].file_name) or "Файл"
-            elif attachments_count > 1:
-                body = f"Файлы: {attachments_count}"
-            else:
-                body = "Файлы"
-        return {
-            "id": message.id,
-            "sender_name": sender_name,
-            "kind": message_kind,
-            "body": body,
-            "task_title": task_title,
-            "attachments_count": attachments_count,
-        }
 
     def _forward_preview_payload(
         self,
@@ -4549,11 +4528,26 @@ class ChatService:
         attachments: list[ChatMessageAttachment],
         users_by_id: dict[int, dict],
     ) -> dict:
-        sender = users_by_id.get(int(message.sender_user_id)) or {
-            "id": int(message.sender_user_id),
-            "username": f"user-{message.sender_user_id}",
-            "full_name": None,
-        }
+        return self._message_reference_preview_payload(
+            message=message,
+            attachments=attachments,
+            users_by_id=users_by_id,
+            sender_fallback={
+                "id": int(message.sender_user_id),
+                "username": f"user-{message.sender_user_id}",
+                "full_name": None,
+            },
+        )
+
+    def _message_reference_preview_payload(
+        self,
+        *,
+        message: ChatMessage,
+        attachments: list[ChatMessageAttachment],
+        users_by_id: dict[int, dict],
+        sender_fallback: dict,
+    ) -> dict:
+        sender = users_by_id.get(int(message.sender_user_id)) or sender_fallback
         sender_name = self._get_short_user_name(sender) or f"user-{message.sender_user_id}"
         message_kind = self._normalize_message_kind(getattr(message, "kind", "text"))
         is_deleted = bool(getattr(message, "is_deleted", False))
@@ -5169,49 +5163,21 @@ class ChatService:
         return result
 
     def _build_attachment_variant_url(self, *, message_id: str, attachment_id: str, variant: str) -> str:
-        return (
-            f"/api/v1/chat/messages/{message_id}/attachments/{attachment_id}/file"
-            f"?inline=1&variant={variant}"
+        return self._attachment_media.build_variant_url(
+            message_id=message_id,
+            attachment_id=attachment_id,
+            variant=variant,
         )
 
     def _build_attachment_variant_urls(self, attachment: ChatMessageAttachment) -> dict[str, str]:
-        mime_type = _normalize_text(getattr(attachment, "mime_type", None)).lower()
-        message_id = _normalize_text(getattr(attachment, "message_id", None))
-        attachment_id = _normalize_text(getattr(attachment, "id", None))
-        if not message_id or not attachment_id:
-            return {}
-        if mime_type.startswith("image/"):
-            return {
-                "thumb": self._build_attachment_variant_url(
-                    message_id=message_id,
-                    attachment_id=attachment_id,
-                    variant="thumb",
-                ),
-                "preview": self._build_attachment_variant_url(
-                    message_id=message_id,
-                    attachment_id=attachment_id,
-                    variant="preview",
-                ),
-            }
-        if mime_type.startswith("video/"):
-            return {
-                "poster": self._build_attachment_variant_url(
-                    message_id=message_id,
-                    attachment_id=attachment_id,
-                    variant="poster",
-                ),
-            }
-        return {}
+        return self._attachment_media.build_variant_urls(attachment)
 
     def _resolve_attachment_variant_path(self, *, conversation_id: str, attachment_id: str, variant: str) -> Path:
-        variants_dir = (self._attachments_root / _normalize_text(conversation_id) / ".variants").resolve()
-        variants_dir.mkdir(parents=True, exist_ok=True)
-        file_path = (variants_dir / f"{Path(_normalize_text(attachment_id)).name}-{_normalize_text(variant)}.png").resolve()
-        try:
-            file_path.relative_to(self._attachments_root.resolve())
-        except ValueError as exc:
-            raise ValueError("Invalid attachment variant path") from exc
-        return file_path
+        return self._attachment_media.resolve_variant_path(
+            conversation_id=conversation_id,
+            attachment_id=attachment_id,
+            variant=variant,
+        )
 
     def _ensure_image_variant(
         self,
@@ -5221,50 +5187,12 @@ class ChatService:
         source_path: Path,
         variant: str,
     ) -> dict[str, str]:
-        max_dimension = int(_CHAT_ATTACHMENT_VARIANT_MAX_DIMENSIONS.get(variant, _CHAT_ATTACHMENT_VARIANT_MAX_DIMENSIONS["preview"]))
-        variant_path = self._resolve_attachment_variant_path(
+        return self._attachment_media.ensure_image_variant(
             conversation_id=conversation_id,
-            attachment_id=attachment.id,
+            attachment=attachment,
+            source_path=source_path,
             variant=variant,
         )
-        if variant_path.exists() and variant_path.is_file():
-            logger.info("chat.media_variant attachment_id=%s variant=%s hit=1", attachment.id, variant)
-            return {
-                "path": str(variant_path),
-                "file_name": variant_path.name,
-                "mime_type": "image/png",
-            }
-
-        try:
-            with Image.open(source_path) as image:
-                image = ImageOps.exif_transpose(image)
-                resample = getattr(Image, "Resampling", Image).LANCZOS
-                image.thumbnail((max_dimension, max_dimension), resample)
-                if image.mode not in {"RGB", "RGBA"}:
-                    image = image.convert("RGBA" if "A" in image.getbands() else "RGB")
-                image.save(variant_path, format="PNG", optimize=True)
-            logger.info("chat.media_variant attachment_id=%s variant=%s hit=0 created", attachment.id, variant)
-            return {
-                "path": str(variant_path),
-                "file_name": variant_path.name,
-                "mime_type": "image/png",
-            }
-        except Exception as exc:
-            logger.error(
-                "chat.media_variant_error attachment_id=%s variant=%s conversation_id=%s error=%s",
-                attachment.id,
-                variant,
-                conversation_id,
-                str(exc),
-                exc_info=True,
-            )
-            # Delete corrupted variant file if it exists
-            try:
-                if variant_path.exists():
-                    variant_path.unlink()
-            except Exception:
-                pass
-            raise
 
     def _ensure_video_poster_variant(
         self,
@@ -5272,120 +5200,32 @@ class ChatService:
         conversation_id: str,
         attachment: ChatMessageAttachment,
     ) -> dict[str, str]:
-        variant = "poster"
-        variant_path = self._resolve_attachment_variant_path(
+        return self._attachment_media.ensure_video_poster_variant(
             conversation_id=conversation_id,
-            attachment_id=attachment.id,
-            variant=variant,
+            attachment=attachment,
         )
-        if variant_path.exists() and variant_path.is_file():
-            logger.info("chat.media_variant attachment_id=%s variant=%s hit=1", attachment.id, variant)
-            return {
-                "path": str(variant_path),
-                "file_name": variant_path.name,
-                "mime_type": "image/png",
-            }
-
-        width = max(320, int(getattr(attachment, "width", 0) or 0) or 720)
-        height = max(180, int(getattr(attachment, "height", 0) or 0) or int(round(width * 9 / 16)))
-        canvas = Image.new("RGBA", (width, height), "#0f172a")
-        draw = ImageDraw.Draw(canvas)
-        draw.rounded_rectangle((0, 0, width, height), radius=max(18, width // 18), fill="#0f172a")
-        draw.rounded_rectangle(
-            (max(12, width // 28), max(12, height // 28), width - max(12, width // 28), height - max(12, height // 28)),
-            radius=max(14, width // 22),
-            outline="#475569",
-            width=max(2, width // 240),
-        )
-        triangle_width = max(44, width // 7)
-        triangle_height = max(52, height // 5)
-        center_x = width // 2
-        center_y = height // 2
-        draw.polygon(
-            [
-                (center_x - triangle_width // 3, center_y - triangle_height // 2),
-                (center_x - triangle_width // 3, center_y + triangle_height // 2),
-                (center_x + triangle_width // 2, center_y),
-            ],
-            fill="#e2e8f0",
-        )
-        canvas.save(variant_path, format="PNG", optimize=True)
-        logger.info("chat.media_variant attachment_id=%s variant=%s hit=0", attachment.id, variant)
-        return {
-            "path": str(variant_path),
-            "file_name": variant_path.name,
-            "mime_type": "image/png",
-        }
 
     def _attachment_to_payload(self, attachment: ChatMessageAttachment) -> dict:
-        return {
-            "id": attachment.id,
-            "file_name": attachment.file_name,
-            "mime_type": _normalize_text(attachment.mime_type) or None,
-            "file_size": int(attachment.file_size or 0),
-            "width": int(attachment.width) if attachment.width is not None else None,
-            "height": int(attachment.height) if attachment.height is not None else None,
-            "variant_urls": self._build_attachment_variant_urls(attachment),
-            "created_at": _iso(attachment.created_at) or "",
-        }
+        return self._attachment_media.to_payload(attachment)
 
     @staticmethod
     def _get_attachment_kind(mime_type: object) -> str:
-        normalized_mime_type = _normalize_text(mime_type).lower()
-        if normalized_mime_type.startswith("image/"):
-            return "image"
-        if normalized_mime_type.startswith("video/"):
-            return "video"
-        if normalized_mime_type.startswith("audio/"):
-            return "audio"
-        return "file"
+        return ChatAttachmentMedia.get_kind(mime_type)
 
     def _normalize_attachment_kind_filter(self, value: object) -> str:
-        normalized = _normalize_text(value).lower()
-        if normalized in {"image", "video", "file", "audio"}:
-            return normalized
-        raise ValueError("Attachment kind must be one of: image, video, file, audio")
+        return ChatAttachmentMedia.normalize_kind_filter(value)
 
     def _apply_attachment_kind_filter(self, *, query, kind: str):
-        if kind == "image":
-            return query.where(ChatMessageAttachment.mime_type.like("image/%"))
-        if kind == "video":
-            return query.where(ChatMessageAttachment.mime_type.like("video/%"))
-        if kind == "audio":
-            return query.where(ChatMessageAttachment.mime_type.like("audio/%"))
-        return query.where(
-            or_(
-                ChatMessageAttachment.mime_type.is_(None),
-                and_(
-                    ChatMessageAttachment.mime_type.not_like("image/%"),
-                    ChatMessageAttachment.mime_type.not_like("video/%"),
-                    ChatMessageAttachment.mime_type.not_like("audio/%"),
-                ),
-            )
-        )
+        return ChatAttachmentMedia.apply_kind_filter(query=query, kind=kind)
 
     def _conversation_attachment_to_payload(self, attachment: ChatMessageAttachment, *, kind: Optional[str] = None) -> dict:
-        resolved_kind = kind or self._get_attachment_kind(attachment.mime_type)
-        return {
-            "id": attachment.id,
-            "message_id": attachment.message_id,
-            "kind": resolved_kind,
-            "file_name": attachment.file_name,
-            "mime_type": _normalize_text(attachment.mime_type) or None,
-            "file_size": int(attachment.file_size or 0),
-            "width": int(attachment.width) if attachment.width is not None else None,
-            "height": int(attachment.height) if attachment.height is not None else None,
-            "variant_urls": self._build_attachment_variant_urls(attachment),
-            "created_at": _iso(attachment.created_at) or "",
-        }
+        return self._attachment_media.conversation_to_payload(attachment, kind=kind)
 
     def _resolve_attachment_path(self, *, conversation_id: str, storage_name: str) -> Path:
-        file_path = (self._attachments_root / _normalize_text(conversation_id) / Path(_normalize_text(storage_name)).name).resolve()
-        try:
-            file_path.relative_to(self._attachments_root.resolve())
-        except ValueError as exc:
-            raise ValueError("Invalid attachment path") from exc
-        return file_path
+        return self._attachment_media.resolve_path(
+            conversation_id=conversation_id,
+            storage_name=storage_name,
+        )
 
     def _repair_gzipped_image_attachment_if_needed(
         self,
@@ -5395,62 +5235,12 @@ class ChatService:
         attachment: ChatMessageAttachment,
         file_path: Path,
     ) -> Path:
-        mime_type = _normalize_text(getattr(attachment, "mime_type", None)).lower()
-        if not mime_type.startswith("image/"):
-            return file_path
-        if not file_path.exists() or not file_path.is_file():
-            return file_path
-
-        try:
-            with file_path.open("rb") as source:
-                header = source.read(3)
-        except OSError:
-            return file_path
-
-        if header != b"\x1f\x8b\x08":
-            return file_path
-
-        temp_path = file_path.with_name(f"{file_path.name}.{uuid4().hex}.repair")
-        try:
-            compressed_payload = file_path.read_bytes()
-            decoded_payload = gzip.decompress(compressed_payload)
-            with Image.open(io.BytesIO(decoded_payload)) as image:
-                validated_image = ImageOps.exif_transpose(image)
-                try:
-                    validated_image.load()
-                    width = int(validated_image.size[0])
-                    height = int(validated_image.size[1])
-                finally:
-                    if validated_image is not image:
-                        validated_image.close()
-
-            with temp_path.open("wb") as target:
-                target.write(decoded_payload)
-            temp_path.replace(file_path)
-
-            attachment.file_size = len(decoded_payload)
-            attachment.width = width if width > 0 else None
-            attachment.height = height if height > 0 else None
-            session.add(attachment)
-            logger.warning(
-                "chat.attachment_storage_repaired attachment_id=%s conversation_id=%s bytes=%d width=%s height=%s",
-                attachment.id,
-                conversation_id,
-                len(decoded_payload),
-                attachment.width,
-                attachment.height,
-            )
-        except (OSError, EOFError, gzip.BadGzipFile, UnidentifiedImageError):
-            logger.exception(
-                "chat.attachment_storage_repair_failed attachment_id=%s conversation_id=%s",
-                getattr(attachment, "id", ""),
-                conversation_id,
-            )
-            try:
-                temp_path.unlink(missing_ok=True)
-            except Exception:
-                pass
-        return file_path
+        return self._attachment_media.repair_gzipped_image_if_needed(
+            session=session,
+            conversation_id=conversation_id,
+            attachment=attachment,
+            file_path=file_path,
+        )
 
     def _mark_sender_message_seen(
         self,
@@ -5622,12 +5412,6 @@ class ChatService:
         }
         if not normalized_conversation_id or not normalized_message_id:
             return stats
-        mentioned_user_id_set = {
-            int(item)
-            for item in list(mentioned_user_ids or [])
-            if int(item) > 0 and int(item) != int(sender_user_id)
-        }
-
         member_ids: list[int] = []
         try:
             with chat_session() as session:
@@ -5657,6 +5441,22 @@ class ChatService:
                 sender_name = _normalize_text(sender.get("full_name")) or _normalize_text(sender.get("username")) or "Коллега"
                 base_title = _normalize_text(title) or "Новое сообщение в чате"
                 base_body = _normalize_text(body)
+                recipient_plans = build_chat_notification_recipient_plans(
+                    sender_user_id=int(sender_user_id),
+                    conversation_kind=conversation.kind,
+                    conversation_title=conversation.title,
+                    member_ids=member_ids,
+                    states_by_user_id=states_by_user_id,
+                    sender_name=sender_name,
+                    event_type=event_type,
+                    title=base_title,
+                    body=base_body,
+                    mentioned_user_ids=mentioned_user_ids,
+                    default_title=base_title if not _normalize_text(title) else "РќРѕРІРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ РІ С‡Р°С‚Рµ",
+                    default_group_title="Р“СЂСѓРїРїРѕРІРѕР№ С‡Р°С‚",
+                    mention_prefix="Р вЂ™Р В°РЎРѓ РЎС“Р С—Р С•Р СРЎРЏР Р…РЎС“Р В»Р С‘",
+                )
+                plans_by_user_id = {int(plan.recipient_user_id): plan for plan in recipient_plans}
                 outbox_now = _utc_now()
 
                 loop_started_at = time.perf_counter()
@@ -5675,16 +5475,10 @@ class ChatService:
                     for member_id in member_ids:
                         if int(member_id) <= 0 or int(member_id) == int(sender_user_id):
                             continue
-                        is_mentioned = int(member_id) in mentioned_user_id_set
-                        state = states_by_user_id.get(int(member_id))
-                        if (
-                            not is_mentioned
-                            and (
-                                bool(getattr(state, "is_muted", False))
-                                or bool(getattr(state, "is_archived", False))
-                            )
-                        ):
+                        plan = plans_by_user_id.get(int(member_id))
+                        if plan is None:
                             continue
+                        is_mentioned = bool(plan.is_mentioned)
                         stats["recipient_count"] += 1
 
                         current_body = base_body

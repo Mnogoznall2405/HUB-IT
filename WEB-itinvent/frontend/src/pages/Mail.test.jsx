@@ -7,42 +7,64 @@ import { writeMailRecentMessageDetail } from '../lib/mailRecentCache';
 const {
   mockGetBootstrap,
   mockGetMyConfig,
+  mockUpdateMyConfig,
   mockSaveMyCredentials,
   mockGetTemplates,
+  mockCreateTemplate,
+  mockUpdateTemplate,
+  mockDeleteTemplate,
+  mockSendItRequest,
+  mockSendMessage,
   mockGetFolderSummary,
   mockGetFolderTree,
   mockDeleteFolder,
+  mockCreateFolder,
+  mockRenameFolder,
+  mockSetFolderFavorite,
   mockGetPreferences,
   mockGetMessages,
   mockGetMessage,
   mockDownloadAttachment,
   mockMarkAsRead,
   mockMarkAsUnread,
+  mockMoveMessage,
   mockGetConversations,
   mockGetConversation,
   mockMarkConversationAsRead,
   mockMarkConversationAsUnread,
   mockGetUnreadCount,
+  mockBulkMessageAction,
   mockRenderStats,
 } = vi.hoisted(() => ({
   mockGetBootstrap: vi.fn(),
   mockGetMyConfig: vi.fn(),
+  mockUpdateMyConfig: vi.fn(),
   mockSaveMyCredentials: vi.fn(),
   mockGetTemplates: vi.fn(),
+  mockCreateTemplate: vi.fn(),
+  mockUpdateTemplate: vi.fn(),
+  mockDeleteTemplate: vi.fn(),
+  mockSendItRequest: vi.fn(),
+  mockSendMessage: vi.fn(),
   mockGetFolderSummary: vi.fn(),
   mockGetFolderTree: vi.fn(),
   mockDeleteFolder: vi.fn(),
+  mockCreateFolder: vi.fn(),
+  mockRenameFolder: vi.fn(),
+  mockSetFolderFavorite: vi.fn(),
   mockGetPreferences: vi.fn(),
   mockGetMessages: vi.fn(),
   mockGetMessage: vi.fn(),
   mockDownloadAttachment: vi.fn(),
   mockMarkAsRead: vi.fn(),
   mockMarkAsUnread: vi.fn(),
+  mockMoveMessage: vi.fn(),
   mockGetConversations: vi.fn(),
   mockGetConversation: vi.fn(),
   mockMarkConversationAsRead: vi.fn(),
   mockMarkConversationAsUnread: vi.fn(),
   mockGetUnreadCount: vi.fn(),
+  mockBulkMessageAction: vi.fn(),
   mockRenderStats: {
     folderRail: 0,
     messageList: 0,
@@ -91,10 +113,69 @@ vi.mock('../components/layout/PageShell', () => ({
 }));
 
 vi.mock('../components/mail/MailAttachmentPreviewDialog', () => ({ default: () => null }));
-vi.mock('../components/mail/MailAdvancedSearchDialog', () => ({ default: () => null }));
+vi.mock('../components/mail/MailAdvancedSearchDialog', () => ({
+  default: ({
+    open,
+    filters,
+    onChange,
+    onApply,
+    onReset,
+    onApplyRecent,
+    recentSearches,
+  }) => (open ? (
+    <div data-testid="mail-advanced-search-dialog">
+      <input
+        data-testid="advanced-from-filter"
+        value={filters?.from_filter || ''}
+        onChange={(event) => onChange?.('from_filter', event.target.value)}
+      />
+      <input
+        data-testid="advanced-subject-filter"
+        value={filters?.subject_filter || ''}
+        onChange={(event) => onChange?.('subject_filter', event.target.value)}
+      />
+      <input
+        data-testid="advanced-query-filter"
+        value={filters?.q || ''}
+        onChange={(event) => onChange?.('q', event.target.value)}
+      />
+      <button type="button" data-testid="advanced-scope-all" onClick={() => onChange?.('folder_scope', 'all')}>
+        scope-all
+      </button>
+      <button type="button" data-testid="advanced-apply" onClick={() => onApply?.()}>
+        apply-advanced
+      </button>
+      <button type="button" data-testid="advanced-reset" onClick={() => onReset?.()}>
+        reset-advanced
+      </button>
+      {(Array.isArray(recentSearches) ? recentSearches : []).map((item, index) => (
+        <button
+          key={`recent-${index}`}
+          type="button"
+          data-testid={`advanced-recent-${index}`}
+          onClick={() => onApplyRecent?.(item)}
+        >
+          recent
+        </button>
+      ))}
+    </div>
+  ) : null),
+}));
 vi.mock('../components/mail/MailBulkActionBar', () => ({
-  default: ({ count, isMobile, onClear }) => (
+  default: ({ count, isMobile, onClear, onMarkRead, onMarkUnread, onDelete, onArchive }) => (
     <div data-testid="mail-bulk-action-bar" data-count={String(count || 0)} data-mobile={isMobile ? 'true' : 'false'}>
+      <button type="button" data-testid="mail-bulk-mark-read" onClick={() => onMarkRead?.()}>
+        mark-read
+      </button>
+      <button type="button" data-testid="mail-bulk-mark-unread" onClick={() => onMarkUnread?.()}>
+        mark-unread
+      </button>
+      <button type="button" data-testid="mail-bulk-archive" onClick={() => onArchive?.()}>
+        archive
+      </button>
+      <button type="button" data-testid="mail-bulk-delete" onClick={() => onDelete?.()}>
+        delete
+      </button>
       <button type="button" data-testid="mail-bulk-clear" onClick={() => onClear?.()}>
         clear-bulk
       </button>
@@ -112,6 +193,7 @@ vi.mock('../components/mail/MailComposeDialog', () => ({
     onComposeSubjectChange,
     composeBody,
     onComposeBodyChange,
+    onOpenSignatureEditor,
     onClose,
   }) => (open ? (
     <div data-testid={layoutMode === 'desktop-inline' ? 'mail-compose-inline-pane' : 'mail-compose-dialog'}>
@@ -134,11 +216,24 @@ vi.mock('../components/mail/MailComposeDialog', () => ({
       <button type="button" data-testid="mail-compose-close-action" onClick={() => onClose?.()}>
         close-compose
       </button>
+      <button type="button" data-testid="mail-compose-open-signature" onClick={() => onOpenSignatureEditor?.()}>
+        open-signature
+      </button>
     </div>
   ) : null),
 }));
 vi.mock('../components/mail/MailFolderRail', () => ({
-  default: ({ onViewModeChange, onFolderChange, folderTreeItems, utilityItems, onDeleteFolderRequest }) => {
+  default: ({
+    onViewModeChange,
+    onFolderChange,
+    folderTreeItems,
+    utilityItems,
+    onCreateFolderRequest,
+    onRenameFolderRequest,
+    onDeleteFolderRequest,
+    onToggleFavorite,
+    onDropMessagesToFolder,
+  }) => {
     mockRenderStats.folderRail += 1;
     return (
     <div data-testid="mail-folder-rail">
@@ -154,6 +249,27 @@ vi.mock('../components/mail/MailFolderRail', () => ({
           >
             {String(item?.label || item?.id || '')}
           </button>
+          <button
+            type="button"
+            data-testid={`create-folder-${String(item?.id || '')}`}
+            onClick={() => onCreateFolderRequest?.(item?.id)}
+          >
+            create-{String(item?.id || '')}
+          </button>
+          <button
+            type="button"
+            data-testid={`rename-folder-${String(item?.id || '')}`}
+            onClick={() => onRenameFolderRequest?.(item)}
+          >
+            rename-{String(item?.id || '')}
+          </button>
+          <button
+            type="button"
+            data-testid={`favorite-folder-${String(item?.id || '')}`}
+            onClick={() => onToggleFavorite?.(item)}
+          >
+            favorite-{String(item?.id || '')}
+          </button>
           {!item?.well_known_key ? (
             <button
               type="button"
@@ -163,6 +279,13 @@ vi.mock('../components/mail/MailFolderRail', () => ({
               delete-{String(item?.id || '')}
             </button>
           ) : null}
+          <button
+            type="button"
+            data-testid={`drop-folder-${String(item?.id || '')}`}
+            onClick={() => onDropMessagesToFolder?.(item?.id)}
+          >
+            drop-{String(item?.id || '')}
+          </button>
         </div>
       ))}
       {(Array.isArray(utilityItems) ? utilityItems : []).map((item) => (
@@ -180,17 +303,127 @@ vi.mock('../components/mail/MailFolderRail', () => ({
   },
 }));
 vi.mock('../components/mail/MailHeadersDialog', () => ({ default: () => null }));
-vi.mock('../components/mail/MailSignatureDialog', () => ({ default: () => null }));
+vi.mock('../components/mail/MailSignatureDialog', () => ({
+  default: ({ open, signatureHtml, onSignatureChange, onSave, onClear }) => (open ? (
+    <div data-testid="mail-signature-dialog">
+      <textarea
+        data-testid="mail-signature-html"
+        value={signatureHtml || ''}
+        onChange={(event) => onSignatureChange?.(event.target.value)}
+      />
+      <button type="button" data-testid="mail-signature-clear" onClick={() => onClear?.()}>
+        clear-signature
+      </button>
+      <button type="button" data-testid="mail-signature-save" onClick={() => onSave?.()}>
+        save-signature
+      </button>
+    </div>
+  ) : null),
+}));
 vi.mock('../components/mail/MailShortcutHelpDialog', () => ({ default: () => null }));
 vi.mock('../components/mail/MailTemplatesDialog', () => ({
-  default: ({ open }) => (open ? <div data-testid="mail-templates-dialog">templates-open</div> : null),
+  default: ({
+    open,
+    templates,
+    startCreateTemplate,
+    templateEditId,
+    startEditTemplate,
+    templateCode,
+    setTemplateCode,
+    templateTitle,
+    setTemplateTitle,
+    templateCategory,
+    setTemplateCategory,
+    templateSubject,
+    setTemplateSubject,
+    templateBody,
+    setTemplateBody,
+    addTemplateField,
+    templateFields,
+    updateTemplateField,
+    saveTemplate,
+    deleteTemplate,
+  }) => (open ? (
+    <div data-testid="mail-templates-dialog">
+      <div data-testid="mail-template-edit-id">{templateEditId || 'new'}</div>
+      {(Array.isArray(templates) ? templates : []).map((template) => (
+        <button
+          key={String(template?.id || template?.code || '')}
+          type="button"
+          data-testid={`mail-template-select-${String(template?.id || '')}`}
+          onClick={() => startEditTemplate?.(template)}
+        >
+          {String(template?.title || template?.code || '')}
+        </button>
+      ))}
+      <button type="button" data-testid="mail-template-new" onClick={() => startCreateTemplate?.()}>
+        new-template
+      </button>
+      <input
+        data-testid="mail-template-code"
+        value={templateCode || ''}
+        onChange={(event) => setTemplateCode?.(event.target.value)}
+      />
+      <input
+        data-testid="mail-template-title"
+        value={templateTitle || ''}
+        onChange={(event) => setTemplateTitle?.(event.target.value)}
+      />
+      <input
+        data-testid="mail-template-category"
+        value={templateCategory || ''}
+        onChange={(event) => setTemplateCategory?.(event.target.value)}
+      />
+      <input
+        data-testid="mail-template-subject"
+        value={templateSubject || ''}
+        onChange={(event) => setTemplateSubject?.(event.target.value)}
+      />
+      <textarea
+        data-testid="mail-template-body"
+        value={templateBody || ''}
+        onChange={(event) => setTemplateBody?.(event.target.value)}
+      />
+      <button type="button" data-testid="mail-template-add-field" onClick={() => addTemplateField?.()}>
+        add-field
+      </button>
+      {(Array.isArray(templateFields) ? templateFields : []).map((field, index) => (
+        <div key={`field-${index}`} data-testid={`mail-template-field-${index}`}>
+          <input
+            data-testid={`mail-template-field-key-${index}`}
+            value={field?.key || ''}
+            onChange={(event) => updateTemplateField?.(index, { key: event.target.value })}
+          />
+          <input
+            data-testid={`mail-template-field-label-${index}`}
+            value={field?.label || ''}
+            onChange={(event) => updateTemplateField?.(index, { label: event.target.value })}
+          />
+          <input
+            data-testid={`mail-template-field-default-${index}`}
+            value={field?.default_value || ''}
+            onChange={(event) => updateTemplateField?.(index, { default_value: event.target.value })}
+          />
+        </div>
+      ))}
+      <button type="button" data-testid="mail-template-save" onClick={() => saveTemplate?.()}>
+        save-template
+      </button>
+      <button type="button" data-testid="mail-template-delete" onClick={() => deleteTemplate?.()}>
+        delete-template
+      </button>
+    </div>
+  ) : null),
 }));
 vi.mock('../components/mail/MailToolbar', () => ({
-  default: ({ mobile, currentFolderLabel, onOpenNavigation, onOpenMailboxList }) => (
+  default: ({ mobile, currentFolderLabel, onOpenNavigation, onOpenMailboxList, onOpenAdvancedSearch }) => (
     <div data-testid="mail-toolbar" data-mobile={mobile ? 'true' : 'false'}>
       <span data-testid="toolbar-current-folder">{currentFolderLabel}</span>
       <button type="button" data-testid="mail-toolbar-open-mailboxes" onClick={() => onOpenMailboxList?.()}>
         open-mailboxes
+      </button>
+      <button type="button" data-testid="mail-toolbar-open-advanced-search" onClick={() => onOpenAdvancedSearch?.()}>
+        open-advanced-search
       </button>
       {mobile ? (
         <button type="button" data-testid="mail-list-open-navigation" onClick={() => onOpenNavigation?.()}>
@@ -257,22 +490,33 @@ vi.mock('../api/client', () => ({
   mailAPI: {
     getBootstrap: mockGetBootstrap,
     getMyConfig: mockGetMyConfig,
+    updateMyConfig: mockUpdateMyConfig,
     saveMyCredentials: mockSaveMyCredentials,
     getTemplates: mockGetTemplates,
+    createTemplate: mockCreateTemplate,
+    updateTemplate: mockUpdateTemplate,
+    deleteTemplate: mockDeleteTemplate,
+    sendItRequest: mockSendItRequest,
+    sendMessage: mockSendMessage,
     getFolderSummary: mockGetFolderSummary,
     getFolderTree: mockGetFolderTree,
     deleteFolder: mockDeleteFolder,
+    createFolder: mockCreateFolder,
+    renameFolder: mockRenameFolder,
+    setFolderFavorite: mockSetFolderFavorite,
     getPreferences: mockGetPreferences,
     getMessages: mockGetMessages,
     getMessage: mockGetMessage,
     downloadAttachment: mockDownloadAttachment,
     markAsRead: mockMarkAsRead,
     markAsUnread: mockMarkAsUnread,
+    moveMessage: mockMoveMessage,
     getConversations: mockGetConversations,
     getConversation: mockGetConversation,
     markConversationAsRead: mockMarkConversationAsRead,
     markConversationAsUnread: mockMarkConversationAsUnread,
     getUnreadCount: mockGetUnreadCount,
+    bulkMessageAction: mockBulkMessageAction,
     searchContacts: vi.fn(async () => []),
   },
 }));
@@ -425,22 +669,33 @@ describe('Mail read-state behavior', () => {
 
     mockGetBootstrap.mockReset();
     mockGetMyConfig.mockReset();
+    mockUpdateMyConfig.mockReset();
     mockSaveMyCredentials.mockReset();
     mockGetTemplates.mockReset();
+    mockCreateTemplate.mockReset();
+    mockUpdateTemplate.mockReset();
+    mockDeleteTemplate.mockReset();
+    mockSendItRequest.mockReset();
+    mockSendMessage.mockReset();
     mockGetFolderSummary.mockReset();
     mockGetFolderTree.mockReset();
     mockDeleteFolder.mockReset();
+    mockCreateFolder.mockReset();
+    mockRenameFolder.mockReset();
+    mockSetFolderFavorite.mockReset();
     mockGetPreferences.mockReset();
     mockGetMessages.mockReset();
     mockGetMessage.mockReset();
     mockDownloadAttachment.mockReset();
     mockMarkAsRead.mockReset();
     mockMarkAsUnread.mockReset();
+    mockMoveMessage.mockReset();
     mockGetConversations.mockReset();
     mockGetConversation.mockReset();
     mockMarkConversationAsRead.mockReset();
     mockMarkConversationAsUnread.mockReset();
     mockGetUnreadCount.mockReset();
+    mockBulkMessageAction.mockReset();
 
     mockGetBootstrap.mockResolvedValue(buildBootstrapPayload());
     mockGetMyConfig.mockResolvedValue({
@@ -451,6 +706,15 @@ describe('Mail read-state behavior', () => {
       mail_requires_relogin: false,
       mail_is_configured: true,
     });
+    mockUpdateMyConfig.mockResolvedValue({
+      mailbox_email: 'user@example.com',
+      mailbox_login: 'user@zsgp.corp',
+      effective_mailbox_login: 'user@zsgp.corp',
+      mail_requires_password: false,
+      mail_requires_relogin: false,
+      mail_is_configured: true,
+      mail_signature_html: '<p>New signature</p>',
+    });
     mockSaveMyCredentials.mockResolvedValue({
       mailbox_email: 'user@example.com',
       mailbox_login: 'user@zsgp.corp',
@@ -460,6 +724,25 @@ describe('Mail read-state behavior', () => {
       mail_is_configured: true,
     });
     mockGetTemplates.mockResolvedValue({ items: [] });
+    mockCreateTemplate.mockResolvedValue({
+      id: 'tpl-created',
+      code: 'created',
+      title: 'Created template',
+      subject_template: 'Created subject',
+      body_template_md: 'Created body',
+      fields: [],
+    });
+    mockUpdateTemplate.mockResolvedValue({
+      id: 'tpl-existing',
+      code: 'existing',
+      title: 'Updated template',
+      subject_template: 'Updated subject',
+      body_template_md: 'Updated body',
+      fields: [],
+    });
+    mockDeleteTemplate.mockResolvedValue({ ok: true });
+    mockSendItRequest.mockResolvedValue({ ok: true });
+    mockSendMessage.mockResolvedValue({ ok: true });
     mockGetFolderSummary.mockResolvedValue({ items: { inbox: { total: 1, unread: 1 }, sent: { total: 1, unread: 0 } } });
     mockGetFolderTree.mockResolvedValue({
       items: [
@@ -495,6 +778,7 @@ describe('Mail read-state behavior', () => {
     });
     mockMarkAsRead.mockResolvedValue({ ok: true });
     mockMarkAsUnread.mockResolvedValue({ ok: true });
+    mockMoveMessage.mockResolvedValue({ ok: true });
     mockGetConversations.mockResolvedValue({
       items: [buildConversationSummary()],
       total: 1,
@@ -506,7 +790,11 @@ describe('Mail read-state behavior', () => {
     mockMarkConversationAsRead.mockResolvedValue({ ok: true, changed: 2 });
     mockMarkConversationAsUnread.mockResolvedValue({ ok: true, changed: 2 });
     mockGetUnreadCount.mockResolvedValue({ unread_count: 0 });
+    mockBulkMessageAction.mockResolvedValue({ ok: true });
     mockDeleteFolder.mockResolvedValue({ ok: true, folder_id: 'deleted-folder' });
+    mockCreateFolder.mockResolvedValue({ ok: true, folder_id: 'created-folder' });
+    mockRenameFolder.mockResolvedValue({ ok: true, folder_id: 'renamed-folder' });
+    mockSetFolderFavorite.mockResolvedValue({ ok: true });
   });
 
   afterEach(() => {
@@ -2216,6 +2504,52 @@ describe('Mail read-state behavior', () => {
     });
   });
 
+  it('saves the active mailbox signature from the compose flow', async () => {
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      mailboxInfo: {
+        mailbox_id: 'primary',
+        mail_signature_html: '<p>Old signature</p>',
+      },
+    }));
+
+    render(
+      <MemoryRouter initialEntries={['/mail?mailbox_id=primary']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-list-panel')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-fab'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-inline-pane')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-open-signature'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-signature-dialog')).toBeTruthy();
+    });
+    expect(screen.getByTestId('mail-signature-html').value).toBe('<p>Old signature</p>');
+
+    fireEvent.change(screen.getByTestId('mail-signature-html'), {
+      target: { value: '<p>New signature</p>' },
+    });
+    fireEvent.click(screen.getByTestId('mail-signature-save'));
+
+    await waitFor(() => {
+      expect(mockUpdateMyConfig).toHaveBeenCalledWith({
+        mailbox_id: 'primary',
+        mail_signature_html: '<p>New signature</p>',
+      });
+    });
+  });
+
   it('keeps the mobile compose flow in the dialog path', async () => {
     installMatchMedia({ mobile: true });
 
@@ -2274,6 +2608,419 @@ describe('Mail read-state behavior', () => {
     }
   });
 
+  it('sends a quick reply from the preview and refreshes mail data', async () => {
+    const selectedMessage = buildMessage({
+      id: 'msg-reply',
+      conversation_id: 'conv-reply',
+      subject: 'Budget review',
+      sender: 'Fallback Sender <fallback@example.com>',
+      sender_email: 'fallback@example.com',
+      is_read: true,
+      mailbox_id: 'mb-message',
+      compose_context: {
+        reply: {
+          mailbox_id: 'mb-reply',
+          to: ['Boss Name <boss@example.com>', { email: ' team@example.com ' }],
+          cc: ['Copy Person <copy@example.com>'],
+          subject: 'Re: Budget review',
+        },
+      },
+    });
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      mailboxInfo: {
+        mailbox_id: 'mb-primary',
+        mailbox_email: 'user@example.com',
+      },
+    }));
+    mockGetConversations.mockResolvedValue({
+      items: [buildConversationSummary({
+        conversation_id: 'conv-reply',
+        subject: 'Budget review',
+        unread_count: 0,
+        messages_count: 1,
+      })],
+      total: 1,
+      offset: 0,
+      limit: 50,
+      has_more: false,
+    });
+    mockGetConversation.mockResolvedValue(buildConversationDetail({
+      conversation_id: 'conv-reply',
+      subject: 'Budget review',
+      unread_count: 0,
+      messages_count: 1,
+      items: [selectedMessage],
+    }));
+    mockGetMessages.mockResolvedValue({
+      items: [buildMessage({
+        id: 'msg-inbox',
+        subject: 'Inbox message',
+        is_read: true,
+      })],
+      total: 1,
+      offset: 0,
+      limit: 50,
+      has_more: false,
+      next_offset: null,
+      search_limited: false,
+      searched_window: 0,
+    });
+    mockGetMessage.mockResolvedValue(buildMessage({
+      id: 'msg-inbox',
+      subject: 'Inbox message',
+      is_read: true,
+    }));
+
+    render(
+      <MemoryRouter initialEntries={['/mail?mailbox_id=mb-primary']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('switch-conversations').length).toBeGreaterThan(0);
+    });
+    fireEvent.click(screen.getAllByTestId('switch-conversations')[0]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-item-conv-reply')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-item-conv-reply'));
+
+    await waitFor(() => {
+      expect(within(screen.getByTestId('mail-preview-panel')).getByTestId('mail-quick-reply-body')).toBeTruthy();
+    });
+
+    mockGetConversations.mockClear();
+    mockGetFolderSummary.mockClear();
+
+    const previewPanel = screen.getByTestId('mail-preview-panel');
+    fireEvent.change(within(previewPanel).getByTestId('mail-quick-reply-body'), {
+      target: { value: 'Line <one>\nLine two >' },
+    });
+    fireEvent.click(within(previewPanel).getByTestId('mail-quick-reply-send'));
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledWith({
+        from_mailbox_id: 'mb-reply',
+        to: ['boss@example.com', 'team@example.com'],
+        cc: ['copy@example.com'],
+        bcc: [],
+        subject: 'Re: Budget review',
+        body: '<p>Line &lt;one&gt;<br/>Line two &gt;</p>',
+        is_html: true,
+        reply_to_message_id: 'msg-reply',
+      });
+    });
+    await waitFor(() => {
+      expect(mockGetConversations).toHaveBeenCalled();
+      expect(mockGetFolderSummary).toHaveBeenCalledWith({ mailbox_id: 'mb-primary' });
+    });
+    expect(within(previewPanel).getByTestId('mail-quick-reply-body').value).toBe('');
+  });
+
+  it('applies advanced search filters to the next message list request', async () => {
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-list-panel')).toBeTruthy();
+    });
+
+    mockGetMessages.mockClear();
+
+    fireEvent.click(screen.getByTestId('mail-toolbar-open-advanced-search'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-advanced-search-dialog')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByTestId('advanced-from-filter'), {
+      target: { value: 'sender@example.com' },
+    });
+    fireEvent.change(screen.getByTestId('advanced-subject-filter'), {
+      target: { value: 'Budget' },
+    });
+    fireEvent.change(screen.getByTestId('advanced-query-filter'), {
+      target: { value: 'quarterly' },
+    });
+    fireEvent.click(screen.getByTestId('advanced-scope-all'));
+    fireEvent.click(screen.getByTestId('advanced-apply'));
+
+    await waitFor(() => {
+      expect(mockGetMessages).toHaveBeenCalledWith(expect.objectContaining({
+        q: 'quarterly',
+        from_filter: 'sender@example.com',
+        subject_filter: 'Budget',
+        folder_scope: 'all',
+        offset: 0,
+      }));
+    });
+
+    expect(JSON.parse(window.localStorage.getItem('mail_recent_searches_v1'))[0]).toMatchObject({
+      q: 'quarterly',
+      from_filter: 'sender@example.com',
+      subject_filter: 'Budget',
+      folder_scope: 'all',
+    });
+  });
+
+  it('applies recent advanced search entries and resets the draft filters', async () => {
+    window.localStorage.setItem('mail_recent_searches_v1', JSON.stringify([
+      {
+        q: 'router',
+        from_filter: 'ops@example.com',
+        subject_filter: 'incident',
+        folder_scope: 'all',
+        label: 'router',
+      },
+    ]));
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-list-panel')).toBeTruthy();
+    });
+
+    mockGetMessages.mockClear();
+
+    fireEvent.click(screen.getByTestId('mail-toolbar-open-advanced-search'));
+    await waitFor(() => {
+      expect(screen.getByTestId('advanced-recent-0')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByTestId('advanced-recent-0'));
+
+    await waitFor(() => {
+      expect(mockGetMessages).toHaveBeenCalledWith(expect.objectContaining({
+        q: 'router',
+        from_filter: 'ops@example.com',
+        subject_filter: 'incident',
+        folder_scope: 'all',
+      }));
+    });
+
+    fireEvent.click(screen.getByTestId('mail-toolbar-open-advanced-search'));
+    await waitFor(() => {
+      expect(screen.getByTestId('advanced-query-filter').value).toBe('router');
+    });
+    fireEvent.click(screen.getByTestId('advanced-reset'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('advanced-query-filter').value).toBe('');
+      expect(screen.getByTestId('advanced-from-filter').value).toBe('');
+      expect(screen.getByTestId('advanced-subject-filter').value).toBe('');
+    });
+  });
+
+  it('runs bulk message actions with the selected message ids and mailbox scope', async () => {
+    const listPage = buildMessagePage(['msg-1', 'msg-2'], { total: 2 });
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({ messages: listPage }));
+    mockGetMessages.mockResolvedValue(listPage);
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-item-msg-1')).toBeTruthy();
+      expect(screen.getByTestId('mail-item-msg-2')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-item-select-msg-1'));
+    fireEvent.click(screen.getByTestId('mail-item-select-msg-2'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-bulk-action-bar').getAttribute('data-count')).toBe('2');
+    });
+
+    fireEvent.click(screen.getByTestId('mail-bulk-mark-read'));
+
+    await waitFor(() => {
+      expect(mockBulkMessageAction).toHaveBeenCalledWith({
+        mailbox_id: undefined,
+        message_ids: ['msg-1', 'msg-2'],
+        action: 'mark_read',
+        target_folder: undefined,
+        permanent: false,
+      });
+    });
+  });
+
+  it('moves selected messages to a dropped folder with a bulk action', async () => {
+    const listPage = buildMessagePage(['msg-1', 'msg-2'], { total: 2 });
+    const folderTreeItems = [
+      { id: 'inbox', label: 'Inbox', well_known_key: 'inbox' },
+      { id: 'archive', label: 'Archive', well_known_key: 'archive' },
+    ];
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      messages: listPage,
+      folder_tree: { items: folderTreeItems },
+    }));
+    mockGetMessages.mockResolvedValue(listPage);
+    mockGetFolderTree.mockResolvedValue({ items: folderTreeItems });
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-item-msg-1')).toBeTruthy();
+      expect(screen.getByTestId('mail-item-msg-2')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-item-select-msg-1'));
+    fireEvent.click(screen.getByTestId('mail-item-select-msg-2'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-bulk-action-bar').getAttribute('data-count')).toBe('2');
+    });
+
+    fireEvent.click(screen.getAllByTestId('drop-folder-archive')[0]);
+
+    await waitFor(() => {
+      expect(mockBulkMessageAction).toHaveBeenCalledWith({
+        mailbox_id: undefined,
+        message_ids: ['msg-1', 'msg-2'],
+        action: 'move',
+        target_folder: 'archive',
+      });
+    });
+    expect(mockMoveMessage).not.toHaveBeenCalled();
+  });
+
+  it('creates a child folder from the folder rail with the expected parent scope', async () => {
+    const folderTreeItems = [
+      { id: 'inbox', label: 'Inbox', well_known_key: 'inbox' },
+      { id: 'team', label: 'Team', scope: 'mailbox', is_favorite: false },
+    ];
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      folder_tree: { items: folderTreeItems },
+    }));
+    mockGetFolderTree.mockResolvedValue({ items: folderTreeItems });
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('folder-team').length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByTestId('create-folder-team')[0]);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Child folder' } });
+    fireEvent.click(screen.getByRole('button', { name: '\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c' }));
+
+    await waitFor(() => {
+      expect(mockCreateFolder).toHaveBeenCalledWith({
+        mailbox_id: undefined,
+        name: 'Child folder',
+        parent_folder_id: 'team',
+        scope: 'mailbox',
+      });
+    });
+  });
+
+  it('renames and favorites folders from the folder rail', async () => {
+    const folderTreeItems = [
+      { id: 'inbox', label: 'Inbox', well_known_key: 'inbox' },
+      { id: 'team', label: 'Team', scope: 'mailbox', is_favorite: false },
+    ];
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      folder_tree: { items: folderTreeItems },
+    }));
+    mockGetFolderTree.mockResolvedValue({ items: folderTreeItems });
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('folder-team').length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByTestId('rename-folder-team')[0]);
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'Renamed Team' } });
+    fireEvent.click(screen.getByRole('button', { name: '\u0421\u043e\u0445\u0440\u0430\u043d\u0438\u0442\u044c' }));
+
+    await waitFor(() => {
+      expect(mockRenameFolder).toHaveBeenCalledWith('team', {
+        name: 'Renamed Team',
+        mailbox_id: undefined,
+      });
+    });
+
+    fireEvent.click(screen.getAllByTestId('favorite-folder-team')[0]);
+
+    await waitFor(() => {
+      expect(mockSetFolderFavorite).toHaveBeenCalledWith('team', true, '');
+    });
+  });
+
+  it('deletes the active folder and returns the mail view to inbox', async () => {
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const folderTreeItems = [
+      { id: 'inbox', label: 'Inbox', well_known_key: 'inbox' },
+      { id: 'team', label: 'Team', scope: 'mailbox', is_favorite: false },
+    ];
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      folder_tree: { items: folderTreeItems },
+    }));
+    mockGetFolderTree.mockResolvedValue({ items: folderTreeItems });
+
+    render(
+      <MemoryRouter initialEntries={['/mail?folder=team']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getAllByTestId('folder-team').length).toBeGreaterThan(0);
+    });
+
+    fireEvent.click(screen.getAllByTestId('delete-folder-team')[0]);
+
+    await waitFor(() => {
+      expect(mockDeleteFolder).toHaveBeenCalledWith('team', '');
+    });
+    await waitFor(() => {
+      expect(screen.getAllByTestId('toolbar-current-folder')[0].textContent).toBe('Inbox');
+    });
+
+    confirmSpy.mockRestore();
+  });
+
   it('does not rerender the folder rail or message list while typing in desktop compose fields', async () => {
     render(
       <MemoryRouter initialEntries={['/mail']}>
@@ -2328,6 +3075,246 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getAllByTestId('utility-templates')[0]);
     await waitFor(() => {
       expect(screen.getByTestId('mail-templates-dialog')).toBeTruthy();
+    });
+  });
+
+  it('creates a mail template from the templates dialog', async () => {
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-folder-rail')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getAllByTestId('utility-templates')[0]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-templates-dialog')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByTestId('mail-template-code'), {
+      target: { value: 'Hardware.Access' },
+    });
+    fireEvent.change(screen.getByTestId('mail-template-title'), {
+      target: { value: 'Hardware access' },
+    });
+    fireEvent.change(screen.getByTestId('mail-template-category'), {
+      target: { value: 'IT' },
+    });
+    fireEvent.change(screen.getByTestId('mail-template-subject'), {
+      target: { value: 'Access for {{ inventory_number }}' },
+    });
+    fireEvent.change(screen.getByTestId('mail-template-body'), {
+      target: { value: 'Please grant access for {{ inventory_number }}.' },
+    });
+    fireEvent.click(screen.getByTestId('mail-template-add-field'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-template-field-0')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByTestId('mail-template-field-key-0'), {
+      target: { value: 'Inventory Number' },
+    });
+    fireEvent.change(screen.getByTestId('mail-template-field-label-0'), {
+      target: { value: 'Inventory number' },
+    });
+    fireEvent.change(screen.getByTestId('mail-template-field-default-0'), {
+      target: { value: '101795' },
+    });
+    fireEvent.click(screen.getByTestId('mail-template-save'));
+
+    await waitFor(() => {
+      expect(mockCreateTemplate).toHaveBeenCalledWith({
+        code: 'hardware.access',
+        title: 'Hardware access',
+        category: 'IT',
+        subject_template: 'Access for {{ inventory_number }}',
+        body_template_md: 'Please grant access for {{ inventory_number }}.',
+        fields: [
+          {
+            key: 'inventory_number',
+            label: 'Inventory number',
+            type: 'text',
+            required: true,
+            placeholder: '',
+            default_value: '101795',
+            options: [],
+          },
+        ],
+      });
+    });
+  });
+
+  it('updates and deletes a mail template from the templates dialog', async () => {
+    mockGetTemplates.mockResolvedValue({
+      items: [
+        {
+          id: 'tpl-existing',
+          code: 'access',
+          title: 'Access request',
+          category: 'IT',
+          subject_template: 'Old access subject',
+          body_template_md: 'Old access body',
+          fields: [
+            {
+              key: 'inventory_number',
+              label: 'Inventory number',
+              type: 'text',
+              required: true,
+              placeholder: '',
+              default_value: '101795',
+              options: [],
+            },
+          ],
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-folder-rail')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getAllByTestId('utility-templates')[0]);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-template-edit-id').textContent).toBe('tpl-existing');
+    });
+
+    fireEvent.change(screen.getByTestId('mail-template-title'), {
+      target: { value: 'Access request updated' },
+    });
+    fireEvent.change(screen.getByTestId('mail-template-subject'), {
+      target: { value: 'Updated access subject' },
+    });
+    fireEvent.change(screen.getByTestId('mail-template-body'), {
+      target: { value: 'Updated access body' },
+    });
+    fireEvent.click(screen.getByTestId('mail-template-save'));
+
+    await waitFor(() => {
+      expect(mockUpdateTemplate).toHaveBeenCalledWith('tpl-existing', {
+        code: 'access',
+        title: 'Access request updated',
+        category: 'IT',
+        subject_template: 'Updated access subject',
+        body_template_md: 'Updated access body',
+        fields: [
+          {
+            key: 'inventory_number',
+            label: 'Inventory number',
+            type: 'text',
+            required: true,
+            placeholder: '',
+            default_value: '101795',
+            options: [],
+          },
+        ],
+      });
+    });
+
+    fireEvent.click(screen.getByTestId('mail-template-delete'));
+
+    await waitFor(() => {
+      expect(mockDeleteTemplate).toHaveBeenCalledWith('tpl-existing');
+    });
+  });
+
+  it('loads templates and sends an IT request from the rail utility', async () => {
+    mockGetTemplates.mockResolvedValue({
+      items: [
+        {
+          id: 'tpl-access',
+          code: 'access',
+          title: 'Access request',
+          fields: [
+            { key: 'inventory_number', label: 'Inventory number', default_value: '101795' },
+            { key: 'comment', label: 'Comment', default_value: '' },
+          ],
+        },
+      ],
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-folder-rail')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getAllByTestId('utility-it-request')[0]);
+
+    await waitFor(() => {
+      expect(mockGetTemplates).toHaveBeenCalledWith({ include_inactive: true });
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-it-request-dialog')).toBeTruthy();
+    });
+
+    fireEvent.mouseDown(screen.getByRole('combobox'));
+    fireEvent.click(await screen.findByRole('option', { name: 'Access request' }));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-it-field-inventory_number')).toBeTruthy();
+    });
+
+    expect(screen.getByTestId('mail-it-field-inventory_number').value).toBe('101795');
+    fireEvent.change(screen.getByTestId('mail-it-field-comment'), {
+      target: { value: 'Need VPN access' },
+    });
+    fireEvent.click(screen.getByTestId('mail-it-submit'));
+
+    await waitFor(() => {
+      expect(mockSendItRequest).toHaveBeenCalledWith({
+        template_id: 'tpl-access',
+        fields: {
+          inventory_number: '101795',
+          comment: 'Need VPN access',
+        },
+      });
+    });
+  });
+
+  it('does not send an IT request without a selected template', async () => {
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-folder-rail')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getAllByTestId('utility-it-request')[0]);
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-it-request-dialog')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-it-submit'));
+
+    await waitFor(() => {
+      expect(mockSendItRequest).not.toHaveBeenCalled();
     });
   });
 

@@ -4,12 +4,6 @@ Mail service for Exchange (EWS/NTLM) inbox access, sending and IT request templa
 from __future__ import annotations
 
 import base64
-from collections import OrderedDict
-from dataclasses import dataclass, field
-import email.policy
-import html
-from html.parser import HTMLParser
-import json
 import logging
 import os
 import re
@@ -17,12 +11,10 @@ import sqlite3
 import warnings
 from contextlib import contextmanager
 from contextvars import ContextVar
-from datetime import date, datetime, timedelta, timezone
-from email.parser import BytesParser
+from datetime import date, datetime, timezone
 from pathlib import Path
-from threading import Event, RLock
+from threading import RLock
 from typing import Any, Optional
-from urllib.parse import quote
 
 from sqlalchemy import inspect
 
@@ -31,42 +23,142 @@ from backend.appdb.sql_compat import SqlAlchemyCompatConnection
 from backend.config import config
 from backend.db_schema import schema_name
 from local_store import get_local_store
-from backend.services.secret_crypto_service import SecretCryptoError, decrypt_secret, encrypt_secret
+from backend.services.secret_crypto_service import decrypt_secret, encrypt_secret
 from backend.services.request_auth_context_service import get_request_session_id
 from backend.services.session_auth_context_service import normalize_exchange_login, session_auth_context_service
+from backend.services.mail_outgoing_html import (
+    build_outgoing_html_body,
+    normalize_outgoing_readable_text_colors,
+    normalize_signature_html,
+    normalize_signature_line_spacing,
+    parse_outgoing_css_color,
+    plain_text_to_html,
+    split_outgoing_html_for_signature,
+    wrap_outgoing_html_fragment,
+)
+from backend.services.mail_exchange_transport import (
+    ExchangeTransportError,
+    build_ca_bundle_http_adapter,
+    create_exchange_account,
+    get_no_verify_http_adapter,
+    resolve_exchange_http_adapter,
+    resolve_tls_ca_bundle,
+    suppress_insecure_request_warning,
+)
+from backend.services.mail_folder_tree import MailFolderTreeBuilder
+from backend.services.mail_folder_mutations import MailFolderMutationError, MailFolderMutations
+from backend.services.mail_message_actions import MailMessageActionError, MailMessageActions
+from backend.services.mail_message_content import MailMessageContent, MailMessageContentError
+from backend.services.mail_draft_lifecycle import MailDraftLifecycle, MailDraftLifecycleError
+from backend.services.mail_conversation_finder import MailConversationFinder, MailConversationFinderError
+from backend.services.mail_conversation_payloads import MailConversationPayloadBuilder
+from backend.services.mail_message_listing import (
+    MailMessageListBuilder,
+    message_matches_filters,
+)
+from backend.services.mail_mailbox_model import (
+    MailboxSelectionError,
+    build_legacy_mailbox_seed,
+    has_duplicate_mailbox_email,
+    next_mailbox_sort_order,
+    primary_mailbox_row,
+    select_mailbox_row,
+    serialize_mailbox_entry,
+)
+from backend.services.mail_mailbox_store import MailMailboxStore
+from backend.services.mail_account_profile_resolver import (
+    MailAccountProfileError,
+    MailAccountProfileResolver,
+)
+from backend.services.mail_compose_orchestration import (
+    ComposeValidationError,
+    build_draft_upsert_plan,
+    build_outbound_send_plan,
+    build_recipient_set,
+    build_reply_forward_reference_headers,
+    parse_recipients,
+    resolve_outbound_mailbox_id,
+)
+from backend.services.mail_metadata_store import MailMetadataStore
+from backend.services.mail_message_serializer import (
+    MailMessageSerializer,
+    item_bcc_recipient_people,
+    item_bcc_recipients,
+    item_conversation_key,
+    item_importance,
+    item_message_id,
+    item_recipient_people,
+    item_recipients,
+    item_sender,
+    item_sender_person,
+    normalize_subject_for_conversation,
+    person_lookup_key,
+    serialize_person,
+)
+from backend.services.mail_runtime_cache import (
+    MailRuntimeCache,
+    RuntimeCachePolicy,
+    SingleflightGroup,
+    cache_key,
+    estimate_cache_value_size,
+    singleflight_key,
+)
+from backend.services.mail_reference_codec import (
+    ATTACHMENT_TOKEN_PREFIX,
+    ATTACHMENT_TOKEN_PREFIX_LEGACY,
+    MailReferenceError,
+    build_inline_attachment_src,
+    decode_attachment_ref,
+    decode_attachment_token,
+    decode_folder_id,
+    decode_message_id,
+    decode_message_ref,
+    encode_attachment_token,
+    encode_folder_id,
+    encode_message_id,
+    extract_attachment_id_from_repr,
+    extract_attachment_raw_id,
+    make_scoped_storage_key,
+    normalize_attachment_content_id,
+    normalize_attachment_id_candidate,
+    resolve_mailbox_scope,
+    split_scoped_storage_key,
+)
+from backend.services.mail_profile_model import (
+    build_effective_mailbox_email,
+    build_effective_mailbox_login,
+    legacy_user_mailbox_auth_mode,
+    mail_auth_mode_for_user,
+    normalize_mailbox_auth_mode,
+)
+from backend.services.mail_template_model import (
+    AttachmentLimitError,
+    AttachmentLimits,
+    TEMPLATE_FIELD_TYPES,
+    TemplateValidationError,
+    coerce_field_value,
+    normalize_field_options,
+    normalize_template_field,
+    normalize_template_fields,
+    render_template,
+    validate_attachments_limits,
+    validate_template_values,
+    value_to_template_string,
+)
+from backend.services.mail_template_store import (
+    MailTemplateStore,
+    TemplateStoreError,
+    parse_template_fields_json,
+)
 from backend.services.user_service import build_default_ldap_mailbox_email, user_service
 
 logger = logging.getLogger(__name__)
 _UNSET = object()
-_MAILBOX_AUTH_MODES = {"stored_credentials", "primary_session", "primary_credentials"}
 _MAIL_REQUEST_CONTEXT: ContextVar[dict[str, Any] | None] = ContextVar("mail_request_context", default=None)
 _MAIL_REQUEST_METRICS: ContextVar[dict[str, Any] | None] = ContextVar("mail_request_metrics", default=None)
 _EXCHANGE_HTTP_ADAPTER_LOCK = RLock()
 _EXCHANGE_HTTP_DEFAULT_ADAPTER_CLS: Any = None
 _EXCHANGE_HTTP_ADAPTER_SIGNATURE: tuple[Any, ...] | None = None
-
-
-@dataclass
-class _RuntimeCacheEntry:
-    bucket: str
-    expires_at: datetime
-    value: Any
-    size_bytes: int = 0
-
-
-@dataclass(frozen=True)
-class _RuntimeCachePolicy:
-    max_entries: int
-    ttl_sec: int
-    max_total_bytes: int | None = None
-    max_entry_bytes: int | None = None
-
-
-@dataclass
-class _SingleflightCall:
-    event: Event = field(default_factory=Event)
-    result: Any = None
-    error: Exception | None = None
 
 
 def _utc_now_iso() -> str:
@@ -78,415 +170,14 @@ def _normalize_text(value: Any, default: str = "") -> str:
     return text or default
 
 
-def _plain_text_to_html(text: Any) -> str:
-    value = str(text or "")
-    normalized = value.replace("\r\n", "\n").replace("\r", "\n")
-    return html.escape(normalized).replace("\n", "<br>")
-
-
-_OUTGOING_MAIL_BODY_STYLE = (
-    "margin:0;"
-    "padding:0;"
-    "font-family:Aptos, Calibri, Arial, Helvetica, sans-serif;"
-    "font-size:11pt;"
-    "line-height:1.5;"
-)
-_OUTGOING_WRAPPER_PATTERN = re.compile(
-    r'^\s*<div\b[^>]*data-mail-outgoing=(["\'])true\1[^>]*>(?P<body>[\s\S]*)</div>\s*$',
-    re.IGNORECASE,
-)
-_OUTGOING_SIGNATURE_WRAPPER_PATTERN = re.compile(
-    r'^\s*<div\b[^>]*data-mail-signature=(["\'])true\1[^>]*>(?P<body>[\s\S]*)</div>\s*$',
-    re.IGNORECASE,
-)
-_OUTGOING_QUOTED_MARKERS = (
-    '<div class="quoted-mail"',
-    "<div class='quoted-mail'",
-    'class="quoted-mail"',
-    "class='quoted-mail'",
-    'class="gmail_quote"',
-    "class='gmail_quote'",
-    'class="protonmail_quote"',
-    "class='protonmail_quote'",
-    'class="yahoo_quoted"',
-    "class='yahoo_quoted'",
-    'class="moz-cite-prefix"',
-    "class='moz-cite-prefix'",
-    'data-mail-quoted-history',
-)
-_OUTGOING_QUOTED_HEADER_PATTERN = re.compile(r"(from|sent|date|to|subject|от|дата|кому|тема)\s*:", re.IGNORECASE)
-_SIGNATURE_LINE_STYLE_PROPS = {
-    "margin": "0 0 4px 0",
-    "line-height": "1.35",
-}
-_OUTGOING_DEFAULT_TEXT_COLOR = "#000000"
-_OUTGOING_LOW_CONTRAST_ON_WHITE = 2.4
-_OUTGOING_NAMED_COLORS = {
-    "black": "#000000",
-    "white": "#ffffff",
-}
-
-
-def _parse_css_color_component(value: Any) -> int:
-    raw = _normalize_text(value)
-    if not raw:
-        return 0
-    try:
-        if raw.endswith("%"):
-            return round((float(raw[:-1]) / 100) * 255)
-        return round(float(raw))
-    except Exception:
-        return 0
-
-
-def _parse_css_alpha_component(value: Any) -> float:
-    raw = _normalize_text(value)
-    if not raw:
-        return 1.0
-    try:
-        if raw.endswith("%"):
-            return max(0.0, min(1.0, float(raw[:-1]) / 100))
-        return max(0.0, min(1.0, float(raw)))
-    except Exception:
-        return 1.0
-
-
-def _clamp_color_byte(value: int) -> int:
-    return max(0, min(255, int(value)))
-
-
-def _parse_outgoing_css_color(value: Any) -> dict[str, float] | None:
-    raw = _normalize_text(value).lower()
-    raw = re.sub(r"\s*!important\s*$", "", raw, flags=re.IGNORECASE).strip()
-    if not raw or raw in {"transparent", "inherit", "initial", "currentcolor"}:
-        return None
-    raw = _OUTGOING_NAMED_COLORS.get(raw, raw)
-
-    hex_match = re.match(r"^#([0-9a-f]{3,4}|[0-9a-f]{6}|[0-9a-f]{8})$", raw, re.IGNORECASE)
-    if hex_match:
-        hex_value = hex_match.group(1)
-        if len(hex_value) <= 4:
-            parts = [part * 2 for part in [hex_value[0], hex_value[1], hex_value[2], hex_value[3] if len(hex_value) > 3 else "f"]]
-        else:
-            parts = [hex_value[0:2], hex_value[2:4], hex_value[4:6], hex_value[6:8] or "ff"]
-        return {
-            "r": int(parts[0], 16),
-            "g": int(parts[1], 16),
-            "b": int(parts[2], 16),
-            "a": int(parts[3], 16) / 255,
-        }
-
-    rgb_match = re.match(r"^rgba?\((.+)\)$", raw, re.IGNORECASE)
-    if not rgb_match:
-        return None
-    parts = [part for part in re.split(r"[,\s]+", re.sub(r"\s*/\s*", " ", rgb_match.group(1))) if part]
-    if len(parts) < 3:
-        return None
-    return {
-        "r": _clamp_color_byte(_parse_css_color_component(parts[0])),
-        "g": _clamp_color_byte(_parse_css_color_component(parts[1])),
-        "b": _clamp_color_byte(_parse_css_color_component(parts[2])),
-        "a": _parse_css_alpha_component(parts[3]) if len(parts) >= 4 else 1.0,
-    }
-
-
-def _srgb_to_linear(value: float) -> float:
-    normalized = value / 255
-    if normalized <= 0.03928:
-        return normalized / 12.92
-    return ((normalized + 0.055) / 1.055) ** 2.4
-
-
-def _relative_luminance(color: dict[str, float]) -> float:
-    return (
-        (0.2126 * _srgb_to_linear(color["r"]))
-        + (0.7152 * _srgb_to_linear(color["g"]))
-        + (0.0722 * _srgb_to_linear(color["b"]))
-    )
-
-
-def _contrast_ratio(left_color: dict[str, float], right_color: dict[str, float]) -> float:
-    left = _relative_luminance(left_color)
-    right = _relative_luminance(right_color)
-    lighter = max(left, right)
-    darker = min(left, right)
-    return (lighter + 0.05) / (darker + 0.05)
-
-
-def _is_low_contrast_outgoing_text_color(value: Any) -> bool:
-    color = _parse_outgoing_css_color(value)
-    if not color or color["a"] <= 0.05:
-        return False
-    return _contrast_ratio(color, {"r": 255, "g": 255, "b": 255, "a": 1}) < _OUTGOING_LOW_CONTRAST_ON_WHITE
-
-
-def _merge_outgoing_readable_text_style(style_value: Any) -> str:
-    declarations: list[str] = []
-    changed = False
-    for part in str(style_value or "").split(";"):
-        declaration = part.strip()
-        if not declaration or ":" not in declaration:
-            continue
-        name, raw_value = declaration.split(":", 1)
-        if name.strip().lower() == "color" and _is_low_contrast_outgoing_text_color(raw_value):
-            declarations.append(f"color:{_OUTGOING_DEFAULT_TEXT_COLOR}")
-            changed = True
-        else:
-            declarations.append(declaration)
-    if not changed:
-        return str(style_value or "")
-    return ";".join(declarations) + ";"
-
-
-def _merge_signature_line_style(style_value: Any) -> str:
-    normalized_style = _merge_outgoing_readable_text_style(style_value)
-    declarations: list[str] = []
-    for part in str(normalized_style or "").split(";"):
-        declaration = part.strip()
-        if not declaration or ":" not in declaration:
-            continue
-        name = declaration.split(":", 1)[0].strip().lower()
-        if name in _SIGNATURE_LINE_STYLE_PROPS:
-            continue
-        declarations.append(declaration)
-    declarations.extend(f"{name}:{value}" for name, value in _SIGNATURE_LINE_STYLE_PROPS.items())
-    return ";".join(declarations) + ";"
-
-
-class _SignatureSpacingHtmlParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=False)
-        self.parts: list[str] = []
-
-    @staticmethod
-    def _format_attrs(attrs: list[tuple[str, str | None]]) -> str:
-        formatted: list[str] = []
-        for name, value in attrs:
-            if value is None:
-                formatted.append(f" {name}")
-                continue
-            formatted.append(f' {name}="{html.escape(str(value), quote=True)}"')
-        return "".join(formatted)
-
-    @staticmethod
-    def _should_compact(tag: str, attrs: list[tuple[str, str | None]]) -> bool:
-        if tag.lower() not in {"p", "div"}:
-            return False
-        attr_names = {str(name or "").lower() for name, _ in attrs}
-        return "data-mail-outgoing" not in attr_names and "data-mail-signature" not in attr_names
-
-    @classmethod
-    def _compact_attrs(cls, tag: str, attrs: list[tuple[str, str | None]]) -> list[tuple[str, str | None]]:
-        if not cls._should_compact(tag, attrs):
-            return attrs
-        next_attrs: list[tuple[str, str | None]] = []
-        style_seen = False
-        for name, value in attrs:
-            if str(name or "").lower() == "style":
-                next_attrs.append((name, _merge_signature_line_style(value)))
-                style_seen = True
-            else:
-                next_attrs.append((name, value))
-        if not style_seen:
-            next_attrs.append(("style", _merge_signature_line_style("")))
-        return next_attrs
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.parts.append(f"<{tag}{self._format_attrs(self._compact_attrs(tag, attrs))}>")
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.parts.append(f"<{tag}{self._format_attrs(self._compact_attrs(tag, attrs))}>")
-
-    def handle_endtag(self, tag: str) -> None:
-        self.parts.append(f"</{tag}>")
-
-    def handle_data(self, data: str) -> None:
-        self.parts.append(data)
-
-    def handle_entityref(self, name: str) -> None:
-        self.parts.append(f"&{name};")
-
-    def handle_charref(self, name: str) -> None:
-        self.parts.append(f"&#{name};")
-
-    def handle_comment(self, data: str) -> None:
-        self.parts.append(f"<!--{data}-->")
-
-    def handle_decl(self, decl: str) -> None:
-        self.parts.append(f"<!{decl}>")
-
-    def get_html(self) -> str:
-        return "".join(self.parts)
-
-
-class _OutgoingReadableTextHtmlParser(HTMLParser):
-    def __init__(self) -> None:
-        super().__init__(convert_charrefs=False)
-        self.parts: list[str] = []
-
-    @staticmethod
-    def _format_attrs(attrs: list[tuple[str, str | None]]) -> str:
-        formatted: list[str] = []
-        for name, value in attrs:
-            if value is None:
-                formatted.append(f" {name}")
-                continue
-            formatted.append(f' {name}="{html.escape(str(value), quote=True)}"')
-        return "".join(formatted)
-
-    @staticmethod
-    def _normalize_attrs(attrs: list[tuple[str, str | None]]) -> list[tuple[str, str | None]]:
-        next_attrs: list[tuple[str, str | None]] = []
-        for name, value in attrs:
-            if str(name or "").lower() == "style":
-                next_attrs.append((name, _merge_outgoing_readable_text_style(value)))
-            else:
-                next_attrs.append((name, value))
-        return next_attrs
-
-    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.parts.append(f"<{tag}{self._format_attrs(self._normalize_attrs(attrs))}>")
-
-    def handle_startendtag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
-        self.parts.append(f"<{tag}{self._format_attrs(self._normalize_attrs(attrs))}>")
-
-    def handle_endtag(self, tag: str) -> None:
-        self.parts.append(f"</{tag}>")
-
-    def handle_data(self, data: str) -> None:
-        self.parts.append(data)
-
-    def handle_entityref(self, name: str) -> None:
-        self.parts.append(f"&{name};")
-
-    def handle_charref(self, name: str) -> None:
-        self.parts.append(f"&#{name};")
-
-    def handle_comment(self, data: str) -> None:
-        self.parts.append(f"<!--{data}-->")
-
-    def handle_decl(self, decl: str) -> None:
-        self.parts.append(f"<!{decl}>")
-
-    def get_html(self) -> str:
-        return "".join(self.parts)
-
-
-def _normalize_outgoing_readable_text_colors(value: Any) -> str:
-    source = _normalize_text(value)
-    if not source:
-        return ""
-    parser = _OutgoingReadableTextHtmlParser()
-    try:
-        parser.feed(source)
-        parser.close()
-    except Exception:
-        return source
-    return _normalize_text(parser.get_html())
-
-
-def _normalize_signature_line_spacing(value: Any) -> str:
-    source = _normalize_text(value)
-    if not source:
-        return ""
-    parser = _SignatureSpacingHtmlParser()
-    try:
-        parser.feed(source)
-        parser.close()
-    except Exception:
-        return source
-    return _normalize_text(parser.get_html())
-
-
-def _unwrap_outgoing_html_wrapper(value: Any, *, pattern: re.Pattern[str]) -> str:
-    source = _normalize_text(value)
-    if not source:
-        return ""
-    match = pattern.match(source)
-    if not match:
-        return source
-    return _normalize_text(match.group("body"))
-
-
-def _normalize_signature_html(value: Any) -> str:
-    without_outgoing_wrapper = _unwrap_outgoing_html_wrapper(value, pattern=_OUTGOING_WRAPPER_PATTERN)
-    without_signature_wrapper = _unwrap_outgoing_html_wrapper(
-        without_outgoing_wrapper,
-        pattern=_OUTGOING_SIGNATURE_WRAPPER_PATTERN,
-    )
-    return _normalize_outgoing_readable_text_colors(_normalize_signature_line_spacing(without_signature_wrapper))
-
-
-def _split_outgoing_html_for_signature(body_html: Any, *, prefer_blockquote_split: bool = False) -> tuple[str, str]:
-    source = _normalize_text(body_html)
-    if not source:
-        return "", ""
-
-    lowered = source.lower()
-    split_indexes: list[int] = []
-    for marker in _OUTGOING_QUOTED_MARKERS:
-        idx = lowered.find(marker.lower())
-        if idx > 0:
-            split_indexes.append(idx)
-
-    if prefer_blockquote_split and not split_indexes:
-        blockquote_idx = lowered.find("<blockquote")
-        if blockquote_idx > 0 and _OUTGOING_QUOTED_HEADER_PATTERN.search(source[:blockquote_idx]):
-            split_indexes.append(blockquote_idx)
-
-    if not split_indexes:
-        return source, ""
-
-    split_index = min(split_indexes)
-    primary_html = source[:split_index].rstrip()
-    quoted_html = source[split_index:].lstrip()
-    return primary_html, quoted_html
-
-
-def _wrap_outgoing_html_fragment(fragment_html: Any) -> str:
-    source = _normalize_text(fragment_html)
-    if not source:
-        return ""
-    return f'<div data-mail-outgoing="true" style="{_OUTGOING_MAIL_BODY_STYLE}">{source}</div>'
-
-
-def _build_outgoing_html_body(
-    body_html: Any,
-    signature_html: Any = "",
-    *,
-    prefer_signature_before_quote: bool = False,
-) -> str:
-    body_source = _normalize_outgoing_readable_text_colors(body_html)
-    signature_source = _normalize_signature_html(signature_html)
-
-    primary_html, quoted_html = _split_outgoing_html_for_signature(
-        body_source,
-        prefer_blockquote_split=prefer_signature_before_quote,
-    ) if prefer_signature_before_quote else (body_source, "")
-
-    has_primary_html = bool(primary_html)
-    has_signature_html = bool(signature_source)
-
-    parts: list[str] = []
-    if primary_html:
-        parts.append(primary_html)
-    if signature_source:
-        signature_margin_top = "16px" if has_primary_html else "0"
-        parts.append(
-            f'<div data-mail-signature="true" style="margin:{signature_margin_top} 0 0 0;">{signature_source}</div>'
-        )
-    if quoted_html:
-        quoted_margin_top = "16px" if (has_primary_html or has_signature_html) else "0"
-        parts.append(
-            f'<div data-mail-quoted-block="true" style="margin:{quoted_margin_top} 0 0 0;">{quoted_html}</div>'
-        )
-
-    if not parts and body_source:
-        parts.append(body_source)
-    if not parts and signature_source:
-        parts.append(signature_source)
-
-    return _wrap_outgoing_html_fragment("".join(parts))
+_plain_text_to_html = plain_text_to_html
+_parse_outgoing_css_color = parse_outgoing_css_color
+_normalize_outgoing_readable_text_colors = normalize_outgoing_readable_text_colors
+_normalize_signature_line_spacing = normalize_signature_line_spacing
+_normalize_signature_html = normalize_signature_html
+_split_outgoing_html_for_signature = split_outgoing_html_for_signature
+_wrap_outgoing_html_fragment = wrap_outgoing_html_fragment
+_build_outgoing_html_body = build_outgoing_html_body
 
 
 def _to_bool(value: Any, default: bool = False) -> bool:
@@ -506,20 +197,7 @@ def _parse_date_filter(value: Any) -> date | None:
 
 
 def _parse_recipients(value: str | None) -> list[str]:
-    text = _normalize_text(value)
-    if not text:
-        return []
-    result: list[str] = []
-    seen: set[str] = set()
-    for part in re.split(r"[;,]+", text):
-        email = _normalize_text(part).lower()
-        if not email:
-            continue
-        if email in seen:
-            continue
-        seen.add(email)
-        result.append(email)
-    return result
+    return parse_recipients(value)
 
 
 class MailServiceError(RuntimeError):
@@ -621,8 +299,8 @@ class MailService:
     _FOLDER_FAVORITES_TABLE = "mail_folder_favorites"
     _VISIBLE_CUSTOM_FOLDERS_TABLE = "mail_visible_custom_folders"
     _USER_PREFS_TABLE = "mail_user_preferences"
-    _ATTACHMENT_TOKEN_PREFIX = "att2_"
-    _ATTACHMENT_TOKEN_PREFIX_LEGACY = "att1_"
+    _ATTACHMENT_TOKEN_PREFIX = ATTACHMENT_TOKEN_PREFIX
+    _ATTACHMENT_TOKEN_PREFIX_LEGACY = ATTACHMENT_TOKEN_PREFIX_LEGACY
     _IT_REQUEST_RECIPIENTS = ["it@zsgp.ru"]
     _SEARCH_WINDOW_LIMIT = 1000
     _SEARCH_BATCH_SIZE = 250
@@ -637,21 +315,21 @@ class MailService:
     _MAIL_CACHE_TTL_SEC_DEFAULT = 90
     _MAIL_BOOTSTRAP_DEFAULT_LIMIT = 20
     _CACHE_BUCKET_POLICIES = {
-        "folder_summary": _RuntimeCachePolicy(max_entries=200, ttl_sec=90),
-        "folder_tree": _RuntimeCachePolicy(max_entries=100, ttl_sec=90),
-        "unread_count": _RuntimeCachePolicy(max_entries=200, ttl_sec=60),
-        "messages": _RuntimeCachePolicy(max_entries=300, ttl_sec=90),
-        "message_detail": _RuntimeCachePolicy(max_entries=300, ttl_sec=180),
-        "conversation_detail": _RuntimeCachePolicy(max_entries=100, ttl_sec=120),
-        "attachment_content": _RuntimeCachePolicy(
+        "folder_summary": RuntimeCachePolicy(max_entries=200, ttl_sec=90),
+        "folder_tree": RuntimeCachePolicy(max_entries=100, ttl_sec=90),
+        "unread_count": RuntimeCachePolicy(max_entries=200, ttl_sec=60),
+        "messages": RuntimeCachePolicy(max_entries=300, ttl_sec=90),
+        "message_detail": RuntimeCachePolicy(max_entries=300, ttl_sec=180),
+        "conversation_detail": RuntimeCachePolicy(max_entries=100, ttl_sec=120),
+        "attachment_content": RuntimeCachePolicy(
             max_entries=32,
             ttl_sec=60,
             max_total_bytes=64 * 1024 * 1024,
             max_entry_bytes=2 * 1024 * 1024,
         ),
-        "notification_feed": _RuntimeCachePolicy(max_entries=100, ttl_sec=30),
+        "notification_feed": RuntimeCachePolicy(max_entries=100, ttl_sec=30),
     }
-    _FIELD_TYPES = {"text", "textarea", "select", "multiselect", "date", "checkbox", "email", "tel"}
+    _FIELD_TYPES = TEMPLATE_FIELD_TYPES
     _STANDARD_FOLDERS = {
         "inbox": {"label": "Входящие", "icon_key": "inbox", "scope": "mailbox"},
         "sent": {"label": "Отправленные", "icon_key": "send", "scope": "mailbox"},
@@ -691,16 +369,158 @@ class MailService:
 
     def __init__(self, *, database_url: str | None = None) -> None:
         explicit_database_url = str(database_url or "").strip() or None
-        self._database_url = get_app_database_url(explicit_database_url) if (explicit_database_url or is_app_database_configured()) else None
+        self._database_url = (
+            get_app_database_url(explicit_database_url)
+            if (explicit_database_url or is_app_database_configured())
+            else None
+        )
+        if config.app.is_production and not self._database_url:
+            raise MailSchemaConfigurationError(
+                "Production mail runtime requires PostgreSQL APP_DATABASE_URL; "
+                "SQLite mail storage is development/test only."
+            )
+        if (
+            config.app.is_production
+            and not explicit_database_url
+            and str(self._database_url or "").strip().lower().startswith("sqlite")
+        ):
+            raise MailSchemaConfigurationError(
+                "Production mail runtime does not allow SQLite APP_DATABASE_URL; "
+                "configure a PostgreSQL APP_DATABASE_URL and run backend Alembic migrations."
+            )
         self._use_app_db = bool(self._database_url)
         self.db_path = None if self._use_app_db else Path(get_local_store().db_path)
         self._app_schema = schema_name("app", self._database_url)
         self._lock = RLock()
-        self._last_log_cleanup_at: datetime | None = None
-        self._cache_lock = RLock()
-        self._runtime_cache: OrderedDict[str, _RuntimeCacheEntry] = OrderedDict()
-        self._singleflight_lock = RLock()
-        self._singleflight_calls: dict[str, _SingleflightCall] = {}
+        self._runtime_cache = MailRuntimeCache()
+        self._singleflight = SingleflightGroup()
+        self._metadata_store = MailMetadataStore(
+            lock=self._lock,
+            connect=self._connect,
+            log_table=self._LOG_TABLE,
+            log_retention_days_getter=lambda: self.mail_log_retention_days,
+            restore_hints_table=self._RESTORE_HINTS_TABLE,
+            draft_context_table=self._DRAFT_CONTEXT_TABLE,
+            folder_favorites_table=self._FOLDER_FAVORITES_TABLE,
+            visible_custom_folders_table=self._VISIBLE_CUSTOM_FOLDERS_TABLE,
+            user_preferences_table=self._USER_PREFS_TABLE,
+            standard_folders=set(self._STANDARD_FOLDERS.keys()),
+            default_preferences=dict(self._DEFAULT_PREFERENCES),
+        )
+        self._mailbox_store = MailMailboxStore(
+            lock=self._lock,
+            connect=lambda: self._connect(),
+            table=self._USER_MAILBOXES_TABLE,
+            now_iso=_utc_now_iso,
+        )
+        self._account_profile_resolver = MailAccountProfileResolver(
+            resolve_primary_mailbox_row=lambda **kwargs: self._resolve_primary_mailbox_row(**kwargs),
+            normalize_mailbox_auth_mode=lambda value, default="stored_credentials": self._normalize_mailbox_auth_mode(value, default),
+            normalize_exchange_login=normalize_exchange_login,
+            decrypt_secret=decrypt_secret,
+            get_request_session_id=lambda: get_request_session_id(),
+            get_session_context=lambda session_id, user_id: session_auth_context_service.get_session_context(
+                session_id,
+                user_id=int(user_id),
+            ),
+            resolve_session_password=lambda session_id, user_id: session_auth_context_service.resolve_session_password(
+                session_id,
+                user_id=int(user_id),
+            ),
+            normalize_signature_html=_normalize_signature_html,
+        )
+        self._message_content = MailMessageContent()
+        self._message_serializer = MailMessageSerializer(
+            inline_attachment_embed_max_size=self._INLINE_ATTACHMENT_EMBED_MAX_SIZE,
+            is_downloadable_attachment=self._message_content.is_downloadable_attachment,
+        )
+        self._folder_tree_builder = MailFolderTreeBuilder(
+            standard_folders_meta=dict(self._STANDARD_FOLDERS),
+            safe_folder_attr=self._safe_folder_attr,
+            encode_folder_id=self._encode_folder_id,
+            folder_scope_for_alias=self._folder_scope_for_alias,
+            custom_folder_root=self._custom_folder_root,
+            is_mail_folder_visible_in_tree=self._is_mail_folder_visible_in_tree,
+        )
+        self._folder_mutations = MailFolderMutations(
+            standard_folder_keys=set(self._STANDARD_FOLDERS.keys()),
+            safe_folder_attr=self._safe_folder_attr,
+            standard_folders=self._standard_folders,
+            resolve_folder=self._resolve_folder,
+            folder_scope_for_alias=self._folder_scope_for_alias,
+            decode_folder_id=self._decode_folder_id,
+            encode_folder_id=self._encode_folder_id,
+            custom_folder_root=self._custom_folder_root,
+            find_existing_child_folder=self._find_existing_child_folder,
+            serialize_folder_node=self._serialize_folder_node,
+        )
+        self._message_actions = MailMessageActions(
+            resolve_folder=self._resolve_folder,
+            encode_message_id=self._encode_message_id,
+        )
+        self._draft_lifecycle = MailDraftLifecycle()
+        self._conversation_finder = MailConversationFinder(
+            search_target_folders=lambda account, folder="inbox", folder_scope="current": self._search_target_folders(
+                account,
+                folder=folder,
+                folder_scope=folder_scope,
+            ),
+            folder_queryset=lambda folder_obj, folder_key: self._folder_queryset(folder_obj, folder_key),
+            item_conversation_key=lambda item: self._item_conversation_key(item),
+            decode_message_id=lambda message_id: self._decode_message_id(message_id),
+            resolve_folder=lambda account, folder_key: self._resolve_folder(account, folder_key),
+            search_batch_size=self._SEARCH_BATCH_SIZE,
+            search_window_limit=lambda: int(self.search_window_limit),
+        )
+        self._conversation_payloads = MailConversationPayloadBuilder(
+            search_target_folders=lambda account, folder="inbox", folder_scope="current": self._search_target_folders(
+                account,
+                folder=folder,
+                folder_scope=folder_scope,
+            ),
+            folder_queryset=lambda folder_obj, folder_key: self._folder_queryset(folder_obj, folder_key),
+            message_matches_filters=lambda item, **filters: self._message_matches_filters(item, **filters),
+            item_conversation_key=lambda item: self._item_conversation_key(item),
+            item_sender=lambda item: self._item_sender(item),
+            item_recipients=lambda item: self._item_recipients(item),
+            item_sender_person=lambda item: self._item_sender_person(item),
+            item_recipient_people=lambda item: self._item_recipient_people(item),
+            person_lookup_key=lambda person: self._person_lookup_key(person),
+            search_batch_size=self._SEARCH_BATCH_SIZE,
+            search_window_limit=lambda: int(self.search_window_limit),
+        )
+        self._message_listing = MailMessageListBuilder(
+            search_target_folders=lambda account, folder="inbox", folder_scope="current": self._search_target_folders(
+                account,
+                folder=folder,
+                folder_scope=folder_scope,
+            ),
+            folder_queryset=lambda folder_obj, folder_key, preview_only=False: self._folder_queryset(
+                folder_obj,
+                folder_key,
+                preview_only=preview_only,
+            ),
+            folder_total_hint=lambda folder_obj, unread_only=False: self._folder_total_hint(
+                folder_obj,
+                unread_only=bool(unread_only),
+            ),
+            serialize_message_preview=lambda *, item, folder_key, mailbox_id=None: self._serialize_message_preview_for_mailbox(
+                item=item,
+                folder_key=folder_key,
+                mailbox_id=mailbox_id,
+            ),
+            message_matches_filters=lambda item, **filters: self._message_matches_filters(item, **filters),
+            parse_date_filter=_parse_date_filter,
+            search_batch_size=self._SEARCH_BATCH_SIZE,
+            search_window_limit=lambda: int(self.search_window_limit),
+        )
+        self._template_store = MailTemplateStore(
+            lock=self._lock,
+            connect=self._connect,
+            table=self._TEMPLATES_TABLE,
+            id_generator=lambda: base64.urlsafe_b64encode(os.urandom(9)).decode("utf-8"),
+            now_iso=_utc_now_iso,
+        )
         if self._use_app_db and self._database_url:
             if str(self._database_url).lower().startswith("sqlite"):
                 logger.warning(
@@ -733,100 +553,28 @@ class MailService:
         except Exception:
             return self._MAIL_BOOTSTRAP_DEFAULT_LIMIT
 
-    def _cache_policy(self, bucket: str) -> _RuntimeCachePolicy:
+    def _cache_policy(self, bucket: str) -> RuntimeCachePolicy:
         normalized_bucket = _normalize_text(bucket)
         return self._CACHE_BUCKET_POLICIES.get(
             normalized_bucket,
-            _RuntimeCachePolicy(max_entries=100, ttl_sec=self.mail_cache_ttl_sec),
+            RuntimeCachePolicy(max_entries=100, ttl_sec=self.mail_cache_ttl_sec),
         )
 
     def _cache_key(self, *, user_id: int, bucket: str, extra: str = "", mailbox_scope: str = "") -> str:
-        normalized_extra = _normalize_text(extra)
-        normalized_scope = _normalize_text(mailbox_scope, "global")
-        return f"{int(user_id)}::{_normalize_text(bucket)}::{normalized_scope}::{normalized_extra}"
+        return cache_key(user_id=int(user_id), bucket=bucket, extra=extra, mailbox_scope=mailbox_scope)
 
     def _singleflight_key(self, *, user_id: int, bucket: str, extra: str = "", mailbox_scope: str = "") -> str:
-        return f"singleflight::{self._cache_key(user_id=int(user_id), bucket=bucket, extra=extra, mailbox_scope=mailbox_scope)}"
+        return singleflight_key(user_id=int(user_id), bucket=bucket, extra=extra, mailbox_scope=mailbox_scope)
 
     @classmethod
     def _estimate_cache_value_size(cls, value: Any) -> int:
-        if value is None:
-            return 0
-        if isinstance(value, (bytes, bytearray)):
-            return len(value)
-        if isinstance(value, str):
-            return len(value.encode("utf-8", "ignore"))
-        if isinstance(value, bool):
-            return 1
-        if isinstance(value, (int, float)):
-            return 8
-        if isinstance(value, dict):
-            return sum(
-                cls._estimate_cache_value_size(key) + cls._estimate_cache_value_size(item)
-                for key, item in value.items()
-            )
-        if isinstance(value, (list, tuple, set, frozenset)):
-            return sum(cls._estimate_cache_value_size(item) for item in value)
-        return len(repr(value).encode("utf-8", "ignore"))
-
-    def _remove_cache_entry_locked(self, key: str) -> _RuntimeCacheEntry | None:
-        return self._runtime_cache.pop(key, None)
-
-    def _prune_expired_cache_locked(self, *, now: datetime | None = None) -> int:
-        current_time = now or datetime.now(timezone.utc)
-        removed = 0
-        for key, entry in list(self._runtime_cache.items()):
-            if entry.expires_at > current_time:
-                continue
-            self._remove_cache_entry_locked(key)
-            removed += 1
-        return removed
-
-    def _bucket_cache_stats_locked(self, bucket: str) -> tuple[int, int]:
-        count = 0
-        total_bytes = 0
-        for entry in self._runtime_cache.values():
-            if entry.bucket != bucket:
-                continue
-            count += 1
-            total_bytes += max(0, int(entry.size_bytes or 0))
-        return count, total_bytes
-
-    def _enforce_cache_policy_locked(self, bucket: str, policy: _RuntimeCachePolicy) -> int:
-        removed = 0
-        count, total_bytes = self._bucket_cache_stats_locked(bucket)
-        while count > policy.max_entries or (
-            policy.max_total_bytes is not None and total_bytes > policy.max_total_bytes
-        ):
-            removed_key = None
-            removed_entry = None
-            for key, entry in self._runtime_cache.items():
-                if entry.bucket != bucket:
-                    continue
-                removed_key = key
-                removed_entry = entry
-                break
-            if removed_key is None or removed_entry is None:
-                break
-            self._remove_cache_entry_locked(removed_key)
-            removed += 1
-            count -= 1
-            total_bytes -= max(0, int(removed_entry.size_bytes or 0))
-        return removed
+        return estimate_cache_value_size(value)
 
     def _cache_get(self, *, user_id: int, bucket: str, extra: str = "", mailbox_scope: str = "") -> Any:
         key = self._cache_key(user_id=int(user_id), bucket=bucket, extra=extra, mailbox_scope=mailbox_scope)
         normalized_bucket = _normalize_text(bucket)
         self._set_request_metric("cache_bucket", normalized_bucket)
-        with self._cache_lock:
-            entry = self._runtime_cache.get(key)
-            if not entry:
-                return None
-            if entry.expires_at <= datetime.now(timezone.utc):
-                self._remove_cache_entry_locked(key)
-                return None
-            self._runtime_cache.move_to_end(key)
-            return entry.value
+        return self._runtime_cache.get(key)
 
     def _cache_set(
         self,
@@ -840,27 +588,14 @@ class MailService:
     ) -> Any:
         normalized_bucket = _normalize_text(bucket)
         policy = self._cache_policy(normalized_bucket)
-        ttl = max(1, int(ttl_sec or policy.ttl_sec))
-        entry_size = self._estimate_cache_value_size(value)
-        if policy.max_entry_bytes is not None and entry_size > policy.max_entry_bytes:
-            self._set_request_metric("cache_bucket", normalized_bucket)
-            return value
-        now = datetime.now(timezone.utc)
-        expires_at = now + timedelta(seconds=ttl)
         key = self._cache_key(user_id=int(user_id), bucket=normalized_bucket, extra=extra, mailbox_scope=mailbox_scope)
-        evicted = 0
-        with self._cache_lock:
-            evicted += self._prune_expired_cache_locked(now=now)
-            if key in self._runtime_cache:
-                self._remove_cache_entry_locked(key)
-            self._runtime_cache[key] = _RuntimeCacheEntry(
-                bucket=normalized_bucket,
-                expires_at=expires_at,
-                value=value,
-                size_bytes=entry_size,
-            )
-            self._runtime_cache.move_to_end(key)
-            evicted += self._enforce_cache_policy_locked(normalized_bucket, policy)
+        value, evicted = self._runtime_cache.set(
+            key,
+            bucket=normalized_bucket,
+            value=value,
+            policy=policy,
+            ttl_sec=ttl_sec,
+        )
         self._set_request_metric("cache_bucket", normalized_bucket)
         if evicted > 0:
             current_evicted = int(self.get_request_metrics().get("cache_evicted") or 0)
@@ -868,25 +603,7 @@ class MailService:
         return value
 
     def invalidate_user_cache(self, *, user_id: int, prefixes: list[str] | tuple[str, ...] | None = None) -> None:
-        normalized_prefixes = {
-            _normalize_text(prefix)
-            for prefix in (prefixes or ())
-            if _normalize_text(prefix)
-        }
-        if "message_detail" in normalized_prefixes:
-            normalized_prefixes.add("attachment_content")
-        user_prefix = f"{int(user_id)}::"
-        with self._cache_lock:
-            keys_to_delete = []
-            for key in list(self._runtime_cache.keys()):
-                if not key.startswith(user_prefix):
-                    continue
-                if normalized_prefixes:
-                    if not any(key.startswith(f"{user_prefix}{prefix}::") for prefix in normalized_prefixes):
-                        continue
-                keys_to_delete.append(key)
-            for key in keys_to_delete:
-                self._remove_cache_entry_locked(key)
+        self._runtime_cache.invalidate_user(user_id=int(user_id), prefixes=prefixes)
 
     def _cached_summary(self, *, user_id: int, mailbox_id: str = "") -> dict[str, dict[str, int]] | None:
         return self._cache_get(user_id=int(user_id), bucket="folder_summary", mailbox_scope=mailbox_id)
@@ -938,21 +655,7 @@ class MailService:
             extra=_normalize_text(message_id),
             mailbox_scope=mailbox_id,
         )
-        now = datetime.now(timezone.utc)
-        with self._cache_lock:
-            entry = self._runtime_cache.get(cache_key)
-            if not entry:
-                return
-            if entry.expires_at <= now:
-                self._remove_cache_entry_locked(cache_key)
-                return
-            value = entry.value
-            if not isinstance(value, dict):
-                return
-            next_value = dict(value)
-            next_value["is_read"] = bool(is_read)
-            entry.value = next_value
-            self._runtime_cache.move_to_end(cache_key)
+        self._runtime_cache.update_dict_value(cache_key, {"is_read": bool(is_read)})
 
     def _cached_attachment_content(
         self,
@@ -1007,34 +710,11 @@ class MailService:
         metrics[str(key)] = value
 
     def _run_singleflight(self, *, key: str, producer) -> Any:
-        with self._singleflight_lock:
-            call = self._singleflight_calls.get(key)
-            if call is None:
-                call = _SingleflightCall()
-                self._singleflight_calls[key] = call
-                leader = True
-                self._set_request_metric("singleflight_hit", 0)
-            else:
-                leader = False
-                self._set_request_metric("singleflight_hit", 1)
-
-        if not leader:
-            call.event.wait()
-            if call.error is not None:
-                raise call.error
-            return call.result
-
-        try:
-            call.result = producer()
-            return call.result
-        except Exception as exc:
-            call.error = exc
-            raise
-        finally:
-            call.event.set()
-            with self._singleflight_lock:
-                if self._singleflight_calls.get(key) is call:
-                    self._singleflight_calls.pop(key, None)
+        return self._singleflight.run(
+            key=key,
+            producer=producer,
+            on_hit=lambda hit: self._set_request_metric("singleflight_hit", hit),
+        )
 
     def _resolve_account_context(self, *, user_id: int, mailbox_id: str | None = None, require_password: bool) -> dict[str, Any]:
         normalized_user_id = int(user_id)
@@ -1094,60 +774,28 @@ class MailService:
         )
 
     def _resolve_tls_ca_bundle(self) -> str:
-        ca_bundle = self.tls_ca_bundle
-        if not ca_bundle:
-            return ""
-        ca_path = Path(ca_bundle).expanduser()
-        if not ca_path.is_file():
-            raise MailServiceError(
-                f"MAIL_TLS_CA_BUNDLE points to a missing file: {ca_path}"
-            )
-        return str(ca_path)
+        try:
+            return resolve_tls_ca_bundle(self.tls_ca_bundle)
+        except ExchangeTransportError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @staticmethod
     def _build_ca_bundle_http_adapter(ca_bundle: str):
-        import requests
-
-        class MailCABundleHTTPAdapter(requests.adapters.HTTPAdapter):
-            def cert_verify(self, conn, url, verify, cert):
-                super().cert_verify(conn=conn, url=url, verify=ca_bundle, cert=cert)
-
-            def get_connection_with_tls_context(self, request, verify, proxies=None, cert=None):
-                return super().get_connection_with_tls_context(
-                    request=request,
-                    verify=ca_bundle,
-                    proxies=proxies,
-                    cert=cert,
-                )
-
-        return MailCABundleHTTPAdapter
+        return build_ca_bundle_http_adapter(ca_bundle)
 
     @staticmethod
     def _get_no_verify_http_adapter():
-        try:
-            from exchangelib.protocol import NoVerifyHTTPAdapter
-            return NoVerifyHTTPAdapter
-        except Exception:
-            return None
+        return get_no_verify_http_adapter()
 
     @staticmethod
     def _suppress_insecure_request_warning() -> None:
-        try:
-            from urllib3.exceptions import InsecureRequestWarning
-        except Exception:
-            return
-        warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+        suppress_insecure_request_warning(warnings_api=warnings)
 
     def _resolve_exchange_http_adapter(self) -> tuple[tuple[Any, ...], Any | None]:
-        if self.verify_tls:
-            ca_bundle = self._resolve_tls_ca_bundle()
-            if ca_bundle:
-                return ("ca_bundle", ca_bundle), self._build_ca_bundle_http_adapter(ca_bundle)
-            return ("default",), None
-        adapter_cls = self._get_no_verify_http_adapter()
-        if adapter_cls is None:
-            return ("default",), None
-        return ("no_verify",), adapter_cls
+        try:
+            return resolve_exchange_http_adapter(verify_tls=self.verify_tls, ca_bundle=self.tls_ca_bundle)
+        except ExchangeTransportError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def _configure_exchange_http_adapter_for_runtime(self) -> None:
         """Apply Exchange HTTP adapter globally for lazy exchangelib requests."""
@@ -1448,91 +1096,30 @@ class MailService:
 
     @staticmethod
     def _normalize_mailbox_auth_mode(value: Any, default: str = "stored_credentials") -> str:
-        mode = _normalize_text(value, default).lower()
-        if mode in _MAILBOX_AUTH_MODES:
-            return mode
-        return default
+        return normalize_mailbox_auth_mode(value, default)
 
     @staticmethod
     def _legacy_user_mail_auth_mode(user: dict[str, Any] | None) -> str:
-        if _normalize_text((user or {}).get("mailbox_password_enc")):
-            return "stored_credentials"
-        return "primary_session" if MailService._mail_auth_mode_for_user(user) == "ad_auto" else "stored_credentials"
+        return legacy_user_mailbox_auth_mode(user)
 
     def _build_legacy_mailbox_seed(self, user: dict[str, Any] | None) -> dict[str, Any] | None:
-        if not user:
-            return None
-        mailbox_email = self._build_effective_mailbox_email(user)
-        if not mailbox_email:
-            return None
-        return {
-            "id": f"legacy-{int(user.get('id') or 0)}",
-            "user_id": int(user.get("id") or 0),
-            "label": _normalize_text(user.get("mailbox_email") or user.get("email") or mailbox_email) or "Основной ящик",
-            "mailbox_email": mailbox_email,
-            "mailbox_login": _normalize_text(user.get("mailbox_login")) or None,
-            "mailbox_password_enc": _normalize_text(user.get("mailbox_password_enc")),
-            "auth_mode": self._legacy_user_mail_auth_mode(user),
-            "is_primary": True,
-            "is_active": True,
-            "sort_order": 0,
-            "last_selected_at": None,
-            "created_at": _normalize_text(user.get("created_at")) or _utc_now_iso(),
-            "updated_at": _normalize_text(user.get("updated_at")) or _utc_now_iso(),
-        }
+        return build_legacy_mailbox_seed(
+            user,
+            mailbox_email=self._build_effective_mailbox_email(user),
+            auth_mode=self._legacy_user_mail_auth_mode(user),
+            now_iso=_utc_now_iso(),
+            default_label="Основной ящик",
+        )
 
     def _ensure_user_mailboxes_seeded(self, *, user_id: int) -> None:
         normalized_user_id = int(user_id)
-        with self._lock, self._connect() as conn:
-            existing = conn.execute(
-                f"SELECT id FROM {self._USER_MAILBOXES_TABLE} WHERE user_id = ? LIMIT 1",
-                (normalized_user_id,),
-            ).fetchone()
-            if existing is not None:
-                return
+        if self._mailbox_store.has_any(user_id=normalized_user_id):
+            return
         user = user_service.get_by_id(normalized_user_id)
         seed = self._build_legacy_mailbox_seed(user)
         if not seed:
             return
-        now_iso = _utc_now_iso()
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"""
-                INSERT OR IGNORE INTO {self._USER_MAILBOXES_TABLE}
-                (
-                    id,
-                    user_id,
-                    label,
-                    mailbox_email,
-                    mailbox_login,
-                    mailbox_password_enc,
-                    auth_mode,
-                    is_primary,
-                    is_active,
-                    sort_order,
-                    last_selected_at,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    _normalize_text(seed["id"]),
-                    normalized_user_id,
-                    _normalize_text(seed["label"]) or "Основной ящик",
-                    _normalize_text(seed["mailbox_email"]).lower(),
-                    _normalize_text(seed.get("mailbox_login")) or None,
-                    _normalize_text(seed.get("mailbox_password_enc")),
-                    _normalize_text(seed.get("auth_mode"), "stored_credentials"),
-                    True,
-                    True,
-                    int(seed.get("sort_order") or 0),
-                    _normalize_text(seed.get("last_selected_at")) or now_iso,
-                    _normalize_text(seed.get("created_at")) or now_iso,
-                    _normalize_text(seed.get("updated_at")) or now_iso,
-                ),
-            )
-            conn.commit()
+        self._mailbox_store.insert_legacy_seed(user_id=normalized_user_id, seed=seed)
 
     def _migrate_legacy_user_mailboxes(self) -> None:
         try:
@@ -1552,48 +1139,13 @@ class MailService:
     ) -> list[dict[str, Any]]:
         normalized_user_id = int(user_id)
         self._ensure_user_mailboxes_seeded(user_id=normalized_user_id)
-        sql = f"""
-            SELECT
-                id,
-                user_id,
-                label,
-                mailbox_email,
-                mailbox_login,
-                mailbox_password_enc,
-                auth_mode,
-                is_primary,
-                is_active,
-                sort_order,
-                last_selected_at,
-                created_at,
-                updated_at
-            FROM {self._USER_MAILBOXES_TABLE}
-            WHERE user_id = ?
-        """
-        params: list[Any] = [normalized_user_id]
-        if not include_inactive:
-            sql += " AND is_active = ?"
-            params.append(True)
-        sql += " ORDER BY is_primary DESC, sort_order ASC, LOWER(mailbox_email) ASC"
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(sql, tuple(params)).fetchall()
-        return [dict(row) for row in rows]
+        return self._mailbox_store.list_rows(user_id=normalized_user_id, include_inactive=include_inactive)
 
     def _touch_mailbox_selected(self, *, user_id: int, mailbox_id: str) -> None:
         normalized_mailbox_id = _normalize_text(mailbox_id)
         if not normalized_mailbox_id:
             return
-        now_iso = _utc_now_iso()
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"""
-                UPDATE {self._USER_MAILBOXES_TABLE}
-                SET last_selected_at = ?, updated_at = ?
-                WHERE user_id = ? AND id = ?
-                """,
-                (now_iso, now_iso, int(user_id), normalized_mailbox_id),
-            )
-            conn.commit()
+        self._mailbox_store.touch_selected(user_id=int(user_id), mailbox_id=normalized_mailbox_id)
 
     def _resolve_mailbox_row(
         self,
@@ -1603,45 +1155,18 @@ class MailService:
         allow_inactive: bool = False,
     ) -> dict[str, Any]:
         rows = self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=True)
-        if not rows:
-            raise MailServiceError("Mailbox email is not configured")
-        normalized_mailbox_id = _normalize_text(mailbox_id)
-        if normalized_mailbox_id:
-            for row in rows:
-                if _normalize_text(row.get("id")) == normalized_mailbox_id:
-                    if not allow_inactive and not _to_bool(row.get("is_active"), default=False):
-                        raise MailServiceError("Mailbox is inactive", status_code=409)
-                    return row
-            raise MailServiceError("Mailbox not found", status_code=404)
-
-        def _row_sort_key(row: dict[str, Any]) -> tuple[int, float, int, str]:
-            is_active = 1 if _to_bool(row.get("is_active"), default=True) else 0
-            last_selected_raw = _normalize_text(row.get("last_selected_at"))
-            try:
-                last_selected = datetime.fromisoformat(last_selected_raw.replace("Z", "+00:00")).timestamp() if last_selected_raw else 0.0
-            except Exception:
-                last_selected = 0.0
-            return (
-                is_active,
-                last_selected,
-                1 if _to_bool(row.get("is_primary"), default=False) else 0,
-                -int(row.get("sort_order") or 0),
+        try:
+            return select_mailbox_row(
+                rows,
+                mailbox_id=mailbox_id,
+                allow_inactive=allow_inactive,
             )
-
-        candidates = rows if allow_inactive else [row for row in rows if _to_bool(row.get("is_active"), default=True)]
-        if not candidates:
-            raise MailServiceError("Mailbox is inactive", status_code=409)
-        return sorted(candidates, key=_row_sort_key, reverse=True)[0]
+        except MailboxSelectionError as exc:
+            raise MailServiceError(str(exc), status_code=exc.status_code) from exc
 
     def _resolve_primary_mailbox_row(self, *, user_id: int, allow_inactive: bool = True) -> dict[str, Any] | None:
         rows = self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=True)
-        for row in rows:
-            if not _to_bool(row.get("is_primary"), default=False):
-                continue
-            if not allow_inactive and not _to_bool(row.get("is_active"), default=True):
-                continue
-            return row
-        return None
+        return primary_mailbox_row(rows, allow_inactive=allow_inactive)
 
     def _sync_primary_mailbox_to_legacy_user(self, *, user_id: int) -> None:
         user = user_service.get_by_id(int(user_id))
@@ -1694,7 +1219,6 @@ class MailService:
             normalized_login = normalized_email
 
         encrypted_password = encrypt_secret(password)
-        now_iso = _utc_now_iso()
         self._ensure_user_mailboxes_seeded(user_id=normalized_user_id)
         rows = self._list_user_mailboxes_rows(user_id=normalized_user_id, include_inactive=True)
         primary_row = next((row for row in rows if _to_bool(row.get("is_primary"), default=False)), None)
@@ -1710,81 +1234,17 @@ class MailService:
         target_id = _normalize_text((target_row or {}).get("id")) or self._generate_mailbox_id()
         next_sort_order = int((target_row or {}).get("sort_order") or 0)
         if target_row is None:
-            next_sort_order = max([int(item.get("sort_order") or 0) for item in rows] or [0]) + 1
-
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"UPDATE {self._USER_MAILBOXES_TABLE} SET is_primary = ?, updated_at = ? WHERE user_id = ? AND id <> ?",
-                (False, now_iso, normalized_user_id, target_id),
-            )
-            if target_row is None:
-                conn.execute(
-                    f"""
-                    INSERT INTO {self._USER_MAILBOXES_TABLE}
-                    (
-                        id,
-                        user_id,
-                        label,
-                        mailbox_email,
-                        mailbox_login,
-                        mailbox_password_enc,
-                        auth_mode,
-                        is_primary,
-                        is_active,
-                        sort_order,
-                        last_selected_at,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        target_id,
-                        normalized_user_id,
-                        _normalize_text(resolved_user.get("full_name") or resolved_user.get("email") or normalized_email) or normalized_email,
-                        normalized_email,
-                        normalized_login,
-                        encrypted_password,
-                        "stored_credentials",
-                        True,
-                        True,
-                        next_sort_order,
-                        now_iso,
-                        now_iso,
-                        now_iso,
-                    ),
-                )
-            else:
-                conn.execute(
-                    f"""
-                    UPDATE {self._USER_MAILBOXES_TABLE}
-                    SET
-                        label = CASE WHEN label IS NULL OR label = '' THEN ? ELSE label END,
-                        mailbox_email = ?,
-                        mailbox_login = ?,
-                        mailbox_password_enc = ?,
-                        auth_mode = ?,
-                        is_primary = ?,
-                        is_active = ?,
-                        last_selected_at = COALESCE(last_selected_at, ?),
-                        updated_at = ?
-                    WHERE user_id = ? AND id = ?
-                    """,
-                    (
-                        normalized_email,
-                        normalized_email,
-                        normalized_login,
-                        encrypted_password,
-                        "stored_credentials",
-                        True,
-                        True,
-                        now_iso,
-                        now_iso,
-                        normalized_user_id,
-                        target_id,
-                    ),
-                )
-            conn.commit()
+            next_sort_order = next_mailbox_sort_order(rows)
+        self._mailbox_store.upsert_primary_stored_credentials(
+            user_id=normalized_user_id,
+            mailbox_id=target_id,
+            label=_normalize_text(resolved_user.get("full_name") or resolved_user.get("email") or normalized_email),
+            mailbox_email=normalized_email,
+            mailbox_login=normalized_login,
+            mailbox_password_enc=encrypted_password,
+            sort_order=next_sort_order,
+            update_existing=target_row is not None,
+        )
 
         user_service.update_user(
             normalized_user_id,
@@ -1804,73 +1264,14 @@ class MailService:
         current_mailbox_id: str = "",
         require_password: bool,
     ) -> dict[str, Any]:
-        user_id = int(user.get("id") or 0)
-        primary_row = self._resolve_primary_mailbox_row(user_id=user_id, allow_inactive=True)
-        if not primary_row:
-            raise MailServiceError(
-                "Primary mailbox credentials are not configured",
-                code="MAIL_PASSWORD_REQUIRED",
-                status_code=409,
+        try:
+            return self._account_profile_resolver.resolve_primary_credentials(
+                user=user,
+                current_mailbox_id=current_mailbox_id,
+                require_password=bool(require_password),
             )
-        if current_mailbox_id and _normalize_text(primary_row.get("id")) == _normalize_text(current_mailbox_id):
-            raise MailServiceError("Shared mailbox cannot use itself as primary credentials", status_code=409)
-
-        primary_auth_mode = self._normalize_mailbox_auth_mode(primary_row.get("auth_mode"))
-        primary_email = _normalize_text(primary_row.get("mailbox_email")).lower()
-        primary_login = _normalize_text(primary_row.get("mailbox_login")).lower()
-        if not primary_login:
-            username = _normalize_text(user.get("username")).lower()
-            primary_login = normalize_exchange_login(username) if username else primary_email
-
-        password = ""
-        requires_password = False
-        requires_relogin = False
-        if primary_auth_mode == "primary_session":
-            session_id = get_request_session_id()
-            session_context = session_auth_context_service.get_session_context(session_id, user_id=user_id)
-            session_login = _normalize_text((session_context or {}).get("exchange_login")).lower()
-            if session_login:
-                primary_login = session_login
-            if require_password:
-                password = session_auth_context_service.resolve_session_password(session_id, user_id=user_id)
-                if not password:
-                    raise MailServiceError(
-                        "Mail access requires re-login",
-                        code="MAIL_RELOGIN_REQUIRED",
-                        status_code=409,
-                    )
-            else:
-                requires_relogin = not bool(
-                    session_context and session_auth_context_service.resolve_session_password(session_id, user_id=user_id)
-                )
-        else:
-            password_enc = _normalize_text(primary_row.get("mailbox_password_enc"))
-            if require_password:
-                if not password_enc:
-                    raise MailServiceError(
-                        "Primary mailbox password is not configured",
-                        code="MAIL_PASSWORD_REQUIRED",
-                        status_code=409,
-                    )
-                try:
-                    password = decrypt_secret(password_enc)
-                except SecretCryptoError as exc:
-                    raise MailServiceError(str(exc)) from exc
-                if not password:
-                    raise MailServiceError(
-                        "Primary mailbox password is empty",
-                        code="MAIL_PASSWORD_REQUIRED",
-                        status_code=409,
-                    )
-            else:
-                requires_password = not bool(password_enc)
-
-        return {
-            "login": primary_login,
-            "password": password,
-            "requires_password": requires_password,
-            "requires_relogin": requires_relogin,
-        }
+        except MailAccountProfileError as exc:
+            raise MailServiceError(str(exc), code=exc.code, status_code=exc.status_code) from exc
 
     def _build_mailbox_profile(
         self,
@@ -1879,120 +1280,14 @@ class MailService:
         mailbox_row: dict[str, Any],
         require_password: bool,
     ) -> dict[str, Any]:
-        auth_mode = self._normalize_mailbox_auth_mode(mailbox_row.get("auth_mode"))
-        email = _normalize_text(mailbox_row.get("mailbox_email")).lower()
-        login = _normalize_text(mailbox_row.get("mailbox_login")).lower()
-        signature = _normalize_signature_html(user.get("mail_signature_html"))
-        if not email:
-            raise MailServiceError("Mailbox email is not configured")
-        if auth_mode == "primary_credentials":
-            primary_credentials = self._resolve_primary_mailbox_credentials(
+        try:
+            return self._account_profile_resolver.build_profile(
                 user=user,
-                current_mailbox_id=_normalize_text(mailbox_row.get("id")),
+                mailbox_row=mailbox_row,
                 require_password=require_password,
             )
-            login = _normalize_text(primary_credentials.get("login")).lower()
-        elif auth_mode == "primary_session":
-            session_id = get_request_session_id()
-            session_context = session_auth_context_service.get_session_context(
-                session_id,
-                user_id=int(user.get("id") or 0),
-            )
-            session_login = _normalize_text((session_context or {}).get("exchange_login")).lower()
-            if session_login:
-                login = session_login
-            elif not login:
-                username = _normalize_text((user or {}).get("username")).lower()
-                login = normalize_exchange_login(username) if username else ""
-        elif not login:
-            login = email
-        if not login:
-            raise MailServiceError("Mailbox login is not configured")
-
-        password = ""
-        mail_requires_password = False
-        mail_requires_relogin = False
-        if require_password:
-            if auth_mode == "primary_credentials":
-                password = _normalize_text(primary_credentials.get("password"))
-            elif auth_mode == "primary_session":
-                session_id = get_request_session_id()
-                session_context = session_auth_context_service.get_session_context(
-                    session_id,
-                    user_id=int(user.get("id") or 0),
-                )
-                if not session_context:
-                    raise MailServiceError(
-                        "Mail access requires re-login",
-                        code="MAIL_RELOGIN_REQUIRED",
-                        status_code=409,
-                    )
-                password = session_auth_context_service.resolve_session_password(session_id, user_id=int(user.get("id") or 0))
-                if not password:
-                    raise MailServiceError(
-                        "Mail access requires re-login",
-                        code="MAIL_RELOGIN_REQUIRED",
-                        status_code=409,
-                    )
-            else:
-                password_enc = _normalize_text(mailbox_row.get("mailbox_password_enc"))
-                if not password_enc:
-                    raise MailServiceError(
-                        "Mailbox password is not configured",
-                        code="MAIL_PASSWORD_REQUIRED",
-                        status_code=409,
-                    )
-                try:
-                    password = decrypt_secret(password_enc)
-                except SecretCryptoError as exc:
-                    raise MailServiceError(str(exc)) from exc
-                if not password:
-                    raise MailServiceError(
-                        "Mailbox password is empty",
-                        code="MAIL_PASSWORD_REQUIRED",
-                        status_code=409,
-                    )
-        else:
-            if auth_mode == "primary_credentials":
-                mail_requires_password = bool(primary_credentials.get("requires_password"))
-                mail_requires_relogin = bool(primary_credentials.get("requires_relogin"))
-            elif auth_mode == "primary_session":
-                session_id = get_request_session_id()
-                session_context = session_auth_context_service.get_session_context(
-                    session_id,
-                    user_id=int(user.get("id") or 0),
-                )
-                session_login = _normalize_text((session_context or {}).get("exchange_login")).lower()
-                if session_login:
-                    login = session_login
-                mail_requires_relogin = not bool(
-                    session_context and session_auth_context_service.resolve_session_password(session_id, user_id=int(user.get("id") or 0))
-                )
-            else:
-                mail_requires_password = not bool(_normalize_text(mailbox_row.get("mailbox_password_enc")))
-
-        mail_auth_mode = (
-            "ad_auto"
-            if auth_mode == "primary_session"
-            else "primary_credentials"
-            if auth_mode == "primary_credentials"
-            else "manual"
-        )
-        return {
-            "user": user,
-            "mailbox_id": _normalize_text(mailbox_row.get("id")),
-            "label": _normalize_text(mailbox_row.get("label")) or email,
-            "email": email,
-            "login": login,
-            "password": password,
-            "signature": signature,
-            "mail_auth_mode": mail_auth_mode,
-            "mail_requires_password": mail_requires_password,
-            "mail_requires_relogin": mail_requires_relogin,
-            "is_primary": _to_bool(mailbox_row.get("is_primary"), default=False),
-            "is_active": _to_bool(mailbox_row.get("is_active"), default=True),
-            "mail_is_configured": bool(email and login and not mail_requires_password and not mail_requires_relogin),
-        }
+        except MailAccountProfileError as exc:
+            raise MailServiceError(str(exc), code=exc.code, status_code=exc.status_code) from exc
 
     def _get_mailbox_unread_count(self, *, user_id: int, mailbox_id: str) -> int:
         cached = self._cached_unread_count(user_id=int(user_id), mailbox_scope=_normalize_text(mailbox_id))
@@ -2026,27 +1321,15 @@ class MailService:
             mailbox_row=mailbox_row,
             require_password=False,
         )
-        return {
-            "id": profile["mailbox_id"],
-            "label": profile["label"],
-            "mailbox_email": profile["email"],
-            "mailbox_login": _normalize_text(mailbox_row.get("mailbox_login")) or None,
-            "effective_mailbox_login": profile["login"] or None,
-            "auth_mode": _normalize_text(mailbox_row.get("auth_mode"), "stored_credentials"),
-            "mail_auth_mode": profile["mail_auth_mode"],
-            "is_primary": bool(profile["is_primary"]),
-            "is_active": bool(profile["is_active"]),
-            "is_selected": bool(selected),
-            "mail_requires_password": bool(profile["mail_requires_password"]),
-            "mail_requires_relogin": bool(profile["mail_requires_relogin"]),
-            "mail_is_configured": bool(profile["mail_is_configured"]),
-            "mail_signature_html": _normalize_signature_html(user.get("mail_signature_html")) or None,
-            "unread_count": max(0, int(unread_count or 0)),
-            "unread_count_state": _normalize_text(unread_count_state, "deferred"),
-            "last_selected_at": _normalize_text(mailbox_row.get("last_selected_at")) or None,
-            "sort_order": int(mailbox_row.get("sort_order") or 0),
-            "mail_updated_at": _normalize_text(user.get("mail_updated_at")) or None,
-        }
+        return serialize_mailbox_entry(
+            user=user,
+            mailbox_row=mailbox_row,
+            profile=profile,
+            signature_html=_normalize_signature_html(user.get("mail_signature_html")),
+            unread_count=unread_count,
+            unread_count_state=unread_count_state,
+            selected=selected,
+        )
 
     def list_user_mailboxes(
         self,
@@ -2190,59 +1473,29 @@ class MailService:
         existing_rows = self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=True)
         normalized_email = _normalize_text(verified["mailbox_email"]).lower()
         normalized_login = _normalize_text(verified["effective_mailbox_login"]).lower()
-        if any(_normalize_text(item.get("mailbox_email")).lower() == normalized_email for item in existing_rows):
+        if has_duplicate_mailbox_email(existing_rows, mailbox_email=normalized_email):
             raise MailServiceError("Mailbox is already connected", status_code=409)
         row_id = self._generate_mailbox_id()
-        now_iso = _utc_now_iso()
         next_is_primary = bool(is_primary) or len(existing_rows) == 0
         if normalized_auth_mode == "primary_credentials" and next_is_primary:
             raise MailServiceError("Shared mailbox cannot be primary", status_code=409)
-        next_sort_order = max([int(item.get("sort_order") or 0) for item in existing_rows] or [0]) + 1
+        next_sort_order = next_mailbox_sort_order(existing_rows)
         if normalized_auth_mode == "stored_credentials":
             encrypted_password = encrypt_secret(password_for_verify)
-        with self._lock, self._connect() as conn:
-            if next_is_primary:
-                conn.execute(
-                    f"UPDATE {self._USER_MAILBOXES_TABLE} SET is_primary = ?, updated_at = ? WHERE user_id = ?",
-                    (False, now_iso, int(user_id)),
-                )
-            conn.execute(
-                f"""
-                INSERT INTO {self._USER_MAILBOXES_TABLE}
-                (
-                    id,
-                    user_id,
-                    label,
-                    mailbox_email,
-                    mailbox_login,
-                    mailbox_password_enc,
-                    auth_mode,
-                    is_primary,
-                    is_active,
-                    sort_order,
-                    last_selected_at,
-                    created_at,
-                    updated_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    row_id,
-                    int(user_id),
-                    _normalize_text(label) or normalized_email,
-                    normalized_email,
-                    normalized_login if normalized_auth_mode == "stored_credentials" else "",
-                    encrypted_password,
-                    normalized_auth_mode,
-                    bool(next_is_primary),
-                    bool(is_active),
-                    next_sort_order,
-                    now_iso if next_is_primary else None,
-                    now_iso,
-                    now_iso,
-                ),
-            )
-            conn.commit()
+        self._mailbox_store.insert_row(
+            user_id=int(user_id),
+            mailbox_id=row_id,
+            label=_normalize_text(label) or normalized_email,
+            mailbox_email=normalized_email,
+            mailbox_login=normalized_login if normalized_auth_mode == "stored_credentials" else "",
+            mailbox_password_enc=encrypted_password,
+            auth_mode=normalized_auth_mode,
+            is_primary=bool(next_is_primary),
+            is_active=bool(is_active),
+            sort_order=next_sort_order,
+            selected=bool(next_is_primary),
+            clear_existing_primary=bool(next_is_primary),
+        )
         if next_is_primary:
             self._sync_primary_mailbox_to_legacy_user(user_id=int(user_id))
         self.invalidate_user_cache(user_id=int(user_id))
@@ -2337,54 +1590,29 @@ class MailService:
                 next_password_enc = encrypt_secret(next_password_raw)
 
         existing_rows = self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=True)
-        if any(
-            _normalize_text(item.get("id")) != _normalize_text(mailbox_id)
-            and _normalize_text(item.get("mailbox_email")).lower() == next_email
-            for item in existing_rows
+        if has_duplicate_mailbox_email(
+            existing_rows,
+            mailbox_email=next_email,
+            exclude_mailbox_id=_normalize_text(mailbox_id),
         ):
             raise MailServiceError("Mailbox is already connected", status_code=409)
 
         if not next_is_active and next_is_primary:
             raise MailServiceError("Primary mailbox cannot be inactive", status_code=409)
 
-        now_iso = _utc_now_iso()
-        with self._lock, self._connect() as conn:
-            if next_is_primary:
-                conn.execute(
-                    f"UPDATE {self._USER_MAILBOXES_TABLE} SET is_primary = ?, updated_at = ? WHERE user_id = ? AND id <> ?",
-                    (False, now_iso, int(user_id), _normalize_text(mailbox_id)),
-                )
-            conn.execute(
-                f"""
-                UPDATE {self._USER_MAILBOXES_TABLE}
-                SET
-                    label = ?,
-                    mailbox_email = ?,
-                    mailbox_login = ?,
-                    mailbox_password_enc = ?,
-                    auth_mode = ?,
-                    is_primary = ?,
-                    is_active = ?,
-                    last_selected_at = CASE WHEN ? THEN ? ELSE last_selected_at END,
-                    updated_at = ?
-                WHERE user_id = ? AND id = ?
-                """,
-                (
-                    next_label or next_email,
-                    next_email,
-                    next_login or None,
-                    next_password_enc,
-                    next_auth_mode,
-                    bool(next_is_primary),
-                    bool(next_is_active),
-                    bool(selected is not _UNSET and bool(selected)),
-                    now_iso,
-                    now_iso,
-                    int(user_id),
-                    _normalize_text(mailbox_id),
-                ),
-            )
-            conn.commit()
+        self._mailbox_store.update_row(
+            user_id=int(user_id),
+            mailbox_id=_normalize_text(mailbox_id),
+            label=next_label or next_email,
+            mailbox_email=next_email,
+            mailbox_login=next_login or "",
+            mailbox_password_enc=next_password_enc,
+            auth_mode=next_auth_mode,
+            is_primary=bool(next_is_primary),
+            is_active=bool(next_is_active),
+            selected=bool(selected is not _UNSET and bool(selected)),
+            clear_existing_primary=bool(next_is_primary),
+        )
         if next_is_primary:
             self._sync_primary_mailbox_to_legacy_user(user_id=int(user_id))
         self.invalidate_user_cache(user_id=int(user_id))
@@ -2403,218 +1631,74 @@ class MailService:
         row = self._resolve_mailbox_row(user_id=int(user_id), mailbox_id=mailbox_id, allow_inactive=True)
         if _to_bool(row.get("is_primary"), default=False):
             raise MailServiceError("Primary mailbox cannot be deleted until another mailbox is primary", status_code=409)
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"DELETE FROM {self._USER_MAILBOXES_TABLE} WHERE user_id = ? AND id = ?",
-                (int(user_id), _normalize_text(mailbox_id)),
-            )
-            conn.commit()
+        self._mailbox_store.delete_row(user_id=int(user_id), mailbox_id=_normalize_text(mailbox_id))
         self.invalidate_user_cache(user_id=int(user_id))
         return {"ok": True, "mailbox_id": _normalize_text(mailbox_id)}
 
     def _maybe_cleanup_message_log(self) -> None:
-        now = datetime.now(timezone.utc)
-        if self._last_log_cleanup_at and (now - self._last_log_cleanup_at) < timedelta(hours=1):
-            return
-        self._cleanup_message_log()
-        self._last_log_cleanup_at = now
+        self._metadata_store.maybe_cleanup_message_log()
 
     def _cleanup_message_log(self) -> None:
-        retention_days = self.mail_log_retention_days
-        if retention_days <= 0:
-            return
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=retention_days)).isoformat()
-        try:
-            with self._lock, self._connect() as conn:
-                cursor = conn.execute(
-                    f"DELETE FROM {self._LOG_TABLE} WHERE sent_at < ?",
-                    (cutoff,),
-                )
-                conn.commit()
-                deleted = int(cursor.rowcount or 0)
-            if deleted > 0:
-                logger.info(
-                    "Mail log retention cleanup completed: deleted=%s retention_days=%s",
-                    deleted,
-                    retention_days,
-                )
-        except Exception as exc:
-            logger.warning("Mail log retention cleanup failed: %s", exc)
+        self._metadata_store.cleanup_message_log()
 
     @staticmethod
     def _encode_message_id(folder: str, exchange_id: str, mailbox_id: str | None = None) -> str:
-        normalized_mailbox_id = _normalize_text(mailbox_id)
-        if normalized_mailbox_id:
-            raw = f"v2::{normalized_mailbox_id}::{_normalize_text(folder, 'inbox')}::{_normalize_text(exchange_id)}"
-        else:
-            raw = f"{_normalize_text(folder, 'inbox')}::{_normalize_text(exchange_id)}"
-        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8").rstrip("=")
+        return encode_message_id(folder, exchange_id, mailbox_id)
 
     @staticmethod
     def _decode_message_ref(token: str) -> tuple[str, str, str]:
-        value = _normalize_text(token)
-        if not value:
-            raise MailServiceError("Message id is required")
-        padded = value + "=" * ((4 - len(value) % 4) % 4)
         try:
-            raw = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
-        except Exception as exc:
-            raise MailServiceError("Invalid message id") from exc
-        mailbox_id = ""
-        if raw.startswith("v2::"):
-            parts = raw.split("::", 3)
-            if len(parts) != 4:
-                raise MailServiceError("Invalid message id payload")
-            _, mailbox_id, folder, exchange_id = parts
-        else:
-            if "::" not in raw:
-                raise MailServiceError("Invalid message id payload")
-            folder, exchange_id = raw.split("::", 1)
-        if not exchange_id:
-            raise MailServiceError("Invalid message id payload")
-        return _normalize_text(folder, "inbox").lower(), exchange_id, _normalize_text(mailbox_id)
+            return decode_message_ref(token)
+        except MailReferenceError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @staticmethod
     def _decode_message_id(token: str) -> tuple[str, str]:
-        folder, exchange_id, _mailbox_id = MailService._decode_message_ref(token)
-        return folder, exchange_id
+        try:
+            return decode_message_id(token)
+        except MailReferenceError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @staticmethod
     def _encode_folder_id(scope: str, exchange_id: str) -> str:
-        raw = f"{_normalize_text(scope, 'mailbox')}::{_normalize_text(exchange_id)}"
-        return base64.urlsafe_b64encode(raw.encode("utf-8")).decode("utf-8").rstrip("=")
+        return encode_folder_id(scope, exchange_id)
 
     @staticmethod
     def _decode_folder_id(token: str) -> tuple[str, str]:
-        value = _normalize_text(token)
-        if not value:
-            raise MailServiceError("Folder id is required")
-        padded = value + "=" * ((4 - len(value) % 4) % 4)
         try:
-            raw = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
-        except Exception as exc:
-            raise MailServiceError("Invalid folder id") from exc
-        if "::" not in raw:
-            raise MailServiceError("Invalid folder id payload")
-        scope, exchange_id = raw.split("::", 1)
-        if not exchange_id:
-            raise MailServiceError("Invalid folder id payload")
-        return _normalize_text(scope, "mailbox").lower(), exchange_id
+            return decode_folder_id(token)
+        except MailReferenceError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @staticmethod
     def _encode_attachment_token(attachment_id: str, mailbox_id: str | None = None) -> str:
-        value = _normalize_text(attachment_id)
-        if not value:
-            return ""
-        # Exchange attachment ids are already compact base64-like strings. Re-encoding
-        # them into another base64 wrapper creates very long path segments that
-        # HTTP.sys rejects before the request reaches FastAPI. Keep only a minimal
-        # URL-safe transform and rely on message_id/mailbox_id for mailbox scope.
-        escaped = (
-            value
-            .replace("~", "~~")
-            .replace("-", "~d")
-            .replace("_", "~u")
-            .replace("+", "-")
-            .replace("/", "_")
-            .rstrip("=")
-        )
-        return f"{MailService._ATTACHMENT_TOKEN_PREFIX}{escaped}"
+        return encode_attachment_token(attachment_id, mailbox_id)
 
     @staticmethod
     def _decode_attachment_ref(token: str) -> tuple[str, str]:
-        value = _normalize_text(token)
-        if not value:
-            raise MailServiceError("Attachment token is required")
-        if value.startswith(MailService._ATTACHMENT_TOKEN_PREFIX):
-            encoded_part = value[len(MailService._ATTACHMENT_TOKEN_PREFIX):]
-            if not encoded_part:
-                raise MailServiceError("Attachment token payload is empty")
-            decoded_chars: list[str] = []
-            index = 0
-            while index < len(encoded_part):
-                current = encoded_part[index]
-                if current == "~":
-                    if index + 1 >= len(encoded_part):
-                        raise MailServiceError("Attachment token payload is invalid")
-                    marker = encoded_part[index + 1]
-                    if marker == "~":
-                        decoded_chars.append("~")
-                    elif marker == "d":
-                        decoded_chars.append("-")
-                    elif marker == "u":
-                        decoded_chars.append("_")
-                    else:
-                        raise MailServiceError("Attachment token payload is invalid")
-                    index += 2
-                    continue
-                if current == "-":
-                    decoded_chars.append("+")
-                elif current == "_":
-                    decoded_chars.append("/")
-                else:
-                    decoded_chars.append(current)
-                index += 1
-            normalized_attachment_id = _normalize_text("".join(decoded_chars))
-            if not normalized_attachment_id:
-                raise MailServiceError("Attachment token payload is invalid")
-            if re.fullmatch(r"[A-Za-z0-9+/]+", normalized_attachment_id or "") and (len(normalized_attachment_id) % 4):
-                normalized_attachment_id = normalized_attachment_id + "=" * ((4 - len(normalized_attachment_id) % 4) % 4)
-            return "", normalized_attachment_id
-        if not value.startswith(MailService._ATTACHMENT_TOKEN_PREFIX_LEGACY):
-            raise MailServiceError("Attachment token format is invalid")
-        encoded_part = value[len(MailService._ATTACHMENT_TOKEN_PREFIX_LEGACY):]
-        if not encoded_part:
-            raise MailServiceError("Attachment token payload is empty")
-        padded = encoded_part + "=" * ((4 - len(encoded_part) % 4) % 4)
         try:
-            raw = base64.urlsafe_b64decode(padded.encode("utf-8")).decode("utf-8")
-        except Exception as exc:
-            raise MailServiceError("Attachment token payload is invalid") from exc
-        normalized_raw = _normalize_text(raw)
-        if not normalized_raw:
-            raise MailServiceError("Attachment token payload is invalid")
-        if normalized_raw.startswith("v2::"):
-            parts = normalized_raw.split("::", 2)
-            if len(parts) != 3:
-                raise MailServiceError("Attachment token payload is invalid")
-            _, mailbox_id, attachment_id = parts
-            resolved_attachment_id = _normalize_text(attachment_id)
-            if not resolved_attachment_id:
-                raise MailServiceError("Attachment token payload is invalid")
-            return _normalize_text(mailbox_id), resolved_attachment_id
-        return "", normalized_raw
+            return decode_attachment_ref(token)
+        except MailReferenceError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @staticmethod
     def _decode_attachment_token(token: str) -> str:
-        _mailbox_id, attachment_id = MailService._decode_attachment_ref(token)
-        return attachment_id
+        try:
+            return decode_attachment_token(token)
+        except MailReferenceError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @staticmethod
     def _resolve_mailbox_scope(*scopes: str | None) -> str:
-        for value in scopes:
-            normalized = _normalize_text(value)
-            if normalized:
-                return normalized
-        return ""
+        return resolve_mailbox_scope(*scopes)
 
     @staticmethod
     def _make_scoped_storage_key(*, mailbox_id: str | None = None, value: str) -> str:
-        normalized_value = _normalize_text(value)
-        normalized_mailbox_id = _normalize_text(mailbox_id)
-        if not normalized_value:
-            return ""
-        if not normalized_mailbox_id:
-            return normalized_value
-        return f"{normalized_mailbox_id}::{normalized_value}"
+        return make_scoped_storage_key(mailbox_id=mailbox_id, value=value)
 
     @staticmethod
     def _split_scoped_storage_key(value: str) -> tuple[str, str]:
-        normalized = _normalize_text(value)
-        if "::" not in normalized:
-            return "", normalized
-        mailbox_id, payload = normalized.split("::", 1)
-        return _normalize_text(mailbox_id), _normalize_text(payload)
+        return split_scoped_storage_key(value)
 
     def _resolve_mailbox_id_from_message(self, *, mailbox_id: str | None = None, message_id: str | None = None) -> str:
         normalized_mailbox_id = _normalize_text(mailbox_id)
@@ -2653,11 +1737,13 @@ class MailService:
         reply_to_message_id: str | None = None,
         forward_message_id: str | None = None,
     ) -> str:
-        return self._resolve_mailbox_scope(
-            mailbox_id,
-            self._resolve_mailbox_id_from_message(message_id=draft_id),
-            self._resolve_mailbox_id_from_message(message_id=reply_to_message_id),
-            self._resolve_mailbox_id_from_message(message_id=forward_message_id),
+        return resolve_outbound_mailbox_id(
+            mailbox_id=mailbox_id,
+            draft_id=draft_id,
+            reply_to_message_id=reply_to_message_id,
+            forward_message_id=forward_message_id,
+            mailbox_id_from_message=lambda value: self._resolve_mailbox_id_from_message(message_id=value),
+            mailbox_scope_resolver=self._resolve_mailbox_scope,
         )
 
     def resolve_attachment_id(self, token_or_id: str) -> str:
@@ -2671,110 +1757,47 @@ class MailService:
 
     @staticmethod
     def _normalize_attachment_id_candidate(value: Any) -> str:
-        if value is None:
-            return ""
-        if isinstance(value, bytes):
-            try:
-                value = value.decode("utf-8", errors="ignore")
-            except Exception:
-                value = str(value)
-        if not isinstance(value, (str, int, float)):
-            return ""
-        normalized = _normalize_text(value)
-        if not normalized or normalized.lower() in {"none", "null"}:
-            return ""
-        if normalized.startswith("<") and normalized.endswith(">"):
-            return ""
-        return normalized
+        return normalize_attachment_id_candidate(value)
 
     @staticmethod
     def _extract_attachment_id_from_repr(value: Any) -> str:
-        raw = _normalize_text(value)
-        if not raw:
-            return ""
-        for pattern in (
-            r"(?:^|[({,\s])id=['\"]([^'\"]+)['\"]",
-            r"(?:^|[({,\s])attachment_id=['\"]([^'\"]+)['\"]",
-        ):
-            match = re.search(pattern, raw)
-            if match and _normalize_text(match.group(1)):
-                return _normalize_text(match.group(1))
-        if "<" not in raw and ">" not in raw and not any(ch.isspace() for ch in raw):
-            return raw
-        return ""
+        return extract_attachment_id_from_repr(value)
 
     @classmethod
     def _extract_attachment_raw_id(cls, attachment: Any) -> str:
-        attachment_id = getattr(attachment, "attachment_id", None)
-        item_id = getattr(attachment, "item_id", None)
-        for candidate in (
-            getattr(attachment_id, "id", None),
-            getattr(attachment_id, "attachment_id", None),
-            getattr(attachment_id, "value", None),
-            getattr(attachment, "id", None),
-            getattr(item_id, "id", None),
-            getattr(item_id, "item_id", None),
-            attachment_id if isinstance(attachment_id, (str, int, float, bytes)) else None,
-        ):
-            normalized = cls._normalize_attachment_id_candidate(candidate)
-            if normalized:
-                return normalized
-        for candidate in (attachment_id, item_id, attachment):
-            normalized = cls._extract_attachment_id_from_repr(candidate)
-            if normalized:
-                return normalized
-        return ""
+        return extract_attachment_raw_id(attachment)
 
     @staticmethod
     def _normalize_attachment_content_id(value: Any) -> str:
-        normalized = _normalize_text(value)
-        if normalized.lower().startswith("cid:"):
-            normalized = normalized[4:]
-        normalized = normalized.strip().strip("<>").strip()
-        return normalized.lower()
+        return normalize_attachment_content_id(value)
 
     @staticmethod
     def _build_inline_attachment_src(*, message_id: str, attachment_ref: str) -> str | None:
-        safe_message_id = _normalize_text(message_id)
-        safe_attachment_ref = _normalize_text(attachment_ref)
-        if not safe_message_id or not safe_attachment_ref:
-            return None
-        quoted_message_id = quote(safe_message_id, safe="")
-        quoted_attachment_ref = quote(safe_attachment_ref, safe="")
-        return f"/api/v1/mail/messages/{quoted_message_id}/attachments/{quoted_attachment_ref}?disposition=inline"
+        return build_inline_attachment_src(message_id=message_id, attachment_ref=attachment_ref)
 
     @staticmethod
     def _mail_auth_mode_for_user(user: dict | None) -> str:
-        auth_source = str((user or {}).get("auth_source") or "local").strip().lower()
-        return "ad_auto" if auth_source == "ldap" else "manual"
+        return mail_auth_mode_for_user(user)
 
     def _build_effective_mailbox_email(self, user: dict | None) -> str:
-        effective = _normalize_text((user or {}).get("mailbox_email") or (user or {}).get("email")).lower()
-        if effective:
-            return effective
-        auth_source = str((user or {}).get("auth_source") or "local").strip().lower()
-        if auth_source == "ldap":
-            return build_default_ldap_mailbox_email((user or {}).get("username"))
-        return ""
+        return build_effective_mailbox_email(
+            user,
+            ldap_email_builder=build_default_ldap_mailbox_email,
+        )
 
     def _build_effective_mailbox_login(self, user: dict | None) -> str:
-        auth_source = str((user or {}).get("auth_source") or "local").strip().lower()
-        if auth_source == "ldap":
+        session_context = None
+        if mail_auth_mode_for_user(user) == "ad_auto":
             session_id = get_request_session_id()
             session_context = session_auth_context_service.get_session_context(
                 session_id,
                 user_id=int((user or {}).get("id") or 0),
             )
-            session_login = _normalize_text((session_context or {}).get("exchange_login")).lower()
-            if session_login:
-                return session_login
-            username = _normalize_text((user or {}).get("username")).lower()
-            return normalize_exchange_login(username) if username else ""
-
-        explicit_login = _normalize_text((user or {}).get("mailbox_login")).lower()
-        if explicit_login:
-            return explicit_login
-        return _normalize_text((user or {}).get("mailbox_email") or (user or {}).get("email")).lower()
+        return build_effective_mailbox_login(
+            user,
+            session_context=session_context,
+            exchange_login_normalizer=normalize_exchange_login,
+        )
 
     @classmethod
     def classify_mail_error_code(cls, value: Any) -> str | None:
@@ -2790,33 +1813,7 @@ class MailService:
     def invalidate_saved_password(self, *, user_id: int, mailbox_id: str | None = None) -> None:
         normalized_mailbox_id = _normalize_text(mailbox_id)
         try:
-            with self._lock, self._connect() as conn:
-                target_mailbox_id = normalized_mailbox_id
-                if not target_mailbox_id:
-                    row = conn.execute(
-                        f"""
-                        SELECT id
-                        FROM {self._USER_MAILBOXES_TABLE}
-                        WHERE user_id = ? AND auth_mode = 'stored_credentials'
-                        ORDER BY is_primary DESC,
-                                 CASE WHEN last_selected_at IS NULL THEN 1 ELSE 0 END,
-                                 last_selected_at DESC,
-                                 sort_order ASC
-                        LIMIT 1
-                        """,
-                        (int(user_id),),
-                    ).fetchone()
-                    target_mailbox_id = _normalize_text((dict(row) if row is not None else {}).get("id"))
-                if target_mailbox_id:
-                    conn.execute(
-                        f"""
-                        UPDATE {self._USER_MAILBOXES_TABLE}
-                        SET mailbox_password_enc = '', updated_at = ?
-                        WHERE user_id = ? AND id = ?
-                        """,
-                        (_utc_now_iso(), int(user_id), target_mailbox_id),
-                    )
-                    conn.commit()
+            self._mailbox_store.clear_saved_password(user_id=int(user_id), mailbox_id=normalized_mailbox_id)
         except Exception:
             logger.warning(
                 "Failed to clear saved mailbox password for user_id=%s mailbox_id=%s",
@@ -2874,28 +1871,16 @@ class MailService:
     def _create_account(self, *, email: str, login: str, password: str):
         self._configure_exchange_http_adapter_for_runtime()
         try:
-            from exchangelib import Account, Configuration, Credentials, DELEGATE, NTLM
-        except Exception as exc:
-            raise MailServiceError("exchangelib package is not installed") from exc
-
-        config_kwargs = {
-            "credentials": Credentials(username=login, password=password),
-            "auth_type": NTLM,
-        }
-        ews_url = self.exchange_ews_url
-        if ews_url:
-            config_kwargs["service_endpoint"] = ews_url
-        else:
-            config_kwargs["server"] = self.exchange_host
-
-        with self._exchange_protocol_context():
-            cfg = Configuration(**config_kwargs)
-            return Account(
-                primary_smtp_address=email,
-                config=cfg,
-                autodiscover=False,
-                access_type=DELEGATE,
+            return create_exchange_account(
+                email=email,
+                login=login,
+                password=password,
+                ews_url=self.exchange_ews_url,
+                exchange_host=self.exchange_host,
+                protocol_context=self._exchange_protocol_context(),
             )
+        except ExchangeTransportError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @staticmethod
     def _safe_folder_attr(target, attr_name: str):
@@ -2918,125 +1903,37 @@ class MailService:
         return {key: value for key, value in mapping.items() if value is not None}
 
     def _list_favorite_folder_ids(self, *, user_id: int, mailbox_id: str | None = None) -> set[str]:
-        normalized_mailbox_id = _normalize_text(mailbox_id)
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT folder_id FROM {self._FOLDER_FAVORITES_TABLE} WHERE user_id = ?",
-                (int(user_id),),
-            ).fetchall()
-        scoped_values: set[str] = set()
-        legacy_values: set[str] = set()
-        for row in rows:
-            stored_value = _normalize_text(row["folder_id"])
-            scoped_mailbox_id, payload = self._split_scoped_storage_key(stored_value)
-            if not payload:
-                continue
-            if scoped_mailbox_id:
-                if scoped_mailbox_id == normalized_mailbox_id:
-                    scoped_values.add(payload)
-            else:
-                legacy_values.add(payload)
-        return scoped_values or legacy_values
+        return self._metadata_store.list_favorite_folder_ids(user_id=int(user_id), mailbox_id=mailbox_id)
 
     def _list_visible_custom_folder_ids(self, *, user_id: int, mailbox_id: str | None = None) -> set[str]:
-        normalized_mailbox_id = _normalize_text(mailbox_id)
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT folder_id FROM {self._VISIBLE_CUSTOM_FOLDERS_TABLE} WHERE user_id = ?",
-                (int(user_id),),
-            ).fetchall()
-        scoped_values: set[str] = set()
-        legacy_values: set[str] = set()
-        for row in rows:
-            stored_value = _normalize_text(row["folder_id"])
-            scoped_mailbox_id, payload = self._split_scoped_storage_key(stored_value)
-            if not payload or payload in self._STANDARD_FOLDERS:
-                continue
-            if scoped_mailbox_id:
-                if scoped_mailbox_id == normalized_mailbox_id:
-                    scoped_values.add(payload)
-            else:
-                legacy_values.add(payload)
-        return scoped_values or legacy_values
+        return self._metadata_store.list_visible_custom_folder_ids(user_id=int(user_id), mailbox_id=mailbox_id)
 
     def _set_custom_folder_visible(self, *, user_id: int, mailbox_id: str | None = None, folder_id: str, visible: bool) -> None:
-        normalized_folder_id = _normalize_text(folder_id)
-        if not normalized_folder_id or normalized_folder_id in self._STANDARD_FOLDERS:
-            return
-        scoped_folder_id = self._make_scoped_storage_key(mailbox_id=mailbox_id, value=normalized_folder_id)
-        with self._lock, self._connect() as conn:
-            if visible:
-                conn.execute(
-                    f"""
-                    INSERT INTO {self._VISIBLE_CUSTOM_FOLDERS_TABLE} (user_id, folder_id, created_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(user_id, folder_id) DO NOTHING
-                    """,
-                    (int(user_id), scoped_folder_id, _utc_now_iso()),
-                )
-            else:
-                conn.execute(
-                    f"DELETE FROM {self._VISIBLE_CUSTOM_FOLDERS_TABLE} WHERE user_id = ? AND folder_id IN (?, ?)",
-                    (int(user_id), scoped_folder_id, normalized_folder_id),
-                )
-            conn.commit()
+        self._metadata_store.set_custom_folder_visible(
+            user_id=int(user_id),
+            mailbox_id=mailbox_id,
+            folder_id=folder_id,
+            visible=bool(visible),
+        )
 
     def _purge_custom_folder_visibility(self, *, user_id: int, folder_ids: set[str]) -> None:
-        normalized_ids = sorted({
-            _normalize_text(folder_id)
-            for folder_id in (folder_ids or set())
-            if _normalize_text(folder_id) and _normalize_text(folder_id) not in self._STANDARD_FOLDERS
-        })
-        if not normalized_ids:
-            return
-        with self._lock, self._connect() as conn:
-            conn.executemany(
-                f"DELETE FROM {self._VISIBLE_CUSTOM_FOLDERS_TABLE} WHERE user_id = ? AND folder_id = ?",
-                [(int(user_id), folder_id) for folder_id in normalized_ids],
-            )
-            conn.commit()
+        self._metadata_store.purge_custom_folder_visibility(user_id=int(user_id), folder_ids=folder_ids)
 
     def set_folder_favorite(self, *, user_id: int, mailbox_id: str | None = None, folder_id: str, favorite: bool) -> dict[str, Any]:
-        normalized_folder_id = _normalize_text(folder_id)
-        if not normalized_folder_id:
-            raise MailServiceError("Folder id is required")
-        now_iso = _utc_now_iso()
-        scoped_folder_id = self._make_scoped_storage_key(mailbox_id=mailbox_id, value=normalized_folder_id)
-        with self._lock, self._connect() as conn:
-            if favorite:
-                conn.execute(
-                    f"""
-                    INSERT INTO {self._FOLDER_FAVORITES_TABLE} (user_id, folder_id, created_at)
-                    VALUES (?, ?, ?)
-                    ON CONFLICT(user_id, folder_id) DO NOTHING
-                    """,
-                    (int(user_id), scoped_folder_id, now_iso),
-                )
-            else:
-                conn.execute(
-                    f"DELETE FROM {self._FOLDER_FAVORITES_TABLE} WHERE user_id = ? AND folder_id IN (?, ?)",
-                    (int(user_id), scoped_folder_id, normalized_folder_id),
-                )
-            conn.commit()
+        try:
+            result = self._metadata_store.set_folder_favorite(
+                user_id=int(user_id),
+                mailbox_id=mailbox_id,
+                folder_id=folder_id,
+                favorite=bool(favorite),
+            )
+        except ValueError as exc:
+            raise MailServiceError(str(exc)) from exc
         self.invalidate_user_cache(user_id=int(user_id), prefixes=("folder_tree", "bootstrap"))
-        return {"ok": True, "folder_id": normalized_folder_id, "favorite": bool(favorite)}
+        return result
 
     def _get_preferences_row(self, *, user_id: int) -> dict[str, Any]:
-        with self._lock, self._connect() as conn:
-            row = conn.execute(
-                f"SELECT prefs_json, updated_at FROM {self._USER_PREFS_TABLE} WHERE user_id = ?",
-                (int(user_id),),
-            ).fetchone()
-        if row is None:
-            return {"prefs": dict(self._DEFAULT_PREFERENCES), "updated_at": None}
-        try:
-            parsed = json.loads(_normalize_text(row["prefs_json"], "{}"))
-        except Exception:
-            parsed = {}
-        prefs = dict(self._DEFAULT_PREFERENCES)
-        if isinstance(parsed, dict):
-            prefs.update({key: parsed.get(key) for key in self._DEFAULT_PREFERENCES.keys() if key in parsed})
-        return {"prefs": prefs, "updated_at": _normalize_text(row["updated_at"]) or None}
+        return self._metadata_store.get_preferences_row(user_id=int(user_id))
 
     def get_preferences(self, *, user_id: int) -> dict[str, Any]:
         row = self._get_preferences_row(user_id=int(user_id))
@@ -3047,34 +1944,9 @@ class MailService:
         }
 
     def update_preferences(self, *, user_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        current = self._get_preferences_row(user_id=int(user_id))["prefs"]
-        next_prefs = dict(current)
-        reading_pane = _normalize_text((payload or {}).get("reading_pane"), next_prefs["reading_pane"]).lower()
-        if reading_pane not in {"right", "bottom", "off"}:
-            reading_pane = next_prefs["reading_pane"]
-        density = _normalize_text((payload or {}).get("density"), next_prefs["density"]).lower()
-        if density not in {"comfortable", "compact"}:
-            density = next_prefs["density"]
-        next_prefs["reading_pane"] = reading_pane
-        next_prefs["density"] = density
-        for key in ("mark_read_on_select", "show_preview_snippets", "show_favorites_first"):
-            if key in (payload or {}):
-                next_prefs[key] = bool((payload or {}).get(key))
-        now_iso = _utc_now_iso()
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"""
-                INSERT INTO {self._USER_PREFS_TABLE} (user_id, prefs_json, updated_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(user_id) DO UPDATE SET
-                    prefs_json = excluded.prefs_json,
-                    updated_at = excluded.updated_at
-                """,
-                (int(user_id), json.dumps(next_prefs, ensure_ascii=False), now_iso),
-            )
-            conn.commit()
+        result = self._metadata_store.update_preferences(user_id=int(user_id), payload=payload)
         self.invalidate_user_cache(user_id=int(user_id), prefixes=("bootstrap",))
-        return {"user_id": int(user_id), "preferences": next_prefs, "updated_at": now_iso}
+        return result
 
     def _folder_scope_for_alias(self, alias: str) -> str:
         return str((self._STANDARD_FOLDERS.get(alias) or {}).get("scope") or "mailbox")
@@ -3214,114 +2086,50 @@ class MailService:
 
     @staticmethod
     def _serialize_person(value: Any) -> dict[str, str | None]:
-        if value is None:
-            return {"name": None, "email": None, "display": None}
-        if isinstance(value, str):
-            email = _normalize_text(value).lower()
-            display = email or None
-            return {"name": None, "email": email or None, "display": display}
-        email = _normalize_text(getattr(value, "email_address", None)).lower()
-        name = _normalize_text(
-            getattr(value, "name", None)
-            or getattr(value, "display_name", None)
-            or getattr(value, "mailbox_name", None)
-        )
-        display = name or email or None
-        return {
-            "name": name or None,
-            "email": email or None,
-            "display": display,
-        }
+        return serialize_person(value)
 
     @staticmethod
     def _person_lookup_key(person: dict[str, Any] | None) -> str:
-        if not isinstance(person, dict):
-            return ""
-        return _normalize_text(
-            person.get("email")
-            or person.get("display")
-            or person.get("name")
-        ).lower()
+        return person_lookup_key(person)
 
     @classmethod
     def _item_sender_person(cls, item) -> dict[str, str | None]:
-        sender = getattr(item, "sender", None)
-        if sender is not None:
-            person = cls._serialize_person(sender)
-            if person.get("email") or person.get("display"):
-                return person
-        author = getattr(item, "author", None)
-        if author is not None:
-            person = cls._serialize_person(author)
-            if person.get("email") or person.get("display"):
-                return person
-        return {"name": None, "email": None, "display": None}
+        return item_sender_person(item)
 
     @classmethod
     def _item_sender(cls, item) -> str:
-        return _normalize_text(cls._item_sender_person(item).get("email")).lower()
+        return item_sender(item)
 
     @classmethod
     def _item_recipient_people(cls, item, attrs: tuple[str, ...] = ("to_recipients", "cc_recipients")) -> list[dict[str, str | None]]:
-        recipients: list[dict[str, str | None]] = []
-        seen: set[str] = set()
-        for attr in attrs:
-            values = getattr(item, attr, None) or []
-            for rec in values:
-                person = cls._serialize_person(rec)
-                lookup_key = cls._person_lookup_key(person)
-                if not lookup_key or lookup_key in seen:
-                    continue
-                seen.add(lookup_key)
-                recipients.append(person)
-        return recipients
+        return item_recipient_people(item, attrs=attrs)
 
     @classmethod
     def _item_recipients(cls, item) -> list[str]:
-        return [
-            _normalize_text(person.get("email")).lower()
-            for person in cls._item_recipient_people(item)
-            if _normalize_text(person.get("email"))
-        ]
+        return item_recipients(item)
 
     @classmethod
     def _item_bcc_recipient_people(cls, item) -> list[dict[str, str | None]]:
-        return cls._item_recipient_people(item, attrs=("bcc_recipients",))
+        return item_bcc_recipient_people(item)
 
     @classmethod
     def _item_bcc_recipients(cls, item) -> list[str]:
-        return [
-            _normalize_text(person.get("email")).lower()
-            for person in cls._item_bcc_recipient_people(item)
-            if _normalize_text(person.get("email"))
-        ]
+        return item_bcc_recipients(item)
 
     @staticmethod
     def _item_message_id(item) -> str:
-        return _normalize_text(getattr(item, "message_id", None)).strip()
+        return item_message_id(item)
 
     @staticmethod
     def _normalize_subject_for_conversation(subject: Any) -> str:
-        value = _normalize_text(subject).lower()
-        if not value:
-            return "(без темы)"
-        normalized = re.sub(r"^(?:(?:re|fwd?|fw)\s*:\s*)+", "", value, flags=re.IGNORECASE).strip()
-        return normalized or "(без темы)"
+        return normalize_subject_for_conversation(subject)
 
     def _item_conversation_key(self, item) -> str:
-        conversation_id = getattr(item, "conversation_id", None)
-        if conversation_id is not None:
-            value = _normalize_text(getattr(conversation_id, "id", None) or conversation_id)
-            if value:
-                return value
-        return self._normalize_subject_for_conversation(getattr(item, "subject", ""))
+        return item_conversation_key(item)
 
     @staticmethod
     def _item_importance(item) -> str:
-        value = _normalize_text(getattr(item, "importance", None), "normal").lower()
-        if value in {"high", "low", "normal"}:
-            return value
-        return "normal"
+        return item_importance(item)
 
     @staticmethod
     def _message_sort_attr(folder_key: str) -> str:
@@ -3350,33 +2158,10 @@ class MailService:
             return queryset
 
     def _build_quote_html(self, item) -> str:
-        sender_person = self._item_sender_person(item)
-        sender = _normalize_text(sender_person.get("display") or sender_person.get("email")) or "-"
-        subject = _normalize_text(getattr(item, "subject", "")) or "(без темы)"
-        received = getattr(item, "datetime_received", None) or getattr(item, "datetime_created", None)
-        received_label = received.strftime("%d.%m.%Y %H:%M") if received else "-"
-        body_html = _normalize_text(getattr(item, "body", None))
-        if not body_html:
-            body_html = _plain_text_to_html(_normalize_text(getattr(item, "text_body", None)))
-        header = (
-            f"<p><strong>От:</strong> {html.escape(sender)}</p>"
-            f"<p><strong>Дата:</strong> {html.escape(received_label)}</p>"
-            f"<p><strong>Тема:</strong> {html.escape(subject)}</p>"
-        )
-        return f"<div class=\"quoted-mail\"><br><br>{header}<blockquote>{body_html}</blockquote></div>"
+        return self._message_serializer.build_quote_html(item)
 
     def _should_embed_inline_attachment(self, attachment) -> bool:
-        content_id = self._normalize_attachment_content_id(getattr(attachment, "content_id", None))
-        if not content_id and not bool(getattr(attachment, "is_inline", False)):
-            return False
-        content_type = _normalize_text(getattr(attachment, "content_type", "")).lower()
-        if not content_type.startswith("image/"):
-            return False
-        try:
-            size = int(getattr(attachment, "size", 0) or 0)
-        except Exception:
-            size = 0
-        return size > 0 and size <= self._INLINE_ATTACHMENT_EMBED_MAX_SIZE
+        return self._message_serializer.should_embed_inline_attachment(attachment)
 
     def _prefetch_inline_attachment_content(self, *, item, account) -> None:
         try:
@@ -3404,72 +2189,10 @@ class MailService:
             return
 
     def _build_inline_attachment_data_url(self, attachment) -> str | None:
-        if not self._should_embed_inline_attachment(attachment):
-            return None
-        try:
-            content = attachment.content
-        except Exception:
-            content = b""
-        if not isinstance(content, (bytes, bytearray)) or not content:
-            return None
-        content_type = _normalize_text(getattr(attachment, "content_type", "application/octet-stream"))
-        encoded = base64.b64encode(bytes(content)).decode("ascii")
-        return f"data:{content_type};base64,{encoded}"
+        return self._message_serializer.build_inline_attachment_data_url(attachment)
 
     def build_compose_context(self, item, mailbox_email: str, mailbox_id: str | None = None) -> dict[str, Any]:
-        mailbox = _normalize_text(mailbox_email).lower()
-        subject = _normalize_text(getattr(item, "subject", "")) or "(без темы)"
-        sender = self._item_sender(item)
-        to_values = self._item_recipients(item)
-        cc_values = [
-            _normalize_text(getattr(rec, "email_address", None)).lower()
-            for rec in (getattr(item, "cc_recipients", None) or [])
-            if _normalize_text(getattr(rec, "email_address", None))
-        ]
-
-        def _dedupe(values: list[str]) -> list[str]:
-            result: list[str] = []
-            seen: set[str] = set()
-            for value in values:
-                email = _normalize_text(value).lower()
-                if not email or email == mailbox or email in seen:
-                    continue
-                seen.add(email)
-                result.append(email)
-            return result
-
-        quote_html = self._build_quote_html(item)
-        reply_subject = subject if re.match(r"(?i)^re:\s*", subject) else f"Re: {subject}"
-        forward_subject = subject if re.match(r"(?i)^fwd?:\s*", subject) else f"Fwd: {subject}"
-
-        reply_all_to = _dedupe([sender, *to_values])
-        if sender and sender in reply_all_to:
-            filtered_to = [sender]
-            filtered_to.extend([value for value in reply_all_to if value != sender])
-            reply_all_to = filtered_to
-
-        return {
-            "mailbox_id": _normalize_text(mailbox_id) or None,
-            "mailbox_email": mailbox or None,
-            "reply": {
-                "subject": reply_subject,
-                "to": _dedupe([sender]),
-                "cc": [],
-                "quote_html": quote_html,
-            },
-            "reply_all": {
-                "subject": reply_subject,
-                "to": reply_all_to,
-                "cc": _dedupe(cc_values),
-                "quote_html": quote_html,
-            },
-            "forward": {
-                "subject": forward_subject,
-                "to": [],
-                "cc": [],
-                "quote_html": quote_html,
-            },
-        }
+        return self._message_serializer.build_compose_context(item, mailbox_email, mailbox_id)
 
     def _serialize_message_detail(
         self,
@@ -3482,117 +2205,15 @@ class MailService:
         draft_context: dict[str, Any] | None = None,
         include_inline_data_urls: bool = False,
     ) -> dict[str, Any]:
-        received = getattr(item, "datetime_received", None) or getattr(item, "datetime_created", None)
-        received_iso = received.isoformat() if received else None
-        body_html = _normalize_text(getattr(item, "body", None))
-        body_text = _normalize_text(getattr(item, "text_body", None))
-        if not body_text and body_html:
-            body_text = _normalize_text(re.sub(r"<[^>]+>", " ", body_html))
-
-        resolved_mailbox_id = _normalize_text(mailbox_id)
-        encoded_message_id = self._encode_message_id(
-            folder_key,
-            _normalize_text(getattr(item, "id", "")),
-            resolved_mailbox_id,
+        return self._message_serializer.serialize_message_detail(
+            item=item,
+            folder_key=folder_key,
+            mailbox_id=mailbox_id,
+            mailbox_email=mailbox_email,
+            restore_hint_folder=restore_hint_folder,
+            draft_context=draft_context,
+            include_inline_data_urls=include_inline_data_urls,
         )
-
-        attachments = []
-        for att in (getattr(item, "attachments", None) or []):
-            attachment_raw_id = self._extract_attachment_raw_id(att)
-            download_token = self._encode_attachment_token(attachment_raw_id, resolved_mailbox_id)
-            content_id = self._normalize_attachment_content_id(getattr(att, "content_id", None))
-            is_inline = bool(getattr(att, "is_inline", False) or content_id)
-            is_downloadable = bool((download_token or attachment_raw_id) and self._is_downloadable_attachment(att))
-            if not is_downloadable:
-                logger.warning(
-                    "Mail attachment is not downloadable: name=%s mailbox_id=%s message_exchange_id=%s attachment_type=%s stable_id=%s",
-                    _normalize_text(getattr(att, "name", "attachment.bin")),
-                    resolved_mailbox_id or "",
-                    _normalize_text(getattr(item, "id", "")),
-                    type(att).__name__,
-                    attachment_raw_id or "",
-                )
-            attachments.append(
-                {
-                    "id": attachment_raw_id,
-                    "download_token": download_token,
-                    "downloadable": is_downloadable,
-                    "name": _normalize_text(getattr(att, "name", "attachment.bin")),
-                    "content_type": _normalize_text(getattr(att, "content_type", "")),
-                    "size": int(getattr(att, "size", 0) or 0),
-                    "content_id": content_id,
-                    "is_inline": is_inline,
-                    "inline_src": self._build_inline_attachment_src(
-                        message_id=encoded_message_id,
-                        attachment_ref=download_token or attachment_raw_id,
-                    ) if is_inline and (download_token or attachment_raw_id) else None,
-                    "inline_data_url": self._build_inline_attachment_data_url(att)
-                    if include_inline_data_urls and is_inline
-                    else None,
-                }
-            )
-
-        sender_person = self._item_sender_person(item)
-        to_people = self._item_recipient_people(item, attrs=("to_recipients",))
-        cc_people = self._item_recipient_people(item, attrs=("cc_recipients",))
-        bcc_people = self._item_bcc_recipient_people(item)
-
-        try:
-            compose_context = self.build_compose_context(item, mailbox_email, resolved_mailbox_id)
-        except TypeError:
-            compose_context = self.build_compose_context(item, mailbox_email)
-
-        return {
-            "id": encoded_message_id,
-            "mailbox_id": resolved_mailbox_id or None,
-            "exchange_id": _normalize_text(getattr(item, "id", "")),
-            "folder": folder_key,
-            "subject": _normalize_text(getattr(item, "subject", "")),
-            "sender": self._item_sender(item),
-            "sender_person": sender_person,
-            "sender_name": sender_person.get("name"),
-            "sender_email": sender_person.get("email"),
-            "sender_display": sender_person.get("display") or self._item_sender(item),
-            "to": [
-                _normalize_text(person.get("email")).lower()
-                for person in to_people
-                if _normalize_text(person.get("email"))
-            ],
-            "to_people": to_people,
-            "cc": [
-                _normalize_text(person.get("email")).lower()
-                for person in cc_people
-                if _normalize_text(person.get("email"))
-            ],
-            "cc_people": cc_people,
-            "bcc": [
-                _normalize_text(person.get("email")).lower()
-                for person in bcc_people
-                if _normalize_text(person.get("email"))
-            ],
-            "bcc_people": bcc_people,
-            "received_at": received_iso,
-            "is_read": bool(getattr(item, "is_read", False)),
-            "body_html": body_html,
-            "body_text": body_text,
-            "importance": self._item_importance(item),
-            "categories": [str(value).strip() for value in (getattr(item, "categories", None) or []) if str(value).strip()],
-            "reminder_is_set": bool(getattr(item, "reminder_is_set", False)),
-            "reminder_due_by": (
-                getattr(item, "reminder_due_by", None).isoformat()
-                if getattr(item, "reminder_due_by", None) is not None
-                else None
-            ),
-            "internet_message_id": self._item_message_id(item) or None,
-            "conversation_id": self._item_conversation_key(item),
-            "restore_hint_folder": restore_hint_folder,
-            "attachments": attachments,
-            "compose_context": compose_context,
-            "draft_context": draft_context or None,
-            "has_external_images": bool(re.search(r"<img[^>]+src=['\"]https?://", body_html, flags=re.IGNORECASE)),
-            "can_archive": not str(folder_key).startswith("archive"),
-            "can_move": True,
-        }
 
     def _set_restore_hint(
         self,
@@ -3603,74 +2224,27 @@ class MailService:
         restore_folder: str,
         source_exchange_id: str | None = None,
     ) -> None:
-        now_iso = _utc_now_iso()
-        scoped_trash_exchange_id = self._make_scoped_storage_key(
+        self._metadata_store.set_restore_hint(
+            user_id=int(user_id),
             mailbox_id=mailbox_id,
-            value=_normalize_text(trash_exchange_id),
+            trash_exchange_id=trash_exchange_id,
+            restore_folder=restore_folder,
+            source_exchange_id=source_exchange_id,
         )
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"""
-                INSERT INTO {self._RESTORE_HINTS_TABLE}
-                (user_id, trash_exchange_id, restore_folder, source_exchange_id, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, trash_exchange_id) DO UPDATE SET
-                    restore_folder = excluded.restore_folder,
-                    source_exchange_id = excluded.source_exchange_id,
-                    created_at = excluded.created_at
-                """,
-                (
-                    int(user_id),
-                    scoped_trash_exchange_id,
-                    _normalize_text(restore_folder, "inbox"),
-                    _normalize_text(source_exchange_id) or None,
-                    now_iso,
-                ),
-            )
-            conn.commit()
 
     def _get_restore_hint(self, *, user_id: int, mailbox_id: str | None = None, trash_exchange_id: str) -> dict[str, Any] | None:
-        scoped_trash_exchange_id = self._make_scoped_storage_key(
+        return self._metadata_store.get_restore_hint(
+            user_id=int(user_id),
             mailbox_id=mailbox_id,
-            value=_normalize_text(trash_exchange_id),
+            trash_exchange_id=trash_exchange_id,
         )
-        with self._lock, self._connect() as conn:
-            row = conn.execute(
-                f"""
-                SELECT restore_folder, source_exchange_id, created_at
-                FROM {self._RESTORE_HINTS_TABLE}
-                WHERE user_id = ? AND trash_exchange_id = ?
-                """,
-                (int(user_id), scoped_trash_exchange_id),
-            ).fetchone()
-            if row is None and scoped_trash_exchange_id != _normalize_text(trash_exchange_id):
-                row = conn.execute(
-                    f"""
-                    SELECT restore_folder, source_exchange_id, created_at
-                    FROM {self._RESTORE_HINTS_TABLE}
-                    WHERE user_id = ? AND trash_exchange_id = ?
-                    """,
-                    (int(user_id), _normalize_text(trash_exchange_id)),
-                ).fetchone()
-        if row is None:
-            return None
-        return {
-            "restore_folder": _normalize_text(row["restore_folder"], "inbox"),
-            "source_exchange_id": _normalize_text(row["source_exchange_id"]) or None,
-            "created_at": _normalize_text(row["created_at"]) or None,
-        }
 
     def _delete_restore_hint(self, *, user_id: int, mailbox_id: str | None = None, trash_exchange_id: str) -> None:
-        scoped_trash_exchange_id = self._make_scoped_storage_key(
+        self._metadata_store.delete_restore_hint(
+            user_id=int(user_id),
             mailbox_id=mailbox_id,
-            value=_normalize_text(trash_exchange_id),
+            trash_exchange_id=trash_exchange_id,
         )
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"DELETE FROM {self._RESTORE_HINTS_TABLE} WHERE user_id = ? AND trash_exchange_id IN (?, ?)",
-                (int(user_id), scoped_trash_exchange_id, _normalize_text(trash_exchange_id)),
-            )
-            conn.commit()
 
     def _save_draft_context(
         self,
@@ -3682,116 +2256,37 @@ class MailService:
         reply_to_message_id: str | None = None,
         forward_message_id: str | None = None,
     ) -> None:
-        scoped_draft_exchange_id = self._make_scoped_storage_key(
+        self._metadata_store.save_draft_context(
+            user_id=int(user_id),
             mailbox_id=mailbox_id,
-            value=_normalize_text(draft_exchange_id),
+            draft_exchange_id=draft_exchange_id,
+            compose_mode=compose_mode,
+            reply_to_message_id=reply_to_message_id,
+            forward_message_id=forward_message_id,
         )
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"""
-                INSERT INTO {self._DRAFT_CONTEXT_TABLE}
-                (draft_exchange_id, user_id, compose_mode, reply_to_message_id, forward_message_id, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(draft_exchange_id) DO UPDATE SET
-                    user_id = excluded.user_id,
-                    compose_mode = excluded.compose_mode,
-                    reply_to_message_id = excluded.reply_to_message_id,
-                    forward_message_id = excluded.forward_message_id,
-                    updated_at = excluded.updated_at
-                """,
-                (
-                    scoped_draft_exchange_id,
-                    int(user_id),
-                    _normalize_text(compose_mode, "draft"),
-                    _normalize_text(reply_to_message_id) or None,
-                    _normalize_text(forward_message_id) or None,
-                    _utc_now_iso(),
-                ),
-            )
-            conn.commit()
 
     def _get_draft_context(self, *, user_id: int, mailbox_id: str | None = None, draft_exchange_id: str) -> dict[str, Any] | None:
-        scoped_draft_exchange_id = self._make_scoped_storage_key(
+        return self._metadata_store.get_draft_context(
+            user_id=int(user_id),
             mailbox_id=mailbox_id,
-            value=_normalize_text(draft_exchange_id),
+            draft_exchange_id=draft_exchange_id,
         )
-        with self._lock, self._connect() as conn:
-            row = conn.execute(
-                f"""
-                SELECT compose_mode, reply_to_message_id, forward_message_id, updated_at
-                FROM {self._DRAFT_CONTEXT_TABLE}
-                WHERE user_id = ? AND draft_exchange_id = ?
-                """,
-                (int(user_id), scoped_draft_exchange_id),
-            ).fetchone()
-            if row is None and scoped_draft_exchange_id != _normalize_text(draft_exchange_id):
-                row = conn.execute(
-                    f"""
-                    SELECT compose_mode, reply_to_message_id, forward_message_id, updated_at
-                    FROM {self._DRAFT_CONTEXT_TABLE}
-                    WHERE user_id = ? AND draft_exchange_id = ?
-                    """,
-                    (int(user_id), _normalize_text(draft_exchange_id)),
-                ).fetchone()
-        if row is None:
-            return None
-        return {
-            "compose_mode": _normalize_text(row["compose_mode"], "draft"),
-            "reply_to_message_id": _normalize_text(row["reply_to_message_id"]) or None,
-            "forward_message_id": _normalize_text(row["forward_message_id"]) or None,
-            "updated_at": _normalize_text(row["updated_at"]) or None,
-        }
 
     def _delete_draft_context(self, *, mailbox_id: str | None = None, draft_exchange_id: str) -> None:
-        scoped_draft_exchange_id = self._make_scoped_storage_key(
+        self._metadata_store.delete_draft_context(
             mailbox_id=mailbox_id,
-            value=_normalize_text(draft_exchange_id),
+            draft_exchange_id=draft_exchange_id,
         )
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"DELETE FROM {self._DRAFT_CONTEXT_TABLE} WHERE draft_exchange_id IN (?, ?)",
-                (scoped_draft_exchange_id, _normalize_text(draft_exchange_id)),
-            )
-            conn.commit()
 
     def _serialize_message_preview(self, item, folder_key: str) -> dict[str, Any]:
         return self._serialize_message_preview_for_mailbox(item=item, folder_key=folder_key, mailbox_id="")
 
     def _serialize_message_preview_for_mailbox(self, *, item, folder_key: str, mailbox_id: str | None = None) -> dict[str, Any]:
-        received = getattr(item, "datetime_received", None) or getattr(item, "datetime_created", None)
-        received_iso = received.isoformat() if received else None
-        body_text = _normalize_text(getattr(item, "text_body", None))
-        if not body_text:
-            body_text = _normalize_text(getattr(item, "body", None))
-        body_preview = body_text[:350]
-        has_attachments = bool(getattr(item, "has_attachments", False))
-        sender_person = self._item_sender_person(item)
-        recipient_people = self._item_recipient_people(item)
-        return {
-            "id": self._encode_message_id(
-                folder_key,
-                _normalize_text(getattr(item, "id", "")),
-                _normalize_text(mailbox_id),
-            ),
-            "mailbox_id": _normalize_text(mailbox_id) or None,
-            "exchange_id": _normalize_text(getattr(item, "id", "")),
-            "folder": folder_key,
-            "subject": _normalize_text(getattr(item, "subject", "")),
-            "sender": self._item_sender(item),
-            "sender_person": sender_person,
-            "sender_name": sender_person.get("name"),
-            "sender_email": sender_person.get("email"),
-            "sender_display": sender_person.get("display") or self._item_sender(item),
-            "recipients": self._item_recipients(item),
-            "recipient_people": recipient_people,
-            "received_at": received_iso,
-            "is_read": bool(getattr(item, "is_read", False)),
-            "has_attachments": has_attachments,
-            "attachments_count": 1 if has_attachments else 0,
-            "body_preview": body_preview,
-            "importance": self._item_importance(item),
-            "categories": [str(value).strip() for value in (getattr(item, "categories", None) or []) if str(value).strip()],
-        }
+        return self._message_serializer.serialize_message_preview(
+            item=item,
+            folder_key=folder_key,
+            mailbox_id=mailbox_id,
+        )
 
     def _message_matches_filters(
         self,
@@ -3807,57 +2302,21 @@ class MailService:
         body_filter: str = "",
         importance_filter: str = "",
     ) -> bool:
-        if has_attachments and not bool(getattr(item, "attachments", None) or []):
-            return False
-
-        received = getattr(item, "datetime_received", None) or getattr(item, "datetime_created", None)
-        if received is not None:
-            try:
-                received_date = received.date()
-            except Exception:
-                received_date = None
-        else:
-            received_date = None
-
-        if date_from and (received_date is None or received_date < date_from):
-            return False
-        if date_to and (received_date is None or received_date > date_to):
-            return False
-
-        if from_filter:
-            sender = self._item_sender(item).lower()
-            if from_filter not in sender:
-                return False
-
-        if to_filter:
-            recipients = " ".join(self._item_recipients(item)).lower()
-            if to_filter not in recipients:
-                return False
-
-        if subject_filter:
-            subject = _normalize_text(getattr(item, "subject", "")).lower()
-            if subject_filter not in subject:
-                return False
-
-        if body_filter:
-            body_preview = _normalize_text(getattr(item, "text_body", None))
-            if not body_preview:
-                body_preview = _normalize_text(getattr(item, "body", None))
-            if body_filter not in body_preview.lower():
-                return False
-
-        if importance_filter:
-            if self._item_importance(item) != importance_filter:
-                return False
-
-        if query_text:
-            subject = _normalize_text(getattr(item, "subject", "")).lower()
-            sender = self._item_sender(item).lower()
-            body_preview = _normalize_text(getattr(item, "text_body", "")).lower()
-            if query_text not in subject and query_text not in sender and query_text not in body_preview:
-                return False
-
-        return True
+        return message_matches_filters(
+            item,
+            item_sender=self._item_sender,
+            item_recipients=self._item_recipients,
+            item_importance=self._item_importance,
+            query_text=query_text,
+            has_attachments=has_attachments,
+            date_from=date_from,
+            date_to=date_to,
+            from_filter=from_filter,
+            to_filter=to_filter,
+            subject_filter=subject_filter,
+            body_filter=body_filter,
+            importance_filter=importance_filter,
+        )
 
     def _list_messages_from_account(
         self,
@@ -3879,133 +2338,32 @@ class MailService:
         body_filter: str = "",
         importance: str = "",
     ) -> dict[str, Any]:
-        safe_limit = max(1, min(200, int(limit or 50)))
-        safe_offset = max(0, int(offset or 0))
-        query_text = _normalize_text(q).lower()
-        normalized_from = _normalize_text(from_filter).lower()
-        normalized_to = _normalize_text(to_filter).lower()
-        normalized_subject = _normalize_text(subject_filter).lower()
-        normalized_body = _normalize_text(body_filter).lower()
-        normalized_importance = _normalize_text(importance).lower()
-        parsed_date_from = _parse_date_filter(date_from)
-        parsed_date_to = _parse_date_filter(date_to)
-        filters_active = bool(
-            query_text
-            or has_attachments
-            or parsed_date_from
-            or parsed_date_to
-            or normalized_from
-            or normalized_to
-            or normalized_subject
-            or normalized_body
-            or normalized_importance
+        result = self._message_listing.list_messages(
+            account=account,
+            mailbox_id=mailbox_id,
+            folder=folder,
+            folder_scope=folder_scope,
+            limit=limit,
+            offset=offset,
+            q=q,
+            unread_only=unread_only,
+            has_attachments=has_attachments,
+            date_from=date_from,
+            date_to=date_to,
+            from_filter=from_filter,
+            to_filter=to_filter,
+            subject_filter=subject_filter,
+            body_filter=body_filter,
+            importance=importance,
         )
-
-        targets = self._search_target_folders(
-            account,
-            folder=_normalize_text(folder, "inbox"),
-            folder_scope=_normalize_text(folder_scope, "current"),
-        )
-        searched_window = 0
-        search_limited = False
-        if len(targets) == 1 and _normalize_text(folder_scope, "current").lower() != "all" and not filters_active:
-            folder_obj, folder_key = targets[0]
-            queryset = self._folder_queryset(folder_obj, folder_key, preview_only=True)
-            if unread_only:
-                queryset = queryset.filter(is_read=False)
-            total_hint = self._folder_total_hint(folder_obj, unread_only=bool(unread_only))
-            page_items = list(queryset[safe_offset: safe_offset + safe_limit + 1])
-            has_more = len(page_items) > safe_limit
-            page_items = page_items[:safe_limit]
-            items = [
-                self._serialize_message_preview_for_mailbox(
-                    item=item,
-                    folder_key=folder_key,
-                    mailbox_id=mailbox_id,
-                )
-                for item in page_items
-            ]
-            total = max(
-                total_hint if total_hint is not None else 0,
-                safe_offset + len(items) + (1 if has_more else 0),
-            )
-        else:
-            serialized_items: list[dict[str, Any]] = []
-            search_budget = max(1, int(self.search_window_limit))
-            for folder_obj, folder_key in targets:
-                queryset = self._folder_queryset(folder_obj, folder_key)
-                if unread_only:
-                    queryset = queryset.filter(is_read=False)
-                scanned = 0
-                while True:
-                    if searched_window >= search_budget:
-                        search_limited = True
-                        break
-                    batch_limit = min(self._SEARCH_BATCH_SIZE, search_budget - searched_window)
-                    batch_items = list(queryset[scanned: scanned + batch_limit])
-                    if not batch_items:
-                        break
-                    for item in batch_items:
-                        if not self._message_matches_filters(
-                            item,
-                            query_text=query_text,
-                            has_attachments=bool(has_attachments),
-                            date_from=parsed_date_from,
-                            date_to=parsed_date_to,
-                            from_filter=normalized_from,
-                            to_filter=normalized_to,
-                            subject_filter=normalized_subject,
-                            body_filter=normalized_body,
-                            importance_filter=normalized_importance,
-                        ):
-                            continue
-                        serialized_items.append(
-                            self._serialize_message_preview_for_mailbox(
-                                item=item,
-                                folder_key=folder_key,
-                                mailbox_id=mailbox_id,
-                            )
-                        )
-                    searched_window += len(batch_items)
-                    scanned += len(batch_items)
-                    if len(batch_items) < batch_limit:
-                        break
-                if search_limited:
-                    break
-            serialized_items.sort(
-                key=lambda item: (
-                    item.get("received_at") or "",
-                    item.get("id") or "",
-                ),
-                reverse=True,
-            )
-            total = len(serialized_items)
-            items = serialized_items[safe_offset: safe_offset + safe_limit]
-            folder_key = _normalize_text(folder, "inbox")
-
-        next_offset = safe_offset + len(items)
-        final_total = max(total, safe_offset + len(items))
-        self._set_request_metric("searched_window", searched_window)
-        self._set_request_metric("search_limited", int(bool(search_limited)))
-        return {
-            "items": items,
-            "folder": folder_key,
-            "limit": safe_limit,
-            "offset": safe_offset,
-            "total": final_total,
-            "has_more": next_offset < final_total,
-            "next_offset": next_offset if next_offset < final_total else None,
-            "search_limited": bool(search_limited),
-            "searched_window": searched_window,
-        }
+        self._set_request_metric("searched_window", result.searched_window)
+        self._set_request_metric("search_limited", int(result.search_limited))
+        return result.payload
 
     def _list_folder_summary_from_account(self, *, account) -> dict[str, dict[str, int]]:
-        result: dict[str, dict[str, int]] = {}
-        mapping = self._standard_folders(account)
-        for key, folder_obj in mapping.items():
-            total, unread = self._folder_counts(folder_obj)
-            result[key] = {"total": total, "unread": unread}
-        return result
+        return self._folder_tree_builder.list_folder_summary(
+            standard_folders=self._standard_folders(account),
+        )
 
     def _list_folder_tree_from_account(
         self,
@@ -4017,127 +2375,17 @@ class MailService:
     ) -> dict[str, Any]:
         favorites = self._list_favorite_folder_ids(user_id=int(user_id), mailbox_id=mailbox_id)
         persisted_custom_folder_ids = self._list_visible_custom_folder_ids(user_id=int(user_id), mailbox_id=mailbox_id)
-        standard = self._standard_folders(account)
-        walked_folders = self._walk_folder_targets(account)
-        folder_lookup = {
-            folder_key: (folder_obj, scope_key)
-            for folder_obj, folder_key, scope_key in walked_folders
-        }
-        standard_exchange_map = {
-            _normalize_text(getattr(folder_obj, "id", None)): alias
-            for alias, folder_obj in standard.items()
-            if _normalize_text(getattr(folder_obj, "id", None))
-        }
-        mailbox_root_id = _normalize_text(getattr(self._safe_folder_attr(account, "msg_folder_root"), "id", None))
-        archive_root_id = _normalize_text(getattr(self._safe_folder_attr(account, "archive_msg_folder_root"), "id", None))
-        mailbox_custom_root_id = _normalize_text(getattr(self._custom_folder_root(account, "mailbox"), "id", None))
-        archive_custom_root_id = _normalize_text(getattr(self._custom_folder_root(account, "archive"), "id", None))
-
-        def resolve_parent_id(folder_obj, scope: str) -> str | None:
-            parent = getattr(folder_obj, "parent", None)
-            parent_exchange_id = _normalize_text(getattr(parent, "id", None))
-            if not parent_exchange_id:
-                return None
-            if parent_exchange_id in standard_exchange_map:
-                return standard_exchange_map[parent_exchange_id]
-            root_ids = {mailbox_root_id, archive_root_id}
-            if scope == "archive":
-                root_ids.add(archive_custom_root_id)
-            else:
-                root_ids.add(mailbox_custom_root_id)
-            if parent_exchange_id in root_ids:
-                return None
-            parent_scope = "archive" if scope == "archive" else "mailbox"
-            parent_folder_id = self._encode_folder_id(parent_scope, parent_exchange_id)
-            return parent_folder_id if parent_folder_id in folder_lookup else None
-
-        items: list[dict[str, Any]] = []
-        for alias, folder_obj in standard.items():
-            scope = self._folder_scope_for_alias(alias)
-            summary_entry = summary.get(alias) if isinstance(summary, dict) else None
-            if isinstance(summary_entry, dict):
-                counts = (
-                    max(0, int(summary_entry.get("total") or 0)),
-                    max(0, int(summary_entry.get("unread") or 0)),
-                )
-            else:
-                counts = self._folder_counts_from_hints(folder_obj, fallback=True)
-            items.append(
-                self._serialize_folder_node(
-                    account,
-                    folder_obj,
-                    folder_key=alias,
-                    scope=scope,
-                    parent_id=resolve_parent_id(folder_obj, scope),
-                    favorite_ids=favorites,
-                    counts=counts,
-                )
-            )
-
-        stale_folder_ids: set[str] = set()
-        present_custom_folder_ids: set[str] = set()
-        pending_custom_entries: dict[str, tuple[Any, str, str, str | None]] = {}
-        for folder_obj, folder_key, scope_key in walked_folders:
-            if folder_key in self._STANDARD_FOLDERS:
-                continue
-            present_custom_folder_ids.add(folder_key)
-            pending_custom_entries[folder_key] = (
-                folder_obj,
-                folder_key,
-                scope_key,
-                resolve_parent_id(folder_obj, scope_key),
-            )
-
-        included_custom_folder_ids: set[str] = set()
-        while pending_custom_entries:
-            progressed = False
-            for folder_key, entry in list(pending_custom_entries.items()):
-                folder_obj, _resolved_folder_key, scope_key, parent_id = entry
-                if parent_id and parent_id not in self._STANDARD_FOLDERS and parent_id not in included_custom_folder_ids:
-                    if parent_id in pending_custom_entries:
-                        continue
-                    pending_custom_entries.pop(folder_key, None)
-                    progressed = True
-                    continue
-                if not self._is_mail_folder_visible_in_tree(folder_obj):
-                    pending_custom_entries.pop(folder_key, None)
-                    progressed = True
-                    continue
-                items.append(
-                    self._serialize_folder_node(
-                        account,
-                        folder_obj,
-                        folder_key=folder_key,
-                        scope=scope_key,
-                        parent_id=parent_id,
-                        favorite_ids=favorites,
-                        counts=self._folder_counts_from_hints(folder_obj, fallback=True),
-                    )
-                )
-                included_custom_folder_ids.add(folder_key)
-                pending_custom_entries.pop(folder_key, None)
-                progressed = True
-            if not progressed:
-                break
-
-        for folder_id in sorted(persisted_custom_folder_ids):
-            if folder_id not in present_custom_folder_ids:
-                stale_folder_ids.add(folder_id)
-
-        if stale_folder_ids:
-            self._purge_custom_folder_visibility(user_id=int(user_id), folder_ids=stale_folder_ids)
-
-        items.sort(
-            key=lambda item: (
-                item.get("scope") != "mailbox",
-                0 if item.get("well_known_key") else 1,
-                str(item.get("label") or "").lower(),
-            )
+        result = self._folder_tree_builder.build_tree(
+            account=account,
+            standard_folders=self._standard_folders(account),
+            walked_folders=self._walk_folder_targets(account),
+            favorite_ids=favorites,
+            persisted_custom_folder_ids=persisted_custom_folder_ids,
+            summary=summary,
         )
-        return {
-            "items": items,
-            "favorites": [item["id"] for item in items if item.get("is_favorite")],
-        }
+        if result.stale_folder_ids:
+            self._purge_custom_folder_visibility(user_id=int(user_id), folder_ids=result.stale_folder_ids)
+        return result.payload
 
     def _get_unread_count_from_account(self, *, account) -> int:
         try:
@@ -4289,44 +2537,13 @@ class MailService:
         return self._run_singleflight(key=singleflight_key, producer=_produce)
 
     def _folder_counts(self, folder_obj) -> tuple[int, int]:
-        total_attr = self._safe_folder_attr(folder_obj, "total_count")
-        unread_attr = self._safe_folder_attr(folder_obj, "unread_count")
-        try:
-            total = int(total_attr)
-        except Exception:
-            total = None
-        try:
-            unread = int(unread_attr)
-        except Exception:
-            unread = None
-        if total is not None and unread is not None:
-            return max(0, total), max(0, unread)
-        try:
-            total = int(folder_obj.all().count())
-        except Exception:
-            total = 0
-        try:
-            unread = int(folder_obj.filter(is_read=False).count())
-        except Exception:
-            unread = 0
-        return total, unread
+        return self._folder_tree_builder.folder_counts(folder_obj)
 
     def _folder_counts_from_hints(self, folder_obj, *, fallback: bool = True) -> tuple[int, int]:
-        total = self._folder_total_hint(folder_obj, unread_only=False)
-        unread = self._folder_total_hint(folder_obj, unread_only=True)
-        if total is not None and unread is not None:
-            return total, unread
-        if not fallback:
-            return max(0, int(total or 0)), max(0, int(unread or 0))
-        return self._folder_counts(folder_obj)
+        return self._folder_tree_builder.folder_counts_from_hints(folder_obj, fallback=fallback)
 
     def _folder_total_hint(self, folder_obj, *, unread_only: bool = False) -> int | None:
-        attr_name = "unread_count" if unread_only else "total_count"
-        raw_value = self._safe_folder_attr(folder_obj, attr_name)
-        try:
-            return max(0, int(raw_value))
-        except Exception:
-            return None
+        return self._folder_tree_builder.folder_total_hint(folder_obj, unread_only=unread_only)
 
     def _serialize_folder_node(
         self,
@@ -4339,27 +2556,14 @@ class MailService:
         favorite_ids: set[str],
         counts: tuple[int, int] | None = None,
     ) -> dict[str, Any]:
-        total, unread = counts if counts is not None else self._folder_counts(folder_obj)
-        well_known_key = folder_key if folder_key in self._STANDARD_FOLDERS else None
-        standard_meta = self._STANDARD_FOLDERS.get(folder_key) if well_known_key else None
-        return {
-            "id": folder_key,
-            "exchange_id": _normalize_text(getattr(folder_obj, "id", None)) or None,
-            "name": _normalize_text(getattr(folder_obj, "name", None)) or (standard_meta or {}).get("label") or folder_key,
-            "label": (standard_meta or {}).get("label") or _normalize_text(getattr(folder_obj, "name", None), folder_key),
-            "scope": scope,
-            "icon_key": (standard_meta or {}).get("icon_key") or "folder",
-            "well_known_key": well_known_key,
-            "parent_id": parent_id,
-            "is_favorite": folder_key in favorite_ids,
-            "is_distinguished": bool(well_known_key),
-            "can_rename": not bool(well_known_key),
-            "can_delete": not bool(well_known_key),
-            "can_create_children": True,
-            "total": total,
-            "unread": unread,
-            "child_folder_count": int(getattr(folder_obj, "child_folder_count", 0) or 0),
-        }
+        return self._folder_tree_builder.serialize_folder_node(
+            folder_obj,
+            folder_key=folder_key,
+            scope=scope,
+            parent_id=parent_id,
+            favorite_ids=favorite_ids,
+            counts=counts,
+        )
 
     def list_folder_tree(self, *, user_id: int, mailbox_id: str | None = None) -> dict[str, Any]:
         self._set_request_metric("singleflight_hit", 0)
@@ -4419,93 +2623,36 @@ class MailService:
         parent_folder_id: str = "",
         scope: str = "mailbox",
     ) -> dict[str, Any]:
-        folder_name = _normalize_text(name)
-        if not folder_name:
-            raise MailServiceError("Folder name is required")
         profile = self._resolve_mail_profile(user_id=int(user_id), mailbox_id=mailbox_id, require_password=True)
         account = self._create_account(
             email=profile["email"],
             login=profile["login"],
             password=profile["password"],
         )
-        scope_key = _normalize_text(scope, "mailbox").lower()
-        parent_folder = None
         resolved_mailbox_id = _normalize_text(profile.get("mailbox_id"))
-        if _normalize_text(parent_folder_id):
-            parent_folder, parent_key = self._resolve_folder(account, parent_folder_id)
-            if str(parent_key) in self._STANDARD_FOLDERS:
-                scope_key = self._folder_scope_for_alias(str(parent_key))
-            else:
-                resolved_scope, _ = self._decode_folder_id(str(parent_key))
-                scope_key = resolved_scope
-        if parent_folder is None:
-            parent_folder = self._custom_folder_root(account, scope_key)
-        if parent_folder is None:
-            raise MailServiceError(f"Folder root is not available: {scope_key}")
         try:
-            from exchangelib.folders import Folder
-        except Exception as exc:
-            raise MailServiceError("exchangelib package is not installed") from exc
-        created = None
-        create_errors: list[str] = []
-        create_parents = [parent_folder]
-        fallback_root = self._safe_folder_attr(account, "archive_msg_folder_root") if scope_key == "archive" else self._safe_folder_attr(account, "msg_folder_root")
-        fallback_root_id = _normalize_text(getattr(fallback_root, "id", None))
-        primary_root_id = _normalize_text(getattr(parent_folder, "id", None))
-        if fallback_root is not None and fallback_root_id and fallback_root_id != primary_root_id:
-            create_parents.append(fallback_root)
-        for candidate_parent in create_parents:
-            try:
-                created = Folder(parent=candidate_parent, name=folder_name)
-                created.save()
-                parent_folder = candidate_parent
-                break
-            except Exception as exc:
-                existing_folder = self._find_existing_child_folder(candidate_parent, folder_name)
-                if existing_folder is not None:
-                    created = existing_folder
-                    parent_folder = candidate_parent
-                    break
-                create_errors.append(str(exc))
-                created = None
-        if created is None:
-            joined_errors = "; ".join(error for error in create_errors if error) or "unknown error"
-            raise MailServiceError(f"Failed to create folder: {joined_errors}")
-        parent_exchange_id = _normalize_text(getattr(parent_folder, "id", None))
-        standard_exchange_map = {
-            _normalize_text(getattr(folder_obj, "id", None)): alias
-            for alias, folder_obj in self._standard_folders(account).items()
-            if _normalize_text(getattr(folder_obj, "id", None))
-        }
-        parent_id = standard_exchange_map.get(parent_exchange_id)
-        if parent_id is None and parent_exchange_id:
-            root_exchange_id = _normalize_text(getattr(self._custom_folder_root(account, scope_key), "id", None))
-            if parent_exchange_id != root_exchange_id:
-                parent_id = self._encode_folder_id(scope_key, parent_exchange_id)
-        created_folder_id = self._encode_folder_id(scope_key, _normalize_text(getattr(created, "id", None)))
+            result = self._folder_mutations.create_folder(
+                account=account,
+                name=name,
+                parent_folder_id=parent_folder_id,
+                scope=scope,
+                favorite_ids=self._list_favorite_folder_ids(user_id=int(user_id), mailbox_id=resolved_mailbox_id),
+            )
+        except MailFolderMutationError as exc:
+            raise MailServiceError(str(exc)) from exc
         self._set_custom_folder_visible(
             user_id=int(user_id),
             mailbox_id=resolved_mailbox_id,
-            folder_id=created_folder_id,
+            folder_id=result.folder_id,
             visible=True,
         )
         self.invalidate_user_cache(
             user_id=int(user_id),
             prefixes=("folder_tree", "folder_summary", "bootstrap", "messages", "message_detail", "conversation_detail"),
         )
-        return self._serialize_folder_node(
-            account,
-            created,
-            folder_key=created_folder_id,
-            scope=scope_key,
-            parent_id=parent_id,
-            favorite_ids=self._list_favorite_folder_ids(user_id=int(user_id), mailbox_id=resolved_mailbox_id),
-        )
+        return result.payload
 
     def rename_folder(self, *, user_id: int, mailbox_id: str | None = None, folder_id: str, name: str) -> dict[str, Any]:
-        next_name = _normalize_text(name)
-        if not next_name:
-            raise MailServiceError("Folder name is required")
         profile = self._resolve_mail_profile(user_id=int(user_id), mailbox_id=mailbox_id, require_password=True)
         resolved_mailbox_id = _normalize_text(profile.get("mailbox_id"))
         account = self._create_account(
@@ -4513,41 +2660,20 @@ class MailService:
             login=profile["login"],
             password=profile["password"],
         )
-        folder_obj, folder_key = self._resolve_folder(account, folder_id)
-        if folder_key in self._STANDARD_FOLDERS:
-            raise MailServiceError("Standard folders cannot be renamed")
         try:
-            folder_obj.name = next_name
-            folder_obj.save(update_fields=["name"])
-        except Exception as exc:
-            raise MailServiceError(f"Failed to rename folder: {exc}") from exc
-        scope_key, _ = self._decode_folder_id(folder_key)
-        parent = getattr(folder_obj, "parent", None)
-        parent_exchange_id = _normalize_text(getattr(parent, "id", None))
-        parent_id = None
-        if parent_exchange_id:
-            standard_exchange_map = {
-                _normalize_text(getattr(item, "id", None)): alias
-                for alias, item in self._standard_folders(account).items()
-                if _normalize_text(getattr(item, "id", None))
-            }
-            parent_id = standard_exchange_map.get(parent_exchange_id)
-            if parent_id is None:
-                root_exchange_id = _normalize_text(getattr(self._safe_folder_attr(account, "archive_msg_folder_root" if scope_key == "archive" else "msg_folder_root"), "id", None))
-                if parent_exchange_id != root_exchange_id:
-                    parent_id = self._encode_folder_id(scope_key, parent_exchange_id)
+            result = self._folder_mutations.rename_folder(
+                account=account,
+                folder_id=folder_id,
+                name=name,
+                favorite_ids=self._list_favorite_folder_ids(user_id=int(user_id), mailbox_id=resolved_mailbox_id),
+            )
+        except MailFolderMutationError as exc:
+            raise MailServiceError(str(exc)) from exc
         self.invalidate_user_cache(
             user_id=int(user_id),
             prefixes=("folder_tree", "bootstrap", "message_detail", "conversation_detail"),
         )
-        return self._serialize_folder_node(
-            account,
-            folder_obj,
-            folder_key=folder_key,
-            scope=scope_key,
-            parent_id=parent_id,
-            favorite_ids=self._list_favorite_folder_ids(user_id=int(user_id), mailbox_id=resolved_mailbox_id),
-        )
+        return result.payload
 
     def delete_folder(self, *, user_id: int, mailbox_id: str | None = None, folder_id: str) -> dict[str, Any]:
         profile = self._resolve_mail_profile(user_id=int(user_id), mailbox_id=mailbox_id, require_password=True)
@@ -4557,13 +2683,10 @@ class MailService:
             login=profile["login"],
             password=profile["password"],
         )
-        folder_obj, folder_key = self._resolve_folder(account, folder_id)
-        if folder_key in self._STANDARD_FOLDERS:
-            raise MailServiceError("Standard folders cannot be deleted")
         try:
-            folder_obj.delete()
-        except Exception as exc:
-            raise MailServiceError(f"Failed to delete folder: {exc}") from exc
+            folder_key = self._folder_mutations.delete_folder(account=account, folder_id=folder_id)
+        except MailFolderMutationError as exc:
+            raise MailServiceError(str(exc)) from exc
         self.set_folder_favorite(
             user_id=int(user_id),
             mailbox_id=resolved_mailbox_id,
@@ -4691,99 +2814,15 @@ class MailService:
         folder: str = "inbox",
         folder_scope: str = "current",
     ) -> tuple[str, list[tuple[Any, str]], str]:
-        conversation_key = _normalize_text(conversation_id)
-        if not conversation_key:
-            raise MailServiceError("Conversation id is required")
-
-        items_raw: list[tuple[Any, str]] = []
-        last_folder_key = _normalize_text(folder, "inbox")
-        targets = self._search_target_folders(
-            account,
-            folder=_normalize_text(folder, "inbox"),
-            folder_scope=_normalize_text(folder_scope, "current"),
-        )
-        search_budget = max(1, int(self.search_window_limit))
-        searched_window = 0
-        search_limited = False
-
-        for folder_obj, folder_key in targets:
-            last_folder_key = folder_key
-            queryset = self._folder_queryset(folder_obj, folder_key)
-            scanned = 0
-            while True:
-                if searched_window >= search_budget:
-                    search_limited = True
-                    break
-                batch_limit = min(self._SEARCH_BATCH_SIZE, search_budget - searched_window)
-                batch_items = list(queryset[scanned: scanned + batch_limit])
-                if not batch_items:
-                    break
-                for item in batch_items:
-                    if self._item_conversation_key(item) == conversation_key:
-                        items_raw.append((item, folder_key))
-                scanned += len(batch_items)
-                searched_window += len(batch_items)
-                if len(batch_items) < batch_limit:
-                    break
-            if search_limited:
-                break
-
-        # Fallback: some clients may accidentally pass an Exchange item id
-        # instead of conversation key. Resolve and retry by derived key.
-        if not items_raw:
-            try:
-                folder_key_from_message, exchange_id = self._decode_message_id(conversation_key)
-                folder_obj, last_folder_key = self._resolve_folder(account, folder_key_from_message)
-                direct_item = folder_obj.get(id=exchange_id)
-            except Exception:
-                direct_item = None
-            if direct_item is not None:
-                conversation_key = self._item_conversation_key(direct_item)
-            try:
-                if direct_item is None:
-                    folder_obj, last_folder_key = self._resolve_folder(account, folder)
-                    direct_item = folder_obj.get(id=conversation_key)
-            except Exception:
-                direct_item = None
-
-            if direct_item is not None:
-                derived_key = self._item_conversation_key(direct_item)
-                if derived_key:
-                    conversation_key = derived_key
-                items_raw = []
-                for folder_obj, folder_key in targets:
-                    last_folder_key = folder_key
-                    queryset = self._folder_queryset(folder_obj, folder_key)
-                    scanned = 0
-                    while True:
-                        if searched_window >= search_budget:
-                            search_limited = True
-                            break
-                        batch_limit = min(self._SEARCH_BATCH_SIZE, search_budget - searched_window)
-                        batch_items = list(queryset[scanned: scanned + batch_limit])
-                        if not batch_items:
-                            break
-                        for item in batch_items:
-                            if self._item_conversation_key(item) == conversation_key:
-                                items_raw.append((item, folder_key))
-                        scanned += len(batch_items)
-                        searched_window += len(batch_items)
-                        if len(batch_items) < batch_limit:
-                            break
-                    if search_limited:
-                        break
-                if not items_raw:
-                    items_raw = [(direct_item, last_folder_key)]
-
-        if not items_raw:
-            raise MailServiceError("Conversation not found")
-
-        items_raw.sort(
-            key=lambda pair: getattr(pair[0], "datetime_received", None)
-            or getattr(pair[0], "datetime_created", None)
-            or datetime.min.replace(tzinfo=timezone.utc)
-        )
-        return conversation_key, items_raw, last_folder_key
+        try:
+            return self._conversation_finder.find(
+                account=account,
+                conversation_id=conversation_id,
+                folder=folder,
+                folder_scope=folder_scope,
+            )
+        except MailConversationFinderError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def mark_as_read(self, *, user_id: int, mailbox_id: str | None = None, message_id: str) -> bool:
         """Mark a message as read in the Exchange server."""
@@ -4800,12 +2839,13 @@ class MailService:
             require_password=True,
         )
         account = mail_context["account"]
-        folder_obj, _ = self._resolve_folder(account, folder_key)
         try:
-            item = folder_obj.get(id=exchange_id)
-            if getattr(item, "is_read", None) is False:
-                item.is_read = True
-                item.save(update_fields=["is_read"])
+            self._message_actions.set_read_state(
+                account=account,
+                folder_key=folder_key,
+                exchange_id=exchange_id,
+                is_read=True,
+            )
             self._update_cached_message_detail_read_state(
                 user_id=int(user_id),
                 mailbox_id=resolved_mailbox_id,
@@ -4817,8 +2857,8 @@ class MailService:
                 prefixes=("unread_count", "folder_summary", "messages", "notification_feed", "bootstrap", "conversation_detail"),
             )
             return True
-        except Exception as exc:
-            raise MailServiceError(f"Failed to mark message as read: {exc}") from exc
+        except MailMessageActionError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def mark_as_unread(self, *, user_id: int, mailbox_id: str | None = None, message_id: str) -> bool:
         folder_key, exchange_id, encoded_mailbox_id = self._decode_message_ref(message_id)
@@ -4834,12 +2874,13 @@ class MailService:
             require_password=True,
         )
         account = mail_context["account"]
-        folder_obj, _ = self._resolve_folder(account, folder_key)
         try:
-            item = folder_obj.get(id=exchange_id)
-            if getattr(item, "is_read", None) is True:
-                item.is_read = False
-                item.save(update_fields=["is_read"])
+            self._message_actions.set_read_state(
+                account=account,
+                folder_key=folder_key,
+                exchange_id=exchange_id,
+                is_read=False,
+            )
             self._update_cached_message_detail_read_state(
                 user_id=int(user_id),
                 mailbox_id=resolved_mailbox_id,
@@ -4851,8 +2892,8 @@ class MailService:
                 prefixes=("unread_count", "folder_summary", "messages", "notification_feed", "bootstrap", "conversation_detail"),
             )
             return True
-        except Exception as exc:
-            raise MailServiceError(f"Failed to mark message as unread: {exc}") from exc
+        except MailMessageActionError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def _set_conversation_read_state(
         self,
@@ -4876,26 +2917,18 @@ class MailService:
             folder=folder,
             folder_scope=folder_scope,
         )
-        changed = 0
-        failed = 0
-        for item, _folder_key in items_raw:
-            try:
-                current_read = bool(getattr(item, "is_read", False))
-                if current_read == bool(is_read):
-                    continue
-                item.is_read = bool(is_read)
-                item.save(update_fields=["is_read"])
-                changed += 1
-            except Exception:
-                failed += 1
+        read_result = self._message_actions.set_items_read_state(
+            items=(item for item, _folder_key in items_raw),
+            is_read=bool(is_read),
+        )
         self.invalidate_user_cache(
             user_id=int(user_id),
             prefixes=("unread_count", "folder_summary", "messages", "notification_feed", "bootstrap", "message_detail", "conversation_detail"),
         )
         return {
-            "ok": failed == 0,
-            "changed": changed,
-            "failed": failed,
+            "ok": read_result.failed == 0,
+            "changed": read_result.changed,
+            "failed": read_result.failed,
             "conversation_id": conversation_key,
             "folder": _normalize_text(folder, "inbox"),
             "folder_scope": _normalize_text(folder_scope, "current"),
@@ -4952,28 +2985,21 @@ class MailService:
             login=profile["login"],
             password=profile["password"],
         )
-        changed = 0
-        failed = 0
-        for folder_obj, _folder_key in self._search_target_folders(account, folder=_normalize_text(folder, "inbox"), folder_scope=_normalize_text(folder_scope, "current")):
-            try:
-                items = list(folder_obj.filter(is_read=False))
-            except Exception:
-                items = []
-            for item in items:
-                try:
-                    item.is_read = True
-                    item.save(update_fields=["is_read"])
-                    changed += 1
-                except Exception:
-                    failed += 1
+        read_result = self._message_actions.mark_all_read(
+            folder_targets=self._search_target_folders(
+                account,
+                folder=_normalize_text(folder, "inbox"),
+                folder_scope=_normalize_text(folder_scope, "current"),
+            ),
+        )
         self.invalidate_user_cache(
             user_id=int(user_id),
             prefixes=("unread_count", "folder_summary", "messages", "notification_feed", "bootstrap", "message_detail", "conversation_detail"),
         )
         return {
-            "ok": failed == 0,
-            "changed": changed,
-            "failed": failed,
+            "ok": read_result.failed == 0,
+            "changed": read_result.changed,
+            "failed": read_result.failed,
             "folder": _normalize_text(folder, "inbox"),
             "folder_scope": _normalize_text(folder_scope, "current"),
         }
@@ -5032,87 +3058,50 @@ class MailService:
             "errors": errors,
         }
 
+    def _mail_message_content(self) -> MailMessageContent:
+        content = getattr(self, "_message_content", None)
+        if isinstance(content, MailMessageContent):
+            return content
+        return MailMessageContent()
+
     def _message_mime_content(self, item) -> bytes:
-        mime_content = getattr(item, "mime_content", None)
-        if isinstance(mime_content, (bytes, bytearray, memoryview)):
-            return bytes(mime_content)
-        if isinstance(mime_content, str):
-            return mime_content.encode("utf-8", errors="ignore")
-        return b""
+        return self._mail_message_content().message_mime_content(item)
 
     @staticmethod
     def _is_downloadable_attachment(attachment: Any) -> bool:
-        try:
-            from exchangelib.attachments import FileAttachment, ItemAttachment
-        except Exception:
-            return False
-        return isinstance(attachment, (FileAttachment, ItemAttachment))
+        return MailMessageContent.is_downloadable_attachment(attachment)
 
     @staticmethod
     def _attachment_download_filename(name: Any, *, default_name: str, preferred_extension: str = "") -> str:
-        filename = _normalize_text(name, default_name)
-        trimmed = filename.rsplit("/", 1)[-1].rsplit("\\", 1)[-1]
-        if preferred_extension and "." not in trimmed:
-            filename = f"{filename}{preferred_extension}"
-        return filename
+        return MailMessageContent.attachment_download_filename(
+            name,
+            default_name=default_name,
+            preferred_extension=preferred_extension,
+        )
 
     def _build_attachment_download_payload(self, *, attachment: Any, account: Any) -> tuple[str, str, bytes] | None:
-        from exchangelib.attachments import FileAttachment, ItemAttachment
-
-        if isinstance(attachment, FileAttachment):
-            content = attachment.content
-            if not content:
-                # Sometimes we need to download it explicitly if not pre-fetched.
-                account.protocol.get_attachments([attachment])
-                content = attachment.content
-            return (
-                self._attachment_download_filename(
-                    getattr(attachment, "name", None),
-                    default_name="attachment.bin",
-                ),
-                _normalize_text(getattr(attachment, "content_type", "application/octet-stream")),
-                bytes(content or b""),
+        try:
+            return self._mail_message_content().build_attachment_download_payload(
+                attachment=attachment,
+                account=account,
             )
-
-        if isinstance(attachment, ItemAttachment):
-            attached_item = getattr(attachment, "item", None)
-            content = self._message_mime_content(attached_item)
-            if not content and getattr(attachment, "attachment_id", None) is not None:
-                attached_item = attachment.item
-                content = self._message_mime_content(attached_item)
-            if not content:
-                raise MailServiceError("Attached item source is not available")
-            return (
-                self._attachment_download_filename(
-                    getattr(attachment, "name", None),
-                    default_name="attached-message",
-                    preferred_extension=".eml",
-                ),
-                _normalize_text(getattr(attachment, "content_type", None), "message/rfc822") or "message/rfc822",
-                content,
-            )
-
-        return None
+        except MailMessageContentError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def get_message_source(self, *, user_id: int, mailbox_id: str | None = None, message_id: str) -> tuple[str, bytes]:
         context = self._get_message_context(user_id=int(user_id), mailbox_id=mailbox_id, message_id=message_id)
-        item = context["item"]
-        source = self._message_mime_content(item)
-        if not source:
-            raise MailServiceError("Raw message source is not available")
-        subject = _normalize_text(getattr(item, "subject", None), "message")
-        safe_name = re.sub(r"[^A-Za-z0-9._-]+", "_", subject).strip("._") or "message"
-        return f"{safe_name}.eml", source
+        try:
+            return self._mail_message_content().message_source_payload(item=context["item"])
+        except MailMessageContentError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def get_message_headers(self, *, user_id: int, mailbox_id: str | None = None, message_id: str) -> dict[str, Any]:
         filename, source = self.get_message_source(user_id=int(user_id), mailbox_id=mailbox_id, message_id=message_id)
-        parsed = BytesParser(policy=email.policy.default).parsebytes(source)
-        items = [{"name": str(name), "value": str(value)} for name, value in parsed.raw_items()]
-        return {
-            "message_id": message_id,
-            "source_name": filename,
-            "items": items,
-        }
+        return self._mail_message_content().message_headers_payload(
+            message_id=message_id,
+            source_name=filename,
+            source=source,
+        )
 
     def move_message(self, *, user_id: int, mailbox_id: str | None = None, message_id: str, target_folder: str) -> dict[str, Any]:
         folder_key, exchange_id, encoded_mailbox_id = self._decode_message_ref(message_id)
@@ -5128,25 +3117,23 @@ class MailService:
             login=profile["login"],
             password=profile["password"],
         )
-        source_folder_obj, source_folder_key = self._resolve_folder(account, folder_key)
-        target_folder_obj, target_folder_key = self._resolve_folder(account, normalized_target)
         try:
-            item = source_folder_obj.get(id=exchange_id)
-        except Exception as exc:
-            raise MailServiceError(f"Message not found: {exchange_id}") from exc
-
-        try:
-            moved_item = item.move(target_folder_obj)
-            new_exchange_id = _normalize_text(getattr(moved_item, "id", None) or getattr(item, "id", None))
-            if target_folder_key == "trash":
+            result = self._message_actions.move_message(
+                account=account,
+                folder_key=folder_key,
+                exchange_id=exchange_id,
+                target_folder=normalized_target,
+                mailbox_id=resolved_mailbox_id,
+            )
+            if result.folder == "trash":
                 self._set_restore_hint(
                     user_id=int(user_id),
                     mailbox_id=resolved_mailbox_id,
-                    trash_exchange_id=new_exchange_id,
-                    restore_folder=source_folder_key,
+                    trash_exchange_id=result.target_exchange_id,
+                    restore_folder=result.source_folder,
                     source_exchange_id=exchange_id,
                 )
-            elif source_folder_key == "trash":
+            elif result.source_folder == "trash":
                 self._delete_restore_hint(
                     user_id=int(user_id),
                     mailbox_id=resolved_mailbox_id,
@@ -5158,11 +3145,11 @@ class MailService:
             )
             return {
                 "ok": True,
-                "message_id": self._encode_message_id(target_folder_key, new_exchange_id, resolved_mailbox_id),
-                "folder": target_folder_key,
+                "message_id": result.message_id,
+                "folder": result.folder,
             }
-        except Exception as exc:
-            raise MailServiceError(f"Failed to move message: {exc}") from exc
+        except MailMessageActionError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def delete_message(
         self,
@@ -5195,10 +3182,12 @@ class MailService:
             login=profile["login"],
             password=profile["password"],
         )
-        folder_obj, _ = self._resolve_folder(account, folder_key)
         try:
-            item = folder_obj.get(id=exchange_id)
-            item.delete()
+            self._message_actions.delete_message(
+                account=account,
+                folder_key=folder_key,
+                exchange_id=exchange_id,
+            )
             self._delete_restore_hint(
                 user_id=int(user_id),
                 mailbox_id=resolved_mailbox_id,
@@ -5213,8 +3202,8 @@ class MailService:
                 prefixes=("unread_count", "folder_summary", "folder_tree", "messages", "notification_feed", "bootstrap", "message_detail", "conversation_detail"),
             )
             return {"ok": True, "permanent": True}
-        except Exception as exc:
-            raise MailServiceError(f"Failed to delete message: {exc}") from exc
+        except MailMessageActionError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def restore_message(
         self,
@@ -5508,147 +3497,33 @@ class MailService:
         importance: str = "",
     ) -> dict[str, Any]:
         self._set_request_metric("singleflight_hit", 0)
-        safe_limit = max(1, min(200, int(limit or 50)))
-        safe_offset = max(0, int(offset or 0))
-        query_text = _normalize_text(q).lower()
-        normalized_from = _normalize_text(from_filter).lower()
-        normalized_to = _normalize_text(to_filter).lower()
-        normalized_subject = _normalize_text(subject_filter).lower()
-        normalized_body = _normalize_text(body_filter).lower()
-        normalized_importance = _normalize_text(importance).lower()
-        parsed_date_from = _parse_date_filter(date_from)
-        parsed_date_to = _parse_date_filter(date_to)
-
         mail_context = self._resolve_account_context(
             user_id=int(user_id),
             mailbox_id=mailbox_id,
             require_password=True,
         )
-        account = mail_context["account"]
-        scanned = 0
-        search_limited = False
-        search_budget = max(1, int(self.search_window_limit))
-        grouped: dict[str, dict[str, Any]] = {}
-        targets = self._search_target_folders(
-            account,
-            folder=_normalize_text(folder, "inbox"),
-            folder_scope=_normalize_text(folder_scope, "current"),
+        result = self._conversation_payloads.list_conversations(
+            account=mail_context["account"],
+            folder=folder,
+            folder_scope=folder_scope,
+            limit=limit,
+            offset=offset,
+            unread_only=bool(unread_only),
+            filters={
+                "query_text": _normalize_text(q).lower(),
+                "has_attachments": bool(has_attachments),
+                "date_from": _parse_date_filter(date_from),
+                "date_to": _parse_date_filter(date_to),
+                "from_filter": _normalize_text(from_filter).lower(),
+                "to_filter": _normalize_text(to_filter).lower(),
+                "subject_filter": _normalize_text(subject_filter).lower(),
+                "body_filter": _normalize_text(body_filter).lower(),
+                "importance_filter": _normalize_text(importance).lower(),
+            },
         )
-
-        for folder_obj, _folder_key in targets:
-            queryset = self._folder_queryset(folder_obj, _folder_key)
-            scan_offset = 0
-            while True:
-                if scanned >= search_budget:
-                    search_limited = True
-                    break
-                batch_limit = min(self._SEARCH_BATCH_SIZE, search_budget - scanned)
-                batch_items = list(queryset[scan_offset: scan_offset + batch_limit])
-                if not batch_items:
-                    break
-                for item in batch_items:
-                    if not self._message_matches_filters(
-                        item,
-                        query_text=query_text,
-                        has_attachments=bool(has_attachments),
-                        date_from=parsed_date_from,
-                        date_to=parsed_date_to,
-                        from_filter=normalized_from,
-                        to_filter=normalized_to,
-                        subject_filter=normalized_subject,
-                        body_filter=normalized_body,
-                        importance_filter=normalized_importance,
-                    ):
-                        continue
-                    key = self._item_conversation_key(item)
-                    group = grouped.get(key)
-                    received = getattr(item, "datetime_received", None) or getattr(item, "datetime_created", None)
-                    received_iso = received.isoformat() if received else None
-                    sender = self._item_sender(item)
-                    participants = [sender, *self._item_recipients(item)]
-                    participant_people = [
-                        self._item_sender_person(item),
-                        *self._item_recipient_people(item),
-                    ]
-                    if group is None:
-                        group = {
-                            "conversation_id": key,
-                            "subject": _normalize_text(getattr(item, "subject", "")) or "(без темы)",
-                            "participants": [],
-                            "participant_people": [],
-                            "participants_set": set(),
-                            "participant_people_set": set(),
-                            "messages_count": 0,
-                            "unread_count": 0,
-                            "last_received_at": received_iso,
-                            "has_attachments": False,
-                            "attachments_count": 0,
-                            "preview": _normalize_text(getattr(item, "text_body", None))[:280],
-                        }
-                        grouped[key] = group
-                    group["messages_count"] += 1
-                    if not bool(getattr(item, "is_read", False)):
-                        group["unread_count"] += 1
-                    attachments_count = len(getattr(item, "attachments", None) or [])
-                    group["has_attachments"] = bool(group["has_attachments"] or attachments_count > 0)
-                    group["attachments_count"] = max(int(group["attachments_count"]), attachments_count)
-                    if received_iso and (
-                        not group.get("last_received_at")
-                        or str(received_iso) > str(group.get("last_received_at"))
-                    ):
-                        group["last_received_at"] = received_iso
-                        group["preview"] = _normalize_text(getattr(item, "text_body", None))[:280]
-                        group["subject"] = _normalize_text(getattr(item, "subject", "")) or "(без темы)"
-                    for participant in participants:
-                        value = _normalize_text(participant).lower()
-                        if value and value not in group["participants_set"]:
-                            group["participants_set"].add(value)
-                            group["participants"].append(value)
-                    for participant in participant_people:
-                        value = self._person_lookup_key(participant)
-                        if value and value not in group["participant_people_set"]:
-                            group["participant_people_set"].add(value)
-                            group["participant_people"].append(participant)
-                scanned += len(batch_items)
-                scan_offset += len(batch_items)
-                if len(batch_items) < batch_limit:
-                    break
-            if search_limited:
-                break
-
-        conversations = [
-            {
-                "conversation_id": item["conversation_id"],
-                "subject": item["subject"],
-                "participants": item["participants"],
-                "participant_people": item["participant_people"],
-                "messages_count": int(item["messages_count"]),
-                "unread_count": int(item["unread_count"]),
-                "last_received_at": item["last_received_at"],
-                "has_attachments": bool(item["has_attachments"]),
-                "attachments_count": int(item["attachments_count"]),
-                "preview": item["preview"],
-            }
-            for item in grouped.values()
-            if not unread_only or int(item["unread_count"]) > 0
-        ]
-        conversations.sort(key=lambda item: item.get("last_received_at") or "", reverse=True)
-        total = len(conversations)
-        page_items = conversations[safe_offset: safe_offset + safe_limit]
-        next_offset = safe_offset + len(page_items)
-        self._set_request_metric("searched_window", scanned)
-        self._set_request_metric("search_limited", int(bool(search_limited)))
-        return {
-            "items": page_items,
-            "folder": _normalize_text(folder, "inbox"),
-            "limit": safe_limit,
-            "offset": safe_offset,
-            "total": total,
-            "has_more": next_offset < total,
-            "next_offset": next_offset if next_offset < total else None,
-            "search_limited": bool(search_limited),
-            "searched_window": scanned,
-        }
+        self._set_request_metric("searched_window", result.searched_window)
+        self._set_request_metric("search_limited", int(result.search_limited))
+        return result.payload
 
     def get_conversation(
         self,
@@ -5713,34 +3588,10 @@ class MailService:
                 )
                 for item, item_folder_key in items_raw
             ]
-            participants: list[str] = []
-            participant_people: list[dict[str, str | None]] = []
-            participant_email_seen: set[str] = set()
-            participant_people_seen: set[str] = set()
-            for item in items:
-                for value in [item.get("sender"), *(item.get("to") or []), *(item.get("cc") or [])]:
-                    email = _normalize_text(value).lower()
-                    if not email or email in participant_email_seen:
-                        continue
-                    participant_email_seen.add(email)
-                    participants.append(email)
-                for person in [item.get("sender_person"), *(item.get("to_people") or []), *(item.get("cc_people") or [])]:
-                    lookup_key = self._person_lookup_key(person)
-                    if not lookup_key or lookup_key in participant_people_seen:
-                        continue
-                    participant_people_seen.add(lookup_key)
-                    participant_people.append(person)
-
-            payload = {
-                "conversation_id": resolved_conversation_key,
-                "subject": items[-1].get("subject") or "(без темы)",
-                "participants": participants,
-                "participant_people": participant_people,
-                "messages_count": len(items),
-                "unread_count": sum(1 for item in items if not item.get("is_read")),
-                "last_received_at": items[-1].get("received_at"),
-                "items": items,
-            }
+            payload = self._conversation_payloads.conversation_detail_payload(
+                conversation_id=resolved_conversation_key,
+                items=items,
+            )
             return self._cache_set(
                 user_id=int(user_id),
                 bucket="conversation_detail",
@@ -5771,14 +3622,27 @@ class MailService:
     ) -> dict[str, Any]:
         safe_attachments = attachments or []
         self._validate_outgoing_attachments_dynamic(safe_attachments)
-        retain_tokens = [self.resolve_attachment_id(token) for token in (retain_existing_attachments or []) if _normalize_text(token)]
-        effective_mailbox_id = self._resolve_outbound_mailbox_id(
-            mailbox_id=mailbox_id,
-            draft_id=draft_id,
-            reply_to_message_id=reply_to_message_id,
-            forward_message_id=forward_message_id,
-        )
-        profile = self._resolve_mail_profile(user_id=int(user_id), mailbox_id=effective_mailbox_id, require_password=True)
+        try:
+            draft_plan = build_draft_upsert_plan(
+                mailbox_id=mailbox_id,
+                draft_id=draft_id,
+                compose_mode=compose_mode,
+                to=to,
+                cc=cc,
+                bcc=bcc,
+                subject=subject,
+                body=body,
+                is_html=is_html,
+                reply_to_message_id=reply_to_message_id,
+                forward_message_id=forward_message_id,
+                retain_existing_attachments=retain_existing_attachments,
+                attachment_id_resolver=self.resolve_attachment_id,
+                mailbox_id_from_message=lambda value: self._resolve_mailbox_id_from_message(message_id=value),
+                mailbox_scope_resolver=self._resolve_mailbox_scope,
+            )
+        except ComposeValidationError as exc:
+            raise MailServiceError(str(exc)) from exc
+        profile = self._resolve_mail_profile(user_id=int(user_id), mailbox_id=draft_plan.effective_mailbox_id, require_password=True)
         resolved_mailbox_id = _normalize_text(profile.get("mailbox_id"))
         account = self._create_account(
             email=profile["email"],
@@ -5786,70 +3650,28 @@ class MailService:
             password=profile["password"],
         )
 
-        try:
-            from exchangelib import HTMLBody, Mailbox, Message
-            from exchangelib.attachments import FileAttachment
-        except Exception as exc:
-            raise MailServiceError("exchangelib package is not installed") from exc
-
-        existing_item = None
         draft_exchange_id = ""
         if draft_id:
             folder_key, draft_exchange_id, encoded_mailbox_id = self._decode_message_ref(draft_id)
             if folder_key != "drafts":
                 raise MailServiceError("Draft id must point to drafts folder")
             resolved_mailbox_id = self._resolve_mailbox_scope(resolved_mailbox_id, encoded_mailbox_id)
-            try:
-                existing_item = account.drafts.get(id=draft_exchange_id)
-            except Exception:
-                existing_item = None
-
-        to_recipients = [Mailbox(email_address=email) for email in _parse_recipients(";".join(to or []))]
-        cc_recipients = [Mailbox(email_address=email) for email in _parse_recipients(";".join(cc or []))]
-        bcc_recipients = [Mailbox(email_address=email) for email in _parse_recipients(";".join(bcc or []))]
-        body_payload = HTMLBody(_normalize_text(body)) if is_html else _normalize_text(body)
 
         try:
-            if existing_item is None:
-                draft_item = Message(
-                    account=account,
-                    folder=account.drafts,
-                    subject=_normalize_text(subject),
-                    body=body_payload,
-                    to_recipients=to_recipients,
-                    cc_recipients=cc_recipients,
-                    bcc_recipients=bcc_recipients,
-                )
-                for filename, content in safe_attachments:
-                    draft_item.attach(FileAttachment(name=filename, content=content))
-                draft_item.save()
-            else:
-                draft_item = existing_item
-                draft_item.subject = _normalize_text(subject)
-                draft_item.body = body_payload
-                draft_item.to_recipients = to_recipients
-                draft_item.cc_recipients = cc_recipients
-                draft_item.bcc_recipients = bcc_recipients
-                for att in list(getattr(draft_item, "attachments", None) or []):
-                    att_id = _normalize_text(getattr(getattr(att, "attachment_id", None), "id", ""))
-                    if att_id and att_id in retain_tokens:
-                        continue
-                    try:
-                        att.detach()
-                    except Exception:
-                        pass
-                for filename, content in safe_attachments:
-                    draft_item.attach(FileAttachment(name=filename, content=content))
-                draft_item.save(update_fields=["subject", "body", "to_recipients", "cc_recipients", "bcc_recipients"])
-
+            draft_item = self._draft_lifecycle.upsert_draft(
+                account=account,
+                draft_plan=draft_plan,
+                attachments=safe_attachments,
+                draft_exchange_id=draft_exchange_id,
+            )
             draft_exchange_id = _normalize_text(getattr(draft_item, "id", ""))
             self._save_draft_context(
                 user_id=int(user_id),
                 mailbox_id=resolved_mailbox_id,
                 draft_exchange_id=draft_exchange_id,
-                compose_mode=_normalize_text(compose_mode, "draft"),
-                reply_to_message_id=_normalize_text(reply_to_message_id) or None,
-                forward_message_id=_normalize_text(forward_message_id) or None,
+                compose_mode=draft_plan.compose_mode,
+                reply_to_message_id=draft_plan.reply_to_message_id or None,
+                forward_message_id=draft_plan.forward_message_id or None,
             )
             detail = self._serialize_message_detail(
                 item=draft_item,
@@ -5873,7 +3695,7 @@ class MailService:
                 "attachments": detail["attachments"],
                 "message": detail,
             }
-        except Exception as exc:
+        except MailDraftLifecycleError as exc:
             raise MailServiceError(f"Failed to save draft: {exc}") from exc
 
     def delete_draft(self, *, user_id: int, mailbox_id: str | None = None, draft_id: str) -> dict[str, Any]:
@@ -5892,15 +3714,14 @@ class MailService:
             password=profile["password"],
         )
         try:
-            item = account.drafts.get(id=exchange_id)
-            item.delete()
+            self._draft_lifecycle.delete_draft(account=account, draft_exchange_id=exchange_id)
             self._delete_draft_context(mailbox_id=resolved_mailbox_id, draft_exchange_id=exchange_id)
             self.invalidate_user_cache(
                 user_id=int(user_id),
                 prefixes=("folder_summary", "folder_tree", "messages", "bootstrap", "message_detail", "conversation_detail"),
             )
             return {"ok": True, "draft_id": draft_id}
-        except Exception as exc:
+        except MailDraftLifecycleError as exc:
             raise MailServiceError(f"Failed to delete draft: {exc}") from exc
 
     def download_attachment(
@@ -5981,29 +3802,18 @@ class MailService:
         exchange_item_id: Optional[str] = None,
         error_text: Optional[str] = None,
     ) -> None:
-        self._maybe_cleanup_message_log()
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"""
-                INSERT INTO {self._LOG_TABLE}
-                (id, user_id, username, direction, folder_hint, subject, recipients_json, sent_at, status, exchange_item_id, error_text)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    _normalize_text(message_id),
-                    int(user_id),
-                    _normalize_text(username),
-                    _normalize_text(direction, "outgoing"),
-                    _normalize_text(folder_hint),
-                    _normalize_text(subject),
-                    json.dumps(recipients or [], ensure_ascii=False),
-                    _utc_now_iso(),
-                    _normalize_text(status, "sent"),
-                    _normalize_text(exchange_item_id) or None,
-                    _normalize_text(error_text) or None,
-                ),
-            )
-            conn.commit()
+        self._metadata_store.log_message(
+            message_id=message_id,
+            user_id=int(user_id),
+            username=username,
+            direction=direction,
+            folder_hint=folder_hint,
+            subject=subject,
+            recipients=recipients,
+            status=status,
+            exchange_item_id=exchange_item_id,
+            error_text=error_text,
+        )
 
     def send_message(
         self,
@@ -6021,11 +3831,10 @@ class MailService:
         forward_message_id: str = "",
         draft_id: str = "",
     ) -> dict[str, Any]:
-        recipients = [item for item in _parse_recipients(";".join(to or [])) if item]
-        cc_recipients = [item for item in _parse_recipients(";".join(cc or [])) if item]
-        bcc_recipients = [item for item in _parse_recipients(";".join(bcc or [])) if item]
-        if not recipients:
-            raise MailServiceError("At least one recipient is required")
+        try:
+            recipient_set = build_recipient_set(to=to, cc=cc, bcc=bcc, require_to=True)
+        except ComposeValidationError as exc:
+            raise MailServiceError(str(exc)) from exc
         safe_attachments = attachments or []
         self._validate_outgoing_attachments_dynamic(safe_attachments)
         effective_mailbox_id = self._resolve_outbound_mailbox_id(
@@ -6045,20 +3854,31 @@ class MailService:
             login=profile["login"],
             password=profile["password"],
         )
+        try:
+            send_plan = build_outbound_send_plan(
+                mailbox_id=effective_mailbox_id,
+                draft_id=draft_id,
+                to=recipient_set.to,
+                cc=recipient_set.cc,
+                bcc=recipient_set.bcc,
+                subject=subject,
+                body=body,
+                signature=profile["signature"],
+                is_html=is_html,
+                reply_to_message_id=reply_to_message_id,
+                forward_message_id=forward_message_id,
+                mailbox_id_from_message=lambda value: self._resolve_mailbox_id_from_message(message_id=value),
+                mailbox_scope_resolver=self._resolve_mailbox_scope,
+            )
+        except ComposeValidationError as exc:
+            raise MailServiceError(str(exc)) from exc
 
         message_id = _normalize_text(base64.urlsafe_b64encode(os.urandom(12)).decode("utf-8"))
-        final_subject = _normalize_text(subject)
-        final_body = _normalize_text(body)
-        signature = _normalize_text(profile["signature"])
-        if is_html:
-            final_body = _build_outgoing_html_body(
-                final_body,
-                signature,
-                prefer_signature_before_quote=bool(_normalize_text(reply_to_message_id) or _normalize_text(forward_message_id)),
-            )
-        elif signature:
-            separator = "\n\n"
-            final_body = f"{final_body}{separator}{signature}" if final_body else signature
+        recipients = send_plan.recipients.to
+        cc_recipients = send_plan.recipients.cc
+        bcc_recipients = send_plan.recipients.bcc
+        final_subject = send_plan.subject
+        final_body = send_plan.body
 
         try:
             from exchangelib import HTMLBody, Mailbox, Message
@@ -6070,7 +3890,7 @@ class MailService:
             to_recipients = [Mailbox(email_address=email) for email in recipients]
             cc_mailboxes = [Mailbox(email_address=email) for email in cc_recipients]
             bcc_mailboxes = [Mailbox(email_address=email) for email in bcc_recipients]
-            body_payload = HTMLBody(final_body) if is_html else final_body
+            body_payload = HTMLBody(final_body) if send_plan.is_html else final_body
             msg_kwargs = dict(
                 account=account,
                 folder=account.sent,
@@ -6080,47 +3900,36 @@ class MailService:
                 cc_recipients=cc_mailboxes,
                 bcc_recipients=bcc_mailboxes,
             )
-            reply_source_id = _normalize_text(reply_to_message_id)
-            forward_source_id = _normalize_text(forward_message_id)
-            reference_ids: list[str] = []
+            reply_message_id_value = ""
+            reply_references = ""
+            forward_message_id_value = ""
 
-            if reply_source_id:
-                reply_folder_key, reply_exchange_id = self._decode_message_id(reply_source_id)
+            if send_plan.reply_to_message_id:
+                reply_folder_key, reply_exchange_id = self._decode_message_id(send_plan.reply_to_message_id)
                 reply_folder_obj, _ = self._resolve_folder(account, reply_folder_key)
                 try:
                     reply_item = reply_folder_obj.get(id=reply_exchange_id)
                 except Exception as exc:
                     raise MailServiceError(f"Reply source message not found: {exc}") from exc
-                reply_message_id = self._item_message_id(reply_item)
-                if reply_message_id:
-                    msg_kwargs["in_reply_to"] = reply_message_id
-                    reference_ids.append(reply_message_id)
-                existing_references = _normalize_text(getattr(reply_item, "references", None))
-                if existing_references:
-                    reference_ids.extend([part for part in existing_references.split() if part])
+                reply_message_id_value = self._item_message_id(reply_item)
+                reply_references = _normalize_text(getattr(reply_item, "references", None))
 
-            if forward_source_id:
-                forward_folder_key, forward_exchange_id = self._decode_message_id(forward_source_id)
+            if send_plan.forward_message_id:
+                forward_folder_key, forward_exchange_id = self._decode_message_id(send_plan.forward_message_id)
                 forward_folder_obj, _ = self._resolve_folder(account, forward_folder_key)
                 try:
                     forward_item = forward_folder_obj.get(id=forward_exchange_id)
                 except Exception as exc:
                     raise MailServiceError(f"Forward source message not found: {exc}") from exc
                 forward_message_id_value = self._item_message_id(forward_item)
-                if forward_message_id_value:
-                    reference_ids.append(forward_message_id_value)
 
-            if reference_ids:
-                unique_references: list[str] = []
-                seen_references: set[str] = set()
-                for value in reference_ids:
-                    item_value = _normalize_text(value)
-                    if not item_value or item_value in seen_references:
-                        continue
-                    seen_references.add(item_value)
-                    unique_references.append(item_value)
-                if unique_references:
-                    msg_kwargs["references"] = " ".join(unique_references)
+            msg_kwargs.update(
+                build_reply_forward_reference_headers(
+                    reply_message_id=reply_message_id_value,
+                    reply_references=reply_references,
+                    forward_message_id=forward_message_id_value,
+                )
+            )
 
             msg = Message(**msg_kwargs)
             if safe_attachments:
@@ -6175,269 +3984,56 @@ class MailService:
 
     @classmethod
     def _normalize_field_options(cls, value: Any) -> list[str]:
-        if value is None:
-            return []
-        raw_options: list[Any]
-        if isinstance(value, str):
-            raw_options = [part for part in re.split(r"[;\n]+", value) if _normalize_text(part)]
-        elif isinstance(value, list):
-            raw_options = value
-        else:
-            raise MailServiceError("Template field options must be an array or string")
-
-        normalized: list[str] = []
-        seen: set[str] = set()
-        for item in raw_options:
-            if isinstance(item, dict):
-                option_value = _normalize_text(item.get("value") or item.get("label"))
-            else:
-                option_value = _normalize_text(item)
-            if not option_value:
-                continue
-            if option_value in seen:
-                continue
-            seen.add(option_value)
-            normalized.append(option_value)
-        return normalized
+        try:
+            return normalize_field_options(value)
+        except TemplateValidationError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @classmethod
     def _normalize_template_field(cls, raw_field: Any, index: int = 0) -> dict[str, Any]:
-        if not isinstance(raw_field, dict):
-            raise MailServiceError("Each template field must be an object")
-        key = _normalize_text(raw_field.get("key")).lower()
-        key = re.sub(r"[^a-z0-9_.-]", "_", key)
-        key = re.sub(r"_+", "_", key).strip("_")
-        if not key:
-            raise MailServiceError("Template field key is required")
-
-        field_type = _normalize_text(raw_field.get("type"), "text").lower()
-        if field_type not in cls._FIELD_TYPES:
-            raise MailServiceError(f"Unsupported template field type: {field_type}")
-
-        label = _normalize_text(raw_field.get("label"), key)
-        placeholder = _normalize_text(raw_field.get("placeholder"))
-        help_text = _normalize_text(raw_field.get("help_text"))
-        default_value = raw_field.get("default_value")
-        required = bool(raw_field.get("required", True))
         try:
-            order = int(raw_field.get("order", index))
-        except Exception:
-            order = index
-        options = cls._normalize_field_options(raw_field.get("options"))
-        if field_type in {"select", "multiselect"} and not options:
-            raise MailServiceError(f"Field '{key}' requires non-empty options")
-        if field_type not in {"select", "multiselect"}:
-            options = []
-
-        if field_type == "checkbox":
-            default_normalized: Any = bool(default_value)
-        elif field_type == "multiselect":
-            if isinstance(default_value, list):
-                default_normalized = [item for item in cls._normalize_field_options(default_value) if item in options]
-            else:
-                default_normalized = []
-        else:
-            default_normalized = _normalize_text(default_value)
-
-        return {
-            "key": key,
-            "label": label,
-            "type": field_type,
-            "required": required,
-            "placeholder": placeholder,
-            "help_text": help_text,
-            "default_value": default_normalized,
-            "options": options,
-            "order": order,
-        }
+            return normalize_template_field(raw_field, index)
+        except TemplateValidationError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @classmethod
     def _normalize_template_fields(cls, raw_fields: Any) -> list[dict[str, Any]]:
-        if not isinstance(raw_fields, list):
-            raise MailServiceError("Template fields must be an array")
-        normalized = [cls._normalize_template_field(item, idx) for idx, item in enumerate(raw_fields)]
-        normalized.sort(key=lambda item: int(item.get("order", 0)))
-        return normalized
+        try:
+            return normalize_template_fields(raw_fields)
+        except TemplateValidationError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @classmethod
     def _parse_template_fields_json(cls, raw_json: str) -> list[dict[str, Any]]:
         try:
-            loaded = json.loads(raw_json or "[]")
-        except Exception as exc:
-            raise MailServiceError("Template fields JSON is invalid") from exc
-        return cls._normalize_template_fields(loaded)
+            return parse_template_fields_json(raw_json)
+        except (TemplateStoreError, TemplateValidationError) as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def _migrate_legacy_template_fields(self) -> None:
-        migrated_count = 0
-        deactivated_count = 0
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                f"SELECT id, required_fields_json, is_active FROM {self._TEMPLATES_TABLE}"
-            ).fetchall()
-            for row in rows:
-                template_id = _normalize_text(row["id"])
-                raw = _normalize_text(row["required_fields_json"], "[]")
-                try:
-                    loaded = json.loads(raw or "[]")
-                except Exception:
-                    conn.execute(
-                        f"UPDATE {self._TEMPLATES_TABLE} SET is_active = 0, updated_at = ? WHERE id = ?",
-                        (_utc_now_iso(), template_id),
-                    )
-                    deactivated_count += 1
-                    logger.warning("Template %s disabled during migration: invalid fields JSON", template_id)
-                    continue
-
-                if not isinstance(loaded, list):
-                    conn.execute(
-                        f"UPDATE {self._TEMPLATES_TABLE} SET is_active = 0, updated_at = ? WHERE id = ?",
-                        (_utc_now_iso(), template_id),
-                    )
-                    deactivated_count += 1
-                    logger.warning("Template %s disabled during migration: fields payload is not an array", template_id)
-                    continue
-
-                is_new_schema = all(isinstance(item, dict) and _normalize_text(item.get("type")) for item in loaded)
-                try:
-                    if is_new_schema:
-                        normalized = self._normalize_template_fields(loaded)
-                    else:
-                        converted = []
-                        for index, item in enumerate(loaded):
-                            if not isinstance(item, dict):
-                                raise MailServiceError("Legacy field entry must be an object")
-                            converted.append(
-                                {
-                                    "key": _normalize_text(item.get("key")).lower(),
-                                    "label": _normalize_text(item.get("label")),
-                                    "type": "text",
-                                    "required": bool(item.get("required", True)),
-                                    "placeholder": _normalize_text(item.get("placeholder")),
-                                    "help_text": "",
-                                    "default_value": "",
-                                    "options": [],
-                                    "order": index,
-                                }
-                            )
-                        normalized = self._normalize_template_fields(converted)
-                    serialized = json.dumps(normalized, ensure_ascii=False)
-                    if serialized != raw:
-                        conn.execute(
-                            f"UPDATE {self._TEMPLATES_TABLE} SET required_fields_json = ?, updated_at = ? WHERE id = ?",
-                            (serialized, _utc_now_iso(), template_id),
-                        )
-                        migrated_count += 1
-                except Exception as exc:
-                    conn.execute(
-                        f"UPDATE {self._TEMPLATES_TABLE} SET is_active = 0, updated_at = ? WHERE id = ?",
-                        (_utc_now_iso(), template_id),
-                    )
-                    deactivated_count += 1
-                    logger.warning("Template %s disabled during migration: %s", template_id, exc)
-            conn.commit()
-
-        if migrated_count or deactivated_count:
-            logger.info(
-                "IT template migration completed: migrated=%s deactivated=%s",
-                migrated_count,
-                deactivated_count,
-            )
+        self._template_store.migrate_legacy_template_fields(logger=logger)
 
     @staticmethod
     def _value_to_template_string(value: Any) -> str:
-        if isinstance(value, list):
-            return ", ".join(_normalize_text(item) for item in value if _normalize_text(item))
-        if isinstance(value, bool):
-            return "Да" if value else "Нет"
-        return _normalize_text(value)
+        return value_to_template_string(value)
 
     @classmethod
     def _render_template(cls, text: str, values: dict[str, Any]) -> str:
-        source = _normalize_text(text)
-
-        def _replace(match: re.Match[str]) -> str:
-            key = _normalize_text(match.group(1))
-            return cls._value_to_template_string(values.get(key))
-
-        return re.sub(r"\{\{\s*([A-Za-z0-9_.-]+)\s*\}\}", _replace, source)
+        return render_template(text, values)
 
     @classmethod
     def _coerce_field_value(cls, field: dict[str, Any], raw_value: Any) -> Any:
-        field_type = _normalize_text(field.get("type"), "text").lower()
-        options = field.get("options") if isinstance(field.get("options"), list) else []
-        default_value = field.get("default_value")
-        value = raw_value if raw_value is not None else default_value
-
-        if field_type == "checkbox":
-            if isinstance(value, bool):
-                return value
-            return str(value).strip().lower() in {"1", "true", "yes", "on", "да"}
-
-        if field_type == "multiselect":
-            if isinstance(value, list):
-                values = [_normalize_text(item) for item in value]
-            else:
-                values = [part for part in re.split(r"[;,]+", _normalize_text(value)) if _normalize_text(part)]
-            filtered: list[str] = []
-            seen: set[str] = set()
-            for item in values:
-                if item in seen:
-                    continue
-                if options and item not in options:
-                    continue
-                seen.add(item)
-                filtered.append(item)
-            return filtered
-
-        text = _normalize_text(value)
-        if field_type == "select":
-            if not text:
-                return ""
-            if options and text not in options:
-                raise MailServiceError(f"Field '{field.get('key')}' has unsupported value")
-            return text
-        if field_type == "email":
-            if text and not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", text):
-                raise MailServiceError(f"Field '{field.get('key')}' must contain a valid email")
-            return text
-        if field_type == "tel":
-            if text and not re.match(r"^[0-9+\-() ]{5,}$", text):
-                raise MailServiceError(f"Field '{field.get('key')}' must contain a valid phone")
-            return text
-        if field_type == "date":
-            if text and not re.match(r"^\d{4}-\d{2}-\d{2}$", text):
-                raise MailServiceError(f"Field '{field.get('key')}' must be in YYYY-MM-DD format")
-            return text
-        return text
+        try:
+            return coerce_field_value(field, raw_value)
+        except TemplateValidationError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @classmethod
     def _validate_template_values(cls, template_fields: list[dict[str, Any]], values: dict[str, Any]) -> dict[str, Any]:
-        normalized_values: dict[str, Any] = {}
-        missing: list[str] = []
-        for field in template_fields:
-            key = _normalize_text(field.get("key"))
-            if not key:
-                continue
-            coerced = cls._coerce_field_value(field, values.get(key))
-            normalized_values[key] = coerced
-
-            if not bool(field.get("required", True)):
-                continue
-            field_type = _normalize_text(field.get("type"))
-            if field_type == "checkbox":
-                if coerced is not True:
-                    missing.append(key)
-                continue
-            if field_type == "multiselect":
-                if not isinstance(coerced, list) or len(coerced) == 0:
-                    missing.append(key)
-                continue
-            if not _normalize_text(coerced):
-                missing.append(key)
-
-        if missing:
-            raise MailServiceError(f"Missing required template fields: {', '.join(missing)}")
-        return normalized_values
+        try:
+            return validate_template_values(template_fields, values)
+        except TemplateValidationError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     @classmethod
     def _validate_attachments_limits(
@@ -6448,23 +4044,17 @@ class MailService:
         max_file_size: int,
         max_total_size: int,
     ) -> None:
-        safe_attachments = attachments or []
-        if len(safe_attachments) > int(max_files):
-            raise MailPayloadTooLargeError(
-                f"Too many attachments. Maximum is {int(max_files)}"
+        try:
+            validate_attachments_limits(
+                attachments,
+                AttachmentLimits(
+                    max_files=int(max_files),
+                    max_file_size=int(max_file_size),
+                    max_total_size=int(max_total_size),
+                ),
             )
-        total_size = 0
-        for filename, content in safe_attachments:
-            size = len(content or b"")
-            if size > int(max_file_size):
-                raise MailPayloadTooLargeError(
-                    f"Attachment '{_normalize_text(filename, 'attachment.bin')}' exceeds {int(max_file_size) // (1024 * 1024)}MB limit"
-                )
-            total_size += size
-            if total_size > int(max_total_size):
-                raise MailPayloadTooLargeError(
-                    f"Total attachment size exceeds {int(max_total_size) // (1024 * 1024)}MB limit"
-                )
+        except AttachmentLimitError as exc:
+            raise MailPayloadTooLargeError(str(exc)) from exc
 
     @classmethod
     def _validate_it_attachments(cls, attachments: list[tuple[str, bytes]]) -> None:
@@ -6522,6 +4112,18 @@ class MailService:
                 break
         return contacts
 
+    @staticmethod
+    def _is_gal_no_results(value: Any) -> bool:
+        return value.__class__.__name__ == "ErrorNameResolutionNoResults"
+
+    @staticmethod
+    def _serialize_gal_contact(value: Any) -> dict[str, str] | None:
+        email = _normalize_text(getattr(value, "email_address", None)).lower()
+        if not email:
+            return None
+        name = _normalize_text(getattr(value, "name", None))
+        return {"name": name or email, "email": email, "source": "exchange_gal"}
+
     def search_contacts(self, user_id: int, q: str, mailbox_id: str | None = None) -> list[dict[str, str]]:
         query = _normalize_text(q)
         if len(query) < 2:
@@ -6543,15 +4145,20 @@ class MailService:
                 return_full_contact_data=False
             )
             for item in results:
-                name = _normalize_text(item.name)
-                email = _normalize_text(item.email_address).lower()
+                if self._is_gal_no_results(item):
+                    continue
+                contact = self._serialize_gal_contact(item)
+                if not contact:
+                    continue
+                email = _normalize_text(contact.get("email")).lower()
                 if email and email not in seen:
                     seen.add(email)
-                    contacts.append({"name": name or email, "email": email, "source": "exchange_gal"})
+                    contacts.append(contact)
             if contacts:
                 return contacts
         except Exception as exc:
-            logger.warning("Error searching contacts in GAL (user_id=%s, q=%s): %s", user_id, query, exc)
+            if not self._is_gal_no_results(exc):
+                logger.warning("Error searching contacts in GAL (user_id=%s, q=%s): %s", user_id, query, exc)
 
         for item in self._search_local_user_contacts(query):
             email = _normalize_text(item.get("email")).lower()
@@ -6561,177 +4168,28 @@ class MailService:
         return contacts
 
     def list_templates(self, *, active_only: bool = True) -> list[dict[str, Any]]:
-        where_sql = "WHERE is_active = 1" if active_only else ""
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM {self._TEMPLATES_TABLE}
-                {where_sql}
-                ORDER BY updated_at DESC, LOWER(title) ASC
-                """
-            ).fetchall()
-        result = []
-        for row in rows:
-            item = dict(row)
-            try:
-                item["fields"] = self._parse_template_fields_json(item.get("required_fields_json") or "[]")
-            except MailServiceError:
-                item["fields"] = []
-            result.append(item)
-        return result
+        return self._template_store.list_templates(active_only=active_only)
 
     def get_template(self, template_id: str, *, active_only: bool = False) -> Optional[dict[str, Any]]:
-        normalized_id = _normalize_text(template_id)
-        if not normalized_id:
-            return None
-        sql = f"SELECT * FROM {self._TEMPLATES_TABLE} WHERE id = ?"
-        params: list[Any] = [normalized_id]
-        if active_only:
-            sql += " AND is_active = 1"
-        with self._lock, self._connect() as conn:
-            row = conn.execute(sql, tuple(params)).fetchone()
-        if row is None:
-            return None
-        item = dict(row)
-        try:
-            item["fields"] = self._parse_template_fields_json(item.get("required_fields_json") or "[]")
-        except MailServiceError:
-            item["fields"] = []
-        return item
+        return self._template_store.get_template(template_id, active_only=active_only)
 
     def create_template(self, *, payload: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
-        if "required_fields" in payload:
-            raise MailServiceError("required_fields is no longer supported. Use fields")
-        template_id = _normalize_text(payload.get("id")) or base64.urlsafe_b64encode(os.urandom(9)).decode("utf-8")
-        code = _normalize_text(payload.get("code")).lower()
-        title = _normalize_text(payload.get("title"))
-        subject_template = _normalize_text(payload.get("subject_template"))
-        body_template_md = _normalize_text(payload.get("body_template_md"))
-        category = _normalize_text(payload.get("category"))
-        template_fields = self._normalize_template_fields(payload.get("fields") or [])
-        if not code:
-            raise MailServiceError("Template code is required")
-        if not title:
-            raise MailServiceError("Template title is required")
-        if not subject_template:
-            raise MailServiceError("Template subject is required")
-        now = _utc_now_iso()
-
-        with self._lock, self._connect() as conn:
-            exists = conn.execute(
-                f"SELECT id FROM {self._TEMPLATES_TABLE} WHERE code = ?",
-                (code,),
-            ).fetchone()
-            if exists is not None:
-                raise MailServiceError(f"Template code already exists: {code}")
-            conn.execute(
-                f"""
-                INSERT INTO {self._TEMPLATES_TABLE}
-                (id, code, title, category, subject_template, body_template_md, required_fields_json, is_active,
-                 created_by_user_id, created_by_username, updated_by_user_id, updated_by_username, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    template_id,
-                    code,
-                    title,
-                    category,
-                    subject_template,
-                    body_template_md,
-                    json.dumps(template_fields, ensure_ascii=False),
-                    int(actor.get("id") or 0),
-                    _normalize_text(actor.get("username")),
-                    int(actor.get("id") or 0),
-                    _normalize_text(actor.get("username")),
-                    now,
-                    now,
-                ),
-            )
-            conn.commit()
-        created = self.get_template(template_id)
-        if not created:
-            raise MailServiceError("Template was not created")
-        return created
+        try:
+            return self._template_store.create_template(payload=payload, actor=actor)
+        except (TemplateStoreError, TemplateValidationError) as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def update_template(self, *, template_id: str, payload: dict[str, Any], actor: dict[str, Any]) -> dict[str, Any]:
-        current = self.get_template(template_id, active_only=False)
-        if current is None:
-            raise MailServiceError("Template not found")
-        if "required_fields" in payload:
-            raise MailServiceError("required_fields is no longer supported. Use fields")
-        fields: list[str] = []
-        params: list[Any] = []
-
-        if "code" in payload:
-            code = _normalize_text(payload.get("code")).lower()
-            if not code:
-                raise MailServiceError("Template code cannot be empty")
-            fields.append("code = ?")
-            params.append(code)
-        if "title" in payload:
-            title = _normalize_text(payload.get("title"))
-            if not title:
-                raise MailServiceError("Template title cannot be empty")
-            fields.append("title = ?")
-            params.append(title)
-        if "category" in payload:
-            fields.append("category = ?")
-            params.append(_normalize_text(payload.get("category")))
-        if "subject_template" in payload:
-            subject_template = _normalize_text(payload.get("subject_template"))
-            if not subject_template:
-                raise MailServiceError("Template subject cannot be empty")
-            fields.append("subject_template = ?")
-            params.append(subject_template)
-        if "body_template_md" in payload:
-            fields.append("body_template_md = ?")
-            params.append(_normalize_text(payload.get("body_template_md")))
-        if "fields" in payload:
-            template_fields = self._normalize_template_fields(payload.get("fields") or [])
-            fields.append("required_fields_json = ?")
-            params.append(json.dumps(template_fields, ensure_ascii=False))
-        if "is_active" in payload:
-            fields.append("is_active = ?")
-            params.append(1 if bool(payload.get("is_active")) else 0)
-
-        if not fields:
-            return current
-        fields.extend(["updated_by_user_id = ?", "updated_by_username = ?", "updated_at = ?"])
-        params.extend([int(actor.get("id") or 0), _normalize_text(actor.get("username")), _utc_now_iso()])
-        params.append(_normalize_text(template_id))
-
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"UPDATE {self._TEMPLATES_TABLE} SET {', '.join(fields)} WHERE id = ?",
-                tuple(params),
-            )
-            conn.commit()
-        updated = self.get_template(template_id, active_only=False)
-        if updated is None:
-            raise MailServiceError("Template not found after update")
-        return updated
+        try:
+            return self._template_store.update_template(template_id=template_id, payload=payload, actor=actor)
+        except (TemplateStoreError, TemplateValidationError) as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def delete_template(self, *, template_id: str, actor: dict[str, Any]) -> bool:
-        with self._lock, self._connect() as conn:
-            row = conn.execute(f"SELECT id FROM {self._TEMPLATES_TABLE} WHERE id = ?", (_normalize_text(template_id),)).fetchone()
-            if row is None:
-                return False
-            conn.execute(
-                f"""
-                UPDATE {self._TEMPLATES_TABLE}
-                SET is_active = 0, updated_by_user_id = ?, updated_by_username = ?, updated_at = ?
-                WHERE id = ?
-                """,
-                (
-                    int(actor.get("id") or 0),
-                    _normalize_text(actor.get("username")),
-                    _utc_now_iso(),
-                    _normalize_text(template_id),
-                ),
-            )
-            conn.commit()
-        return True
+        try:
+            return self._template_store.delete_template(template_id=template_id, actor=actor)
+        except TemplateStoreError as exc:
+            raise MailServiceError(str(exc)) from exc
 
     def _build_legacy_mail_config_payload(self, *, user: dict[str, Any]) -> dict[str, Any]:
         mail_auth_mode = self._mail_auth_mode_for_user(user)

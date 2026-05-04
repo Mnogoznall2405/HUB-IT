@@ -177,6 +177,81 @@ def test_forward_message_repeat_keeps_original_attribution(chat_env):
     assert forwarded_twice["body"] == original["body"]
 
 
+def test_message_reference_preview_payloads_share_body_rules(chat_env):
+    service = chat_env["service"]
+    users_by_id = {1: {"id": 1, "username": "author", "full_name": "Task Author"}}
+
+    file_message = SimpleNamespace(
+        id="msg-file",
+        sender_user_id=1,
+        kind="file",
+        body="",
+        is_deleted=False,
+    )
+    attachments = [SimpleNamespace(file_name="diagram.png")]
+
+    expected_file_preview = {
+        "id": "msg-file",
+        "sender_name": "Task",
+        "kind": "file",
+        "body": "diagram.png",
+        "task_title": None,
+        "attachments_count": 1,
+    }
+    assert service._reply_preview_payload(
+        message=file_message,
+        attachments=attachments,
+        users_by_id=users_by_id,
+    ) == expected_file_preview
+    assert service._forward_preview_payload(
+        message=file_message,
+        attachments=attachments,
+        users_by_id=users_by_id,
+    ) == expected_file_preview
+
+    task_message = SimpleNamespace(
+        id="msg-task",
+        sender_user_id=1,
+        kind="task_share",
+        body="Ignored body",
+        task_preview_json='{"id": "task-1", "title": "Check invoice"}',
+        is_deleted=False,
+    )
+    task_reply_preview = service._reply_preview_payload(
+        message=task_message,
+        attachments=[],
+        users_by_id=users_by_id,
+    )
+    assert task_reply_preview == service._forward_preview_payload(
+        message=task_message,
+        attachments=[],
+        users_by_id=users_by_id,
+    )
+    assert task_reply_preview["body"] == "Check invoice"
+    assert task_reply_preview["task_title"] == "Check invoice"
+
+    deleted_message = SimpleNamespace(
+        id="msg-deleted",
+        sender_user_id=99,
+        kind="file",
+        body="Hidden",
+        is_deleted=True,
+    )
+    deleted_reply_preview = service._reply_preview_payload(
+        message=deleted_message,
+        attachments=[SimpleNamespace(file_name="hidden.pdf")],
+        users_by_id={},
+    )
+    assert deleted_reply_preview == service._forward_preview_payload(
+        message=deleted_message,
+        attachments=[SimpleNamespace(file_name="hidden.pdf")],
+        users_by_id={},
+    )
+    assert deleted_reply_preview["sender_name"] == "user-99"
+    assert deleted_reply_preview["body"] == chat_service_module.CHAT_DELETED_MESSAGE_BODY
+    assert deleted_reply_preview["attachments_count"] == 0
+
+
 def test_conversation_settings_update_flags_and_muted_chat_skips_notifications(chat_env):
     service = chat_env["service"]
     hub_service = chat_env["hub_service"]

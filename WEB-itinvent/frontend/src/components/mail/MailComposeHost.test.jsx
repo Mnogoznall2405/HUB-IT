@@ -123,7 +123,9 @@ describe('MailComposeHost', () => {
 
     const dialog = screen.getByTestId('mail-compose-host-dialog');
     expect(dialog).toHaveAttribute('data-layout-mode', 'desktop-inline');
-    expect(dialog).toHaveAttribute('data-mailbox-id', 'mb-2');
+    await waitFor(() => {
+      expect(dialog).toHaveAttribute('data-mailbox-id', 'mb-2');
+    });
     expect(dialog).toHaveAttribute('data-to-values', 'person@example.com');
     expect(dialog).toHaveAttribute('data-subject', 'Hello');
     expect(dialog).toHaveAttribute('data-body', '<p>Body</p>');

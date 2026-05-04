@@ -6,9 +6,11 @@ import {
   buildMailFolderSummaryCacheKey,
   buildMailFolderTreeCacheKey,
   buildMailListCacheKey,
+  buildMailListRequestContext,
   buildMailListState,
   buildMailMessageDetailCacheKey,
   createEmptyListData,
+  isExpandedMailListData,
   isListItemSame,
   normalizeMailListResponse,
 } from './mailListModel';
@@ -64,6 +66,64 @@ describe('mailListModel cache keys', () => {
       0,
     ]);
   });
+
+  it('builds one list request context for API params, cache key, and bootstrap eligibility', () => {
+    const context = buildMailListRequestContext({
+      scope: 'user-1',
+      folder: ' Inbox ',
+      viewMode: 'messages',
+      search: '',
+      unreadOnly: false,
+      hasAttachmentsOnly: false,
+      advancedFilters: { folder_scope: 'current' },
+      limit: 20,
+    });
+
+    expect(context).toMatchObject({
+      folder: 'inbox',
+      viewMode: 'messages',
+      folderScope: 'current',
+      usesBootstrapList: true,
+      params: {
+        folder: 'inbox',
+        q: undefined,
+        unread_only: undefined,
+        has_attachments: undefined,
+        folder_scope: 'current',
+        limit: 20,
+        offset: 0,
+      },
+      cacheKey: [
+        'mail',
+        'user-1',
+        'list',
+        'messages',
+        'inbox',
+        '',
+        0,
+        0,
+        '',
+        '',
+        'current',
+        '',
+        '',
+        '',
+        '',
+        '',
+        20,
+        0,
+      ],
+    });
+    expect(context.contextKey).toBe(JSON.stringify(context.cacheKey));
+
+    expect(buildMailListRequestContext({
+      scope: 'user-1',
+      folder: 'inbox',
+      viewMode: 'messages',
+      search: 'printer',
+      advancedFilters: { folder_scope: 'current' },
+    }).usesBootstrapList).toBe(false);
+  });
 });
 
 describe('normalizeMailListResponse', () => {
@@ -104,6 +164,12 @@ describe('normalizeMailListResponse', () => {
       search_limited: true,
       searched_window: 100,
     });
+  });
+
+  it('detects expanded list data from loaded pages or item count over limit', () => {
+    expect(isExpandedMailListData({ loaded_pages: 2, items: [], limit: 50 })).toBe(true);
+    expect(isExpandedMailListData({ loaded_pages: 1, items: Array.from({ length: 51 }), limit: 50 })).toBe(true);
+    expect(isExpandedMailListData({ loaded_pages: 1, items: Array.from({ length: 50 }), limit: 50 })).toBe(false);
   });
 });
 

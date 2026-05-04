@@ -138,6 +138,39 @@ def test_mail_service_production_postgres_rejects_incomplete_schema(monkeypatch)
         mail_module.MailService(database_url="postgresql://mail-prod")
 
 
+def test_mail_service_production_rejects_missing_app_db(monkeypatch):
+    monkeypatch.setattr(mail_module.config.app, "environment", "production", raising=False)
+    monkeypatch.setattr(mail_module.config.app_db, "database_url", "", raising=False)
+
+    with pytest.raises(mail_module.MailSchemaConfigurationError, match="requires PostgreSQL APP_DATABASE_URL"):
+        mail_module.MailService()
+
+
+def test_mail_service_production_rejects_sqlite_app_db(temp_dir, monkeypatch):
+    monkeypatch.setattr(mail_module.config.app, "environment", "production", raising=False)
+    monkeypatch.setattr(
+        mail_module.config.app_db,
+        "database_url",
+        f"sqlite:///{(Path(temp_dir) / 'mail-prod.sqlite3').as_posix()}",
+        raising=False,
+    )
+
+    with pytest.raises(mail_module.MailSchemaConfigurationError, match="does not allow SQLite"):
+        mail_module.MailService()
+
+
+def test_mail_service_development_keeps_sqlite_fallback(temp_dir, monkeypatch):
+    store = type("Store", (), {"db_path": str(Path(temp_dir) / "legacy-mail.sqlite3")})()
+    monkeypatch.setattr(mail_module.config.app, "environment", "development", raising=False)
+    monkeypatch.setattr(mail_module.config.app_db, "database_url", "", raising=False)
+    monkeypatch.setattr(mail_module, "get_local_store", lambda: store)
+
+    service = mail_module.MailService()
+
+    assert service._use_app_db is False
+    assert service.db_path == Path(store.db_path)
+
+
 def test_mail_service_marks_conversation_read_and_unread(temp_dir, monkeypatch):
     service = mail_module.MailService(database_url=f"sqlite:///{(Path(temp_dir) / 'mail_read_state.db').as_posix()}")
     items = [

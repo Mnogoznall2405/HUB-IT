@@ -426,6 +426,32 @@ class AuthSecurityService:
             "refresh_ttl_seconds": _ttl_seconds(refresh_ttl),
         }
 
+    @staticmethod
+    def _sync_ad_primary_mailbox_after_password_login(
+        *,
+        user: dict[str, Any],
+        request_username: Any,
+        password: str,
+    ) -> None:
+        if str((user or {}).get("auth_source") or "").strip().lower() != "ldap":
+            return
+        if not str(password or "").strip():
+            return
+        try:
+            from backend.services.mail_service import mail_service
+
+            mail_service.ensure_primary_ad_mailbox_credentials(
+                user=user,
+                exchange_login=normalize_exchange_login(request_username or user.get("username")),
+                mailbox_password=password,
+            )
+        except Exception:
+            logger.warning(
+                "Failed to sync AD primary mailbox credentials after login: user_id=%s",
+                int((user or {}).get("id") or 0),
+                exc_info=True,
+            )
+
     def _complete_login(
         self,
         *,
@@ -447,19 +473,26 @@ class AuthSecurityService:
         )
         auth_source = str(user.get("auth_source") or "local").strip().lower() or "local"
         password_enc = str(challenge.get("password_enc") or "").strip()
+        login_password = ""
         if auth_source == "ldap" and password_enc:
             try:
+                login_password = decrypt_secret(password_enc)
                 session_auth_context_service.store_session_context(
                     session_id=session_id,
                     user_id=int(user.get("id") or 0),
                     auth_source="ldap",
                     exchange_login=normalize_exchange_login(challenge.get("request_username") or user.get("username")),
-                    password=decrypt_secret(password_enc),
+                    password=login_password,
                     expires_at=session_expires,
                 )
             except Exception as exc:
                 session_service.close_session(session_id)
                 raise AuthSecurityError(f"Failed to initialize mail session context: {exc}") from exc
+            self._sync_ad_primary_mailbox_after_password_login(
+                user=user,
+                request_username=challenge.get("request_username") or user.get("username"),
+                password=login_password,
+            )
         final_device_id = str(device_id or f"session:{session_id}")
         tokens = self.issue_tokens(user=user, session_id=session_id, device_id=final_device_id)
         self.delete_login_challenge(str(challenge.get("challenge_id") or ""))
