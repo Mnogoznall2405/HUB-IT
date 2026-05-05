@@ -890,6 +890,41 @@ def test_force_scan_deleted_event_resolves_incident_and_run_history(temp_dir):
     assert runs["items"][0]["observation_counts"]["deleted"] == 1
 
 
+def test_list_host_scan_runs_includes_observation_only_host(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(
+        agent_id="agent-obs",
+        command="scan_now",
+        payload={"force_rescan": True},
+        dedupe_key="force:agent-obs",
+    )
+
+    store.queue_job(
+        {
+            "agent_id": "agent-obs",
+            "hostname": "HOST-OBS",
+            "branch": "BR",
+            "user_login": "user",
+            "file_path": r"C:\Users\user\Documents\observed.txt",
+            "file_name": "observed.txt",
+            "file_hash": "hash-observed",
+            "file_size": 100,
+            "source_kind": "text",
+            "event_id": "observation-only-host-event",
+            "scan_task_id": task["id"],
+        }
+    )
+
+    observations = store.list_task_observations(task_id=task["id"])
+    assert observations["total"] == 1
+    assert observations["items"][0]["observation_type"] == "found_new"
+
+    runs = store.list_host_scan_runs(hostname="HOST-OBS")
+    assert runs["total"] == 1
+    assert runs["items"][0]["id"] == task["id"]
+    assert runs["items"][0]["observation_counts"]["found_new"] == 1
+
+
 def test_force_scan_cleaned_event_resolves_incident(temp_dir):
     store = _make_store(temp_dir)
     queued = store.queue_job(
@@ -1651,19 +1686,26 @@ def test_scrub_scan_job_pdf_payloads_removes_legacy_pdf_from_sqlite_payloads(tem
 
 
 def test_list_agents_table_uses_sql_branch_fallback_when_heartbeat_branch_is_empty(monkeypatch, temp_dir):
-    store = _make_store(temp_dir)
+    root = Path(temp_dir)
+    store = ScanStore(
+        db_path=root / "scan-server.db",
+        archive_dir=root / "archive",
+        task_ack_timeout_sec=300,
+        agent_online_timeout_sec=1800,
+        resolve_agent_sql_context=True,
+    )
     now_ts = int(time.time())
 
     monkeypatch.setattr(
         scan_database,
         "_resolve_agent_sql_context",
-        lambda mac_address, hostname: {"branch_name": "Тюмень"} if str(hostname) == "TMN-IT-0004" else None,
+        lambda mac_address, hostname: {"branch_name": "Тюмень"} if str(hostname) == "HOST-SQL-0004" else None,
     )
 
     store.upsert_agent_heartbeat(
         {
-            "agent_id": "tmn-it-0004",
-            "hostname": "TMN-IT-0004",
+            "agent_id": "agent-sql-0004",
+            "hostname": "HOST-SQL-0004",
             "branch": "",
             "ip_address": "10.105.0.233",
             "version": "1.2.3",
@@ -1676,7 +1718,7 @@ def test_list_agents_table_uses_sql_branch_fallback_when_heartbeat_branch_is_emp
     response = store.list_agents_table(branch="тюм", limit=10, offset=0)
 
     assert response["total"] == 1
-    assert response["items"][0]["agent_id"] == "tmn-it-0004"
+    assert response["items"][0]["agent_id"] == "agent-sql-0004"
     assert response["items"][0]["branch"] == "Тюмень"
 
 

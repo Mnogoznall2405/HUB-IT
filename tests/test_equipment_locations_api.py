@@ -133,6 +133,44 @@ def test_queries_get_all_locations_uses_branch_priority_query_only_for_ordering(
     ]
 
 
+def test_queries_directory_read_helpers_preserve_public_shapes(monkeypatch):
+    db_ids = []
+
+    class FakeDB:
+        def __init__(self):
+            self.calls = []
+
+        def execute_query(self, query, params=None):
+            self.calls.append((query, tuple(params or ())))
+            if "FROM BRANCHES" in query and not params:
+                return [
+                    {"BRANCH_NO": 1, "BRANCH_NAME": "North"},
+                    {"id": 2, "name": "South"},
+                ]
+            if "FROM BRANCHES" in query:
+                return [{"BRANCH_NO": params[0], "BRANCH_NAME": "North"}]
+            if "FROM LOCATIONS" in query:
+                return [{"LOC_NO": params[0], "LOC_NAME": "Room 101"}]
+            return []
+
+    fake_db = FakeDB()
+
+    def fake_get_db(db_id=None):
+        db_ids.append(db_id)
+        return fake_db
+
+    monkeypatch.setattr(db_queries, "get_db", fake_get_db)
+
+    assert db_queries.get_all_branches(db_id="main") == [
+        {"id": 1, "name": "North"},
+        {"id": 2, "name": "South"},
+    ]
+    assert db_queries.get_branch_by_no(1, db_id="main") == {"BRANCH_NO": 1, "BRANCH_NAME": "North"}
+    assert db_queries.get_location_by_no(101, db_id="main") == {"LOC_NO": 101, "LOC_NAME": "Room 101"}
+    assert [call[1] for call in fake_db.calls] == [(), (1,), (101,)]
+    assert db_ids == ["main", "main", "main"]
+
+
 @pytest.mark.asyncio
 async def test_create_equipment_accepts_existing_location_without_branch_mapping(monkeypatch):
     monkeypatch.setattr(equipment_api.queries, "get_branch_by_no", lambda branch_no, db_id=None: {"BRANCH_NO": branch_no})

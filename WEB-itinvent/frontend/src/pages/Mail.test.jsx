@@ -22,6 +22,7 @@ const {
   mockRenameFolder,
   mockSetFolderFavorite,
   mockGetPreferences,
+  mockUpdatePreferences,
   mockGetMessages,
   mockGetMessage,
   mockDownloadAttachment,
@@ -53,6 +54,7 @@ const {
   mockRenameFolder: vi.fn(),
   mockSetFolderFavorite: vi.fn(),
   mockGetPreferences: vi.fn(),
+  mockUpdatePreferences: vi.fn(),
   mockGetMessages: vi.fn(),
   mockGetMessage: vi.fn(),
   mockDownloadAttachment: vi.fn(),
@@ -416,7 +418,7 @@ vi.mock('../components/mail/MailTemplatesDialog', () => ({
   ) : null),
 }));
 vi.mock('../components/mail/MailToolbar', () => ({
-  default: ({ mobile, currentFolderLabel, onOpenNavigation, onOpenMailboxList, onOpenAdvancedSearch }) => (
+  default: ({ mobile, currentFolderLabel, onOpenNavigation, onOpenMailboxList, onOpenAdvancedSearch, onOpenToolsMenu }) => (
     <div data-testid="mail-toolbar" data-mobile={mobile ? 'true' : 'false'}>
       <span data-testid="toolbar-current-folder">{currentFolderLabel}</span>
       <button type="button" data-testid="mail-toolbar-open-mailboxes" onClick={() => onOpenMailboxList?.()}>
@@ -424,6 +426,9 @@ vi.mock('../components/mail/MailToolbar', () => ({
       </button>
       <button type="button" data-testid="mail-toolbar-open-advanced-search" onClick={() => onOpenAdvancedSearch?.()}>
         open-advanced-search
+      </button>
+      <button type="button" data-testid="mail-toolbar-open-tools" onClick={(event) => onOpenToolsMenu?.(event)}>
+        open-tools
       </button>
       {mobile ? (
         <button type="button" data-testid="mail-list-open-navigation" onClick={() => onOpenNavigation?.()}>
@@ -433,8 +438,59 @@ vi.mock('../components/mail/MailToolbar', () => ({
     </div>
   ),
 }));
-vi.mock('../components/mail/MailToolsMenu', () => ({ default: () => null }));
-vi.mock('../components/mail/MailViewSettingsDialog', () => ({ default: () => null }));
+vi.mock('../components/mail/MailToolsMenu', () => ({
+  default: ({ open, onOpenViewSettings }) => (open ? (
+    <div data-testid="mail-tools-menu">
+      <button type="button" data-testid="mail-tools-open-view-settings" onClick={() => onOpenViewSettings?.()}>
+        view-settings
+      </button>
+    </div>
+  ) : null),
+}));
+vi.mock('../components/mail/MailViewSettingsDialog', () => ({
+  default: ({ open, value, onChange, onSave }) => (open ? (
+    <div data-testid="mail-view-settings-dialog">
+      <select
+        data-testid="mail-view-reading-pane"
+        value={value?.reading_pane || 'right'}
+        onChange={(event) => onChange?.('reading_pane', event.target.value)}
+      >
+        <option value="right">right</option>
+        <option value="bottom">bottom</option>
+        <option value="off">off</option>
+      </select>
+      <select
+        data-testid="mail-view-density"
+        value={value?.density || 'comfortable'}
+        onChange={(event) => onChange?.('density', event.target.value)}
+      >
+        <option value="comfortable">comfortable</option>
+        <option value="compact">compact</option>
+      </select>
+      <label>
+        <input
+          data-testid="mail-view-show-snippets"
+          type="checkbox"
+          checked={Boolean(value?.show_preview_snippets)}
+          onChange={(event) => onChange?.('show_preview_snippets', event.target.checked)}
+        />
+        show snippets
+      </label>
+      <label>
+        <input
+          data-testid="mail-view-show-favorites"
+          type="checkbox"
+          checked={Boolean(value?.show_favorites_first)}
+          onChange={(event) => onChange?.('show_favorites_first', event.target.checked)}
+        />
+        show favorites
+      </label>
+      <button type="button" data-testid="mail-view-save" onClick={() => onSave?.()}>
+        save-view
+      </button>
+    </div>
+  ) : null),
+}));
 
 vi.mock('../components/mail/MailMessageList', () => ({
   default: ({ listData, viewMode, selectedItems, onSelectId, onToggleSelectedListItem, messageListRef, onLoadMoreMessages, bottomInset }) => {
@@ -505,6 +561,7 @@ vi.mock('../api/client', () => ({
     renameFolder: mockRenameFolder,
     setFolderFavorite: mockSetFolderFavorite,
     getPreferences: mockGetPreferences,
+    updatePreferences: mockUpdatePreferences,
     getMessages: mockGetMessages,
     getMessage: mockGetMessage,
     downloadAttachment: mockDownloadAttachment,
@@ -684,6 +741,7 @@ describe('Mail read-state behavior', () => {
     mockRenameFolder.mockReset();
     mockSetFolderFavorite.mockReset();
     mockGetPreferences.mockReset();
+    mockUpdatePreferences.mockReset();
     mockGetMessages.mockReset();
     mockGetMessage.mockReset();
     mockDownloadAttachment.mockReset();
@@ -757,6 +815,12 @@ describe('Mail read-state behavior', () => {
         show_preview_snippets: true,
         show_favorites_first: true,
       },
+    });
+    mockUpdatePreferences.mockResolvedValue({
+      reading_pane: 'right',
+      density: 'comfortable',
+      show_preview_snippets: true,
+      show_favorites_first: true,
     });
     mockGetMessages.mockResolvedValue({
       items: [buildMessage()],
@@ -3075,6 +3139,56 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getAllByTestId('utility-templates')[0]);
     await waitFor(() => {
       expect(screen.getByTestId('mail-templates-dialog')).toBeTruthy();
+    });
+  });
+
+  it('saves mail view preferences from the toolbar tools menu', async () => {
+    mockUpdatePreferences.mockResolvedValueOnce({
+      reading_pane: 'bottom',
+      density: 'compact',
+      show_preview_snippets: false,
+      show_favorites_first: false,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-list-panel')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-toolbar-open-tools'));
+    fireEvent.click(screen.getByTestId('mail-tools-open-view-settings'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-view-settings-dialog')).toBeTruthy();
+    });
+
+    fireEvent.change(screen.getByTestId('mail-view-reading-pane'), {
+      target: { value: 'bottom' },
+    });
+    fireEvent.change(screen.getByTestId('mail-view-density'), {
+      target: { value: 'compact' },
+    });
+    fireEvent.click(screen.getByTestId('mail-view-show-snippets'));
+    fireEvent.click(screen.getByTestId('mail-view-show-favorites'));
+    fireEvent.click(screen.getByTestId('mail-view-save'));
+
+    await waitFor(() => {
+      expect(mockUpdatePreferences).toHaveBeenCalledWith({
+        reading_pane: 'bottom',
+        density: 'compact',
+        show_preview_snippets: false,
+        show_favorites_first: false,
+      });
+    });
+    await waitFor(() => {
+      expect(screen.queryByTestId('mail-view-settings-dialog')).toBeNull();
     });
   });
 

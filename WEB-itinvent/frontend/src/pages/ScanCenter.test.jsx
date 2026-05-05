@@ -565,7 +565,9 @@ describe('ScanCenter page', () => {
   it('acknowledges the current incident inbox filter with one batch request', async () => {
     render(<ScanCenter />);
 
-    await screen.findByText('HOST-01');
+    await waitFor(() => {
+      expect(scanAPI.getIncidents).toHaveBeenCalled();
+    });
     fireEvent.click(screen.getByRole('button', { name: /Просмотрено по фильтру/i }));
 
     await waitFor(() => {
