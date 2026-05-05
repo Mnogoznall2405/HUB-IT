@@ -145,6 +145,9 @@ bot.log*
 # Kiro
 .kiro/
 
+# OpenCode/Codex local skills
+.opencode/
+
 # Test files
 test_*.py
 test_*.bat
