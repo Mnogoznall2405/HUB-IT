@@ -4499,6 +4499,7 @@ export default function Chat() {
     sidebarSearchActive,
     shouldPollActiveThreadIncrementally,
     threadPollMs: THREAD_POLL_MS,
+    isChatRouteActive: () => String(location.pathname || '').startsWith('/chat'),
   });
 
   useChatAiStatusPolling({
