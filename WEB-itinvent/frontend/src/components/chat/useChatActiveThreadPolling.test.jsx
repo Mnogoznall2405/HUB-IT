@@ -9,7 +9,7 @@ vi.mock('../../lib/chatFeature', () => ({
   CHAT_WS_ENABLED: true,
 }));
 
-function Harness({ loadMessages }) {
+function Harness({ loadMessages, isChatRouteActive = () => true }) {
   const activeConversationIdRef = useRef('conv-1');
   const degradedThreadRevalidateCountRef = useRef(0);
   const lastConversationsLoadAtRef = useRef(0);
@@ -41,6 +41,7 @@ function Harness({ loadMessages }) {
     sidebarSearchActive: false,
     shouldPollActiveThreadIncrementally: () => true,
     threadPollMs: 6000,
+    isChatRouteActive,
   });
 
   return null;
@@ -53,6 +54,16 @@ describe('useChatActiveThreadPolling', () => {
 
   afterEach(() => {
     vi.useRealTimers();
+  });
+
+  it('skips degraded polling outside chat route', async () => {
+    const loadMessages = vi.fn(() => Promise.resolve());
+
+    render(<Harness loadMessages={loadMessages} isChatRouteActive={() => false} />);
+
+    expect(loadMessages).toHaveBeenCalledTimes(0);
+    await vi.advanceTimersByTimeAsync(4000);
+    expect(loadMessages).toHaveBeenCalledTimes(0);
   });
 
   it('does not start overlapping degraded thread polls', async () => {

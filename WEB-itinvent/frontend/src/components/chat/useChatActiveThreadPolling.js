@@ -23,12 +23,14 @@ export default function useChatActiveThreadPolling({
   shouldPollActiveThreadIncrementally,
   threadPollMs,
   incrementalPollMs,
+  isChatRouteActive = () => true,
 }) {
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || !conversationBootstrapComplete) return undefined;
 
     const triggerForegroundRefresh = () => {
       if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      if (!isChatRouteActive()) return;
       const now = Date.now();
       if ((now - Number(lastForegroundRefreshAtRef.current || 0)) < 1250) return;
       if ((now - Number(lastConversationsLoadAtRef.current || 0)) < 3000) return;
@@ -72,26 +74,29 @@ export default function useChatActiveThreadPolling({
     loadMessagesRef,
     messagesLoadingRef,
     sidebarSearchActive,
+    isChatRouteActive,
   ]);
 
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || CHAT_WS_ENABLED) return undefined;
     const intervalId = window.setInterval(() => {
+      if (!isChatRouteActive()) return;
       if (!sidebarSearchActive) void loadConversations({ silent: true, force: true });
     }, listPollMs);
     return () => window.clearInterval(intervalId);
-  }, [listPollMs, loadConversations, sidebarSearchActive]);
+  }, [isChatRouteActive, listPollMs, loadConversations, sidebarSearchActive]);
 
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || CHAT_WS_ENABLED || !activeConversationId) return undefined;
     const intervalId = window.setInterval(() => {
+      if (!isChatRouteActive()) return;
       pushNavigationDebugEntry('chat-poll:thread', {
         activeConversationId: String(activeConversationId || ''),
       });
       void loadMessages(activeConversationId, { silent: true, reason: 'poll:thread', force: true });
     }, threadPollMs);
     return () => window.clearInterval(intervalId);
-  }, [activeConversationId, loadMessages, threadPollMs]);
+  }, [activeConversationId, isChatRouteActive, loadMessages, threadPollMs]);
 
   useEffect(() => {
     const normalizedConversationId = String(activeConversationId || '').trim();
@@ -105,6 +110,7 @@ export default function useChatActiveThreadPolling({
     let inFlight = false;
     const pollOnce = () => {
       if (cancelled || inFlight || messagesLoadingRef.current) return;
+      if (!isChatRouteActive()) return;
       const currentConversationId = String(activeConversationIdRef.current || normalizedConversationId).trim();
       if (!currentConversationId) return;
       inFlight = true;
@@ -145,5 +151,6 @@ export default function useChatActiveThreadPolling({
     messagesLoadingRef,
     messagesRef,
     shouldPollActiveThreadIncrementally,
+    isChatRouteActive,
   ]);
 }
