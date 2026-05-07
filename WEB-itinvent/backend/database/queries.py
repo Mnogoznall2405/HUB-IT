@@ -14,6 +14,13 @@ from backend.database.equipment_act_history_reads import (
     get_equipment_acts_by_inv as _act_history_get_equipment_acts_by_inv,
     get_equipment_history_by_inv as _act_history_get_equipment_history_by_inv,
 )
+from backend.database.equipment_context_reads import (
+    _normalize_mac_for_lookup as _context_normalize_mac_for_lookup,
+    resolve_pc_context_by_mac_or_hostname as _context_resolve_pc_context_by_mac_or_hostname,
+)
+from backend.database.equipment_consumable_reads import (
+    get_consumables_lookup as _consumable_get_consumables_lookup,
+)
 from backend.database.equipment_directory_reads import (
     QUERY_GET_ALL_BRANCHES,
     QUERY_GET_ALL_LOCATIONS,
@@ -23,6 +30,30 @@ from backend.database.equipment_directory_reads import (
     get_branch_by_no as _directory_get_branch_by_no,
     get_location_by_no as _directory_get_location_by_no,
     get_locations_by_branch as _directory_get_locations_by_branch,
+)
+from backend.database.equipment_item_detail_reads import (
+    QUERY_GET_EQUIPMENT_BY_INV,
+    _normalize_inv_no_token as _item_detail_normalize_inv_no_token,
+    get_equipment_by_inv as _item_detail_get_equipment_by_inv,
+    get_equipment_items_by_ids as _item_detail_get_equipment_items_by_ids,
+    get_equipment_items_by_inv_nos as _item_detail_get_equipment_items_by_inv_nos,
+    get_transfer_act_items_by_inv_nos as _item_detail_get_transfer_act_items_by_inv_nos,
+)
+from backend.database.equipment_reference_reads import (
+    QUERY_GET_ALL_EQUIPMENT_TYPES,
+    QUERY_GET_ALL_STATUSES,
+    QUERY_GET_MODELS_BY_TYPE,
+    get_all_equipment_types as _reference_get_all_equipment_types,
+    get_all_statuses as _reference_get_all_statuses,
+    get_default_status_no as _reference_get_default_status_no,
+    get_model_by_no as _reference_get_model_by_no,
+    get_model_no_by_name as _reference_get_model_no_by_name,
+    get_models_by_type as _reference_get_models_by_type,
+    get_owner_by_no as _reference_get_owner_by_no,
+    get_owner_email_by_no as _reference_get_owner_email_by_no,
+    get_owner_no_by_name as _reference_get_owner_no_by_name,
+    get_status_by_no as _reference_get_status_by_no,
+    get_type_by_no as _reference_get_type_by_no,
 )
 from backend.database.equipment_search_reads import (
     QUERY_SEARCH_BY_SERIAL,
@@ -113,45 +144,6 @@ QUERY_GET_EQUIPMENT_BY_OWNER = """
     ORDER BY i.INV_NO
 """
 
-QUERY_GET_EQUIPMENT_BY_INV = """
-    SELECT
-        i.ID as id,
-        i.INV_NO as inv_no,
-        i.SERIAL_NO as serial_no,
-        i.HW_SERIAL_NO as hw_serial_no,
-        i.PART_NO as part_no,
-        i.CI_TYPE as ci_type,
-        i.TYPE_NO as type_no,
-        i.MODEL_NO as model_no,
-        i.STATUS_NO as status_no,
-        i.EMPL_NO as empl_no,
-        i.BRANCH_NO as branch_no,
-        i.LOC_NO as loc_no,
-        t.TYPE_NAME as type_name,
-        m.MODEL_NAME as model_name,
-        v.VENDOR_NAME as vendor_name,
-        s.DESCR as status,
-        o.OWNER_DISPLAY_NAME as employee_name,
-        o.OWNER_DEPT as employee_dept,
-        o.OWNER_EMAIL as employee_email,
-        b.BRANCH_NAME as branch_name,
-        l.DESCR as location,
-        i.DESCR as DESCRIPTION,
-        i.IP_ADDRESS as ip_address,
-        NULL as mac_address,
-        NULL as network_name,
-        NULL as domain_name
-    FROM ITEMS i
-    LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
-    LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-    LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
-    LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
-    LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
-    LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
-    LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-    WHERE i.CI_TYPE = 1 AND i.INV_NO = ?
-"""
-
 QUERY_GET_ALL_EQUIPMENT = """
     SELECT
         i.INV_NO,
@@ -179,29 +171,6 @@ QUERY_COUNT_ALL_EQUIPMENT = """
     SELECT COUNT(*) as total
     FROM ITEMS i
     WHERE i.CI_TYPE = 1
-"""
-
-QUERY_GET_ALL_EQUIPMENT_TYPES = """
-    SELECT CI_TYPE, TYPE_NO, TYPE_NAME
-    FROM CI_TYPES
-    WHERE CI_TYPE IS NOT NULL AND TYPE_NO IS NOT NULL
-    ORDER BY TYPE_NAME
-"""
-
-QUERY_GET_ALL_STATUSES = """
-    SELECT STATUS_NO, DESCR as STATUS_NAME
-    FROM STATUS
-    ORDER BY DESCR
-"""
-
-QUERY_GET_MODELS_BY_TYPE = """
-    SELECT
-        m.MODEL_NO as model_no,
-        m.MODEL_NAME as model_name,
-        m.TYPE_NO as type_no
-    FROM CI_MODELS m
-    WHERE m.CI_TYPE = 1 AND m.TYPE_NO = ?
-    ORDER BY m.MODEL_NAME
 """
 
 # Branches for database switching
@@ -325,114 +294,12 @@ def get_equipment_by_owner(owner_no: int, db_id: Optional[str] = None) -> List[d
 
 
 def get_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> Optional[dict]:
-    """
-    Get equipment by inventory number.
-
-    Args:
-        inv_no: Inventory number (string or numeric)
-        db_id: Database ID to use (None for default)
-
-    Returns:
-        Equipment dict or None if not found
-    """
-    db = get_db(db_id)
-    # INV_NO is float in database, convert string to float
-    try:
-        inv_no_float = float(inv_no) if inv_no else None
-    except (ValueError, TypeError):
-        inv_no_float = None
-    # Primary expected columns in ITINVENT DB snapshots.
-    # If a specific database does not have these columns, query will fallback below.
-    optional_ip_select = "i.IP_ADDRESS as ip_address"
-    optional_mac_select = "i.MAC_ADDRESS as mac_address"
-    optional_network_select = "i.NETBIOS_NAME as network_name"
-    optional_domain_select = "i.DOMAIN_NAME as domain_name"
-
-    try:
-        item_columns = _get_table_columns("ITEMS", db_id)
-        available_columns = {
-            str(row.get("column_name") or row.get("COLUMN_NAME") or "").upper()
-            for row in (item_columns or [])
-        }
-
-        def _pick_first(candidates: List[str]) -> Optional[str]:
-            for column in candidates:
-                if column in available_columns:
-                    return column
-            return None
-
-        ip_col = _pick_first(["IP_ADDRESS"])
-        mac_col = _pick_first(["MAC_ADDRESS", "MAC_ADDR", "MAC"])
-        network_col = _pick_first(
-            [
-                "NETBIOS_NAME",
-                "HOST_NAME",
-                "HOSTNAME",
-                "DNS_NAME",
-                "NETWORK_NAME",
-                "NET_NAME",
-                "PC_NAME",
-                "COMPUTER_NAME",
-            ]
-        )
-        domain_col = _pick_first(["DOMAIN_NAME", "NET_DOMAIN", "DOMAIN"])
-
-        if ip_col:
-            optional_ip_select = f"i.{ip_col} as ip_address"
-        if mac_col:
-            optional_mac_select = f"i.{mac_col} as mac_address"
-        if network_col:
-            optional_network_select = f"i.{network_col} as network_name"
-        if domain_col:
-            optional_domain_select = f"i.{domain_col} as domain_name"
-    except Exception:
-        pass
-
-    query = f"""
-        SELECT
-            i.ID as id,
-            i.INV_NO as inv_no,
-            i.SERIAL_NO as serial_no,
-            i.HW_SERIAL_NO as hw_serial_no,
-            i.PART_NO as part_no,
-            i.CI_TYPE as ci_type,
-            i.TYPE_NO as type_no,
-            i.MODEL_NO as model_no,
-            i.STATUS_NO as status_no,
-            i.EMPL_NO as empl_no,
-            i.BRANCH_NO as branch_no,
-            i.LOC_NO as loc_no,
-            t.TYPE_NAME as type_name,
-            m.MODEL_NAME as model_name,
-            v.VENDOR_NAME as vendor_name,
-            s.DESCR as status,
-            o.OWNER_DISPLAY_NAME as employee_name,
-            o.OWNER_DEPT as employee_dept,
-            o.OWNER_EMAIL as employee_email,
-            b.BRANCH_NAME as branch_name,
-            l.DESCR as location,
-            i.DESCR as DESCRIPTION,
-            {optional_ip_select},
-            {optional_mac_select},
-            {optional_network_select},
-            {optional_domain_select}
-        FROM ITEMS i
-        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
-        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-        LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
-        LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
-        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
-        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
-        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-        WHERE i.CI_TYPE = 1 AND i.INV_NO = ?
-    """
-
-    try:
-        result = db.execute_query(query, (inv_no_float,))
-    except Exception:
-        # Safe fallback to legacy query shape when optional metadata lookup fails.
-        result = db.execute_query(QUERY_GET_EQUIPMENT_BY_INV, (inv_no_float,))
-    return result[0] if result else None
+    return _item_detail_get_equipment_by_inv(
+        inv_no,
+        db_id=db_id,
+        get_db_fn=get_db,
+        table_columns_fn=_get_table_columns,
+    )
 
 
 def get_equipment_acts_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
@@ -454,200 +321,19 @@ def get_equipment_history_by_inv(inv_no: str, db_id: Optional[str] = None) -> di
 
 
 def get_equipment_items_by_ids(item_ids: List[int], db_id: Optional[str] = None) -> List[dict]:
-    """
-    Resolve equipment records by ITEMS.ID.
-
-    Returns normalized fields used by uploaded-act draft preview.
-    """
-    normalized_ids: List[int] = []
-    for raw in item_ids or []:
-        try:
-            value = int(raw)
-        except (TypeError, ValueError):
-            continue
-        if value > 0 and value not in normalized_ids:
-            normalized_ids.append(value)
-
-    if not normalized_ids:
-        return []
-
-    placeholders = ", ".join(["?"] * len(normalized_ids))
-    query = f"""
-        SELECT
-            i.ID AS item_id,
-            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
-            i.SERIAL_NO AS serial_no,
-            m.MODEL_NAME AS model_name,
-            o.OWNER_DISPLAY_NAME AS employee_name,
-            b.BRANCH_NAME AS branch_name,
-            l.DESCR AS location_name
-        FROM ITEMS i
-        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
-        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
-        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-        WHERE i.CI_TYPE = 1
-          AND i.ID IN ({placeholders})
-        ORDER BY i.ID
-    """
-    db = get_db(db_id)
-    return db.execute_query(query, tuple(normalized_ids))
+    return _item_detail_get_equipment_items_by_ids(item_ids, db_id=db_id, get_db_fn=get_db)
 
 
 def _normalize_inv_no_token(raw: Any) -> Optional[str]:
-    """Normalize inventory number token for resilient matching."""
-    text = str(raw or "").strip()
-    if not text:
-        return None
-
-    text = re.sub(r"\s+", "", text)
-    text = text.replace("№", "")
-    text = text.strip(".,;:|")
-    if not text:
-        return None
-
-    if re.fullmatch(r"\d+[.,]0+", text):
-        text = re.split(r"[.,]", text, maxsplit=1)[0]
-    if re.fullmatch(r"\d+", text):
-        text = str(int(text))
-
-    return text
+    return _item_detail_normalize_inv_no_token(raw)
 
 
 def get_equipment_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = None) -> List[dict]:
-    """
-    Resolve equipment records by ITEMS.INV_NO.
-
-    Returns normalized fields used by uploaded-act draft preview.
-    """
-    normalized_tokens: List[str] = []
-    for raw in inv_nos or []:
-        token = _normalize_inv_no_token(raw)
-        if token and token not in normalized_tokens:
-            normalized_tokens.append(token)
-
-    if not normalized_tokens:
-        return []
-
-    text_tokens = list(normalized_tokens)
-    numeric_tokens: List[int] = []
-    for token in normalized_tokens:
-        if re.fullmatch(r"\d+", token):
-            numeric = int(token)
-            if numeric not in numeric_tokens:
-                numeric_tokens.append(numeric)
-
-    where_parts: List[str] = []
-    params: List[Any] = []
-
-    if text_tokens:
-        placeholders = ", ".join(["?"] * len(text_tokens))
-        where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
-        params.extend([token.upper() for token in text_tokens])
-
-    if numeric_tokens:
-        placeholders = ", ".join(["?"] * len(numeric_tokens))
-        where_parts.append(f"TRY_CONVERT(BIGINT, i.INV_NO) IN ({placeholders})")
-        params.extend(numeric_tokens)
-
-    if not where_parts:
-        return []
-
-    query = f"""
-        SELECT
-            i.ID AS item_id,
-            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
-            i.SERIAL_NO AS serial_no,
-            m.MODEL_NAME AS model_name,
-            o.OWNER_DISPLAY_NAME AS employee_name,
-            b.BRANCH_NAME AS branch_name,
-            l.DESCR AS location_name
-        FROM ITEMS i
-        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
-        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
-        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-        WHERE i.CI_TYPE = 1
-          AND ({' OR '.join(where_parts)})
-        ORDER BY TRY_CONVERT(BIGINT, i.INV_NO), i.ID
-    """
-    db = get_db(db_id)
-    return db.execute_query(query, tuple(params))
+    return _item_detail_get_equipment_items_by_inv_nos(inv_nos, db_id=db_id, get_db_fn=get_db)
 
 
 def get_transfer_act_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] = None) -> List[dict]:
-    """
-    Resolve equipment records for transfer-act generation in one query.
-
-    This intentionally avoids get_equipment_by_inv() because that helper performs
-    per-call metadata discovery and would turn a multi-select act into N+1 SQL.
-    """
-    normalized_tokens: List[str] = []
-    for raw in inv_nos or []:
-        token = _normalize_inv_no_token(raw)
-        if token and token not in normalized_tokens:
-            normalized_tokens.append(token)
-
-    if not normalized_tokens:
-        return []
-
-    numeric_tokens: List[int] = []
-    for token in normalized_tokens:
-        if re.fullmatch(r"\d+", token):
-            numeric = int(token)
-            if numeric not in numeric_tokens:
-                numeric_tokens.append(numeric)
-
-    where_parts: List[str] = []
-    params: List[Any] = []
-
-    placeholders = ", ".join(["?"] * len(normalized_tokens))
-    where_parts.append(f"UPPER(CAST(i.INV_NO AS VARCHAR(64))) IN ({placeholders})")
-    params.extend([token.upper() for token in normalized_tokens])
-
-    if numeric_tokens:
-        placeholders = ", ".join(["?"] * len(numeric_tokens))
-        where_parts.append(f"TRY_CONVERT(BIGINT, i.INV_NO) IN ({placeholders})")
-        params.extend(numeric_tokens)
-
-    query = f"""
-        SELECT
-            i.ID AS id,
-            CAST(i.INV_NO AS VARCHAR(64)) AS inv_no,
-            i.SERIAL_NO AS serial_no,
-            i.HW_SERIAL_NO AS hw_serial_no,
-            i.PART_NO AS part_no,
-            i.CI_TYPE AS ci_type,
-            i.TYPE_NO AS type_no,
-            i.MODEL_NO AS model_no,
-            i.STATUS_NO AS status_no,
-            i.EMPL_NO AS empl_no,
-            i.BRANCH_NO AS branch_no,
-            i.LOC_NO AS loc_no,
-            t.TYPE_NAME AS type_name,
-            m.MODEL_NAME AS model_name,
-            v.VENDOR_NAME AS vendor_name,
-            s.DESCR AS status,
-            o.OWNER_DISPLAY_NAME AS employee_name,
-            o.OWNER_DEPT AS employee_dept,
-            o.OWNER_EMAIL AS employee_email,
-            b.BRANCH_NAME AS branch_name,
-            l.DESCR AS location,
-            i.DESCR AS DESCRIPTION
-        FROM ITEMS i
-        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
-        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-        LEFT JOIN VENDORS v ON m.VENDOR_NO = v.VENDOR_NO
-        LEFT JOIN STATUS s ON i.STATUS_NO = s.STATUS_NO
-        LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
-        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
-        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-        WHERE i.CI_TYPE = 1
-          AND ({' OR '.join(where_parts)})
-        ORDER BY TRY_CONVERT(BIGINT, i.INV_NO), i.ID
-    """
-    db = get_db(db_id)
-    return db.execute_query(query, tuple(params))
+    return _item_detail_get_transfer_act_items_by_inv_nos(inv_nos, db_id=db_id, get_db_fn=get_db)
 
 
 def find_duplicate_uploaded_act(
@@ -2078,22 +1764,11 @@ def get_all_locations(db_id: Optional[str] = None, branch_no: Any = None) -> Lis
 
 
 def get_all_equipment_types(db_id: Optional[str] = None) -> List[dict]:
-    """Get all equipment types."""
-    db = get_db(db_id)
-    return db.execute_query(QUERY_GET_ALL_EQUIPMENT_TYPES)
+    return _reference_get_all_equipment_types(db_id, get_db_fn=get_db)
 
 
 def get_all_statuses(db_id: Optional[str] = None) -> List[dict]:
-    """Get all equipment statuses."""
-    db = get_db(db_id)
-    rows = db.execute_query(QUERY_GET_ALL_STATUSES)
-    return [
-        {
-            "status_no": row.get("status_no", row.get("STATUS_NO")),
-            "status_name": row.get("status_name", row.get("STATUS_NAME")),
-        }
-        for row in rows
-    ]
+    return _reference_get_all_statuses(db_id, get_db_fn=get_db)
 
 
 def get_available_databases() -> dict:
@@ -2196,118 +1871,27 @@ def get_owner_departments(limit: int = 500, db_id: Optional[str] = None) -> List
 
 
 def get_owner_by_no(owner_no: int, db_id: Optional[str] = None) -> Optional[dict]:
-    """Get owner by OWNER_NO."""
-    db = get_db(db_id)
-    query = """
-        SELECT
-            o.OWNER_NO,
-            o.OWNER_DISPLAY_NAME,
-            o.OWNER_DEPT
-        FROM OWNERS o
-        WHERE o.OWNER_NO = ?
-    """
-    rows = db.execute_query(query, (owner_no,))
-    return rows[0] if rows else None
+    return _reference_get_owner_by_no(owner_no, db_id, get_db_fn=get_db)
 
 
 def get_status_by_no(status_no: int, db_id: Optional[str] = None) -> Optional[dict]:
-    """Get status by STATUS_NO."""
-    db = get_db(db_id)
-    query = """
-        SELECT
-            s.STATUS_NO,
-            s.DESCR as STATUS_NAME
-        FROM STATUS s
-        WHERE s.STATUS_NO = ?
-    """
-    rows = db.execute_query(query, (status_no,))
-    return rows[0] if rows else None
+    return _reference_get_status_by_no(status_no, db_id, get_db_fn=get_db)
 
 
 def get_default_status_no(db_id: Optional[str] = None) -> Optional[int]:
-    """Resolve default STATUS_NO for create forms."""
-    db = get_db(db_id)
-    preferred_query = """
-        SELECT TOP 1 s.STATUS_NO
-        FROM STATUS s
-        WHERE LOWER(CAST(s.DESCR AS NVARCHAR(255))) LIKE N'%эксплуата%'
-        ORDER BY s.STATUS_NO
-    """
-    rows = db.execute_query(preferred_query, ())
-    if rows:
-        value = rows[0].get("STATUS_NO") or rows[0].get("status_no")
-        try:
-            return int(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    fallback_query = """
-        SELECT TOP 1 s.STATUS_NO
-        FROM STATUS s
-        ORDER BY s.STATUS_NO
-    """
-    rows = db.execute_query(fallback_query, ())
-    if not rows:
-        return None
-    value = rows[0].get("STATUS_NO") or rows[0].get("status_no")
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    return _reference_get_default_status_no(db_id, get_db_fn=get_db)
 
 
 def get_type_by_no(type_no: int, db_id: Optional[str] = None, ci_type: int = 1) -> Optional[dict]:
-    """Get equipment type by TYPE_NO for selected CI_TYPE."""
-    db = get_db(db_id)
-    query = """
-        SELECT
-            t.CI_TYPE,
-            t.TYPE_NO,
-            t.TYPE_NAME
-        FROM CI_TYPES t
-        WHERE t.CI_TYPE = ? AND t.TYPE_NO = ?
-    """
-    rows = db.execute_query(query, (ci_type, type_no))
-    return rows[0] if rows else None
+    return _reference_get_type_by_no(type_no, db_id, ci_type, get_db_fn=get_db)
 
 
 def get_models_by_type(type_no: int, db_id: Optional[str] = None, ci_type: int = 1) -> List[dict]:
-    """Get model list by TYPE_NO for selected CI_TYPE."""
-    db = get_db(db_id)
-    query = """
-        SELECT
-            m.MODEL_NO as model_no,
-            m.MODEL_NAME as model_name,
-            m.TYPE_NO as type_no,
-            m.CI_TYPE as ci_type
-        FROM CI_MODELS m
-        WHERE m.CI_TYPE = ? AND m.TYPE_NO = ?
-        ORDER BY m.MODEL_NAME
-    """
-    return db.execute_query(query, (ci_type, type_no))
+    return _reference_get_models_by_type(type_no, db_id, ci_type, get_db_fn=get_db)
 
 
 def get_model_no_by_name(model_name: str, ci_type: int = 1, strict: bool = True, db_id: Optional[str] = None) -> Optional[int]:
-    """Get MODEL_NO by model name."""
-    if not model_name:
-        return None
-    db = get_db(db_id)
-    where_clause = "m.MODEL_NAME = ?" if strict else "m.MODEL_NAME LIKE ?"
-    param = model_name if strict else f"%{model_name}%"
-    query = f"""
-        SELECT TOP 1 m.MODEL_NO
-        FROM CI_MODELS m
-        WHERE m.CI_TYPE = ? AND {where_clause}
-        ORDER BY m.MODEL_NO
-    """
-    rows = db.execute_query(query, (ci_type, param))
-    if not rows:
-        return None
-    value = rows[0].get("MODEL_NO") or rows[0].get("model_no")
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    return _reference_get_model_no_by_name(model_name, ci_type, strict, db_id, get_db_fn=get_db)
 
 
 def create_model(model_name: str, type_no: int, ci_type: int = 1, db_id: Optional[str] = None) -> Optional[int]:
@@ -2343,19 +1927,7 @@ def create_model(model_name: str, type_no: int, ci_type: int = 1, db_id: Optiona
 
 
 def get_model_by_no(model_no: int, db_id: Optional[str] = None, ci_type: int = 1) -> Optional[dict]:
-    """Get model by MODEL_NO for selected CI_TYPE."""
-    db = get_db(db_id)
-    query = """
-        SELECT
-            m.CI_TYPE,
-            m.TYPE_NO,
-            m.MODEL_NO,
-            m.MODEL_NAME
-        FROM CI_MODELS m
-        WHERE m.CI_TYPE = ? AND m.MODEL_NO = ?
-    """
-    rows = db.execute_query(query, (ci_type, model_no))
-    return rows[0] if rows else None
+    return _reference_get_model_by_no(model_no, db_id, ci_type, get_db_fn=get_db)
 
 
 def get_branch_by_no(branch_no: Any, db_id: Optional[str] = None) -> Optional[dict]:
@@ -2558,26 +2130,7 @@ def delete_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
 
 
 def get_owner_no_by_name(employee_name: str, strict: bool = True, db_id: Optional[str] = None) -> Optional[int]:
-    """Get OWNER_NO by employee full name."""
-    if not employee_name:
-        return None
-    db = get_db(db_id)
-    where_clause = "o.OWNER_DISPLAY_NAME = ?" if strict else "o.OWNER_DISPLAY_NAME LIKE ?"
-    param = employee_name if strict else f"%{employee_name}%"
-    query = f"""
-        SELECT TOP 1 o.OWNER_NO
-        FROM OWNERS o
-        WHERE {where_clause}
-        ORDER BY o.OWNER_NO
-    """
-    rows = db.execute_query(query, (param,))
-    if not rows:
-        return None
-    value = rows[0].get("OWNER_NO") or rows[0].get("owner_no")
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    return _reference_get_owner_no_by_name(employee_name, strict, db_id, get_db_fn=get_db)
 
 
 def _parse_fio(full_name: str) -> tuple[str, str, str]:
@@ -2616,21 +2169,7 @@ def create_owner(employee_name: str, department: Optional[str] = None, db_id: Op
 
 
 def get_owner_email_by_no(owner_no: int, db_id: Optional[str] = None) -> Optional[str]:
-    """Get owner email by OWNER_NO."""
-    db = get_db(db_id)
-    query = """
-        SELECT TOP 1 NULLIF(LTRIM(RTRIM(o.OWNER_EMAIL)), '') AS OWNER_EMAIL
-        FROM OWNERS o
-        WHERE o.OWNER_NO = ?
-    """
-    rows = db.execute_query(query, (owner_no,))
-    if not rows:
-        return None
-    value = rows[0].get("OWNER_EMAIL") or rows[0].get("owner_email")
-    if value is None:
-        return None
-    email = str(value).strip()
-    return email or None
+    return _reference_get_owner_email_by_no(owner_no, db_id, get_db_fn=get_db)
 
 
 def create_equipment_item(
@@ -2900,52 +2439,16 @@ def get_consumables_lookup(
     only_positive_qty: bool = True,
     limit: int = 300,
 ) -> List[Dict[str, Any]]:
-    """Lookup consumables (CI_TYPE=4) with branch/location for work operations."""
-    db = get_db(db_id)
-    safe_limit = max(1, min(int(limit or 300), 1000))
-
-    conditions = ["i.CI_TYPE = 4"]
-    params: List[Any] = []
-
-    if only_positive_qty:
-        conditions.append("ISNULL(i.QTY, 0) > 0")
-    if type_no is not None:
-        conditions.append("i.TYPE_NO = ?")
-        params.append(int(type_no))
-    if model_name:
-        conditions.append("LOWER(CAST(m.MODEL_NAME AS NVARCHAR(255))) LIKE ?")
-        params.append(f"%{str(model_name).strip().lower()}%")
-    if branch_no not in (None, ""):
-        conditions.append("i.BRANCH_NO = ?")
-        params.append(branch_no)
-    if loc_no not in (None, ""):
-        conditions.append("i.LOC_NO = ?")
-        params.append(loc_no)
-
-    query = f"""
-        SELECT TOP {safe_limit}
-            i.ID as id,
-            i.INV_NO as inv_no,
-            i.TYPE_NO as type_no,
-            i.MODEL_NO as model_no,
-            ISNULL(i.QTY, 0) as qty,
-            i.PART_NO as part_no,
-            i.DESCR as description,
-            t.TYPE_NAME as type_name,
-            m.MODEL_NAME as model_name,
-            b.BRANCH_NO as branch_no,
-            b.BRANCH_NAME as branch_name,
-            l.LOC_NO as loc_no,
-            l.DESCR as location_name
-        FROM ITEMS i
-        LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
-        LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-        LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
-        LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-        WHERE {" AND ".join(conditions)}
-        ORDER BY m.MODEL_NAME, b.BRANCH_NAME, l.DESCR, i.ID
-    """
-    return db.execute_query(query, tuple(params))
+    return _consumable_get_consumables_lookup(
+        db_id=db_id,
+        type_no=type_no,
+        model_name=model_name,
+        branch_no=branch_no,
+        loc_no=loc_no,
+        only_positive_qty=only_positive_qty,
+        limit=limit,
+        get_db_fn=get_db,
+    )
 
 
 def consume_consumable_stock(
@@ -3338,7 +2841,7 @@ def transfer_equipment_by_inv_with_history(
 
 
 def _normalize_mac_for_lookup(value: Optional[str]) -> str:
-    return re.sub(r"[^0-9A-Fa-f]", "", str(value or "")).upper()
+    return _context_normalize_mac_for_lookup(value)
 
 
 def resolve_pc_context_by_mac_or_hostname(
@@ -3346,85 +2849,9 @@ def resolve_pc_context_by_mac_or_hostname(
     hostname: Optional[str],
     db_id: Optional[str] = None,
 ) -> Optional[dict]:
-    """
-    Resolve branch and owner context for a PC from SQL inventory.
-
-    Priority:
-    1. Exact MAC match (normalized)
-    2. Exact hostname/netbios match (case-insensitive)
-    """
-    db = get_db(db_id)
-    normalized_mac = _normalize_mac_for_lookup(mac_address)
-    normalized_hostname = str(hostname or "").strip()
-
-    if normalized_mac:
-        query_mac = """
-            SELECT TOP 1
-                i.INV_NO as inv_no,
-                i.MAC_ADDRESS as mac_address,
-                i.NETBIOS_NAME as network_name,
-                i.IP_ADDRESS as ip_address,
-                m.MODEL_NAME as model_name,
-                i.BRANCH_NO as branch_no,
-                i.LOC_NO as loc_no,
-                b.BRANCH_NAME as branch_name,
-                l.DESCR as location_name,
-                i.EMPL_NO as empl_no,
-                o.OWNER_DISPLAY_NAME as employee_name
-            FROM ITEMS i
-            LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-            LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
-            LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
-            LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-            WHERE i.CI_TYPE = 1
-              AND UPPER(REPLACE(REPLACE(COALESCE(i.MAC_ADDRESS, ''), ':', ''), '-', '')) = ?
-            ORDER BY i.ID DESC
-        """
-        try:
-            rows = db.execute_query(query_mac, (normalized_mac,))
-            if rows:
-                return rows[0]
-        except Exception:
-            # Some legacy snapshots may have schema differences; hostname fallback below.
-            pass
-
-    if normalized_hostname:
-        candidates: List[str] = [normalized_hostname]
-        short_name = normalized_hostname.split(".")[0].strip()
-        if short_name and short_name.upper() != normalized_hostname.upper():
-            candidates.append(short_name)
-
-        query_host = """
-            SELECT TOP 1
-                i.INV_NO as inv_no,
-                i.MAC_ADDRESS as mac_address,
-                i.NETBIOS_NAME as network_name,
-                i.IP_ADDRESS as ip_address,
-                m.MODEL_NAME as model_name,
-                i.BRANCH_NO as branch_no,
-                i.LOC_NO as loc_no,
-                b.BRANCH_NAME as branch_name,
-                l.DESCR as location_name,
-                i.EMPL_NO as empl_no,
-                o.OWNER_DISPLAY_NAME as employee_name
-            FROM ITEMS i
-            LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
-            LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
-            LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
-            LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
-            WHERE i.CI_TYPE = 1
-              AND (
-                    UPPER(COALESCE(i.NETBIOS_NAME, '')) = UPPER(?)
-                 OR UPPER(COALESCE(i.DOMAIN_NAME, '')) = UPPER(?)
-              )
-            ORDER BY i.ID DESC
-        """
-        for candidate in candidates:
-            try:
-                rows = db.execute_query(query_host, (candidate, candidate))
-                if rows:
-                    return rows[0]
-            except Exception:
-                continue
-
-    return None
+    return _context_resolve_pc_context_by_mac_or_hostname(
+        mac_address,
+        hostname,
+        db_id=db_id,
+        get_db_fn=get_db,
+    )

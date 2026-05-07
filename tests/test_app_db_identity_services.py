@@ -89,6 +89,57 @@ def test_session_service_works_with_app_db_backend(temp_dir):
     assert service.list_sessions(active_only=True)[0]["session_id"] == "app-db-session"
 
 
+def test_session_service_records_client_context_and_closes_trusted_device_sessions(temp_dir):
+    service = SessionService(file_path=Path(temp_dir) / "web_sessions.json", database_url=_sqlite_url(temp_dir))
+
+    created = service.create_session(
+        session_id="trusted-session",
+        user_id=7,
+        username="demo",
+        role="viewer",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/142.0.0.0",
+        expires_at="2030-03-21T10:00:00+00:00",
+        auth_method="trusted_device",
+        trusted_device_id="device-1",
+    )
+
+    assert created["auth_method"] == "trusted_device"
+    assert created["trusted_device_id"] == "device-1"
+    assert created["client_browser_family"] == "chrome"
+    assert created["client_os_family"] == "windows"
+    assert len(created["client_fingerprint_hash"]) == 64
+
+    assert service.close_trusted_device_sessions(user_id=7, trusted_device_id="device-1") == 1
+    closed = service.get_session("trusted-session")
+    assert closed["status"] == "trusted_device_revoked"
+    assert closed["is_active"] is False
+
+
+def test_session_service_closes_session_on_browser_or_os_mismatch(temp_dir):
+    service = SessionService(file_path=Path(temp_dir) / "web_sessions.json", database_url=_sqlite_url(temp_dir))
+    service.create_session(
+        session_id="client-context-session",
+        user_id=7,
+        username="demo",
+        role="viewer",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/142.0.0.0",
+        expires_at="2030-03-21T10:00:00+00:00",
+    )
+
+    result = service.validate_session_client_context(
+        session_id="client-context-session",
+        user_id=7,
+        user_agent="Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Firefox/140.0",
+    )
+
+    assert result == {"valid": False, "code": "STEP_UP_REQUIRED"}
+    closed = service.get_session("client-context-session")
+    assert closed["status"] == "client_mismatch"
+    assert closed["is_active"] is False
+
+
 def test_session_service_throttles_app_db_touch_writes(temp_dir):
     service = SessionService(file_path=Path(temp_dir) / "web_sessions.json", database_url=_sqlite_url(temp_dir))
     service.create_session(

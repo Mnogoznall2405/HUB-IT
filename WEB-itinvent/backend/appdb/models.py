@@ -50,6 +50,7 @@ class AppUser(AppBase):
     full_name: Mapped[str | None] = mapped_column(String(255), nullable=True)
     department: Mapped[str | None] = mapped_column(String(255), nullable=True)
     job_title: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
     role: Mapped[str] = mapped_column(String(20), nullable=False, default="viewer")
     use_custom_permissions: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
@@ -159,6 +160,11 @@ class AppSessionRecord(AppBase):
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     device_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    auth_method: Mapped[str] = mapped_column(String(32), nullable=False, default="legacy")
+    trusted_device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    client_browser_family: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    client_os_family: Mapped[str] = mapped_column(String(32), nullable=False, default="unknown")
+    client_fingerprint_hash: Mapped[str] = mapped_column(String(64), nullable=False, default="")
 
 
 class AppSessionAuthContext(AppBase):

@@ -99,6 +99,47 @@ async def test_locations_endpoints_use_global_directory(monkeypatch):
     assert calls == [("main", None), ("main", "17"), ("main", "123")]
 
 
+@pytest.mark.asyncio
+async def test_owner_search_route_trims_and_short_circuits_blank_queries(monkeypatch):
+    calls = []
+
+    def fail_search(*args, **kwargs):
+        calls.append((args, kwargs))
+        raise AssertionError("blank trimmed owner search must not call helper")
+
+    monkeypatch.setattr(equipment_api.queries, "search_owners", fail_search)
+
+    assert await equipment_api.search_owners(q="   ", limit=20, db_id="main", _=_user()) == {"owners": []}
+    assert calls == []
+
+
+@pytest.mark.asyncio
+async def test_owner_search_and_departments_routes_delegate_to_query_helpers(monkeypatch):
+    owner_calls = []
+    dept_calls = []
+
+    def fake_search_owners(term, limit, db_id=None):
+        owner_calls.append((term, limit, db_id))
+        return [{"OWNER_NO": 1, "OWNER_DISPLAY_NAME": "Alice Smith", "OWNER_DEPT": "IT"}]
+
+    def fake_get_owner_departments(limit, db_id=None):
+        dept_calls.append((limit, db_id))
+        return ["IT", "HR"]
+
+    monkeypatch.setattr(equipment_api.queries, "search_owners", fake_search_owners)
+    monkeypatch.setattr(equipment_api.queries, "get_owner_departments", fake_get_owner_departments)
+
+    assert await equipment_api.search_owners(q=" Alice ", limit=25, db_id="main", _=_user()) == {
+        "owners": [{"OWNER_NO": 1, "OWNER_DISPLAY_NAME": "Alice Smith", "OWNER_DEPT": "IT"}]
+    }
+    assert await equipment_api.get_owner_departments(limit=250, db_id="main", _=_user()) == {
+        "departments": ["IT", "HR"]
+    }
+
+    assert owner_calls == [("Alice", 25, "main")]
+    assert dept_calls == [(250, "main")]
+
+
 def test_queries_get_all_locations_uses_branch_priority_query_only_for_ordering(monkeypatch):
     rows = [
         {"LOC_NO": 100, "LOC_NAME": "Alpha"},
@@ -235,6 +276,42 @@ async def test_create_consumable_accepts_existing_location_without_branch_mappin
     result = await equipment_api.create_consumable(payload, db_id="main", current_user=_user())
     assert result.success is True
     assert result.inv_no == "2002"
+
+
+@pytest.mark.asyncio
+async def test_batch_equipment_by_inv_nos_dedupes_and_reports_not_found(monkeypatch):
+    calls = []
+
+    def get_equipment_by_inv(inv_no, db_id=None):
+        calls.append((inv_no, db_id))
+        if inv_no == "1001":
+            return {"inv_no": "1001", "model_name": "Notebook"}
+        return None
+
+    monkeypatch.setattr(equipment_api.queries, "get_equipment_by_inv", get_equipment_by_inv)
+
+    payload = equipment_api.EquipmentByInvNosRequest(inv_nos=[" 1001 ", "1001", "2002", ""])
+    result = await equipment_api.get_equipment_by_inv_nos(payload, db_id="main", _=_user())
+
+    assert calls == [("1001", "main"), ("2002", "main")]
+    assert result == {
+        "equipment": [{"inv_no": "1001", "model_name": "Notebook"}],
+        "not_found": ["2002"],
+        "requested": 2,
+    }
+
+
+@pytest.mark.asyncio
+async def test_batch_equipment_by_inv_nos_short_circuits_empty_payload(monkeypatch):
+    def fail_get_equipment_by_inv(inv_no, db_id=None):
+        raise AssertionError("empty batch lookup should not open a database connection")
+
+    monkeypatch.setattr(equipment_api.queries, "get_equipment_by_inv", fail_get_equipment_by_inv)
+
+    payload = equipment_api.EquipmentByInvNosRequest(inv_nos=["", "  "])
+    result = await equipment_api.get_equipment_by_inv_nos(payload, db_id="main", _=_user())
+
+    assert result == {"equipment": [], "not_found": [], "requested": 0}
 
 
 @pytest.mark.asyncio

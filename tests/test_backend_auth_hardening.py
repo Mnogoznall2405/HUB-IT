@@ -24,6 +24,9 @@ def _clear_auth_env(monkeypatch) -> None:
         "JWT_SECRET_KEY",
         "JWT_SECRET_KEYS",
         "JWT_PREVIOUS_SECRET_KEYS",
+        "JWT_ISSUER",
+        "JWT_AUDIENCE",
+        "JWT_REQUIRE_ISS_AUD",
         "AUTH_COOKIE_SECURE",
     ):
         monkeypatch.delenv(key, raising=False)
@@ -138,3 +141,28 @@ def test_user_service_keeps_default_users_in_development(temp_dir, monkeypatch):
     service = user_module.UserService(file_path=Path(temp_dir) / "web_users.json")
 
     assert service.authenticate("admin", "admin")["username"] == "admin"
+
+
+def test_jwt_tokens_include_and_verify_issuer_and_audience(monkeypatch):
+    security_module = importlib.import_module("backend.utils.security")
+    monkeypatch.setattr(security_module.config.jwt, "secret_key", "x" * 64, raising=False)
+    monkeypatch.setattr(security_module.config.jwt, "previous_secret_keys", [], raising=False)
+    monkeypatch.setattr(security_module.config.jwt, "issuer", "itinvent-test", raising=False)
+    monkeypatch.setattr(security_module.config.jwt, "audience", "itinvent-web-test", raising=False)
+    monkeypatch.setattr(security_module.config.jwt, "require_issuer_audience", False, raising=False)
+
+    token = security_module.create_access_token({"sub": "ivanov"})
+
+    assert security_module.decode_access_token(token).username == "ivanov"
+    monkeypatch.setattr(security_module.config.jwt, "audience", "other-audience", raising=False)
+    assert security_module.decode_access_token(token) is None
+
+
+def test_backup_codes_use_64_bits_of_entropy():
+    twofa_module = importlib.import_module("backend.services.twofa_service")
+
+    codes = twofa_module.twofa_service.generate_backup_codes(count=3)
+
+    assert len(codes) == 3
+    assert all(len(code.replace("-", "")) == 16 for code in codes)
+    assert all(code.count("-") == 3 for code in codes)

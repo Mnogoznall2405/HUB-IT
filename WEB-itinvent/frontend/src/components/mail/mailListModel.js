@@ -1,8 +1,10 @@
+import { normalizeMailFolderId } from './mailViewStateModel';
+
 const DEFAULT_MAIL_BOOTSTRAP_LIMIT = 20;
 const DEFAULT_MAIL_LIST_LIMIT = 50;
 
 const normalizeMailViewMode = (value) => (value === 'conversations' ? 'conversations' : 'messages');
-const normalizeMailFolder = (value) => String(value || 'inbox').trim().toLowerCase() || 'inbox';
+const normalizeMailFolder = (value) => normalizeMailFolderId(value);
 
 export const createEmptyListData = () => ({
   items: [],
@@ -161,7 +163,7 @@ export const buildMailConversationDetailCacheKey = ({ scope, conversationId, fol
   scope,
   'conversation-detail',
   String(conversationId || ''),
-  String(folder || 'inbox').trim().toLowerCase() || 'inbox',
+  normalizeMailFolder(folder),
   String(folderScope || 'current'),
 ];
 

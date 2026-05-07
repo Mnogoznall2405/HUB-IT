@@ -4,6 +4,7 @@ export const authAccountSecurityAPI = {
   getCurrentUser: async (options = {}) => {
     const response = await apiClient.get('/auth/me', {
       suppressAuthRequired: Boolean(options?.suppressAuthRequired),
+      timeout: options?.timeout,
     });
     return response.data;
   },

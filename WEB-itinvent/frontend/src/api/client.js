@@ -67,6 +67,7 @@ const derivedApiBase = basePrefix === '/' ? '/api' : `${basePrefix}/api`;
 const API_BASE_URL = import.meta.env.VITE_API_URL || derivedApiBase;
 export const API_V1_BASE = `${API_BASE_URL}/v1`;
 const SYSTEM_GET_STALE_TIME_MS = 30_000;
+export const AUTH_REFRESH_TIMEOUT_MS = 1500;
 
 const normalizeDbId = (value) => String(value ?? '').trim();
 
@@ -145,11 +146,22 @@ const pushChatRequestDebugEntry = (entry) => {
       console.log(prefix, `${String(nextEntry.method || 'GET').toUpperCase()} ${nextEntry.url} -> ${nextEntry.status} (${nextEntry.durationMs}ms)`, nextEntry);
       return;
     }
+    if (nextEntry.phase === 'canceled') {
+      console.log(prefix, `${String(nextEntry.method || 'GET').toUpperCase()} ${nextEntry.url} -> CANCELED (${nextEntry.durationMs}ms)`, nextEntry);
+      return;
+    }
     console.warn(prefix, `${String(nextEntry.method || 'GET').toUpperCase()} ${nextEntry.url} -> ${nextEntry.status || 'ERR'} (${nextEntry.durationMs}ms)`, nextEntry);
   } catch {
     // Ignore request debug logging failures.
   }
 };
+
+const isRequestCanceledError = (error) => (
+  String(error?.code || '') === 'ERR_CANCELED'
+  || String(error?.name || '') === 'CanceledError'
+  || String(error?.message || '').toLowerCase() === 'canceled'
+  || Boolean(error?.config?.signal?.aborted)
+);
 
 const createClientRequestId = () => {
   try {
@@ -252,12 +264,13 @@ apiClient.interceptors.response.use(
   },
   async (error) => {
     const metadata = error?.config?.metadata || {};
+    const requestCanceled = isRequestCanceledError(error);
     if (shouldDebugChatRequests()) {
       pushChatRequestDebugEntry({
-        phase: 'error',
+        phase: requestCanceled ? 'canceled' : 'error',
         method: String(error?.config?.method || 'get').toUpperCase(),
         url: String(metadata.debugUrl || buildDebugRequestUrl(error?.config || {})),
-        status: Number(error?.response?.status || 0) || 'ERR',
+        status: requestCanceled ? 'CANCELED' : (Number(error?.response?.status || 0) || 'ERR'),
         durationMs: Math.max(0, Date.now() - Number(metadata.startedAt || Date.now())),
         message: String(error?.message || 'request failed'),
       });
@@ -277,7 +290,10 @@ apiClient.interceptors.response.use(
       if (canRetryWithRefresh) {
         try {
           if (!refreshInFlight) {
-            refreshInFlight = apiClient.post('/auth/refresh', null, { suppressAuthRequired: true });
+            refreshInFlight = apiClient.post('/auth/refresh', null, {
+              suppressAuthRequired: true,
+              timeout: AUTH_REFRESH_TIMEOUT_MS,
+            });
           }
           await refreshInFlight;
           error.config._retry = true;
@@ -334,7 +350,10 @@ export const authAPI = {
   },
 
   refresh: async () => {
-    const response = await apiClient.post('/auth/refresh', null, { suppressAuthRequired: true });
+    const response = await apiClient.post('/auth/refresh', null, {
+      suppressAuthRequired: true,
+      timeout: AUTH_REFRESH_TIMEOUT_MS,
+    });
     return response.data;
   },
 
@@ -625,6 +644,14 @@ export const chatAPI = {
 
   get shareTask() {
     return chatMessageSendingAPI.shareTask;
+  },
+
+  get sendReaction() {
+    return chatMessageSendingAPI.sendReaction;
+  },
+
+  get removeReaction() {
+    return chatMessageSendingAPI.removeReaction;
   },
 
   get sendFiles() {

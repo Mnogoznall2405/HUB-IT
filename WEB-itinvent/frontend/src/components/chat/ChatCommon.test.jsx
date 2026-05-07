@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
-import { AttachmentCard, FileAttachment } from './ChatCommon';
+import { AttachmentCard, FileAttachment, PresenceAvatar } from './ChatCommon';
 import { buildAttachmentUrl } from './chatHelpers';
 
 const theme = createTheme();
@@ -311,5 +311,62 @@ describe('AttachmentCard', () => {
     expect(fileLink).toHaveAttribute('href', buildAttachmentUrl('msg-2', 'att-2', { inline: true }));
     expect(fileLink).toHaveTextContent('PDF');
     expect(screen.queryByText('Скачать')).not.toBeInTheDocument();
+  });
+});
+
+describe('PresenceAvatar', () => {
+  it('renders initials when no avatar_url is provided', () => {
+    renderWithTheme(
+      <PresenceAvatar item={{ full_name: 'John Doe', username: 'johndoe' }} size={48} />
+    );
+
+    expect(screen.getByText('JD')).toBeInTheDocument();
+    expect(screen.queryByRole('img')).not.toBeInTheDocument();
+  });
+
+  it('renders avatar image when avatar_url is provided', () => {
+    renderWithTheme(
+      <PresenceAvatar item={{ full_name: 'John Doe', username: 'johndoe', avatar_url: '/api/v1/settings/avatar/1/file?v=123' }} size={48} />
+    );
+
+    const img = screen.getByRole('img');
+    expect(img).toHaveAttribute('src', '/api/v1/settings/avatar/1/file?v=123');
+    expect(img).toHaveAttribute('alt', 'JD');
+    expect(screen.queryByText('JD')).not.toBeInTheDocument();
+  });
+
+  it('renders online indicator when online prop is true', () => {
+    renderWithTheme(
+      <PresenceAvatar item={{ full_name: 'John Doe' }} online={true} size={48} />
+    );
+
+    // The online indicator is a span with aria-hidden="true"
+    const onlineIndicator = document.querySelector('span[aria-hidden="true"]');
+    expect(onlineIndicator).toBeInTheDocument();
+  });
+
+  it('does not render online indicator when online prop is false', () => {
+    renderWithTheme(
+      <PresenceAvatar item={{ full_name: 'John Doe' }} online={false} size={48} />
+    );
+
+    const onlineIndicator = document.querySelector('span[aria-hidden="true"]');
+    expect(onlineIndicator).not.toBeInTheDocument();
+  });
+
+  it('falls back to username initials when full_name is not provided', () => {
+    renderWithTheme(
+      <PresenceAvatar item={{ username: 'johndoe' }} size={48} />
+    );
+
+    expect(screen.getByText('JO')).toBeInTheDocument();
+  });
+
+  it('renders hash symbol when neither full_name nor username is provided', () => {
+    renderWithTheme(
+      <PresenceAvatar item={{}} size={48} />
+    );
+
+    expect(screen.getByText('#')).toBeInTheDocument();
   });
 });

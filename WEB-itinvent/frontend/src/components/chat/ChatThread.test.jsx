@@ -6,11 +6,14 @@ import { describe, expect, it, vi } from 'vitest';
 import ChatThread, {
   ChatBubble,
   getChatKeyboardBottomSpacer,
+  getChatVisualViewportKeyboardInset,
   getComposerMentionTrigger,
   isMobileMessageLongPress,
+  shouldShowLoadOlderControl,
   shouldSuppressNativeMessageGesture,
   shouldCancelLongPressMove,
 } from './ChatThread';
+import ChatReactionPicker from './ChatReactionPicker';
 
 const theme = createTheme();
 const ui = {
@@ -112,6 +115,24 @@ const buildThreadProps = (overrides = {}) => ({
 });
 
 describe('ChatBubble', () => {
+  it('closes the reaction picker on Escape', () => {
+    const onClose = vi.fn();
+    renderWithTheme(
+      <ChatReactionPicker
+        theme={theme}
+        ui={ui}
+        open
+        selectedEmoji=""
+        onSelect={vi.fn()}
+        onClose={onClose}
+      />,
+    );
+
+    fireEvent.keyDown(document, { key: 'Escape', code: 'Escape', keyCode: 27 });
+
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
   it('highlights plain-text mentions in message bodies', () => {
     renderWithTheme(
       <ChatBubble
@@ -966,6 +987,16 @@ describe('ChatBubble', () => {
       />,
     );
 
+    const scrollNode = screen.getByTestId('chat-thread-scroll');
+    Object.defineProperty(scrollNode, 'scrollHeight', { configurable: true, value: 1600 });
+    Object.defineProperty(scrollNode, 'clientHeight', { configurable: true, value: 720 });
+    scrollNode.scrollTop = 520;
+    fireEvent.scroll(scrollNode);
+    expect(screen.queryByTestId('chat-load-older-button')).not.toBeInTheDocument();
+
+    scrollNode.scrollTop = 20;
+    fireEvent.scroll(scrollNode);
+
     const messageListActionButtons = screen.getAllByRole('button')
       .filter((button) => !button.getAttribute('aria-label') && String(button.textContent || '').trim());
 
@@ -1312,6 +1343,41 @@ describe('ChatBubble', () => {
 });
 
 describe('ChatThread composer', () => {
+  it('reveals the older-history control only near the top of a scrollable thread', () => {
+    expect(shouldShowLoadOlderControl({
+      messagesHasMore: true,
+      scrollTop: 640,
+      scrollHeight: 1600,
+      clientHeight: 720,
+    })).toBe(false);
+    expect(shouldShowLoadOlderControl({
+      messagesHasMore: true,
+      scrollTop: 48,
+      scrollHeight: 1600,
+      clientHeight: 720,
+    })).toBe(true);
+    expect(shouldShowLoadOlderControl({
+      messagesHasMore: true,
+      scrollTop: 0,
+      scrollHeight: 720,
+      clientHeight: 720,
+    })).toBe(false);
+    expect(shouldShowLoadOlderControl({
+      messagesHasMore: true,
+      messagesLoading: true,
+      scrollTop: 0,
+      scrollHeight: 1600,
+      clientHeight: 720,
+    })).toBe(false);
+    expect(shouldShowLoadOlderControl({
+      messagesHasMore: true,
+      loadingOlder: true,
+      scrollTop: 640,
+      scrollHeight: 1600,
+      clientHeight: 720,
+    })).toBe(true);
+  });
+
   it('keeps mobile message long-press policy independent from compact phone layout', () => {
     expect(isMobileMessageLongPress({ mobileInteractionsEnabled: true, compactMobile: false })).toBe(true);
     expect(isMobileMessageLongPress({ mobileInteractionsEnabled: false, compactMobile: true })).toBe(true);
@@ -1352,6 +1418,24 @@ describe('ChatThread composer', () => {
       compactMobile: true,
       keyboardInset: 0,
       composerHeight: 112,
+    })).toBe(0);
+  });
+
+  it('calculates the iOS visual viewport keyboard inset and ignores browser chrome noise', () => {
+    expect(getChatVisualViewportKeyboardInset({
+      layoutHeight: 812,
+      visualHeight: 512,
+      offsetTop: 0,
+    })).toBe(300);
+    expect(getChatVisualViewportKeyboardInset({
+      layoutHeight: 812,
+      visualHeight: 492,
+      offsetTop: 20,
+    })).toBe(300);
+    expect(getChatVisualViewportKeyboardInset({
+      layoutHeight: 812,
+      visualHeight: 780,
+      offsetTop: 0,
     })).toBe(0);
   });
 

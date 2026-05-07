@@ -10,4 +10,9 @@ describe('index.html viewport meta', () => {
     expect(html).toContain('maximum-scale=1.0');
     expect(html).toContain('user-scalable=no');
   });
+
+  it('sets a non-white startup background before the app bundle loads', () => {
+    const html = fs.readFileSync(path.resolve(process.cwd(), 'index.html'), 'utf8');
+    expect(html).toContain('background: #f5f7fa');
+  });
 });

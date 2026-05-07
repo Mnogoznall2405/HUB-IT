@@ -179,6 +179,7 @@ const ChatMessageList = memo(function ChatMessageList({
   selectedMessageIds = [],
   onToggleMessageSelection,
   onStartMessageSelection,
+  onToggleReaction,
   highlightedMessageId,
   isFileDragActive,
   getReadTargetRef,
@@ -252,6 +253,7 @@ const ChatMessageList = memo(function ChatMessageList({
           {messagesHasMore ? (
             <Stack alignItems="center" sx={{ pb: 0.8 }}>
               <Button
+                data-testid="chat-load-older-button"
                 variant="text"
                 size="small"
                 onClick={onLoadOlder}
@@ -329,6 +331,7 @@ const ChatMessageList = memo(function ChatMessageList({
                   selected={selected}
                   onToggleMessageSelection={onToggleMessageSelection}
                   onStartMessageSelection={onStartMessageSelection}
+                  onToggleReaction={onToggleReaction}
                   highlighted={highlightedMessageId === item.message?.id}
                   groupedWithPrevious={Boolean(groupedMeta.groupedWithPrevious)}
                   groupedWithNext={Boolean(groupedMeta.groupedWithNext)}

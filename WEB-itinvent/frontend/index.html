@@ -11,6 +11,52 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="HUB-IT" />
+    <style>
+      html, body, #root {
+        min-height: 100%;
+        margin: 0;
+        background: #f5f7fa;
+      }
+    </style>
+    <script>
+      (function () {
+        var retryKey = 'hubit:static-asset-retry';
+        var retryDelayMs = 250;
+
+        function isStaticAssetUrl(value) {
+          try {
+            var url = new URL(String(value || ''), window.location.origin);
+            return url.origin === window.location.origin
+              && /^\/assets\/.+\.(js|css)$/i.test(url.pathname);
+          } catch (error) {
+            return false;
+          }
+        }
+
+        function retryOnce(assetUrl) {
+          if (!isStaticAssetUrl(assetUrl)) return;
+          var key = retryKey + ':' + window.location.pathname + ':' + assetUrl;
+          if (sessionStorage.getItem(key) === '1') return;
+          sessionStorage.setItem(key, '1');
+          window.setTimeout(function () {
+            window.location.reload();
+          }, retryDelayMs);
+        }
+
+        window.addEventListener('error', function (event) {
+          var target = event && event.target;
+          var assetUrl = target && (target.src || target.href);
+          retryOnce(assetUrl);
+        }, true);
+
+        window.addEventListener('vite:preloadError', function (event) {
+          if (event && typeof event.preventDefault === 'function') {
+            event.preventDefault();
+          }
+          retryOnce(event && event.payload && event.payload.href);
+        });
+      }());
+    </script>
     <title>HUB-IT</title>
   </head>
   <body>

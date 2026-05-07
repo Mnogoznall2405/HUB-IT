@@ -5,6 +5,7 @@ import {
   buildMailRoute,
   buildMailViewStateStorageKey,
   normalizeMailListViewContextState,
+  normalizeMailFolderId,
   normalizeMailViewState,
   readStoredMailListViewState,
   readStoredMailViewState,
@@ -43,6 +44,16 @@ describe('mailViewStateModel', () => {
     });
   });
 
+  it('normalizes standard folders without lowercasing encoded custom folder ids', () => {
+    const encodedFolderId = 'bWFpbGJveDo6AAMkAGVmM2QzLTQ0ZC0xMjM';
+
+    expect(normalizeMailFolderId(' SentItems ')).toBe('sentitems');
+    expect(normalizeMailFolderId(` ${encodedFolderId} `)).toBe(encodedFolderId);
+    expect(normalizeMailViewState({ folder: encodedFolderId })).toMatchObject({
+      folder: encodedFolderId,
+    });
+  });
+
   it('reads mailbox-specific state before legacy/default fallbacks', () => {
     const storage = createMemoryStorage({
       [buildMailViewStateStorageKey('mb-2')]: JSON.stringify({ folder: 'sent', viewMode: 'conversations' }),
@@ -75,8 +86,12 @@ describe('mailViewStateModel', () => {
   });
 
   it('builds canonical mail routes with optional message and mailbox scope', () => {
+    const encodedFolderId = 'bWFpbGJveDo6AAMkAGVmM2QzLTQ0ZC0xMjM';
+
     expect(buildMailRoute({ folder: ' Sent ', messageId: ' msg-1 ', mailboxId: ' mb-1 ' }))
       .toBe('/mail?folder=sent&message=msg-1&mailbox_id=mb-1');
+    expect(buildMailRoute({ folder: encodedFolderId, messageId: '', mailboxId: '' }))
+      .toBe(`/mail?folder=${encodedFolderId}`);
     expect(buildMailRoute({ folder: '', messageId: '', mailboxId: '' }))
       .toBe('/mail?folder=inbox');
   });

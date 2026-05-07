@@ -103,6 +103,7 @@ vi.mock('../components/layout/PageShell', () => ({
     <div
       data-testid="page-shell"
       data-full-height={fullHeight ? 'true' : 'false'}
+      data-shell-height={String(sx?.height ?? '')}
       data-mail-ui-font={sx?.['--mail-ui-font'] || ''}
       data-mail-message-font={sx?.['--mail-message-font'] || ''}
       data-mail-mono-font={sx?.['--mail-mono-font'] || ''}
@@ -493,10 +494,16 @@ vi.mock('../components/mail/MailViewSettingsDialog', () => ({
 }));
 
 vi.mock('../components/mail/MailMessageList', () => ({
-  default: ({ listData, viewMode, selectedItems, onSelectId, onToggleSelectedListItem, messageListRef, onLoadMoreMessages, bottomInset }) => {
+  default: ({ listSx, listData, viewMode, selectedItems, onSelectId, onToggleSelectedListItem, messageListRef, onLoadMoreMessages, bottomInset }) => {
     mockRenderStats.messageList += 1;
     return (
-    <div data-testid="mail-list" data-scroll-root="true" data-bottom-inset={String(bottomInset || '')} ref={messageListRef}>
+    <div
+      data-testid="mail-list"
+      data-scroll-root="true"
+      data-list-height={String(listSx?.height ?? '')}
+      data-bottom-inset={String(bottomInset || '')}
+      ref={messageListRef}
+    >
       {(Array.isArray(listData?.items) ? listData.items : []).map((item) => {
         const rowId = String(viewMode === 'conversations' ? (item?.conversation_id || item?.id || '') : (item?.id || ''));
         return (
@@ -1650,6 +1657,28 @@ describe('Mail read-state behavior', () => {
 
     expect(screen.getByTestId('mail-toolbar')).toBeTruthy();
     expect(screen.getByTestId('mail-list-panel')).toBeVisible();
+  });
+
+  it('gives the mobile mail shell a viewport height so the message list can scroll internally', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-list-panel')).toBeVisible();
+    });
+
+    expect(screen.getByTestId('page-shell')).toHaveAttribute(
+      'data-shell-height',
+      'calc(100dvh - var(--app-shell-header-offset))',
+    );
+    expect(screen.getByTestId('mail-list')).toHaveAttribute('data-list-height', '');
   });
 
   it('does not open mobile navigation from a left-edge swipe on the list screen', async () => {

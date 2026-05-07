@@ -1,3 +1,5 @@
+import { pushNavigationDebugEntry } from './navigationDebug';
+
 const routePrefetchPromises = new Map();
 const ROUTE_CHUNK_RELOAD_KEY = 'itinvent:route-chunk-reload-attempted';
 
@@ -11,9 +13,12 @@ const isRouteChunkLoadError = (error) => {
   );
 };
 
-const loadRouteWithReloadFallback = (loader) => (
+export const loadRouteWithReloadFallback = (loader, { reloadOnChunkError = true } = {}) => (
   loader()
     .then((module) => {
+      pushNavigationDebugEntry('route-loader:loaded', {
+        reloadOnChunkError: Boolean(reloadOnChunkError),
+      });
       try {
         window.sessionStorage.removeItem(ROUTE_CHUNK_RELOAD_KEY);
       } catch {
@@ -22,15 +27,25 @@ const loadRouteWithReloadFallback = (loader) => (
       return module;
     })
     .catch((error) => {
-      if (typeof window !== 'undefined' && isRouteChunkLoadError(error)) {
+      const chunkLoadError = isRouteChunkLoadError(error);
+      pushNavigationDebugEntry('route-loader:error', {
+        reloadOnChunkError: Boolean(reloadOnChunkError),
+        chunkLoadError,
+        message: String(error?.message || error),
+      });
+      if (typeof window !== 'undefined' && reloadOnChunkError && chunkLoadError) {
         try {
           const alreadyRetried = window.sessionStorage.getItem(ROUTE_CHUNK_RELOAD_KEY) === '1';
+          pushNavigationDebugEntry('route-loader:chunk-reload', {
+            alreadyRetried,
+          });
           if (!alreadyRetried) {
             window.sessionStorage.setItem(ROUTE_CHUNK_RELOAD_KEY, '1');
             window.location.reload();
             return new Promise(() => {});
           }
         } catch {
+          pushNavigationDebugEntry('route-loader:chunk-reload:storage-error');
           window.location.reload();
           return new Promise(() => {});
         }
@@ -41,21 +56,39 @@ const loadRouteWithReloadFallback = (loader) => (
 
 const defineRouteLoader = (loader) => () => loadRouteWithReloadFallback(loader);
 
-export const loadLoginRoute = defineRouteLoader(() => import('../pages/Login'));
-export const loadDashboardRoute = defineRouteLoader(() => import('../pages/Dashboard'));
-export const loadTasksRoute = defineRouteLoader(() => import('../pages/Tasks'));
-export const loadChatRoute = defineRouteLoader(() => import('../pages/Chat'));
-export const loadDatabaseRoute = defineRouteLoader(() => import('../pages/Database'));
-export const loadNetworksRoute = defineRouteLoader(() => import('../pages/Networks'));
-export const loadSettingsRoute = defineRouteLoader(() => import('../pages/Settings'));
-export const loadStatisticsRoute = defineRouteLoader(() => import('../pages/Statistics'));
-export const loadComputersRoute = defineRouteLoader(() => import('../pages/Computers'));
-export const loadScanCenterRoute = defineRouteLoader(() => import('../pages/ScanCenter'));
-export const loadMfuRoute = defineRouteLoader(() => import('../pages/Mfu'));
-export const loadMailRoute = defineRouteLoader(() => import('../pages/Mail'));
-export const loadAdUsersRoute = defineRouteLoader(() => import('../pages/AdUsers'));
-export const loadVcsRoute = defineRouteLoader(() => import('../pages/Vcs'));
-export const loadKnowledgeBaseRoute = defineRouteLoader(() => import('../pages/KnowledgeBase'));
+const ROUTE_IMPORTERS = new Map([
+  ['/login', () => import('../pages/Login')],
+  ['/dashboard', () => import('../pages/Dashboard')],
+  ['/tasks', () => import('../pages/Tasks')],
+  ['/chat', () => import('../pages/Chat')],
+  ['/database', () => import('../pages/Database')],
+  ['/networks', () => import('../pages/Networks')],
+  ['/settings', () => import('../pages/Settings')],
+  ['/statistics', () => import('../pages/Statistics')],
+  ['/computers', () => import('../pages/Computers')],
+  ['/scan-center', () => import('../pages/ScanCenter')],
+  ['/mfu', () => import('../pages/Mfu')],
+  ['/mail', () => import('../pages/Mail')],
+  ['/ad-users', () => import('../pages/AdUsers')],
+  ['/vcs', () => import('../pages/Vcs')],
+  ['/kb', () => import('../pages/KnowledgeBase')],
+]);
+
+export const loadLoginRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/login'));
+export const loadDashboardRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/dashboard'));
+export const loadTasksRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/tasks'));
+export const loadChatRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/chat'));
+export const loadDatabaseRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/database'));
+export const loadNetworksRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/networks'));
+export const loadSettingsRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/settings'));
+export const loadStatisticsRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/statistics'));
+export const loadComputersRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/computers'));
+export const loadScanCenterRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/scan-center'));
+export const loadMfuRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/mfu'));
+export const loadMailRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/mail'));
+export const loadAdUsersRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/ad-users'));
+export const loadVcsRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/vcs'));
+export const loadKnowledgeBaseRoute = defineRouteLoader(ROUTE_IMPORTERS.get('/kb'));
 
 const ROUTE_LOADERS = new Map([
   ['/login', loadLoginRoute],
@@ -86,16 +119,37 @@ export const normalizeRouteLoaderPath = (path) => {
 
 export const prefetchRouteByPath = (path) => {
   const normalizedPath = normalizeRouteLoaderPath(path);
-  const loader = ROUTE_LOADERS.get(normalizedPath);
-  if (!loader) return Promise.resolve(null);
+  if (!ROUTE_IMPORTERS.has(normalizedPath)) {
+    pushNavigationDebugEntry('route-prefetch:skip:unknown', {
+      requestedPath: String(path || ''),
+      normalizedPath,
+    });
+    return Promise.resolve(null);
+  }
 
   const existingPromise = routePrefetchPromises.get(normalizedPath);
-  if (existingPromise) return existingPromise;
+  if (existingPromise) {
+    pushNavigationDebugEntry('route-prefetch:reuse', { normalizedPath });
+    return existingPromise;
+  }
 
-  const nextPromise = loader().catch((error) => {
-    routePrefetchPromises.delete(normalizedPath);
-    throw error;
-  });
+  // Do not dynamically import here. Vite can emit a global preload error for a
+  // failed speculative import, and the app-level chunk recovery would reload the
+  // still-current route before user navigation is applied.
+  pushNavigationDebugEntry('route-prefetch:noop', { normalizedPath });
+  const nextPromise = Promise.resolve(null);
   routePrefetchPromises.set(normalizedPath, nextPromise);
   return nextPromise;
+};
+
+export const getStartupRoutePrefetchPath = (path) => {
+  const normalizedPath = normalizeRouteLoaderPath(path);
+  if (!normalizedPath || normalizedPath === '/') return '';
+  return ROUTE_LOADERS.has(normalizedPath) ? normalizedPath : '';
+};
+
+export const prefetchStartupRoute = () => {
+  if (typeof window === 'undefined') return Promise.resolve(null);
+  const path = getStartupRoutePrefetchPath(window.location?.pathname || '');
+  return path ? prefetchRouteByPath(path) : Promise.resolve(null);
 };

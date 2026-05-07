@@ -3815,6 +3815,20 @@ class MailService:
             error_text=error_text,
         )
 
+    def _forward_source_attachments(self, *, forward_item: Any, account: Any) -> list[tuple[str, bytes]]:
+        attachments: list[tuple[str, bytes]] = []
+        for attachment in getattr(forward_item, "attachments", []) or []:
+            content_id = self._normalize_attachment_content_id(getattr(attachment, "content_id", None))
+            if bool(getattr(attachment, "is_inline", False) or content_id):
+                continue
+            payload = self._build_attachment_download_payload(attachment=attachment, account=account)
+            if payload is None:
+                continue
+            filename, _content_type, content = payload
+            if content:
+                attachments.append((filename, content))
+        return attachments
+
     def send_message(
         self,
         *,
@@ -3903,6 +3917,7 @@ class MailService:
             reply_message_id_value = ""
             reply_references = ""
             forward_message_id_value = ""
+            forward_attachments: list[tuple[str, bytes]] = []
 
             if send_plan.reply_to_message_id:
                 reply_folder_key, reply_exchange_id = self._decode_message_id(send_plan.reply_to_message_id)
@@ -3922,6 +3937,10 @@ class MailService:
                 except Exception as exc:
                     raise MailServiceError(f"Forward source message not found: {exc}") from exc
                 forward_message_id_value = self._item_message_id(forward_item)
+                forward_attachments = self._forward_source_attachments(
+                    forward_item=forward_item,
+                    account=account,
+                )
 
             msg_kwargs.update(
                 build_reply_forward_reference_headers(
@@ -3932,8 +3951,10 @@ class MailService:
             )
 
             msg = Message(**msg_kwargs)
-            if safe_attachments:
-                for filename, content in safe_attachments:
+            outgoing_attachments = [*forward_attachments, *safe_attachments]
+            self._validate_outgoing_attachments_dynamic(outgoing_attachments)
+            if outgoing_attachments:
+                for filename, content in outgoing_attachments:
                     att = FileAttachment(name=filename, content=content)
                     msg.attach(att)
 

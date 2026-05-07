@@ -28,7 +28,6 @@ body {
   color: rgba(0, 0, 0, 0.87);
   line-height: 1.5;
   min-height: 100vh;
-  overscroll-behavior: none;
 }
 
 ::-webkit-scrollbar {
@@ -277,6 +276,13 @@ select {
 
   body {
     padding-bottom: env(safe-area-inset-bottom);
+    overscroll-behavior-y: auto;
+  }
+}
+
+@media (min-width: 601px) {
+  body {
+    overscroll-behavior: none;
   }
 }
 

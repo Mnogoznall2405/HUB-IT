@@ -272,15 +272,65 @@ class TrustedDeviceService:
                 return None
             return self._row_to_dict(row) if row is not None else None
 
-    def is_token_device_valid(self, *, user_id: int, token_device_id: str | None) -> bool:
+    def validate_token_device(
+        self,
+        *,
+        user_id: int,
+        token_device_id: str | None,
+        session_id: str | None = None,
+        user_agent: str | None = None,
+    ) -> dict[str, Any]:
+        from backend.services.session_service import session_service
+
+        normalized_session_id = _normalize_text(session_id)
+        if normalized_session_id:
+            client_result = session_service.validate_session_client_context(
+                session_id=normalized_session_id,
+                user_id=int(user_id),
+                user_agent=str(user_agent or ""),
+            )
+            if not bool(client_result.get("valid")):
+                return client_result
+
         normalized = _normalize_text(token_device_id)
         if not normalized or not normalized.startswith("trusted:"):
-            return True
+            return {"valid": True, "code": None}
         device_id = normalized.split(":", 1)[1].strip()
         if not device_id:
-            return False
+            return {"valid": False, "code": "AUTH_REQUIRED"}
         device = self.get_device(device_id)
-        return bool(device and int(device.get("user_id", 0)) == int(user_id) and device.get("is_active"))
+        if not device or int(device.get("user_id", 0)) != int(user_id):
+            if normalized_session_id:
+                session_service.close_session(normalized_session_id, reason="trusted_device_revoked")
+            return {"valid": False, "code": "TRUSTED_DEVICE_REVOKED"}
+        if not bool(device.get("is_active")):
+            if normalized_session_id:
+                session_service.close_session(normalized_session_id, reason="trusted_device_revoked")
+            return {"valid": False, "code": "TRUSTED_DEVICE_REVOKED"}
+        if not normalized_session_id:
+            return {"valid": False, "code": "AUTH_REQUIRED"}
+
+        session = session_service.get_session(normalized_session_id)
+        if not session or int(session.get("user_id", 0) or 0) != int(user_id):
+            return {"valid": False, "code": "SESSION_EXPIRED"}
+        if session.get("status") != "active" or not bool(session.get("is_active", True)):
+            return {"valid": False, "code": "SESSION_EXPIRED"}
+        session_device_id = _normalize_text(session.get("trusted_device_id"))
+        if not session_device_id:
+            session_service.bind_trusted_device_session(
+                session_id=normalized_session_id,
+                user_id=int(user_id),
+                trusted_device_id=device_id,
+                auth_method=str(session.get("auth_method") or "trusted_device"),
+            )
+            return {"valid": True, "code": None}
+        if session_device_id != device_id:
+            session_service.close_session(normalized_session_id, reason="client_mismatch")
+            return {"valid": False, "code": "STEP_UP_REQUIRED"}
+        return {"valid": True, "code": None}
+
+    def is_token_device_valid(self, *, user_id: int, token_device_id: str | None) -> bool:
+        return bool(self.validate_token_device(user_id=user_id, token_device_id=token_device_id).get("valid"))
 
     def build_registration_options(
         self,

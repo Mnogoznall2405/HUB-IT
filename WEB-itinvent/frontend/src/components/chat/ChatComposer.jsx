@@ -306,7 +306,7 @@ const ChatComposer = memo(function ChatComposer({
         bgcolor: composerBg,
         backdropFilter: 'blur(22px) saturate(1.08)',
         position: 'sticky',
-        bottom: 0,
+        bottom: compactMobile ? `${keyboardInset}px` : 0,
         zIndex: 5,
         borderTop: theme.palette.mode === 'dark' ? `0.5px solid ${ui.borderSoft}` : 'none',
         boxShadow: theme.palette.mode === 'dark'

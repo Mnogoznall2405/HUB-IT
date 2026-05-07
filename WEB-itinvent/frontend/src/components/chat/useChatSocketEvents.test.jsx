@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import useChatSocketEvents from './useChatSocketEvents';
 import {
   CHAT_SOCKET_MESSAGE_CREATED_EVENT,
+  CHAT_SOCKET_MESSAGE_REACTION_CHANGED_EVENT,
   CHAT_SOCKET_STATUS_EVENT,
 } from '../../lib/chatSocket';
 
@@ -160,5 +161,34 @@ describe('useChatSocketEvents', () => {
     });
 
     expect(queueAutoScroll).toHaveBeenCalledWith(false, 'socket:message_created');
+  });
+
+  it('merges reaction_changed message payload into the active thread', () => {
+    const mergeMessageIntoThread = vi.fn();
+    render(
+      <Harness
+        activeConversationId="conv-1"
+        mergeMessageIntoThread={mergeMessageIntoThread}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CHAT_SOCKET_MESSAGE_REACTION_CHANGED_EVENT, {
+        detail: {
+          conversation_id: 'conv-1',
+          payload: {
+            id: 'msg-4',
+            conversation_id: 'conv-1',
+            body: 'reacted',
+            reactions: [{ reaction_emoji: '\u{1F44D}', count: 1, is_own: true }],
+          },
+        },
+      }));
+    });
+
+    expect(mergeMessageIntoThread).toHaveBeenCalledWith(expect.objectContaining({
+      id: 'msg-4',
+      reactions: [{ reaction_emoji: '\u{1F44D}', count: 1, is_own: true }],
+    }));
   });
 });

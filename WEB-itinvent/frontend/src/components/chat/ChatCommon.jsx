@@ -101,6 +101,7 @@ const compactUrlList = (...items) => {
 export function PresenceAvatar({ item, online = false, size = 48, sx = {} }) {
   const label = avatarLabel(item);
   const theme = useTheme();
+  const avatarUrl = item?.avatar_url || item?.avatarUrl;
 
   return (
     <Box
@@ -112,26 +113,41 @@ export function PresenceAvatar({ item, online = false, size = 48, sx = {} }) {
         ...sx,
       }}
     >
-      <Box
-        sx={(muiTheme) => ({
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'center',
-          width: '100%',
-          height: '100%',
-          borderRadius: '999px',
-          fontSize: '0.875rem',
-          fontWeight: 700,
-          letterSpacing: '-0.02em',
-          bgcolor: muiTheme.palette.mode === 'dark' ? '#445161' : alpha(muiTheme.palette.primary.main, 0.14),
-          color: muiTheme.palette.mode === 'dark' ? '#ffffff' : muiTheme.palette.primary.main,
-          boxShadow: muiTheme.palette.mode === 'dark'
-            ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
-            : 'inset 0 1px 0 rgba(255,255,255,0.72)',
-        })}
-      >
-        {label}
-      </Box>
+      {avatarUrl ? (
+        <Box
+          component="img"
+          src={avatarUrl}
+          alt={label}
+          sx={{
+            display: 'block',
+            width: '100%',
+            height: '100%',
+            borderRadius: '999px',
+            objectFit: 'cover',
+          }}
+        />
+      ) : (
+        <Box
+          sx={(muiTheme) => ({
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            width: '100%',
+            height: '100%',
+            borderRadius: '999px',
+            fontSize: '0.875rem',
+            fontWeight: 700,
+            letterSpacing: '-0.02em',
+            bgcolor: muiTheme.palette.mode === 'dark' ? '#445161' : alpha(muiTheme.palette.primary.main, 0.14),
+            color: muiTheme.palette.mode === 'dark' ? '#ffffff' : muiTheme.palette.primary.main,
+            boxShadow: muiTheme.palette.mode === 'dark'
+              ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
+              : 'inset 0 1px 0 rgba(255,255,255,0.72)',
+          })}
+        >
+          {label}
+        </Box>
+      )}
       {online ? (
         <span
           aria-hidden="true"

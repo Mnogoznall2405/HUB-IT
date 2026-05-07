@@ -4,6 +4,11 @@ import QRCode from 'qrcode';
 
 import { authAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  encodeCredential,
+  normalizeAuthenticationOptions,
+  normalizeRegistrationOptions,
+} from '../lib/webauthnCredentials';
 
 const CANONICAL_HOST = 'hubit.zsgp.ru';
 const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
@@ -25,75 +30,6 @@ function shouldForceCanonicalHost() {
 
 function buildCanonicalUrl(pathname = '/', search = '', hash = '') {
   return `${CANONICAL_ORIGIN}${pathname || '/'}${search || ''}${hash || ''}`;
-}
-
-function b64urlToBuffer(value) {
-  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
-  const binary = window.atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes.buffer;
-}
-
-function bufferToB64url(value) {
-  const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array(value.buffer);
-  let binary = '';
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function encodeCredential(credential) {
-  if (!credential) return null;
-  const response = credential.response || {};
-  return {
-    id: credential.id,
-    rawId: bufferToB64url(credential.rawId),
-    type: credential.type,
-    response: {
-      clientDataJSON: response.clientDataJSON ? bufferToB64url(response.clientDataJSON) : undefined,
-      attestationObject: response.attestationObject ? bufferToB64url(response.attestationObject) : undefined,
-      authenticatorData: response.authenticatorData ? bufferToB64url(response.authenticatorData) : undefined,
-      signature: response.signature ? bufferToB64url(response.signature) : undefined,
-      userHandle: response.userHandle ? bufferToB64url(response.userHandle) : undefined,
-      transports: typeof response.getTransports === 'function' ? response.getTransports() : undefined,
-    },
-  };
-}
-
-function normalizeRegistrationOptions(publicKey) {
-  return {
-    ...publicKey,
-    challenge: b64urlToBuffer(publicKey.challenge),
-    user: {
-      ...publicKey.user,
-      id: b64urlToBuffer(publicKey.user.id),
-    },
-    excludeCredentials: Array.isArray(publicKey.excludeCredentials)
-      ? publicKey.excludeCredentials.map((item) => ({
-        ...item,
-        id: b64urlToBuffer(item.id),
-      }))
-      : [],
-  };
-}
-
-function normalizeAuthenticationOptions(publicKey) {
-  const normalized = {
-    ...publicKey,
-    challenge: b64urlToBuffer(publicKey.challenge),
-  };
-  if (Array.isArray(publicKey.allowCredentials) && publicKey.allowCredentials.length > 0) {
-    normalized.allowCredentials = publicKey.allowCredentials.map((item) => ({
-      ...item,
-      id: b64urlToBuffer(item.id),
-    }));
-  }
-  return normalized;
 }
 
 function isWindowsDesktopEnvironment() {
@@ -415,6 +351,9 @@ function Login() {
   const [rememberDeviceMode, setRememberDeviceMode] = useState('generic');
   const [rememberDeviceHint, setRememberDeviceHint] = useState('');
   const [rememberDeviceError, setRememberDeviceError] = useState('');
+  const [rememberDeviceRegistrationOptions, setRememberDeviceRegistrationOptions] = useState(null);
+  const [rememberDeviceOptionsLoading, setRememberDeviceOptionsLoading] = useState(false);
+  const [rememberDeviceOptionsReloadKey, setRememberDeviceOptionsReloadKey] = useState(0);
   const [showPasswordForm, setShowPasswordForm] = useState(false);
   const [passwordAssistMessage, setPasswordAssistMessage] = useState('');
   const [showVerifyFallback, setShowVerifyFallback] = useState(true);
@@ -674,6 +613,41 @@ function Login() {
   }, [rememberDeviceOpen]);
 
   useEffect(() => {
+    if (!rememberDeviceOpen || rememberDeviceUnsupported) {
+      setRememberDeviceRegistrationOptions(null);
+      setRememberDeviceOptionsLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setRememberDeviceRegistrationOptions(null);
+    setRememberDeviceOptionsLoading(true);
+
+    authAPI.getTrustedDeviceRegistrationOptions(undefined, {
+      platformOnly: rememberDeviceMode === 'platform',
+    })
+      .then((options) => {
+        if (cancelled) return;
+        setRememberDeviceRegistrationOptions(options);
+        setRememberDeviceError('');
+      })
+      .catch((optionsError) => {
+        if (cancelled) return;
+        setRememberDeviceRegistrationOptions(null);
+        setRememberDeviceError(extractWebAuthnErrorMessage(optionsError, 'Не удалось подготовить доверенное устройство'));
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setRememberDeviceOptionsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [rememberDeviceMode, rememberDeviceOpen, rememberDeviceOptionsReloadKey, rememberDeviceUnsupported]);
+
+  useEffect(() => {
     if (
       loginModeLoading
       || step !== 'password'
@@ -700,6 +674,8 @@ function Login() {
     setRememberDeviceOpen(false);
     setRememberDeviceRequired(false);
     setRegisteringDevice(false);
+    setRememberDeviceRegistrationOptions(null);
+    setRememberDeviceOptionsLoading(false);
     setRememberDeviceHint('');
     setRememberDeviceError('');
     setRememberDeviceMode('generic');
@@ -710,9 +686,6 @@ function Login() {
   };
 
   const dismissRememberDevicePrompt = () => {
-    if (rememberDeviceRequired && !rememberDeviceUnsupported) {
-      return;
-    }
     closeRememberDevicePrompt();
   };
 
@@ -974,14 +947,17 @@ function Login() {
   };
 
   const handleRememberDevice = async () => {
+    const options = rememberDeviceRegistrationOptions;
+    if (!options?.challenge_id || !options?.public_key) {
+      setRememberDeviceError('Не удалось подготовить доверенное устройство. Повторите попытку.');
+      setRememberDeviceOptionsReloadKey((value) => value + 1);
+      return;
+    }
+
     setRegisteringDevice(true);
     setError(null);
     setRememberDeviceError('');
     try {
-      const options = await authAPI.getTrustedDeviceRegistrationOptions(
-        deviceLabel.trim() || undefined,
-        { platformOnly: rememberDeviceMode === 'platform' },
-      );
       const credential = await navigator.credentials.create({
         publicKey: normalizeRegistrationOptions(options.public_key),
       });
@@ -998,6 +974,8 @@ function Login() {
         return;
       }
       setRememberDeviceError(extractWebAuthnErrorMessage(registerError, 'Не удалось запомнить устройство'));
+      setRememberDeviceRegistrationOptions(null);
+      setRememberDeviceOptionsReloadKey((value) => value + 1);
       setRegisteringDevice(false);
     }
   };
@@ -1612,7 +1590,6 @@ function Login() {
                   <button
                     type="button"
                     onClick={dismissRememberDevicePrompt}
-                    hidden={rememberDeviceRequired && !rememberDeviceUnsupported}
                     className={secondaryButtonClassName}
                   >
                     {rememberDeviceUnsupported ? 'Продолжить' : 'Не сейчас'}
@@ -1621,10 +1598,10 @@ function Login() {
                     <button
                       type="button"
                       onClick={handleRememberDevice}
-                      disabled={registeringDevice}
+                      disabled={registeringDevice || rememberDeviceOptionsLoading || !rememberDeviceRegistrationOptions}
                       className={primaryButtonClassName}
                     >
-                      {registeringDevice ? <Spinner className="h-4 w-4" /> : null}
+                      {registeringDevice || rememberDeviceOptionsLoading ? <Spinner className="h-4 w-4" /> : null}
                       <span>{rememberDeviceMode === 'platform' ? 'Через Windows Hello' : 'Запомнить'}</span>
                     </button>
                   ) : null}

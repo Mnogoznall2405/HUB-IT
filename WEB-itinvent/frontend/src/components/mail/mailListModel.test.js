@@ -67,6 +67,25 @@ describe('mailListModel cache keys', () => {
     ]);
   });
 
+  it('preserves encoded custom folder ids in API params and cache keys', () => {
+    const encodedFolderId = 'bWFpbGJveDo6AAMkAGVmM2QzLTQ0ZC0xMjM';
+    const context = buildMailListRequestContext({
+      scope: 'user-1',
+      folder: ` ${encodedFolderId} `,
+      viewMode: 'messages',
+    });
+
+    expect(context.folder).toBe(encodedFolderId);
+    expect(context.params.folder).toBe(encodedFolderId);
+    expect(context.cacheKey[4]).toBe(encodedFolderId);
+    expect(buildMailConversationDetailCacheKey({
+      scope: 'user-1',
+      conversationId: 'c1',
+      folder: encodedFolderId,
+      folderScope: 'current',
+    })[4]).toBe(encodedFolderId);
+  });
+
   it('builds one list request context for API params, cache key, and bootstrap eligibility', () => {
     const context = buildMailListRequestContext({
       scope: 'user-1',

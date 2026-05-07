@@ -48,6 +48,7 @@ class User(UserBase):
     network_zone: Literal["internal", "external"] = "external"
     twofa_policy: Literal["off", "all", "external_only"] = "off"
     twofa_required_for_current_request: bool = False
+    avatar_url: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     mail_updated_at: Optional[str] = None
@@ -180,6 +181,7 @@ class UserCreateRequest(BaseModel):
     mailbox_login: Optional[str] = None
     mailbox_password: Optional[str] = Field(default=None, min_length=1, max_length=256)
     mail_signature_html: Optional[str] = None
+    avatar_url: Optional[str] = None
 
     @field_validator(
         "mailbox_email",
@@ -192,6 +194,7 @@ class UserCreateRequest(BaseModel):
         "mailbox_login",
         "mailbox_password",
         "mail_signature_html",
+        "avatar_url",
         mode="before",
     )
     @classmethod
@@ -230,6 +233,7 @@ class UserUpdateRequest(BaseModel):
     mailbox_login: Optional[str] = None
     mailbox_password: Optional[str] = Field(default=None, min_length=1, max_length=256)
     mail_signature_html: Optional[str] = None
+    avatar_url: Optional[str] = None
 
     @field_validator(
         "mailbox_email",
@@ -241,6 +245,7 @@ class UserUpdateRequest(BaseModel):
         "mailbox_login",
         "mailbox_password",
         "mail_signature_html",
+        "avatar_url",
         mode="before",
     )
     @classmethod
@@ -300,3 +305,7 @@ class SessionInfo(BaseModel):
     closed_at: Optional[str] = None
     closed_reason: Optional[str] = None
     device_label: Optional[str] = None
+    auth_method: str = "legacy"
+    trusted_device_id: Optional[str] = None
+    client_browser_family: str = "unknown"
+    client_os_family: str = "unknown"

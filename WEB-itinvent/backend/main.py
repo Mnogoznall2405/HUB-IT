@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, ad_users, vcs, ai_bots, departments
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, ad_users, vcs, ai_bots, departments, avatar
 from backend.services.ad_sync_service import background_ad_sync_loop
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.mail_notification_service import mail_notification_service
@@ -311,6 +311,7 @@ app.include_router(equipment.router, prefix="/api/v1/equipment", tags=["Equipmen
 app.include_router(database.router, prefix="/api/v1/database", tags=["Database Management"])
 app.include_router(json_operations.router, prefix="/api/v1/json", tags=["JSON Operations"])
 app.include_router(settings.router, prefix="/api/v1/settings", tags=["User Settings"])
+app.include_router(avatar.router, prefix="/api/v1/settings", tags=["Avatar"])
 app.include_router(networks.router, prefix="/api/v1/networks", tags=["Networks"])
 app.include_router(discovery.router, prefix="/api/v1/discovery", tags=["Discovery"])
 app.include_router(inventory.router, prefix="/api/v1/inventory", tags=["Inventory"])

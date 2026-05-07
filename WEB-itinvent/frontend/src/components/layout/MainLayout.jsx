@@ -95,6 +95,7 @@ import { hasAnyAppPushPermission } from '../../lib/appPushPermissions';
 import { syncAppBadge } from '../../lib/appBadge';
 import { applyPwaUpdate, getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
 import { prefetchRouteByPath } from '../../lib/routeLoaders';
+import { pushNavigationDebugEntry } from '../../lib/navigationDebug';
 import { getMessagePreview } from '../chat/chatHelpers';
 import { MainLayoutShellContext } from './MainLayoutShellContext';
 
@@ -237,6 +238,15 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
     () => String(new URLSearchParams(location.search).get('conversation') || '').trim(),
     [location.search],
   );
+
+  useEffect(() => {
+    pushNavigationDebugEntry('layout:location', {
+      pathname: String(location.pathname || ''),
+      search: String(location.search || ''),
+      hash: String(location.hash || ''),
+      pendingPath: String(pendingNavigation?.path || ''),
+    });
+  }, [location.hash, location.pathname, location.search, pendingNavigation?.path]);
   const isChatRoute = location.pathname.startsWith('/chat');
   const isMailRoute = location.pathname.startsWith('/mail');
   const isFixedHeightRoute = isChatRoute || isMailRoute;
@@ -1311,6 +1321,14 @@ useEffect(() => {
 
   const handleNavigation = (item) => {
     const externalUrl = String(item?.externalUrl || '').trim();
+    pushNavigationDebugEntry('layout:navigation:click', {
+      targetPath: String(item?.path || '').trim(),
+      label: String(item?.label || '').trim(),
+      externalUrl,
+      currentPath: String(location.pathname || ''),
+      currentSearch: String(location.search || ''),
+      pendingPath: String(pendingNavigation?.path || ''),
+    });
     if (externalUrl) {
       window.open(externalUrl, '_blank', 'noopener,noreferrer');
       setDrawerOpen(false);
@@ -1326,6 +1344,10 @@ useEffect(() => {
       ? (location.pathname === '/networks' || location.pathname.startsWith('/networks/'))
       : location.pathname === targetPath;
     if (alreadyActive) {
+      pushNavigationDebugEntry('layout:navigation:already-active', {
+        targetPath,
+        currentPath: String(location.pathname || ''),
+      });
       setPendingNavigation(null);
       setDrawerOpen(false);
       return;
@@ -1340,7 +1362,12 @@ useEffect(() => {
       pendingNavigationTimeoutRef.current = null;
     }
 
-    void prefetchRouteByPath(targetPath).catch(() => {});
+    void prefetchRouteByPath(targetPath).catch((error) => {
+      pushNavigationDebugEntry('layout:navigation:prefetch-error', {
+        targetPath,
+        message: String(error?.message || error),
+      });
+    });
     setPendingNavigation({
       path: targetPath,
       label: String(item?.label || '').trim(),
@@ -1348,6 +1375,11 @@ useEffect(() => {
     setDrawerOpen(false);
 
     pendingNavigationTimerRef.current = window.setTimeout(() => {
+      pushNavigationDebugEntry('layout:navigation:navigate', {
+        targetPath,
+        beforePath: String(window.location?.pathname || ''),
+        beforeSearch: String(window.location?.search || ''),
+      });
       navigate(targetPath);
       pendingNavigationTimerRef.current = null;
     }, 56);
@@ -1538,9 +1570,9 @@ useEffect(() => {
       <Box
         sx={{
           display: 'flex',
-          minHeight: isFixedHeightRoute ? 0 : '100dvh',
-          height: isFixedHeightRoute ? '100dvh' : undefined,
-          overflow: isFixedHeightRoute ? 'hidden' : 'visible',
+          minHeight: isFixedHeightRoute ? { xs: '100dvh', md: 0 } : '100dvh',
+          height: isFixedHeightRoute ? { xs: undefined, md: '100dvh' } : undefined,
+          overflow: isFixedHeightRoute ? { xs: 'visible', md: 'hidden' } : 'visible',
           bgcolor: ui.pageBg,
           '--app-shell-header-offset': {
             xs: isStandaloneShell ? '52px' : '56px',
@@ -1951,7 +1983,7 @@ useEffect(() => {
           position: 'relative',
           display: isFixedHeightRoute ? 'flex' : 'block',
           flexDirection: isFixedHeightRoute ? 'column' : undefined,
-          overflow: isFixedHeightRoute ? 'hidden' : 'visible',
+          overflow: isFixedHeightRoute ? { xs: 'visible', md: 'hidden' } : 'visible',
           px: { xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2, md: 3 },
           pb: { xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2, md: 3 },
           pt: { xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2, md: 3 },

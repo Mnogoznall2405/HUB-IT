@@ -93,6 +93,7 @@ import {
 } from '../components/mail/mailListModel';
 import {
   buildMailRoute,
+  normalizeMailFolderId,
   normalizeMailListViewContextState,
   normalizeMailViewMode,
   readStoredMailListViewState,
@@ -749,7 +750,7 @@ function Mail() {
     if (!activeMailboxId) return;
     if (lastAppliedMailboxViewStateRef.current === activeMailboxId) return;
     const searchParams = new URLSearchParams(location.search || '');
-    const routeFolder = String(searchParams.get('folder') || '').trim().toLowerCase();
+    const routeFolder = normalizeMailFolderId(searchParams.get('folder') || '', '');
     const routeMessageId = String(searchParams.get('message') || '').trim();
     const storedState = readStoredMailViewState(activeMailboxId, { defaultAdvancedFilters: DEFAULT_ADVANCED_FILTERS });
     lastAppliedMailboxViewStateRef.current = activeMailboxId;
@@ -1091,7 +1092,7 @@ function Mail() {
   useEffect(() => {
     const searchParams = new URLSearchParams(location.search || '');
     const nextMailboxId = normalizeMailboxId(searchParams.get('mailbox_id'));
-    const nextFolder = String(searchParams.get('folder') || '').trim().toLowerCase();
+    const nextFolder = normalizeMailFolderId(searchParams.get('folder') || '', '');
     const nextMessageId = String(searchParams.get('message') || '').trim();
     if (nextMailboxId && nextMailboxId !== activeMailboxId) {
       lastAppliedMailboxViewStateRef.current = '';
@@ -2347,7 +2348,7 @@ function Mail() {
     <Box
       data-testid="mail-list-panel"
       sx={{
-        height: isMobile ? 0 : '100%',
+        height: isMobile ? undefined : '100%',
         minHeight: 0,
         minWidth: 0,
         width: '100%',
@@ -2428,7 +2429,7 @@ function Mail() {
         </Stack>
       </Box>
       <MailMessageList
-        listSx={{ flex: '1 1 0%', minHeight: 0, minWidth: 0, height: isMobile ? 0 : undefined }}
+        listSx={{ flex: '1 1 0%', minHeight: 0, minWidth: 0 }}
         folder={folder}
         viewMode={viewMode}
         listData={listData}
@@ -2804,7 +2805,6 @@ function Mail() {
         position: 'relative',
         display: 'flex',
         flex: '1 1 0%',
-        height: 0,
         minHeight: 0,
         minWidth: 0,
         width: '100%',
@@ -2902,7 +2902,7 @@ function Mail() {
         sx={{
           ...getMailUiFontScopeSx(),
           flex: '1 1 0%',
-          height: isMobile ? 0 : undefined,
+          height: isMobile ? 'calc(100dvh - var(--app-shell-header-offset))' : undefined,
           gap: 0,
           minHeight: 0,
           minWidth: 0,

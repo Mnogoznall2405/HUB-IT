@@ -9,6 +9,7 @@ import {
   CHAT_SOCKET_MESSAGE_CREATED_EVENT,
   CHAT_SOCKET_MESSAGE_DELETED_EVENT,
   CHAT_SOCKET_MESSAGE_READ_EVENT,
+  CHAT_SOCKET_MESSAGE_REACTION_CHANGED_EVENT,
   CHAT_SOCKET_PRESENCE_UPDATED_EVENT,
   CHAT_SOCKET_SNAPSHOT_EVENT,
   CHAT_SOCKET_STATUS_EVENT,
@@ -216,6 +217,14 @@ export default function useChatSocketEvents({
       applyMessageReadDelta(payload);
     };
 
+    const handleMessageReactionChanged = (event) => {
+      const envelope = event?.detail || {};
+      const message = envelope?.payload || {};
+      const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
+      if (!message?.id || conversationId !== activeConversationIdRef.current) return;
+      mergeMessageIntoThread(message);
+    };
+
     const handlePresenceUpdated = (event) => {
       const envelope = event?.detail || {};
       const payload = envelope?.payload || {};
@@ -323,6 +332,7 @@ export default function useChatSocketEvents({
     window.addEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleMessageCreated);
     window.addEventListener(CHAT_SOCKET_MESSAGE_DELETED_EVENT, handleMessageDeleted);
     window.addEventListener(CHAT_SOCKET_MESSAGE_READ_EVENT, handleMessageRead);
+    window.addEventListener(CHAT_SOCKET_MESSAGE_REACTION_CHANGED_EVENT, handleMessageReactionChanged);
     window.addEventListener(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, handlePresenceUpdated);
     window.addEventListener(CHAT_SOCKET_TYPING_EVENT, handleTyping);
     window.addEventListener(CHAT_SOCKET_AI_RUN_UPDATED_EVENT, handleAiRunUpdated);
@@ -336,6 +346,7 @@ export default function useChatSocketEvents({
       window.removeEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleMessageCreated);
       window.removeEventListener(CHAT_SOCKET_MESSAGE_DELETED_EVENT, handleMessageDeleted);
       window.removeEventListener(CHAT_SOCKET_MESSAGE_READ_EVENT, handleMessageRead);
+      window.removeEventListener(CHAT_SOCKET_MESSAGE_REACTION_CHANGED_EVENT, handleMessageReactionChanged);
       window.removeEventListener(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, handlePresenceUpdated);
       window.removeEventListener(CHAT_SOCKET_TYPING_EVENT, handleTyping);
       window.removeEventListener(CHAT_SOCKET_AI_RUN_UPDATED_EVENT, handleAiRunUpdated);

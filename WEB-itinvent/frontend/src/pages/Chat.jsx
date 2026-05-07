@@ -66,6 +66,7 @@ import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../lib/chatFeature';
 import { getOrFetchSWR, invalidateSWRCacheByPrefix, peekSWRCache, setSWRCache } from '../lib/swrCache';
 import { chatSocket } from '../lib/chatSocket';
 import { buildChatUiTokens } from '../components/chat/chatUiTokens';
+import { pushNavigationDebugEntry } from '../lib/navigationDebug';
 
 const loadChatContextPanelModule = () => import('../components/chat/ChatContextPanel');
 const loadChatDialogsModule = () => import('../components/chat/ChatDialogs');
@@ -106,6 +107,23 @@ export const shouldDeferChatUrlSyncForRequestedConversation = ({
   if (!applyingId) return false;
   return String(activeConversationId || '').trim() !== applyingId;
 };
+export const isChatEscapeKey = (event) => (
+  event?.key === 'Escape'
+  || event?.key === 'Esc'
+  || event?.code === 'Escape'
+  || event?.keyCode === 27
+);
+export const shouldCloseActiveConversationOnEscape = ({
+  event,
+  activeConversationId = '',
+  hasBlockingSurface = false,
+} = {}) => (
+  isChatEscapeKey(event)
+  && !Boolean(event?.defaultPrevented)
+  && !Boolean(event?.isComposing)
+  && !hasBlockingSurface
+  && String(activeConversationId || '').trim().length > 0
+);
 const CHAT_MOBILE_HISTORY_FLAG = '__hubChatMobileShell';
 const CHAT_MOBILE_HISTORY_VIEW_KEY = '__hubChatMobileShellView';
 const CHAT_MOBILE_HISTORY_DRAWER_KEY = '__hubChatMobileShellDrawer';
@@ -438,12 +456,177 @@ const normalizeThreadMessageId = (message) => String(message?.id || '').trim();
 
 const normalizeThreadMessageClientId = (message) => String(message?.client_message_id || '').trim();
 
+const hasOwn = (value, key) => Boolean(
+  value
+  && typeof value === 'object'
+  && Object.prototype.hasOwnProperty.call(value, key)
+);
+
+const getChatUserKey = (value) => {
+  const user = value?.user || value;
+  if (!user || typeof user !== 'object') return '';
+  const userId = Number(user?.id || user?.user_id || 0);
+  if (Number.isFinite(userId) && userId > 0) return `id:${userId}`;
+  const username = String(user?.username || '').trim().toLowerCase();
+  return username ? `username:${username}` : '';
+};
+
+const readChatAvatarField = (value) => {
+  if (!value || typeof value !== 'object') return { has: false, value: null };
+  const key = hasOwn(value, 'avatar_url') ? 'avatar_url' : (hasOwn(value, 'avatarUrl') ? 'avatarUrl' : '');
+  if (!key) return { has: false, value: null };
+  const rawValue = value[key];
+  if (rawValue === null) return { has: true, value: null };
+  const normalizedValue = String(rawValue || '').trim();
+  return { has: true, value: normalizedValue || null };
+};
+
+export const mergeChatUserSummary = (primary, fallback) => {
+  if (!primary && !fallback) return null;
+  if (!primary) return fallback || null;
+  if (!fallback) {
+    const primaryAvatar = readChatAvatarField(primary);
+    if (!primaryAvatar.has) return primary || null;
+    return {
+      ...primary,
+      avatar_url: primaryAvatar.value,
+      avatarUrl: primaryAvatar.value,
+    };
+  }
+
+  const primaryAvatar = readChatAvatarField(primary);
+  const fallbackAvatar = readChatAvatarField(fallback);
+  const primaryPresence = primary?.presence || null;
+  const fallbackPresence = fallback?.presence || null;
+  const resolvedAvatar = primaryAvatar.has
+    ? primaryAvatar.value
+    : (fallbackAvatar.has ? fallbackAvatar.value : null);
+
+  return {
+    ...fallback,
+    ...primary,
+    avatar_url: resolvedAvatar,
+    avatarUrl: resolvedAvatar,
+    presence: primaryPresence || fallbackPresence || null,
+  };
+};
+
+export const mergeChatMemberSummary = (primary, fallback) => {
+  if (!primary && !fallback) return null;
+  if (!primary) return fallback || null;
+  if (!fallback) return primary || null;
+  return {
+    ...fallback,
+    ...primary,
+    user: mergeChatUserSummary(primary?.user, fallback?.user),
+  };
+};
+
+export const mergeChatMemberList = (primaryItems, fallbackItems) => {
+  const primaryList = Array.isArray(primaryItems) ? primaryItems : [];
+  const fallbackList = Array.isArray(fallbackItems) ? fallbackItems : [];
+  const fallbackByKey = new Map();
+  fallbackList.forEach((item) => {
+    const key = getChatUserKey(item);
+    if (key) fallbackByKey.set(key, item);
+  });
+  return primaryList.map((item) => mergeChatMemberSummary(item, fallbackByKey.get(getChatUserKey(item))));
+};
+
+export const mergeChatConversationSummary = (primary, fallback) => {
+  if (!primary && !fallback) return null;
+  if (!primary) return fallback || null;
+  if (!fallback) return primary || null;
+  return {
+    ...fallback,
+    ...primary,
+    direct_peer: mergeChatUserSummary(primary?.direct_peer, fallback?.direct_peer),
+    member_preview: Array.isArray(primary?.member_preview)
+      ? mergeChatMemberList(primary.member_preview, fallback?.member_preview)
+      : (Array.isArray(fallback?.member_preview) ? fallback.member_preview : []),
+    members: Array.isArray(primary?.members)
+      ? mergeChatMemberList(primary.members, fallback?.members)
+      : fallback?.members,
+  };
+};
+
+export const mergeChatConversationList = (primaryItems, fallbackItems) => {
+  const primaryList = Array.isArray(primaryItems) ? primaryItems : [];
+  const fallbackById = new Map(
+    (Array.isArray(fallbackItems) ? fallbackItems : [])
+      .map((item) => [String(item?.id || '').trim(), item])
+      .filter(([id]) => id),
+  );
+  return primaryList.map((item) => mergeChatConversationSummary(item, fallbackById.get(String(item?.id || '').trim())));
+};
+
+export const collectChatConversationUsers = (conversation) => {
+  const users = [];
+  const addUser = (value) => {
+    const user = value?.user || value;
+    if (user && typeof user === 'object' && getChatUserKey(user)) users.push(user);
+  };
+  addUser(conversation?.direct_peer);
+  (Array.isArray(conversation?.member_preview) ? conversation.member_preview : []).forEach(addUser);
+  (Array.isArray(conversation?.members) ? conversation.members : []).forEach(addUser);
+  return users;
+};
+
+export const shouldKeepActiveConversationWithoutSidebarMatch = ({
+  activeConversationId = '',
+  conversationExists = false,
+  detailExists = false,
+  messagesLoading = false,
+} = {}) => (
+  String(activeConversationId || '').trim().length > 0
+  && !conversationExists
+  && (Boolean(detailExists) || Boolean(messagesLoading))
+);
+
+export const shouldRequestActiveConversationDetail = ({
+  activeConversationId = '',
+  loadedConversationId = '',
+  requestConversationId = '',
+  hasActiveConversation = false,
+  hasConversationDetail = false,
+  contextPanelOpen = false,
+  infoOpen = false,
+} = {}) => {
+  const normalizedConversationId = String(activeConversationId || '').trim();
+  if (!normalizedConversationId) return false;
+  if (String(requestConversationId || '').trim() === normalizedConversationId) return false;
+  const detailLoaded = (
+    String(loadedConversationId || '').trim() === normalizedConversationId
+    && Boolean(hasConversationDetail)
+  );
+  return (
+    !detailLoaded
+    || Boolean(contextPanelOpen)
+    || Boolean(infoOpen)
+    || !Boolean(hasActiveConversation)
+  );
+};
+
+export const mergeChatThreadMessageSender = (message, existingMessage = null, knownUsers = []) => {
+  if (!message?.sender) return message;
+  const senderKey = getChatUserKey(message.sender);
+  if (!senderKey) return message;
+  const fallback = [existingMessage?.sender, ...(Array.isArray(knownUsers) ? knownUsers : [])]
+    .find((item) => getChatUserKey(item) === senderKey);
+  if (!fallback) return message;
+  return {
+    ...message,
+    sender: mergeChatUserSummary(message.sender, fallback),
+  };
+};
+
 const buildThreadMessageSignature = (message) => {
   if (!message || typeof message !== 'object') return '';
   const sender = message?.sender || {};
   const replyPreview = message?.reply_preview || {};
   const taskPreview = message?.task_preview || {};
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  const reactions = Array.isArray(message?.reactions) ? message.reactions : [];
   return JSON.stringify({
     id: normalizeThreadMessageId(message),
     conversation_id: String(message?.conversation_id || '').trim(),
@@ -464,6 +647,7 @@ const buildThreadMessageSignature = (message) => {
       id: String(sender?.id || '').trim(),
       username: String(sender?.username || '').trim(),
       full_name: String(sender?.full_name || '').trim(),
+      avatar_url: String(sender?.avatar_url || sender?.avatarUrl || '').trim(),
     },
     reply_preview: {
       id: String(replyPreview?.id || '').trim(),
@@ -486,6 +670,14 @@ const buildThreadMessageSignature = (message) => {
       preview_url: String(attachment?.preview_url || attachment?.previewUrl || '').trim(),
       poster_url: String(attachment?.poster_url || attachment?.posterUrl || '').trim(),
     })),
+    reactions: reactions
+      .map((reaction) => ({
+        reaction_emoji: String(reaction?.reaction_emoji || reaction?.emoji || '').trim(),
+        count: Number(reaction?.count || 0),
+        is_own: Boolean(reaction?.is_own),
+      }))
+      .filter((reaction) => reaction.reaction_emoji && reaction.count > 0)
+      .sort((left, right) => left.reaction_emoji.localeCompare(right.reaction_emoji)),
   });
 };
 
@@ -556,10 +748,15 @@ export const reconcileThreadMessages = (currentMessages, incomingMessages, {
   conversationId = '',
   preserveSendingOptimistic = false,
   mode = 'replace',
+  knownUsers = [],
 } = {}) => {
   const current = Array.isArray(currentMessages) ? currentMessages : [];
   const incoming = Array.isArray(incomingMessages) ? incomingMessages.filter((item) => item?.id) : [];
   const currentById = new Map(current.map((item) => [normalizeThreadMessageId(item), item]));
+  const senderFallbacks = [
+    ...(Array.isArray(knownUsers) ? knownUsers : []),
+    ...current.map((item) => item?.sender).filter(Boolean),
+  ];
   const incomingIds = new Set(incoming.map((item) => normalizeThreadMessageId(item)).filter(Boolean));
   const currentOptimisticByClientId = new Map();
   current.forEach((item) => {
@@ -577,7 +774,10 @@ export const reconcileThreadMessages = (currentMessages, incomingMessages, {
     const existing = currentById.get(messageId)
       || (clientMessageId ? currentOptimisticByClientId.get(clientMessageId) : null)
       || null;
-    const nextMessage = withPreservedThreadRenderKey(message, existing);
+    const nextMessage = withPreservedThreadRenderKey(
+      mergeChatThreadMessageSender(message, existing, senderFallbacks),
+      existing,
+    );
     return areThreadMessagesEquivalent(existing, nextMessage) ? existing : nextMessage;
   });
 
@@ -861,6 +1061,8 @@ export default function Chat() {
   const requestedConversationHandledRef = useRef('');
   const applyingRequestedConversationRef = useRef('');
   const requestedMessageRevealKeyRef = useRef('');
+  const suppressRequestedConversationRestoreRef = useRef('');
+  const suppressClosedConversationRestoreRef = useRef('');
   const conversationsRequestSeqRef = useRef(0);
   const conversationsLoadingRequestSeqRef = useRef(0);
   const conversationsLoadingRef = useRef(true);
@@ -911,6 +1113,8 @@ export default function Chat() {
   const lastConversationsLoadAtRef = useRef(0);
   const conversationsCacheHydratedRef = useRef(Boolean(initialConversationsCache?.data));
   const hydratedThreadConversationIdRef = useRef(initialThreadCache?.data ? initialConversationId : '');
+  const activeDetailLoadConversationRef = useRef('');
+  const activeDetailRequestConversationRef = useRef('');
   const mobileHistoryReadyRef = useRef(false);
   const mobileHistoryModeRef = useRef('inbox');
   const lastHandledThreadLayoutKeyRef = useRef('');
@@ -1120,16 +1324,12 @@ export default function Chat() {
     if (!detail) {
       return activeConversationSummary;
     }
-    return {
-      ...activeConversationSummary,
-      ...detail,
-      direct_peer: detail?.direct_peer || activeConversationSummary?.direct_peer || null,
-      member_preview: Array.isArray(detail?.member_preview) && detail.member_preview.length > 0
-        ? detail.member_preview
-        : (Array.isArray(activeConversationSummary?.member_preview) ? activeConversationSummary.member_preview : []),
-      members: Array.isArray(detail?.members) ? detail.members : undefined,
-    };
+    return mergeChatConversationSummary(detail, activeConversationSummary);
   }, [activeConversationId, activeConversationSummary, conversationDetailsById]);
+  const activeConversationKnownUsers = useMemo(
+    () => collectChatConversationUsers(activeConversation),
+    [activeConversation],
+  );
   const mentionCandidates = useMemo(() => {
     const currentUserId = Number(user?.id || 0);
     const byKey = new Map();
@@ -1210,7 +1410,7 @@ export default function Chat() {
     const items = Array.isArray(payload?.items) ? payload.items : [];
     lastConversationsLoadAtRef.current = Date.now();
     conversationsCacheHydratedRef.current = true;
-    setConversations(items);
+    setConversations((current) => mergeChatConversationList(items, current));
     if (preserveSidebarScrollTop !== null) {
       window.requestAnimationFrame(() => {
         if (sidebarScrollRef.current) {
@@ -1226,16 +1426,7 @@ export default function Chat() {
     if (!normalizedConversationId) return;
     setConversationDetailsById((current) => ({
       ...current,
-      [normalizedConversationId]: {
-        ...(current[normalizedConversationId] || {}),
-        ...conversation,
-        member_preview: Array.isArray(conversation?.member_preview)
-          ? conversation.member_preview
-          : (current[normalizedConversationId]?.member_preview || []),
-        members: Array.isArray(conversation?.members)
-          ? conversation.members
-          : current[normalizedConversationId]?.members,
-      },
+      [normalizedConversationId]: mergeChatConversationSummary(conversation, current[normalizedConversationId] || {}),
     }));
   }, []);
 
@@ -1250,11 +1441,12 @@ export default function Chat() {
       conversationId: normalizedConversationId,
       preserveSendingOptimistic: true,
       mode: 'replaceWindowButPreserveFreshLocal',
+      knownUsers: activeConversationKnownUsers,
     }));
     setMessagesHasMore(Boolean(payload?.has_older ?? payload?.has_more));
     setMessagesHasNewer(Boolean(payload?.has_newer));
     return items;
-  }, []);
+  }, [activeConversationKnownUsers]);
 
   const loadConversationDetail = useCallback(async (conversationId, { force = false, signal } = {}) => {
     const normalizedConversationId = String(conversationId || '').trim();
@@ -2769,6 +2961,7 @@ export default function Chat() {
         id: Number(user?.id || 0) || user?.id || 0,
         username: String(user?.username || '').trim(),
         full_name: String(user?.full_name || user?.username || '').trim() || null,
+        avatar_url: String(user?.avatar_url || user?.avatarUrl || '').trim() || null,
       },
       body: normalizedBody,
       body_format: normalizedBodyFormat,
@@ -2783,7 +2976,7 @@ export default function Chat() {
       optimisticStatus: 'sending',
       renderKey: optimisticId,
     };
-  }, [user?.full_name, user?.id, user?.username]);
+  }, [user?.avatarUrl, user?.avatar_url, user?.full_name, user?.id, user?.username]);
 
   const revokeObjectUrls = useCallback((urls) => {
     if (!Array.isArray(urls) || typeof URL === 'undefined' || typeof URL.revokeObjectURL !== 'function') return;
@@ -2833,6 +3026,7 @@ export default function Chat() {
         id: Number(user?.id || 0) || user?.id || 0,
         username: String(user?.username || '').trim(),
         full_name: String(user?.full_name || user?.username || '').trim() || null,
+        avatar_url: String(user?.avatar_url || user?.avatarUrl || '').trim() || null,
       },
       body: String(body || '').trim(),
       created_at: new Date().toISOString(),
@@ -2848,7 +3042,7 @@ export default function Chat() {
       optimisticObjectUrls: objectUrls,
       renderKey: optimisticId,
     };
-  }, [user?.full_name, user?.id, user?.username]);
+  }, [user?.avatarUrl, user?.avatar_url, user?.full_name, user?.id, user?.username]);
 
   const upsertThreadMessages = useCallback((incomingMessages, { replaceByMessageId = null } = {}) => {
     const sourceMessages = (Array.isArray(incomingMessages) ? incomingMessages : [incomingMessages])
@@ -2861,6 +3055,10 @@ export default function Chat() {
     setMessages((current) => {
       let next = [...current];
       let changed = false;
+      const senderFallbacks = [
+        ...activeConversationKnownUsers,
+        ...current.map((item) => item?.sender).filter(Boolean),
+      ];
 
       sourceMessages.forEach((message) => {
         const messageId = String(message?.id || '').trim();
@@ -2874,7 +3072,10 @@ export default function Chat() {
 
         if (existingIndex >= 0) {
           const existing = next[existingIndex];
-          const nextMessage = withStableMessageRenderKey(message, existing);
+          const nextMessage = withStableMessageRenderKey(
+            mergeChatThreadMessageSender(message, existing, senderFallbacks),
+            existing,
+          );
           if (!areThreadMessagesEquivalent(existing, nextMessage)) {
             next[existingIndex] = nextMessage;
             changed = true;
@@ -2892,7 +3093,9 @@ export default function Chat() {
           return;
         }
 
-        next.push(withStableMessageRenderKey(message));
+        next.push(withStableMessageRenderKey(
+          mergeChatThreadMessageSender(message, null, senderFallbacks),
+        ));
         changed = true;
       });
 
@@ -2907,7 +3110,7 @@ export default function Chat() {
       }
       return changed ? ordered : current;
     });
-  }, [withStableMessageRenderKey]);
+  }, [activeConversationKnownUsers, withStableMessageRenderKey]);
 
   const upsertThreadMessage = useCallback((message, { replaceId = '' } = {}) => {
     if (!message?.id) return;
@@ -2948,7 +3151,7 @@ export default function Chat() {
     setConversations((current) => {
       const index = current.findIndex((item) => item.id === normalizedConversationId);
       const next = index >= 0
-        ? current.map((item) => (item.id === normalizedConversationId ? conversation : item))
+        ? current.map((item) => (item.id === normalizedConversationId ? mergeChatConversationSummary(conversation, item) : item))
         : [conversation, ...current];
       if (!promote) return next;
       const promotedIndex = next.findIndex((item) => item.id === normalizedConversationId);
@@ -2964,14 +3167,7 @@ export default function Chat() {
       if (!existing) return current;
       return {
         ...current,
-        [normalizedConversationId]: {
-          ...existing,
-          ...conversation,
-          member_preview: Array.isArray(conversation?.member_preview)
-            ? conversation.member_preview
-            : (existing.member_preview || []),
-          members: Array.isArray(conversation?.members) ? conversation.members : existing.members,
-        },
+        [normalizedConversationId]: mergeChatConversationSummary(conversation, existing),
       };
     });
   }, [upsertSearchConversation]);
@@ -3704,6 +3900,18 @@ export default function Chat() {
       requestedMessageRevealKeyRef.current = '';
       return;
     }
+    const currentPathname = typeof window !== 'undefined'
+      ? String(window.location?.pathname || '')
+      : String(location.pathname || '');
+    if (!currentPathname.startsWith('/chat')) {
+      pushNavigationDebugEntry('chat:message-reveal:skip:not-chat', {
+        currentPathname,
+        locationPathname: String(location.pathname || ''),
+        requestedConversationId,
+        requestedMessageId,
+      });
+      return;
+    }
     const normalizedConversationId = String(activeConversationId || '').trim();
     if (!normalizedConversationId || normalizedConversationId !== requestedConversationId) return;
     if (messagesLoading) return;
@@ -3724,7 +3932,7 @@ export default function Chat() {
     return () => {
       cancelled = true;
     };
-  }, [activeConversationId, location.search, messages.length, messagesLoading, navigate, requestedConversationId, requestedMessageId, revealMessage]);
+  }, [activeConversationId, location.pathname, location.search, messages.length, messagesLoading, navigate, requestedConversationId, requestedMessageId, revealMessage]);
 
   const handleOpenPinnedMessage = useCallback(async () => {
     const normalizedMessageId = String(pinnedMessage?.id || '').trim();
@@ -3746,7 +3954,7 @@ export default function Chat() {
     try {
       const updated = await chatAPI.updateConversationSettings(conversationId, payload);
       setConversations((current) => {
-        const next = current.map((item) => (item.id === updated.id ? updated : item));
+        const next = current.map((item) => (item.id === updated.id ? mergeChatConversationSummary(updated, item) : item));
         next.sort((left, right) => {
           const leftPinned = left?.is_pinned ? 1 : 0;
           const rightPinned = right?.is_pinned ? 1 : 0;
@@ -3772,7 +3980,7 @@ export default function Chat() {
     setConversations((current) => {
       const exists = current.some((item) => String(item?.id || '').trim() === normalizedConversationId);
       const next = exists
-        ? current.map((item) => (String(item?.id || '').trim() === normalizedConversationId ? { ...item, ...updated } : item))
+        ? current.map((item) => (String(item?.id || '').trim() === normalizedConversationId ? mergeChatConversationSummary(updated, item) : item))
         : [{ ...updated }, ...current];
       return next;
     });
@@ -3938,7 +4146,22 @@ export default function Chat() {
       chatWsEnabled: CHAT_WS_ENABLED,
       threadPollMs: THREAD_POLL_MS,
     });
-  }, [logChatDebug]);
+    pushNavigationDebugEntry('chat:mount', {
+      activeConversationId: String(activeConversationIdRef.current || ''),
+      locationPathname: String(location.pathname || ''),
+      locationSearch: String(location.search || ''),
+    });
+  }, [location.pathname, location.search, logChatDebug]);
+
+  useEffect(() => {
+    return () => {
+      pushNavigationDebugEntry('chat:unmount', {
+        activeConversationId: String(activeConversationIdRef.current || ''),
+        locationPathname: String(window.location?.pathname || ''),
+        locationSearch: String(window.location?.search || ''),
+      });
+    };
+  }, []);
 
   useLayoutEffect(() => {
     const layoutKey = `${userCacheId}:${String(activeConversationId || '').trim()}`;
@@ -4100,49 +4323,66 @@ export default function Chat() {
 
   useEffect(() => {
     if (conversationsLoading) return;
+    if (!location.pathname.startsWith('/chat')) {
+      pushNavigationDebugEntry('chat:bootstrap:skip:not-chat', {
+        locationPathname: String(location.pathname || ''),
+        requestedConversationId,
+        restoredConversationId,
+      });
+      return;
+    }
+    const suppressedClosedConversationId = String(suppressClosedConversationRestoreRef.current || '').trim();
+
+    if (
+      suppressedClosedConversationId
+      && (
+        String(requestedConversationId || '').trim() === suppressedClosedConversationId
+        || String(restoredConversationId || '').trim() === suppressedClosedConversationId
+      )
+    ) {
+      return;
+    }
     const requestedExists = requestedConversationId && conversations.some((item) => item.id === requestedConversationId);
     const restoredExists = restoredConversationId && conversations.some((item) => item.id === restoredConversationId);
 
     if (!conversationBootstrapComplete) {
       if (requestedConversationId) {
         requestedConversationHandledRef.current = requestedConversationId;
-        if (requestedExists) {
-          invalidConversationRef.current = '';
-          applyingRequestedConversationRef.current = requestedConversationId;
-          setActiveConversationId(requestedConversationId);
-          if (isMobile) {
-            setMobileView('thread');
-            if (mobileHistoryReadyRef.current) {
-              writeMobileHistoryState({ view: 'thread', drawerOpen: false, infoOpen: false }, 'replace', requestedConversationId);
-            }
+        invalidConversationRef.current = '';
+        applyingRequestedConversationRef.current = requestedConversationId;
+        setActiveConversationId(requestedConversationId);
+        if (isMobile) {
+          setMobileView('thread');
+          if (mobileHistoryReadyRef.current) {
+            writeMobileHistoryState({ view: 'thread', drawerOpen: false, infoOpen: false }, 'replace', requestedConversationId);
           }
-          setConversationBootstrapComplete(true);
-          return;
         }
-        applyingRequestedConversationRef.current = '';
-        if (invalidConversationRef.current !== requestedConversationId) {
-          invalidConversationRef.current = requestedConversationId;
-          notifyInfo?.('Чат из ссылки недоступен или вы больше не являетесь его участником.', { title: 'Чат недоступен' });
-        }
-        clearStoredConversationState({ conversationId: requestedConversationId, invalidateThread: true });
-        cancelPendingInitialAnchor();
-        setActiveConversationId('');
-        if (isMobile) setMobileView('inbox');
         setConversationBootstrapComplete(true);
-        navigate('/chat', { replace: true });
+        if (!requestedExists) {
+          void loadConversationDetail(requestedConversationId, { force: true }).catch((error) => {
+            if (String(activeConversationIdRef.current || '').trim() !== requestedConversationId) return;
+            notifyApiError(error, 'Не удалось загрузить диалог из ссылки.');
+          });
+        }
         return;
       }
 
       if (restoredConversationId) {
-        if (restoredExists) {
-          invalidConversationRef.current = '';
-          applyingRequestedConversationRef.current = '';
-          setActiveConversationId(restoredConversationId);
-          if (isMobile) setMobileView(restoredMobileView === 'thread' ? 'thread' : 'inbox');
-          setConversationBootstrapComplete(true);
-          return;
+        invalidConversationRef.current = '';
+        applyingRequestedConversationRef.current = '';
+        setActiveConversationId(restoredConversationId);
+        if (isMobile) setMobileView(restoredMobileView === 'thread' ? 'thread' : 'inbox');
+        setConversationBootstrapComplete(true);
+        if (!restoredExists) {
+          void loadConversationDetail(restoredConversationId, { force: true }).catch(() => {
+            if (String(activeConversationIdRef.current || '').trim() !== restoredConversationId) return;
+            clearStoredConversationState({ conversationId: restoredConversationId, invalidateThread: true });
+            cancelPendingInitialAnchor();
+            setActiveConversationId('');
+            if (isMobile) setMobileView('inbox');
+          });
         }
-        clearStoredConversationState({ conversationId: restoredConversationId, invalidateThread: true });
+        return;
       }
 
       cancelPendingInitialAnchor();
@@ -4154,45 +4394,64 @@ export default function Chat() {
 
     if (requestedConversationId && requestedConversationId !== requestedConversationHandledRef.current) {
       requestedConversationHandledRef.current = requestedConversationId;
-      if (requestedExists) {
-        invalidConversationRef.current = '';
-        applyingRequestedConversationRef.current = requestedConversationId;
-        setActiveConversationId(requestedConversationId);
-        if (isMobile) {
-          setMobileView('thread');
-          if (mobileHistoryReadyRef.current) {
-            writeMobileHistoryState({ view: 'thread', drawerOpen: false, infoOpen: false }, 'replace', requestedConversationId);
-          }
+      invalidConversationRef.current = '';
+      applyingRequestedConversationRef.current = requestedConversationId;
+      setActiveConversationId(requestedConversationId);
+      if (isMobile) {
+        setMobileView('thread');
+        if (mobileHistoryReadyRef.current) {
+          writeMobileHistoryState({ view: 'thread', drawerOpen: false, infoOpen: false }, 'replace', requestedConversationId);
         }
-        return;
       }
-      applyingRequestedConversationRef.current = '';
-      if (invalidConversationRef.current !== requestedConversationId) {
-        invalidConversationRef.current = requestedConversationId;
-        notifyInfo?.('Чат из ссылки недоступен или вы больше не являетесь его участником.', { title: 'Чат недоступен' });
+      if (!requestedExists) {
+        void loadConversationDetail(requestedConversationId, { force: true }).catch((error) => {
+          if (String(activeConversationIdRef.current || '').trim() !== requestedConversationId) return;
+          notifyApiError(error, 'Не удалось загрузить диалог из ссылки.');
+        });
       }
-      clearStoredConversationState({ conversationId: requestedConversationId, invalidateThread: true });
-      if (isMobile) setMobileView('inbox');
-      navigate('/chat', { replace: true });
       return;
     }
 
     if (!requestedConversationId) {
       requestedConversationHandledRef.current = '';
       applyingRequestedConversationRef.current = '';
+      suppressRequestedConversationRestoreRef.current = '';
+      suppressClosedConversationRestoreRef.current = '';
     }
-    if (activeConversationId && conversations.some((item) => item.id === activeConversationId)) return;
+    const activeExistsInConversations = activeConversationId && conversations.some((item) => item.id === activeConversationId);
+    const activeExistsInDetails = activeConversationId && Boolean(conversationDetailsById[String(activeConversationId || '').trim()]);
+    if (activeExistsInConversations) return;
+    if (shouldKeepActiveConversationWithoutSidebarMatch({
+      activeConversationId,
+      conversationExists: Boolean(activeExistsInConversations),
+      detailExists: Boolean(activeExistsInDetails),
+      messagesLoading,
+    })) {
+      return;
+    }
     if (activeConversationId) {
       clearStoredConversationState({ conversationId: activeConversationId, invalidateThread: true });
     }
     cancelPendingInitialAnchor();
     setActiveConversationId('');
     if (isMobile) setMobileView('inbox');
-  }, [activeConversationId, cancelPendingInitialAnchor, clearStoredConversationState, conversationBootstrapComplete, conversations, conversationsLoading, isMobile, navigate, notifyInfo, requestedConversationId, restoredConversationId, restoredMobileView, writeMobileHistoryState]);
+  }, [activeConversationId, cancelPendingInitialAnchor, clearStoredConversationState, conversationBootstrapComplete, conversationDetailsById, conversations, conversationsLoading, isMobile, loadConversationDetail, location.pathname, messagesLoading, notifyApiError, requestedConversationId, restoredConversationId, restoredMobileView, writeMobileHistoryState]);
 
   useEffect(() => {
     if (!conversationBootstrapComplete) return;
     if (isMobile) return;
+    const currentPathname = typeof window !== 'undefined'
+      ? String(window.location?.pathname || '')
+      : String(location.pathname || '');
+    if (!currentPathname.startsWith('/chat')) {
+      pushNavigationDebugEntry('chat:url-sync:skip:not-chat', {
+        currentPathname,
+        locationPathname: String(location.pathname || ''),
+        activeConversationId: String(activeConversationId || ''),
+        locationSearch: String(location.search || ''),
+      });
+      return;
+    }
     const currentParams = new URLSearchParams(location.search);
     const currentConversation = String(currentParams.get('conversation') || '').trim();
     const nextConversation = String(activeConversationId || '').trim();
@@ -4210,8 +4469,15 @@ export default function Chat() {
     if (nextConversation) currentParams.set('conversation', nextConversation);
     else currentParams.delete('conversation');
     const nextSearch = currentParams.toString();
+    pushNavigationDebugEntry('chat:url-sync:navigate', {
+      currentConversation,
+      nextConversation,
+      nextSearch,
+      locationPathname: String(location.pathname || ''),
+      currentPathname,
+    });
     navigate({ pathname: '/chat', search: nextSearch ? `?${nextSearch}` : '' }, { replace: true });
-  }, [activeConversationId, conversationBootstrapComplete, isMobile, location.search, navigate]);
+  }, [activeConversationId, conversationBootstrapComplete, isMobile, location.pathname, location.search, navigate]);
 
   useChatActiveThreadPolling({
     activeConversationId,
@@ -4255,17 +4521,54 @@ export default function Chat() {
 
   useEffect(() => {
     const normalizedConversationId = String(activeConversationId || '').trim();
-    if (!normalizedConversationId || (!contextPanelOpen && !infoOpen)) return undefined;
-    const abortController = typeof AbortController === 'function' ? new AbortController() : null;
-    void loadConversationDetail(normalizedConversationId, { signal: abortController?.signal }).catch(() => {});
-    return () => {
-      try {
-        abortController?.abort?.();
-      } catch {
-        // Ignore detail abort cleanup failures.
-      }
-    };
-  }, [activeConversationId, contextPanelOpen, infoOpen, loadConversationDetail]);
+    if (!normalizedConversationId) {
+      activeDetailLoadConversationRef.current = '';
+      activeDetailRequestConversationRef.current = '';
+      return undefined;
+    }
+    const hasConversationDetail = Boolean(conversationDetailsById[normalizedConversationId]);
+    const shouldLoadDetail = shouldRequestActiveConversationDetail({
+      activeConversationId: normalizedConversationId,
+      loadedConversationId: activeDetailLoadConversationRef.current,
+      requestConversationId: activeDetailRequestConversationRef.current,
+      hasActiveConversation: Boolean(activeConversation),
+      hasConversationDetail,
+      contextPanelOpen,
+      infoOpen,
+    });
+    if (!shouldLoadDetail) return undefined;
+    activeDetailRequestConversationRef.current = normalizedConversationId;
+    const forceActiveRefresh = activeDetailLoadConversationRef.current !== normalizedConversationId || !hasConversationDetail;
+    void loadConversationDetail(normalizedConversationId, {
+      force: forceActiveRefresh,
+    })
+      .then((detail) => {
+        if (String(detail?.id || '').trim() === normalizedConversationId) {
+          activeDetailLoadConversationRef.current = normalizedConversationId;
+        }
+      })
+      .catch(() => {
+        if (String(activeConversationIdRef.current || '').trim() === normalizedConversationId) {
+          activeDetailLoadConversationRef.current = '';
+        }
+      })
+      .finally(() => {
+        if (activeDetailRequestConversationRef.current === normalizedConversationId) {
+          activeDetailRequestConversationRef.current = '';
+        }
+      });
+    return undefined;
+  }, [activeConversation, activeConversationId, contextPanelOpen, conversationDetailsById, infoOpen, loadConversationDetail]);
+
+  useEffect(() => {
+    const normalizedConversationId = String(activeConversationId || '').trim();
+    if (!normalizedConversationId || activeConversationKnownUsers.length === 0) return;
+    setMessages((current) => reconcileThreadMessages(current, current, {
+      conversationId: normalizedConversationId,
+      mode: 'replace',
+      knownUsers: activeConversationKnownUsers,
+    }));
+  }, [activeConversationId, activeConversationKnownUsers]);
 
   useChatSocketEvents({
     activeConversation,
@@ -4490,6 +4793,7 @@ export default function Chat() {
 
   const openConversation = useCallback((conversationId) => {
     const normalizedConversationId = String(conversationId || '').trim();
+    suppressClosedConversationRestoreRef.current = '';
     logChatDebug('openConversation', {
       conversationId: normalizedConversationId,
     });
@@ -4802,6 +5106,77 @@ export default function Chat() {
     }
   }, [closeMessageMenu, mergeMessageIntoThread, notifyApiError]);
 
+  const handleToggleReaction = useCallback(async (message, reactionEmoji) => {
+    const conversationId = String(message?.conversation_id || activeConversationIdRef.current || '').trim();
+    const messageId = String(message?.id || '').trim();
+    if (!conversationId || !messageId) return;
+
+    const currentReactions = Array.isArray(message?.reactions) ? message.reactions : [];
+    const selectedReaction = currentReactions.find((reaction) => Boolean(reaction?.is_own));
+    const shouldRemove = Boolean(reactionEmoji && selectedReaction?.reaction_emoji === reactionEmoji);
+    let optimisticReactions = currentReactions
+      .map((reaction) => {
+        if (!reaction?.is_own) return reaction;
+        return {
+          ...reaction,
+          is_own: false,
+          count: Math.max(0, Number(reaction?.count || 0) - 1),
+        };
+      })
+      .filter((reaction) => Number(reaction?.count || 0) > 0);
+
+    if (reactionEmoji && !shouldRemove) {
+      let foundTarget = false;
+      optimisticReactions = optimisticReactions.map((reaction) => {
+        if (reaction?.reaction_emoji !== reactionEmoji) return reaction;
+        foundTarget = true;
+        return {
+          ...reaction,
+          is_own: true,
+          count: Number(reaction?.count || 0) + 1,
+        };
+      });
+      if (!foundTarget) {
+        optimisticReactions.push({ reaction_emoji: reactionEmoji, count: 1, is_own: true });
+      }
+    }
+
+    const optimisticMessage = { ...message, reactions: optimisticReactions };
+    mergeMessageIntoThread(optimisticMessage);
+
+    try {
+      let reactionResult = null;
+      const canUseSocket = CHAT_WS_ENABLED && socketStatusRef.current === 'connected' && typeof chatSocket.sendReaction === 'function';
+      if (canUseSocket) {
+        try {
+          reactionResult = await chatSocket.sendReaction(conversationId, messageId, shouldRemove ? null : reactionEmoji);
+        } catch (socketError) {
+          logChatDebug('reaction:socketFallback', {
+            conversationId,
+            messageId,
+            error: String(socketError?.message || socketError),
+          });
+          socketStatusRef.current = 'disconnected';
+          setSocketStatus('disconnected');
+        }
+      }
+      if (!reactionResult) {
+        reactionResult = shouldRemove
+          ? await chatAPI.removeReaction(conversationId, messageId)
+          : await chatAPI.sendReaction(conversationId, messageId, reactionEmoji);
+      }
+      if (Array.isArray(reactionResult?.reactions)) {
+        mergeMessageIntoThread({
+          ...optimisticMessage,
+          reactions: reactionResult.reactions,
+        });
+      }
+    } catch (error) {
+      mergeMessageIntoThread(message);
+      notifyApiError(error, 'Не удалось обновить реакцию.');
+    }
+  }, [activeConversationIdRef, logChatDebug, mergeMessageIntoThread, notifyApiError, setSocketStatus, socketStatusRef]);
+
   const {
     copySelectedMessages: selectedCopySelectedMessages,
     openForwardSelectedMessages: selectedOpenForwardSelectedMessages,
@@ -4851,6 +5226,102 @@ export default function Chat() {
     syncConversationPreview,
     upsertThreadMessages,
   });
+
+const closeActiveConversation = useCallback(() => {
+  const conversationId = String(activeConversationIdRef.current || '').trim();
+  if (!conversationId) return;
+
+  suppressClosedConversationRestoreRef.current = conversationId;
+  requestedConversationHandledRef.current = conversationId;
+  applyingRequestedConversationRef.current = '';
+  requestedMessageRevealKeyRef.current = '';
+
+  clearStoredConversationState({
+    conversationId,
+    invalidateThread: false,
+  });
+
+  cancelPendingInitialAnchor();
+  clearInitialViewportGuard('conversation_closed');
+
+  setInfoOpen(false);
+  setContextPanelOpen(false);
+  setThreadMenuAnchor(null);
+  setMessageMenuAnchor(null);
+  setMessageMenuMessage(null);
+  setComposerMenuAnchor(null);
+  setEmojiAnchorEl(null);
+  setReplyMessage(null);
+  clearSelectedMessages();
+  resetMessageSearch();
+
+  setActiveConversationId('');
+
+  if (location.pathname.startsWith('/chat')) {
+    navigate({ pathname: '/chat', search: '' }, { replace: true });
+  }
+
+  if (isMobile) {
+    setMobileView('inbox');
+  }
+}, [
+  abortActiveThreadLoad,
+  cancelPendingInitialAnchor,
+  clearInitialViewportGuard,
+  clearSelectedMessages,
+  clearStoredConversationState,
+  isMobile,
+  location.pathname,
+  logChatDebug,
+  navigate,
+  resetMessageSearch,
+]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return undefined;
+    const handleChatEscape = (event) => {
+      const hasBlockingSurface = Boolean(
+        threadMenuAnchor
+        || messageMenuAnchor
+        || composerMenuAnchor
+        || emojiAnchorEl
+        || fileDialogOpen
+        || groupOpen
+        || shareOpen
+        || forwardOpen
+        || attachmentPreview
+        || messageReadsOpen
+        || searchOpen
+        || mailActionEditor,
+      );
+      if (!shouldCloseActiveConversationOnEscape({
+        event,
+        activeConversationId: activeConversationIdRef.current,
+        hasBlockingSurface,
+      })) {
+        return;
+      }
+      event.preventDefault?.();
+      event.stopPropagation?.();
+      closeActiveConversation();
+    };
+    window.addEventListener('keydown', handleChatEscape);
+    return () => window.removeEventListener('keydown', handleChatEscape);
+  }, [
+    attachmentPreview,
+    closeActiveConversation,
+    composerMenuAnchor,
+    emojiAnchorEl,
+    fileDialogOpen,
+    forwardOpen,
+    groupOpen,
+    mailActionEditor,
+    messageMenuAnchor,
+    messageReadsOpen,
+    searchOpen,
+    shareOpen,
+    threadMenuAnchor,
+  ]);
 
   const handleUnpinPinnedMessage = useCallback(() => {
     persistPinnedMessage(null);
@@ -5089,6 +5560,7 @@ export default function Chat() {
       canCopySelectedMessages={canCopySelectedMessages}
       onToggleMessageSelection={toggleMessageSelection}
       onStartMessageSelection={startMessageSelection}
+      onToggleReaction={handleToggleReaction}
       onClearMessageSelection={clearSelectedMessages}
       onReplySelectedMessage={selectedReplyToSelectedMessage}
       onCopySelectedMessages={selectedCopySelectedMessages}
@@ -5150,8 +5622,8 @@ export default function Chat() {
           height: '100%',
           flex: 1,
           minHeight: 0,
-          overflow: 'hidden',
-          overscrollBehaviorY: 'none',
+          overflow: { xs: 'visible', md: 'hidden' },
+          overscrollBehaviorY: { xs: 'auto', md: 'none' },
         }}
       >
         <Stack spacing={isPhone ? 0 : 1.5} sx={{ flex: 1, minHeight: 0 }}>

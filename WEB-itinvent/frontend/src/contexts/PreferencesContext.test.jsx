@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const getMySettingsMock = vi.fn();
@@ -35,6 +35,25 @@ describe('PreferencesContext dashboard mobile sections', () => {
     vi.clearAllMocks();
     localStorage.clear();
     localStorage.setItem('user', JSON.stringify({ id: 1, username: 'tester' }));
+  });
+
+  it('defers loading user settings until after the initial render', async () => {
+    getMySettingsMock.mockResolvedValue({
+      dashboard_mobile_sections: ['tasks', 'urgent'],
+    });
+
+    render(
+      <PreferencesProvider>
+        <PreferencesProbe />
+      </PreferencesProvider>,
+    );
+
+    expect(screen.getByTestId('sections')).toHaveTextContent('urgent,announcements,tasks');
+    expect(getMySettingsMock).not.toHaveBeenCalled();
+
+    await waitFor(() => {
+      expect(getMySettingsMock).toHaveBeenCalledWith({ suppressAuthRequired: true });
+    });
   });
 
   it('reads and normalizes dashboard mobile sections from the settings API', async () => {
@@ -88,6 +107,30 @@ describe('PreferencesContext dashboard mobile sections', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('sections')).toHaveTextContent('tasks,urgent');
+    });
+  });
+
+  it('still refreshes settings after auth changes', async () => {
+    getMySettingsMock.mockResolvedValue({
+      dashboard_mobile_sections: ['tasks', 'urgent'],
+    });
+
+    render(
+      <PreferencesProvider>
+        <PreferencesProbe />
+      </PreferencesProvider>,
+    );
+
+    await waitFor(() => {
+      expect(getMySettingsMock).toHaveBeenCalledTimes(1);
+    });
+
+    act(() => {
+      window.dispatchEvent(new Event('auth-changed'));
+    });
+
+    await waitFor(() => {
+      expect(getMySettingsMock).toHaveBeenCalledTimes(2);
     });
   });
 });

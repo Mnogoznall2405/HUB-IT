@@ -462,6 +462,10 @@ class AuthSecurityService:
     ) -> dict[str, Any]:
         session_id = uuid.uuid4().hex
         session_expires = _now_utc() + self._refresh_ttl()
+        final_device_id = str(device_id or f"session:{session_id}")
+        trusted_device_id = ""
+        if final_device_id.startswith("trusted:"):
+            trusted_device_id = final_device_id.split(":", 1)[1].strip()
         session_service.create_session(
             session_id=session_id,
             user_id=int(user.get("id") or 0),
@@ -470,6 +474,8 @@ class AuthSecurityService:
             ip_address=str(challenge.get("ip_address") or ""),
             user_agent=str(challenge.get("user_agent") or ""),
             expires_at=session_expires.isoformat(),
+            auth_method=auth_method,
+            trusted_device_id=trusted_device_id or None,
         )
         auth_source = str(user.get("auth_source") or "local").strip().lower() or "local"
         password_enc = str(challenge.get("password_enc") or "").strip()
@@ -493,7 +499,6 @@ class AuthSecurityService:
                 request_username=challenge.get("request_username") or user.get("username"),
                 password=login_password,
             )
-        final_device_id = str(device_id or f"session:{session_id}")
         tokens = self.issue_tokens(user=user, session_id=session_id, device_id=final_device_id)
         self.delete_login_challenge(str(challenge.get("challenge_id") or ""))
         try:

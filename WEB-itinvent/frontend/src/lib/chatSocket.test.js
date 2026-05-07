@@ -163,6 +163,77 @@ describe('chatSocket client lifecycle', () => {
     chatSocket.close(true);
   });
 
+  it('sends reaction commands over an open websocket', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+
+    const pending = chatSocket.sendReaction('conv-1', 'msg-1', '\u{1F44D}');
+    const sentPayload = JSON.parse(socket.sent[socket.sent.length - 1]);
+
+    expect(sentPayload.type).toBe('chat.send_reaction');
+    expect(sentPayload.conversation_id).toBe('conv-1');
+    expect(sentPayload.payload).toEqual({
+      message_id: 'msg-1',
+      reaction_emoji: '\u{1F44D}',
+    });
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.command.ok',
+        request_id: sentPayload.request_id,
+        conversation_id: 'conv-1',
+        payload: {
+          message_id: 'msg-1',
+          reactions: [{ reaction_emoji: '\u{1F44D}', count: 1, is_own: true }],
+        },
+      }),
+    });
+
+    await expect(pending).resolves.toEqual({
+      message_id: 'msg-1',
+      reactions: [{ reaction_emoji: '\u{1F44D}', count: 1, is_own: true }],
+    });
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('dispatches reaction changed websocket events', async () => {
+    const { chatSocket, CHAT_SOCKET_MESSAGE_REACTION_CHANGED_EVENT } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+    const events = [];
+
+    window.addEventListener(CHAT_SOCKET_MESSAGE_REACTION_CHANGED_EVENT, (event) => {
+      events.push(event.detail);
+    });
+
+    socket.emitOpen();
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.message.reaction_changed',
+        conversation_id: 'conv-1',
+        payload: {
+          id: 'msg-1',
+          conversation_id: 'conv-1',
+          reactions: [{ reaction_emoji: '\u{1F44D}', count: 1, is_own: true }],
+        },
+      }),
+    });
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toEqual(expect.objectContaining({
+      type: 'chat.message.reaction_changed',
+      conversation_id: 'conv-1',
+    }));
+
+    release();
+    chatSocket.close(true);
+  });
+
   it('resolves subscribeInbox when the server answers with chat.snapshot', async () => {
     const { chatSocket } = await loadChatSocket();
     const release = chatSocket.retain();

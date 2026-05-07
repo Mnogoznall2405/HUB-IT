@@ -44,6 +44,23 @@ export const chatMessageSendingAPI = {
     );
     return response.data;
   },
+
+  sendReaction: async (conversationId, messageId, reactionEmoji) => {
+    const response = await apiClient.post(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/reaction`,
+      {
+        reaction_emoji: reactionEmoji || undefined,
+      },
+    );
+    return response.data;
+  },
+
+  removeReaction: async (conversationId, messageId) => {
+    const response = await apiClient.delete(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/reaction`,
+    );
+    return response.data;
+  },
 };
 
 export default chatMessageSendingAPI;

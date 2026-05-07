@@ -14,6 +14,17 @@ import re
 
 ATTACHMENT_TOKEN_PREFIX = "att2_"
 ATTACHMENT_TOKEN_PREFIX_LEGACY = "att1_"
+STANDARD_FOLDER_KEYS = {
+    "inbox",
+    "sent",
+    "sentitems",
+    "drafts",
+    "trash",
+    "deleted",
+    "junk",
+    "spam",
+    "archive",
+}
 
 
 class MailReferenceError(ValueError):
@@ -23,6 +34,12 @@ class MailReferenceError(ValueError):
 def normalize_text(value: Any, default: str = "") -> str:
     text = str(value or "").strip()
     return text or default
+
+
+def normalize_folder_key(value: Any, default: str = "inbox") -> str:
+    text = normalize_text(value, default)
+    lowered = text.lower()
+    return lowered if lowered in STANDARD_FOLDER_KEYS else text
 
 
 def encode_message_id(folder: str, exchange_id: str, mailbox_id: str | None = None) -> str:
@@ -55,7 +72,7 @@ def decode_message_ref(token: str) -> tuple[str, str, str]:
         folder, exchange_id = raw.split("::", 1)
     if not exchange_id:
         raise MailReferenceError("Invalid message id payload")
-    return normalize_text(folder, "inbox").lower(), exchange_id, normalize_text(mailbox_id)
+    return normalize_folder_key(folder), exchange_id, normalize_text(mailbox_id)
 
 
 def decode_message_id(token: str) -> tuple[str, str]:

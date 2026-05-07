@@ -261,6 +261,7 @@ class UserService:
             "mailbox_password_enc": str(row.mailbox_password_enc or ""),
             "mail_signature_html": row.mail_signature_html,
             "mail_updated_at": row.mail_updated_at.isoformat() if row.mail_updated_at else None,
+            "avatar_url": row.avatar_url,
             "totp_secret_enc": str(row.totp_secret_enc or ""),
             "is_2fa_enabled": bool(row.is_2fa_enabled),
             "twofa_enabled_at": row.twofa_enabled_at.isoformat() if row.twofa_enabled_at else None,
@@ -289,6 +290,7 @@ class UserService:
         row.mailbox_login = (str(payload.get("mailbox_login") or "").strip() or None)
         row.mailbox_password_enc = str(payload.get("mailbox_password_enc") or "")
         row.mail_signature_html = (str(payload.get("mail_signature_html") or "").strip() or None)
+        row.avatar_url = (str(payload.get("avatar_url") or "").strip() or None)
         row.totp_secret_enc = str(payload.get("totp_secret_enc") or "")
         row.is_2fa_enabled = bool(payload.get("is_2fa_enabled", False))
         twofa_enabled_at = str(payload.get("twofa_enabled_at") or "").strip()
@@ -348,6 +350,7 @@ class UserService:
             "mailbox_login": mailbox_login,
             "mail_signature_html": mail_signature_html,
             "mail_is_configured": mail_is_configured,
+            "avatar_url": (str(user.get("avatar_url") or "").strip() or None),
             "is_2fa_enabled": bool(user.get("is_2fa_enabled", False)),
             "trusted_devices_count": int(user.get("trusted_devices_count", 0) or 0),
             "discoverable_trusted_devices_count": int(user.get("discoverable_trusted_devices_count", 0) or 0),
@@ -742,6 +745,7 @@ class UserService:
         mailbox_login: Optional[str] | object = _UNSET,
         mailbox_password: Optional[str] | object = _UNSET,
         mail_signature_html: Optional[str] | object = _UNSET,
+        avatar_url: Optional[str] | object = _UNSET,
         totp_secret_enc: Optional[str] | object = _UNSET,
         is_2fa_enabled: Optional[bool] | object = _UNSET,
         twofa_enabled_at: Optional[str] | object = _UNSET,
@@ -785,6 +789,8 @@ class UserService:
             if mail_signature_html is not _UNSET:
                 user["mail_signature_html"] = (str(mail_signature_html or "").strip() or None)
                 mail_fields_changed = True
+            if avatar_url is not _UNSET:
+                user["avatar_url"] = (str(avatar_url or "").strip() or None)
             if mailbox_password is not _UNSET:
                 clear_password = not str(mailbox_password or "").strip()
                 if clear_password:

@@ -183,6 +183,27 @@ class ChatMessageRead(Base):
     read_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class ChatMessageReaction(Base):
+    __tablename__ = "chat_message_reactions"
+    __table_args__ = _table_args(
+        UniqueConstraint("message_id", "user_id", name="uq_chat_message_reactions_message_user"),
+        Index("ix_chat_message_reactions_message_id_reaction", "message_id", "reaction_emoji"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    reaction_emoji: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class ChatConversationUserState(Base):
     __tablename__ = "chat_conversation_user_state"
     __table_args__ = _table_args(

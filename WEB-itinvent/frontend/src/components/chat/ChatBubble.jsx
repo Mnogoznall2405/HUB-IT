@@ -1,5 +1,5 @@
 import { keyframes } from '@emotion/react';
-import { memo, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Box,
   Button,
@@ -10,6 +10,7 @@ import {
   Typography,
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
+import AddReactionRoundedIcon from '@mui/icons-material/AddReactionRounded';
 import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import DoneRoundedIcon from '@mui/icons-material/DoneRounded';
@@ -19,6 +20,8 @@ import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded';
 import { useReducedMotion } from 'framer-motion';
 
 import { AttachmentCard, TaskShareCard } from './ChatCommon';
+import ChatMessageReactions from './ChatMessageReactions';
+import ChatReactionPicker from './ChatReactionPicker';
 import MarkdownRenderer from '../hub/MarkdownRenderer';
 import {
   detectChatBodyFormat,
@@ -34,6 +37,16 @@ const LONG_PRESS_SCROLL_CANCEL_PX = 30;
 const LONG_PRESS_HORIZONTAL_CANCEL_PX = 44;
 const VIDEO_ATTACHMENT_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v']);
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
+const INTERACTIVE_MESSAGE_TARGET_SELECTOR = [
+  'a',
+  'button',
+  'input',
+  'textarea',
+  'select',
+  '[role="button"]',
+  '[role="menuitem"]',
+  '[data-chat-reaction-ignore="true"]',
+].join(',');
 const TELEGRAM_CHAT_FONT_FAMILY = [
   '"SF Pro Text"',
   '"SF Pro Display"',
@@ -75,6 +88,10 @@ export const shouldSuppressNativeMessageGesture = ({
   mobileInteractionsEnabled = false,
   compactMobile = false,
 } = {}) => isMobileMessageLongPress({ mobileInteractionsEnabled, compactMobile });
+
+const isInteractiveMessageTarget = (target) => (
+  Boolean(target?.closest && target.closest(INTERACTIVE_MESSAGE_TARGET_SELECTOR))
+);
 
 const MENTION_TEXT_PATTERN = /(@[0-9A-Za-zА-Яа-яЁё_.-]+)/g;
 
@@ -595,6 +612,7 @@ export function ChatBubble({
   onConfirmAction,
   onCancelAction,
   onEditAction,
+  onToggleReaction,
   highlighted = false,
   selectionMode = false,
   selected = false,
@@ -624,12 +642,18 @@ export function ChatBubble({
   const hasForwardPreview = Boolean(message?.forward_preview);
   const ownMetaColor = ui.bubbleOwnMetaText || '#ffffff';
   const senderAccentColor = showSender ? resolveGroupSenderColor(message?.sender, theme, ui) : ui.accentText;
+  const reactionItems = Array.isArray(message?.reactions)
+    ? message.reactions.filter((reaction) => String(reaction?.reaction_emoji || reaction?.emoji || '').trim() && Number(reaction?.count || 0) > 0)
+    : [];
+  const hasVisibleReactions = reactionItems.length > 0;
+  const ownReactionEmoji = reactionItems.find((reaction) => Boolean(reaction?.is_own))?.reaction_emoji || '';
   const inlineMeta = !task
     && attachments.length === 0
     && emojiOnlyCount === 0
     && !isMarkdownBody
     && !hasReplyPreview
     && !hasForwardPreview
+    && !hasVisibleReactions
     && isShortInlineMessage(body);
   const receiptColor = message?.is_own
     ? (deliveryStatus === 'read' && !isSending
@@ -641,6 +665,7 @@ export function ChatBubble({
   const longPressTimerRef = useRef(null);
   const longPressStartRef = useRef({ x: 0, y: 0 });
   const longPressGestureRef = useRef({ source: '', pointerId: null, handled: false });
+  const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
   const prefersReducedMotion = useReducedMotion();
   const canToggleSelection = typeof onToggleMessageSelection === 'function';
   const mobileMessageInteractionsEnabled = isMobileMessageLongPress({
@@ -652,6 +677,17 @@ export function ChatBubble({
     compactMobile,
   });
   const showQuickActions = !selectionMode && !compactMobile && emojiOnlyCount === 0 && typeof onOpenMessageMenu === 'function';
+
+  const openReactionPicker = useCallback(() => {
+    if (typeof onToggleReaction !== 'function') return;
+    setReactionPickerOpen(true);
+  }, [onToggleReaction]);
+
+  const openReactionPickerFromEvent = useCallback((event) => {
+    if (selectionMode || typeof onToggleReaction !== 'function') return;
+    event?.stopPropagation?.();
+    openReactionPicker();
+  }, [onToggleReaction, openReactionPicker, selectionMode]);
 
   const clearLongPress = () => {
     if (longPressTimerRef.current) {
@@ -975,6 +1011,11 @@ export function ChatBubble({
         onTouchEnd={clearLongPress}
         onTouchCancel={handleTouchCancel}
         onTouchMove={handleLongPressMove}
+        onClick={(event) => {
+          if (!compactMobile) return;
+          if (isInteractiveMessageTarget(event.target)) return;
+          openReactionPickerFromEvent(event);
+        }}
         className={joinClasses('relative transition duration-100', compactMobile ? 'active:opacity-90' : '')}
         sx={{
           width: bubbleWidth,
@@ -1075,6 +1116,25 @@ export function ChatBubble({
                 }}
               >
                 <MoreHorizRoundedIcon sx={{ fontSize: 16 }} />
+              </button>
+            </Tooltip>
+            <Tooltip title="Reaction">
+              <button
+                type="button"
+                aria-label="Reaction"
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openReactionPicker();
+                }}
+                className="inline-flex h-7 w-7 items-center justify-center rounded-full transition duration-100 active:scale-[0.96]"
+                style={{
+                  color: ownReactionEmoji ? (ui.accentText || theme.palette.primary.main) : ui.textPrimary,
+                  backgroundColor: alpha(ui.surfaceStrong || '#ffffff', theme.palette.mode === 'dark' ? 0.92 : 0.96),
+                  boxShadow: ui.shadowSoft,
+                  border: `1px solid ${ownReactionEmoji ? alpha(ui.accentText || theme.palette.primary.main, 0.38) : ui.borderSoft}`,
+                }}
+              >
+                <AddReactionRoundedIcon sx={{ fontSize: 15 }} />
               </button>
             </Tooltip>
           </Stack>
@@ -1213,7 +1273,7 @@ export function ChatBubble({
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
               pr: inlineMeta ? 0 : 0.25,
-              pb: inlineMeta ? 0 : 1.8,
+              pb: hasVisibleReactions ? 0 : inlineMeta ? 0 : 1.8,
               lineHeight: emojiOnlyCount ? 1.08 : 1.34,
               fontSize: emojiOnlyCount ? (emojiOnlyCount === 1 ? '3.2rem' : '2.6rem') : CHAT_FONT_SIZES.body,
               color: bubbleText,
@@ -1260,6 +1320,27 @@ export function ChatBubble({
             bottomOffset={7}
           />
         ) : null}
+        <ChatMessageReactions
+          reactions={reactionItems}
+          theme={theme}
+          ui={ui}
+          compactMobile={compactMobile}
+          isOwn={Boolean(message?.is_own)}
+          onToggleReaction={(emoji) => onToggleReaction?.(message, emoji)}
+        />
+        <ChatReactionPicker
+          theme={theme}
+          ui={ui}
+          open={reactionPickerOpen}
+          isOwn={Boolean(message?.is_own)}
+          selectedEmoji={ownReactionEmoji}
+          compactMobile={compactMobile}
+          onSelect={(emoji) => {
+            setReactionPickerOpen(false);
+            onToggleReaction?.(message, emoji);
+          }}
+          onClose={() => setReactionPickerOpen(false)}
+        />
       </Box>
     </Box>
   );

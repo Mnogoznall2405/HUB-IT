@@ -99,6 +99,9 @@ class JWTConfig:
     algorithm: str = "HS256"
     access_token_expire_minutes: int = 15
     refresh_token_expire_days: int = 7
+    issuer: str = "itinvent"
+    audience: str = "itinvent-web"
+    require_issuer_audience: bool = False
 
 
 @dataclass
@@ -264,6 +267,9 @@ class Config:
                     )
                 ),
                 refresh_token_expire_days=int(os.getenv("JWT_REFRESH_EXPIRE_DAYS", "7")),
+                issuer=(str(os.getenv("JWT_ISSUER", "itinvent") or "").strip() or "itinvent"),
+                audience=(str(os.getenv("JWT_AUDIENCE", "itinvent-web") or "").strip() or "itinvent-web"),
+                require_issuer_audience=str(os.getenv("JWT_REQUIRE_ISS_AUD", "0")).strip().lower() in {"1", "true", "yes", "on"},
             ),
             session=SessionConfig(
                 idle_timeout_minutes=int(os.getenv("SESSION_IDLE_TIMEOUT_MINUTES", "30")),
@@ -336,9 +342,21 @@ class Config:
 
     def validate(self) -> None:
         """Validate hard security invariants for production runtime."""
-        if not self.app.is_production:
-            return
         jwt_keys = [self.jwt.secret_key, *self.jwt.previous_secret_keys]
+        if not self.app.is_production:
+            if any(_is_placeholder_jwt_secret(item) for item in jwt_keys):
+                warnings.warn(
+                    "Non-production auth is using a placeholder JWT secret; do not deploy this configuration.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            if not bool(self.app.auth_cookie_secure):
+                warnings.warn(
+                    "Non-production auth has AUTH_COOKIE_SECURE=false; do not deploy this configuration.",
+                    RuntimeWarning,
+                    stacklevel=2,
+                )
+            return
         if any(_is_placeholder_jwt_secret(item) for item in jwt_keys):
             raise ConfigurationError(
                 "Production APP_ENV requires non-empty, non-placeholder JWT_SECRET_KEYS or JWT_SECRET_KEY"

@@ -139,7 +139,7 @@ describe('MailMessageList', () => {
       },
     });
 
-    renderWithTheme(<MailMessageList {...props} />);
+    const { container } = renderWithTheme(<MailMessageList {...props} />);
 
     const selectedRow = screen.getByTestId('mail-row-msg-1');
     const bulkRow = screen.getByTestId('mail-row-msg-2');
@@ -160,10 +160,14 @@ describe('MailMessageList', () => {
       selectedItems: ['msg-1'],
     });
 
-    renderWithTheme(<MailMessageList {...props} />);
+    const { container } = renderWithTheme(<MailMessageList {...props} />);
 
     expect(screen.getByTestId('mail-row-selected-check-msg-1')).toBeTruthy();
     expect(screen.queryByText('Выбрано')).toBeNull();
+
+    expect(screen.getByTestId('mail-row-motion-msg-1')).toHaveAttribute('data-motion-enabled', 'false');
+    expect(screen.getByTestId('mail-row-motion-msg-1').style.touchAction).toBe('pan-y');
+    expect(container.querySelector('[data-testid="mail-list-scroll-root"]')).toHaveStyle('overscroll-behavior: auto');
 
     const rowBody = screen.getByTestId('mail-row-msg-1');
     fireEvent.pointerDown(rowBody.parentElement, { pointerType: 'touch' });

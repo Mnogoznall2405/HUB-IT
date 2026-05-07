@@ -9,9 +9,16 @@ import {
   getChatBottomInstantSettleFrames,
   buildConversationFilterCounts,
   canUseAiChatPermission,
+  collectChatConversationUsers,
   filterSidebarConversations,
   getLatestPersistedThreadMessageId,
   isRegularSidebarConversation,
+  mergeChatConversationList,
+  mergeChatUserSummary,
+  reconcileThreadMessages,
+  shouldCloseActiveConversationOnEscape,
+  shouldKeepActiveConversationWithoutSidebarMatch,
+  shouldRequestActiveConversationDetail,
   mergeAiStatusPayload,
   normalizeForwardMessageQueue,
   resolveActiveAiBotRecord,
@@ -58,6 +65,196 @@ describe('Chat page AI helpers', () => {
       applyingRequestedConversationId: '',
       activeConversationId: 'conv-a',
     })).toBe(false);
+  });
+
+  it('closes the active conversation only on an unhandled Escape key', () => {
+    expect(shouldCloseActiveConversationOnEscape({
+      event: { key: 'Escape' },
+      activeConversationId: 'conv-1',
+    })).toBe(true);
+
+    expect(shouldCloseActiveConversationOnEscape({
+      event: { key: 'Enter' },
+      activeConversationId: 'conv-1',
+    })).toBe(false);
+
+    expect(shouldCloseActiveConversationOnEscape({
+      event: { key: 'Escape', defaultPrevented: true },
+      activeConversationId: 'conv-1',
+    })).toBe(false);
+
+    expect(shouldCloseActiveConversationOnEscape({
+      event: { key: 'Escape' },
+      activeConversationId: 'conv-1',
+      hasBlockingSurface: true,
+    })).toBe(false);
+
+    expect(shouldCloseActiveConversationOnEscape({
+      event: { key: 'Escape' },
+      activeConversationId: '',
+    })).toBe(false);
+  });
+
+  it('keeps active chat open while detail or messages validate a sidebar miss', () => {
+    expect(shouldKeepActiveConversationWithoutSidebarMatch({
+      activeConversationId: 'conv-1',
+      conversationExists: false,
+      detailExists: true,
+      messagesLoading: false,
+    })).toBe(true);
+
+    expect(shouldKeepActiveConversationWithoutSidebarMatch({
+      activeConversationId: 'conv-1',
+      conversationExists: false,
+      detailExists: false,
+      messagesLoading: true,
+    })).toBe(true);
+
+    expect(shouldKeepActiveConversationWithoutSidebarMatch({
+      activeConversationId: 'conv-1',
+      conversationExists: false,
+      detailExists: false,
+      messagesLoading: false,
+    })).toBe(false);
+  });
+
+  it('continues loading conversation detail after a sparse sidebar summary appears', () => {
+    expect(shouldRequestActiveConversationDetail({
+      activeConversationId: 'conv-1',
+      loadedConversationId: '',
+      requestConversationId: '',
+      hasActiveConversation: true,
+      hasConversationDetail: false,
+    })).toBe(true);
+
+    expect(shouldRequestActiveConversationDetail({
+      activeConversationId: 'conv-1',
+      loadedConversationId: '',
+      requestConversationId: 'conv-1',
+      hasActiveConversation: true,
+      hasConversationDetail: false,
+    })).toBe(false);
+
+    expect(shouldRequestActiveConversationDetail({
+      activeConversationId: 'conv-1',
+      loadedConversationId: 'conv-1',
+      requestConversationId: '',
+      hasActiveConversation: true,
+      hasConversationDetail: true,
+    })).toBe(false);
+
+    expect(shouldRequestActiveConversationDetail({
+      activeConversationId: 'conv-1',
+      loadedConversationId: 'conv-1',
+      requestConversationId: '',
+      hasActiveConversation: true,
+      hasConversationDetail: true,
+      infoOpen: true,
+    })).toBe(true);
+  });
+
+  it('keeps avatar_url when conversation detail lacks a fresh avatar', () => {
+    expect(mergeChatUserSummary(
+      { id: 7, username: 'peer', full_name: 'Peer User' },
+      { id: 7, username: 'peer', full_name: 'Peer User', avatar_url: '/api/v1/settings/avatar/7/file?v=123' },
+    )).toMatchObject({
+      id: 7,
+      avatar_url: '/api/v1/settings/avatar/7/file?v=123',
+    });
+
+    expect(mergeChatUserSummary(
+      { id: 7, username: 'peer', avatar_url: '/api/v1/settings/avatar/7/file?v=456' },
+      { id: 7, username: 'peer', avatar_url: '/api/v1/settings/avatar/7/file?v=123' },
+    )).toMatchObject({
+      avatar_url: '/api/v1/settings/avatar/7/file?v=456',
+    });
+
+    expect(mergeChatUserSummary(
+      { id: 7, username: 'peer', avatar_url: null },
+      { id: 7, username: 'peer', avatar_url: '/api/v1/settings/avatar/7/file?v=123' },
+    )).toMatchObject({
+      avatar_url: null,
+    });
+  });
+
+  it('keeps direct chat avatars when a sparse conversation payload arrives', () => {
+    const current = [{
+      id: 'conv-1',
+      kind: 'direct',
+      title: 'Peer User',
+      direct_peer: {
+        id: 7,
+        username: 'peer',
+        full_name: 'Peer User',
+        avatar_url: '/api/v1/settings/avatar/7/file?v=123',
+      },
+      member_preview: [{
+        user: { id: 7, username: 'peer', avatar_url: '/api/v1/settings/avatar/7/file?v=123' },
+        member_role: 'member',
+        joined_at: '2026-05-07T04:00:00Z',
+      }],
+    }];
+    const incoming = [{
+      id: 'conv-1',
+      kind: 'direct',
+      title: 'Peer User',
+      direct_peer: { id: 7, username: 'peer', full_name: 'Peer User' },
+      member_preview: [{
+        user: { id: 7, username: 'peer' },
+        member_role: 'member',
+        joined_at: '2026-05-07T04:00:00Z',
+      }],
+      last_message_preview: 'Новое сообщение',
+    }];
+
+    expect(mergeChatConversationList(incoming, current)[0]).toMatchObject({
+      last_message_preview: 'Новое сообщение',
+      direct_peer: {
+        avatar_url: '/api/v1/settings/avatar/7/file?v=123',
+      },
+      member_preview: [{
+        user: {
+          avatar_url: '/api/v1/settings/avatar/7/file?v=123',
+        },
+      }],
+    });
+  });
+
+  it('keeps sender avatar for sparse thread messages from a known chat user', () => {
+    const currentMessages = [{
+      id: 'msg-1',
+      conversation_id: 'conv-1',
+      sender: {
+        id: 7,
+        username: 'peer',
+        avatar_url: '/api/v1/settings/avatar/7/file?v=123',
+      },
+      body: 'Первое',
+      created_at: '2026-05-07T04:00:00Z',
+    }];
+    const incomingMessages = [{
+      id: 'msg-2',
+      conversation_id: 'conv-1',
+      sender: { id: 7, username: 'peer' },
+      body: 'Второе',
+      created_at: '2026-05-07T04:01:00Z',
+    }];
+    const knownUsers = collectChatConversationUsers({
+      direct_peer: {
+        id: 7,
+        username: 'peer',
+        avatar_url: '/api/v1/settings/avatar/7/file?v=123',
+      },
+    });
+
+    const result = reconcileThreadMessages(currentMessages, incomingMessages, {
+      conversationId: 'conv-1',
+      mode: 'replaceWindowButPreserveFreshLocal',
+      knownUsers,
+    });
+
+    expect(result.find((item) => item.id === 'msg-2')?.sender?.avatar_url)
+      .toBe('/api/v1/settings/avatar/7/file?v=123');
   });
 
   it('skips active-thread revalidation when a fresh socket message is already rendered', () => {

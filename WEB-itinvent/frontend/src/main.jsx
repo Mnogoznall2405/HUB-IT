@@ -3,6 +3,8 @@ import ReactDOM from 'react-dom/client'
 import App from './App.jsx'
 import { NotificationProvider } from './contexts/NotificationContext'
 import { PreferencesProvider } from './contexts/PreferencesContext'
+import { prefetchStartupRoute } from './lib/routeLoaders'
+import { pushNavigationDebugEntry } from './lib/navigationDebug'
 import {
   bindPwaRuntime,
   clearPwaInstallPrompt,
@@ -10,6 +12,8 @@ import {
   storePwaInstallPrompt,
 } from './lib/pwaInstall'
 import './index.css'
+
+window.__itinventNavigationDebug = true;
 
 const CHUNK_RELOAD_FINGERPRINT_KEY = 'itinvent_chunk_reload_fingerprint';
 
@@ -23,12 +27,22 @@ const tryRecoverChunkLoad = (reason = '') => {
   try {
     const fingerprint = buildChunkReloadFingerprint(reason);
     const previousFingerprint = String(sessionStorage.getItem(CHUNK_RELOAD_FINGERPRINT_KEY) || '').trim();
+    pushNavigationDebugEntry('chunk:recover:attempt', {
+      reason: String(reason || ''),
+      fingerprint,
+      previousFingerprint,
+      willReload: previousFingerprint !== fingerprint,
+    });
     if (previousFingerprint !== fingerprint) {
       sessionStorage.setItem(CHUNK_RELOAD_FINGERPRINT_KEY, fingerprint);
       window.location.reload();
       return true;
     }
   } catch (error) {
+    pushNavigationDebugEntry('chunk:recover:error', {
+      reason: String(reason || ''),
+      error: String(error?.message || error),
+    });
     console.error('Chunk reload recovery failed', error);
   }
   return false;
@@ -37,6 +51,11 @@ const tryRecoverChunkLoad = (reason = '') => {
 window.addEventListener('vite:preloadError', (event) => {
   event.preventDefault();
   const reason = String(event?.payload?.message || event?.payload?.path || event?.type || 'vite:preloadError');
+  pushNavigationDebugEntry('vite:preloadError', {
+    reason,
+    payloadPath: String(event?.payload?.path || ''),
+    payloadMessage: String(event?.payload?.message || ''),
+  });
   const recovered = tryRecoverChunkLoad(reason);
   if (!recovered) {
     console.error('Chunk preload error suppressed to avoid reload loop', event?.payload || event);
@@ -48,6 +67,9 @@ window.addEventListener('unhandledrejection', (event) => {
   const message = String(reason?.message || reason || '');
   if (message.includes('Failed to fetch dynamically imported module')) {
     event.preventDefault?.();
+    pushNavigationDebugEntry('unhandledrejection:dynamic-import', {
+      message,
+    });
     const recovered = tryRecoverChunkLoad(message);
     if (!recovered) {
       console.error('Dynamic import error suppressed to avoid reload loop', reason);
@@ -78,6 +100,8 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
     refreshPwaInstallState();
   });
 }
+
+void prefetchStartupRoute().catch(() => {});
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>

@@ -60,6 +60,8 @@ def _encode_token(data: dict, *, token_type: str, expires_delta: timedelta) -> s
             "exp": expire,
             "jti": str(to_encode.get("jti") or uuid.uuid4().hex),
             "token_type": str(token_type or "access"),
+            "iss": config.jwt.issuer,
+            "aud": config.jwt.audience,
         }
     )
     return jwt.encode(to_encode, config.jwt.secret_key, algorithm=config.jwt.algorithm)
@@ -93,7 +95,23 @@ def decode_access_token(token: str, *, expected_token_type: str | None = None) -
         if not key:
             continue
         try:
-            payload = jwt.decode(normalized, key, algorithms=[config.jwt.algorithm])
+            unverified_claims = jwt.get_unverified_claims(normalized)
+            has_issuer_or_audience = "iss" in unverified_claims or "aud" in unverified_claims
+            if has_issuer_or_audience or bool(config.jwt.require_issuer_audience):
+                payload = jwt.decode(
+                    normalized,
+                    key,
+                    algorithms=[config.jwt.algorithm],
+                    issuer=config.jwt.issuer,
+                    audience=config.jwt.audience,
+                )
+            else:
+                payload = jwt.decode(
+                    normalized,
+                    key,
+                    algorithms=[config.jwt.algorithm],
+                    options={"verify_aud": False, "verify_iss": False},
+                )
             token_type = str(payload.get("token_type") or "access").strip().lower() or "access"
             if expected_token_type and token_type != str(expected_token_type).strip().lower():
                 return None

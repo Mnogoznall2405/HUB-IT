@@ -138,8 +138,8 @@ class TwoFactorService:
         items: list[str] = []
         seen: set[str] = set()
         while len(items) < total:
-            raw = secrets.token_hex(4).upper()
-            code = f"{raw[:4]}-{raw[4:]}"
+            raw = secrets.token_hex(8).upper()
+            code = f"{raw[:4]}-{raw[4:8]}-{raw[8:12]}-{raw[12:]}"
             if code in seen:
                 continue
             seen.add(code)

@@ -47,6 +47,44 @@ const SWIPE_COMMIT_THRESHOLD = 132;
 const SWIPE_REVEAL_OFFSET = 78;
 const SWIPE_COMMIT_OFFSET = 164;
 const SWIPE_MAX_OFFSET = 168;
+const MAIL_MOBILE_SCROLL_DEBUG_STORAGE_KEY = 'mail_mobile_scroll_debug';
+
+function isMailMobileScrollDebugEnabled() {
+  if (typeof window === 'undefined') return false;
+  try {
+    const params = new URLSearchParams(window.location.search || '');
+    if (params.get('mail_scroll_debug') === '0'
+      || window.localStorage?.getItem(MAIL_MOBILE_SCROLL_DEBUG_STORAGE_KEY) === '0') {
+      return false;
+    }
+    if (params.get('mail_scroll_debug') === '1'
+      || window.localStorage?.getItem(MAIL_MOBILE_SCROLL_DEBUG_STORAGE_KEY) === '1') {
+      return true;
+    }
+    return Boolean(window.matchMedia?.('(max-width: 599.95px)')?.matches || window.innerWidth < 600);
+  } catch {
+    return false;
+  }
+}
+
+function getMailDebugTargetMeta(target) {
+  const element = target instanceof HTMLElement ? target : null;
+  if (!element) return null;
+  const closestTestId = element.closest?.('[data-testid]')?.getAttribute('data-testid') || '';
+  return {
+    tag: element.tagName,
+    testId: element.getAttribute('data-testid') || '',
+    closestTestId,
+    role: element.getAttribute('role') || '',
+    className: typeof element.className === 'string' ? element.className.slice(0, 120) : '',
+  };
+}
+
+function logMailMobileScrollDebug(eventName, payload = {}) {
+  if (!isMailMobileScrollDebugEnabled()) return;
+  // eslint-disable-next-line no-console
+  console.debug('[mail-mobile-scroll]', eventName, payload);
+}
 
 function assignRef(ref, value) {
   if (!ref) return;
@@ -317,12 +355,46 @@ function MessageRow({
   const handlePointerDown = (event) => {
     clearLongPress();
     longPressTriggeredRef.current = false;
+    logMailMobileScrollDebug('row:pointerdown', {
+      rowId,
+      canSwipe,
+      canLongPressSelect,
+      pointerType: event.pointerType || '',
+      target: getMailDebugTargetMeta(event.target),
+    });
     if (!canLongPressSelect) return;
     if (event.pointerType && event.pointerType !== 'touch' && event.pointerType !== 'pen') return;
     longPressTimerRef.current = window.setTimeout(() => {
       longPressTriggeredRef.current = true;
       onToggleSelected?.(String(item.id));
     }, LONG_PRESS_MS);
+  };
+
+  const handlePointerMove = (event) => {
+    logMailMobileScrollDebug('row:pointermove', {
+      rowId,
+      canSwipe,
+      pointerType: event.pointerType || '',
+      target: getMailDebugTargetMeta(event.target),
+    });
+  };
+
+  const handlePointerUp = (event) => {
+    logMailMobileScrollDebug('row:pointerup', {
+      rowId,
+      pointerType: event.pointerType || '',
+      target: getMailDebugTargetMeta(event.target),
+    });
+    clearLongPress();
+  };
+
+  const handlePointerCancel = (event) => {
+    logMailMobileScrollDebug('row:pointercancel', {
+      rowId,
+      pointerType: event.pointerType || '',
+      target: getMailDebugTargetMeta(event.target),
+    });
+    clearLongPress();
   };
 
   const handleClick = (event) => {
@@ -397,6 +469,20 @@ function MessageRow({
   const dragHandleIds = rowIsSelectedInBulk
     ? selectedItems
     : [String(item.id)].filter(Boolean);
+  const RowSurface = canSwipe ? motion.div : 'div';
+  const rowSurfaceMotionProps = canSwipe ? {
+    drag: 'x',
+    dragConstraints: { left: -SWIPE_MAX_OFFSET, right: SWIPE_MAX_OFFSET },
+    dragDirectionLock: true,
+    dragElastic: 0.08,
+    dragMomentum: false,
+    animate: { x: committedSide ? (committedSide === 'right' ? SWIPE_COMMIT_OFFSET : -SWIPE_COMMIT_OFFSET) : parkedOffset },
+    whileTap: { scale: 0.998 },
+    transition: { type: 'spring', stiffness: 420, damping: 34 },
+    onDragStart: handleDragStart,
+    onDrag: handleDrag,
+    onDragEnd: handleDragEnd,
+  } : {};
 
   return (
     <Box
@@ -456,22 +542,14 @@ function MessageRow({
         </Box>
       ) : null}
 
-      <motion.div
+      <RowSurface
         data-testid={`mail-row-motion-${rowId}`}
-        drag={canSwipe ? 'x' : false}
-        dragConstraints={canSwipe ? { left: -SWIPE_MAX_OFFSET, right: SWIPE_MAX_OFFSET } : undefined}
-        dragDirectionLock={canSwipe}
-        dragElastic={canSwipe ? 0.08 : 0}
-        dragMomentum={false}
-        animate={{ x: committedSide ? (committedSide === 'right' ? SWIPE_COMMIT_OFFSET : -SWIPE_COMMIT_OFFSET) : parkedOffset }}
-        whileTap={canSwipe ? { scale: 0.998 } : undefined}
-        transition={{ type: 'spring', stiffness: 420, damping: 34 }}
-        onDragStart={handleDragStart}
-        onDrag={handleDrag}
-        onDragEnd={handleDragEnd}
+        data-motion-enabled={canSwipe ? 'true' : 'false'}
+        {...rowSurfaceMotionProps}
         onPointerDown={canLongPressSelect ? handlePointerDown : undefined}
-        onPointerUp={canLongPressSelect ? clearLongPress : undefined}
-        onPointerCancel={canLongPressSelect ? clearLongPress : undefined}
+        onPointerMove={canLongPressSelect ? handlePointerMove : undefined}
+        onPointerUp={canLongPressSelect ? handlePointerUp : undefined}
+        onPointerCancel={canLongPressSelect ? handlePointerCancel : undefined}
         onPointerLeave={canLongPressSelect ? clearLongPress : undefined}
         onClick={handleClick}
         role="button"
@@ -485,7 +563,7 @@ function MessageRow({
         }}
         style={{
           cursor: 'pointer',
-          touchAction: canSwipe ? 'pan-y' : 'auto',
+          touchAction: isMobile ? 'pan-y' : 'auto',
           outline: 'none',
         }}
       >
@@ -823,7 +901,7 @@ function MessageRow({
         </Box>
 
         <Box className="mail-divider-inset" sx={{ borderBottom: '1px solid' }} />
-      </motion.div>
+      </RowSurface>
     </Box>
   );
 }
@@ -1052,24 +1130,45 @@ export default function MailMessageList({
   }, []);
 
   const handleTouchStart = (event) => {
+    const container = localListRef.current;
+    const firstTouch = event.touches?.[0];
+    logMailMobileScrollDebug('list:touchstart', {
+      isMobile,
+      hasPullToRefresh: Boolean(onPullToRefresh),
+      scrollTop: Math.max(0, Number(container?.scrollTop || 0)),
+      clientY: firstTouch?.clientY ?? null,
+      target: getMailDebugTargetMeta(event.target),
+    });
     if (!isMobile || !onPullToRefresh) return;
     if (activeSwipeState.rowId || swipeGestureRowIdRef.current) {
       touchStartRef.current = null;
       pullingRef.current = false;
       return;
     }
-    const container = localListRef.current;
     if (!container || container.scrollTop > 0) {
       touchStartRef.current = null;
       pullingRef.current = false;
       return;
     }
-    const firstTouch = event.touches?.[0];
     touchStartRef.current = firstTouch?.clientY || 0;
     pullingRef.current = true;
   };
 
   const handleTouchMove = (event) => {
+    const container = localListRef.current;
+    const firstTouch = event.touches?.[0];
+    logMailMobileScrollDebug('list:touchmove', {
+      isMobile,
+      hasPullToRefresh: Boolean(onPullToRefresh),
+      pulling: Boolean(pullingRef.current),
+      scrollTop: Math.max(0, Number(container?.scrollTop || 0)),
+      scrollHeight: Math.max(0, Number(container?.scrollHeight || 0)),
+      clientHeight: Math.max(0, Number(container?.clientHeight || 0)),
+      clientY: firstTouch?.clientY ?? null,
+      activeSwipeRowId: activeSwipeState.rowId || '',
+      swipeGestureRowId: swipeGestureRowIdRef.current || '',
+      target: getMailDebugTargetMeta(event.target),
+    });
     if (!pullingRef.current || !isMobile || !onPullToRefresh) return;
     if (activeSwipeState.rowId || swipeGestureRowIdRef.current) {
       pullingRef.current = false;
@@ -1078,7 +1177,6 @@ export default function MailMessageList({
       setRefreshArmed(false);
       return;
     }
-    const firstTouch = event.touches?.[0];
     const startY = touchStartRef.current;
     const currentY = firstTouch?.clientY || 0;
     const delta = Math.max(0, currentY - startY);
@@ -1092,7 +1190,16 @@ export default function MailMessageList({
     setRefreshArmed(nextDistance >= 52);
   };
 
-  const handleTouchEnd = () => {
+  const handleTouchEnd = (event) => {
+    const container = localListRef.current;
+    logMailMobileScrollDebug('list:touchend', {
+      isMobile,
+      hasPullToRefresh: Boolean(onPullToRefresh),
+      pulling: Boolean(pullingRef.current),
+      refreshArmed,
+      scrollTop: Math.max(0, Number(container?.scrollTop || 0)),
+      target: getMailDebugTargetMeta(event?.target),
+    });
     if (pullingRef.current && refreshArmed && !activeSwipeState.rowId && !swipeGestureRowIdRef.current) {
       onPullToRefresh?.();
     }
@@ -1103,6 +1210,14 @@ export default function MailMessageList({
   };
 
   const handleListScroll = () => {
+    const container = localListRef.current;
+    logMailMobileScrollDebug('list:scroll', {
+      isMobile,
+      scrollTop: Math.max(0, Number(container?.scrollTop || 0)),
+      scrollHeight: Math.max(0, Number(container?.scrollHeight || 0)),
+      clientHeight: Math.max(0, Number(container?.clientHeight || 0)),
+      activeSwipeRowId: activeSwipeState.rowId || '',
+    });
     if (activeSwipeState.rowId) {
       closeActiveSwipe();
     }
@@ -1141,7 +1256,7 @@ export default function MailMessageList({
         sx={{
           overflowY: 'auto',
           overflowX: 'hidden',
-          overscrollBehavior: 'contain',
+          overscrollBehavior: isMobile ? 'auto' : 'contain',
           WebkitOverflowScrolling: 'touch',
           touchAction: 'pan-y',
           flex: '1 1 0%',
@@ -1150,10 +1265,10 @@ export default function MailMessageList({
           bgcolor: tokens.panelBg,
         }}
         onScroll={handleListScroll}
-        onTouchStart={onPullToRefresh ? handleTouchStart : undefined}
-        onTouchMove={onPullToRefresh ? handleTouchMove : undefined}
-        onTouchEnd={onPullToRefresh ? handleTouchEnd : undefined}
-        onTouchCancel={onPullToRefresh ? handleTouchEnd : undefined}
+        onTouchStart={isMobile ? handleTouchStart : undefined}
+        onTouchMove={isMobile ? handleTouchMove : undefined}
+        onTouchEnd={isMobile ? handleTouchEnd : undefined}
+        onTouchCancel={isMobile ? handleTouchEnd : undefined}
       >
         <Box
           sx={{

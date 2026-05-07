@@ -12,6 +12,7 @@ class ChatUserSummary(BaseModel):
     full_name: Optional[str] = None
     role: str = "viewer"
     is_active: bool = True
+    avatar_url: Optional[str] = None
     presence: Optional["ChatPresenceSummary"] = None
 
 
@@ -39,6 +40,12 @@ class ChatForwardPreview(BaseModel):
     attachments_count: int = 0
 
 
+class ChatMessageReactionItem(BaseModel):
+    reaction_emoji: str
+    count: int = 0
+    is_own: bool = False
+
+
 class ChatMessageResponse(BaseModel):
     id: str
     conversation_id: str
@@ -60,6 +67,7 @@ class ChatMessageResponse(BaseModel):
     forward_preview: Optional["ChatForwardPreview"] = None
     task_preview: Optional["ChatTaskPreview"] = None
     attachments: list["ChatAttachmentResponse"] = Field(default_factory=list)
+    reactions: list[ChatMessageReactionItem] = Field(default_factory=list)
     action_card: Optional[dict[str, Any]] = None
 
 
@@ -235,6 +243,21 @@ class ForwardMessageRequest(BaseModel):
 
 class MarkReadRequest(BaseModel):
     message_id: str = Field(..., min_length=1, max_length=64)
+
+
+class ChatMessageReactionRequest(BaseModel):
+    reaction_emoji: Optional[str] = Field(default=None, max_length=16)
+
+    @field_validator("reaction_emoji", mode="before")
+    @classmethod
+    def _normalize_reaction_emoji(cls, value):
+        text = str(value or "").strip()
+        return text or None
+
+
+class ChatMessageReactionsResponse(BaseModel):
+    message_id: str
+    reactions: list[ChatMessageReactionItem] = Field(default_factory=list)
 
 
 class ChatUsersResponse(BaseModel):

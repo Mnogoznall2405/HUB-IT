@@ -19,6 +19,7 @@ from backend.config import config
 from backend.db_schema import schema_name
 from backend import inventory_runtime
 from backend.models.auth import User
+from backend.database.equipment_context_reads import resolve_pc_context_batch
 from backend.services.user_db_selection_service import user_db_selection_service
 from backend.services.authorization_service import PERM_COMPUTERS_READ, PERM_COMPUTERS_READ_ALL
 from local_store import get_local_store
@@ -1380,6 +1381,37 @@ def _build_computers_search_payload(
     network_cache: Dict[str, Optional[Dict[str, Any]]] = {}
     network_conn: Optional[Any] = None
     needs_network_for_search = bool(q and "network" in fields)
+
+    # Batch-prefetch SQL contexts to avoid N+1 queries per host
+    _prefetch_macs: List[str] = []
+    _prefetch_hosts: List[str] = []
+    _mac_to_host: Dict[str, str] = {}
+    for _item in current_data.values():
+        if isinstance(_item, dict):
+            _mac = _normalize_text(_item.get("mac_address"))
+            _host = _normalize_text(_item.get("hostname"))
+            if _mac:
+                _prefetch_macs.append(_mac)
+                _mac_to_host[_normalize_mac(_mac)] = _host.lower()
+            if _host:
+                _prefetch_hosts.append(_host)
+
+    for _db_id in db_candidates:
+        _batch_results = resolve_pc_context_batch(_prefetch_macs, _prefetch_hosts, db_id=_db_id)
+        for _mac_norm, _context in _batch_results.items():
+            _hostname = _mac_to_host.get(_mac_norm, "")
+            _cache_key = f"{_mac_norm}|{_hostname}|{','.join(db_candidates)}"
+            _resolved = dict(_context)
+            _resolved["database_id"] = _db_id
+            _resolved["database_name"] = database_name_map.get(_db_id, _db_id)
+            sql_cache[_cache_key] = _resolved
+        # Cache negative lookups so we don't hit SQL Server for missing hosts
+        for _mac_norm in _mac_to_host:
+            if _mac_norm not in _batch_results:
+                _hostname = _mac_to_host.get(_mac_norm, "")
+                _cache_key = f"{_mac_norm}|{_hostname}|{','.join(db_candidates)}"
+                if _cache_key not in sql_cache:
+                    sql_cache[_cache_key] = None
 
     def _attach_network_fields(items: List[Dict[str, Any]]) -> None:
         nonlocal network_conn

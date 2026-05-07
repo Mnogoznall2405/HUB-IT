@@ -41,6 +41,7 @@ export {
 export { getComposerMentionTrigger } from './ChatComposer';
 
 const COMPOSER_STICK_DISTANCE_PX = CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
+const LOAD_OLDER_REVEAL_DISTANCE_PX = 72;
 const BLUR_SCROLL_DELTA_PX = 12;
 const BACK_SWIPE_EDGE_PX = 28;
 const BACK_SWIPE_START_PX = 14;
@@ -75,6 +76,41 @@ export const getChatKeyboardBottomSpacer = ({ compactMobile = false, keyboardIns
     ? Math.round(measuredComposerHeight * 0.18)
     : 12;
   return Math.max(16, Math.min(32, baseGap));
+};
+
+export const getChatVisualViewportKeyboardInset = ({
+  layoutHeight = 0,
+  visualHeight = 0,
+  offsetTop = 0,
+  threshold = 50,
+} = {}) => {
+  const normalizedLayoutHeight = Number(layoutHeight || 0);
+  const normalizedVisualHeight = Number(visualHeight || 0);
+  const normalizedOffsetTop = Number(offsetTop || 0);
+  if (!Number.isFinite(normalizedLayoutHeight) || !Number.isFinite(normalizedVisualHeight)) return 0;
+  if (normalizedLayoutHeight <= 0 || normalizedVisualHeight <= 0) return 0;
+  const inset = Math.max(0, normalizedLayoutHeight - normalizedVisualHeight - Math.max(0, normalizedOffsetTop));
+  return inset > Number(threshold || 0) ? Math.round(inset) : 0;
+};
+
+export const shouldShowLoadOlderControl = ({
+  messagesHasMore = false,
+  messagesLoading = false,
+  loadingOlder = false,
+  scrollTop = 0,
+  scrollHeight = 0,
+  clientHeight = 0,
+} = {}) => {
+  if (!messagesHasMore || messagesLoading) return false;
+  if (loadingOlder) return true;
+
+  const normalizedScrollTop = Math.max(0, Number(scrollTop || 0));
+  const normalizedScrollHeight = Math.max(0, Number(scrollHeight || 0));
+  const normalizedClientHeight = Math.max(0, Number(clientHeight || 0));
+  const scrollableDistance = Math.max(0, normalizedScrollHeight - normalizedClientHeight);
+  if (scrollableDistance <= LOAD_OLDER_REVEAL_DISTANCE_PX) return false;
+
+  return normalizedScrollTop <= LOAD_OLDER_REVEAL_DISTANCE_PX;
 };
 
 function HeaderAction({ title, children, onClick, active = false, compactMobile = false, hidden = false, disabled = false }) {
@@ -674,6 +710,7 @@ export default function ChatThread({
   canDeleteSelectedMessages = false,
   onToggleMessageSelection,
   onStartMessageSelection,
+  onToggleReaction,
   onClearMessageSelection,
   onReplySelectedMessage,
   onCopySelectedMessages,
@@ -729,6 +766,7 @@ export default function ChatThread({
   const [composerHeight, setComposerHeight] = useState(compactMobile ? 92 : 102);
   const [keyboardInset, setKeyboardInset] = useState(0);
   const [backSwipeOffset, setBackSwipeOffset] = useState(0);
+  const [showLoadOlderControl, setShowLoadOlderControl] = useState(false);
   const hasConversationTarget = Boolean(String(activeConversationId || '').trim());
   const showConversationLoadingState = !activeConversation && (messagesLoading || hasConversationTarget);
   const showEmbeddedMenuButton = compactMobile && headerMode !== 'notifications-only';
@@ -749,6 +787,22 @@ export default function ChatThread({
   const stickyDateLabelRef = useRef('');
   const stickyDateFrameRef = useRef(null);
   const stickyDateAnchorsRef = useRef([]);
+
+  const syncLoadOlderControl = useCallback((node = threadScrollRef.current) => {
+    const nextVisible = shouldShowLoadOlderControl({
+      messagesHasMore,
+      messagesLoading,
+      loadingOlder,
+      scrollTop: node?.scrollTop,
+      scrollHeight: node?.scrollHeight,
+      clientHeight: node?.clientHeight,
+    });
+    setShowLoadOlderControl((current) => (current === nextVisible ? current : nextVisible));
+  }, [loadingOlder, messagesHasMore, messagesLoading, threadScrollRef]);
+
+  useLayoutEffect(() => {
+    syncLoadOlderControl();
+  }, [messageCount, syncLoadOlderControl]);
 
   useLayoutEffect(() => {
     const previousSelectionMode = previousSelectionModeRef.current;
@@ -772,7 +826,6 @@ export default function ChatThread({
     const scrollToBottom = () => {
       const nextScrollTop = Math.max(0, Number(container.scrollHeight || 0) - Number(container.clientHeight || 0));
       container.scrollTop = nextScrollTop;
-      lastScrollTopRef.current = nextScrollTop;
     };
 
     scrollToBottom();
@@ -832,6 +885,39 @@ export default function ChatThread({
     if (!compactMobile) {
       setKeyboardInset(0);
       return undefined;
+    }
+
+    const visualViewport = window.visualViewport;
+    if (visualViewport) {
+      let frameId = null;
+      const updateKeyboardInset = () => {
+        frameId = null;
+        const nextInset = getChatVisualViewportKeyboardInset({
+          layoutHeight: window.innerHeight,
+          visualHeight: visualViewport.height,
+          offsetTop: visualViewport.offsetTop,
+        });
+        setKeyboardInset(nextInset);
+      };
+      const scheduleKeyboardInsetUpdate = () => {
+        if (frameId !== null) return;
+        frameId = window.requestAnimationFrame(updateKeyboardInset);
+      };
+
+      visualViewport.addEventListener('resize', scheduleKeyboardInsetUpdate);
+      visualViewport.addEventListener('scroll', scheduleKeyboardInsetUpdate);
+      window.addEventListener('resize', scheduleKeyboardInsetUpdate);
+      scheduleKeyboardInsetUpdate();
+
+      return () => {
+        visualViewport.removeEventListener('resize', scheduleKeyboardInsetUpdate);
+        visualViewport.removeEventListener('scroll', scheduleKeyboardInsetUpdate);
+        window.removeEventListener('resize', scheduleKeyboardInsetUpdate);
+        if (frameId !== null) {
+          window.cancelAnimationFrame(frameId);
+          frameId = null;
+        }
+      };
     }
 
     let lastHeight = window.innerHeight;
@@ -905,40 +991,25 @@ export default function ChatThread({
     };
   }, [compactMobile, messageCount, threadContentRef, threadScrollRef]);
 
-  // На Android клавиатура сжимает visualViewport — скроллим при каждом изменении
   const handleComposerFocusChange = useCallback((focused) => {
-    composerFocusedRef.current = Boolean(focused);
-    if (!focused) return;
-    if (!threadPinnedToBottomRef.current) return;
+    const isFocused = Boolean(focused);
+    composerFocusedRef.current = isFocused;
 
-    let scrollFrameId = null;
-    let remainingFrames = 2;
-    const scrollToEnd = () => {
-      if (!composerFocusedRef.current || !threadPinnedToBottomRef.current) return;
-      if (scrollFrameId) return;
-      scrollFrameId = window.requestAnimationFrame(() => {
-        scrollFrameId = null;
-        if (!composerFocusedRef.current || !threadPinnedToBottomRef.current) return;
-        scrollPinnedThreadToBottom({ settleFrames: 0 });
-        remainingFrames -= 1;
-        if (remainingFrames > 0) scrollToEnd();
-      });
-    };
-
-    if (window.visualViewport) {
-      const vp = window.visualViewport;
-      vp.addEventListener('resize', scrollToEnd);
-      vp.addEventListener('scroll', scrollToEnd);
-      setTimeout(() => {
-        vp.removeEventListener('resize', scrollToEnd);
-        vp.removeEventListener('scroll', scrollToEnd);
-        if (scrollFrameId) {
-          window.cancelAnimationFrame(scrollFrameId);
-          scrollFrameId = null;
-        }
-      }, 2000);
+    if (!isFocused) {
+      setKeyboardInset(0);
+      return;
     }
-  }, [scrollPinnedThreadToBottom]);
+
+    if (compactMobile) {
+      [50, 150, 300, 500, 800].forEach((delay) => {
+        window.setTimeout(() => {
+          const container = threadScrollRef.current;
+          if (!container) return;
+          container.scrollTop = Math.max(0, container.scrollHeight - container.clientHeight);
+        }, delay);
+      });
+    }
+  }, [compactMobile, threadScrollRef]);
 
   const handleThreadTouchStart = useCallback((event) => {
     if (!compactMobile || typeof onBack !== 'function') return;
@@ -1007,8 +1078,9 @@ export default function ChatThread({
     }
 
     lastScrollTopRef.current = currentScrollTop;
+    syncLoadOlderControl(node);
     onThreadScroll?.(event);
-  }, [composerRef, onThreadScroll]);
+  }, [composerRef, onThreadScroll, syncLoadOlderControl]);
 
   if (!activeConversation) {
     return (
@@ -1199,7 +1271,7 @@ export default function ChatThread({
             messages={messages}
             messagesLoading={messagesLoading}
             effectiveLastReadMessageId={effectiveLastReadMessageId}
-            messagesHasMore={messagesHasMore}
+            messagesHasMore={showLoadOlderControl}
             loadingOlder={loadingOlder}
             onLoadOlder={onLoadOlder}
             threadContentRef={threadContentRef}
@@ -1214,6 +1286,7 @@ export default function ChatThread({
             selectedMessageIds={selectedMessageIds}
             onToggleMessageSelection={onToggleMessageSelection}
             onStartMessageSelection={onStartMessageSelection}
+            onToggleReaction={onToggleReaction}
             highlightedMessageId={highlightedMessageId}
             isFileDragActive={isFileDragActive}
             getReadTargetRef={getReadTargetRef}

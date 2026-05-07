@@ -94,6 +94,48 @@ function makeAuthCredential() {
   };
 }
 
+function makeRegistrationCredential() {
+  return {
+    id: 'reg-cred-1',
+    rawId: makeBuffer([21, 22, 23]),
+    type: 'public-key',
+    response: {
+      clientDataJSON: makeBuffer([24, 25, 26]),
+      attestationObject: makeBuffer([27, 28, 29]),
+      getTransports: () => ['internal'],
+    },
+  };
+}
+
+function makeRegistrationOptions() {
+  return {
+    challenge_id: 'register-challenge-1',
+    public_key: {
+      challenge: 'AQID',
+      rp: {
+        id: 'hubit.zsgp.ru',
+        name: 'HUB-IT',
+      },
+      user: {
+        id: 'BAUG',
+        name: 'ivanov',
+        displayName: 'Ivan Ivanov',
+      },
+      pubKeyCredParams: [
+        { type: 'public-key', alg: -7 },
+      ],
+      timeout: 12000,
+      attestation: 'none',
+      authenticatorSelection: {
+        userVerification: 'required',
+        residentKey: 'required',
+        requireResidentKey: true,
+      },
+      excludeCredentials: [],
+    },
+  };
+}
+
 function makeNotAllowedError(message = 'Cancelled') {
   const error = new Error(message);
   error.name = 'NotAllowedError';
@@ -140,6 +182,8 @@ describe('Login hybrid internal/external flow', () => {
       network_zone: 'internal',
       biometric_login_enabled: false,
     });
+    mockGetTrustedDeviceRegistrationOptions.mockResolvedValue(makeRegistrationOptions());
+    mockVerifyTrustedDeviceRegistration.mockResolvedValue({ id: 'trusted-device-1' });
 
     installMatchMedia({ mobile: false });
     Object.defineProperty(window.navigator, 'userAgent', {
@@ -255,7 +299,7 @@ describe('Login hybrid internal/external flow', () => {
     expect(locationAssignMock).not.toHaveBeenCalled();
   });
 
-  it('keeps 2FA verify code-only and opens mandatory enrollment prompt for external user without discoverable device', async () => {
+  it('keeps 2FA verify code-only and lets external user skip enrollment prompt without discoverable device', async () => {
     mockGetLoginMode.mockResolvedValue({
       network_zone: 'external',
       biometric_login_enabled: true,
@@ -303,7 +347,82 @@ describe('Login hybrid internal/external flow', () => {
 
     const dialog = await screen.findByRole('dialog');
     expect(dialog).toBeInTheDocument();
-    expect(locationAssignMock).not.toHaveBeenCalled();
+    const dialogButtons = within(dialog).getAllByRole('button');
+    fireEvent.click(dialogButtons[0]);
+
+    await waitFor(() => {
+      expect(locationAssignMock).toHaveBeenCalledWith('/dashboard');
+    });
+  });
+
+  it('preloads trusted-device registration options before the create passkey click', async () => {
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: true,
+    });
+    mockStartPasskeyLogin.mockResolvedValue({
+      success: true,
+      challenge_id: 'passkey-challenge-1',
+      public_key: {
+        challenge: 'AQID',
+        rpId: 'hubit.zsgp.ru',
+        timeout: 12000,
+        userVerification: 'required',
+      },
+    });
+    window.navigator.credentials.get.mockRejectedValue(makeNotAllowedError());
+    window.navigator.credentials.create.mockResolvedValue(makeRegistrationCredential());
+    window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable.mockResolvedValue(true);
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: '2fa_required',
+      login_challenge_id: 'challenge-verify',
+      trusted_devices_available: true,
+    });
+    mockVerifyTwoFactorLogin.mockResolvedValue({
+      success: true,
+      status: 'authenticated',
+      user: {
+        id: 7,
+        username: 'ivanov',
+        role: 'viewer',
+        permissions: [],
+        network_zone: 'external',
+        discoverable_trusted_devices_count: 0,
+      },
+    });
+
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    submitPasswordStep();
+
+    await screen.findByTestId('verify-fallback-form');
+    setInputValue('login-totp-verify', '654321');
+    fireEvent.submit(await screen.findByTestId('verify-fallback-form'));
+
+    const dialog = await screen.findByRole('dialog');
+    await waitFor(() => {
+      expect(mockGetTrustedDeviceRegistrationOptions).toHaveBeenCalledTimes(1);
+    });
+
+    const dialogButtons = within(dialog).getAllByRole('button');
+    fireEvent.click(dialogButtons[1]);
+
+    await waitFor(() => {
+      expect(window.navigator.credentials.create).toHaveBeenCalledTimes(1);
+    });
+    expect(mockGetTrustedDeviceRegistrationOptions).toHaveBeenCalledTimes(1);
+    expect(mockVerifyTrustedDeviceRegistration).toHaveBeenCalledWith(
+      'register-challenge-1',
+      expect.objectContaining({
+        id: 'reg-cred-1',
+        type: 'public-key',
+      }),
+      undefined,
+    );
+    await waitFor(() => {
+      expect(locationAssignMock).toHaveBeenCalledWith('/dashboard');
+    });
   });
 
   it('allows unsupported external enrollment prompt to continue into the app', async () => {

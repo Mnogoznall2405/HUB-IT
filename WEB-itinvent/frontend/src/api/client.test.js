@@ -5360,6 +5360,36 @@ describe('settingsAPI app settings endpoints', () => {
   });
 });
 
+describe('settingsAPI avatar endpoints', () => {
+  beforeEach(() => {
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { avatar_url: '/api/v1/settings/avatar/42/file?v=1234567890' } });
+    apiClientMock.delete = vi.fn().mockResolvedValue({ data: { avatar_url: null } });
+  });
+
+  it('uploads avatar image as multipart form data', async () => {
+    const { settingsAPI } = await import('./client');
+    const file = new File(['fake-image-data'], 'avatar.png', { type: 'image/png' });
+
+    const result = await settingsAPI.uploadAvatar(file);
+
+    expect(apiClientMock.post).toHaveBeenCalledWith(
+      '/settings/avatar',
+      expect.any(FormData),
+      { headers: { 'Content-Type': 'multipart/form-data' } }
+    );
+    expect(result.avatar_url).toBe('/api/v1/settings/avatar/42/file?v=1234567890');
+  });
+
+  it('deletes user avatar', async () => {
+    const { settingsAPI } = await import('./client');
+
+    const result = await settingsAPI.deleteAvatar();
+
+    expect(apiClientMock.delete).toHaveBeenCalledWith('/settings/avatar');
+    expect(result.avatar_url).toBeNull();
+  });
+});
+
 describe('networksAPI.exportMapPdf', () => {
   beforeEach(() => {
     apiClientMock.get.mockReset();

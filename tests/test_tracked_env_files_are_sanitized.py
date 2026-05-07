@@ -43,12 +43,6 @@ IGNORED_KEYS = {
     "DATABASE_TYPE",
 }
 
-IGNORED_PREFIXES = (
-    "SCAN_AGENT_",
-    "ITINV_AGENT_",
-)
-
-
 def _iter_env_entries(path: Path):
     for raw_line in path.read_text(encoding="utf-8").splitlines():
         line = raw_line.strip()
@@ -64,7 +58,7 @@ def test_tracked_env_like_files_do_not_contain_non_agent_live_secrets():
         assert path.exists(), f"{path.relative_to(PROJECT_ROOT)} should remain present as a sanitized example"
         for key, value in _iter_env_entries(path):
             normalized_key = key.upper()
-            if normalized_key in IGNORED_KEYS or normalized_key.startswith(IGNORED_PREFIXES):
+            if normalized_key in IGNORED_KEYS:
                 continue
             if not any(part in normalized_key for part in SENSITIVE_KEY_PARTS):
                 continue

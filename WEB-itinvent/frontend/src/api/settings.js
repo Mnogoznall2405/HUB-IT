@@ -73,6 +73,18 @@ export const settingsAPI = {
     const response = await apiClient.get(`/ai-bots/${encodeURIComponent(botId)}/runs`);
     return response.data;
   },
+  uploadAvatar: async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await apiClient.post('/settings/avatar', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+  deleteAvatar: async () => {
+    const response = await apiClient.delete('/settings/avatar');
+    return response.data;
+  },
 };
 
 export default settingsAPI;

@@ -2,11 +2,13 @@
  * Authentication Context - manages user authentication state across the app.
  */
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
-import { authAPI } from '../api/client';
+import { AUTH_REFRESH_TIMEOUT_MS, authAPI } from '../api/client';
 import { disableChatPushSubscription } from '../lib/chatNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
 
 const AuthContext = createContext(null);
+const AUTH_VERIFIED_AT_KEY = 'auth_verified_at';
+const AUTH_VERIFICATION_FRESH_MS = 60_000;
 const rolePermissionFallback = {
   viewer: [
     'dashboard.read',
@@ -91,6 +93,44 @@ const isLoginRoute = () => {
   return pathname === '/login';
 };
 
+const readCachedUser = () => {
+  if (typeof window === 'undefined') return null;
+  try {
+    return normalizeUserWithPermissions(JSON.parse(window.localStorage.getItem('user') || 'null'));
+  } catch {
+    window.localStorage.removeItem('user');
+    window.localStorage.removeItem(AUTH_VERIFIED_AT_KEY);
+    return null;
+  }
+};
+
+const markAuthVerified = () => {
+  try {
+    window.localStorage.setItem(AUTH_VERIFIED_AT_KEY, String(Date.now()));
+  } catch {
+    // Ignore storage failures.
+  }
+};
+
+const clearAuthVerified = () => {
+  try {
+    window.localStorage.removeItem(AUTH_VERIFIED_AT_KEY);
+  } catch {
+    // Ignore storage failures.
+  }
+};
+
+const hasFreshAuthVerification = () => {
+  if (typeof window === 'undefined') return false;
+  try {
+    const value = Number(window.localStorage.getItem(AUTH_VERIFIED_AT_KEY) || 0);
+    const ageMs = Date.now() - value;
+    return Number.isFinite(value) && value > 0 && ageMs >= 0 && ageMs < AUTH_VERIFICATION_FRESH_MS;
+  } catch {
+    return false;
+  }
+};
+
 export const useAuth = () => {
   const context = useContext(AuthContext);
   if (!context) {
@@ -100,25 +140,30 @@ export const useAuth = () => {
 };
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [loading, setLoading] = useState(true);
+  const [startupCachedUser] = useState(() => readCachedUser());
+  const [user, setUser] = useState(startupCachedUser);
+  const [loading, setLoading] = useState(() => !startupCachedUser && !isLoginRoute());
+  const [authChecking, setAuthChecking] = useState(false);
   const [error, setError] = useState(null);
 
-  const refreshSession = useCallback(async ({ suppressAuthRequired = false } = {}) => {
+  const refreshSession = useCallback(async ({ suppressAuthRequired = false, timeout = undefined } = {}) => {
     try {
       const currentUser = normalizeUserWithPermissions(
-        await authAPI.getCurrentUser({ suppressAuthRequired })
+        await authAPI.getCurrentUser({ suppressAuthRequired, timeout })
       );
       setUser(currentUser || null);
       if (currentUser && typeof currentUser === 'object') {
         localStorage.setItem('user', JSON.stringify(currentUser));
+        markAuthVerified();
       } else {
         localStorage.removeItem('user');
+        clearAuthVerified();
       }
       return currentUser || null;
     } catch (refreshError) {
       setUser(null);
       localStorage.removeItem('user');
+      clearAuthVerified();
       clearAllMailRecentCache();
       throw refreshError;
     }
@@ -126,21 +171,7 @@ export const AuthProvider = ({ children }) => {
 
   // Restore cached user and validate active cookie session
   useEffect(() => {
-    const savedUser = localStorage.getItem('user');
-    let hasCachedUser = false;
-
-    if (savedUser) {
-      try {
-        const cachedUser = normalizeUserWithPermissions(JSON.parse(savedUser));
-        if (cachedUser) {
-          setUser(cachedUser);
-          hasCachedUser = true;
-        }
-      } catch (e) {
-        console.error('Failed to parse saved user:', e);
-        localStorage.removeItem('user');
-      }
-    }
+    const hasCachedUser = Boolean(startupCachedUser);
 
     if (!hasCachedUser && isLoginRoute()) {
       setLoading(false);
@@ -149,27 +180,35 @@ export const AuthProvider = ({ children }) => {
 
     if (hasCachedUser) {
       setLoading(false);
+      if (hasFreshAuthVerification()) {
+        return;
+      }
+      setAuthChecking(true);
     }
 
     const verifySession = async () => {
       try {
-        await refreshSession({ suppressAuthRequired: true });
+        await refreshSession({ suppressAuthRequired: true, timeout: AUTH_REFRESH_TIMEOUT_MS });
       } catch {
         setUser(null);
         localStorage.removeItem('user');
+        clearAuthVerified();
       } finally {
+        setAuthChecking(false);
         setLoading(false);
       }
     };
 
     verifySession();
-  }, [refreshSession]);
+  }, [refreshSession, startupCachedUser]);
 
   useEffect(() => {
     const onAuthRequired = () => {
       localStorage.removeItem('user');
+      clearAuthVerified();
       clearAllMailRecentCache();
       setUser(null);
+      setAuthChecking(false);
       setLoading(false);
       window.dispatchEvent(new Event('auth-changed'));
     };
@@ -182,7 +221,13 @@ export const AuthProvider = ({ children }) => {
    */
   const applyAuthenticatedPayload = useCallback((payload) => {
     const currentUser = normalizeUserWithPermissions(payload?.user);
-    localStorage.setItem('user', JSON.stringify(currentUser));
+    if (currentUser && typeof currentUser === 'object') {
+      localStorage.setItem('user', JSON.stringify(currentUser));
+      markAuthVerified();
+    } else {
+      localStorage.removeItem('user');
+      clearAuthVerified();
+    }
     setUser(currentUser);
     window.dispatchEvent(new Event('auth-changed'));
     return currentUser;
@@ -332,6 +377,7 @@ export const AuthProvider = ({ children }) => {
       } finally {
         // Always clear local user cache
         localStorage.removeItem('user');
+        clearAuthVerified();
         clearAllMailRecentCache();
         setUser(null);
         window.dispatchEvent(new Event('auth-changed'));
@@ -363,6 +409,7 @@ export const AuthProvider = ({ children }) => {
   const value = {
     user,
     loading,
+    authChecking,
     error,
     login,
     startTwoFactorSetup,

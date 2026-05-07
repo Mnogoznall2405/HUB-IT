@@ -1,6 +1,6 @@
-const SW_VERSION = '2026-04-26T23:10:00+05:00';
-const APP_SHELL_CACHE = 'hubit-app-shell-v2026-04-26-23';
-const APP_ASSET_CACHE = 'hubit-app-assets-v2026-04-26-23';
+const SW_VERSION = '2026-05-07T09:25:00+05:00';
+const APP_SHELL_CACHE = 'hubit-app-shell-v2026-05-07-09';
+const APP_ASSET_CACHE = 'hubit-app-assets-v2026-05-07-09';
 const CHAT_MEDIA_CACHE = 'hubit-chat-media-v2026-04-17-1';
 const PUSH_RUNTIME_CACHE = 'itinvent-push-runtime-v1';
 const PUSH_PENDING_SYNC_URL = `${self.location.origin}/__push/pending-sync`;
@@ -136,6 +136,16 @@ function isStaticAssetRequest(request, url) {
   if (url.pathname.startsWith('/api/')) return false;
   if (STATIC_ASSET_DESTINATIONS.has(String(request.destination || '').trim())) return true;
   return url.pathname.startsWith('/assets/');
+}
+
+function isTransientStaticAssetStatus(status) {
+  return [408, 425, 429, 499, 500, 502, 503, 504].includes(Number(status || 0));
+}
+
+function delay(ms) {
+  return new Promise((resolve) => {
+    self.setTimeout(resolve, Math.max(0, Number(ms || 0)));
+  });
 }
 
 function isChatMediaVariantRequest(request, url) {
@@ -279,14 +289,23 @@ async function handleNavigationRequest(request, event) {
 async function handleStaticAssetRequest(request) {
   const cache = await caches.open(APP_ASSET_CACHE);
   const cachedResponse = await cache.match(request, { ignoreSearch: true });
-  const networkPromise = fetch(request)
-    .then(async (response) => {
-      if (response?.ok) {
-        await cache.put(request, response.clone());
-      }
+  const fetchAndCache = async (attempt = 0) => {
+    const response = await fetch(request).catch(() => null);
+    if (response?.ok) {
+      await cache.put(request, response.clone());
       return response;
-    })
-    .catch(() => null);
+    }
+    if (response && attempt < 2 && isTransientStaticAssetStatus(response.status)) {
+      await delay(180 * (attempt + 1));
+      return fetchAndCache(attempt + 1);
+    }
+    if (!response && attempt < 1) {
+      await delay(180);
+      return fetchAndCache(attempt + 1);
+    }
+    return response;
+  };
+  const networkPromise = fetchAndCache();
 
   if (cachedResponse) {
     return cachedResponse;

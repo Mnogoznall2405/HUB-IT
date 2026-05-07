@@ -3,6 +3,7 @@ Session persistence and lifecycle management for web authentication.
 """
 from __future__ import annotations
 
+import hashlib
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from time import monotonic
@@ -79,11 +80,37 @@ def _build_device_label(user_agent: str) -> str:
     return f"{browser} on {platform}"
 
 
+def _normalize_family_label(value: str) -> str:
+    normalized = str(value or "").strip().lower()
+    if not normalized:
+        return "unknown"
+    return "".join(ch if ch.isalnum() else "_" for ch in normalized).strip("_") or "unknown"
+
+
+def build_client_context(user_agent: str) -> dict[str, str]:
+    browser_family = _normalize_family_label(_detect_browser(user_agent))
+    os_family = _normalize_family_label(_detect_platform(user_agent))
+    fingerprint_source = f"{browser_family}|{os_family}"
+    return {
+        "client_browser_family": browser_family,
+        "client_os_family": os_family,
+        "client_fingerprint_hash": hashlib.sha256(fingerprint_source.encode("utf-8")).hexdigest(),
+    }
+
+
 class SessionService:
     """Manages web auth sessions in JSON storage."""
 
     FILE_NAME = "web_sessions.json"
     TOUCH_THROTTLE_SECONDS = 60
+    TERMINAL_STATUSES = {
+        "terminated",
+        "expired_idle",
+        "expired_absolute",
+        "refresh_reused",
+        "trusted_device_revoked",
+        "client_mismatch",
+    }
 
     def __init__(self, file_path: Optional[Path] = None, database_url: Optional[str] = None):
         use_singleton_store = file_path is None
@@ -159,6 +186,11 @@ class SessionService:
             "closed_at": row.closed_at.isoformat() if row.closed_at else None,
             "closed_reason": row.closed_reason,
             "device_label": row.device_label,
+            "auth_method": str(row.auth_method or "legacy"),
+            "trusted_device_id": str(row.trusted_device_id or ""),
+            "client_browser_family": str(row.client_browser_family or "unknown"),
+            "client_os_family": str(row.client_os_family or "unknown"),
+            "client_fingerprint_hash": str(row.client_fingerprint_hash or ""),
         }
 
     @staticmethod
@@ -177,6 +209,11 @@ class SessionService:
         row.closed_at = _parse_datetime(payload.get("closed_at"))
         row.closed_reason = str(payload.get("closed_reason") or "").strip() or None
         row.device_label = str(payload.get("device_label") or "").strip() or None
+        row.auth_method = str(payload.get("auth_method") or "legacy").strip() or "legacy"
+        row.trusted_device_id = str(payload.get("trusted_device_id") or "").strip() or None
+        row.client_browser_family = str(payload.get("client_browser_family") or "unknown").strip() or "unknown"
+        row.client_os_family = str(payload.get("client_os_family") or "unknown").strip() or "unknown"
+        row.client_fingerprint_hash = str(payload.get("client_fingerprint_hash") or "").strip()
 
     def _normalize_db_row(self, row: AppSessionRecord, now: Optional[datetime] = None) -> dict:
         item = self._row_to_session_dict(row)
@@ -213,11 +250,11 @@ class SessionService:
             return "active"
 
         explicit_status = str(session.get("status") or "").strip()
-        if explicit_status in {"terminated", "expired_idle", "expired_absolute"}:
+        if explicit_status in self.TERMINAL_STATUSES:
             return explicit_status
 
         closed_reason = str(session.get("closed_reason") or "").strip()
-        if closed_reason in {"terminated", "expired_idle", "expired_absolute"}:
+        if closed_reason in self.TERMINAL_STATUSES:
             return closed_reason
 
         if expires_at and expires_at <= now:
@@ -235,6 +272,18 @@ class SessionService:
         resolved_device = _build_device_label(session.get("user_agent", ""))
         if device_label != resolved_device:
             session["device_label"] = resolved_device
+            changed = True
+
+        client_context = build_client_context(session.get("user_agent", ""))
+        for key, value in client_context.items():
+            if not str(session.get(key) or "").strip():
+                session[key] = value
+                changed = True
+        if not str(session.get("auth_method") or "").strip():
+            session["auth_method"] = "legacy"
+            changed = True
+        if "trusted_device_id" not in session:
+            session["trusted_device_id"] = ""
             changed = True
 
         idle_expires_at = self._compute_idle_expires_at(session)
@@ -303,9 +352,12 @@ class SessionService:
         ip_address: str,
         user_agent: str,
         expires_at: str,
+        auth_method: str = "legacy",
+        trusted_device_id: str | None = None,
     ) -> dict:
         self._run_maintenance()
         now_iso = _utc_now_iso()
+        client_context = build_client_context(user_agent)
         item = {
             "session_id": session_id,
             "user_id": int(user_id),
@@ -322,6 +374,9 @@ class SessionService:
             "closed_at": None,
             "closed_reason": None,
             "device_label": "",
+            "auth_method": str(auth_method or "legacy").strip() or "legacy",
+            "trusted_device_id": str(trusted_device_id or "").strip(),
+            **client_context,
         }
         self._normalize_session(item)
         if self._use_app_database:
@@ -435,35 +490,61 @@ class SessionService:
             changed = True
         return changed
 
-    def close_session(self, session_id: Optional[str]) -> None:
+    def get_session(self, session_id: Optional[str]) -> dict | None:
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id:
+            return None
+        self._run_maintenance()
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                row = session.get(AppSessionRecord, normalized_session_id)
+                if row is None:
+                    return None
+                item = self._normalize_db_row(row, now=_utc_now())
+                return dict(item)
+        sessions = self._load_sessions()
+        changed = False
+        now = _utc_now()
+        for item in sessions:
+            if str(item.get("session_id") or "").strip() != normalized_session_id:
+                continue
+            changed = self._normalize_session(item, now=now) or changed
+            if changed:
+                self._save_sessions(sessions)
+            return dict(item)
+        return None
+
+    def close_session(self, session_id: Optional[str], *, reason: str = "terminated") -> None:
         if not session_id:
             return
+        close_reason = str(reason or "terminated").strip() or "terminated"
         if self._use_app_database:
             with app_session(self._database_url) as session:
                 row = session.get(AppSessionRecord, str(session_id or "").strip())
                 if row is None:
                     return
                 item = self._row_to_session_dict(row)
-                if self._close_session_record(item, reason="terminated"):
+                if self._close_session_record(item, reason=close_reason):
                     self._apply_session_payload(row, item)
             return
         sessions = self._load_sessions()
         changed = False
         for session in sessions:
             if session.get("session_id") == session_id:
-                changed = self._close_session_record(session, reason="terminated") or changed
+                changed = self._close_session_record(session, reason=close_reason) or changed
                 break
         if changed:
             self._save_sessions(sessions)
 
-    def close_session_by_id(self, session_id: str) -> bool:
+    def close_session_by_id(self, session_id: str, *, reason: str = "terminated") -> bool:
+        close_reason = str(reason or "terminated").strip() or "terminated"
         if self._use_app_database:
             with app_session(self._database_url) as session:
                 row = session.get(AppSessionRecord, str(session_id or "").strip())
                 if row is None:
                     return False
                 item = self._row_to_session_dict(row)
-                if self._close_session_record(item, reason="terminated"):
+                if self._close_session_record(item, reason=close_reason):
                     self._apply_session_payload(row, item)
                 return True
         sessions = self._load_sessions()
@@ -473,7 +554,7 @@ class SessionService:
             if session.get("session_id") != session_id:
                 continue
             closed = True
-            changed = self._close_session_record(session, reason="terminated") or changed
+            changed = self._close_session_record(session, reason=close_reason) or changed
             break
         if changed:
             self._save_sessions(sessions)
@@ -504,6 +585,112 @@ class SessionService:
         if changed:
             self._save_sessions(sessions)
         return closed
+
+    def close_trusted_device_sessions(self, *, user_id: int, trusted_device_id: str, reason: str = "trusted_device_revoked") -> int:
+        normalized_device_id = str(trusted_device_id or "").strip()
+        if int(user_id or 0) <= 0 or not normalized_device_id:
+            return 0
+        close_reason = str(reason or "trusted_device_revoked").strip() or "trusted_device_revoked"
+        if self._use_app_database:
+            closed = 0
+            with app_session(self._database_url) as session:
+                rows = session.scalars(
+                    select(AppSessionRecord).where(
+                        AppSessionRecord.user_id == int(user_id),
+                        AppSessionRecord.trusted_device_id == normalized_device_id,
+                        AppSessionRecord.is_active.is_(True),
+                    )
+                ).all()
+                for row in rows:
+                    item = self._row_to_session_dict(row)
+                    if self._close_session_record(item, reason=close_reason):
+                        self._apply_session_payload(row, item)
+                    closed += 1
+            return closed
+        sessions = self._load_sessions()
+        changed = False
+        closed = 0
+        for item in sessions:
+            if int(item.get("user_id", 0) or 0) != int(user_id):
+                continue
+            if str(item.get("trusted_device_id") or "").strip() != normalized_device_id:
+                continue
+            if item.get("status") != "active" or not bool(item.get("is_active", True)):
+                continue
+            if self._close_session_record(item, reason=close_reason):
+                changed = True
+            closed += 1
+        if changed:
+            self._save_sessions(sessions)
+        return closed
+
+    def bind_trusted_device_session(self, *, session_id: str, user_id: int, trusted_device_id: str, auth_method: str = "trusted_device") -> bool:
+        normalized_session_id = str(session_id or "").strip()
+        normalized_device_id = str(trusted_device_id or "").strip()
+        if not normalized_session_id or int(user_id or 0) <= 0 or not normalized_device_id:
+            return False
+        normalized_auth_method = str(auth_method or "trusted_device").strip() or "trusted_device"
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                row = session.get(AppSessionRecord, normalized_session_id)
+                if row is None or int(row.user_id) != int(user_id):
+                    return False
+                item = self._normalize_db_row(row, now=_utc_now())
+                item["trusted_device_id"] = normalized_device_id
+                item["auth_method"] = normalized_auth_method
+                self._apply_session_payload(row, item)
+                return True
+        sessions = self._load_sessions()
+        changed = False
+        for item in sessions:
+            if str(item.get("session_id") or "").strip() != normalized_session_id:
+                continue
+            if int(item.get("user_id", 0) or 0) != int(user_id):
+                return False
+            self._normalize_session(item, now=_utc_now())
+            item["trusted_device_id"] = normalized_device_id
+            item["auth_method"] = normalized_auth_method
+            changed = True
+            break
+        if changed:
+            self._save_sessions(sessions)
+        return changed
+
+    def validate_session_client_context(self, *, session_id: str, user_id: int, user_agent: str, close_on_mismatch: bool = True) -> dict:
+        session = self.get_session(session_id)
+        if not session or int(session.get("user_id", 0) or 0) != int(user_id or 0):
+            return {"valid": False, "code": "SESSION_EXPIRED"}
+        if session.get("status") != "active" or not bool(session.get("is_active", True)):
+            return {"valid": False, "code": "SESSION_EXPIRED"}
+
+        current_context = build_client_context(user_agent)
+        stored_browser = str(session.get("client_browser_family") or "").strip()
+        stored_os = str(session.get("client_os_family") or "").strip()
+        if not stored_browser or stored_browser == "unknown" or not stored_os or stored_os == "unknown":
+            if self._use_app_database:
+                with app_session(self._database_url) as db_session:
+                    row = db_session.get(AppSessionRecord, str(session_id or "").strip())
+                    if row is not None and int(row.user_id) == int(user_id):
+                        item = self._normalize_db_row(row, now=_utc_now())
+                        item.update(current_context)
+                        self._apply_session_payload(row, item)
+            else:
+                sessions = self._load_sessions()
+                for item in sessions:
+                    if str(item.get("session_id") or "").strip() == str(session_id or "").strip():
+                        item.update(current_context)
+                        self._save_sessions(sessions)
+                        break
+            return {"valid": True, "code": None}
+
+        if (
+            stored_browser != current_context["client_browser_family"]
+            or stored_os != current_context["client_os_family"]
+        ):
+            if close_on_mismatch:
+                self.close_session(session_id, reason="client_mismatch")
+            return {"valid": False, "code": "STEP_UP_REQUIRED"}
+        return {"valid": True, "code": None}
 
     def cleanup_sessions(self, *, force: bool = False) -> dict:
         if not self._should_run_cleanup(force=force):

@@ -25,6 +25,18 @@ security_optional = HTTPBearer(auto_error=False)
 logger = logging.getLogger(__name__)
 
 
+def _auth_detail(code: str, message: str) -> dict[str, str]:
+    return {"code": str(code or "AUTH_REQUIRED"), "message": str(message or "Authentication required")}
+
+
+def _credentials_exception(code: str = "AUTH_REQUIRED", message: str = "Could not validate credentials") -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail=_auth_detail(code, message),
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+
+
 def _user_role(user: User | dict[str, Any] | None) -> str:
     if isinstance(user, dict):
         return str(user.get("role") or "").strip().lower()
@@ -72,13 +84,8 @@ def _resolve_access_token(
     return None
 
 
-def _load_user_from_token(token: Optional[str]) -> User:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
+def _load_user_from_token(token: Optional[str], user_agent: str | None = None) -> User:
+    credentials_exception = _credentials_exception()
     normalized_token = str(token or "").strip()
     if not normalized_token:
         raise credentials_exception
@@ -91,7 +98,7 @@ def _load_user_from_token(token: Optional[str]) -> User:
 
     if token_data.session_id and not session_service.is_session_active(token_data.session_id):
         session_auth_context_service.delete_session_context(token_data.session_id)
-        raise credentials_exception
+        raise _credentials_exception("SESSION_EXPIRED", "Session expired")
 
     user_raw = None
     if token_data.user_id not in (None, 0):
@@ -101,11 +108,15 @@ def _load_user_from_token(token: Optional[str]) -> User:
     if not user_raw:
         raise credentials_exception
 
-    if not trusted_device_service.is_token_device_valid(
+    device_validation = trusted_device_service.validate_token_device(
         user_id=int(user_raw.get("id") or 0),
         token_device_id=token_data.device_id,
-    ):
-        raise credentials_exception
+        session_id=token_data.session_id,
+        user_agent=user_agent,
+    )
+    if not bool(device_validation.get("valid")):
+        code = str(device_validation.get("code") or "AUTH_REQUIRED")
+        raise _credentials_exception(code, "Authentication required")
 
     if token_data.session_id:
         session_service.touch_session(token_data.session_id)
@@ -120,12 +131,7 @@ def _load_user_from_token(token: Optional[str]) -> User:
 
 
 def _load_session_id_from_token(token: Optional[str]) -> Optional[str]:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-
+    credentials_exception = _credentials_exception()
     normalized_token = str(token or "").strip()
     if not normalized_token:
         raise credentials_exception
@@ -139,11 +145,11 @@ def _load_session_id_from_token(token: Optional[str]) -> Optional[str]:
     session_id = str(token_data.session_id or "").strip() or None
     if session_id and not session_service.is_session_active(session_id):
         session_auth_context_service.delete_session_context(session_id)
-        raise credentials_exception
+        raise _credentials_exception("SESSION_EXPIRED", "Session expired")
     return session_id
 
 
-def _load_optional_user_from_token(token: Optional[str]) -> Optional[User]:
+def _load_optional_user_from_token(token: Optional[str], user_agent: str | None = None) -> Optional[User]:
     normalized_token = str(token or "").strip()
     if not normalized_token:
         return None
@@ -165,10 +171,13 @@ def _load_optional_user_from_token(token: Optional[str]) -> Optional[User]:
     if not user_raw:
         return None
 
-    if not trusted_device_service.is_token_device_valid(
+    device_validation = trusted_device_service.validate_token_device(
         user_id=int(user_raw.get("id") or 0),
         token_device_id=token_data.device_id,
-    ):
+        session_id=token_data.session_id,
+        user_agent=user_agent,
+    )
+    if not bool(device_validation.get("valid")):
         return None
 
     if token_data.session_id:
@@ -181,6 +190,24 @@ def _load_optional_user_from_token(token: Optional[str]) -> Optional[User]:
         custom_permissions=public_user.get("custom_permissions"),
     )
     return User(**public_user)
+
+
+def _load_user_from_token_for_request(token: Optional[str], user_agent: str | None) -> User:
+    try:
+        return _load_user_from_token(token, user_agent=user_agent)
+    except TypeError as exc:
+        if "user_agent" not in str(exc):
+            raise
+        return _load_user_from_token(token)
+
+
+def _load_optional_user_from_token_for_request(token: Optional[str], user_agent: str | None) -> Optional[User]:
+    try:
+        return _load_optional_user_from_token(token, user_agent=user_agent)
+    except TypeError as exc:
+        if "user_agent" not in str(exc):
+            raise
+        return _load_optional_user_from_token(token)
 
 
 async def get_current_user(
@@ -198,7 +225,11 @@ async def get_current_user(
         User object
     """
     token = _resolve_access_token(credentials, access_token_cookie)
-    current_user = await run_in_threadpool(_load_user_from_token, token)
+    current_user = await run_in_threadpool(
+        _load_user_from_token_for_request,
+        token,
+        request.headers.get("user-agent") or "",
+    )
     network_context = build_request_network_context(request)
     ensure_admin_ip_allowed(
         current_user,
@@ -229,7 +260,11 @@ async def get_current_user_from_websocket(websocket: WebSocket) -> User:
         HTTPAuthorizationCredentials(scheme="Bearer", credentials=credentials) if credentials else None,
         access_token_cookie,
     )
-    current_user = await run_in_threadpool(_load_user_from_token, token)
+    current_user = await run_in_threadpool(
+        _load_user_from_token_for_request,
+        token,
+        websocket.headers.get("user-agent") or "",
+    )
     network_context = build_request_network_context(websocket)
     ensure_admin_ip_allowed(
         current_user,
@@ -350,7 +385,11 @@ async def get_current_user_optional(
     Useful for endpoints that work for both authenticated and anonymous users.
     """
     token = _resolve_access_token(credentials, access_token_cookie)
-    current_user = await run_in_threadpool(_load_optional_user_from_token, token)
+    current_user = await run_in_threadpool(
+        _load_optional_user_from_token_for_request,
+        token,
+        request.headers.get("user-agent") or "",
+    )
     if current_user is None:
         return None
     network_context = build_request_network_context(request)

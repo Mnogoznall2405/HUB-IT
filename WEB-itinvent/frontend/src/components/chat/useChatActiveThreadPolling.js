@@ -1,6 +1,7 @@
 import { useEffect } from 'react';
 
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
+import { pushNavigationDebugEntry } from '../../lib/navigationDebug';
 
 export default function useChatActiveThreadPolling({
   activeConversationId,
@@ -34,9 +35,15 @@ export default function useChatActiveThreadPolling({
       lastForegroundRefreshAtRef.current = now;
 
       if (!sidebarSearchActive) {
+        pushNavigationDebugEntry('chat-poll:foreground:conversations', {
+          activeConversationId: String(activeConversationIdRef.current || ''),
+        });
         void loadConversations({ silent: true, force: true });
       }
       if (activeConversationIdRef.current && !messagesLoadingRef.current) {
+        pushNavigationDebugEntry('chat-poll:foreground:messages', {
+          activeConversationId: String(activeConversationIdRef.current || ''),
+        });
         void loadMessagesRef.current?.(activeConversationIdRef.current, {
           silent: true,
           reason: 'window:foreground',
@@ -78,6 +85,9 @@ export default function useChatActiveThreadPolling({
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || CHAT_WS_ENABLED || !activeConversationId) return undefined;
     const intervalId = window.setInterval(() => {
+      pushNavigationDebugEntry('chat-poll:thread', {
+        activeConversationId: String(activeConversationId || ''),
+      });
       void loadMessages(activeConversationId, { silent: true, reason: 'poll:thread', force: true });
     }, threadPollMs);
     return () => window.clearInterval(intervalId);
@@ -99,6 +109,11 @@ export default function useChatActiveThreadPolling({
       if (!currentConversationId) return;
       inFlight = true;
       degradedThreadRevalidateCountRef.current += 1;
+      pushNavigationDebugEntry('chat-poll:incremental', {
+        activeConversationId: currentConversationId,
+        transportState: activeThreadTransportState,
+        count: Number(degradedThreadRevalidateCountRef.current || 0),
+      });
       logChatDebugRef.current?.('threadPoll:degradedRevalidate', {
         conversationId: currentConversationId,
         transportState: activeThreadTransportState,

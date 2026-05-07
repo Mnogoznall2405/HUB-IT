@@ -61,6 +61,53 @@ function syncSelectedDatabase(databaseId) {
   localStorage.removeItem('selected_database');
 }
 
+function scheduleAfterFirstPaint(callback) {
+  if (typeof window === 'undefined') {
+    callback();
+    return () => {};
+  }
+
+  let timeoutId = null;
+  let idleId = null;
+  let frameId = null;
+  let cancelled = false;
+
+  const run = () => {
+    if (cancelled) return;
+    callback();
+  };
+
+  const scheduleIdle = () => {
+    if (typeof window.requestIdleCallback === 'function') {
+      idleId = window.requestIdleCallback(run, { timeout: 1_000 });
+      return;
+    }
+    timeoutId = window.setTimeout(run, 0);
+  };
+
+  if (typeof window.requestAnimationFrame === 'function') {
+    frameId = window.requestAnimationFrame(() => {
+      frameId = null;
+      scheduleIdle();
+    });
+  } else {
+    timeoutId = window.setTimeout(run, 0);
+  }
+
+  return () => {
+    cancelled = true;
+    if (frameId !== null && typeof window.cancelAnimationFrame === 'function') {
+      window.cancelAnimationFrame(frameId);
+    }
+    if (idleId !== null && typeof window.cancelIdleCallback === 'function') {
+      window.cancelIdleCallback(idleId);
+    }
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  };
+}
+
 export function PreferencesProvider({ children }) {
   const [preferences, setPreferences] = useState(() => readCachedPreferences());
   const [loading, setLoading] = useState(false);
@@ -88,6 +135,18 @@ export function PreferencesProvider({ children }) {
 
   useEffect(() => {
     let timeoutId = null;
+    let cancelDeferredRefresh = null;
+
+    const cancelScheduledRefresh = () => {
+      if (timeoutId !== null) {
+        window.clearTimeout(timeoutId);
+        timeoutId = null;
+      }
+      if (typeof cancelDeferredRefresh === 'function') {
+        cancelDeferredRefresh();
+        cancelDeferredRefresh = null;
+      }
+    };
 
     const scheduleRefresh = () => {
       const pathname = typeof window !== 'undefined'
@@ -99,22 +158,23 @@ export function PreferencesProvider({ children }) {
         }, 3500);
         return;
       }
-      void refreshFromServer();
+      timeoutId = window.setTimeout(() => {
+        timeoutId = null;
+        cancelDeferredRefresh = scheduleAfterFirstPaint(() => {
+          cancelDeferredRefresh = null;
+          void refreshFromServer();
+        });
+      }, 0);
     };
 
     scheduleRefresh();
     const authChanged = () => {
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-        timeoutId = null;
-      }
+      cancelScheduledRefresh();
       scheduleRefresh();
     };
     window.addEventListener('auth-changed', authChanged);
     return () => {
-      if (timeoutId !== null) {
-        window.clearTimeout(timeoutId);
-      }
+      cancelScheduledRefresh();
       window.removeEventListener('auth-changed', authChanged);
     };
   }, [refreshFromServer]);

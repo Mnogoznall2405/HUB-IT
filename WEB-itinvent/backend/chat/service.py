@@ -40,6 +40,7 @@ from backend.chat.models import (
     ChatMessage,
     ChatMessageAttachment,
     ChatMessageRead,
+    ChatMessageReaction,
 )
 from backend.chat.message_persistence import (
     ChatFileMessagePersistence,
@@ -1564,6 +1565,11 @@ class ChatService:
                 session=session,
                 forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
             )
+            reactions_by_message_id = self._build_message_reactions(
+                session=session,
+                message_ids=[message.id],
+                current_user_id=int(current_user_id),
+            )
             return self._serialize_message(
                 conversation_kind=conversation.kind,
                 message=message,
@@ -1575,6 +1581,7 @@ class ChatService:
                 reply_previews=reply_previews,
                 forward_previews=forward_previews,
                 attachments=attachments_by_message.get(message.id, []),
+                reactions_by_message_id=reactions_by_message_id,
             )
 
     def get_messages_for_users(
@@ -1644,6 +1651,22 @@ class ChatService:
                 forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
             )
             attachments = attachments_by_message.get(message.id, [])
+            reaction_rows = list(
+                session.execute(
+                    select(ChatMessageReaction).where(
+                        ChatMessageReaction.message_id == message.id,
+                    )
+                ).scalars()
+            )
+            reactions_by_member_user_id = {
+                int(user_id): self._build_message_reactions(
+                    session=session,
+                    message_ids=[message.id],
+                    current_user_id=int(user_id),
+                    reaction_rows=reaction_rows,
+                )
+                for user_id in valid_member_ids
+            }
 
             sender_user_id = int(getattr(message, "sender_user_id", 0) or 0)
             has_sender_view = sender_user_id in valid_member_ids
@@ -1685,24 +1708,25 @@ class ChatService:
                     reply_previews=reply_previews,
                     forward_previews=forward_previews,
                     attachments=attachments,
+                    reactions_by_message_id=reactions_by_member_user_id.get(sender_user_id, {}),
                 )
                 results[sender_user_id] = sender_payload
 
             if recipient_view_user_ids:
-                recipient_payload = self._serialize_message(
-                    conversation_kind=conversation.kind,
-                    message=message,
-                    current_user_id=int(recipient_view_user_ids[0]),
-                    users_by_id=users_by_id,
-                    member_ids=valid_member_ids,
-                    states_by_user_id={},
-                    reads_by_message_id={},
-                    reply_previews=reply_previews,
-                    forward_previews=forward_previews,
-                    attachments=attachments,
-                )
                 for user_id in recipient_view_user_ids:
-                    results[int(user_id)] = recipient_payload
+                    results[int(user_id)] = self._serialize_message(
+                        conversation_kind=conversation.kind,
+                        message=message,
+                        current_user_id=int(user_id),
+                        users_by_id=users_by_id,
+                        member_ids=valid_member_ids,
+                        states_by_user_id={},
+                        reads_by_message_id={},
+                        reply_previews=reply_previews,
+                        forward_previews=forward_previews,
+                        attachments=attachments,
+                        reactions_by_message_id=reactions_by_member_user_id.get(int(user_id), {}),
+                    )
 
         return results
 
@@ -3623,6 +3647,121 @@ class ChatService:
             pass
         return payload
 
+    def add_or_update_reaction(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        message_id: str,
+        reaction_emoji: str,
+    ) -> dict:
+        self._ensure_available()
+        normalized_message_id = _normalize_text(message_id)
+        normalized_reaction = _normalize_text(reaction_emoji)
+        if not normalized_message_id:
+            raise ValueError("message_id is required")
+        if not normalized_reaction:
+            raise ValueError("reaction_emoji is required")
+        if len(normalized_reaction) > 16:
+            raise ValueError("reaction_emoji is too long")
+
+        member_user_ids: list[int] = []
+        with chat_session() as session:
+            conversation = self._require_membership(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            member_user_ids = self._conversation_member_ids(session, conversation.id)
+            message = session.get(ChatMessage, normalized_message_id)
+            if message is None or message.conversation_id != conversation.id:
+                raise LookupError("Message not found")
+            if bool(getattr(message, "is_deleted", False)):
+                raise ValueError("Cannot react to deleted message")
+
+            now = _utc_now()
+            existing = session.execute(
+                select(ChatMessageReaction).where(
+                    ChatMessageReaction.message_id == message.id,
+                    ChatMessageReaction.user_id == int(current_user_id),
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(
+                    ChatMessageReaction(
+                        message_id=message.id,
+                        user_id=int(current_user_id),
+                        reaction_emoji=normalized_reaction,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                existing.reaction_emoji = normalized_reaction
+                existing.updated_at = now
+            session.flush()
+            payload = {
+                "message_id": message.id,
+                "reactions": self._build_message_reactions(
+                    session=session,
+                    message_ids=[message.id],
+                    current_user_id=int(current_user_id),
+                ).get(message.id, []),
+            }
+
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=member_user_ids,
+        )
+        return payload
+
+    def remove_reaction(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        message_id: str,
+    ) -> dict:
+        self._ensure_available()
+        normalized_message_id = _normalize_text(message_id)
+        if not normalized_message_id:
+            raise ValueError("message_id is required")
+
+        member_user_ids: list[int] = []
+        with chat_session() as session:
+            conversation = self._require_membership(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            member_user_ids = self._conversation_member_ids(session, conversation.id)
+            message = session.get(ChatMessage, normalized_message_id)
+            if message is None or message.conversation_id != conversation.id:
+                raise LookupError("Message not found")
+            existing = session.execute(
+                select(ChatMessageReaction).where(
+                    ChatMessageReaction.message_id == message.id,
+                    ChatMessageReaction.user_id == int(current_user_id),
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                session.delete(existing)
+            session.flush()
+            payload = {
+                "message_id": message.id,
+                "reactions": self._build_message_reactions(
+                    session=session,
+                    message_ids=[message.id],
+                    current_user_id=int(current_user_id),
+                ).get(message.id, []),
+            }
+
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=member_user_ids,
+        )
+        return payload
+
     def _build_conversation_payload(
         self,
         session,
@@ -3859,6 +3998,59 @@ class ChatService:
             if int(user_id) > 0
         })
 
+    def _build_message_reactions(
+        self,
+        *,
+        session,
+        message_ids: list[str],
+        current_user_id: int,
+        reaction_rows: Optional[list[ChatMessageReaction]] = None,
+    ) -> dict[str, list[dict]]:
+        normalized_message_ids = [
+            _normalize_text(item)
+            for item in list(message_ids or [])
+            if _normalize_text(item)
+        ]
+        if not normalized_message_ids:
+            return {}
+        rows = list(reaction_rows) if reaction_rows is not None else list(
+            session.execute(
+                select(ChatMessageReaction).where(
+                    ChatMessageReaction.message_id.in_(normalized_message_ids),
+                )
+            ).scalars()
+        )
+        grouped: dict[str, dict[str, dict[str, Any]]] = {}
+        for row in rows:
+            message_id = _normalize_text(getattr(row, "message_id", None))
+            reaction_emoji = _normalize_text(getattr(row, "reaction_emoji", None))
+            if not message_id or not reaction_emoji:
+                continue
+            bucket = grouped.setdefault(message_id, {})
+            item = bucket.setdefault(reaction_emoji, {
+                "reaction_emoji": reaction_emoji,
+                "count": 0,
+                "is_own": False,
+            })
+            item["count"] = max(0, int(item.get("count", 0) or 0) + 1)
+            if int(getattr(row, "user_id", 0) or 0) == int(current_user_id):
+                item["is_own"] = True
+        return {
+            message_id: sorted(
+                [
+                    {
+                        "reaction_emoji": item["reaction_emoji"],
+                        "count": int(item["count"]),
+                        "is_own": bool(item["is_own"]),
+                    }
+                    for item in reactions_by_emoji.values()
+                    if int(item.get("count", 0) or 0) > 0
+                ],
+                key=lambda item: (0 if item["is_own"] else 1, item["reaction_emoji"]),
+            )
+            for message_id, reactions_by_emoji in grouped.items()
+        }
+
     def _serialize_message(
         self,
         *,
@@ -3872,6 +4064,7 @@ class ChatService:
         reply_previews: Optional[dict[str, dict]] = None,
         forward_previews: Optional[dict[str, dict]] = None,
         attachments: Optional[list[dict] | list[ChatMessageAttachment]] = None,
+        reactions_by_message_id: Optional[dict[str, list[dict]]] = None,
     ) -> dict:
         sender = users_by_id.get(int(message.sender_user_id)) or {
             "id": int(message.sender_user_id),
@@ -3926,6 +4119,7 @@ class ChatService:
             "forward_preview": dict((forward_previews or {}).get(_normalize_text(getattr(message, "forward_from_message_id", None))) or {}) or None,
             "task_preview": None if is_deleted else self._deserialize_task_preview(getattr(message, "task_preview_json", None)),
             "attachments": attachment_payload,
+            "reactions": [] if is_deleted else list((reactions_by_message_id or {}).get(message.id, [])),
             "action_card": None if is_deleted else self._get_message_action_card(message_id=message.id),
         }
 
@@ -4436,6 +4630,11 @@ class ChatService:
                 for item in messages
             ],
         )
+        reactions_by_message_id = self._build_message_reactions(
+            session=session,
+            message_ids=[item.id for item in messages],
+            current_user_id=int(current_user_id),
+        )
         return {
             "items": [
                 self._serialize_message(
@@ -4449,6 +4648,7 @@ class ChatService:
                     reply_previews=reply_previews,
                     forward_previews=forward_previews,
                     attachments=attachments_by_message.get(item.id, []),
+                    reactions_by_message_id=reactions_by_message_id,
                 )
                 for item in messages
             ],
@@ -4863,6 +5063,11 @@ class ChatService:
         )
         presence_map = self._get_presence_map(user_ids=payload_user_ids)
         users_by_id = self._get_users_map(presence_map=presence_map, user_ids=payload_user_ids)
+        reactions_by_message_id = self._build_message_reactions(
+            session=session,
+            message_ids=[message.id],
+            current_user_id=int(current_user_id),
+        )
         return self._serialize_message(
             conversation_kind=conversation.kind,
             message=message,
@@ -4879,6 +5084,7 @@ class ChatService:
                 forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
             ),
             attachments=attachments,
+            reactions_by_message_id=reactions_by_message_id,
         )
 
     def _upsert_chat_push_outbox_job(
@@ -5261,6 +5467,7 @@ class ChatService:
             "full_name": _normalize_text(item.get("full_name")) or None,
             "role": _normalize_text(item.get("role")) or "viewer",
             "is_active": bool(item.get("is_active", True)),
+            "avatar_url": _normalize_text(item.get("avatar_url")) or None,
             "presence": dict((presence_map or {}).get(user_id) or self._build_presence_payload(is_online=False, last_seen_at=None)),
         }
 

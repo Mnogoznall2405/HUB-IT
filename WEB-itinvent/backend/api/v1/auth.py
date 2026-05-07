@@ -73,6 +73,14 @@ _LOGIN_BAN_STATE_NAMESPACE = "auth_login_bans"
 _LOGIN_ESCALATION_STATE_NAMESPACE = "auth_login_escalation"
 
 
+def _auth_detail(code: str, message: str) -> dict[str, str]:
+    return {"code": str(code or "AUTH_REQUIRED"), "message": str(message or "Authentication required")}
+
+
+def _auth_http_exception(code: str, message: str, *, status_code: int = 401) -> HTTPException:
+    return HTTPException(status_code=status_code, detail=_auth_detail(code, message))
+
+
 def _request_is_https(request: Request) -> bool:
     forwarded_proto = str(request.headers.get("x-forwarded-proto", "") or "").strip().lower()
     if forwarded_proto:
@@ -849,7 +857,7 @@ async def refresh_auth_tokens(
             window_seconds=60,
             request=request,
         )
-        raise HTTPException(status_code=401, detail="Refresh token is invalid")
+        raise _auth_http_exception("AUTH_REQUIRED", "Refresh token is invalid")
     await run_in_threadpool(
         _enforce_rate_limit,
         namespace="auth_refresh",
@@ -859,25 +867,40 @@ async def refresh_auth_tokens(
         request=request,
     )
     if await run_in_threadpool(auth_runtime_store_service.is_jti_revoked, token_data.jti):
-        raise HTTPException(status_code=401, detail="Refresh token has been revoked")
+        raise _auth_http_exception("AUTH_REQUIRED", "Refresh token has been revoked")
     refresh_state = await run_in_threadpool(auth_runtime_store_service.consume_refresh_token, token_data.jti)
     if not refresh_state:
-        raise HTTPException(status_code=401, detail="Refresh token is expired or already used")
+        await run_in_threadpool(session_service.close_session, str(token_data.session_id), reason="refresh_reused")
+        await run_in_threadpool(session_auth_context_service.delete_session_context, str(token_data.session_id))
+        raise _auth_http_exception("REFRESH_REUSED", "Refresh token is expired or already used")
     await run_in_threadpool(auth_runtime_store_service.revoke_jti, token_data.jti, ttl_seconds=token_ttl_seconds(token_data))
     user = await run_in_threadpool(user_service.get_by_id, int(token_data.user_id))
     if not user:
-        raise HTTPException(status_code=401, detail="User not found")
+        raise _auth_http_exception("AUTH_REQUIRED", "User not found")
+    device_id = str(refresh_state.get("device_id") or token_data.device_id or f"session:{token_data.session_id}")
+    device_validation = await run_in_threadpool(
+        trusted_device_service.validate_token_device,
+        user_id=int(token_data.user_id),
+        token_device_id=device_id,
+        session_id=str(token_data.session_id),
+        user_agent=request.headers.get("user-agent") or "",
+    )
+    if not bool(device_validation.get("valid")):
+        code = str(device_validation.get("code") or "AUTH_REQUIRED")
+        if code in {"SESSION_EXPIRED", "TRUSTED_DEVICE_REVOKED", "STEP_UP_REQUIRED"}:
+            await run_in_threadpool(session_auth_context_service.delete_session_context, str(token_data.session_id))
+        raise _auth_http_exception(code, "Authentication required")
     try:
         refreshed = await run_in_threadpool(
             auth_security_service.refresh_session_tokens,
             user=user,
             session_id=str(token_data.session_id),
-            device_id=str(refresh_state.get("device_id") or token_data.device_id or f"session:{token_data.session_id}"),
+            device_id=device_id,
             network_zone=network_context.network_zone,
             twofa_policy=resolve_twofa_policy(),
         )
     except AuthSecurityError as exc:
-        raise HTTPException(status_code=401, detail=str(exc)) from exc
+        raise _auth_http_exception("SESSION_EXPIRED", str(exc)) from exc
     _set_auth_cookies(
         response,
         access_token=str(refreshed.get("access_token") or ""),
@@ -1127,7 +1150,17 @@ async def revoke_trusted_device(
     device = trusted_device_service.revoke_device(user_id=int(current_user.id), device_id=device_id)
     if not device:
         raise HTTPException(status_code=404, detail="Trusted device not found")
-    return {"success": True, "device_id": device_id}
+    closed_sessions = session_service.close_trusted_device_sessions(
+        user_id=int(current_user.id),
+        trusted_device_id=device_id,
+        reason="trusted_device_revoked",
+    )
+    active_sessions = session_service.list_sessions(active_only=True)
+    session_auth_context_service.prune_active_sessions([
+        str(item.get("session_id") or "").strip()
+        for item in active_sessions
+    ])
+    return {"success": True, "device_id": device_id, "closed_sessions": closed_sessions}
 
 
 @router.post("/users/{user_id}/reset-2fa")

@@ -28,6 +28,14 @@ def test_reference_codec_round_trips_v1_and_v2_message_ids():
     assert codec.decode_message_ref(v2) == ("sent", "exchange-2", "mbox-1")
 
 
+def test_reference_codec_preserves_encoded_custom_folder_in_message_ids():
+    custom_folder_id = codec.encode_folder_id("mailbox", "AAMkAGVmM2QzLTQ0ZC0xMjM")
+    message_id = codec.encode_message_id(custom_folder_id, "exchange-1", mailbox_id="mbox-1")
+
+    assert codec.decode_message_ref(message_id) == (custom_folder_id, "exchange-1", "mbox-1")
+    assert codec.decode_message_id(message_id) == (custom_folder_id, "exchange-1")
+
+
 def test_reference_codec_round_trips_folder_ids():
     token = codec.encode_folder_id("Archive", "folder-1")
 

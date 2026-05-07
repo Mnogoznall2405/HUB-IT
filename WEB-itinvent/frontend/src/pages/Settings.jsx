@@ -71,10 +71,15 @@ import { authAPI, mailAPI, settingsAPI } from '../api/client';
 import { databaseAPI } from '../api/database';
 import { departmentsAPI } from '../api/departments';
 import OverflowMenu from '../components/common/OverflowMenu';
+import { avatarLabel } from '../components/chat/chatHelpers';
 import { useAuth } from '../contexts/AuthContext';
 import { usePreferences } from '../contexts/PreferencesContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
+import {
+  encodeCredential,
+  normalizeRegistrationOptions,
+} from '../lib/webauthnCredentials';
 import {
   getWindowsNotificationState,
   requestBrowserNotificationPermission,
@@ -601,8 +606,139 @@ function SettingsTabPanel({ active, children }) {
   );
 }
 
+function AvatarSection({ user, onAvatarChange }) {
+  const theme = useTheme();
+  const { notifyApiError, notifySuccess } = useNotification();
+  const [uploading, setUploading] = useState(false);
+  const fileInputRef = useRef(null);
+  const avatarUrl = user?.avatar_url || user?.avatarUrl;
+  const label = avatarLabel(user);
+
+  const handleFileSelect = useCallback(async (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      notifyApiError(new Error('Only image files are allowed'), 'Пожалуйста, выберите изображение.');
+      return;
+    }
+    setUploading(true);
+    try {
+      const result = await settingsAPI.uploadAvatar(file);
+      notifySuccess('Аватар обновлён.', { source: 'settings-avatar' });
+      onAvatarChange?.(result?.avatar_url || null);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось загрузить аватар.');
+    } finally {
+      setUploading(false);
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
+    }
+  }, [notifyApiError, notifySuccess, onAvatarChange]);
+
+  const handleDelete = useCallback(async () => {
+    if (!window.confirm('Удалить аватар?')) return;
+    try {
+      await settingsAPI.deleteAvatar();
+      notifySuccess('Аватар удалён.', { source: 'settings-avatar' });
+      onAvatarChange?.(null);
+    } catch (error) {
+      notifyApiError(error, 'Не удалось удалить аватар.');
+    }
+  }, [notifyApiError, notifySuccess, onAvatarChange]);
+
+  return (
+    <SectionCard title="Аватар" description="Изображение профиля, отображаемое в чате и других разделах." contentSx={{ p: 1.5 }}>
+      <Stack direction="row" spacing={2} alignItems="center">
+        <Box
+          sx={{
+            position: 'relative',
+            width: 96,
+            height: 96,
+            flexShrink: 0,
+          }}
+        >
+          {avatarUrl ? (
+            <Box
+              component="img"
+              src={avatarUrl}
+              alt={label}
+              sx={{
+                width: '100%',
+                height: '100%',
+                borderRadius: '999px',
+                objectFit: 'cover',
+                border: `2px solid ${theme.palette.divider}`,
+              }}
+            />
+          ) : (
+            <Box
+              sx={{
+                width: '100%',
+                height: '100%',
+                borderRadius: '999px',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '1.5rem',
+                fontWeight: 700,
+                bgcolor: theme.palette.mode === 'dark' ? '#445161' : alpha(theme.palette.primary.main, 0.14),
+                color: theme.palette.mode === 'dark' ? '#ffffff' : theme.palette.primary.main,
+                border: `2px solid ${theme.palette.divider}`,
+              }}
+            >
+              {label}
+            </Box>
+          )}
+          {uploading ? (
+            <CircularProgress
+              size={24}
+              sx={{
+                position: 'absolute',
+                bottom: -4,
+                right: -4,
+                bgcolor: theme.palette.background.paper,
+                borderRadius: '999px',
+              }}
+            />
+          ) : null}
+        </Box>
+        <Stack direction="row" spacing={1}>
+          <Button
+            variant="outlined"
+            size="small"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+          >
+            {avatarUrl ? 'Изменить' : 'Загрузить'}
+          </Button>
+          {avatarUrl ? (
+            <Button
+              variant="outlined"
+              size="small"
+              color="error"
+              onClick={handleDelete}
+              disabled={uploading}
+            >
+              Удалить
+            </Button>
+          ) : null}
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/jpeg,image/png,image/webp,image/gif"
+            style={{ display: 'none' }}
+            onChange={handleFileSelect}
+          />
+        </Stack>
+      </Stack>
+    </SectionCard>
+  );
+}
+
 function ProfileTab({ user, dbOptions }) {
   const { notifyApiError, notifySuccess } = useNotification();
+  //const { refreshSession } = useAuth();
   const [mailboxes, setMailboxes] = useState([]);
   const [mailboxesLoading, setMailboxesLoading] = useState(true);
   const [mailboxDialogOpen, setMailboxDialogOpen] = useState(false);
@@ -736,8 +872,13 @@ function ProfileTab({ user, dbOptions }) {
     }
   }, [loadMailboxes, notifyApiError, notifySuccess]);
 
+  /*const handleAvatarChange = useCallback((newAvatarUrl) => {
+    refreshSession({ suppressAuthRequired: true });
+  }, [refreshSession]);*/
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1, minHeight: 0 }}>
+      {/* <AvatarSection user={user} onAvatarChange={handleAvatarChange} /> */}
       <SectionCard title="Профиль" description="Основные сведения об учётной записи." contentSx={{ p: 1.5 }}>
         <Grid container spacing={2}>
           <Grid item xs={12} md={6}><ProfileField label="Логин" value={user?.username} /></Grid>
@@ -930,8 +1071,12 @@ function SecurityTab({
   trustedDevices,
   loading,
   resettingTwoFactor,
+  registeringTrustedDevice,
+  trustedDeviceRegistrationReady,
+  trustedDeviceRegistrationLoading,
   onReload,
   onRegenerateBackupCodes,
+  onRegisterTrustedDevice,
   onRevokeTrustedDevice,
   onResetTwoFactor,
 }) {
@@ -978,7 +1123,21 @@ function SecurityTab({
         </Stack>
       </SectionCard>
 
-      <SectionCard title="Доверенные устройства" description="Эти устройства могут подтверждать вход через WebAuthn без ручного ввода TOTP-кода.">
+      <SectionCard
+        title="Доверенные устройства"
+        description="Эти устройства могут подтверждать вход через WebAuthn без ручного ввода TOTP-кода."
+        action={(
+          <Button
+            size="small"
+            variant="contained"
+            startIcon={registeringTrustedDevice ? <CircularProgress size={16} color="inherit" /> : <PhoneIphoneOutlinedIcon />}
+            onClick={onRegisterTrustedDevice}
+            disabled={loading || registeringTrustedDevice || trustedDeviceRegistrationLoading || !trustedDeviceRegistrationReady}
+          >
+            Запомнить это устройство
+          </Button>
+        )}
+      >
         <Stack spacing={1}>
           {loading ? (
             <Stack direction="row" spacing={1} alignItems="center">
@@ -4631,6 +4790,10 @@ function Settings() {
   const [savingAppSettings, setSavingAppSettings] = useState(false);
   const [securityLoading, setSecurityLoading] = useState(false);
   const [resettingTwoFactor, setResettingTwoFactor] = useState(false);
+  const [registeringTrustedDevice, setRegisteringTrustedDevice] = useState(false);
+  const [trustedDeviceRegistrationOptions, setTrustedDeviceRegistrationOptions] = useState(null);
+  const [trustedDeviceOptionsLoading, setTrustedDeviceOptionsLoading] = useState(false);
+  const [trustedDeviceOptionsReloadKey, setTrustedDeviceOptionsReloadKey] = useState(0);
   const [trustedDevices, setTrustedDevices] = useState([]);
   const [backupCodes, setBackupCodes] = useState([]);
   const [backupCodesDialogOpen, setBackupCodesDialogOpen] = useState(false);
@@ -4827,6 +4990,45 @@ function Settings() {
     }
   }, [tab, canManageUsers, canManageSessions, canManageAiBots, isAdmin, loadUsers, loadSessions, loadEnv, loadAppSettings, loadAiBotsAdmin, loadSecurity]);
 
+  useEffect(() => {
+    if (tab !== 'security' || !user?.id) {
+      setTrustedDeviceRegistrationOptions(null);
+      setTrustedDeviceOptionsLoading(false);
+      return undefined;
+    }
+    if (typeof window === 'undefined' || !window.PublicKeyCredential || !navigator.credentials?.create) {
+      setTrustedDeviceRegistrationOptions(null);
+      setTrustedDeviceOptionsLoading(false);
+      return undefined;
+    }
+
+    let cancelled = false;
+    setTrustedDeviceRegistrationOptions(null);
+    setTrustedDeviceOptionsLoading(true);
+
+    authAPI.getTrustedDeviceRegistrationOptions(undefined, { platformOnly: false })
+      .then((options) => {
+        if (!cancelled) {
+          setTrustedDeviceRegistrationOptions(options);
+        }
+      })
+      .catch((error) => {
+        if (!cancelled) {
+          setTrustedDeviceRegistrationOptions(null);
+          notifyApiError(error, 'Не удалось подготовить регистрацию доверенного устройства.', { dedupeMode: 'none' });
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setTrustedDeviceOptionsLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [notifyApiError, tab, trustedDeviceOptionsReloadKey, user?.id]);
+
   const handleSavePreferences = useCallback(async () => {
     setSavingPreferences(true);
     setBlockingError('');
@@ -4869,6 +5071,49 @@ function Settings() {
       notifyApiError(error, 'Не удалось отозвать доверенное устройство.', { dedupeMode: 'none' });
     }
   }, [loadSecurity, notifyApiError, notifySuccess, refreshSession]);
+
+  const handleRegisterTrustedDevice = useCallback(async () => {
+    if (typeof window === 'undefined' || !window.PublicKeyCredential || !navigator.credentials?.create) {
+      notifyInfo('Этот браузер не поддерживает создание доверенного устройства.', { dedupeMode: 'none' });
+      return;
+    }
+    const options = trustedDeviceRegistrationOptions;
+    if (!options?.challenge_id || !options?.public_key) {
+      notifyInfo('Регистрация доверенного устройства ещё не готова. Повторите попытку через несколько секунд.', { dedupeMode: 'none' });
+      setTrustedDeviceOptionsReloadKey((value) => value + 1);
+      return;
+    }
+
+    setRegisteringTrustedDevice(true);
+    try {
+      const credential = await navigator.credentials.create({
+        publicKey: normalizeRegistrationOptions(options.public_key),
+      });
+      await authAPI.verifyTrustedDeviceRegistration(
+        options.challenge_id,
+        encodeCredential(credential),
+        undefined,
+      );
+      await refreshSession({ suppressAuthRequired: true });
+      notifySuccess('Это устройство добавлено в доверенные.', { dedupeMode: 'none' });
+      await loadSecurity();
+      setTrustedDeviceRegistrationOptions(null);
+      setTrustedDeviceOptionsReloadKey((value) => value + 1);
+    } catch (error) {
+      if (String(error?.name || '').trim() === 'InvalidStateError') {
+        notifySuccess('Это устройство уже добавлено в доверенные.', { dedupeMode: 'none' });
+        await loadSecurity();
+        setTrustedDeviceRegistrationOptions(null);
+        setTrustedDeviceOptionsReloadKey((value) => value + 1);
+        return;
+      }
+      setTrustedDeviceRegistrationOptions(null);
+      setTrustedDeviceOptionsReloadKey((value) => value + 1);
+      notifyApiError(error, 'Не удалось запомнить это устройство.', { dedupeMode: 'none' });
+    } finally {
+      setRegisteringTrustedDevice(false);
+    }
+  }, [loadSecurity, notifyApiError, notifyInfo, notifySuccess, refreshSession, trustedDeviceRegistrationOptions]);
 
   const handleReloadSecurity = useCallback(async () => {
     try {
@@ -5317,8 +5562,12 @@ function Settings() {
                   trustedDevices={trustedDevices}
                   loading={securityLoading}
                   resettingTwoFactor={resettingTwoFactor}
+                  registeringTrustedDevice={registeringTrustedDevice}
+                  trustedDeviceRegistrationReady={Boolean(trustedDeviceRegistrationOptions)}
+                  trustedDeviceRegistrationLoading={trustedDeviceOptionsLoading}
                   onReload={handleReloadSecurity}
                   onRegenerateBackupCodes={handleRegenerateBackupCodes}
+                  onRegisterTrustedDevice={handleRegisterTrustedDevice}
                   onRevokeTrustedDevice={handleRevokeTrustedDevice}
                   onResetTwoFactor={handleResetTwoFactor}
                 />

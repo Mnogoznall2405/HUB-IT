@@ -687,7 +687,9 @@ def test_refresh_rejects_replayed_refresh_token(monkeypatch):
     )
 
     assert response.status_code == 401
-    assert "already used" in response.json()["detail"]
+    detail = response.json()["detail"]
+    assert detail["code"] == "REFRESH_REUSED"
+    assert "already used" in detail["message"]
 
 
 def test_auth_me_returns_security_fields(monkeypatch):

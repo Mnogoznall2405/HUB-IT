@@ -90,11 +90,15 @@ const resolveFirstAccessiblePath = (hasPermission, user) => {
 /**
  * Protected Route component - redirects to login if not authenticated
  */
-const ProtectedRoute = ({ children }) => {
+export const ProtectedRoute = ({ children }) => {
   const { isAuthenticated, loading } = useAuth();
 
-  if (loading) {
-    return <Box sx={{ display: 'flex', justifyContent: 'center', mt: 4 }}>Loading...</Box>;
+  if (loading && !isAuthenticated()) {
+    return (
+      <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
+        <BrandedRouteLoader label="Загружаем..." sublabel="Проверяем активную сессию" />
+      </Box>
+    );
   }
 
   if (!isAuthenticated()) {

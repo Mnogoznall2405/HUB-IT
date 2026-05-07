@@ -7,6 +7,7 @@ export const CHAT_SOCKET_SNAPSHOT_EVENT = 'chat-ws-snapshot';
 export const CHAT_SOCKET_MESSAGE_CREATED_EVENT = 'chat-ws-message-created';
 export const CHAT_SOCKET_MESSAGE_DELETED_EVENT = 'chat-ws-message-deleted';
 export const CHAT_SOCKET_MESSAGE_READ_EVENT = 'chat-ws-message-read';
+export const CHAT_SOCKET_MESSAGE_REACTION_CHANGED_EVENT = 'chat-ws-message-reaction-changed';
 export const CHAT_SOCKET_CONVERSATION_UPDATED_EVENT = 'chat-ws-conversation-updated';
 export const CHAT_SOCKET_CONVERSATION_REMOVED_EVENT = 'chat-ws-conversation-removed';
 export const CHAT_SOCKET_UNREAD_SUMMARY_EVENT = 'chat-ws-unread-summary';
@@ -175,6 +176,20 @@ class ChatSocketClient {
       conversation_id: normalizedConversationId,
       payload: {
         message_id: String(messageId || '').trim(),
+      },
+    }, {
+      requireOpen: true,
+    });
+  }
+
+  async sendReaction(conversationId, messageId, reactionEmoji) {
+    const normalizedConversationId = normalizeConversationId(conversationId);
+    return this.sendCommand({
+      type: 'chat.send_reaction',
+      conversation_id: normalizedConversationId,
+      payload: {
+        message_id: String(messageId || '').trim(),
+        reaction_emoji: reactionEmoji || null,
       },
     }, {
       requireOpen: true,
@@ -377,6 +392,10 @@ class ChatSocketClient {
     }
     if (eventType === 'chat.message.read') {
       dispatchWindowEvent(CHAT_SOCKET_MESSAGE_READ_EVENT, envelope);
+      return;
+    }
+    if (eventType === 'chat.message.reaction_changed') {
+      dispatchWindowEvent(CHAT_SOCKET_MESSAGE_REACTION_CHANGED_EVENT, envelope);
       return;
     }
     if (eventType === 'chat.conversation.updated') {

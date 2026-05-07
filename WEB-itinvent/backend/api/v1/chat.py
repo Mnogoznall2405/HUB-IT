@@ -39,6 +39,8 @@ from backend.chat.schemas import (
     ChatUploadSessionResponse,
     ChatMessageReadsResponse,
     ChatMessageListResponse,
+    ChatMessageReactionRequest,
+    ChatMessageReactionsResponse,
     ChatMessageResponse,
     ChatMemberRoleUpdateRequest,
     ChatOwnershipTransferRequest,
@@ -616,6 +618,42 @@ async def _publish_message_read(
         await asyncio.gather(*publish_tasks)
 
 
+async def _publish_message_reaction_changed(
+    *,
+    conversation_id: str,
+    message_id: str,
+) -> None:
+    member_user_ids = await _run_chat_call(
+        chat_service.get_conversation_member_ids,
+        conversation_id=conversation_id,
+    )
+    member_ids = sorted({
+        int(item)
+        for item in list(member_user_ids or [])
+        if int(item) > 0
+    })
+    if not member_ids:
+        return
+
+    messages_by_user = await _run_chat_call(
+        chat_service.get_messages_for_users,
+        message_id=message_id,
+        user_ids=member_ids,
+    )
+    publish_tasks = [
+        chat_realtime.publish_conversation_event(
+            user_id=int(member_user_id),
+            conversation_id=conversation_id,
+            event_type="chat.message.reaction_changed",
+            payload=payload,
+        )
+        for member_user_id in member_ids
+        if (payload := messages_by_user.get(member_user_id)) is not None
+    ]
+    if publish_tasks:
+        await asyncio.gather(*publish_tasks)
+
+
 async def _publish_message_created_after_send(*, conversation_id: str, message_id: str) -> None:
     started_at = time.perf_counter()
     try:
@@ -1078,6 +1116,66 @@ async def delete_chat_message(
                 label="publish_message_deleted_system_event",
             )
         return message
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.post("/conversations/{conversation_id}/messages/{message_id}/reaction", response_model=ChatMessageReactionsResponse)
+async def set_chat_message_reaction(
+    conversation_id: str,
+    message_id: str,
+    payload: ChatMessageReactionRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        if payload.reaction_emoji:
+            result = await _run_chat_call(
+                chat_service.add_or_update_reaction,
+                current_user_id=int(current_user.id),
+                conversation_id=conversation_id,
+                message_id=message_id,
+                reaction_emoji=payload.reaction_emoji,
+            )
+        else:
+            result = await _run_chat_call(
+                chat_service.remove_reaction,
+                current_user_id=int(current_user.id),
+                conversation_id=conversation_id,
+                message_id=message_id,
+            )
+        _schedule_chat_background_task(
+            _publish_message_reaction_changed(
+                conversation_id=conversation_id,
+                message_id=message_id,
+            ),
+            label="publish_message_reaction_changed",
+        )
+        return result
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.delete("/conversations/{conversation_id}/messages/{message_id}/reaction", response_model=ChatMessageReactionsResponse)
+async def delete_chat_message_reaction(
+    conversation_id: str,
+    message_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        result = await _run_chat_call(
+            chat_service.remove_reaction,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+        )
+        _schedule_chat_background_task(
+            _publish_message_reaction_changed(
+                conversation_id=conversation_id,
+                message_id=message_id,
+            ),
+            label="publish_message_reaction_changed",
+        )
+        return result
     except Exception as exc:
         _raise_chat_http_error(exc)
 
@@ -1923,6 +2021,55 @@ async def chat_websocket(websocket: WebSocket):
                             read_at=read_payload.get("read_at"),
                         ),
                         label="publish_message_read",
+                    )
+                    continue
+
+                if message_type == "chat.send_reaction":
+                    ensure_user_permission(current_user, PERM_CHAT_WRITE)
+                    if not conversation_id:
+                        raise ValueError("conversation_id is required")
+                    message_id = str(payload.get("message_id") or "").strip()
+                    if not message_id:
+                        raise ValueError("message_id is required")
+                    reaction_emoji = _normalize_text(payload.get("reaction_emoji"))
+                    command_started_at = time.perf_counter()
+                    if reaction_emoji:
+                        reaction_payload = await _run_chat_call(
+                            chat_service.add_or_update_reaction,
+                            current_user_id=int(current_user.id),
+                            conversation_id=conversation_id,
+                            message_id=message_id,
+                            reaction_emoji=reaction_emoji,
+                        )
+                    else:
+                        reaction_payload = await _run_chat_call(
+                            chat_service.remove_reaction,
+                            current_user_id=int(current_user.id),
+                            conversation_id=conversation_id,
+                            message_id=message_id,
+                        )
+                    await chat_realtime.send_command_ok(
+                        connection_id,
+                        request_id=request_id,
+                        conversation_id=conversation_id,
+                        payload=reaction_payload,
+                    )
+                    _log_ws_command_timing(
+                        "send_reaction",
+                        command_started_at,
+                        connection_id=connection_id,
+                        request_id=request_id or "-",
+                        user_id=int(current_user.id),
+                        conversation_id=conversation_id,
+                        message_id=message_id,
+                        has_reaction=int(bool(reaction_emoji)),
+                    )
+                    _schedule_chat_background_task(
+                        _publish_message_reaction_changed(
+                            conversation_id=conversation_id,
+                            message_id=message_id,
+                        ),
+                        label="publish_message_reaction_changed",
                     )
                     continue
 

@@ -92,4 +92,46 @@ describe('Chat page cache helpers', () => {
 
     expect(next.map((message) => message.id)).toEqual(['msg-2']);
   });
+
+  it('updates a rendered message when only reactions change', () => {
+    const currentMessage = {
+      id: 'msg-1',
+      conversation_id: 'conv-1',
+      body: 'hello',
+      created_at: '2026-04-28T08:00:00.000Z',
+      reactions: [],
+    };
+    const reactedMessage = {
+      ...currentMessage,
+      reactions: [{ reaction_emoji: '\u{2764}\u{FE0F}', count: 1, is_own: true }],
+    };
+
+    const next = reconcileThreadMessages([currentMessage], [reactedMessage], {
+      conversationId: 'conv-1',
+    });
+
+    expect(next[0]).not.toBe(currentMessage);
+    expect(next[0].reactions).toEqual([{ reaction_emoji: '\u{2764}\u{FE0F}', count: 1, is_own: true }]);
+  });
+
+  it('updates message sender when avatar_url changes', () => {
+    const currentMessage = {
+      id: 'msg-1',
+      conversation_id: 'conv-1',
+      body: 'hello',
+      created_at: '2026-04-28T08:00:00.000Z',
+      sender: { id: 1, username: 'user1', full_name: 'User One', avatar_url: '' },
+    };
+    const updatedMessage = {
+      ...currentMessage,
+      sender: { id: 1, username: 'user1', full_name: 'User One', avatar_url: '/api/v1/settings/avatar/1/file?v=123' },
+    };
+
+    const next = reconcileThreadMessages([currentMessage], [updatedMessage], {
+      conversationId: 'conv-1',
+    });
+
+    expect(next[0]).not.toBe(currentMessage);
+    expect(next[0].sender.avatar_url).toBe('/api/v1/settings/avatar/1/file?v=123');
+  });
 });
