@@ -4506,12 +4506,15 @@ export default function Chat() {
     sidebarSearchActive,
     shouldPollActiveThreadIncrementally,
     threadPollMs: THREAD_POLL_MS,
+codex/investigate-chat-transition-issue-w18how
     isChatRouteActive: () => {
       const currentPath = typeof window !== 'undefined'
         ? String(window.location?.pathname || '')
         : String(location.pathname || '');
       return currentPath.startsWith('/chat');
-    },
+    }
+    isChatRouteActive: () => String(location.pathname || '').startsWith('/chat'),
+main
   });
 
   useChatAiStatusPolling({
