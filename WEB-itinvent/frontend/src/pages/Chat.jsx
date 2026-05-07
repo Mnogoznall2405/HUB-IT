@@ -4479,12 +4479,20 @@ export default function Chat() {
     navigate({ pathname: '/chat', search: nextSearch ? `?${nextSearch}` : '' }, { replace: true });
   }, [activeConversationId, conversationBootstrapComplete, isMobile, location.pathname, location.search, navigate]);
 
+  const chatRouteActiveNow = (() => {
+    const windowPath = typeof window !== 'undefined'
+      ? String(window.location?.pathname || '')
+      : '';
+    const locationPath = String(location.pathname || '');
+    return windowPath.startsWith('/chat') || locationPath.startsWith('/chat');
+  })();
+
   useChatActiveThreadPolling({
     activeConversationId,
     activeConversationIdRef,
     activeThreadTransportState,
     buildActiveThreadPollLoadOptions,
-    conversationBootstrapComplete,
+    conversationBootstrapComplete: conversationBootstrapComplete && chatRouteActiveNow,
     degradedThreadRevalidateCountRef,
     incrementalPollMs: ACTIVE_THREAD_INCREMENTAL_POLL_MS,
     lastConversationsLoadAtRef,
@@ -4499,6 +4507,13 @@ export default function Chat() {
     sidebarSearchActive,
     shouldPollActiveThreadIncrementally,
     threadPollMs: THREAD_POLL_MS,
+    isChatRouteActive: () => {
+      const windowPath = typeof window !== 'undefined'
+        ? String(window.location?.pathname || '')
+        : '';
+      const locationPath = String(location.pathname || '');
+      return windowPath.startsWith('/chat') || locationPath.startsWith('/chat');
+    },
   });
 
   useChatAiStatusPolling({
