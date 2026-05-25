@@ -41,9 +41,40 @@ QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY = """
         l.LOC_NO
 """
 
+QUERY_GET_LOCATIONS_BY_BRANCH_COLUMN = """
+    SELECT
+        l.LOC_NO as LOC_NO,
+        l.DESCR as LOC_NAME,
+        l.BRANCH_NO as BRANCH_NO
+    FROM LOCATIONS l
+    WHERE l.LOC_NO IS NOT NULL
+      AND l.BRANCH_NO = ?
+    ORDER BY l.DESCR, l.LOC_NO
+"""
+
+QUERY_LOCATIONS_HAS_BRANCH_COLUMN = """
+    SELECT TOP 1 1 as ok
+    FROM INFORMATION_SCHEMA.COLUMNS
+    WHERE TABLE_NAME = 'LOCATIONS'
+      AND COLUMN_NAME = 'BRANCH_NO'
+"""
+
 
 def _get_db(db_id: Optional[str], get_db_fn: Optional[Callable[[Optional[str]], Any]]) -> Any:
     return (get_db_fn or _default_get_db)(db_id)
+
+
+def locations_has_branch_column(
+    db_id: Optional[str] = None,
+    *,
+    get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
+) -> bool:
+    """Return whether LOCATIONS has an explicit BRANCH_NO relation column."""
+    db = _get_db(db_id, get_db_fn)
+    try:
+        return bool(db.execute_query(QUERY_LOCATIONS_HAS_BRANCH_COLUMN))
+    except Exception:
+        return False
 
 
 def get_all_branches(
@@ -90,15 +121,21 @@ def get_all_locations(
     normalized_branch = None if branch_no in (None, "", "null") else branch_no
     if normalized_branch is None:
         rows = db.execute_query(QUERY_GET_ALL_LOCATIONS)
+    elif locations_has_branch_column(db_id, get_db_fn=get_db_fn):
+        rows = db.execute_query(QUERY_GET_LOCATIONS_BY_BRANCH_COLUMN, (normalized_branch,))
     else:
         rows = db.execute_query(QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY, (normalized_branch,))
-    return [
-        {
+    result = []
+    for row in rows:
+        item = {
             "loc_no": row.get("loc_no", row.get("LOC_NO")),
             "loc_name": row.get("loc_name", row.get("LOC_NAME")),
         }
-        for row in rows
-    ]
+        row_branch_no = row.get("branch_no", row.get("BRANCH_NO"))
+        if row_branch_no is not None:
+            item["branch_no"] = row_branch_no
+        result.append(item)
+    return result
 
 
 def get_branch_by_no(
@@ -137,3 +174,29 @@ def get_location_by_no(
     """
     rows = db.execute_query(query, (loc_no,))
     return rows[0] if rows else None
+
+
+def is_location_in_branch(
+    loc_no: Any,
+    branch_no: Any,
+    db_id: Optional[str] = None,
+    *,
+    get_db_fn: Optional[Callable[[Optional[str]], Any]] = None,
+) -> bool:
+    """Validate LOCATIONS.BRANCH_NO when the schema supports branch-specific locations."""
+    if loc_no in (None, "") or branch_no in (None, ""):
+        return False
+    if not locations_has_branch_column(db_id, get_db_fn=get_db_fn):
+        return True
+
+    db = _get_db(db_id, get_db_fn)
+    rows = db.execute_query(
+        """
+        SELECT TOP 1 1 as ok
+        FROM LOCATIONS l
+        WHERE l.LOC_NO = ?
+          AND l.BRANCH_NO = ?
+        """,
+        (loc_no, branch_no),
+    )
+    return bool(rows)

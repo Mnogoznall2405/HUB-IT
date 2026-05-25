@@ -3,7 +3,9 @@ from __future__ import annotations
 import json
 import logging
 import os
+import random
 import re
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -33,6 +35,31 @@ JSON_RETRYABLE_ERROR_MARKERS = (
     "invalid parameter",
     "bad request",
 )
+# Markers for transient errors that benefit from retry with backoff (network/server-side issues)
+TRANSIENT_ERROR_MARKERS = (
+    "timeout",
+    "timed out",
+    "connection",
+    "connect",
+    "rate limit",
+    "rate_limit",
+    "429",
+    "502",
+    "503",
+    "504",
+    "bad gateway",
+    "service unavailable",
+    "gateway timeout",
+    "temporarily",
+    "internal server error",
+    "500",
+    "read timeout",
+    "remote disconnected",
+    "incomplete read",
+)
+DEFAULT_MAX_TRANSIENT_RETRIES = int(os.environ.get("AI_OPENROUTER_MAX_RETRIES", "3"))
+DEFAULT_RETRY_BASE_DELAY_SEC = float(os.environ.get("AI_OPENROUTER_RETRY_BASE_DELAY", "0.8"))
+DEFAULT_RETRY_MAX_DELAY_SEC = float(os.environ.get("AI_OPENROUTER_RETRY_MAX_DELAY", "8.0"))
 
 
 class OpenRouterClientError(RuntimeError):
@@ -101,16 +128,28 @@ def _extract_json_payload(text: str) -> dict[str, Any]:
     wrapped = re.match(r"^```(?:json)?\s*([\s\S]*?)```$", normalized, flags=re.IGNORECASE)
     if wrapped:
         normalized = str(wrapped.group(1) or "").strip()
+    # 1) Direct JSON parsing.
     try:
         payload = json.loads(normalized)
         return payload if isinstance(payload, dict) else {}
     except Exception as exc:
+        # 2) Fallback: extract first balanced JSON object substring.
         start = normalized.find("{")
         end = normalized.rfind("}")
         if 0 <= start < end:
+            candidate = normalized[start : end + 1]
             try:
-                payload = json.loads(normalized[start : end + 1])
-                return payload if isinstance(payload, dict) else {}
+                payload = json.loads(candidate)
+                if isinstance(payload, dict):
+                    return payload
+            except Exception:
+                pass
+            # 3) Last-resort: strip trailing commas and re-try (common LLM typo).
+            try:
+                cleaned = re.sub(r",\s*([}\]])", r"\1", candidate)
+                payload = json.loads(cleaned)
+                if isinstance(payload, dict):
+                    return payload
             except Exception:
                 pass
         raise OpenRouterClientError("LLM returned invalid JSON payload.") from exc
@@ -119,6 +158,25 @@ def _extract_json_payload(text: str) -> dict[str, Any]:
 def _is_json_mode_retryable_error(exc: Exception) -> bool:
     text = str(exc or "").lower()
     return any(marker in text for marker in JSON_RETRYABLE_ERROR_MARKERS)
+
+
+def _is_transient_error(exc: Exception) -> bool:
+    """Detect transient errors (network/timeout/rate-limit/5xx) worth retrying with backoff."""
+    text = str(exc or "").lower()
+    if any(marker in text for marker in TRANSIENT_ERROR_MARKERS):
+        return True
+    # Match HTTP status codes shaped like 'status code: 502' / 'http 503'.
+    if re.search(r"\b(?:5\d{2}|429)\b", text):
+        return True
+    return False
+
+
+def _retry_delay_seconds(attempt_index: int) -> float:
+    """Compute exponential backoff with jitter for retry attempt (1-based)."""
+    base = max(0.05, DEFAULT_RETRY_BASE_DELAY_SEC) * (2 ** max(0, attempt_index - 1))
+    capped = min(DEFAULT_RETRY_MAX_DELAY_SEC, base)
+    jitter = random.uniform(0.0, max(0.05, capped * 0.2))
+    return capped + jitter
 
 
 def _build_response_format(
@@ -216,8 +274,33 @@ class OpenRouterClient:
                 request_kwargs["extra_body"] = {"plugins": [{"id": "response-healing"}]}
             return client.chat.completions.create(**request_kwargs)
 
+        def _request_with_transient_retry(*, use_schema: bool, use_response_healing: bool):
+            """Call _request with exponential backoff retry on transient errors only."""
+            last_exc: Exception | None = None
+            attempts = max(1, DEFAULT_MAX_TRANSIENT_RETRIES)
+            for attempt in range(1, attempts + 1):
+                try:
+                    return _request(use_schema=use_schema, use_response_healing=use_response_healing)
+                except Exception as exc:
+                    last_exc = exc
+                    if not _is_transient_error(exc) or attempt >= attempts:
+                        raise
+                    delay = _retry_delay_seconds(attempt)
+                    logger.warning(
+                        "AI chat transient error; retrying in %.2fs: model=%s attempt=%s/%s error=%s",
+                        delay,
+                        resolved_model,
+                        attempt,
+                        attempts,
+                        exc,
+                    )
+                    time.sleep(delay)
+            if last_exc is not None:
+                raise last_exc
+            raise OpenRouterClientError("Failed to call OpenRouter (no response).")
+
         try:
-            completion = _request(
+            completion = _request_with_transient_retry(
                 use_schema=bool(response_schema),
                 use_response_healing=bool(response_healing),
             )
@@ -229,7 +312,7 @@ class OpenRouterClient:
                     exc,
                 )
                 try:
-                    completion = _request(use_schema=False, use_response_healing=False)
+                    completion = _request_with_transient_retry(use_schema=False, use_response_healing=False)
                 except Exception as fallback_exc:
                     logger.warning("AI chat completion failed: model=%s error=%s", resolved_model, fallback_exc)
                     raise OpenRouterClientError("Failed to call OpenRouter.") from fallback_exc
@@ -264,8 +347,9 @@ class OpenRouterClient:
                 "image_url": {"url": data_url},
             },
         ]
-        try:
-            completion = client.chat.completions.create(
+
+        def _do_call():
+            return client.chat.completions.create(
                 model=resolved_model,
                 temperature=0.0,
                 max_tokens=1800,
@@ -274,10 +358,31 @@ class OpenRouterClient:
                     {"role": "user", "content": user_content},
                 ],
             )
-        except Exception as exc:
-            logger.warning("AI image OCR failed: model=%s error=%s", resolved_model, exc)
-            return ""
-        return _extract_completion_text(completion)
+
+        attempts = max(1, DEFAULT_MAX_TRANSIENT_RETRIES)
+        last_exc: Exception | None = None
+        for attempt in range(1, attempts + 1):
+            try:
+                completion = _do_call()
+                return _extract_completion_text(completion)
+            except Exception as exc:
+                last_exc = exc
+                if not _is_transient_error(exc) or attempt >= attempts:
+                    logger.warning("AI image OCR failed: model=%s error=%s", resolved_model, exc)
+                    return ""
+                delay = _retry_delay_seconds(attempt)
+                logger.warning(
+                    "AI image OCR transient error; retrying in %.2fs: model=%s attempt=%s/%s error=%s",
+                    delay,
+                    resolved_model,
+                    attempt,
+                    attempts,
+                    exc,
+                )
+                time.sleep(delay)
+        if last_exc is not None:
+            logger.warning("AI image OCR failed after retries: model=%s error=%s", resolved_model, last_exc)
+        return ""
 
 
 openrouter_client = OpenRouterClient()

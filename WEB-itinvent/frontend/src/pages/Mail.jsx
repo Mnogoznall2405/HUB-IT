@@ -31,6 +31,7 @@ import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { mailAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
+import { useNotification } from '../contexts/NotificationContext';
 import useDebounce from '../hooks/useDebounce';
 import {
   getOrFetchSWR,
@@ -93,6 +94,7 @@ import {
 } from '../components/mail/mailListModel';
 import {
   buildMailRoute,
+  normalizeMailFolder,
   normalizeMailListViewContextState,
   normalizeMailViewMode,
   readStoredMailListViewState,
@@ -105,10 +107,12 @@ import {
   getMailboxEntryId,
   mergeMailboxEntries,
   normalizeMailboxId,
+  readStoredSelectedMailboxId,
   resolveComposeMailboxId as resolveMailboxComposeMailboxId,
   resolveItemMailboxId as resolveMailboxItemMailboxId,
   withMailboxParams,
   withMailboxPayload,
+  writeStoredSelectedMailboxId,
 } from '../components/mail/mailMailboxModel';
 import {
   buildMailDetailCacheKey,
@@ -378,17 +382,41 @@ function Mail() {
   const navigate = useNavigate();
   const location = useLocation();
   const { hasPermission, user } = useAuth();
+  const { notifySuccess, notifyInfo, notifyWarning } = useNotification();
+  const notifyMailSuccess = useCallback((value, options = {}) => {
+    const text = String(value || '').trim();
+    if (!text) return;
+    notifySuccess(text, { source: 'mail', dedupeMode: 'none', ...options });
+  }, [notifySuccess]);
+  const notifyMailComposeWarning = useCallback((warning) => {
+    const message = String(warning?.message || '').trim();
+    if (!message) return;
+    const severity = String(warning?.severity || 'warning');
+    const notify = severity === 'info' ? notifyInfo : notifyWarning;
+    notify(message, {
+      source: warning?.source || 'mail-compose',
+      title: String(warning?.title || (severity === 'info' ? 'Информация' : 'Предупреждение')).trim(),
+      dedupeMode: 'recent',
+      dedupeKey: warning?.dedupeKey || `mail-compose:${String(warning?.id || message)}`,
+      durationMs: Number(warning?.durationMs || 4500),
+    });
+  }, [notifyInfo, notifyWarning]);
   const initialRouteMailboxId = useMemo(
     () => normalizeMailboxId(new URLSearchParams(location.search || '').get('mailbox_id')),
     [location.search]
   );
+  const initialStoredMailboxId = useMemo(
+    () => (initialRouteMailboxId ? '' : readStoredSelectedMailboxId()),
+    [initialRouteMailboxId]
+  );
+  const initialSelectedMailboxId = initialRouteMailboxId || initialStoredMailboxId;
   const initialMailViewState = useMemo(
-    () => readStoredMailViewState(initialRouteMailboxId, { defaultAdvancedFilters: DEFAULT_ADVANCED_FILTERS }),
-    [initialRouteMailboxId],
+    () => readStoredMailViewState(initialSelectedMailboxId, { defaultAdvancedFilters: DEFAULT_ADVANCED_FILTERS }),
+    [initialSelectedMailboxId],
   );
   const initialMailCacheScope = useMemo(
-    () => initialRouteMailboxId || String(user?.id || 'anonymous'),
-    [initialRouteMailboxId, user?.id]
+    () => initialSelectedMailboxId || String(user?.id || 'anonymous'),
+    [initialSelectedMailboxId, user?.id]
   );
   const initialMailRecentContextKey = useMemo(() => buildMailListRequestContext({
     scope: initialMailCacheScope,
@@ -412,7 +440,6 @@ function Mail() {
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
 
   const [folder, setFolder] = useState(initialMailViewState.folder);
   const [viewMode, setViewMode] = useState(initialMailViewState.viewMode);
@@ -425,7 +452,7 @@ function Mail() {
 
   const [mailboxInfo, setMailboxInfo] = useState(null);
   const [mailboxes, setMailboxes] = useState([]);
-  const [selectedMailboxId, setSelectedMailboxId] = useState(initialRouteMailboxId);
+  const [selectedMailboxId, setSelectedMailboxId] = useState(initialSelectedMailboxId);
   const [mailConfigLoading, setMailConfigLoading] = useState(true);
   const [mailCredentialsOpen, setMailCredentialsOpen] = useState(false);
   const [mailCredentialsSaving, setMailCredentialsSaving] = useState(false);
@@ -542,6 +569,11 @@ function Mail() {
     () => normalizeMailboxId(selectedMailboxId || mailboxInfo?.mailbox_id || initialRouteMailboxId),
     [initialRouteMailboxId, mailboxInfo?.mailbox_id, selectedMailboxId]
   );
+  useEffect(() => {
+    if (activeMailboxId) {
+      writeStoredSelectedMailboxId(activeMailboxId);
+    }
+  }, [activeMailboxId]);
   const {
     begin: beginAutoReadGuard,
     settle: settleAutoReadGuard,
@@ -749,7 +781,8 @@ function Mail() {
     if (!activeMailboxId) return;
     if (lastAppliedMailboxViewStateRef.current === activeMailboxId) return;
     const searchParams = new URLSearchParams(location.search || '');
-    const routeFolder = String(searchParams.get('folder') || '').trim().toLowerCase();
+    const rawRouteFolder = String(searchParams.get('folder') || '').trim();
+    const routeFolder = rawRouteFolder ? normalizeMailFolder(rawRouteFolder) : '';
     const routeMessageId = String(searchParams.get('message') || '').trim();
     const storedState = readStoredMailViewState(activeMailboxId, { defaultAdvancedFilters: DEFAULT_ADVANCED_FILTERS });
     lastAppliedMailboxViewStateRef.current = activeMailboxId;
@@ -1091,11 +1124,13 @@ function Mail() {
   useEffect(() => {
     const searchParams = new URLSearchParams(location.search || '');
     const nextMailboxId = normalizeMailboxId(searchParams.get('mailbox_id'));
-    const nextFolder = String(searchParams.get('folder') || '').trim().toLowerCase();
+    const rawNextFolder = String(searchParams.get('folder') || '').trim();
+    const nextFolder = rawNextFolder ? normalizeMailFolder(rawNextFolder) : '';
     const nextMessageId = String(searchParams.get('message') || '').trim();
     if (nextMailboxId && nextMailboxId !== activeMailboxId) {
       lastAppliedMailboxViewStateRef.current = '';
       setSelectedMailboxId(nextMailboxId);
+      writeStoredSelectedMailboxId(nextMailboxId);
       return;
     }
     if (!nextMessageId) {
@@ -1163,6 +1198,7 @@ function Mail() {
     setMoveTarget('');
     setMailboxInfo(null);
     setSelectedMailboxId(normalizedMailboxId);
+    writeStoredSelectedMailboxId(normalizedMailboxId);
     setMailConfigLoading(true);
     setLoading(false);
     setMailBackgroundRefreshing(false);
@@ -1192,7 +1228,7 @@ function Mail() {
       setMailboxInfo(data || null);
       setMailboxes((prev) => mergeMailboxEntries(prev, data || null));
       const resolvedMailboxId = getMailboxEntryId(data);
-      if (resolvedMailboxId) {
+      if (resolvedMailboxId && (!activeMailboxId || resolvedMailboxId === activeMailboxId)) {
         setSelectedMailboxId(resolvedMailboxId);
       }
       return data || null;
@@ -1263,7 +1299,7 @@ function Mail() {
     mailAPI,
     canManageTemplates: canManageUsers,
     onError: setError,
-    onMessage: setMessage,
+    onMessage: notifyMailSuccess,
   });
   const {
     templates,
@@ -1292,7 +1328,7 @@ function Mail() {
     handleMailCredentialsRequired,
     getMailErrorDetail,
     onError: setError,
-    onMessage: setMessage,
+    onMessage: notifyMailSuccess,
   });
 
   const refreshMailPreferences = useCallback(async () => {
@@ -1809,11 +1845,11 @@ function Mail() {
 
   const handleComposeSent = useCallback(async () => {
     setComposeSession(null);
-    setMessage('Письмо отправлено.');
+    notifyMailSuccess('Письмо отправлено.');
     invalidateMailClientCache();
     await refreshList({ silent: true, force: true });
     await refreshFolderSummary();
-  }, [invalidateMailClientCache, refreshFolderSummary, refreshList]);
+  }, [invalidateMailClientCache, notifyMailSuccess, refreshFolderSummary, refreshList]);
 
   const {
     signatureOpen,
@@ -1836,7 +1872,7 @@ function Mail() {
     handleMailCredentialsRequired,
     getMailErrorDetail,
     onError: setError,
-    onMessage: setMessage,
+    onMessage: notifyMailSuccess,
   });
 
   const handleSaveMailCredentials = useCallback(async () => {
@@ -1861,7 +1897,7 @@ function Mail() {
       setMailCredentialsPassword('');
       setMailCredentialsOpen(false);
       setError('');
-      setMessage('Корпоративный пароль сохранён в профиле. Этот ящик доступен на всех ваших устройствах.');
+      notifyMailSuccess('Корпоративный пароль сохранён в профиле. Этот ящик доступен на всех ваших устройствах.');
       invalidateMailClientCache();
       await refreshBootstrap({ force: true });
     } catch (requestError) {
@@ -1876,6 +1912,7 @@ function Mail() {
     mailCredentialsLogin,
     mailCredentialsPassword,
     invalidateMailClientCache,
+    notifyMailSuccess,
     refreshBootstrap,
   ]);
 
@@ -1904,7 +1941,7 @@ function Mail() {
     handleMailCredentialsRequired,
     getMailErrorDetail,
     onError: setError,
-    onMessage: setMessage,
+    onMessage: notifyMailSuccess,
   });
 
   const handleSaveMailPreferences = useCallback(async () => {
@@ -1915,13 +1952,13 @@ function Mail() {
       setMailPreferences(nextValue);
       setMailPreferencesDraft(nextValue);
       setMailPreferencesOpen(false);
-      setMessage('Настройки вида сохранены.');
+      notifyMailSuccess('Настройки вида сохранены.');
     } catch (requestError) {
       setError(requestError?.response?.data?.detail || 'Не удалось сохранить настройки вида.');
     } finally {
       setMailPreferencesSaving(false);
     }
-  }, [mailPreferencesDraft]);
+  }, [mailPreferencesDraft, notifyMailSuccess]);
 
   const {
     selectedMessageIds,
@@ -1948,7 +1985,7 @@ function Mail() {
     handleMailCredentialsRequired,
     getMailErrorDetail,
     onError: setError,
-    onMessage: setMessage,
+    onMessage: notifyMailSuccess,
   });
 
   const {
@@ -1996,7 +2033,7 @@ function Mail() {
         });
       }
       await afterListMutation({ clearBulkSelection: false });
-      setMessage(`Отмечено как прочитанное: ${Number(data?.changed || 0)}.`);
+      notifyMailSuccess(`Отмечено как прочитанное: ${Number(data?.changed || 0)}.`);
     } catch (requestError) {
       if (!(await handleMailCredentialsRequired(requestError, 'Не удалось отметить письма как прочитанные.'))) {
         setError(getMailErrorDetail(requestError, 'Не удалось отметить письма как прочитанные.'));
@@ -2009,6 +2046,7 @@ function Mail() {
     applyConversationReadStateLocally,
     applyMessageReadStateLocally,
     folder,
+    notifyMailSuccess,
     selectedConversation,
     selectedMessage,
     viewMode,
@@ -2280,7 +2318,7 @@ function Mail() {
     setAdvancedSearchOpen(true);
   }, [advancedFiltersApplied, search]);
   const handleFolderChange = useCallback((value) => {
-    const nextFolder = String(value || 'inbox');
+    const nextFolder = normalizeMailFolder(value);
     if (nextFolder === folder) {
       closeMobileNavigationIfNeeded();
       return;
@@ -2531,6 +2569,7 @@ function Mail() {
         onCloseSession={() => setComposeSession(null)}
         onRegisterCloseHandler={(handler) => { composeCloseRequestRef.current = handler; }}
         onSendSuccess={handleComposeSent}
+        onComposeWarning={notifyMailComposeWarning}
         handleMailCredentialsRequired={handleMailCredentialsRequired}
         getMailErrorDetail={getMailErrorDetail}
       />
@@ -2634,6 +2673,7 @@ function Mail() {
           message={selectedMessage}
           renderState={selectedMessageRenderState}
           ui={ui}
+          isMobile={isMobile}
           formatFileSize={formatFileSize}
           getRenderedContentSx={(options = {}) => getMailRenderedContentSx({ ...options, theme })}
           onRevealRemoteImages={revealRemoteImagesForMessage}
@@ -2919,7 +2959,6 @@ function Mail() {
         }}
       >
         {showPageChrome && error ? <Alert severity="error" onClose={() => setError('')} sx={{ borderRadius: ui.radiusMd, mb: 1 }}>{error}</Alert> : null}
-        {showPageChrome && message ? <Alert severity="success" onClose={() => setMessage('')} sx={{ borderRadius: ui.radiusMd, mb: 1 }}>{message}</Alert> : null}
         {showPageChrome && showSaveMailForAllDevicesBanner ? (
           <Alert
             severity="info"
@@ -3256,6 +3295,7 @@ function Mail() {
               onCloseSession={() => setComposeSession(null)}
               onRegisterCloseHandler={(handler) => { composeCloseRequestRef.current = handler; }}
               onSendSuccess={handleComposeSent}
+              onComposeWarning={notifyMailComposeWarning}
               handleMailCredentialsRequired={handleMailCredentialsRequired}
               getMailErrorDetail={getMailErrorDetail}
             />

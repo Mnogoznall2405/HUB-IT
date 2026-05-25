@@ -13,6 +13,7 @@ from sqlalchemy import or_, select
 from backend.chat.db import chat_session
 from backend.chat.models import ChatPushOutbox
 from backend.chat.push_service import chat_push_service
+from backend.chat.utils import normalize_text as _normalize_text
 
 
 logger = logging.getLogger("backend.chat.push_outbox")
@@ -35,10 +36,6 @@ def _coerce_utc(value: datetime | None) -> datetime | None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
 
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
 
 
 def _clamp_env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -96,7 +93,7 @@ class ChatPushOutboxService:
 
     @property
     def retry_base_sec(self) -> int:
-        return _clamp_env_int("CHAT_PUSH_OUTBOX_RETRY_BASE_SEC", 15, 5, 600)
+        return _clamp_env_int("CHAT_PUSH_OUTBOX_RETRY_BASE_SEC", 5, 1, 600)
 
     @property
     def processing_timeout_sec(self) -> int:

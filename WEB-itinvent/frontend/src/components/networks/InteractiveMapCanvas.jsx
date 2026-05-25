@@ -445,11 +445,11 @@ function InteractiveMapCanvas({
         onClick={handleCanvasClick}
         sx={{
           width: '100%',
-          minHeight: 420,
+          minHeight: mobile ? 0 : 420,
           height,
           overflow: 'hidden',
-          borderRadius: 2,
-          border: '1px solid',
+          borderRadius: mobile ? 0 : 2,
+          border: mobile ? 'none' : '1px solid',
           borderColor: ui.borderSoft,
           position: 'relative',
           bgcolor: ui.panelBg,
@@ -495,7 +495,7 @@ function InteractiveMapCanvas({
                 const displayYRatio = point.displayYRatio;
 
                 // 1. Уменьшаем размеры маркеров
-                const pinSize = mobile ? (isSelected ? 16 : 12) : (isSelected ? 24 : 16);
+                const pinSize = mobile ? (isSelected ? 4 : 3) : (isSelected ? 24 : 16);
 
                 // 2. Логика цвета
                 const isSocket = !!point.patch_panel_port;
@@ -536,6 +536,7 @@ function InteractiveMapCanvas({
                         }}
                         onPointerMove={(event) => {
                           if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
+                          if (!onPointDrop) return;
                           pointDragRef.current.moved = true;
                           const container = containerRef.current;
                           if (!container || !baseSize.width || !baseSize.height) return;
@@ -556,18 +557,18 @@ function InteractiveMapCanvas({
                             try { event.currentTarget.releasePointerCapture(event.pointerId); } catch (e) { }
                           }
 
-                          // Если мы передвигали маркер
-                          if (pointDragRef.current.moved && draggedPoint) {
-                            onPointDrop?.(pointId, draggedPoint.xRatio, draggedPoint.yRatio);
-                          } else {
-                            // Просто клик
-                            onPointSelect?.(point);
+                          if (pointDragRef.current.moved && draggedPoint && onPointDrop) {
+                            onPointDrop(pointId, draggedPoint.xRatio, draggedPoint.yRatio);
                           }
                           setDraggedPoint(null);
+                          pointDragRef.current.active = false;
                         }}
                         onClick={(event) => {
                           event.stopPropagation();
-                          // Если был drag, не обрабатываем клик
+                          if (!pointDragRef.current.moved) {
+                            onPointSelect?.(point);
+                          }
+                          pointDragRef.current.moved = false;
                         }}
                         sx={{
                           position: 'absolute',
@@ -664,6 +665,7 @@ function InteractiveMapCanvas({
                         }}
                         onPointerMove={(event) => {
                           if (!pointDragRef.current.active || pointDragRef.current.pointerId !== event.pointerId) return;
+                          if (!onPointDrop) return;
                           pointDragRef.current.moved = true;
                           const container = containerRef.current;
                           if (!container || !baseSize.width || !baseSize.height) return;
@@ -685,16 +687,18 @@ function InteractiveMapCanvas({
                             try { event.currentTarget.releasePointerCapture(event.pointerId); } catch (e) { }
                           }
 
-                          if (pointDragRef.current.moved && draggedPoint && draggedPoint.clusterId === cluster.id) {
-                            // Отправляем массив ID на бэкенд для обновления всех сразу
-                            onPointDrop?.(draggedPoint.ids, draggedPoint.xRatio, draggedPoint.yRatio);
-                          } else {
-                            onPointSelect?.(lastPoint);
+                          if (pointDragRef.current.moved && draggedPoint && draggedPoint.clusterId === cluster.id && onPointDrop) {
+                            onPointDrop(draggedPoint.ids, draggedPoint.xRatio, draggedPoint.yRatio);
                           }
                           setDraggedPoint(null);
+                          pointDragRef.current.active = false;
                         }}
                         onClick={(event) => {
                           event.stopPropagation();
+                          if (!pointDragRef.current.moved) {
+                            onPointSelect?.(lastPoint);
+                          }
+                          pointDragRef.current.moved = false;
                         }}
                         sx={{
                           position: 'absolute',
@@ -707,14 +711,14 @@ function InteractiveMapCanvas({
                           flexDirection: 'column',
                           alignItems: 'center',
                           justifyContent: 'center',
-                          minWidth: mobile ? 20 : 28,
+                          minWidth: mobile ? 8 : 28,
                           height: 'auto',
-                          padding: '3px 6px',
-                          borderRadius: '8px',
+                          padding: mobile ? '0px 1px' : '3px 6px',
+                          borderRadius: mobile ? '2px' : '8px',
                           bgcolor: '#fff',
                           color: '#1f2328',
                           fontWeight: 'bold',
-                          fontSize: mobile ? '0.6rem' : '0.68rem',
+                          fontSize: mobile ? '0.28rem' : '0.68rem',
                           lineHeight: 1.15,
                           boxShadow: ui.shellShadow,
                           border: '1px solid',

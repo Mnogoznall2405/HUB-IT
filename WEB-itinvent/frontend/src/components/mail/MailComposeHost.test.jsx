@@ -62,6 +62,13 @@ vi.mock('./MailComposeDialog', () => ({
       <button type="button" data-testid="mail-compose-host-send" onClick={() => onSendCompose?.()}>
         send
       </button>
+      <button
+        type="button"
+        data-testid="mail-compose-host-send-with-recipient-override"
+        onClick={() => onSendCompose?.({ composeToValues: ['typed-external@example.net'] })}
+      >
+        send override
+      </button>
       <button type="button" data-testid="mail-compose-host-close" onClick={() => onClose?.()}>
         close
       </button>
@@ -157,6 +164,92 @@ describe('MailComposeHost', () => {
     expect(mockSendMessageMultipart).not.toHaveBeenCalled();
   });
 
+  it('sends with recipient values flushed by the compose dialog before submit', async () => {
+    renderHost({
+      session: {
+        id: 6,
+        initialState: {
+          composeToValues: [],
+          composeSubject: 'Hello',
+          composeBody: '<p>Body</p>',
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-send-with-recipient-override'));
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        to: ['typed-external@example.net'],
+      }));
+    });
+  });
+
+  it('emits external recipient warnings through the compose warning callback', async () => {
+    const onComposeWarning = vi.fn();
+    renderHost({
+      onComposeWarning,
+      session: {
+        id: 7,
+        initialState: {
+          composeToValues: ['person@external.test'],
+          composeSubject: 'Hello',
+          composeBody: '<p>Body</p>',
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(onComposeWarning).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'external_recipients',
+        severity: 'info',
+        title: 'Внешний адресат',
+        message: 'В письме есть внешние получатели.',
+        source: 'mail-compose',
+      }));
+    });
+  });
+
+  it('notifies about an empty subject on send without blocking the message', async () => {
+    const onComposeWarning = vi.fn();
+    renderHost({
+      onComposeWarning,
+      session: {
+        id: 8,
+        initialState: {
+          composeToValues: ['person@example.com'],
+          composeSubject: '',
+          composeBody: '<p>Body</p>',
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+    expect(onComposeWarning).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-send'));
+
+    await waitFor(() => {
+      expect(onComposeWarning).toHaveBeenCalledWith(expect.objectContaining({
+        id: 'empty_subject_send',
+        severity: 'warning',
+        title: 'Письмо без темы',
+        message: 'Тема письма пустая. Письмо будет отправлено без темы.',
+      }));
+    });
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        subject: '',
+      }));
+    });
+  });
+
   it('keeps a local draft when server draft save fails on close', async () => {
     const onCloseSession = vi.fn();
     mockSaveDraftMultipart.mockRejectedValueOnce(new Error('offline'));
@@ -168,6 +261,7 @@ describe('MailComposeHost', () => {
     });
 
     fireEvent.click(screen.getByTestId('mail-compose-host-close'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Сохранить' }));
 
     await waitFor(() => {
       expect(mockSaveDraftMultipart).toHaveBeenCalledWith(expect.objectContaining({
@@ -190,6 +284,36 @@ describe('MailComposeHost', () => {
       editor_body: '<p>Body</p>',
     });
     expect(storedDraft.saved_at).toBeTruthy();
+  });
+
+  it('discards an existing draft when the user declines saving on close', async () => {
+    const onCloseSession = vi.fn();
+
+    renderHost({
+      onCloseSession,
+      session: {
+        id: 5,
+        initialState: {
+          composeToValues: ['person@example.com'],
+          composeSubject: 'Draft',
+          composeBody: '<p>Body</p>',
+          composeDraftId: 'draft-1',
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-close'));
+    fireEvent.click(await screen.findByRole('button', { name: 'Не сохранять' }));
+
+    await waitFor(() => {
+      expect(mockDeleteDraft).toHaveBeenCalledWith('draft-1', { mailboxId: 'mb-2' });
+    });
+    expect(mockSaveDraftMultipart).not.toHaveBeenCalled();
+    expect(onCloseSession).toHaveBeenCalled();
   });
 
   it('routes credential-required send errors without showing the generic compose error', async () => {
@@ -218,6 +342,37 @@ describe('MailComposeHost', () => {
     await waitFor(() => {
       expect(screen.getByTestId('mail-compose-host-dialog')).toHaveAttribute('data-compose-error', '');
       expect(screen.getByTestId('mail-compose-host-dialog')).toHaveAttribute('data-sending', 'false');
+    });
+  });
+
+  it('retains existing draft attachments when sending a draft', async () => {
+    renderHost({
+      session: {
+        id: 4,
+        initialState: {
+          composeToValues: ['person@example.com'],
+          composeSubject: 'Draft',
+          composeBody: '<p>Body</p>',
+          composeDraftId: 'draft-1',
+          composeDraftAttachments: [
+            { id: 'att-1', download_token: 'token-1', name: 'report.pdf' },
+            { id: 'att-2', name: 'notes.txt' },
+          ],
+        },
+      },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-host-dialog')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByTestId('mail-compose-host-send'));
+
+    await waitFor(() => {
+      expect(mockSendMessage).toHaveBeenCalledWith(expect.objectContaining({
+        draft_id: 'draft-1',
+        retain_existing_attachments: ['token-1', 'att-2'],
+      }));
     });
   });
 

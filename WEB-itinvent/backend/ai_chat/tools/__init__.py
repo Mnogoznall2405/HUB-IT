@@ -4,5 +4,8 @@ from backend.ai_chat.tools.registry import ai_tool_registry
 from backend.ai_chat.tools import itinvent  # noqa: F401
 from backend.ai_chat.tools import files  # noqa: F401
 from backend.ai_chat.tools import office  # noqa: F401
+from backend.ai_chat.tools import mfu  # noqa: F401
+from backend.ai_chat.tools import network  # noqa: F401
+from backend.ai_chat.tools import ad  # noqa: F401
 
 __all__ = ["ai_tool_registry"]

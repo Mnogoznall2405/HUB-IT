@@ -1,4 +1,4 @@
-import { memo, useMemo } from 'react';
+import { memo, useEffect, useRef, useMemo } from 'react';
 import {
   Avatar,
   Box,
@@ -12,6 +12,7 @@ import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 
 import { MemoChatBubble } from './ChatBubble';
 import ChatFileUploadPanel from './ChatFileUploadPanel';
+import ChatTypingIndicator from './ChatTypingIndicator';
 import {
   buildTimelineItems,
   getDateDividerLabel,
@@ -154,6 +155,73 @@ function TimelineMarker({ label, tone, stickyOffset = 0, dataTestId, isDateMarke
   );
 }
 
+function LoadOlderSentinel({
+  loadingOlder,
+  onLoadOlder,
+  historyAutoLoadEnabled = false,
+  ui,
+  servicePillBg,
+}) {
+  const sentinelRef = useRef(null);
+  const onLoadOlderRef = useRef(onLoadOlder);
+  const loadingOlderRef = useRef(loadingOlder);
+  onLoadOlderRef.current = onLoadOlder;
+  loadingOlderRef.current = loadingOlder;
+
+  useEffect(() => {
+    const node = sentinelRef.current;
+    if (!historyAutoLoadEnabled || !node || typeof IntersectionObserver === 'undefined') return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries[0]?.isIntersecting && !loadingOlderRef.current) {
+          onLoadOlderRef.current?.();
+        }
+      },
+      { threshold: 0.1 },
+    );
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [historyAutoLoadEnabled]);
+
+  return (
+    <Stack ref={sentinelRef} alignItems="center" sx={{ pb: 0.8, pt: 0.5 }}>
+      {loadingOlder ? (
+        <Box
+          className="rounded-full border px-3 py-0.5 text-[11px] font-semibold backdrop-blur-xl"
+          style={{
+            backgroundColor: servicePillBg,
+            color: ui.textSecondary,
+            borderColor: ui.borderSoft,
+          }}
+        >
+          Загрузка истории...
+        </Box>
+      ) : (
+        <Button
+          variant="text"
+          size="small"
+          onClick={onLoadOlder}
+          sx={{
+            color: ui.accentText,
+            textTransform: 'none',
+            borderRadius: 999,
+            px: 1.5,
+            py: 0.4,
+            bgcolor: alpha(servicePillBg, 0.96),
+            border: '1px solid',
+            borderColor: ui.borderSoft,
+            fontSize: '11px',
+            fontWeight: 600,
+            minHeight: 0,
+          }}
+        >
+          Показать ранние сообщения
+        </Button>
+      )}
+    </Stack>
+  );
+}
+
 const ChatMessageList = memo(function ChatMessageList({
   theme,
   ui,
@@ -167,6 +235,7 @@ const ChatMessageList = memo(function ChatMessageList({
   messagesHasMore,
   loadingOlder,
   onLoadOlder,
+  historyAutoLoadEnabled = false,
   threadContentRef,
   bottomRef,
   onOpenReads,
@@ -182,6 +251,10 @@ const ChatMessageList = memo(function ChatMessageList({
   highlightedMessageId,
   isFileDragActive,
   getReadTargetRef,
+  onToggleReaction,
+  onScrollToMessage,
+  currentUserId,
+  aiTypingStatus,
 }) {
   const normalizedMessages = Array.isArray(messages) ? messages : [];
   const timelineItems = useMemo(
@@ -250,26 +323,13 @@ const ChatMessageList = memo(function ChatMessageList({
       ) : (
         <Stack ref={threadContentRef} data-testid="chat-thread-content" spacing={0} sx={{ overflowAnchor: 'none' }}>
           {messagesHasMore ? (
-            <Stack alignItems="center" sx={{ pb: 0.8 }}>
-              <Button
-                variant="text"
-                size="small"
-                onClick={onLoadOlder}
-                disabled={loadingOlder}
-                sx={{
-                  color: ui.accentText,
-                  textTransform: 'none',
-                  borderRadius: compactMobile ? 999 : 1.5,
-                  px: 1.5,
-                  py: 0.4,
-                  bgcolor: alpha(servicePillBg, 0.96),
-                  border: '1px solid',
-                  borderColor: ui.borderSoft,
-                }}
-              >
-                {loadingOlder ? 'Загрузка истории...' : 'Показать более ранние сообщения'}
-              </Button>
-            </Stack>
+            <LoadOlderSentinel
+              loadingOlder={loadingOlder}
+              onLoadOlder={onLoadOlder}
+              historyAutoLoadEnabled={historyAutoLoadEnabled}
+              ui={ui}
+              servicePillBg={servicePillBg}
+            />
           ) : null}
 
           {timelineItems.map((item) => {
@@ -311,7 +371,7 @@ const ChatMessageList = memo(function ChatMessageList({
             const messageId = String(item.message?.id || '').trim();
             const selected = Boolean(messageId && selectedMessageIdSet.has(messageId));
             return (
-              <div key={item.key} data-message-date={getDateDividerLabel(item.message?.created_at)}>
+              <div key={item.key} data-message-id={item.message?.id} data-message-date={getDateDividerLabel(item.message?.created_at)}>
                 <MemoChatBubble
                   conversationKind={activeConversation.kind}
                   message={item.message}
@@ -335,10 +395,21 @@ const ChatMessageList = memo(function ChatMessageList({
                   compactMobile={compactMobile}
                   mobileInteractionsEnabled={mobileInteractionsEnabled}
                   readTargetRef={getReadTargetRef?.(item.message?.id)}
+                  onToggleReactionRaw={onToggleReaction}
+                  onScrollToMessage={onScrollToMessage}
+                  currentUserId={currentUserId}
                 />
               </div>
             );
           })}
+          {aiTypingStatus?.visible && (
+            <ChatTypingIndicator
+              botName={aiTypingStatus.botName}
+              theme={theme}
+              ui={ui}
+              compactMobile={compactMobile}
+            />
+          )}
           <Box ref={bottomRef} />
         </Stack>
       )}

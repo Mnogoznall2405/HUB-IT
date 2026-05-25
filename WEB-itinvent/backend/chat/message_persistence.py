@@ -12,11 +12,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from backend.chat.models import ChatConversationUserState, ChatMessage, ChatMessageAttachment
-
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
+from backend.chat.utils import normalize_text as _normalize_text
 
 
 def _get_or_create_conversation_state(

@@ -1,5 +1,6 @@
 import {
   TRANSFER_OPERATION_ACT_ONLY,
+  TRANSFER_OPERATION_LOCATION_ONLY,
   TRANSFER_OPERATION_MOVE,
 } from './equipmentModel';
 
@@ -168,6 +169,8 @@ export const buildTransferEmployeeInputState = ({
 export const getTransferEmptyTargetError = (operationMode) =>
   operationMode === TRANSFER_OPERATION_ACT_ONLY
     ? 'Не выбрано оборудование для акта'
+    : operationMode === TRANSFER_OPERATION_LOCATION_ONLY
+      ? 'Не выбрано оборудование для перемещения'
     : 'Не выбрано оборудование для перемещения';
 
 export const buildTransferActOnlyPayload = ({
@@ -232,6 +235,33 @@ export const buildTransferMovePayload = ({
       new_employee: trimmedEmployeeName,
       new_employee_no: employeeNo || undefined,
       new_employee_dept: !employeeNo ? trimmedDepartment || undefined : undefined,
+      branch_no: branchNo,
+      loc_no: locationNo,
+    },
+  };
+};
+
+export const buildTransferLocationPayload = ({
+  targetInvNos,
+  branchNo,
+  locationNo,
+}) => {
+  const invNos = Array.isArray(targetInvNos) ? targetInvNos : [];
+
+  if (invNos.length === 0) {
+    return { error: getTransferEmptyTargetError(TRANSFER_OPERATION_LOCATION_ONLY), payload: null };
+  }
+  if (!branchNo) {
+    return { error: 'Выберите филиал назначения из списка.', payload: null };
+  }
+  if (!locationNo) {
+    return { error: 'Выберите местоположение назначения из списка.', payload: null };
+  }
+
+  return {
+    error: '',
+    payload: {
+      inv_nos: invNos,
       branch_no: branchNo,
       loc_no: locationNo,
     },

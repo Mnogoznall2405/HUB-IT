@@ -48,6 +48,7 @@ class User(UserBase):
     network_zone: Literal["internal", "external"] = "external"
     twofa_policy: Literal["off", "all", "external_only"] = "off"
     twofa_required_for_current_request: bool = False
+    avatar_url: Optional[str] = None
     created_at: Optional[str] = None
     updated_at: Optional[str] = None
     mail_updated_at: Optional[str] = None

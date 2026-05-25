@@ -11,7 +11,7 @@ import {
   isArchiveFile,
 } from './chatHelpers';
 
-const CHAT_ARCHIVE_UPLOAD_WARNING = 'Архивы (.zip, .rar, .7z, .tar, .gz) нельзя отправлять в чат.';
+const CHAT_ARCHIVE_UPLOAD_WARNING = 'РђСЂС…РёРІС‹ (.zip, .rar, .7z, .tar, .gz) РЅРµР»СЊР·СЏ РѕС‚РїСЂР°РІР»СЏС‚СЊ РІ С‡Р°С‚.';
 
 export default function useChatFileSending({
   activeConversation,
@@ -84,7 +84,7 @@ export default function useChatFileSending({
     }
 
     if ((existingItems.length + uniqueIncomingFiles.length) > CHAT_MAX_FILE_COUNT) {
-      notifyWarning?.(`Можно отправить не более ${CHAT_MAX_FILE_COUNT} файлов за один раз.`);
+      notifyWarning?.(`РњРѕР¶РЅРѕ РѕС‚РїСЂР°РІРёС‚СЊ РЅРµ Р±РѕР»РµРµ ${CHAT_MAX_FILE_COUNT} С„Р°Р№Р»РѕРІ Р·Р° РѕРґРёРЅ СЂР°Р·.`);
       return false;
     }
 
@@ -108,13 +108,13 @@ export default function useChatFileSending({
       const nextItems = [...existingItems, ...preparedItems];
       const totalBytes = nextItems.reduce((sum, item) => sum + Number(item?.file?.size || 0), 0);
       if (totalBytes > CHAT_MAX_FILE_BYTES) {
-        notifyWarning?.('Суммарный размер файлов после подготовки превышает 25 МБ.');
+        notifyWarning?.('РЎСѓРјРјР°СЂРЅС‹Р№ СЂР°Р·РјРµСЂ С„Р°Р№Р»РѕРІ РїРѕСЃР»Рµ РїРѕРґРіРѕС‚РѕРІРєРё РїСЂРµРІС‹С€Р°РµС‚ 25 РњР‘.');
         return false;
       }
       setSelectedUploadItems(nextItems);
       return true;
     } catch {
-      notifyWarning?.('Не удалось подготовить файлы к отправке.');
+      notifyWarning?.('РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕРґРіРѕС‚РѕРІРёС‚СЊ С„Р°Р№Р»С‹ Рє РѕС‚РїСЂР°РІРєРµ.');
       return false;
     } finally {
       setPreparingFiles(false);
@@ -185,7 +185,10 @@ export default function useChatFileSending({
     const conversationId = String(activeConversationId || '').trim();
     if (!conversationId || selectedFiles.length === 0 || preparingFiles) return;
 
-    const totalBytes = selectedUploadItems.reduce(
+    // Capture current state into local variables before clearing UI
+    const snapshotUploadItems = [...selectedUploadItems];
+    const snapshotCaption = fileCaption;
+    const totalBytes = snapshotUploadItems.reduce(
       (sum, item) => sum + Number(item?.transferSize || item?.transferFile?.size || item?.file?.size || 0),
       0,
     );
@@ -194,12 +197,19 @@ export default function useChatFileSending({
     const optimisticMessage = createOptimisticFileMessage({
       conversationId,
       files: selectedFiles,
-      body: fileCaption,
+      body: snapshotCaption,
       replyPreview: buildReplyPreview(draftReplyMessage),
     });
     fileUploadAbortRef.current = abortController;
-    setSendingFiles(true);
+
+    // Clear UI immediately — dialog closes, composer is free
+    setSelectedUploadItems([]);
+    setFileCaption('');
+    setFileDialogOpen(false);
     setFileUploadProgress(0);
+    setReplyMessage(null);
+    setSendingFiles(true);
+
     if (optimisticMessage) {
       applyOutgoingThreadMessage(conversationId, optimisticMessage, {
         scroll: true,
@@ -208,8 +218,8 @@ export default function useChatFileSending({
     }
 
     try {
-      const serverMessage = await chatAPI.sendFiles(conversationId, selectedUploadItems, {
-        body: fileCaption,
+      const serverMessage = await chatAPI.sendFiles(conversationId, snapshotUploadItems, {
+        body: snapshotCaption,
         reply_to_message_id: draftReplyMessage?.id || undefined,
         signal: abortController?.signal,
         onUploadProgress: (progressEvent) => {
@@ -217,17 +227,11 @@ export default function useChatFileSending({
           const total = Number(progressEvent?.total || totalBytes || 0);
           if (total <= 0) return;
           const nextProgress = Math.max(0, Math.min(100, Math.round((loaded / total) * 100)));
-          setFileUploadProgress(nextProgress);
           if (optimisticMessage?.id) {
             patchThreadMessage(optimisticMessage.id, { uploadProgress: nextProgress });
           }
         },
       });
-      setSelectedUploadItems([]);
-      setFileCaption('');
-      setFileDialogOpen(false);
-      setFileUploadProgress(0);
-      setReplyMessage(null);
       cancelPendingInitialAnchor();
       logChatDebug('sendFiles:autoScroll', {
         conversationId,
@@ -249,7 +253,7 @@ export default function useChatFileSending({
         removeThreadMessage(optimisticMessage.id);
       }
       if (String(error?.code || '') !== 'ERR_CANCELED') {
-        notifyApiError(error, 'Не удалось отправить файлы в чат.');
+        notifyApiError(error, 'РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РїСЂР°РІРёС‚СЊ С„Р°Р№Р»С‹ РІ С‡Р°С‚.');
       }
     } finally {
       revokeObjectUrls(optimisticMessage?.optimisticObjectUrls);
@@ -348,3 +352,4 @@ export default function useChatFileSending({
     sendFiles,
   };
 }
+

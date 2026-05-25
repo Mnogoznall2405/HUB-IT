@@ -10,9 +10,14 @@ from pathlib import Path
 from unittest.mock import AsyncMock, Mock, MagicMock
 import shutil
 import uuid
+from hypothesis import settings
 
-# Добавляем корень проекта в путь
+settings.register_profile("itinvent", deadline=None)
+settings.load_profile("itinvent")
+
+# Добавляем корень проекта и WEB-itinvent в путь
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent.parent / "WEB-itinvent"))
 
 
 @pytest.fixture

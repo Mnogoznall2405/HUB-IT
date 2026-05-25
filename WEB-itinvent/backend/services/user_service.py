@@ -266,6 +266,7 @@ class UserService:
             "twofa_enabled_at": row.twofa_enabled_at.isoformat() if row.twofa_enabled_at else None,
             "password_hash": str(row.password_hash or ""),
             "password_salt": str(row.password_salt or ""),
+            "avatar_url": row.avatar_url or None,
             "created_at": row.created_at.isoformat() if row.created_at else None,
             "updated_at": row.updated_at.isoformat() if row.updated_at else None,
         }
@@ -352,6 +353,7 @@ class UserService:
             "trusted_devices_count": int(user.get("trusted_devices_count", 0) or 0),
             "discoverable_trusted_devices_count": int(user.get("discoverable_trusted_devices_count", 0) or 0),
             "twofa_enforced": bool(config.security.twofa_enforced),
+            "avatar_url": (str(user.get("avatar_url") or "").strip() or None),
         }
 
     def to_public_user(self, user: dict) -> dict:
@@ -825,6 +827,33 @@ class UserService:
                 updated_user.get("telegram_id"),
                 updated_user.get("assigned_database"),
             )
+        return self._sanitize_user(updated_user)
+
+    def update_avatar_url(self, user_id: int, avatar_url: Optional[str]) -> Optional[dict]:
+        normalized_user_id = int(user_id or 0)
+        if normalized_user_id <= 0:
+            return None
+        if self._use_app_database:
+            def _update_in_db() -> Optional[dict]:
+                with app_session(self._database_url) as session:
+                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=3000)
+                    row = session.get(AppUser, normalized_user_id)
+                    if row is None:
+                        return None
+                    row.avatar_url = (str(avatar_url or "").strip() or None)
+                    session.flush()
+                    return self._row_to_user_dict(row)
+            return run_with_transient_lock_retry(_update_in_db)
+        users = self._load_users()
+        updated_user: Optional[dict] = None
+        for user in users:
+            if int(user.get("id", 0)) == normalized_user_id:
+                user["avatar_url"] = (str(avatar_url or "").strip() or None)
+                updated_user = user
+                break
+        if not updated_user:
+            return None
+        self._save_users(users)
         return self._sanitize_user(updated_user)
 
     def change_password(self, user_id: int, old_password: str, new_password: str) -> bool:

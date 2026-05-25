@@ -127,6 +127,7 @@ _DIRECT_DESCRIPTIONS = {
     "LDAP_SYNC_USER": ("Active Directory", "Логин сервисной учётной записи для синхронизации AD."),
     "LDAP_SYNC_PASSWORD": ("Active Directory", "Пароль сервисной учётной записи для синхронизации AD."),
     "LDAP_SYNC_INTERVAL_SECONDS": ("Active Directory", "Интервал фоновой синхронизации AD в секундах."),
+    "AD_PASSWORD_MAX_AGE_DAYS": ("Active Directory", "Срок действия пароля AD в днях для AI-проверки и отчёта."),
     "SCAN_AGENT_SCAN_ON_START": (
         "Scan backend",
         "Запускать локальный scan сразу при старте агента. По умолчанию 0: scan выполняется только по серверной команде scan_now.",

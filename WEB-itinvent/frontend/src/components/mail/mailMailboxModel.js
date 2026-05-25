@@ -1,5 +1,40 @@
 export const normalizeMailboxId = (value) => String(value || '').trim();
 
+export const MAIL_SELECTED_MAILBOX_STORAGE_KEY = 'mail_selected_mailbox_id_v1';
+
+const getDefaultMailboxStorage = () => {
+  if (typeof window === 'undefined') return null;
+  return window.sessionStorage;
+};
+
+export const readStoredSelectedMailboxId = (
+  { storage = getDefaultMailboxStorage() } = {},
+) => {
+  if (!storage) return '';
+  try {
+    return normalizeMailboxId(storage.getItem(MAIL_SELECTED_MAILBOX_STORAGE_KEY));
+  } catch {
+    return '';
+  }
+};
+
+export const writeStoredSelectedMailboxId = (
+  mailboxId = '',
+  { storage = getDefaultMailboxStorage() } = {},
+) => {
+  if (!storage) return;
+  const normalizedMailboxId = normalizeMailboxId(mailboxId);
+  try {
+    if (normalizedMailboxId) {
+      storage.setItem(MAIL_SELECTED_MAILBOX_STORAGE_KEY, normalizedMailboxId);
+    } else {
+      storage.removeItem(MAIL_SELECTED_MAILBOX_STORAGE_KEY);
+    }
+  } catch {
+    // Ignore session storage failures.
+  }
+};
+
 export const getMailboxEntryId = (value) => normalizeMailboxId(value?.id || value?.mailbox_id);
 
 export const normalizeUnreadCountState = (value) => {

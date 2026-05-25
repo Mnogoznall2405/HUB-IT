@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
 import json
 from io import BytesIO
 from pathlib import Path
@@ -191,3 +192,23 @@ def test_patterns_endpoint_returns_yaml_patterns():
 
     assert result["total"] >= 1
     assert any(item["id"] == "loan_keyword" for item in result["items"])
+
+
+def test_scan_auth_runtime_loads_service_singletons_after_submodule_imports():
+    importlib.import_module("backend.services.authorization_service")
+    importlib.import_module("backend.services.session_service")
+    importlib.import_module("backend.services.user_service")
+    scan_app._load_web_auth_runtime.cache_clear()
+
+    runtime = scan_app._load_web_auth_runtime()
+
+    assert hasattr(runtime["authorization_service"], "has_permission")
+    assert hasattr(runtime["session_service"], "is_session_active")
+    assert hasattr(runtime["user_service"], "get_by_id")
+
+
+def test_authorization_module_keeps_has_permission_compatibility_facade():
+    authorization_module = importlib.import_module("backend.services.authorization_service")
+
+    assert authorization_module.has_permission("operator", scan_app.PERM_SCAN_READ) is True
+    assert authorization_module.has_permission("viewer", scan_app.PERM_SCAN_READ) is False

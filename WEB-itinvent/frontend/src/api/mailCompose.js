@@ -92,6 +92,7 @@ export const mailComposeAPI = {
     body,
     isHtml,
     files,
+    retainExistingAttachments,
     replyToMessageId,
     forwardMessageId,
     draftId,
@@ -109,6 +110,7 @@ export const mailComposeAPI = {
     formData.append('reply_to_message_id', replyToMessageId || '');
     formData.append('forward_message_id', forwardMessageId || '');
     formData.append('draft_id', draftId || '');
+    formData.append('retain_existing_attachments_json', JSON.stringify(retainExistingAttachments || []));
     if (files && files.length > 0) {
       files.forEach((file) => {
         formData.append('files', file);

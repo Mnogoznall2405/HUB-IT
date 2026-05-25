@@ -7,6 +7,8 @@ export const normalizeMailRecipient = (value) => {
   return String(match?.[1] || text).trim();
 };
 
+export const isValidEmailRecipient = (value) => /^[^\s@]+@[^\s@]+$/.test(normalizeMailRecipient(value));
+
 export const toRecipientEmails = (values) => (
   Array.isArray(values)
     ? values

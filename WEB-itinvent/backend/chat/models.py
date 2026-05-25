@@ -55,6 +55,7 @@ class ChatConversation(Base):
     created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     last_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     last_message_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
@@ -268,6 +269,37 @@ class ChatPushOutbox(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatMessageReaction(Base):
+    __tablename__ = "chat_message_reactions"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "message_id",
+            "user_id",
+            "emoji",
+            name="uq_chat_message_reactions_message_user_emoji",
+        ),
+        Index("ix_chat_message_reactions_message_id", "message_id"),
+        Index("ix_chat_message_reactions_user_id", "user_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    message_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_messages"), ondelete="CASCADE"),
+        nullable=False,
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    emoji: Mapped[str] = mapped_column(String(32), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
 class ChatEventOutbox(Base):

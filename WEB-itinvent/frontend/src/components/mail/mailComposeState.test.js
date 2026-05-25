@@ -5,6 +5,7 @@ import {
   createComposeInitialState,
   getComposeCombinedBody,
   getComposeDialogTitle,
+  isValidEmailRecipient,
   normalizeMailRecipient,
   readStoredComposeState,
   toRecipientEmails,
@@ -24,6 +25,12 @@ describe('mailComposeState', () => {
       '',
       null,
     ])).toEqual(['first@example.com', 'second@example.com', 'third@example.com']);
+  });
+
+  it('validates external email recipients without requiring an address-book contact', () => {
+    expect(isValidEmailRecipient('external@example.com')).toBe(true);
+    expect(isValidEmailRecipient('User <external@example.com>')).toBe(true);
+    expect(isValidEmailRecipient('not-an-address')).toBe(false);
   });
 
   it('creates compose state with stable defaults and aliases', () => {

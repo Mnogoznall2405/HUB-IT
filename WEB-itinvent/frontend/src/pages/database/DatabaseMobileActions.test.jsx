@@ -18,6 +18,7 @@ const renderActions = (props = {}) => {
     onOpenUploadAct: vi.fn(),
     onOpenAddEquipment: vi.fn(),
     onOpenAddConsumable: vi.fn(),
+    onOpenLocationTransferForSelection: vi.fn(),
     onOpenTransferForSelection: vi.fn(),
     onOpenTransferActForSelection: vi.fn(),
     onOpenCartridgeForSelection: vi.fn(),
@@ -127,6 +128,21 @@ describe('DatabaseMobileActions', () => {
     expect(handlers.onOpenCartridgeForSelection).not.toHaveBeenCalled();
     expect(handlers.onOpenBatteryForSelection).not.toHaveBeenCalled();
     expect(handlers.onOpenComponentForSelection).not.toHaveBeenCalled();
+  });
+
+  it('renders selected transfer actions with explicit labels', () => {
+    const handlers = renderActions({
+      canDatabaseWrite: true,
+      selectedItemsCount: 3,
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Перемещение' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Перемещение с актом' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Акт без перемещения' }));
+
+    expect(handlers.onOpenLocationTransferForSelection).toHaveBeenCalledTimes(1);
+    expect(handlers.onOpenTransferForSelection).toHaveBeenCalledTimes(1);
+    expect(handlers.onOpenTransferActForSelection).toHaveBeenCalledTimes(1);
   });
 
   it('opens enabled selected component action with resolved defaults', () => {

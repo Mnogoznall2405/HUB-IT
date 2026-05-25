@@ -5,7 +5,9 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
+import urllib.request
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -44,6 +46,8 @@ from backend.chat.schemas import (
     ChatOwnershipTransferRequest,
     ChatShareableTasksResponse,
     ChatUsersResponse,
+    ChatReactionToggleRequest,
+    ChatReactionToggleResponse,
     DirectConversationRequest,
     ForwardMessageRequest,
     GroupConversationRequest,
@@ -64,6 +68,77 @@ http_logger = logging.getLogger("backend.chat.api")
 logger.setLevel(logging.INFO)
 http_logger.setLevel(logging.INFO)
 runtime_logger = logging.getLogger("uvicorn.error")
+
+
+def _extract_og_meta(html: str) -> dict:
+    """Extract Open Graph and basic meta tags from HTML."""
+    result = {}
+    patterns = {
+        "title": [
+            r'<meta\s+(?:property|name)=["\']og:title["\']\s+content=["\'](.*?)["\']',
+            r'<meta\s+content=["\'](.*?)["\']\s+(?:property|name)=["\']og:title["\']',
+            r'<title[^>]*>(.*?)</title>',
+        ],
+        "description": [
+            r'<meta\s+(?:property|name)=["\']og:description["\']\s+content=["\'](.*?)["\']',
+            r'<meta\s+content=["\'](.*?)["\']\s+(?:property|name)=["\']og:description["\']',
+            r'<meta\s+name=["\']description["\']\s+content=["\'](.*?)["\']',
+        ],
+        "image": [
+            r'<meta\s+(?:property|name)=["\']og:image["\']\s+content=["\'](.*?)["\']',
+            r'<meta\s+content=["\'](.*?)["\']\s+(?:property|name)=["\']og:image["\']',
+        ],
+        "site_name": [
+            r'<meta\s+(?:property|name)=["\']og:site_name["\']\s+content=["\'](.*?)["\']',
+            r'<meta\s+content=["\'](.*?)["\']\s+(?:property|name)=["\']og:site_name["\']',
+        ],
+    }
+    for key, pats in patterns.items():
+        for pat in pats:
+            m = re.search(pat, html, re.IGNORECASE | re.DOTALL)
+            if m:
+                value = m.group(1).strip()
+                if value:
+                    result[key] = value
+                    break
+    return result
+
+
+@router.get("/link-preview")
+async def get_link_preview(
+    url: str = Query(...),
+    _: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    """Fetch Open Graph metadata for the given URL."""
+    normalized = url.strip()
+    if not normalized.startswith(("http://", "https://")):
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    try:
+        req = urllib.request.Request(
+            normalized,
+            headers={
+                "User-Agent": "Mozilla/5.0 (compatible; ItInventBot/1.0)",
+                "Accept": "text/html,application/xhtml+xml",
+                "Accept-Language": "ru,en;q=0.9",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            content_type = resp.headers.get("Content-Type", "")
+            if "text/html" not in content_type:
+                return {"url": normalized, "title": None, "description": None, "image": None, "site_name": None}
+            raw = resp.read(65536)
+            html = raw.decode("utf-8", errors="replace")
+    except Exception as exc:
+        http_logger.debug("link-preview fetch failed for %s: %s", normalized, exc)
+        raise HTTPException(status_code=422, detail="Could not fetch URL")
+    meta = _extract_og_meta(html)
+    return {
+        "url": normalized,
+        "title": meta.get("title"),
+        "description": meta.get("description"),
+        "image": meta.get("image"),
+        "site_name": meta.get("site_name"),
+    }
 
 
 def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
@@ -672,6 +747,7 @@ async def _publish_message_read_after_mark_read(
 async def _publish_presence_updated(user_id: int) -> None:
     if int(user_id or 0) <= 0:
         return
+    chat_service.invalidate_presence_cache(user_id=int(user_id))
     payload = await _run_chat_call(chat_service.get_presence, user_id=int(user_id))
     await chat_realtime.publish_presence_event(
         user_id=int(user_id),
@@ -1033,6 +1109,73 @@ async def update_chat_group_profile(
         _raise_chat_http_error(exc)
 
 
+@router.post("/conversations/{conversation_id}/avatar", response_model=ChatConversationDetailResponse)
+async def upload_chat_group_avatar(
+    conversation_id: str,
+    file: UploadFile = File(...),
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    from PIL import Image as PilImage
+    import io
+    import time as _time
+    from pathlib import Path
+
+    content_type = str(file.content_type or "").strip().lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are accepted")
+
+    raw = await file.read()
+    if len(raw) > 5 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image must be smaller than 5 MB")
+
+    def _save_avatar() -> str:
+        from backend.services.hub_service import hub_service
+        avatars_dir = Path(hub_service.data_dir) / "group_avatars"
+        avatars_dir.mkdir(parents=True, exist_ok=True)
+        safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in conversation_id)
+        dest_path = avatars_dir / f"{safe_id}.jpg"
+        with PilImage.open(io.BytesIO(raw)) as img:
+            img = img.convert("RGB")
+            w, h = img.size
+            min_dim = min(w, h)
+            left = (w - min_dim) // 2
+            top = (h - min_dim) // 2
+            img = img.crop((left, top, left + min_dim, top + min_dim))
+            img = img.resize((256, 256), PilImage.LANCZOS)
+            img.save(str(dest_path), format="JPEG", quality=88, optimize=True)
+        return f"/api/v1/chat/group-avatars/{safe_id}.jpg?v={int(_time.time())}"
+
+    try:
+        avatar_url = await run_in_threadpool(_save_avatar)
+        conversation = await _run_chat_call(
+            chat_service.update_group_avatar,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            avatar_url=avatar_url,
+        )
+        _schedule_chat_background_task(
+            _publish_group_conversation_change(
+                conversation_id=conversation_id,
+                reason="profile_updated",
+            ),
+            label="publish_group_avatar_updated",
+        )
+        return conversation
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.get("/group-avatars/{filename}")
+async def serve_group_avatar(filename: str):
+    from pathlib import Path
+    from backend.services.hub_service import hub_service
+    safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in filename)
+    path = Path(hub_service.data_dir) / "group_avatars" / safe_name
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    return FileResponse(str(path), media_type="image/jpeg")
+
+
 @router.get("/conversations/{conversation_id}", response_model=ChatConversationDetailResponse)
 async def get_chat_conversation(
     conversation_id: str,
@@ -1078,6 +1221,37 @@ async def delete_chat_message(
                 label="publish_message_deleted_system_event",
             )
         return message
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.post("/conversations/{conversation_id}/messages/{message_id}/reactions", response_model=ChatReactionToggleResponse)
+async def toggle_chat_message_reaction(
+    conversation_id: str,
+    message_id: str,
+    payload: ChatReactionToggleRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        result = await _run_chat_call(
+            chat_service.toggle_reaction,
+            current_user_id=int(current_user.id),
+            message_id=message_id,
+            emoji=payload.emoji,
+        )
+        member_user_ids = await _run_chat_call(
+            chat_service.get_conversation_member_ids,
+            conversation_id=conversation_id,
+        )
+        async def _publish_reaction(member_user_id: int) -> None:
+            await chat_realtime.publish_conversation_event(
+                user_id=int(member_user_id),
+                conversation_id=conversation_id,
+                event_type="chat.message.reaction",
+                payload=result,
+            )
+        await asyncio.gather(*[_publish_reaction(uid) for uid in (member_user_ids or [])])
+        return result
     except Exception as exc:
         _raise_chat_http_error(exc)
 

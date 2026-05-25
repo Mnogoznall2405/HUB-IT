@@ -40,6 +40,7 @@ from backend.chat.models import (
     ChatMessage,
     ChatMessageAttachment,
     ChatMessageRead,
+    ChatMessageReaction,
 )
 from backend.chat.message_persistence import (
     ChatFileMessagePersistence,
@@ -56,6 +57,7 @@ from backend.chat.push_service import chat_push_service
 from backend.chat.upload_session_completion import UploadSessionCompletionMaterializer
 from backend.chat.upload_sessions import ChatUploadSessionStore
 from backend.chat.upload_session_transfer import plan_upload_session_chunk
+from backend.chat.utils import normalize_text as _normalize_text
 from backend.services.hub_service import hub_service
 from backend.services.session_service import session_service
 from backend.services.user_service import user_service
@@ -84,11 +86,6 @@ CHAT_GROUP_MANAGER_ROLES = {"owner", "moderator"}
 
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
-
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
 
 
 def _normalize_body_format(value: object, default: str = "plain") -> str:
@@ -231,13 +228,33 @@ def _probe_image_dimensions(payload: bytes, mime_type: object) -> tuple[int | No
     return None, None
 
 
+def _probe_video_dimensions(file_path: Path, mime_type: object) -> tuple[int | None, int | None]:
+    normalized_mime_type = _normalize_text(mime_type).lower()
+    if not normalized_mime_type.startswith("video/"):
+        return None, None
+    try:
+        import cv2
+        cap = cv2.VideoCapture(str(file_path))
+        if cap.isOpened():
+            width = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+            height = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+            cap.release()
+            if width > 0 and height > 0:
+                return width, height
+        else:
+            cap.release()
+    except Exception:
+        pass
+    return None, None
+
+
 def _direct_key(user_a: int, user_b: int) -> str:
     first, second = sorted((int(user_a), int(user_b)))
     return f"{first}:{second}"
 
 
 CHAT_MAX_FILES_PER_MESSAGE = 5
-CHAT_MAX_TOTAL_FILE_BYTES = 25 * 1024 * 1024
+CHAT_MAX_TOTAL_FILE_BYTES = 1024 * 1024 * 1024
 CHAT_MAX_MESSAGE_BODY_LENGTH = 12000
 CHAT_ALLOWED_TRANSFER_ENCODINGS = {"identity", "gzip"}
 CHAT_ARCHIVE_EXTENSIONS = {
@@ -256,13 +273,14 @@ CHAT_ARCHIVE_MIME_TYPES = {
 CHAT_ALLOWED_EXTENSIONS = {
     ".jpg", ".jpeg", ".png", ".gif", ".webp", ".bmp",
     ".mp4", ".mov", ".webm", ".m4v",
+    ".ogg", ".mp3", ".wav", ".aac", ".m4a", ".opus", ".flac",
     ".pdf",
     ".doc", ".docx", ".docm", ".rtf", ".odt",
     ".xls", ".xlsx", ".xlsm", ".ods",
     ".ppt", ".pptx", ".pptm", ".odp",
     ".txt", ".csv", ".tsv", ".log", ".md", ".json", ".xml",
 }
-CHAT_ALLOWED_MIME_PREFIXES = ("image/", "video/")
+CHAT_ALLOWED_MIME_PREFIXES = ("image/", "video/", "audio/")
 CHAT_ALLOWED_MIME_TYPES = {
     "application/pdf",
     "application/msword",
@@ -336,6 +354,8 @@ class ChatService:
     """Service layer for the built-in chat."""
 
     _CHAT_CACHE_TTL_SEC_DEFAULT = 15
+    _PRESENCE_CACHE_TTL_SEC = 20
+    _USERS_CACHE_TTL_SEC = 60
 
     def __init__(self) -> None:
         self._runtime_status: Optional[ChatRuntimeStatus] = None
@@ -407,6 +427,7 @@ class ChatService:
         )
         self._cache_lock = RLock()
         self._runtime_cache: dict[str, tuple[datetime, Any]] = {}
+        self._presence_cache: dict[str, tuple[datetime, dict]] = {}
         self._upload_cleanup_task: asyncio.Task | None = None
         self._upload_cleanup_stop_event: asyncio.Event | None = None
 
@@ -489,12 +510,33 @@ class ChatService:
                         continue
                 self._runtime_cache.pop(key, None)
 
+    def invalidate_bucket_for_all_users(self, *, bucket: str) -> None:
+        """Remove all cache entries for given bucket regardless of user_id."""
+        needle = f"::{_normalize_text(bucket)}::"
+        with self._cache_lock:
+            for key in list(self._runtime_cache.keys()):
+                if needle in key:
+                    self._runtime_cache.pop(key, None)
+
+    def invalidate_presence_cache(self, *, user_id: int) -> None:
+        needle = str(int(user_id))
+        with self._cache_lock:
+            for key in list(self._presence_cache.keys()):
+                if key == "__all__" or needle in key.split(","):
+                    self._presence_cache.pop(key, None)
+
     def _invalidate_conversation_views_for_users(self, *, conversation_id: str, user_ids: list[int] | set[int] | tuple[int, ...]) -> None:
         normalized_conversation_id = _normalize_text(conversation_id)
         if not normalized_conversation_id:
             return
         for user_id in {int(item) for item in list(user_ids or []) if int(item) > 0}:
             self._invalidate_user_cache(user_id=user_id, bucket="conversations")
+            self._invalidate_user_cache(user_id=user_id, bucket="unread_summary")
+            self._invalidate_user_cache(
+                user_id=user_id,
+                bucket="conversation_detail",
+                extra_prefix=normalized_conversation_id,
+            )
             self._invalidate_user_cache(
                 user_id=user_id,
                 bucket="thread_latest",
@@ -505,6 +547,7 @@ class ChatService:
                 bucket="thread_bootstrap",
                 extra_prefix=f"{normalized_conversation_id}|",
             )
+            self.invalidate_presence_cache(user_id=user_id)
 
     def _set_request_meta(self, **payload: Any) -> None:
         _chat_request_meta_var.set(dict(payload))
@@ -800,7 +843,7 @@ class ChatService:
                         raise ValueError("Decoded file size exceeds original_size")
                     next_total_size = total_size + chunk_size
                     if next_total_size > CHAT_MAX_TOTAL_FILE_BYTES:
-                        raise ValueError("Total upload size exceeds 25 MB")
+                        raise ValueError("Total upload size exceeds 1 GB")
                     file_size = next_file_size
                     total_size = next_total_size
                     target.write(chunk)
@@ -923,15 +966,24 @@ class ChatService:
                 )
                 return cached
         with chat_session() as session:
-            conversation_ids = list(
-                session.execute(
-                    select(ChatMember.conversation_id).where(
-                        ChatMember.user_id == int(current_user_id),
-                        ChatMember.left_at.is_(None),
-                    )
-                ).scalars()
-            )
-            if not conversation_ids:
+            # Q1: conversations + user state in one JOIN
+            my_member = aliased(ChatMember)
+            conv_state = aliased(ChatConversationUserState)
+            q1_rows = session.execute(
+                select(ChatConversation, conv_state)
+                .join(my_member, and_(
+                    my_member.conversation_id == ChatConversation.id,
+                    my_member.user_id == int(current_user_id),
+                    my_member.left_at.is_(None),
+                ))
+                .outerjoin(conv_state, and_(
+                    conv_state.conversation_id == ChatConversation.id,
+                    conv_state.user_id == int(current_user_id),
+                ))
+                .where(ChatConversation.is_archived.is_(False))
+            ).all()
+
+            if not q1_rows:
                 if not search:
                     self._cache_set(
                         user_id=int(current_user_id),
@@ -948,31 +1000,11 @@ class ChatService:
                 )
                 return []
 
-            conversations = list(
-                session.execute(
-                    select(ChatConversation).where(
-                        ChatConversation.id.in_(conversation_ids),
-                        ChatConversation.is_archived.is_(False),
-                    )
-                ).scalars()
-            )
-            if not conversations:
-                if not search:
-                    self._cache_set(
-                        user_id=int(current_user_id),
-                        bucket="conversations",
-                        extra=str(page_size),
-                        value=[],
-                    )
-                self._set_request_meta(
-                    route="conversations",
-                    cache_hit=False,
-                    limit=page_size,
-                    query=None,
-                    items_count=0,
-                )
-                return []
+            conversations = [row[0] for row in q1_rows]
+            states_by_conversation = {row[0].id: row[1] for row in q1_rows if row[1] is not None}
+            conversation_ids = [c.id for c in conversations]
 
+            # Q2: all active members for these conversations
             members = list(
                 session.execute(
                     select(ChatMember).where(
@@ -981,15 +1013,9 @@ class ChatService:
                     )
                 ).scalars()
             )
-            states = list(
-                session.execute(
-                    select(ChatConversationUserState).where(
-                        ChatConversationUserState.conversation_id.in_(conversation_ids),
-                        ChatConversationUserState.user_id == int(current_user_id),
-                    )
-                ).scalars()
-            )
-            last_message_ids = [item.last_message_id for item in conversations if _normalize_text(item.last_message_id)]
+
+            # Q3: last messages + their attachments in two batched queries
+            last_message_ids = [c.last_message_id for c in conversations if _normalize_text(c.last_message_id)]
             messages = []
             if last_message_ids:
                 messages = list(session.execute(select(ChatMessage).where(ChatMessage.id.in_(last_message_ids))).scalars())
@@ -999,9 +1025,8 @@ class ChatService:
             ) if last_message_ids else {}
 
             unread_by_conversation = {
-                _normalize_text(item.conversation_id): max(0, int(getattr(item, "unread_count", 0) or 0))
-                for item in states
-                if _normalize_text(getattr(item, "conversation_id", None))
+                conv_id: max(0, int(getattr(state, "unread_count", 0) or 0))
+                for conv_id, state in states_by_conversation.items()
             }
 
             participant_ids = {
@@ -1014,7 +1039,6 @@ class ChatService:
             members_by_conversation: dict[str, list[ChatMember]] = {}
             for member in members:
                 members_by_conversation.setdefault(member.conversation_id, []).append(member)
-            states_by_conversation = {item.conversation_id: item for item in states}
             messages_by_id = {item.id: item for item in messages}
 
             items = []
@@ -1112,13 +1136,16 @@ class ChatService:
         return items
 
     def get_unread_summary(self, *, current_user_id: int) -> dict:
+        cached = self._cache_get(user_id=int(current_user_id), bucket="unread_summary")
+        if cached is not None:
+            return cached
         payload = self.get_unread_summaries(user_ids=[int(current_user_id)]).get(int(current_user_id))
-        if isinstance(payload, dict):
-            return payload
-        return {
+        result = payload if isinstance(payload, dict) else {
             "messages_unread_total": 0,
             "conversations_unread": 0,
         }
+        self._cache_set(user_id=int(current_user_id), bucket="unread_summary", value=result, ttl_sec=5)
+        return result
 
     def get_unread_summaries(
         self,
@@ -1265,17 +1292,31 @@ class ChatService:
         normalized_conversation_id = _normalize_text(conversation_id)
         if not normalized_conversation_id:
             raise ValueError("conversation_id is required")
+        cached = self._cache_get(
+            user_id=int(current_user_id),
+            bucket="conversation_detail",
+            extra=normalized_conversation_id,
+        )
+        if cached is not None:
+            return cached
         with chat_session() as session:
             conversation = self._require_membership(
                 session=session,
                 conversation_id=normalized_conversation_id,
                 current_user_id=int(current_user_id),
             )
-            return self._build_conversation_detail_payload(
+            result = self._build_conversation_detail_payload(
                 session=session,
                 conversation=conversation,
                 current_user_id=int(current_user_id),
             )
+        self._cache_set(
+            user_id=int(current_user_id),
+            bucket="conversation_detail",
+            extra=normalized_conversation_id,
+            value=result,
+        )
+        return result
 
     def get_conversation_summary(
         self,
@@ -1563,6 +1604,7 @@ class ChatService:
             forward_previews = self._build_forward_previews(
                 session=session,
                 forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
+                users_by_id=users_by_id,
             )
             return self._serialize_message(
                 conversation_kind=conversation.kind,
@@ -1642,6 +1684,7 @@ class ChatService:
             forward_previews = self._build_forward_previews(
                 session=session,
                 forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
+                users_by_id=users_by_id,
             )
             attachments = attachments_by_message.get(message.id, [])
 
@@ -2148,6 +2191,7 @@ class ChatService:
                         _normalize_text(getattr(item, "forward_from_message_id", None))
                         for item in candidates
                     ],
+                    users_by_id=users_by_id,
                 )
                 all_forward_previews.update(forward_previews)
 
@@ -2267,6 +2311,83 @@ class ChatService:
                 )
             items.sort(key=lambda item: item.get("read_at") or "", reverse=True)
             return {"items": items}
+
+    def toggle_reaction(self, *, current_user_id: int, message_id: str, emoji: str) -> dict:
+        self._ensure_available()
+        normalized_message_id = _normalize_text(message_id)
+        normalized_emoji = _normalize_text(emoji)
+        if not normalized_message_id or not normalized_emoji:
+            raise ValueError("message_id and emoji are required")
+        if len(normalized_emoji) > 32:
+            raise ValueError("emoji too long")
+        with chat_session() as session:
+            message = session.execute(
+                select(ChatMessage).where(ChatMessage.id == normalized_message_id)
+            ).scalar_one_or_none()
+            if message is None:
+                raise KeyError(f"Message {normalized_message_id!r} not found")
+            existing = session.execute(
+                select(ChatMessageReaction).where(
+                    ChatMessageReaction.message_id == normalized_message_id,
+                    ChatMessageReaction.user_id == int(current_user_id),
+                    ChatMessageReaction.emoji == normalized_emoji,
+                )
+            ).scalar_one_or_none()
+            if existing is not None:
+                session.delete(existing)
+                session.flush()
+                action = "removed"
+            else:
+                reaction = ChatMessageReaction(
+                    message_id=normalized_message_id,
+                    conversation_id=message.conversation_id,
+                    user_id=int(current_user_id),
+                    emoji=normalized_emoji,
+                )
+                session.add(reaction)
+                session.flush()
+                action = "added"
+            rows = session.execute(
+                select(ChatMessageReaction).where(
+                    ChatMessageReaction.message_id == normalized_message_id,
+                )
+            ).scalars().all()
+            reactions_map: dict[str, list[int]] = {}
+            for row in rows:
+                reactions_map.setdefault(row.emoji, []).append(row.user_id)
+            return {
+                "message_id": normalized_message_id,
+                "conversation_id": message.conversation_id,
+                "action": action,
+                "emoji": normalized_emoji,
+                "user_id": int(current_user_id),
+                "reactions": [
+                    {"emoji": e, "user_ids": uids, "count": len(uids)}
+                    for e, uids in reactions_map.items()
+                ],
+            }
+
+    def get_message_reactions(self, *, message_id: str) -> dict:
+        self._ensure_available()
+        normalized_message_id = _normalize_text(message_id)
+        if not normalized_message_id:
+            raise ValueError("message_id is required")
+        with chat_session() as session:
+            rows = session.execute(
+                select(ChatMessageReaction).where(
+                    ChatMessageReaction.message_id == normalized_message_id,
+                )
+            ).scalars().all()
+            reactions_map: dict[str, list[int]] = {}
+            for row in rows:
+                reactions_map.setdefault(row.emoji, []).append(row.user_id)
+            return {
+                "message_id": normalized_message_id,
+                "reactions": [
+                    {"emoji": e, "user_ids": uids, "count": len(uids)}
+                    for e, uids in reactions_map.items()
+                ],
+            }
 
     def get_message_read_delta(self, *, conversation_id: str, message_id: str) -> dict:
         self._ensure_available()
@@ -2501,7 +2622,7 @@ class ChatService:
                 )
                 total_size += int(prepared_item["original_size"])
                 if total_size > CHAT_MAX_TOTAL_FILE_BYTES:
-                    raise ValueError("Total upload size exceeds 25 MB")
+                    raise ValueError("Total upload size exceeds 1 GB")
                 prepared_files.append(prepared_item)
 
         session_id = str(uuid4())
@@ -2722,6 +2843,7 @@ class ChatService:
                     return self._ensure_video_poster_variant(
                         conversation_id=message.conversation_id,
                         attachment=attachment,
+                        source_path=file_path,
                     )
             except (OSError, ValueError, UnidentifiedImageError):
                 logger.exception(
@@ -3187,6 +3309,28 @@ class ChatService:
         )
         return payload
 
+    def update_group_avatar(self, *, current_user_id: int, conversation_id: str, avatar_url: Optional[str]) -> dict:
+        self._ensure_available()
+        normalized_avatar_url = _normalize_text(avatar_url) or None
+        affected_user_ids: set[int] = {int(current_user_id)}
+        with chat_session() as session:
+            conversation, _ = self._require_group_owner(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            conversation.avatar_url = normalized_avatar_url
+            member_ids_after = self._conversation_member_ids(session, conversation.id)
+            affected_user_ids.update(member_ids_after)
+            session.flush()
+            payload = self._build_conversation_detail_payload(session, conversation, int(current_user_id))
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=sorted(affected_user_ids),
+        )
+        return payload
+
     def send_message(
         self,
         *,
@@ -3334,7 +3478,7 @@ class ChatService:
                 if len(source_attachments) > CHAT_MAX_FILES_PER_MESSAGE:
                     raise ValueError(f"You can upload at most {CHAT_MAX_FILES_PER_MESSAGE} files at a time")
                 if sum(int(item.file_size or 0) for item in source_attachments) > CHAT_MAX_TOTAL_FILE_BYTES:
-                    raise ValueError("Total upload size exceeds 25 MB")
+                    raise ValueError("Total upload size exceeds 1 GB")
 
                 forward_from_message_id = (
                     _normalize_text(getattr(source_message, "forward_from_message_id", None))
@@ -3811,6 +3955,7 @@ class ChatService:
             "id": conversation.id,
             "kind": conversation.kind if conversation.kind in {"direct", "group", "ai"} else "group",
             "title": title,
+            "avatar_url": _normalize_text(getattr(conversation, "avatar_url", None)) or None,
             "created_at": _iso(conversation.created_at) or "",
             "updated_at": _iso(conversation.updated_at) or "",
             "last_message_at": _iso(conversation.last_message_at),
@@ -3872,6 +4017,7 @@ class ChatService:
         reply_previews: Optional[dict[str, dict]] = None,
         forward_previews: Optional[dict[str, dict]] = None,
         attachments: Optional[list[dict] | list[ChatMessageAttachment]] = None,
+        reactions_by_message_id: Optional[dict[str, list[dict]]] = None,
     ) -> dict:
         sender = users_by_id.get(int(message.sender_user_id)) or {
             "id": int(message.sender_user_id),
@@ -3927,6 +4073,7 @@ class ChatService:
             "task_preview": None if is_deleted else self._deserialize_task_preview(getattr(message, "task_preview_json", None)),
             "attachments": attachment_payload,
             "action_card": None if is_deleted else self._get_message_action_card(message_id=message.id),
+            "reactions": list((reactions_by_message_id or {}).get(message.id, [])),
         }
 
     def _get_message_action_card(self, *, message_id: str) -> dict | None:
@@ -4016,6 +4163,7 @@ class ChatService:
         *,
         session,
         forward_from_message_ids: list[object],
+        users_by_id: Optional[dict[int, dict]] = None,
     ) -> dict[str, dict]:
         normalized_ids = [
             _normalize_text(item)
@@ -4032,18 +4180,21 @@ class ChatService:
             session=session,
             message_ids=[item.id for item in source_messages],
         )
-        source_sender_ids = {
-            int(getattr(item, "sender_user_id", 0) or 0)
-            for item in source_messages
-            if int(getattr(item, "sender_user_id", 0) or 0) > 0
-        }
-        presence_map = self._get_presence_map(user_ids=source_sender_ids)
-        source_users_by_id = self._get_users_map(presence_map=presence_map, user_ids=source_sender_ids)
+        if users_by_id is not None:
+            resolved_users = users_by_id
+        else:
+            source_sender_ids = {
+                int(getattr(item, "sender_user_id", 0) or 0)
+                for item in source_messages
+                if int(getattr(item, "sender_user_id", 0) or 0) > 0
+            }
+            presence_map = self._get_presence_map(user_ids=source_sender_ids)
+            resolved_users = self._get_users_map(presence_map=presence_map, user_ids=source_sender_ids)
         return {
             item.id: self._forward_preview_payload(
                 message=item,
                 attachments=attachments_by_message.get(item.id, []),
-                users_by_id=source_users_by_id,
+                users_by_id=resolved_users,
             )
             for item in source_messages
         }
@@ -4435,7 +4586,26 @@ class ChatService:
                 _normalize_text(getattr(item, "forward_from_message_id", None))
                 for item in messages
             ],
+            users_by_id=users_by_id,
         )
+        message_ids = [item.id for item in messages]
+        reactions_by_message_id: dict[str, list[dict]] = {}
+        if message_ids:
+            reaction_rows = list(
+                session.execute(
+                    select(ChatMessageReaction).where(
+                        ChatMessageReaction.message_id.in_(message_ids)
+                    )
+                ).scalars()
+            )
+            raw_map: dict[str, dict[str, list[int]]] = {}
+            for rr in reaction_rows:
+                raw_map.setdefault(rr.message_id, {}).setdefault(rr.emoji, []).append(rr.user_id)
+            for mid, emoji_map in raw_map.items():
+                reactions_by_message_id[mid] = [
+                    {"emoji": e, "user_ids": uids, "count": len(uids)}
+                    for e, uids in emoji_map.items()
+                ]
         return {
             "items": [
                 self._serialize_message(
@@ -4449,6 +4619,7 @@ class ChatService:
                     reply_previews=reply_previews,
                     forward_previews=forward_previews,
                     attachments=attachments_by_message.get(item.id, []),
+                    reactions_by_message_id=reactions_by_message_id,
                 )
                 for item in messages
             ],
@@ -4629,6 +4800,8 @@ class ChatService:
                         raise ValueError(f"File is empty: {file_name}")
 
                     width, height = _probe_image_dimensions(probe_bytes, mime_type)
+                    if width is None and height is None:
+                        width, height = _probe_video_dimensions(temp_path, mime_type)
                     logger.info(
                         "chat.upload_probe file=%s mime_type=%s size=%d width=%s height=%s",
                         file_name,
@@ -4639,6 +4812,29 @@ class ChatService:
                     )
                     temp_path.replace(final_path)
                     written_paths.append(final_path)
+
+                    # Compress video if applicable
+                    if _normalize_text(mime_type).lower().startswith("video/"):
+                        try:
+                            from backend.chat.video_compress import compress_video, probe_video_info
+                            compressed_path = final_path.with_suffix(".compressed.mp4")
+                            result = compress_video(final_path, compressed_path)
+                            if result and result.exists():
+                                final_path.unlink(missing_ok=True)
+                                result.rename(final_path)
+                                file_size = final_path.stat().st_size
+                                mime_type = "video/mp4"
+                                info = probe_video_info(final_path)
+                                if info.get("width") and info.get("height"):
+                                    width = info["width"]
+                                    height = info["height"]
+                                logger.info(
+                                    "chat.video_compressed file=%s new_size=%d width=%s height=%s",
+                                    file_name, file_size, width, height,
+                                )
+                        except Exception as exc:
+                            logger.warning("chat.video_compress_failed file=%s error=%s", file_name, exc)
+
                     prepared.append(
                         {
                             "attachment_id": attachment_id,
@@ -4734,10 +4930,12 @@ class ChatService:
         *,
         conversation_id: str,
         attachment: ChatMessageAttachment,
+        source_path: Path | None = None,
     ) -> dict[str, str]:
         return self._attachment_media.ensure_video_poster_variant(
             conversation_id=conversation_id,
             attachment=attachment,
+            source_path=source_path,
         )
 
     def _attachment_to_payload(self, attachment: ChatMessageAttachment) -> dict:
@@ -4877,6 +5075,7 @@ class ChatService:
             forward_previews=self._build_forward_previews(
                 session=session,
                 forward_from_message_ids=[getattr(message, "forward_from_message_id", None)],
+                users_by_id=users_by_id,
             ),
             attachments=attachments,
         )
@@ -4972,9 +5171,9 @@ class ChatService:
                     title=base_title,
                     body=base_body,
                     mentioned_user_ids=mentioned_user_ids,
-                    default_title=base_title if not _normalize_text(title) else "РќРѕРІРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ РІ С‡Р°С‚Рµ",
-                    default_group_title="Р“СЂСѓРїРїРѕРІРѕР№ С‡Р°С‚",
-                    mention_prefix="Р вЂ™Р В°РЎРѓ РЎС“Р С—Р С•Р СРЎРЏР Р…РЎС“Р В»Р С‘",
+                    default_title=base_title if not _normalize_text(title) else "Новое сообщение в чате",
+                    default_group_title="Групповой чат",
+                    mention_prefix="Вас упомянули",
                 )
                 plans_by_user_id = {int(plan.recipient_user_id): plan for plan in recipient_plans}
                 outbox_now = _utc_now()
@@ -5004,7 +5203,7 @@ class ChatService:
 
                         if is_mentioned:
                             current_event_type = "chat.mention"
-                            mention_prefix = "Р’Р°СЃ СѓРїРѕРјСЏРЅСѓР»Рё"
+                            mention_prefix = "Вас упомянули"
                             if conversation.kind == "direct":
                                 current_title = sender_name
                                 current_body = f"[{mention_prefix}] {base_body}"
@@ -5071,7 +5270,16 @@ class ChatService:
         return stats
 
     def _get_presence_map(self, *, user_ids: Optional[list[int] | set[int] | tuple[int, ...]] = None) -> dict[int, dict]:
+        normalized_ids = sorted({int(item) for item in list(user_ids or []) if int(item) > 0})
+        cache_key = ",".join(str(i) for i in normalized_ids) if normalized_ids else "__all__"
         now = _utc_now()
+        with self._cache_lock:
+            cached_entry = self._presence_cache.get(cache_key)
+            if cached_entry is not None:
+                expires_at, cached_value = cached_entry
+                if expires_at > now:
+                    return cached_value
+                self._presence_cache.pop(cache_key, None)
         result: dict[int, dict] = {}
         normalized_user_ids = {
             int(item)
@@ -5143,7 +5351,7 @@ class ChatService:
             if int(user_id) in connected_user_ids:
                 payload["is_online"] = True
 
-        return {
+        presence_result = {
             user_id: self._build_presence_payload(
                 is_online=bool(payload.get("is_online")),
                 last_seen_at=payload.get("last_seen_at"),
@@ -5151,6 +5359,10 @@ class ChatService:
             )
             for user_id, payload in result.items()
         }
+        expires_at = now + timedelta(seconds=self._PRESENCE_CACHE_TTL_SEC)
+        with self._cache_lock:
+            self._presence_cache[cache_key] = (expires_at, presence_result)
+        return presence_result
 
     def _build_presence_payload(
         self,
@@ -5233,12 +5445,19 @@ class ChatService:
         presence_map: Optional[dict[int, dict]] = None,
         user_ids: Optional[list[int] | set[int] | tuple[int, ...]] = None,
     ) -> dict[int, dict]:
-        result = {}
         normalized_user_ids = {
             int(item)
             for item in list(user_ids or [])
             if int(item) > 0
         }
+        cache_key_extra = ",".join(str(i) for i in sorted(normalized_user_ids)) if normalized_user_ids else "__all__"
+        cached_users = self._cache_get(user_id=0, bucket="users_map", extra=cache_key_extra)
+        if cached_users is not None:
+            return {
+                user_id: self._serialize_user(item, presence_map=presence_map)
+                for user_id, item in cached_users.items()
+            }
+        raw_users: dict[int, dict] = {}
         source_users = (
             user_service.get_users_map_by_ids(normalized_user_ids).values()
             if normalized_user_ids
@@ -5250,8 +5469,12 @@ class ChatService:
                 continue
             if normalized_user_ids and user_id not in normalized_user_ids:
                 continue
-            result[user_id] = self._serialize_user(item, presence_map=presence_map)
-        return result
+            raw_users[user_id] = dict(item)
+        self._cache_set(user_id=0, bucket="users_map", extra=cache_key_extra, value=raw_users, ttl_sec=self._USERS_CACHE_TTL_SEC)
+        return {
+            user_id: self._serialize_user(item, presence_map=presence_map)
+            for user_id, item in raw_users.items()
+        }
 
     def _serialize_user(self, item: dict, *, presence_map: Optional[dict[int, dict]] = None) -> dict:
         user_id = int(item.get("id", 0) or 0)
@@ -5261,6 +5484,7 @@ class ChatService:
             "full_name": _normalize_text(item.get("full_name")) or None,
             "role": _normalize_text(item.get("role")) or "viewer",
             "is_active": bool(item.get("is_active", True)),
+            "avatar_url": (_normalize_text(item.get("avatar_url")) or None),
             "presence": dict((presence_map or {}).get(user_id) or self._build_presence_payload(is_online=False, last_seen_at=None)),
         }
 

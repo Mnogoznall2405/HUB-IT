@@ -34,6 +34,7 @@ from backend.models.equipment import (
     ConsumableQtyUpdateResponse,
     TransferActOnlyRequest,
     TransferExecuteRequest,
+    TransferLocationRequest,
     TransferExecuteResponse,
     TransferEmailRequest,
     TransferEmailResult,
@@ -1299,6 +1300,70 @@ async def transfer_equipment(
         current_user=current_user,
     )
     return _queued_transfer_response(job)
+
+
+@router.post("/transfer/location", response_model=TransferExecuteResponse)
+async def transfer_equipment_location(
+    payload: TransferLocationRequest,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+):
+    """
+    Move one or multiple equipment items to another branch/location only.
+
+    This writes CI_HISTORY but does not change owner, generate acts, create reminders,
+    or send email.
+    """
+    inv_nos = _normalize_inv_nos(payload.inv_nos)
+    if not inv_nos:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
+
+    branch_no = payload.branch_no
+    loc_no = payload.loc_no
+
+    if not queries.get_branch_by_no(branch_no, db_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid branch_no")
+
+    if not queries.get_location_by_no(loc_no, db_id):
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Invalid loc_no")
+
+    if not queries.is_location_in_branch(loc_no, branch_no, db_id):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="loc_no does not belong to branch_no",
+        )
+
+    changed_by = current_user.username if current_user else "IT-WEB"
+    transferred: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for inv_no in inv_nos:
+        result = queries.transfer_equipment_location_by_inv_with_history(
+            inv_no=inv_no,
+            new_branch_no=branch_no,
+            new_loc_no=loc_no,
+            changed_by=changed_by,
+            comment=payload.comment,
+            db_id=db_id,
+        )
+        if result.get("success"):
+            transferred.append(result)
+        else:
+            failed.append({
+                "inv_no": inv_no,
+                "error": result.get("message") or "Location transfer failed",
+            })
+
+    if transferred:
+        invalidate_equipment_cache(db_id)
+
+    return TransferExecuteResponse(
+        success_count=len(transferred),
+        failed_count=len(failed),
+        transferred=transferred,
+        failed=failed,
+        acts=[],
+    )
 
 
 @router.post("/transfer/act-only", response_model=TransferExecuteResponse)

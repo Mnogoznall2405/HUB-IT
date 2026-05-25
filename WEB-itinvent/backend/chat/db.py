@@ -25,9 +25,17 @@ _engines: dict[str, object] = {}
 _session_factories: dict[str, object] = {}
 
 
+# Tables managed by _ensure_*() helpers are excluded from the automatic
+# production schema check (_verify_production_schema). Add new tables here
+# when they are introduced via _ensure_* instead of a pure Alembic migration.
+_CHAT_SCHEMA_CHECK_EXCLUDED_TABLES: frozenset[str] = frozenset({
+    "chat_message_reactions",
+})
+
 _CHAT_REQUIRED_COLUMNS = {
     table.name: {column.name for column in table.columns}
     for table in Base.metadata.sorted_tables
+    if table.name not in _CHAT_SCHEMA_CHECK_EXCLUDED_TABLES
 }
 
 
@@ -163,6 +171,7 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
     engine = get_chat_engine(database_url)
     if engine.dialect.name == "postgresql":
         if _uses_legacy_public_chat_schema(engine):
+            _ensure_chat_reactions_table(engine)
             if config.app.is_production:
                 _verify_production_schema(engine)
                 return
@@ -183,6 +192,7 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
     _ensure_chat_conversation_columns(engine)
     _ensure_chat_user_state_columns(engine)
     _ensure_chat_attachment_columns(engine)
+    _ensure_chat_reactions_table(engine)
 
 
 def _verify_production_schema(engine) -> None:
@@ -405,6 +415,49 @@ def _ensure_chat_attachment_columns(engine) -> None:
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))
+
+
+def _ensure_chat_reactions_table(engine) -> None:
+    inspector = inspect(engine)
+    table_schema = _runtime_schema(engine)
+    table_name = _qualified_table("chat_message_reactions", engine=engine)
+    if not inspector.has_table("chat_message_reactions", schema=table_schema):
+        with engine.begin() as connection:
+            connection.execute(text(
+                f"CREATE TABLE IF NOT EXISTS {table_name} ("
+                "id SERIAL PRIMARY KEY, "
+                "message_id VARCHAR(36) NOT NULL, "
+                "conversation_id VARCHAR(36) NOT NULL, "
+                "user_id INTEGER NOT NULL, "
+                "emoji VARCHAR(32) NOT NULL, "
+                "created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(), "
+                "CONSTRAINT uq_chat_message_reactions_message_user_emoji UNIQUE (message_id, user_id, emoji))"
+            ))
+            connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_message_id ON {table_name}(message_id)"))
+            connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_user_id ON {table_name}(user_id)"))
+            connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_conversation_id ON {table_name}(conversation_id)"))
+        return
+    columns = {str(item.get("name")) for item in inspector.get_columns("chat_message_reactions", schema=table_schema)}
+    statements: list[str] = []
+    if "conversation_id" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS conversation_id VARCHAR(36) NOT NULL DEFAULT ''")
+    if "emoji" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS emoji VARCHAR(32) NOT NULL DEFAULT ''")
+    if "user_id" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS user_id INTEGER NOT NULL DEFAULT 0")
+    if "message_id" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS message_id VARCHAR(36) NOT NULL DEFAULT ''")
+    if "created_at" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN IF NOT EXISTS created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()")
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+        if engine.dialect.name == "postgresql":
+            connection.execute(text(f"ALTER TABLE {table_name} ALTER COLUMN reaction_emoji DROP NOT NULL") if "reaction_emoji" in columns else text("SELECT 1"))
+            connection.execute(text(f"ALTER TABLE {table_name} ALTER COLUMN updated_at DROP NOT NULL") if "updated_at" in columns else text("SELECT 1"))
+        connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_message_id ON {table_name}(message_id)"))
+        connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_user_id ON {table_name}(user_id)"))
+        connection.execute(text(f"CREATE INDEX IF NOT EXISTS ix_chat_message_reactions_conversation_id ON {table_name}(conversation_id)"))
 
 
 def _runtime_schema(engine) -> str | None:

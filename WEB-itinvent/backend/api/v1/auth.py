@@ -9,8 +9,11 @@ import hashlib
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, status, HTTPException, Request, Response, Cookie
+from pathlib import Path
+
+from fastapi import APIRouter, Depends, File, status, HTTPException, Request, Response, Cookie, UploadFile
 from fastapi.concurrency import run_in_threadpool
+from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 from backend.api.deps import ensure_admin_ip_allowed, get_current_active_user, get_current_admin_user, get_current_session_id, get_current_user, require_permission
@@ -1344,3 +1347,139 @@ async def trigger_ad_sync(
     except Exception as e:
         logger.error(f"AD sync endpoint error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+def _get_avatars_dir() -> Path:
+    from backend.services.hub_service import hub_service
+    avatars_dir = Path(hub_service.data_dir) / "user_avatars"
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+    return avatars_dir
+
+
+@router.post("/me/avatar", response_model=User)
+async def upload_my_avatar(
+    file: UploadFile = File(...),
+    request: Request = None,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Upload or replace the current user's avatar photo.
+    Accepts image/* files up to 2 MB. Resizes to 256x256 JPEG.
+    """
+    from PIL import Image as PilImage
+    import io
+
+    content_type = str(file.content_type or "").strip().lower()
+    if not content_type.startswith("image/"):
+        raise HTTPException(status_code=400, detail="Only image files are accepted")
+
+    raw = await file.read()
+    if len(raw) > 2 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="Image must be smaller than 2 MB")
+
+    def _process_and_save() -> str:
+        avatars_dir = _get_avatars_dir()
+        dest_path = avatars_dir / f"{int(current_user.id)}.jpg"
+        logger.info("[avatar] saving to %s", dest_path)
+        with PilImage.open(io.BytesIO(raw)) as img:
+            img = img.convert("RGB")
+            # Center-crop to square then resize to 256x256
+            w, h = img.size
+            min_dim = min(w, h)
+            left = (w - min_dim) // 2
+            top = (h - min_dim) // 2
+            img = img.crop((left, top, left + min_dim, top + min_dim))
+            img = img.resize((256, 256), PilImage.LANCZOS)
+            img.save(str(dest_path), format="JPEG", quality=88, optimize=True)
+        logger.info("[avatar] file saved OK, size=%s", dest_path.stat().st_size)
+        import time
+        avatar_url = f"/api/v1/auth/avatars/{int(current_user.id)}.jpg?v={int(time.time())}"
+        result = user_service.update_avatar_url(int(current_user.id), avatar_url)
+        logger.info("[avatar] update_avatar_url result=%s", result)
+        return avatar_url
+
+    saved_url = await run_in_threadpool(_process_and_save)
+    logger.info("[avatar] upload done for user_id=%s url=%s", current_user.id, saved_url)
+    try:
+        from backend.chat.service import chat_service
+        chat_service._invalidate_user_cache(user_id=0, bucket="users_map")
+        chat_service.invalidate_bucket_for_all_users(bucket="conversation_detail")
+        chat_service.invalidate_bucket_for_all_users(bucket="conversations")
+        logger.info("[avatar] chat caches invalidated")
+    except Exception as e:
+        logger.warning("[avatar] cache invalidate failed: %s", e)
+    payload = _build_current_user_payload(current_user, request)
+    logger.info("[avatar] payload avatar_url=%s", getattr(payload, 'avatar_url', 'N/A'))
+    return payload
+
+
+@router.delete("/me/avatar", response_model=User)
+async def delete_my_avatar(
+    request: Request = None,
+    current_user: User = Depends(get_current_active_user),
+):
+    """
+    Remove the current user's avatar photo.
+    """
+    def _remove() -> None:
+        avatars_dir = _get_avatars_dir()
+        dest_path = avatars_dir / f"{int(current_user.id)}.jpg"
+        if dest_path.exists():
+            dest_path.unlink(missing_ok=True)
+        user_service.update_avatar_url(int(current_user.id), None)
+
+    await run_in_threadpool(_remove)
+    logger.info("[avatar] deleted for user_id=%s", current_user.id)
+    try:
+        from backend.chat.service import chat_service
+        chat_service._invalidate_user_cache(user_id=0, bucket="users_map")
+        chat_service.invalidate_bucket_for_all_users(bucket="conversation_detail")
+        chat_service.invalidate_bucket_for_all_users(bucket="conversations")
+        logger.info("[avatar] chat caches invalidated")
+    except Exception as e:
+        logger.warning("[avatar] cache invalidate failed: %s", e)
+    return _build_current_user_payload(current_user, request)
+
+
+@router.get("/me/avatar/debug")
+async def debug_my_avatar(
+    current_user: User = Depends(get_current_active_user),
+):
+    """Debug: show avatar_url from DB directly."""
+    import os
+    raw = user_service.get_by_id(int(current_user.id))
+    avatars_dir = _get_avatars_dir()
+    file_path = avatars_dir / f"{int(current_user.id)}.jpg"
+    return {
+        "user_id": current_user.id,
+        "current_user_avatar_url": current_user.avatar_url,
+        "db_avatar_url": (raw or {}).get("avatar_url"),
+        "file_exists": file_path.exists(),
+        "file_size": file_path.stat().st_size if file_path.exists() else None,
+        "avatars_dir": str(avatars_dir),
+    }
+
+
+@router.get("/avatars/{filename}")
+async def get_user_avatar(filename: str):
+    """
+    Serve a user avatar image. No authentication required.
+    """
+    safe_name = Path(filename).name
+    if not safe_name.endswith(".jpg") or not safe_name[:-4].isdigit():
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    avatars_dir = _get_avatars_dir()
+    avatar_path = avatars_dir / safe_name
+    if not avatar_path.exists():
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    import os
+    stat = os.stat(avatar_path)
+    etag = f"\"{int(stat.st_mtime)}-{stat.st_size}\""
+    return FileResponse(
+        path=str(avatar_path),
+        media_type="image/jpeg",
+        headers={
+            "Cache-Control": "public, max-age=0, must-revalidate",
+            "ETag": etag,
+        },
+    )

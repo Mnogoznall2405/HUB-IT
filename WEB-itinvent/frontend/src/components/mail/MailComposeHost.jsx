@@ -1,4 +1,5 @@
 import { lazy, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Button, Dialog, DialogActions, DialogContent, DialogTitle, Typography } from '@mui/material';
 import { mailAPI } from '../../api/client';
 import useDebounce from '../../hooks/useDebounce';
 import {
@@ -6,6 +7,7 @@ import {
   createComposeInitialState,
   getComposeCombinedBody,
   getComposeDialogTitle,
+  isValidEmailRecipient,
   toRecipientEmails,
 } from './mailComposeState';
 
@@ -14,7 +16,6 @@ const MailComposeDialog = lazy(loadMailComposeDialog);
 
 const normalizeMailboxId = (value) => String(value || '').trim();
 const getMailboxEntryId = (value) => normalizeMailboxId(value?.id || value?.mailbox_id);
-const isValidEmail = (value) => /^[^\s@]+@[^\s@]+$/.test(String(value || '').trim());
 
 export default function MailComposeHost({
   session,
@@ -36,6 +37,7 @@ export default function MailComposeHost({
   onCloseSession,
   onRegisterCloseHandler,
   onSendSuccess,
+  onComposeWarning,
   handleMailCredentialsRequired,
   getMailErrorDetail,
 }) {
@@ -43,8 +45,10 @@ export default function MailComposeHost({
   const [composeToSearch, setComposeToSearch] = useState('');
   const [composeToOptions, setComposeToOptions] = useState([]);
   const [composeToLoading, setComposeToLoading] = useState(false);
+  const [closeDraftPromptOpen, setCloseDraftPromptOpen] = useState(false);
   const composeStateRef = useRef(composeState);
   const composeUploadAbortRef = useRef(null);
+  const notifiedComposeWarningsRef = useRef(new Set());
   const mountedRef = useRef(true);
   const debouncedComposeToSearch = useDebounce(composeToSearch, 400);
 
@@ -72,6 +76,8 @@ export default function MailComposeHost({
     setComposeToSearch('');
     setComposeToOptions([]);
     setComposeToLoading(false);
+    setCloseDraftPromptOpen(false);
+    notifiedComposeWarningsRef.current = new Set();
   }, [session?.id]);
 
   const patchComposeState = useCallback((updater) => {
@@ -124,15 +130,15 @@ export default function MailComposeHost({
     const bcc = toRecipientEmails(composeState.composeBccValues);
     const nextErrors = { ...fieldErrors };
     let changed = false;
-    if (nextErrors.to && to.length > 0 && to.every((value) => isValidEmail(value))) {
+    if (nextErrors.to && to.length > 0 && to.every((value) => isValidEmailRecipient(value))) {
       delete nextErrors.to;
       changed = true;
     }
-    if (nextErrors.cc && cc.every((value) => isValidEmail(value))) {
+    if (nextErrors.cc && cc.every((value) => isValidEmailRecipient(value))) {
       delete nextErrors.cc;
       changed = true;
     }
-    if (nextErrors.bcc && bcc.every((value) => isValidEmail(value))) {
+    if (nextErrors.bcc && bcc.every((value) => isValidEmailRecipient(value))) {
       delete nextErrors.bcc;
       changed = true;
     }
@@ -189,7 +195,9 @@ export default function MailComposeHost({
       warnings.push({
         id: 'empty_subject',
         severity: 'warning',
+        title: 'Письмо без темы',
         message: 'Тема письма пустая.',
+        notifyOnAppear: false,
       });
     }
     if (mailboxPrimaryDomain) {
@@ -201,6 +209,7 @@ export default function MailComposeHost({
         warnings.push({
           id: 'external_recipients',
           severity: 'info',
+          title: 'Внешний адресат',
           message: 'В письме есть внешние получатели.',
         });
       }
@@ -211,6 +220,7 @@ export default function MailComposeHost({
       warnings.push({
         id: 'missing_attachment',
         severity: 'warning',
+        title: 'Проверьте вложение',
         message: 'В тексте упомянуто вложение, но файлы не прикреплены.',
       });
     }
@@ -226,6 +236,28 @@ export default function MailComposeHost({
     composeState.dismissedComposeWarnings,
     mailboxPrimaryDomain,
   ]);
+
+  const notifyComposeWarning = useCallback((warning, options = {}) => {
+    if (!warning || typeof onComposeWarning !== 'function') return;
+    const warningId = String(warning.id || 'compose-warning');
+    onComposeWarning({
+      ...warning,
+      ...options,
+      id: warningId,
+      source: 'mail-compose',
+      dedupeKey: options.dedupeKey || `mail-compose:${session?.id || 'active'}:${warningId}`,
+    });
+  }, [onComposeWarning, session?.id]);
+
+  useEffect(() => {
+    composeWarnings.forEach((warning) => {
+      if (warning?.notifyOnAppear === false) return;
+      const key = `${warning?.id || ''}:${warning?.message || ''}`;
+      if (!key || notifiedComposeWarningsRef.current.has(key)) return;
+      notifiedComposeWarningsRef.current.add(key);
+      notifyComposeWarning(warning);
+    });
+  }, [composeWarnings, notifyComposeWarning]);
 
   const clearStoredComposeDraft = useCallback(() => {
     if (typeof window === 'undefined') return;
@@ -299,6 +331,17 @@ export default function MailComposeHost({
     }
   }, [clearStoredComposeDraft, patchComposeState, persistLocalComposeDraft, resolveComposeMailboxId]);
 
+  const discardComposeDraft = useCallback(async (state) => {
+    if (state?.composeDraftId) {
+      try {
+        await mailAPI.deleteDraft(state.composeDraftId, { mailboxId: resolveComposeMailboxId(state.composeFromMailboxId) });
+      } catch {
+        // ignore draft cleanup errors
+      }
+    }
+    clearStoredComposeDraft();
+  }, [clearStoredComposeDraft, resolveComposeMailboxId]);
+
   useEffect(() => {
     if (composeState.composeSending || (!hasComposeContent && !composeState.composeDraftId)) return undefined;
     const timer = setTimeout(() => {
@@ -311,24 +354,32 @@ export default function MailComposeHost({
     const state = composeStateRef.current;
     if (state.composeSending) return;
     if (!composeStateHasContent(state) && state.composeDraftId) {
-      try {
-        await mailAPI.deleteDraft(state.composeDraftId, { mailboxId: resolveComposeMailboxId(state.composeFromMailboxId) });
-      } catch {
-        // ignore draft cleanup errors
-      }
-      clearStoredComposeDraft();
+      await discardComposeDraft(state);
       onCloseSession?.();
       return;
     }
     if (composeStateHasContent(state) || state.composeDraftId) {
-      try {
-        await flushComposeDraft({ includeFiles: true });
-      } catch {
-        // fallback draft already persisted locally
-      }
+      setCloseDraftPromptOpen(true);
+      return;
     }
     onCloseSession?.();
-  }, [clearStoredComposeDraft, flushComposeDraft, onCloseSession, resolveComposeMailboxId]);
+  }, [discardComposeDraft, onCloseSession]);
+
+  const handleSaveAndCloseCompose = useCallback(async () => {
+    setCloseDraftPromptOpen(false);
+    try {
+      await flushComposeDraft({ includeFiles: true });
+    } catch {
+      // fallback draft already persisted locally
+    }
+    onCloseSession?.();
+  }, [flushComposeDraft, onCloseSession]);
+
+  const handleDiscardAndCloseCompose = useCallback(async () => {
+    setCloseDraftPromptOpen(false);
+    await discardComposeDraft(composeStateRef.current);
+    onCloseSession?.();
+  }, [discardComposeDraft, onCloseSession]);
 
   const handleCloseComposeRef = useRef(handleCloseCompose);
   handleCloseComposeRef.current = handleCloseCompose;
@@ -341,19 +392,44 @@ export default function MailComposeHost({
     return () => onRegisterCloseHandler(null);
   }, [onRegisterCloseHandler]);
 
-  const handleSendCompose = useCallback(async () => {
+  const handleSendCompose = useCallback(async (submitOverrides = {}) => {
+    const recipientOverrides = {};
+    if (Array.isArray(submitOverrides?.composeToValues)) {
+      recipientOverrides.composeToValues = submitOverrides.composeToValues;
+    }
+    if (Array.isArray(submitOverrides?.composeCcValues)) {
+      recipientOverrides.composeCcValues = submitOverrides.composeCcValues;
+    }
+    if (Array.isArray(submitOverrides?.composeBccValues)) {
+      recipientOverrides.composeBccValues = submitOverrides.composeBccValues;
+    }
+    if (Object.keys(recipientOverrides).length > 0) {
+      composeStateRef.current = {
+        ...composeStateRef.current,
+        ...recipientOverrides,
+      };
+      patchComposeState(recipientOverrides);
+    }
     const state = composeStateRef.current;
     const to = toRecipientEmails(state.composeToValues);
     const cc = toRecipientEmails(state.composeCcValues);
     const bcc = toRecipientEmails(state.composeBccValues);
     const validationErrors = {};
     if (to.length === 0) validationErrors.to = 'Укажите хотя бы одного получателя.';
-    if (to.some((value) => !isValidEmail(value))) validationErrors.to = 'Проверьте адреса в поле "Кому".';
-    if (cc.some((value) => !isValidEmail(value))) validationErrors.cc = 'Проверьте адреса в поле "Копия".';
-    if (bcc.some((value) => !isValidEmail(value))) validationErrors.bcc = 'Проверьте адреса в поле "Скрытая копия".';
+    if (to.some((value) => !isValidEmailRecipient(value))) validationErrors.to = 'Проверьте адреса в поле "Кому".';
+    if (cc.some((value) => !isValidEmailRecipient(value))) validationErrors.cc = 'Проверьте адреса в поле "Копия".';
+    if (bcc.some((value) => !isValidEmailRecipient(value))) validationErrors.bcc = 'Проверьте адреса в поле "Скрытая копия".';
     if (Object.keys(validationErrors).length > 0) {
       patchComposeState({ composeFieldErrors: validationErrors });
       return;
+    }
+    if (!String(state.composeSubject || '').trim()) {
+      notifyComposeWarning({
+        id: 'empty_subject_send',
+        severity: 'warning',
+        title: 'Письмо без темы',
+        message: 'Тема письма пустая. Письмо будет отправлено без темы.',
+      });
     }
     patchComposeState({
       composeFieldErrors: {},
@@ -376,6 +452,7 @@ export default function MailComposeHost({
           replyToMessageId: state.composeReplyToMessageId,
           forwardMessageId: state.composeForwardMessageId,
           draftId: state.composeDraftId,
+          retainExistingAttachments: state.composeDraftAttachments.map((item) => item?.download_token || item?.id).filter(Boolean),
           files: state.composeFiles,
           signal: controller.signal,
           onUploadProgress: (event) => {
@@ -402,6 +479,7 @@ export default function MailComposeHost({
           reply_to_message_id: state.composeReplyToMessageId,
           forward_message_id: state.composeForwardMessageId,
           draft_id: state.composeDraftId,
+          retain_existing_attachments: state.composeDraftAttachments.map((item) => item?.download_token || item?.id).filter(Boolean),
         });
       }
       clearStoredComposeDraft();
@@ -423,100 +501,118 @@ export default function MailComposeHost({
     clearStoredComposeDraft,
     getMailErrorDetail,
     handleMailCredentialsRequired,
+    notifyComposeWarning,
     onSendSuccess,
     patchComposeState,
     resolveComposeMailboxId,
   ]);
 
   return (
-    <MailComposeDialog
-      open
-      onClose={handleCloseCompose}
-      dialogTitle={getComposeDialogTitle(composeState.composeMode)}
-      composeMode={composeState.composeMode}
-      draftSyncState={composeState.draftSyncState}
-      draftSavedAt={composeState.draftSavedAt}
-      composeError={composeState.composeError}
-      onClearComposeError={() => patchComposeState({ composeError: '' })}
-      formatFullDate={formatFullDate}
-      composeDragActive={composeState.composeDragActive}
-      onDragEnter={(event) => {
-        event.preventDefault();
-        patchComposeState({ composeDragActive: true });
-      }}
-      onDragOver={(event) => {
-        event.preventDefault();
-        patchComposeState({ composeDragActive: true });
-      }}
-      onDragLeave={(event) => {
-        event.preventDefault();
-        patchComposeState({ composeDragActive: false });
-      }}
-      onDrop={(event) => {
-        event.preventDefault();
-        patchComposeState((current) => ({
-          composeDragActive: false,
-          composeFiles: Array.from(event.dataTransfer?.files || []).length > 0
-            ? [...current.composeFiles, ...Array.from(event.dataTransfer?.files || [])]
-            : current.composeFiles,
-        }));
-      }}
-      onFileChange={(event) => {
-        const files = Array.from(event.target.files || []);
-        patchComposeState((current) => ({
-          composeFiles: files.length > 0 ? [...current.composeFiles, ...files] : current.composeFiles,
-        }));
-        event.target.value = '';
-      }}
-      composeToOptions={composeToOptions}
-      composeToLoading={composeToLoading}
-      composeFromOptions={composeFromOptions}
-      composeFromMailboxId={composeState.composeFromMailboxId}
-      onComposeFromMailboxIdChange={(value) => patchComposeState({ composeFromMailboxId: String(value || '') })}
-      composeToValues={composeState.composeToValues}
-      onComposeToValuesChange={(value) => patchComposeState({ composeToValues: Array.isArray(value) ? value : [] })}
-      onComposeToSearchChange={setComposeToSearch}
-      composeFieldErrors={composeState.composeFieldErrors}
-      composeCcValues={composeState.composeCcValues}
-      onComposeCcValuesChange={(value) => patchComposeState({ composeCcValues: Array.isArray(value) ? value : [] })}
-      composeBccValues={composeState.composeBccValues}
-      onComposeBccValuesChange={(value) => patchComposeState({ composeBccValues: Array.isArray(value) ? value : [] })}
-      composeSubject={composeState.composeSubject}
-      onComposeSubjectChange={(value) => patchComposeState({ composeSubject: String(value || '') })}
-      composeBody={composeState.composeBody}
-      onComposeBodyChange={(value) => patchComposeState({ composeBody: String(value || '') })}
-      quotedOriginalHtml={composeState.composeQuotedOriginalHtml}
-      composeSignatureHtml={composeSignaturePreviewHtml}
-      composeDraftAttachments={composeState.composeDraftAttachments}
-      composeFiles={composeState.composeFiles}
-      composeWarnings={composeWarnings}
-      onDismissComposeWarning={(warningId) => patchComposeState((current) => ({
-        dismissedComposeWarnings: [...new Set([...(current.dismissedComposeWarnings || []), String(warningId || '')])],
-      }))}
-      onComposePasteFiles={(files) => {
-        const incoming = Array.isArray(files) ? files : Array.from(files || []);
-        patchComposeState((current) => ({
-          composeFiles: incoming.length > 0 ? [...current.composeFiles, ...incoming] : current.composeFiles,
-        }));
-      }}
-      onSendComposeShortcut={handleSendCompose}
-      formatFileSize={formatFileSize}
-      sumFilesSize={sumFilesSize}
-      sumAttachmentSize={sumAttachmentSize}
-      onRemoveDraftAttachment={(id) => patchComposeState((current) => ({
-        composeDraftAttachments: current.composeDraftAttachments.filter((item) => String(item.id) !== String(id)),
-      }))}
-      onRemoveComposeFile={(indexToRemove) => patchComposeState((current) => ({
-        composeFiles: current.composeFiles.filter((_, index) => index !== indexToRemove),
-      }))}
-      composeSending={composeState.composeSending}
-      composeUploadProgress={composeState.composeUploadProgress}
-      onCancelComposeUpload={() => {
-        if (composeUploadAbortRef.current) composeUploadAbortRef.current.abort();
-      }}
-      onOpenSignatureEditor={() => onOpenSignatureEditor?.(composeState.composeFromMailboxId)}
-      onSendCompose={handleSendCompose}
-      layoutMode={layoutMode}
-    />
+    <>
+      <MailComposeDialog
+        open
+        onClose={handleCloseCompose}
+        dialogTitle={getComposeDialogTitle(composeState.composeMode)}
+        composeMode={composeState.composeMode}
+        draftSyncState={composeState.draftSyncState}
+        draftSavedAt={composeState.draftSavedAt}
+        composeError={composeState.composeError}
+        onClearComposeError={() => patchComposeState({ composeError: '' })}
+        formatFullDate={formatFullDate}
+        composeDragActive={composeState.composeDragActive}
+        onDragEnter={(event) => {
+          event.preventDefault();
+          patchComposeState({ composeDragActive: true });
+        }}
+        onDragOver={(event) => {
+          event.preventDefault();
+          patchComposeState({ composeDragActive: true });
+        }}
+        onDragLeave={(event) => {
+          event.preventDefault();
+          patchComposeState({ composeDragActive: false });
+        }}
+        onDrop={(event) => {
+          event.preventDefault();
+          patchComposeState((current) => ({
+            composeDragActive: false,
+            composeFiles: Array.from(event.dataTransfer?.files || []).length > 0
+              ? [...current.composeFiles, ...Array.from(event.dataTransfer?.files || [])]
+              : current.composeFiles,
+          }));
+        }}
+        onFileChange={(event) => {
+          const files = Array.from(event.target.files || []);
+          patchComposeState((current) => ({
+            composeFiles: files.length > 0 ? [...current.composeFiles, ...files] : current.composeFiles,
+          }));
+          event.target.value = '';
+        }}
+        composeToOptions={composeToOptions}
+        composeToLoading={composeToLoading}
+        composeFromOptions={composeFromOptions}
+        composeFromMailboxId={composeState.composeFromMailboxId}
+        onComposeFromMailboxIdChange={(value) => patchComposeState({ composeFromMailboxId: String(value || '') })}
+        composeToValues={composeState.composeToValues}
+        onComposeToValuesChange={(value) => patchComposeState({ composeToValues: Array.isArray(value) ? value : [] })}
+        onComposeToSearchChange={setComposeToSearch}
+        composeFieldErrors={composeState.composeFieldErrors}
+        composeCcValues={composeState.composeCcValues}
+        onComposeCcValuesChange={(value) => patchComposeState({ composeCcValues: Array.isArray(value) ? value : [] })}
+        composeBccValues={composeState.composeBccValues}
+        onComposeBccValuesChange={(value) => patchComposeState({ composeBccValues: Array.isArray(value) ? value : [] })}
+        composeSubject={composeState.composeSubject}
+        onComposeSubjectChange={(value) => patchComposeState({ composeSubject: String(value || '') })}
+        composeBody={composeState.composeBody}
+        onComposeBodyChange={(value) => patchComposeState({ composeBody: String(value || '') })}
+        quotedOriginalHtml={composeState.composeQuotedOriginalHtml}
+        composeSignatureHtml={composeSignaturePreviewHtml}
+        composeDraftAttachments={composeState.composeDraftAttachments}
+        composeFiles={composeState.composeFiles}
+        onComposePasteFiles={(files) => {
+          const incoming = Array.isArray(files) ? files : Array.from(files || []);
+          patchComposeState((current) => ({
+            composeFiles: incoming.length > 0 ? [...current.composeFiles, ...incoming] : current.composeFiles,
+          }));
+        }}
+        onSendComposeShortcut={handleSendCompose}
+        formatFileSize={formatFileSize}
+        sumFilesSize={sumFilesSize}
+        sumAttachmentSize={sumAttachmentSize}
+        onRemoveDraftAttachment={(id) => patchComposeState((current) => ({
+          composeDraftAttachments: current.composeDraftAttachments.filter((item) => String(item.id) !== String(id)),
+        }))}
+        onRemoveComposeFile={(indexToRemove) => patchComposeState((current) => ({
+          composeFiles: current.composeFiles.filter((_, index) => index !== indexToRemove),
+        }))}
+        composeSending={composeState.composeSending}
+        composeUploadProgress={composeState.composeUploadProgress}
+        onCancelComposeUpload={() => {
+          if (composeUploadAbortRef.current) composeUploadAbortRef.current.abort();
+        }}
+        onOpenSignatureEditor={() => onOpenSignatureEditor?.(composeState.composeFromMailboxId)}
+        onSendCompose={handleSendCompose}
+        layoutMode={layoutMode}
+      />
+      <Dialog open={closeDraftPromptOpen} onClose={() => setCloseDraftPromptOpen(false)} maxWidth="xs" fullWidth>
+        <DialogTitle>Сохранить письмо в черновики?</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary">
+            Если не сохранить, изменения в этом письме будут удалены.
+          </Typography>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setCloseDraftPromptOpen(false)} sx={{ textTransform: 'none' }}>
+            Продолжить редактирование
+          </Button>
+          <Button color="error" onClick={handleDiscardAndCloseCompose} sx={{ textTransform: 'none' }}>
+            Не сохранять
+          </Button>
+          <Button variant="contained" onClick={handleSaveAndCloseCompose} sx={{ textTransform: 'none' }}>
+            Сохранить
+          </Button>
+        </DialogActions>
+      </Dialog>
+    </>
   );
 }

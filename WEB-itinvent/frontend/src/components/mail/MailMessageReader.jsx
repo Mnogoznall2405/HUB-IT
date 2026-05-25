@@ -5,6 +5,7 @@ export default function MailMessageReader({
   message,
   renderState,
   ui,
+  isMobile = false,
   formatFileSize,
   getRenderedContentSx,
   onRevealRemoteImages,
@@ -27,7 +28,18 @@ export default function MailMessageReader({
     : () => ({});
 
   return (
-    <Box className="mail-scroll-hidden mail-safe-bottom" sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', WebkitOverflowScrolling: 'touch', p: { xs: 1.35, md: 2 } }}>
+    <Box
+      className="mail-scroll-hidden mail-safe-bottom"
+      sx={{
+        flex: 1,
+        minHeight: 0,
+        overflowY: 'auto',
+        overflowX: 'hidden',
+        WebkitOverflowScrolling: 'touch',
+        p: { xs: 1.35, md: 2 },
+        pb: isMobile ? 'calc(86px + env(safe-area-inset-bottom, 0px))' : { xs: 1.35, md: 2 },
+      }}
+    >
       {renderResult.hasBlockedExternalImages ? (
         <Alert
           severity="info"

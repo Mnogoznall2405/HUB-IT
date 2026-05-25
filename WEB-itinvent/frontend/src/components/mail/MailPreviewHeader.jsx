@@ -93,6 +93,54 @@ function DesktopActionItem({ icon, label, onClick, danger = false, disabled = fa
   );
 }
 
+function MobileBottomActionButton({ icon, label, onClick, danger = false, disabled = false, tokens }) {
+  return (
+    <Button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      sx={{
+        minWidth: 0,
+        width: tokens.bulkActionSize,
+        height: 56,
+        px: 0.25,
+        py: 0.5,
+        borderRadius: tokens.radiusMd,
+        display: 'flex',
+        flexDirection: 'column',
+        gap: 0.25,
+        color: danger
+          ? (tokens.isDark ? '#fecaca' : '#b91c1c')
+          : tokens.textPrimary,
+        bgcolor: 'transparent',
+        textTransform: 'none',
+        fontWeight: 800,
+        fontSize: '0.68rem',
+        lineHeight: 1.1,
+        transition: tokens.transition,
+        '& .MuiButton-startIcon': {
+          m: 0,
+          '& svg': { fontSize: 22 },
+        },
+        '&:hover': {
+          bgcolor: danger
+            ? 'rgba(239, 68, 68, 0.10)'
+            : tokens.actionHover,
+        },
+        '&:active': {
+          transform: 'scale(0.98)',
+        },
+        '&.Mui-disabled': {
+          opacity: 0.42,
+        },
+      }}
+      startIcon={icon}
+    >
+      {label}
+    </Button>
+  );
+}
+
 export default function MailPreviewHeader({
   selectedMessage,
   selectedConversation,
@@ -276,6 +324,18 @@ export default function MailPreviewHeader({
       : []),
   ];
 
+  const mobileQuickActionIds = new Set([
+    folder === 'drafts' ? 'open-draft' : 'reply',
+    'forward',
+    'toggle-read',
+    folder === 'trash' ? 'delete-forever' : 'delete',
+  ]);
+  const mobileSheetActionItems = compactMobile
+    ? actionItems.filter((item) => !mobileQuickActionIds.has(item.id))
+    : actionItems;
+  const mobileForwardDisabled = folder === 'drafts' || messageActionLoading;
+  const mobileReadActionLabel = effectiveIsRead ? 'Не проч.' : 'Прочитано';
+
   return (
     <Box sx={{ borderBottom: '1px solid', borderColor: tokens.panelBorder }}>
       <Box
@@ -324,24 +384,26 @@ export default function MailPreviewHeader({
               </Typography>
             </Box>
 
-            <IconButton
-              aria-label={primaryActionLabel}
-              onClick={primaryActionHandler}
-              disabled={messageActionLoading}
-              sx={getMailIconButtonSx(tokens, {
-                width: 38,
-                height: 38,
-                color: 'primary.main',
-                bgcolor: alpha(theme.palette.primary.main, tokens.isDark ? 0.22 : 0.1),
-                borderColor: alpha(theme.palette.primary.main, tokens.isDark ? 0.34 : 0.2),
-              })}
-            >
-              {primaryActionIcon}
-            </IconButton>
-
-            {folder !== 'drafts' ? (
+            {!compactMobile ? (
               <IconButton
-                aria-label={'\u041f\u0435\u0440\u0435\u0441\u043b\u0430\u0442\u044c'}
+                aria-label={primaryActionLabel}
+                onClick={primaryActionHandler}
+                disabled={messageActionLoading}
+                sx={getMailIconButtonSx(tokens, {
+                  width: 38,
+                  height: 38,
+                  color: 'primary.main',
+                  bgcolor: alpha(theme.palette.primary.main, tokens.isDark ? 0.22 : 0.1),
+                  borderColor: alpha(theme.palette.primary.main, tokens.isDark ? 0.34 : 0.2),
+                })}
+              >
+                {primaryActionIcon}
+              </IconButton>
+            ) : null}
+
+            {!compactMobile && folder !== 'drafts' ? (
+              <IconButton
+                aria-label={'\u041F\u0435\u0440\u0435\u0441\u043B\u0430\u0442\u044c'}
                 data-testid="mail-preview-forward"
                 onClick={() => onOpenComposeFromMessage?.('forward')}
                 disabled={messageActionLoading}
@@ -354,25 +416,23 @@ export default function MailPreviewHeader({
               </IconButton>
             ) : null}
 
-            <IconButton
-              size="small"
-              aria-label="Еще действия"
-              data-testid={compactMobile ? 'mail-preview-mobile-more' : 'mail-preview-desktop-more'}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (compactMobile) {
-                  setMobileSheetOpen(true);
-                } else {
+            {!compactMobile ? (
+              <IconButton
+                size="small"
+                aria-label="Еще действия"
+                data-testid="mail-preview-desktop-more"
+                onClick={(event) => {
+                  event.stopPropagation();
                   setMenuAnchorEl(event.currentTarget);
-                }
-              }}
-              sx={getMailIconButtonSx(tokens, {
-                width: 38,
-                height: 38,
-              })}
-            >
-              <MoreHorizRoundedIcon fontSize="small" />
-            </IconButton>
+                }}
+                sx={getMailIconButtonSx(tokens, {
+                  width: 38,
+                  height: 38,
+                })}
+              >
+                <MoreHorizRoundedIcon fontSize="small" />
+              </IconButton>
+            ) : null}
           </Box>
         </Box>
       </Box>
@@ -494,6 +554,68 @@ export default function MailPreviewHeader({
         />
       </Menu>
 
+      {compactMobile ? (
+        <Box
+          data-testid="mail-preview-mobile-bottom-bar"
+          sx={{
+            position: 'fixed',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: theme.zIndex.appBar + 2,
+            minHeight: `calc(${tokens.bulkBarHeight}px + env(safe-area-inset-bottom, 0px))`,
+            px: 1,
+            pt: 0.55,
+            pb: 'calc(0.55rem + env(safe-area-inset-bottom, 0px))',
+            bgcolor: tokens.bulkBottomBarBg,
+            borderTop: '1px solid',
+            borderColor: tokens.panelBorder,
+            boxShadow: tokens.isDark
+              ? '0 -18px 36px rgba(0, 0, 0, 0.32)'
+              : '0 -18px 36px rgba(15, 23, 42, 0.12)',
+          }}
+        >
+          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', gap: 0.35 }}>
+            <MobileBottomActionButton
+              icon={primaryActionIcon}
+              label={folder === 'drafts' ? 'Открыть' : 'Ответить'}
+              disabled={messageActionLoading}
+              onClick={primaryActionHandler}
+              tokens={tokens}
+            />
+            <MobileBottomActionButton
+              icon={<ForwardRoundedIcon />}
+              label="Переслать"
+              disabled={mobileForwardDisabled}
+              onClick={() => onOpenComposeFromMessage?.('forward')}
+              tokens={tokens}
+            />
+            <MobileBottomActionButton
+              icon={readActionIcon}
+              label={mobileReadActionLabel}
+              disabled={messageActionLoading}
+              onClick={onToggleReadState}
+              tokens={tokens}
+            />
+            <MobileBottomActionButton
+              icon={folder === 'trash' ? <DeleteForeverRoundedIcon /> : <DeleteOutlineRoundedIcon />}
+              label="Удалить"
+              danger
+              disabled={messageActionLoading}
+              onClick={() => onDeleteSelectedMessage?.(folder === 'trash')}
+              tokens={tokens}
+            />
+            <MobileBottomActionButton
+              icon={<MoreHorizRoundedIcon />}
+              label="Ещё"
+              disabled={messageActionLoading}
+              onClick={() => setMobileSheetOpen(true)}
+              tokens={tokens}
+            />
+          </Box>
+        </Box>
+      ) : null}
+
       <Drawer
         anchor="bottom"
         open={mobileSheetOpen}
@@ -515,7 +637,7 @@ export default function MailPreviewHeader({
               WebkitOverflowScrolling: 'touch',
             }}
           >
-            {actionItems.map((item) => (
+            {mobileSheetActionItems.map((item) => (
               <SheetActionItem
                 key={item.id}
                 icon={item.icon}

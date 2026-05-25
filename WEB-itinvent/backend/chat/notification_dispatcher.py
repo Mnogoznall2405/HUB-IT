@@ -10,11 +10,7 @@ from typing import Any, Iterator
 from sqlalchemy import select
 
 from backend.chat.models import ChatPushOutbox
-
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
+from backend.chat.utils import normalize_text as _normalize_text
 
 
 @dataclass

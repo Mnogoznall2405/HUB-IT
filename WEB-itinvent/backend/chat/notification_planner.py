@@ -4,10 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
 
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
+from backend.chat.utils import normalize_text as _normalize_text
 
 
 @dataclass(frozen=True)

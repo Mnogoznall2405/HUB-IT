@@ -399,6 +399,20 @@ export const authAPI = {
     return response.data;
   },
 
+  uploadAvatar: async (file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await apiClient.post('/auth/me/avatar', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  },
+
+  deleteAvatar: async () => {
+    const response = await apiClient.delete('/auth/me/avatar');
+    return response.data;
+  },
+
   get getSessions() {
     return authSessionsAPI.getSessions;
   },
@@ -567,6 +581,10 @@ export const chatAPI = {
     return chatGroupsAPI.updateGroupProfile;
   },
 
+  get uploadGroupAvatar() {
+    return chatGroupsAPI.uploadGroupAvatar;
+  },
+
   get deleteChatMessage() {
     return chatThreadMessagesAPI.deleteChatMessage;
   },
@@ -641,6 +659,10 @@ export const chatAPI = {
 
   get markRead() {
     return chatThreadMessagesAPI.markRead;
+  },
+
+  get toggleReaction() {
+    return chatThreadMessagesAPI.toggleReaction;
   },
 };
 
@@ -1216,6 +1238,10 @@ export const equipmentAPI = {
     return equipmentTransferActsAPI.transfer;
   },
 
+  get transferLocation() {
+    return equipmentTransferActsAPI.transferLocation;
+  },
+
   get createTransferActOnly() {
     return equipmentTransferActsAPI.createTransferActOnly;
   },
@@ -1302,3 +1328,5 @@ export const scanAPI = {
 };
 
 export { adUsersAPI } from './adUsers';
+export { addressBookAPI } from './addressBook';
+export { ticketsAPI } from './tickets';

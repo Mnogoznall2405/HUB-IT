@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import logging
 import re
+import time
 from typing import Any, Literal, Optional
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -12,12 +16,16 @@ from backend.ai_chat.tools.context import (
     ITINVENT_TOOL_ACTION_CONSUMABLE_CONSUME_DRAFT,
     ITINVENT_TOOL_ACTION_CONSUMABLE_QTY_DRAFT,
     ITINVENT_TOOL_ACTION_TRANSFER_DRAFT,
+    ITINVENT_TOOL_ACTION_STATUS_CHANGE_DRAFT,
+    ITINVENT_TOOL_ACTION_LOCATION_CHANGE_DRAFT,
     ITINVENT_TOOL_DATABASE_CURRENT,
     ITINVENT_TOOL_CONSUMABLES_SEARCH,
     ITINVENT_TOOL_DIRECTORY_BRANCHES,
     ITINVENT_TOOL_DIRECTORY_EQUIPMENT_TYPES,
     ITINVENT_TOOL_DIRECTORY_LOCATIONS,
     ITINVENT_TOOL_DIRECTORY_STATUSES,
+    ITINVENT_TOOL_DIRECTORY_VENDORS,
+    ITINVENT_TOOL_DIRECTORY_DEPARTMENTS,
     ITINVENT_TOOL_EMPLOYEE_LIST_EQUIPMENT,
     ITINVENT_TOOL_EMPLOYEE_SEARCH,
     ITINVENT_TOOL_ENTITY_RESOLVE,
@@ -26,10 +34,16 @@ from backend.ai_chat.tools.context import (
     ITINVENT_TOOL_EQUIPMENT_SEARCH,
     ITINVENT_TOOL_EQUIPMENT_SEARCH_UNIVERSAL,
     ITINVENT_TOOL_EQUIPMENT_SEARCH_MULTI_DB,
+    ITINVENT_TOOL_EQUIPMENT_HISTORY,
+    ITINVENT_TOOL_EQUIPMENT_ACTS,
+    ITINVENT_TOOL_EQUIPMENT_MODELS_SEARCH,
+    ITINVENT_TOOL_USER_BY_NAME,
+    ITINVENT_TOOL_USER_FULL_CONTEXT,
     get_available_database_options,
 )
 from backend.ai_chat.tools.registry import ai_tool_registry
-from backend.database import equipment_db, queries
+from backend.database import connection, equipment_db, queries
+from backend.database.connection import get_db
 
 
 DEFAULT_RESULT_LIMIT = 250
@@ -265,6 +279,21 @@ def _coerce_int(value: Any) -> int | None:
         return int(value)
     except (TypeError, ValueError):
         return None
+
+
+def _calculate_agent_status(last_seen_at: int) -> str:
+    """Determine agent status based on last heartbeat timestamp."""
+    from backend.api.v1.inventory import ONLINE_MAX_AGE_SECONDS, STALE_MAX_AGE_SECONDS
+
+    if not last_seen_at:
+        return "unknown"
+    age = int(time.time()) - last_seen_at
+    if age <= ONLINE_MAX_AGE_SECONDS:
+        return "online"
+    elif age <= STALE_MAX_AGE_SECONDS:
+        return "stale"
+    else:
+        return "offline"
 
 
 def _normalize_equipment_item(row: dict[str, Any], *, database_id: str | None) -> dict[str, Any]:
@@ -1473,6 +1502,797 @@ class ConsumableQtyDraftTool(AiTool):
             return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc), sources=[_build_source(database_id)])
 
 
+class EquipmentHistoryArgs(BaseModel):
+    inv_no: str = Field(..., min_length=1, max_length=120)
+    database_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("inv_no", "database_id", mode="before")
+    @classmethod
+    def _normalize(cls, value):
+        text = _normalize_text(value)
+        return text or None
+
+
+class EquipmentActsArgs(BaseModel):
+    inv_no: str = Field(..., min_length=1, max_length=120)
+    database_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("inv_no", "database_id", mode="before")
+    @classmethod
+    def _normalize(cls, value):
+        text = _normalize_text(value)
+        return text or None
+
+
+class EquipmentModelsSearchArgs(_LimitMixin):
+    query: str = Field(..., min_length=1, max_length=120)
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _normalize_query(cls, value):
+        return _normalize_text(value)
+
+
+class DirectoryVendorsArgs(_LimitMixin):
+    query: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _normalize_query(cls, value):
+        text = _normalize_text(value)
+        return text or None
+
+
+class DirectoryDepartmentsArgs(_LimitMixin):
+    query: Optional[str] = Field(default=None, max_length=120)
+
+    @field_validator("query", mode="before")
+    @classmethod
+    def _normalize_query(cls, value):
+        text = _normalize_text(value)
+        return text or None
+
+
+class StatusChangeDraftArgs(BaseModel):
+    inv_nos: list[str] = Field(..., min_length=1, max_length=50)
+    new_status: str = Field(..., min_length=1, max_length=180)
+    new_status_no: Optional[int] = Field(default=None, ge=1)
+    comment: Optional[str] = Field(default=None, max_length=500)
+    database_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("inv_nos", mode="before")
+    @classmethod
+    def _normalize_inv_nos(cls, value):
+        items = value if isinstance(value, list) else [value]
+        result: list[str] = []
+        for item in items:
+            text = _normalize_text(item)
+            if text and text not in result:
+                result.append(text)
+        return result
+
+    @field_validator("new_status", "comment", "database_id", mode="before")
+    @classmethod
+    def _normalize_optional_text(cls, value):
+        text = _normalize_text(value)
+        return text or None
+
+
+class LocationChangeDraftArgs(BaseModel):
+    inv_nos: list[str] = Field(..., min_length=1, max_length=50)
+    new_branch: Optional[str] = Field(default=None, max_length=180)
+    new_branch_no: Optional[str | int] = None
+    new_location: Optional[str] = Field(default=None, max_length=180)
+    new_location_no: Optional[str | int] = None
+    comment: Optional[str] = Field(default=None, max_length=500)
+    database_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("inv_nos", mode="before")
+    @classmethod
+    def _normalize_inv_nos(cls, value):
+        items = value if isinstance(value, list) else [value]
+        result: list[str] = []
+        for item in items:
+            text = _normalize_text(item)
+            if text and text not in result:
+                result.append(text)
+        return result
+
+    @field_validator("new_branch", "new_location", "comment", "database_id", mode="before")
+    @classmethod
+    def _normalize_optional_text(cls, value):
+        text = _normalize_text(value)
+        return text or None
+
+
+class EquipmentHistoryTool(AiTool):
+    tool_id = ITINVENT_TOOL_EQUIPMENT_HISTORY
+    description = "Get the transfer and change history for a specific equipment item by inventory number."
+    input_model = EquipmentHistoryArgs
+    stage = "checking_itinvent"
+
+    def execute(self, *, context: AiToolExecutionContext, args: EquipmentHistoryArgs) -> AiToolResult:
+        database_id = _resolve_tool_database_id(context, args)
+        if not database_id:
+            return _database_error(self.tool_id, getattr(args, "database_id", None))
+        try:
+            from backend.database.equipment_act_history_reads import get_equipment_history_by_inv
+            rows = get_equipment_history_by_inv(args.inv_no, database_id) or []
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc))
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            database_id=database_id,
+            data={
+                "inv_no": args.inv_no,
+                **_result_metadata(returned_count=len(rows), total=len(rows), limit=len(rows) + 1),
+                "items": rows,
+            },
+            sources=[_build_source(database_id)],
+        )
+
+
+class EquipmentActsTool(AiTool):
+    tool_id = ITINVENT_TOOL_EQUIPMENT_ACTS
+    description = "Get documents (transfer acts) linked to a specific equipment item by inventory number."
+    input_model = EquipmentActsArgs
+    stage = "checking_itinvent"
+
+    def execute(self, *, context: AiToolExecutionContext, args: EquipmentActsArgs) -> AiToolResult:
+        database_id = _resolve_tool_database_id(context, args)
+        if not database_id:
+            return _database_error(self.tool_id, getattr(args, "database_id", None))
+        try:
+            from backend.database.equipment_act_history_reads import get_equipment_acts_by_inv
+            rows = get_equipment_acts_by_inv(args.inv_no, database_id) or []
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc))
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            database_id=database_id,
+            data={
+                "inv_no": args.inv_no,
+                **_result_metadata(returned_count=len(rows), total=len(rows), limit=len(rows) + 1),
+                "items": rows,
+            },
+            sources=[_build_source(database_id)],
+        )
+
+
+class EquipmentModelsSearchTool(AiTool):
+    tool_id = ITINVENT_TOOL_EQUIPMENT_MODELS_SEARCH
+    description = "Search equipment models and vendors in the ITinvent directory by name or keyword."
+    input_model = EquipmentModelsSearchArgs
+    stage = "checking_itinvent"
+
+    def execute(self, *, context: AiToolExecutionContext, args: EquipmentModelsSearchArgs) -> AiToolResult:
+        database_id = _resolve_tool_database_id(context, args)
+        if not database_id:
+            return _database_error(self.tool_id, getattr(args, "database_id", None))
+        from backend.database.connection import get_db
+        db = get_db(database_id)
+        query_param = f"%{args.query}%"
+        sql = """
+            SELECT TOP 100
+                m.MODEL_NO as model_no,
+                m.MODEL_NAME as model_name,
+                t.TYPE_NAME as type_name,
+                v.VENDOR_NAME as vendor_name
+            FROM CI_MODELS m
+            LEFT JOIN CI_TYPES t ON t.TYPE_NO = m.TYPE_NO AND t.CI_TYPE = m.CI_TYPE
+            LEFT JOIN VENDORS v ON v.VENDOR_NO = m.VENDOR_NO
+            WHERE m.CI_TYPE = 1
+              AND (m.MODEL_NAME LIKE ? OR v.VENDOR_NAME LIKE ? OR t.TYPE_NAME LIKE ?)
+            ORDER BY m.MODEL_NAME
+        """
+        try:
+            rows = db.execute_query(sql, (query_param, query_param, query_param)) or []
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc))
+        items = [
+            {
+                "model_no": row.get("model_no"),
+                "model_name": _normalize_text(row.get("model_name")),
+                "type_name": _normalize_text(row.get("type_name")),
+                "vendor_name": _normalize_text(row.get("vendor_name")),
+            }
+            for row in _cap_rows(rows, args.limit)
+            if isinstance(row, dict)
+        ]
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            database_id=database_id,
+            data={
+                "query": args.query,
+                **_result_metadata(returned_count=len(items), total=len(rows), limit=args.limit),
+                "items": items,
+            },
+            sources=[_build_source(database_id)],
+        )
+
+
+class DirectoryVendorsTool(AiTool):
+    tool_id = ITINVENT_TOOL_DIRECTORY_VENDORS
+    description = "List all vendors (manufacturers) registered in the ITinvent directory."
+    input_model = DirectoryVendorsArgs
+    stage = "checking_itinvent"
+
+    def execute(self, *, context: AiToolExecutionContext, args: DirectoryVendorsArgs) -> AiToolResult:
+        database_id = _resolve_tool_database_id(context, args)
+        if not database_id:
+            return _database_error(self.tool_id, getattr(args, "database_id", None))
+        from backend.database.connection import get_db
+        db = get_db(database_id)
+        query_text = _normalize_text(args.query).lower()
+        sql = "SELECT TOP 500 v.VENDOR_NO as vendor_no, v.VENDOR_NAME as vendor_name FROM VENDORS v ORDER BY v.VENDOR_NAME"
+        try:
+            rows = db.execute_query(sql, ()) or []
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc))
+        filtered = [
+            row for row in rows
+            if isinstance(row, dict) and (
+                not query_text or query_text in _normalize_text(row.get("vendor_name")).lower()
+            )
+        ]
+        items = [
+            {"vendor_no": row.get("vendor_no"), "vendor_name": _normalize_text(row.get("vendor_name"))}
+            for row in _cap_rows(filtered, args.limit)
+        ]
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            database_id=database_id,
+            data={
+                "query": args.query,
+                **_result_metadata(returned_count=len(items), total=len(filtered), limit=args.limit),
+                "items": items,
+            },
+            sources=[_build_source(database_id)],
+        )
+
+
+class DirectoryDepartmentsTool(AiTool):
+    tool_id = ITINVENT_TOOL_DIRECTORY_DEPARTMENTS
+    description = "List all departments (owner departments) registered in ITinvent."
+    input_model = DirectoryDepartmentsArgs
+    stage = "checking_itinvent"
+
+    def execute(self, *, context: AiToolExecutionContext, args: DirectoryDepartmentsArgs) -> AiToolResult:
+        database_id = _resolve_tool_database_id(context, args)
+        if not database_id:
+            return _database_error(self.tool_id, getattr(args, "database_id", None))
+        query_text = _normalize_text(args.query).lower()
+        try:
+            departments = queries.get_owner_departments(limit=500, db_id=database_id) or []
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc))
+        filtered = [d for d in departments if not query_text or query_text in _normalize_text(d).lower()]
+        items = filtered[: _safe_limit(args.limit)]
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            database_id=database_id,
+            data={
+                "query": args.query,
+                **_result_metadata(returned_count=len(items), total=len(filtered), limit=args.limit),
+                "items": items,
+            },
+            sources=[_build_source(database_id)],
+        )
+
+
+class StatusChangeDraftTool(AiTool):
+    tool_id = ITINVENT_TOOL_ACTION_STATUS_CHANGE_DRAFT
+    description = (
+        "Create a pending action card to change equipment status. "
+        "Does not modify ITinvent until the user confirms the card."
+    )
+    input_model = StatusChangeDraftArgs
+    stage = "checking_itinvent"
+
+    def execute(self, *, context: AiToolExecutionContext, args: StatusChangeDraftArgs) -> AiToolResult:
+        database_id = _resolve_tool_database_id(context, args)
+        if not database_id:
+            return _database_error(self.tool_id, getattr(args, "database_id", None))
+        try:
+            from backend.appdb.db import app_session
+            from backend.appdb.models import AppAiPendingAction
+            from backend.ai_chat.action_cards import DRAFT_EXPIRES_IN, _utc_now, _json_dumps
+            import uuid
+            card_id = str(uuid.uuid4())
+            payload = {
+                "inv_nos": args.inv_nos,
+                "new_status": args.new_status,
+                "new_status_no": args.new_status_no,
+                "comment": args.comment,
+                "database_id": database_id,
+            }
+            expires_at = _utc_now() + DRAFT_EXPIRES_IN
+            with app_session() as session:
+                action = AppAiPendingAction(
+                    id=card_id,
+                    action_type=self.tool_id,
+                    conversation_id=context.conversation_id,
+                    run_id=context.run_id,
+                    requester_user_id=int(context.user_id),
+                    payload_json=_json_dumps(payload),
+                    expires_at=expires_at,
+                )
+                session.add(action)
+                session.commit()
+            card = {"id": card_id, "action_type": self.tool_id, "payload": payload, "expires_at": expires_at.isoformat()}
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=True,
+                database_id=database_id,
+                data={"action_card": card, "requires_confirmation": True},
+                sources=[_build_source(database_id)],
+            )
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc))
+
+
+class LocationChangeDraftTool(AiTool):
+    tool_id = ITINVENT_TOOL_ACTION_LOCATION_CHANGE_DRAFT
+    description = (
+        "Create a pending action card to change equipment location or branch. "
+        "Does not modify ITinvent until the user confirms the card."
+    )
+    input_model = LocationChangeDraftArgs
+    stage = "checking_itinvent"
+
+    def execute(self, *, context: AiToolExecutionContext, args: LocationChangeDraftArgs) -> AiToolResult:
+        database_id = _resolve_tool_database_id(context, args)
+        if not database_id:
+            return _database_error(self.tool_id, getattr(args, "database_id", None))
+        try:
+            from backend.appdb.db import app_session
+            from backend.appdb.models import AppAiPendingAction
+            from backend.ai_chat.action_cards import DRAFT_EXPIRES_IN, _utc_now, _json_dumps
+            import uuid
+            card_id = str(uuid.uuid4())
+            payload = {
+                "inv_nos": args.inv_nos,
+                "new_branch": args.new_branch,
+                "new_branch_no": args.new_branch_no,
+                "new_location": args.new_location,
+                "new_location_no": args.new_location_no,
+                "comment": args.comment,
+                "database_id": database_id,
+            }
+            expires_at = _utc_now() + DRAFT_EXPIRES_IN
+            with app_session() as session:
+                action = AppAiPendingAction(
+                    id=card_id,
+                    action_type=self.tool_id,
+                    conversation_id=context.conversation_id,
+                    run_id=context.run_id,
+                    requester_user_id=int(context.user_id),
+                    payload_json=_json_dumps(payload),
+                    expires_at=expires_at,
+                )
+                session.add(action)
+                session.commit()
+            card = {"id": card_id, "action_type": self.tool_id, "payload": payload, "expires_at": expires_at.isoformat()}
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=True,
+                database_id=database_id,
+                data={"action_card": card, "requires_confirmation": True},
+                sources=[_build_source(database_id)],
+            )
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc))
+
+
+class UserByNameArgs(BaseModel):
+    name: str = Field(..., min_length=1, max_length=120)
+    database_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("name", "database_id", mode="before")
+    @classmethod
+    def _normalize(cls, value):
+        text = _normalize_text(value)
+        return text or None
+
+
+class UserByNameTool(AiTool):
+    tool_id = ITINVENT_TOOL_USER_BY_NAME
+    description = (
+        "Search for a user/employee by name, surname, or login. "
+        "Returns employee details including OWNER_NO, full name, department, email. "
+        "Useful to resolve ambiguous employee names before looking up their equipment."
+    )
+    input_model = UserByNameArgs
+    stage = "checking_itinvent"
+
+    def execute(self, *, context: AiToolExecutionContext, args: UserByNameArgs) -> AiToolResult:
+        database_id = _resolve_tool_database_id(context, args)
+        if not database_id:
+            return _database_error(self.tool_id, getattr(args, "database_id", None))
+        try:
+            result = queries.search_employees(args.name, page=1, limit=10, db_id=database_id)
+            employees = list((result or {}).get("employees") or [])
+            # Also try direct owner lookup by name for exact matches
+            owner_no = queries.get_owner_no_by_name(args.name, strict=False, db_id=database_id)
+            owner_details = None
+            if owner_no:
+                owner_row = queries.get_owner_by_no(owner_no, db_id=database_id)
+                if owner_row:
+                    owner_details = dict(owner_row)
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=True,
+                database_id=database_id,
+                data={
+                    "query": args.name,
+                    "count": len(employees),
+                    "employees": employees,
+                    "exact_match": owner_details,
+                },
+                sources=[_build_source(database_id)],
+            )
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc))
+
+
+class UserFullContextArgs(BaseModel):
+    query: str = Field(..., min_length=1, max_length=160,
+        description="Фамилия, имя, логин или email сотрудника")
+    database_id: Optional[str] = Field(default=None, max_length=128)
+
+    @field_validator("query", "database_id", mode="before")
+    @classmethod
+    def _normalize(cls, value):
+        text = _normalize_text(value)
+        return text or None
+
+
+class UserFullContextTool(AiTool):
+    tool_id = ITINVENT_TOOL_USER_FULL_CONTEXT
+    description = (
+        "Get full IT context for an employee by name, surname, login, or email. "
+        "Returns employee details, all assigned equipment, active computer sessions "
+        "(hostname, IP, online/offline status from monitoring agent), and Active Directory info. "
+        "Use this tool to check if an employee's computer is online."
+    )
+    input_model = UserFullContextArgs
+    stage = "checking_itinvent"
+
+    def execute(self, *, context: AiToolExecutionContext, args: UserFullContextArgs) -> AiToolResult:
+        database_id = _resolve_tool_database_id(context, args)
+        if not database_id:
+            return _database_error(self.tool_id, getattr(args, "database_id", None))
+
+        query = args.query
+        try:
+            # Step 1: Search for employee — first try exact match, then fuzzy
+            owner_no = queries.get_owner_no_by_name(query, strict=False, db_id=database_id)
+
+            employee_row = None
+            if owner_no:
+                employee_row = queries.get_owner_by_no(owner_no, db_id=database_id)
+            else:
+                # Fallback: search_employees
+                result = queries.search_employees(query, page=1, limit=5, db_id=database_id)
+                employees = list((result or {}).get("employees") or [])
+                if employees:
+                    # Pick the first (best) match
+                    employee_row = employees[0]
+                    owner_no = employee_row.get("OWNER_NO") or employee_row.get("owner_no")
+                    if owner_no is not None:
+                        owner_no = int(owner_no)
+
+            if not employee_row or not owner_no:
+                return AiToolResult(
+                    tool_id=self.tool_id,
+                    ok=False,
+                    database_id=database_id,
+                    error=f"Сотрудник не найден по запросу: '{query}'",
+                    sources=[_build_source(database_id)],
+                )
+
+            # Build employee section
+            name = _normalize_text(
+                employee_row.get("OWNER_DISPLAY_NAME")
+                or employee_row.get("owner_display_name")
+                or employee_row.get("name")
+            )
+            department = _normalize_text(
+                employee_row.get("OWNER_DEPT")
+                or employee_row.get("owner_dept")
+                or employee_row.get("department")
+            )
+            login = _normalize_text(
+                employee_row.get("OWNER_LOGIN")
+                or employee_row.get("owner_login")
+            ) or None
+            email = _normalize_text(
+                employee_row.get("OWNER_EMAIL")
+                or employee_row.get("owner_email")
+            ) or None
+            branch = _normalize_text(
+                employee_row.get("BRANCH_NAME")
+                or employee_row.get("branch_name")
+                or employee_row.get("branch")
+            ) or None
+
+            # If email not in row, try dedicated lookup
+            if not email:
+                email = queries.get_owner_email_by_no(owner_no, db_id=database_id)
+
+            # Derive login from email if not available
+            if not login and email and "@" in email:
+                login = email.split("@", 1)[0]
+
+            employee_section = {
+                "name": name or None,
+                "login": login,
+                "department": department or None,
+                "branch": branch,
+                "email": email,
+                "owner_no": owner_no,
+            }
+
+            # Equipment and AD will be added in subsequent tasks (2.4)
+            # Step 2: Get equipment for this employee
+            equipment_rows = queries.get_equipment_by_owner(owner_no, database_id)
+            equipment_list = []
+            for row in (equipment_rows or []):
+                mac_address = _normalize_text(
+                    _row_value(row, "mac_address", "mac")
+                )
+                hostname = _normalize_text(
+                    _row_value(row, "network_name", "hostname", "host_name")
+                )
+                inv_no = _truncate_text(
+                    _row_value(row, "inv_no", "inventory_number", "inventory_no"), limit=120
+                ) or None
+                serial_no = _truncate_text(
+                    _row_value(row, "serial_no", "serial_number", "sn"), limit=180
+                ) or None
+                type_name = _truncate_text(
+                    _row_value(row, "type_name", "item_type", "type"), limit=180
+                ) or None
+                model_name = _truncate_text(
+                    _row_value(row, "model_name", "model"), limit=220
+                ) or None
+                status = _truncate_text(
+                    _row_value(row, "status", "status_name", "item_status"), limit=120
+                ) or None
+                location = _truncate_text(
+                    _row_value(row, "location", "location_name", "room", "cabinet"), limit=180
+                ) or None
+
+                # Agent enrichment
+                ip_address = None
+                agent_status = "unknown"
+                agent_last_seen = None
+                current_user = None
+
+                if mac_address or hostname:
+                    try:
+                        from backend.api.v1.inventory import _get_inventory_host, _get_inventory_app_store
+                        host = None
+                        # 1. Try by MAC address (most reliable)
+                        if mac_address:
+                            host = _get_inventory_host(mac_address)
+                            logger.info("full_context enrichment MAC=%s -> host=%s", mac_address, type(host).__name__ if host else None)
+                        # 2. Fallback: search by hostname
+                        if not isinstance(host, dict) and hostname:
+                            app_store = _get_inventory_app_store()
+                            if app_store is not None:
+                                found_keys = app_store.search_host_keys(
+                                    hostname, {"identity"}
+                                )
+                                logger.info("full_context enrichment hostname=%s -> keys=%s", hostname, found_keys)
+                                if found_keys:
+                                    for found_mac in found_keys:
+                                        host = _get_inventory_host(found_mac)
+                                        if isinstance(host, dict):
+                                            break
+                        if isinstance(host, dict):
+                            last_seen_raw = host.get("last_seen_at") or host.get("timestamp")
+                            last_seen_at = int(last_seen_raw) if last_seen_raw else 0
+                            agent_status = _calculate_agent_status(last_seen_at)
+                            if last_seen_at > 0:
+                                from datetime import datetime, timezone
+                                agent_last_seen = datetime.fromtimestamp(
+                                    last_seen_at, tz=timezone.utc
+                                ).isoformat()
+                            ip_address = _normalize_text(
+                                host.get("ip_primary") or host.get("ip_address")
+                            ) or None
+                            current_user = _normalize_text(
+                                host.get("current_user") or host.get("user_login")
+                            ) or None
+                    except Exception as exc:
+                        # Snapshot unavailable — keep defaults
+                        logger.warning("full_context enrichment failed for inv_no=%s: %s", inv_no, exc)
+                        pass
+
+                equipment_list.append({
+                    "inv_no": inv_no,
+                    "serial_no": serial_no,
+                    "type": type_name,
+                    "model": model_name,
+                    "status": status,
+                    "hostname": hostname or None,
+                    "ip_address": ip_address,
+                    "mac_address": mac_address or None,
+                    "agent_status": agent_status,
+                    "agent_last_seen": agent_last_seen,
+                    "current_user": current_user,
+                    "location": location,
+                })
+
+            # Step 2b: Find active sessions for this employee (hosts where they are logged in)
+            active_sessions = []
+            try:
+                from backend.api.v1.inventory import _get_inventory_host, _get_inventory_app_store
+                app_store = _get_inventory_app_store()
+                if app_store is not None and (login or name):
+                    # Try login variants first, then surname
+                    search_queries = []
+                    if login:
+                        search_queries.append(login)
+                        if "." in login:
+                            search_queries.append(login.replace(".", "_"))
+                        if "_" in login:
+                            search_queries.append(login.replace("_", "."))
+                    # Add surname (first word of name) as fallback
+                    if name:
+                        surname = name.split()[0] if name.split() else None
+                        if surname and len(surname) >= 3:
+                            search_queries.append(surname)
+
+                    session_keys = set()
+                    for q in search_queries:
+                        session_keys = app_store.search_host_keys(q, {"user"})
+                        if session_keys:
+                            break
+
+                    # Also collect MACs already matched to equipment
+                    equipment_macs = {
+                        item.get("mac_address", "").lower().replace("-", "").replace(":", "")
+                        for item in equipment_list if item.get("mac_address")
+                    }
+
+                    for found_mac in session_keys:
+                        host = _get_inventory_host(found_mac)
+                        if isinstance(host, dict):
+                            last_seen_raw = host.get("last_seen_at") or host.get("timestamp")
+                            last_seen_at = int(last_seen_raw) if last_seen_raw else 0
+                            sess_status = _calculate_agent_status(last_seen_at)
+                            sess_last_seen = None
+                            if last_seen_at > 0:
+                                from datetime import datetime, timezone
+                                sess_last_seen = datetime.fromtimestamp(
+                                    last_seen_at, tz=timezone.utc
+                                ).isoformat()
+                            active_sessions.append({
+                                "hostname": _normalize_text(host.get("hostname")) or None,
+                                "ip_address": _normalize_text(host.get("ip_primary") or host.get("ip_address")) or None,
+                                "mac_address": _normalize_text(host.get("mac_address")) or None,
+                                "agent_status": sess_status,
+                                "agent_last_seen": sess_last_seen,
+                                "current_user": _normalize_text(host.get("current_user") or host.get("user_login")) or None,
+                            })
+            except Exception as exc:
+                logger.warning("full_context active_sessions lookup failed: %s", exc)
+
+            # Step 3: Active Directory integration
+            ad_section = None
+            ad_error = None
+
+            if login:
+                try:
+                    from backend.services.ad_users_service import (
+                        get_ad_user_logon_history,
+                        get_ad_user_lockout_status,
+                        get_ad_password_max_age_days,
+                    )
+
+                    logon_data = get_ad_user_logon_history(login)
+                    lockout_data = get_ad_user_lockout_status(login)
+
+                    logon_status = str(logon_data.get("status") or "").strip().lower()
+                    lockout_status = str(lockout_data.get("status") or "").strip().lower()
+
+                    # Check for LDAP connection errors
+                    if logon_status == "error" or lockout_status == "error":
+                        ad_section = None
+                        ad_error = "LDAP connection unavailable"
+                    elif logon_status == "not_found" and lockout_status == "not_found":
+                        ad_section = None
+                        ad_error = "User not found in AD"
+                    else:
+                        # At least one query returned data — assemble AD section
+                        ad_login = (
+                            logon_data.get("login")
+                            or lockout_data.get("login")
+                            or login
+                        )
+                        ad_display_name = (
+                            logon_data.get("display_name")
+                            or lockout_data.get("display_name")
+                        ) or None
+                        ad_account_type = (
+                            logon_data.get("account_type")
+                            or lockout_data.get("account_type")
+                            or "user"
+                        )
+                        ad_last_logon = logon_data.get("last_logon") if logon_status == "ok" else None
+                        ad_logon_count = logon_data.get("logon_count", 0) if logon_status == "ok" else 0
+                        ad_is_locked = lockout_data.get("is_locked", False) if lockout_status == "ok" else False
+
+                        # Calculate password_expires_in_days from last_password_change
+                        password_expires_in_days = None
+                        if logon_status == "ok":
+                            last_pwd_change_str = logon_data.get("last_password_change")
+                            if last_pwd_change_str:
+                                try:
+                                    from datetime import datetime, timezone, timedelta
+                                    pwd_last_set_dt = datetime.fromisoformat(last_pwd_change_str)
+                                    if pwd_last_set_dt.tzinfo is None:
+                                        pwd_last_set_dt = pwd_last_set_dt.replace(tzinfo=timezone.utc)
+                                    max_age_days = get_ad_password_max_age_days()
+                                    expiration_date = pwd_last_set_dt + timedelta(days=max_age_days)
+                                    now = datetime.now(timezone.utc)
+                                    remaining = (expiration_date - now).total_seconds()
+                                    import math
+                                    password_expires_in_days = max(0, int(math.ceil(remaining / 86400))) if remaining > 0 else 0
+                                except (ValueError, TypeError, OSError):
+                                    password_expires_in_days = None
+
+                        # Handle case where logon found user but lockout didn't (or vice versa)
+                        if logon_status == "not_found" and lockout_status == "ok":
+                            # Only lockout data available
+                            ad_last_logon = None
+                            ad_logon_count = 0
+                            password_expires_in_days = None
+                        elif logon_status == "ok" and lockout_status == "not_found":
+                            # Only logon data available
+                            ad_is_locked = False
+
+                        ad_section = {
+                            "login": ad_login,
+                            "display_name": ad_display_name,
+                            "account_type": ad_account_type,
+                            "last_logon": ad_last_logon,
+                            "logon_count": ad_logon_count,
+                            "password_expires_in_days": password_expires_in_days,
+                            "is_locked": ad_is_locked,
+                        }
+                except Exception:
+                    # LDAP connection failure or any other AD error — graceful degradation
+                    ad_section = None
+                    ad_error = "LDAP connection unavailable"
+
+            result_data = {
+                "employee": employee_section,
+                "equipment": equipment_list,
+                "active_sessions": active_sessions if active_sessions else None,
+                "ad": ad_section,
+            }
+            if ad_error:
+                result_data["ad_error"] = ad_error
+
+            return AiToolResult(
+                tool_id=self.tool_id,
+                ok=True,
+                database_id=database_id,
+                data=result_data,
+                sources=[_build_source(database_id)],
+            )
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, database_id=database_id, error=str(exc))
+
+
 for _tool in [
     DatabaseCurrentTool(),
     EquipmentSearchTool(),
@@ -1492,5 +2312,14 @@ for _tool in [
     TransferDraftTool(),
     ConsumableConsumeDraftTool(),
     ConsumableQtyDraftTool(),
+    EquipmentHistoryTool(),
+    EquipmentActsTool(),
+    EquipmentModelsSearchTool(),
+    DirectoryVendorsTool(),
+    DirectoryDepartmentsTool(),
+    StatusChangeDraftTool(),
+    LocationChangeDraftTool(),
+    UserByNameTool(),
+    UserFullContextTool(),
 ]:
     ai_tool_registry.register(_tool)

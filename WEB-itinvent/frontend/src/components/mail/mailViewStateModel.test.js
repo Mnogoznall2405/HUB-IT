@@ -81,6 +81,23 @@ describe('mailViewStateModel', () => {
       .toBe('/mail?folder=inbox');
   });
 
+  it('preserves case-sensitive custom folder ids in view state and routes', () => {
+    const customFolderId = 'bWFpbGJveDo6QWJjREVfMTIz';
+
+    expect(normalizeMailViewState({ folder: ` ${customFolderId} ` })).toMatchObject({
+      folder: customFolderId,
+    });
+    expect(buildMailRoute({ folder: ` ${customFolderId} ` }))
+      .toBe(`/mail?folder=${customFolderId}`);
+
+    const storage = createMemoryStorage();
+    writeStoredMailViewState({ folder: customFolderId }, { storage, mailboxId: 'mb-1' });
+
+    expect(readStoredMailViewState('mb-1', { storage })).toMatchObject({
+      folder: customFolderId,
+    });
+  });
+
   it('normalizes and persists list scroll state per list context', () => {
     expect(normalizeMailListViewContextState({
       scrollTop: -10,

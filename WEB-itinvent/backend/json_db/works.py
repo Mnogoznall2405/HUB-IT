@@ -906,7 +906,22 @@ class WorksManager:
                 logger.warning(f"Could not get database connection for {db_name}")
                 return
 
-            new_description = self._merge_description_note(current_description, note_line, note_pattern)
+            # Fetch current DESCR from database if not provided or empty
+            effective_description = current_description
+            if not effective_description:
+                try:
+                    with db.get_connection() as conn:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT DESCR FROM ITEMS WHERE ID = ?", (equipment_id,))
+                        row = cursor.fetchone()
+                        if row:
+                            effective_description = row[0] if row else ""
+                            logger.info(f"Fetched current DESCR from DB for equipment_id={equipment_id}")
+                except Exception as e:
+                    logger.warning(f"Could not fetch current DESCR from DB: {e}")
+                    effective_description = ""
+
+            new_description = self._merge_description_note(effective_description, note_line, note_pattern)
 
             # Execute UPDATE
             with db.get_connection() as conn:

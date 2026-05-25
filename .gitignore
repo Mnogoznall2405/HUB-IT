@@ -145,6 +145,15 @@ bot.log*
 # Kiro
 .kiro/
 
+# OpenCode
+.opencode/
+*.7z
+
+# Local agent/runtime artifacts
+.codex_tmp/
+WEB-itinvent/uploads/
+/*.xlsx
+
 # Test files
 test_*.py
 test_*.bat

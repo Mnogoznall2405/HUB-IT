@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from backend.chat.db import chat_session
 from backend.chat.models import ChatPushSubscription
+from backend.chat.utils import normalize_text as _normalize_text
 from backend.config import config
 from cryptography.hazmat.primitives import serialization
 
@@ -32,9 +33,6 @@ CHAT_PUSH_TTL_SEC = 12 * 60 * 60
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
-
-def _normalize_text(value: object) -> str:
-    return str(value or "").strip()
 
 
 def _encode_base64url(value: bytes) -> str:
@@ -429,6 +427,7 @@ class ChatPushService:
                         vapid_claims={"sub": _normalize_text(config.web_push.subject)},
                         ttl=max(30, int(ttl or DEFAULT_PUSH_TTL_SEC)),
                         headers=headers or None,
+                        timeout=10,
                     )
                     managed.failure_count = 0
                     managed.last_push_at = now
@@ -570,7 +569,7 @@ class ChatPushService:
             body=body,
             channel="chat",
             route=f"/chat?conversation={normalized_conversation_id}&message={normalized_message_id}",
-            tag=f"chat:{normalized_message_id}",
+            tag=f"chat:{normalized_conversation_id}",
             data={
                 "conversation_id": normalized_conversation_id,
                 "message_id": normalized_message_id,

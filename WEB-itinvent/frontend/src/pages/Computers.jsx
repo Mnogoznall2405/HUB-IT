@@ -35,6 +35,7 @@ import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { equipmentAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
+import { useSearchParams } from 'react-router-dom';
 import { useTheme } from '@mui/material/styles';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
@@ -575,8 +576,10 @@ function Computers() {
   const [selected, setSelected] = useState(null);
   const [open, setOpen] = useState(false);
 
-  const [q, setQ] = useState('');
-  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [searchParams] = useSearchParams();
+  const initialQ = searchParams.get('q') || '';
+  const [q, setQ] = useState(initialQ);
+  const [debouncedQuery, setDebouncedQuery] = useState(initialQ);
   const [searchFields, setSearchFields] = useState(DEFAULT_COMPUTER_SEARCH_FIELDS);
   const [searchMeta, setSearchMeta] = useState({ total: 0, limit: COMPUTERS_PAGE_SIZE, offset: 0, has_more: false, next_offset: null });
   const [searchSummary, setSearchSummary] = useState(null);
@@ -735,6 +738,13 @@ function Computers() {
       clearAutoLoadTimer();
     };
   }, [clearAutoLoadTimer, clearPollTimer, load, scheduleNextPoll]);
+
+  // Trigger search on load if debouncedQuery is set (e.g., from URL ?q=...)
+  useEffect(() => {
+    if (debouncedQuery && debouncedQuery.trim()) {
+      load({ withLoader: true, append: false, offset: 0 });
+    }
+  }, []);
 
   useEffect(() => {
     const handleVisibilityChange = async () => {

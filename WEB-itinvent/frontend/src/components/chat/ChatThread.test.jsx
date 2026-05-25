@@ -6,8 +6,10 @@ import { describe, expect, it, vi } from 'vitest';
 import ChatThread, {
   ChatBubble,
   getChatKeyboardBottomSpacer,
+  getChatThreadBottomPadding,
   getComposerMentionTrigger,
   isMobileMessageLongPress,
+  shouldAnimateChatBubble,
   shouldSuppressNativeMessageGesture,
   shouldCancelLongPressMove,
 } from './ChatThread';
@@ -35,6 +37,36 @@ const ui = {
 const renderWithTheme = (node) => render(<ThemeProvider theme={theme}>{node}</ThemeProvider>);
 
 const getBubbleSurfaceByText = (text) => screen.getByText(text).closest('[data-chat-bubble-surface="true"]');
+
+function installIntersectionObserverMock() {
+  const OriginalIntersectionObserver = window.IntersectionObserver;
+  const observers = [];
+
+  class MockIntersectionObserver {
+    constructor(callback) {
+      this.callback = callback;
+      this.node = null;
+      this.observe = vi.fn((node) => {
+        this.node = node;
+      });
+      this.unobserve = vi.fn();
+      this.disconnect = vi.fn();
+      observers.push(this);
+    }
+
+    trigger(isIntersecting = true) {
+      this.callback([{ isIntersecting, target: this.node }]);
+    }
+  }
+
+  window.IntersectionObserver = MockIntersectionObserver;
+  return {
+    observers,
+    restore: () => {
+      window.IntersectionObserver = OriginalIntersectionObserver;
+    },
+  };
+}
 
 const buildThreadProps = (overrides = {}) => ({
   theme,
@@ -133,6 +165,90 @@ describe('ChatBubble', () => {
     );
 
     expect(screen.getByText('@assignee')).toBeInTheDocument();
+  });
+
+  it('uses a smaller body font for compact mobile messages', () => {
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-mobile-font',
+          kind: 'text',
+          body: 'Compact mobile text',
+          is_own: false,
+          sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        compactMobile
+      />,
+    );
+
+    expect(screen.getByText('Compact mobile text')).toHaveStyle({ fontSize: '15px' });
+  });
+
+  it('renders reactions in a Telegram-style footer beside the message time', () => {
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-reaction-footer',
+          kind: 'text',
+          body: 'Ara ara',
+          created_at: '2026-03-21T10:02:00Z',
+          is_own: false,
+          sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+          reactions: [
+            { emoji: '🔥', count: 1, user_ids: ['1'] },
+            { emoji: '🌚', count: 1, user_ids: [] },
+          ],
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        onToggleReaction={vi.fn()}
+        currentUserId="1"
+        compactMobile
+      />,
+    );
+
+    const footer = screen.getByTestId('chat-bubble-reaction-footer');
+    const reactionsBar = within(footer).getByTestId('chat-reactions-bar');
+    expect(reactionsBar).toBeInTheDocument();
+    expect(within(footer).getByTestId('chat-bubble-meta-bottom')).toBeInTheDocument();
+    expect(within(reactionsBar).getAllByTestId('chat-reaction-emoji')[0]).toHaveStyle({ fontSize: '13px' });
+    expect(within(reactionsBar).queryByText('1')).not.toBeInTheDocument();
+  });
+
+  it('does not run the downward appear animation for outgoing sending messages', () => {
+    expect(shouldAnimateChatBubble({
+      isOwn: true,
+      isOptimistic: true,
+      isSending: true,
+    })).toBe(false);
+    expect(shouldAnimateChatBubble({
+      compactMobile: true,
+      isOwn: true,
+      isOptimistic: true,
+      isSending: true,
+    })).toBe(false);
+    expect(shouldAnimateChatBubble({
+      isOwn: true,
+      isOptimistic: false,
+      isSending: false,
+    })).toBe(false);
+    expect(shouldAnimateChatBubble({
+      isOwn: false,
+      isOptimistic: false,
+      isSending: false,
+    })).toBe(true);
   });
 
   it('renders attachments together with the optional file caption', () => {
@@ -978,6 +1094,167 @@ describe('ChatBubble', () => {
     expect(onJumpToLatest).toHaveBeenCalledTimes(1);
   });
 
+  it('does not auto-load older history on initial mobile render', () => {
+    const intersection = installIntersectionObserverMock();
+    const onLoadOlder = vi.fn();
+
+    try {
+      renderWithTheme(
+        <ChatThread
+          {...buildThreadProps({
+            messages: [
+              {
+                id: 'msg-mobile-history',
+                conversation_id: 'conv-1',
+                kind: 'text',
+                body: 'Mobile history anchor',
+                created_at: '2026-03-21T10:00:00Z',
+                is_own: false,
+                sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+              },
+            ],
+            messagesHasMore: true,
+            onLoadOlder,
+          })}
+        />,
+      );
+
+      expect(intersection.observers).toHaveLength(0);
+      expect(onLoadOlder).not.toHaveBeenCalled();
+
+      const loadOlderButton = screen.getAllByRole('button')
+        .find((button) => !button.getAttribute('aria-label') && String(button.textContent || '').trim());
+      expect(loadOlderButton).toBeTruthy();
+      fireEvent.click(loadOlderButton);
+      expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    } finally {
+      intersection.restore();
+    }
+  });
+
+  it('does not auto-load older history on initial desktop render', () => {
+    const intersection = installIntersectionObserverMock();
+    const onLoadOlder = vi.fn();
+
+    try {
+      renderWithTheme(
+        <ChatThread
+          {...buildThreadProps({
+            isMobile: false,
+            compactMobile: false,
+            messages: [
+              {
+                id: 'msg-desktop-history',
+                conversation_id: 'conv-1',
+                kind: 'text',
+                body: 'Desktop history anchor',
+                created_at: '2026-03-21T10:00:00Z',
+                is_own: false,
+                sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+              },
+            ],
+            messagesHasMore: true,
+            onLoadOlder,
+          })}
+        />,
+      );
+
+      expect(intersection.observers).toHaveLength(0);
+      expect(onLoadOlder).not.toHaveBeenCalled();
+    } finally {
+      intersection.restore();
+    }
+  });
+
+  it('auto-loads older history only after the user scrolls near the top', async () => {
+    const intersection = installIntersectionObserverMock();
+    const onLoadOlder = vi.fn();
+
+    try {
+      renderWithTheme(
+        <ChatThread
+          {...buildThreadProps({
+            messages: [
+              {
+                id: 'msg-scroll-history',
+                conversation_id: 'conv-1',
+                kind: 'text',
+                body: 'Scroll history anchor',
+                created_at: '2026-03-21T10:00:00Z',
+                is_own: false,
+                sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+              },
+            ],
+            messagesHasMore: true,
+            onLoadOlder,
+          })}
+        />,
+      );
+
+      const scrollRoot = screen.getByTestId('chat-thread-scroll');
+      Object.defineProperty(scrollRoot, 'scrollTop', { configurable: true, writable: true, value: 0 });
+
+      await act(async () => {
+        fireEvent.wheel(scrollRoot, { deltaY: -80 });
+      });
+
+      expect(intersection.observers).toHaveLength(1);
+
+      act(() => {
+        intersection.observers[0].trigger(true);
+      });
+
+      expect(onLoadOlder).toHaveBeenCalledTimes(1);
+    } finally {
+      intersection.restore();
+    }
+  });
+
+  it('does not repeat auto-load older while an older request is already loading', async () => {
+    const intersection = installIntersectionObserverMock();
+    const onLoadOlder = vi.fn();
+
+    try {
+      renderWithTheme(
+        <ChatThread
+          {...buildThreadProps({
+            messages: [
+              {
+                id: 'msg-loading-history',
+                conversation_id: 'conv-1',
+                kind: 'text',
+                body: 'Loading history anchor',
+                created_at: '2026-03-21T10:00:00Z',
+                is_own: false,
+                sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+              },
+            ],
+            messagesHasMore: true,
+            loadingOlder: true,
+            onLoadOlder,
+          })}
+        />,
+      );
+
+      const scrollRoot = screen.getByTestId('chat-thread-scroll');
+      Object.defineProperty(scrollRoot, 'scrollTop', { configurable: true, writable: true, value: 0 });
+
+      await act(async () => {
+        fireEvent.wheel(scrollRoot, { deltaY: -80 });
+      });
+
+      expect(intersection.observers).toHaveLength(1);
+
+      act(() => {
+        intersection.observers[0].trigger(true);
+      });
+
+      expect(onLoadOlder).not.toHaveBeenCalled();
+    } finally {
+      intersection.restore();
+    }
+  });
+
   it('does not rescan date markers on every sticky-date scroll frame', async () => {
     renderWithTheme(
       <ChatThread
@@ -1634,6 +1911,132 @@ describe('ChatThread composer', () => {
     }
   });
 
+  it('compensates reaction height from the reacted message upward without moving lower messages', () => {
+    const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+    const messageHeights = new Map([
+      ['msg-reaction-resize', 72],
+      ['msg-after-reaction', 64],
+    ]);
+    Element.prototype.getBoundingClientRect = function getBoundingClientRectMock() {
+      const messageId = this.getAttribute?.('data-message-id');
+      if (messageId && messageHeights.has(messageId)) {
+        const height = messageHeights.get(messageId);
+        return {
+          width: 320,
+          height,
+          top: 0,
+          left: 0,
+          right: 320,
+          bottom: height,
+          x: 0,
+          y: 0,
+          toJSON: () => ({}),
+        };
+      }
+      return originalGetBoundingClientRect.call(this);
+    };
+
+    const threadScrollRef = React.createRef();
+    const threadContentRef = React.createRef();
+    const baseMessages = [
+      {
+        id: 'msg-reaction-resize',
+        conversation_id: 'conv-1',
+        kind: 'text',
+        body: 'Reacted message',
+        created_at: '2026-03-21T10:02:00Z',
+        is_own: false,
+        sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+      },
+      {
+        id: 'msg-after-reaction',
+        conversation_id: 'conv-1',
+        kind: 'text',
+        body: 'Lower message must stay anchored',
+        created_at: '2026-03-21T10:03:00Z',
+        is_own: true,
+        sender: { id: 1, username: 'me', full_name: 'Me' },
+      },
+    ];
+
+    try {
+      const { rerender } = renderWithTheme(
+        <ChatThread
+          {...buildThreadProps({
+            messages: baseMessages,
+            threadScrollRef,
+            threadContentRef,
+          })}
+        />,
+      );
+
+      const threadScroll = screen.getByTestId('chat-thread-scroll');
+      let scrollHeight = 1200;
+      let clientHeight = 400;
+      let scrollTop = 800;
+
+      Object.defineProperty(threadScroll, 'scrollHeight', {
+        configurable: true,
+        get: () => scrollHeight,
+      });
+      Object.defineProperty(threadScroll, 'clientHeight', {
+        configurable: true,
+        get: () => clientHeight,
+      });
+      Object.defineProperty(threadScroll, 'scrollTop', {
+        configurable: true,
+        get: () => scrollTop,
+        set: (value) => {
+          scrollTop = Number(value);
+        },
+      });
+
+      fireEvent.scroll(threadScroll, { target: { scrollTop: 800 } });
+      messageHeights.set('msg-reaction-resize', 96);
+      scrollHeight = 1224;
+
+      rerender(
+        <ThemeProvider theme={theme}>
+          <ChatThread
+            {...buildThreadProps({
+              messages: [
+                {
+                  ...baseMessages[0],
+                  reactions: [{ emoji: '🔥', count: 1, user_ids: ['1'] }],
+                },
+                baseMessages[1],
+              ],
+              threadScrollRef,
+              threadContentRef,
+            })}
+          />
+        </ThemeProvider>,
+      );
+
+      expect(scrollTop).toBe(824);
+
+      messageHeights.set('msg-reaction-resize', 72);
+      scrollHeight = 1200;
+      scrollTop = 800;
+
+      rerender(
+        <ThemeProvider theme={theme}>
+          <ChatThread
+            {...buildThreadProps({
+              messages: baseMessages,
+              threadScrollRef,
+              threadContentRef,
+            })}
+          />
+        </ThemeProvider>,
+      );
+
+      expect(scrollTop).toBe(800);
+    } finally {
+      Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
+    }
+  });
+
   it('shows the AI run status banner for queued and failed AI conversations', () => {
     const { rerender } = renderWithTheme(
       <ChatThread
@@ -1682,14 +2085,42 @@ describe('ChatThread composer', () => {
     expect(screen.getByText(/OpenRouter unavailable/i)).toBeInTheDocument();
   });
 
-  it('renders a mobile composer textarea with iOS-safe font size and disabled send button when empty', () => {
+  it('renders a mobile composer textarea with iOS-safe font size and voice action when empty', () => {
     renderWithTheme(<ChatThread {...buildThreadProps()} />);
 
     const composer = screen.getByTestId('chat-composer-textarea');
     const capsule = screen.getByTestId('chat-composer-capsule');
-    expect(composer).toHaveStyle({ fontSize: '16px', overflowY: 'auto' });
+    expect(composer).toHaveStyle({
+      fontSize: '16px',
+      maxHeight: '120px',
+      overflowY: 'auto',
+      overflowWrap: 'anywhere',
+      wordBreak: 'break-word',
+    });
+    expect(screen.getByTestId('chat-composer-dock')).toHaveStyle({ position: 'relative' });
     expect(within(capsule).getByTestId('chat-composer-emoji-button')).toBeInTheDocument();
     expect(within(capsule).getByTestId('chat-composer-menu-button')).toBeInTheDocument();
-    expect(screen.getByTestId('chat-composer-send-button')).toBeDisabled();
+    expect(screen.queryByTestId('chat-composer-send-button')).not.toBeInTheDocument();
+    expect(screen.getByTestId('chat-composer-voice-button')).toBeEnabled();
+  });
+
+  it('keeps bottom scroll padding to the visual gap instead of the full composer height', () => {
+    expect(getChatThreadBottomPadding({
+      compactMobile: true,
+      keyboardInset: 0,
+      composerHeight: 112,
+    })).toBe(8);
+
+    expect(getChatThreadBottomPadding({
+      compactMobile: true,
+      keyboardInset: 280,
+      composerHeight: 168,
+    })).toBe(38);
+
+    expect(getChatThreadBottomPadding({
+      compactMobile: false,
+      keyboardInset: 280,
+      composerHeight: 112,
+    })).toBe(18);
   });
 });

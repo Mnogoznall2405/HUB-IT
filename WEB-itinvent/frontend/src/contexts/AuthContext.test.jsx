@@ -23,11 +23,13 @@ vi.mock('../lib/chatNotifications', () => ({
 import { AuthProvider, useAuth } from './AuthContext';
 
 function AuthProbe() {
-  const { loading, user, refreshSession } = useAuth();
+  const { loading, user, refreshSession, hasPermission } = useAuth();
   return (
     <>
       <div data-testid="loading">{String(loading)}</div>
       <div data-testid="username">{user?.username || ''}</div>
+      <div data-testid="can-dashboard">{String(hasPermission('dashboard.read'))}</div>
+      <div data-testid="can-tickets">{String(hasPermission('tickets.read'))}</div>
       <button type="button" onClick={() => refreshSession({ suppressAuthRequired: true })}>
         refresh
       </button>
@@ -90,5 +92,29 @@ describe('AuthProvider startup', () => {
     await waitFor(() => {
       expect(screen.getByTestId('username')).toHaveTextContent('manual');
     });
+  });
+
+  it('does not grant tickets access from the operator fallback permissions', async () => {
+    getCurrentUserMock.mockResolvedValue({ id: 8, username: 'operator', role: 'operator' });
+
+    renderAuth('/dashboard');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('username')).toHaveTextContent('operator');
+    });
+    expect(screen.getByTestId('can-dashboard')).toHaveTextContent('true');
+    expect(screen.getByTestId('can-tickets')).toHaveTextContent('false');
+  });
+
+  it('does not grant tickets access from the viewer fallback permissions', async () => {
+    getCurrentUserMock.mockResolvedValue({ id: 9, username: 'viewer', role: 'viewer' });
+
+    renderAuth('/dashboard');
+
+    await waitFor(() => {
+      expect(screen.getByTestId('username')).toHaveTextContent('viewer');
+    });
+    expect(screen.getByTestId('can-dashboard')).toHaveTextContent('true');
+    expect(screen.getByTestId('can-tickets')).toHaveTextContent('false');
   });
 });

@@ -13,6 +13,7 @@ export const CHAT_SOCKET_UNREAD_SUMMARY_EVENT = 'chat-ws-unread-summary';
 export const CHAT_SOCKET_PRESENCE_UPDATED_EVENT = 'chat-ws-presence-updated';
 export const CHAT_SOCKET_TYPING_EVENT = 'chat-ws-typing';
 export const CHAT_SOCKET_AI_RUN_UPDATED_EVENT = 'chat-ws-ai-run-updated';
+export const CHAT_SOCKET_MESSAGE_REACTION_EVENT = 'chat-ws-message-reaction';
 
 const HEARTBEAT_MS = 25_000;
 const REQUEST_TIMEOUT_MS = 15_000;
@@ -379,6 +380,10 @@ class ChatSocketClient {
       dispatchWindowEvent(CHAT_SOCKET_MESSAGE_READ_EVENT, envelope);
       return;
     }
+    if (eventType === 'chat.message.reaction') {
+      dispatchWindowEvent(CHAT_SOCKET_MESSAGE_REACTION_EVENT, envelope);
+      return;
+    }
     if (eventType === 'chat.conversation.updated') {
       dispatchWindowEvent(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, envelope);
       return;
@@ -519,10 +524,22 @@ class ChatSocketClient {
     // Conversation subscriptions are replayed from activeConversationIds on connect.
     // Keep only the last offline intent so stale subscribe/unsubscribe commands do not flush.
     this.pendingConversationSubscriptions.clear();
+    // Extend timeouts for pending requests that were queued while offline so
+    // their request_id is still registered when the server responds after flush.
+    this.pendingRequests.forEach((pending, requestId) => {
+      window.clearTimeout(pending.timeoutId);
+      pending.timeoutId = window.setTimeout(() => {
+        this.pendingRequests.delete(requestId);
+        pending.reject(new Error('Chat websocket command timed out'));
+      }, REQUEST_TIMEOUT_MS);
+    });
     const queued = [...this.messageQueue];
     this.messageQueue = [];
     if (queued.length === 0) return;
     queued.forEach((payload) => {
+      const requestId = String(payload?.request_id || '').trim();
+      // Skip messages whose request_id already timed out (no longer in pendingRequests).
+      if (requestId && !this.pendingRequests.has(requestId)) return;
       try {
         this.socket.send(JSON.stringify(payload));
       } catch {

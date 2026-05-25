@@ -49,6 +49,14 @@ export const chatThreadMessagesAPI = {
     });
     return response.data;
   },
+
+  toggleReaction: async (conversationId, messageId, emoji) => {
+    const response = await apiClient.post(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}/reactions`,
+      { emoji },
+    );
+    return response.data;
+  },
 };
 
 export default chatThreadMessagesAPI;

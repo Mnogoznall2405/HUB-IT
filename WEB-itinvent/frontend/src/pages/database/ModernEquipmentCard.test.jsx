@@ -33,8 +33,8 @@ const renderCard = (props = {}) => render(
 
 describe('ModernEquipmentCard', () => {
   it('builds action button metadata and hides delete by default', () => {
-    expect(getEquipmentCardActionButtons(['view', 'transfer', 'delete']).map((entry) => entry.action))
-      .toEqual(['view', 'transfer']);
+    expect(getEquipmentCardActionButtons(['view', 'location_transfer', 'transfer', 'delete']).map((entry) => entry.action))
+      .toEqual(['view', 'location_transfer', 'transfer']);
     expect(getEquipmentCardActionButtons(['delete'], { includeDelete: true }).map((entry) => entry.action))
       .toEqual(['delete']);
   });
@@ -51,7 +51,7 @@ describe('ModernEquipmentCard', () => {
     expect(screen.getByText('Серийный номер')).toBeInTheDocument();
     expect(screen.getByText('Office')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: /Переместить/ }));
+    fireEvent.click(screen.getByRole('button', { name: /Перемещение с актом/ }));
 
     expect(onAction).toHaveBeenCalledWith('transfer', item);
   });

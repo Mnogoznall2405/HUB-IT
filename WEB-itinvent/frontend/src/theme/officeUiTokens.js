@@ -274,8 +274,8 @@ export function getOfficePageShellSx(ui, { fullHeight = false } = {}) {
     bgcolor: 'transparent',
     ...(fullHeight ? {
       height: {
-        xs: 'calc(100dvh - var(--app-shell-header-offset) - 32px)',
-        md: 'calc(100dvh - var(--app-shell-header-offset) - 48px)',
+        xs: 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 32px)',
+        md: 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 48px)',
       },
       overflow: 'hidden',
     } : {}),

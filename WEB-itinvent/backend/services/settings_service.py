@@ -23,10 +23,11 @@ class SettingsService:
     DEFAULTS = {
         "pinned_database": None,
         "theme_mode": "light",
-        "font_family": "Inter",
+        "font_family": "Aptos",
         "font_scale": 1.0,
         "dashboard_mobile_sections": ["urgent", "announcements", "tasks"],
     }
+    ALLOWED_FONT_FAMILIES = {"Aptos", "Inter", "Roboto", "Segoe UI"}
 
     def __init__(self, file_path: Optional[Path] = None, database_url: Optional[str] = None):
         if file_path is None:
@@ -74,7 +75,7 @@ class SettingsService:
                     str(int(row.user_id)): {
                         "pinned_database": row.pinned_database,
                         "theme_mode": str(row.theme_mode or "light"),
-                        "font_family": str(row.font_family or "Inter"),
+                        "font_family": str(row.font_family or "Aptos"),
                         "font_scale": float(row.font_scale or 1.0),
                         "dashboard_mobile_sections": self._normalize_dashboard_mobile_sections(row.dashboard_mobile_sections_json),
                     }
@@ -101,7 +102,7 @@ class SettingsService:
                         session.add(row)
                     row.pinned_database = (str(payload.get("pinned_database") or "").strip() or None)
                     row.theme_mode = str(payload.get("theme_mode") or "light")
-                    row.font_family = str(payload.get("font_family") or "Inter")
+                    row.font_family = str(payload.get("font_family") or "Aptos")
                     row.font_scale = float(payload.get("font_scale") or 1.0)
                     row.dashboard_mobile_sections_json = json.dumps(
                         self._normalize_dashboard_mobile_sections(payload.get("dashboard_mobile_sections"))
@@ -119,8 +120,8 @@ class SettingsService:
         settings = {**self.DEFAULTS, **raw}
         if settings["theme_mode"] not in {"light", "dark"}:
             settings["theme_mode"] = "light"
-        if settings["font_family"] not in {"Inter", "Roboto", "Segoe UI"}:
-            settings["font_family"] = "Inter"
+        if settings["font_family"] not in self.ALLOWED_FONT_FAMILIES:
+            settings["font_family"] = "Aptos"
         try:
             scale = float(settings.get("font_scale", 1.0))
         except (TypeError, ValueError):
@@ -141,7 +142,7 @@ class SettingsService:
             current["pinned_database"] = str(value).strip() if value not in (None, "") else None
         if "theme_mode" in patch and str(patch.get("theme_mode")) in {"light", "dark"}:
             current["theme_mode"] = str(patch.get("theme_mode"))
-        if "font_family" in patch and str(patch.get("font_family")) in {"Inter", "Roboto", "Segoe UI"}:
+        if "font_family" in patch and str(patch.get("font_family")) in self.ALLOWED_FONT_FAMILIES:
             current["font_family"] = str(patch.get("font_family"))
         if "font_scale" in patch:
             try:

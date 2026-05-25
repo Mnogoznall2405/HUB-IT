@@ -2,12 +2,14 @@ import { describe, expect, it } from 'vitest';
 
 import {
   TRANSFER_OPERATION_ACT_ONLY,
+  TRANSFER_OPERATION_LOCATION_ONLY,
   TRANSFER_OPERATION_MOVE,
 } from './equipmentModel';
 import {
   buildTransferActOnlyPayload,
   buildTransferEmailPayload,
   buildTransferEmployeeInputState,
+  buildTransferLocationPayload,
   buildTransferMovePayload,
   buildTransferSourceDefaults,
   getSelectedTransferEmployeeOption,
@@ -231,6 +233,39 @@ describe('transferModel', () => {
       branch_no: '10',
       loc_no: '20',
     });
+  });
+
+  it('builds location-only transfer payloads and validates required destination', () => {
+    expect(buildTransferLocationPayload({
+      targetInvNos: ['1001', '1002'],
+      branchNo: '10',
+      locationNo: '20',
+    })).toEqual({
+      error: '',
+      payload: {
+        inv_nos: ['1001', '1002'],
+        branch_no: '10',
+        loc_no: '20',
+      },
+    });
+
+    expect(buildTransferLocationPayload({
+      targetInvNos: [],
+      branchNo: '10',
+      locationNo: '20',
+    }).error).toBe(getTransferEmptyTargetError(TRANSFER_OPERATION_LOCATION_ONLY));
+
+    expect(buildTransferLocationPayload({
+      targetInvNos: ['1001'],
+      branchNo: '',
+      locationNo: '20',
+    }).error).toBe('Выберите филиал назначения из списка.');
+
+    expect(buildTransferLocationPayload({
+      targetInvNos: ['1001'],
+      branchNo: '10',
+      locationNo: '',
+    }).error).toBe('Выберите местоположение назначения из списка.');
   });
 
   it('returns current validation messages for invalid transfer move input', () => {

@@ -3,13 +3,16 @@ import { describe, expect, it } from 'vitest';
 import {
   buildFallbackMailboxEntry,
   getMailboxEntryId,
+  MAIL_SELECTED_MAILBOX_STORAGE_KEY,
   mergeMailboxEntries,
   normalizeMailboxId,
   normalizeUnreadCountState,
+  readStoredSelectedMailboxId,
   resolveComposeMailboxId,
   resolveItemMailboxId,
   withMailboxParams,
   withMailboxPayload,
+  writeStoredSelectedMailboxId,
 } from './mailMailboxModel';
 
 describe('mailMailboxModel', () => {
@@ -26,6 +29,23 @@ describe('mailMailboxModel', () => {
     expect(normalizeUnreadCountState('STALE')).toBe('stale');
     expect(normalizeUnreadCountState('ready')).toBe('deferred');
     expect(normalizeUnreadCountState('')).toBe('deferred');
+  });
+
+  it('stores and reads the last selected mailbox id with safe normalization', () => {
+    const storage = new Map();
+    const storageAdapter = {
+      getItem: (key) => storage.get(key) || null,
+      setItem: (key, value) => storage.set(key, value),
+      removeItem: (key) => storage.delete(key),
+    };
+
+    writeStoredSelectedMailboxId(' shared ', { storage: storageAdapter });
+    expect(storage.get(MAIL_SELECTED_MAILBOX_STORAGE_KEY)).toBe('shared');
+    expect(readStoredSelectedMailboxId({ storage: storageAdapter })).toBe('shared');
+
+    writeStoredSelectedMailboxId('', { storage: storageAdapter });
+    expect(storage.has(MAIL_SELECTED_MAILBOX_STORAGE_KEY)).toBe(false);
+    expect(readStoredSelectedMailboxId({ storage: storageAdapter })).toBe('');
   });
 
   it('builds selected fallback mailbox entries with display, login, and auth fields', () => {

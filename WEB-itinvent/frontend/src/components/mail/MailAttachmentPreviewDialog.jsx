@@ -99,6 +99,10 @@ export default function MailAttachmentPreviewDialog({
               <Alert severity="info">Показана только часть файла (до 1 МБ).</Alert>
             ) : null}
           </Stack>
+        ) : attachmentPreview.kind === 'unsupported' ? (
+          <Alert severity="info" sx={{ mt: 2 }}>
+            Предпросмотр недоступен для этого типа файла. Используйте кнопку «Скачать», чтобы сохранить файл и открыть его в соответствующей программе.
+          </Alert>
         ) : attachmentPreview.tooLargeForPreview ? (
           <Alert severity="warning">
             {`Файл слишком большой для предпросмотра (> ${formatFileSize(maxPreviewFileBytes)}). Используйте кнопку «Скачать».`}

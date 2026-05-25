@@ -45,6 +45,7 @@ import useChatActiveThreadPolling from '../components/chat/useChatActiveThreadPo
 import useChatAiStatusPolling from '../components/chat/useChatAiStatusPolling';
 import useChatComposerSending from '../components/chat/useChatComposerSending';
 import useChatFileSending from '../components/chat/useChatFileSending';
+import useVoiceRecorder from '../components/chat/useVoiceRecorder';
 import useChatForwardMessages from '../components/chat/useChatForwardMessages';
 import useChatGroupDialog from '../components/chat/useChatGroupDialog';
 import useChatMessageMenuActions from '../components/chat/useChatMessageMenuActions';
@@ -76,6 +77,7 @@ const LIST_POLL_MS = 15_000;
 const THREAD_POLL_MS = 6_000;
 const ACTIVE_THREAD_INCREMENTAL_POLL_MS = 1_000;
 const AI_ACTIVE_POLL_MS = 1_000;
+const AI_ACTIVE_POLL_WS_CONNECTED_MS = 10_000;
 const ACTIVE_THREAD_SOCKET_STALE_MS = 60_000;
 const SEARCH_MS = 250;
 const CHAT_DEBUG_STORAGE_KEY = 'chat:debug';
@@ -170,6 +172,7 @@ const AI_STATUS_FALLBACK_TEXTS = {
   reading_files: 'Изучаю вложенные файлы и контекст.',
   retrieving_kb: 'Проверяю базу знаний и документы.',
   checking_itinvent: 'Проверяю данные ITinvent.',
+  checking_ad: 'Проверяю данные Active Directory.',
   searching_equipment: 'Ищу оборудование.',
   opening_equipment_card: 'Открываю карточку устройства.',
   generating_answer: 'Формирую ответ.',
@@ -871,6 +874,7 @@ export default function Chat() {
   const threadViewportSyncFrameRef = useRef(null);
   const bottomInstantSettleFrameRef = useRef(null);
   const prependScrollRestoreRef = useRef(null);
+  const loadOlderInFlightCursorRef = useRef('');
   const messagesHasMoreRef = useRef(false);
   const messagesHasNewerRef = useRef(false);
   const highlightResetTimeoutRef = useRef(null);
@@ -1166,6 +1170,16 @@ export default function Chat() {
     () => buildAiStatusDisplayModel(activeAiStatus),
     [activeAiStatus],
   );
+  const aiTypingStatus = useMemo(() => {
+    if (String(activeConversation?.kind || '').trim() !== 'ai') return null;
+    const status = String(activeAiStatus?.status || '').trim();
+    const visible = status === 'queued' || status === 'running';
+    if (!visible) return null;
+    return {
+      visible: true,
+      botName: String(activeAiStatus?.bot_title || activeAiStatusDisplay?.primaryText || 'AI Ассистент').trim() || 'AI Ассистент',
+    };
+  }, [activeConversation?.kind, activeAiStatus, activeAiStatusDisplay]);
   const activeAiLiveDataNotice = useMemo(
     () => buildAiLiveDataNotice({
       activeConversationKind: activeConversation?.kind,
@@ -2418,29 +2432,12 @@ export default function Chat() {
     setMessageMenuMessage(null);
   }, [activeConversationId]);
 
-  useEffect(() => {
-    conversationsRef.current = conversations;
-  }, [conversations]);
-
-  useEffect(() => {
-    conversationsLoadingRef.current = conversationsLoading;
-  }, [conversationsLoading]);
-
-  useEffect(() => {
-    messagesRef.current = messages;
-  }, [messages]);
-
-  useEffect(() => {
-    messagesLoadingRef.current = messagesLoading;
-  }, [messagesLoading]);
-
-  useEffect(() => {
-    messagesHasMoreRef.current = messagesHasMore;
-  }, [messagesHasMore]);
-
-  useEffect(() => {
-    messagesHasNewerRef.current = messagesHasNewer;
-  }, [messagesHasNewer]);
+  conversationsRef.current = conversations;
+  conversationsLoadingRef.current = conversationsLoading;
+  messagesRef.current = messages;
+  messagesLoadingRef.current = messagesLoading;
+  messagesHasMoreRef.current = messagesHasMore;
+  messagesHasNewerRef.current = messagesHasNewer;
 
   useEffect(() => {
     if (!conversationsCacheHydratedRef.current) return;
@@ -3116,15 +3113,19 @@ export default function Chat() {
     const start = Number.isInteger(storedStart) ? storedStart : (Number.isInteger(input?.selectionStart) ? input.selectionStart : currentValue.length);
     const end = Number.isInteger(storedEnd) ? storedEnd : (Number.isInteger(input?.selectionEnd) ? input.selectionEnd : start);
     const nextValue = `${currentValue.slice(0, start)}${emoji}${currentValue.slice(end)}`;
+    const nextPosition = start + emoji.length;
     setMessageText(nextValue);
+    composerSelectionRef.current = { start: nextPosition, end: nextPosition };
+    if (isMobile) {
+      // На мобильном не закрываем пикер — пользователь может набрать ещё эмодзи
+      return;
+    }
     setEmojiAnchorEl(null);
     window.requestAnimationFrame(() => {
       composerRef.current?.focus?.();
-      const nextPosition = start + emoji.length;
       composerRef.current?.setSelectionRange?.(nextPosition, nextPosition);
-      composerSelectionRef.current = { start: nextPosition, end: nextPosition };
     });
-  }, [messageText]);
+  }, [isMobile, messageText]);
 
   const markConversationReadLive = useCallback(async (conversationId, messageId) => {
     const normalizedConversationId = String(conversationId || '').trim();
@@ -3965,10 +3966,20 @@ export default function Chat() {
     });
     queueInitialThreadPositionRef.current?.(activeConversationId);
     focusComposerRef.current?.();
-    const cachedThreadEntry = peekSWRCache(
-      buildChatThreadCacheKeyParts(userCacheId, activeConversationId),
-      { staleTimeMs: CHAT_SWR_STALE_TIME_MS },
-    );
+
+    const isFromNotification = String(requestedConversationId || '').trim() === activeConversationId;
+
+    if (isFromNotification) {
+      invalidateSWRCacheByPrefix('chat', 'thread', userCacheId, activeConversationId);
+    }
+
+    const cachedThreadEntry = !isFromNotification
+      ? peekSWRCache(
+        buildChatThreadCacheKeyParts(userCacheId, activeConversationId),
+        { staleTimeMs: CHAT_SWR_STALE_TIME_MS },
+      )
+      : null;
+
     if (cachedThreadEntry?.data) {
       applyLatestThreadPayload(activeConversationId, cachedThreadEntry.data);
       resolvePendingInitialAnchorFromPayload(activeConversationId, cachedThreadEntry.data);
@@ -3985,11 +3996,14 @@ export default function Chat() {
       setMessagesHasNewer(false);
       setViewerLastReadMessageId('');
       setViewerLastReadAt('');
-      void loadThreadBootstrap(activeConversationId, { reason: 'effect:activeConversation' });
+      void loadThreadBootstrap(activeConversationId, {
+        reason: isFromNotification ? 'effect:activeConversation:fromNotification' : 'effect:activeConversation',
+        force: isFromNotification,
+      });
     }
     setReplyMessage(null);
     resetMessageSearch();
-  }, [activeConversationId, applyLatestThreadPayload, clearInitialViewportGuard, loadThreadBootstrap, resetMessageSearch, resolvePendingInitialAnchorFromPayload, userCacheId]);
+  }, [activeConversationId, applyLatestThreadPayload, clearInitialViewportGuard, loadThreadBootstrap, requestedConversationId, resetMessageSearch, resolvePendingInitialAnchorFromPayload, userCacheId]);
 
   useEffect(() => {
     suppressDraftSyncRef.current = true;
@@ -4241,7 +4255,7 @@ export default function Chat() {
     activeThreadTransportState,
     aiStatus: activeAiStatus,
     canUseAiChat,
-    intervalMs: AI_ACTIVE_POLL_MS,
+    intervalMs: socketStatus === 'connected' ? AI_ACTIVE_POLL_WS_CONNECTED_MS : AI_ACTIVE_POLL_MS,
     mergeAiStatusPayload,
     setAiStatusByConversation,
     shouldPollActiveAiThread,
@@ -4291,6 +4305,7 @@ export default function Chat() {
     promoteConversationToTop,
     queueAutoScroll,
     setAiStatusByConversation,
+    setMessages,
     setSocketStatus,
     setTypingUsers,
     setViewerLastReadAt,
@@ -4720,6 +4735,27 @@ export default function Chat() {
     setThreadMenuAnchor,
   });
 
+  const handleVoiceRecordingComplete = useCallback(async ({ file }) => {
+    const conversationId = String(activeConversationId || '').trim();
+    if (!conversationId || !file) return;
+    try {
+      await chatAPI.sendFiles(conversationId, [file], {});
+    } catch (error) {
+      notifyApiError(error, 'Не удалось отправить голосовое сообщение.');
+    }
+  }, [activeConversationId, notifyApiError]);
+
+  const {
+    voiceRecording,
+    voiceRecordingDuration,
+    startVoiceRecording,
+    stopVoiceRecording,
+    cancelVoiceRecording,
+  } = useVoiceRecorder({
+    onRecordingComplete: handleVoiceRecordingComplete,
+    notifyWarning,
+  });
+
   const handleComposerKeyDown = useCallback((event) => {
     if (
       event.key !== 'Enter'
@@ -4749,6 +4785,21 @@ export default function Chat() {
       setMessageReadsOpen(false);
     } finally {
       setMessageReadsLoading(false);
+    }
+  }, [notifyApiError]);
+
+  const handleToggleReaction = useCallback(async (messageId, emoji) => {
+    const conversationId = String(activeConversationIdRef.current || '').trim();
+    if (!conversationId || !messageId || !emoji) return;
+    try {
+      const result = await chatAPI.toggleReaction(conversationId, messageId, emoji);
+      if (result?.message_id && Array.isArray(result?.reactions)) {
+        setMessages((current) => current.map((msg) => (
+          msg.id === result.message_id ? { ...msg, reactions: result.reactions } : msg
+        )));
+      }
+    } catch (error) {
+      notifyApiError(error, 'Не удалось поставить реакцию.');
     }
   }, [notifyApiError]);
 
@@ -4864,11 +4915,20 @@ export default function Chat() {
   const loadOlderMessages = useCallback(async () => {
     const firstMessageId = String(messagesRef.current[0]?.id || '').trim();
     if (!activeConversationId || !firstMessageId || loadingOlder || !messagesHasMore) return;
-    await loadMessages(activeConversationId, {
-      silent: true,
-      beforeMessageId: firstMessageId,
-      reason: 'loadOlderMessages',
-    });
+    const cursorKey = `${activeConversationId}:${firstMessageId}`;
+    if (loadOlderInFlightCursorRef.current === cursorKey) return;
+    loadOlderInFlightCursorRef.current = cursorKey;
+    try {
+      await loadMessages(activeConversationId, {
+        silent: true,
+        beforeMessageId: firstMessageId,
+        reason: 'loadOlderMessages',
+      });
+    } finally {
+      if (loadOlderInFlightCursorRef.current === cursorKey) {
+        loadOlderInFlightCursorRef.current = '';
+      }
+    }
   }, [activeConversationId, loadMessages, loadingOlder, messagesHasMore]);
 
   const handleThreadScroll = useCallback((event) => {
@@ -5048,6 +5108,54 @@ export default function Chat() {
     />
   );
 
+  const handleOpenMenu = useCallback((event) => {
+    void loadChatDialogsModule();
+    setThreadMenuAnchor(event.currentTarget);
+  }, []);
+
+  const handleOpenComposerMenu = useCallback((event) => {
+    void loadChatDialogsModule();
+    setComposerMenuAnchor(event.currentTarget);
+    if (isMobile) focusComposer({ forceMobile: true });
+  }, [isMobile, focusComposer]);
+
+  const handleOpenEmojiPicker = useCallback((event) => {
+    void loadChatDialogsModule();
+    syncComposerSelection();
+    if (isMobile) {
+      composerRef.current?.blur?.();
+    }
+    setEmojiAnchorEl(event.currentTarget);
+  }, [isMobile, syncComposerSelection]);
+
+  const handleCloseEmojiPicker = useCallback(() => {
+    setEmojiAnchorEl(null);
+    window.requestAnimationFrame(() => {
+      composerRef.current?.focus?.();
+    });
+  }, []);
+
+  const handleComposerFocusChange = useCallback((focused) => {
+    if (focused && isMobile && emojiAnchorEl) {
+      setEmojiAnchorEl(null);
+    }
+  }, [isMobile, emojiAnchorEl]);
+
+  const handleSendGif = useCallback(async (gif) => {
+    if (!gif?.fullUrl) return;
+    try {
+      const resp = await fetch(gif.fullUrl);
+      const blob = await resp.blob();
+      const name = (gif.title || 'animation').replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 40) + '.gif';
+      const file = new File([blob], name, { type: 'image/gif' });
+      setEmojiAnchorEl(null);
+      await queueSelectedFiles([file]);
+    } catch {
+      setMessageText(gif.fullUrl);
+      window.requestAnimationFrame(() => handleComposerSend());
+    }
+  }, [queueSelectedFiles, handleComposerSend]);
+
   const threadPane = (
     <ChatThread
       theme={theme}
@@ -5072,10 +5180,7 @@ export default function Chat() {
       onBack={openMobileInboxView}
       onOpenInfo={handleOpenInfo}
       onOpenSearch={openSearchDialog}
-      onOpenMenu={(event) => {
-        void loadChatDialogsModule();
-        setThreadMenuAnchor(event.currentTarget);
-      }}
+      onOpenMenu={handleOpenMenu}
       onOpenReads={openMessageReads}
       onOpenAttachmentPreview={openMediaViewer}
       onReplyMessage={handleReplyMessage}
@@ -5093,21 +5198,15 @@ export default function Chat() {
       onReplySelectedMessage={selectedReplyToSelectedMessage}
       onCopySelectedMessages={selectedCopySelectedMessages}
       onForwardSelectedMessages={selectedOpenForwardSelectedMessages}
-      onOpenComposerMenu={(event) => {
-        void loadChatDialogsModule();
-        setComposerMenuAnchor(event.currentTarget);
-        if (isMobile) focusComposer({ forceMobile: true });
-      }}
+      onOpenComposerMenu={handleOpenComposerMenu}
       composerRef={composerRef}
       messageText={messageText}
       onMessageTextChange={setMessageText}
       onComposerKeyDown={handleComposerKeyDown}
       onComposerSelectionSync={syncComposerSelection}
-      onOpenEmojiPicker={(event) => {
-        void loadChatDialogsModule();
-        syncComposerSelection();
-        setEmojiAnchorEl(event.currentTarget);
-      }}
+      onOpenEmojiPicker={handleOpenEmojiPicker}
+      onCloseEmojiPicker={handleCloseEmojiPicker}
+      onComposerFocusChange={handleComposerFocusChange}
       onSendMessage={handleComposerSend}
       onComposerPaste={handleComposerPaste}
       onComposerDrop={handleComposerDrop}
@@ -5120,8 +5219,8 @@ export default function Chat() {
       onJumpToLatest={jumpToLatest}
       replyMessage={replyMessage}
       onClearReply={clearReplyMessage}
+      aiTypingStatus={aiTypingStatus}
       aiStatus={activeConversation?.kind === 'ai' ? activeAiStatus : null}
-      aiStatusDisplay={activeConversation?.kind === 'ai' ? activeAiStatusDisplay : null}
       pinnedMessage={pinnedMessage}
       onOpenPinnedMessage={handleOpenPinnedMessage}
       onUnpinPinnedMessage={handleUnpinPinnedMessage}
@@ -5138,6 +5237,18 @@ export default function Chat() {
       fileUploadProgress={fileUploadProgress}
       selectedFilesSummary={selectedFilesSummary}
       getReadTargetRef={getReadTargetRef}
+      onToggleReaction={handleToggleReaction}
+      onScrollToMessage={scrollToMessage}
+      currentUserId={user?.id}
+      mobileEmojiPickerOpen={isMobile && emojiPickerOpen}
+      onInsertEmoji={insertEmojiAtSelection}
+      onSendSticker={insertEmojiAtSelection}
+      onSendGif={handleSendGif}
+      voiceRecording={voiceRecording}
+      voiceRecordingDuration={voiceRecordingDuration}
+      onStartVoiceRecording={startVoiceRecording}
+      onStopVoiceRecording={stopVoiceRecording}
+      onCancelVoiceRecording={cancelVoiceRecording}
     />
   );
 
@@ -5346,6 +5457,7 @@ export default function Chat() {
                 messageMenuAnchor={messageMenuAnchor}
                 messageMenuMessage={messageMenuMessage}
                 onCloseMessageMenu={closeMessageMenu}
+                onToggleReactionFromMenu={(msg, emoji) => msg?.id && handleToggleReaction(msg.id, emoji)}
                 onReplyFromMessageMenu={handleReplyFromMessageMenu}
                 onCopyMessage={handleCopyMessage}
                 onTogglePinMessageFromMenu={handleTogglePinMessageFromMenu}

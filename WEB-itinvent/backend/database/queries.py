@@ -18,11 +18,15 @@ from backend.database.equipment_directory_reads import (
     QUERY_GET_ALL_BRANCHES,
     QUERY_GET_ALL_LOCATIONS,
     QUERY_GET_ALL_LOCATIONS_WITH_BRANCH_PRIORITY,
+    QUERY_GET_LOCATIONS_BY_BRANCH_COLUMN,
+    QUERY_LOCATIONS_HAS_BRANCH_COLUMN,
     get_all_branches as _directory_get_all_branches,
     get_all_locations as _directory_get_all_locations,
     get_branch_by_no as _directory_get_branch_by_no,
+    is_location_in_branch as _directory_is_location_in_branch,
     get_location_by_no as _directory_get_location_by_no,
     get_locations_by_branch as _directory_get_locations_by_branch,
+    locations_has_branch_column as _directory_locations_has_branch_column,
 )
 from backend.database.equipment_search_reads import (
     QUERY_SEARCH_BY_SERIAL,
@@ -2366,20 +2370,12 @@ def get_location_by_no(loc_no: Any, db_id: Optional[str] = None) -> Optional[dic
     return _directory_get_location_by_no(loc_no, db_id, get_db_fn=get_db)
 
 
+def locations_has_branch_column(db_id: Optional[str] = None) -> bool:
+    return _directory_locations_has_branch_column(db_id, get_db_fn=get_db)
+
+
 def is_location_in_branch(loc_no: Any, branch_no: Any, db_id: Optional[str] = None) -> bool:
-    """
-    Check location-branch relation using ITEMS table mapping.
-    Works for schemas where LOCATIONS has no BRANCH_NO column.
-    """
-    db = get_db(db_id)
-    query = """
-        SELECT TOP 1 1 as ok
-        FROM ITEMS i
-        WHERE i.BRANCH_NO = ?
-          AND i.LOC_NO = ?
-    """
-    rows = db.execute_query(query, (branch_no, loc_no))
-    return bool(rows)
+    return _directory_is_location_in_branch(loc_no, branch_no, db_id, get_db_fn=get_db)
 
 
 def update_equipment_fields(
@@ -3332,6 +3328,177 @@ def transfer_equipment_by_inv_with_history(
                 "model_name": current.get("MODEL_NAME"),
                 "part_no": current.get("PART_NO"),
                 "message": "Transferred",
+            }
+        )
+        return result
+
+
+def transfer_equipment_location_by_inv_with_history(
+    inv_no: str,
+    new_branch_no: Any,
+    new_loc_no: Any,
+    changed_by: str = "IT-WEB",
+    comment: Optional[str] = None,
+    db_id: Optional[str] = None,
+) -> dict:
+    """
+    Move one equipment unit to another branch/location and write CI_HISTORY.
+
+    Ownership, status, type, model and quantity are preserved.
+    """
+    result = {
+        "success": False,
+        "inv_no": str(inv_no or "").strip(),
+        "message": "",
+        "hist_id": None,
+    }
+
+    try:
+        inv_no_float = float(inv_no) if inv_no not in (None, "") else None
+    except (TypeError, ValueError):
+        result["message"] = "Invalid inventory number"
+        return result
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1
+                i.ID, i.INV_NO, i.SERIAL_NO, i.HW_SERIAL_NO, i.PART_NO,
+                i.EMPL_NO, i.BRANCH_NO, i.LOC_NO, i.STATUS_NO,
+                i.TYPE_NO, i.MODEL_NO, i.CI_TYPE, i.QTY,
+                o.OWNER_DISPLAY_NAME AS OLD_EMPLOYEE_NAME,
+                b.BRANCH_NAME AS BRANCH_NAME,
+                l.DESCR AS LOCATION_NAME,
+                t.TYPE_NAME AS TYPE_NAME,
+                m.MODEL_NAME AS MODEL_NAME
+            FROM ITEMS i
+            LEFT JOIN OWNERS o ON i.EMPL_NO = o.OWNER_NO
+            LEFT JOIN BRANCHES b ON i.BRANCH_NO = b.BRANCH_NO
+            LEFT JOIN LOCATIONS l ON i.LOC_NO = l.LOC_NO
+            LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
+            LEFT JOIN CI_MODELS m ON i.MODEL_NO = m.MODEL_NO AND i.CI_TYPE = m.CI_TYPE
+            WHERE i.CI_TYPE = 1 AND i.INV_NO = ?
+            """,
+            (inv_no_float,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            result["message"] = f"Equipment with INV_NO {inv_no} not found"
+            return result
+
+        columns = [column[0] for column in cursor.description]
+        current = dict(zip(columns, row))
+
+        old_empl_no = current.get("EMPL_NO")
+        old_branch_no = current.get("BRANCH_NO")
+        old_loc_no = current.get("LOC_NO")
+        old_status_no = current.get("STATUS_NO")
+        old_serial_no = current.get("SERIAL_NO")
+        old_inv_no = current.get("INV_NO")
+        old_type_no = current.get("TYPE_NO")
+        old_model_no = current.get("MODEL_NO")
+        old_ci_type = current.get("CI_TYPE")
+        old_qty = current.get("QTY") if current.get("QTY") is not None else 1
+        employee_name = current.get("OLD_EMPLOYEE_NAME") or "Без владельца"
+        now = datetime.now()
+
+        cursor.execute("SELECT ISNULL(MAX(HIST_ID), 0) + 1 FROM CI_HISTORY")
+        hist_id = cursor.fetchone()[0]
+
+        cursor.execute(
+            """
+            INSERT INTO CI_HISTORY (
+                HIST_ID,
+                ITEM_ID,
+                EMPL_NO_OLD, EMPL_NO_NEW,
+                BRANCH_NO_OLD, BRANCH_NO_NEW,
+                LOC_NO_OLD, LOC_NO_NEW,
+                STATUS_NO_OLD, STATUS_NO_NEW,
+                SERIAL_NO_OLD, SERIAL_NO_NEW,
+                INV_NO_OLD, INV_NO_NEW,
+                TYPE_NO_OLD, TYPE_NO_NEW,
+                MODEL_NO_OLD, MODEL_NO_NEW,
+                CI_TYPE_OLD, CI_TYPE_NEW,
+                COMP_NO_OLD, COMP_NO_NEW,
+                QTY_OLD, QTY_NEW,
+                CH_DATE, CH_USER, CH_COMMENT
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                hist_id,
+                current.get("ID"),
+                old_empl_no, old_empl_no,
+                old_branch_no, new_branch_no,
+                old_loc_no, new_loc_no,
+                old_status_no, old_status_no,
+                old_serial_no, old_serial_no,
+                old_inv_no, old_inv_no,
+                old_type_no, old_type_no,
+                old_model_no, old_model_no,
+                old_ci_type, old_ci_type,
+                0, 0,
+                old_qty, old_qty,
+                now, changed_by or "IT-WEB", comment,
+            ),
+        )
+
+        cursor.execute(
+            """
+            UPDATE ITEMS
+            SET BRANCH_NO = ?,
+                LOC_NO = ?,
+                CH_DATE = ?,
+                CH_USER = ?
+            WHERE ID = ?
+            """,
+            (
+                new_branch_no,
+                new_loc_no,
+                now,
+                changed_by or "IT-WEB",
+                current.get("ID"),
+            ),
+        )
+
+        branch_name = current.get("BRANCH_NAME")
+        location_name = current.get("LOCATION_NAME")
+
+        cursor.execute("SELECT TOP 1 BRANCH_NAME FROM BRANCHES WHERE BRANCH_NO = ?", (new_branch_no,))
+        branch_row = cursor.fetchone()
+        if branch_row and branch_row[0] is not None:
+            branch_name = branch_row[0]
+
+        cursor.execute("SELECT TOP 1 DESCR FROM LOCATIONS WHERE LOC_NO = ?", (new_loc_no,))
+        loc_row = cursor.fetchone()
+        if loc_row and loc_row[0] is not None:
+            location_name = loc_row[0]
+
+        try:
+            inv_text = str(int(round(float(old_inv_no)))) if old_inv_no is not None else str(inv_no)
+        except (TypeError, ValueError):
+            inv_text = str(inv_no)
+
+        result.update(
+            {
+                "success": True,
+                "hist_id": int(hist_id),
+                "inv_no": inv_text,
+                "serial_no": old_serial_no,
+                "old_employee_no": old_empl_no,
+                "old_employee_name": employee_name,
+                "new_employee_no": old_empl_no,
+                "new_employee_name": employee_name,
+                "branch_no": new_branch_no,
+                "loc_no": new_loc_no,
+                "branch_name": branch_name,
+                "location_name": location_name,
+                "type_name": current.get("TYPE_NAME"),
+                "model_name": current.get("MODEL_NAME"),
+                "part_no": current.get("PART_NO"),
+                "message": "Location transferred",
             }
         )
         return result

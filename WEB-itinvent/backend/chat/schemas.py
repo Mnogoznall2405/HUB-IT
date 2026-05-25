@@ -12,6 +12,7 @@ class ChatUserSummary(BaseModel):
     full_name: Optional[str] = None
     role: str = "viewer"
     is_active: bool = True
+    avatar_url: Optional[str] = None
     presence: Optional["ChatPresenceSummary"] = None
 
 
@@ -39,6 +40,25 @@ class ChatForwardPreview(BaseModel):
     attachments_count: int = 0
 
 
+class ChatReactionSummary(BaseModel):
+    emoji: str
+    count: int = 0
+    user_ids: list[int] = Field(default_factory=list)
+
+
+class ChatReactionToggleRequest(BaseModel):
+    emoji: str
+
+
+class ChatReactionToggleResponse(BaseModel):
+    message_id: str
+    conversation_id: str
+    action: Literal["added", "removed"]
+    emoji: str
+    user_id: int
+    reactions: list[ChatReactionSummary] = Field(default_factory=list)
+
+
 class ChatMessageResponse(BaseModel):
     id: str
     conversation_id: str
@@ -61,12 +81,14 @@ class ChatMessageResponse(BaseModel):
     task_preview: Optional["ChatTaskPreview"] = None
     attachments: list["ChatAttachmentResponse"] = Field(default_factory=list)
     action_card: Optional[dict[str, Any]] = None
+    reactions: list[ChatReactionSummary] = Field(default_factory=list)
 
 
 class ChatConversationSummary(BaseModel):
     id: str
     kind: Literal["direct", "group", "ai"]
     title: str
+    avatar_url: Optional[str] = None
     created_at: str
     updated_at: str
     last_message_at: Optional[str] = None
@@ -312,8 +334,8 @@ class ChatConversationAttachmentsResponse(BaseModel):
 class ChatUploadSessionFileRequest(BaseModel):
     file_name: str = Field(..., min_length=1, max_length=255)
     mime_type: Optional[str] = Field(default=None, max_length=255)
-    size: int = Field(..., gt=0, le=25 * 1024 * 1024)
-    original_size: int = Field(..., gt=0, le=25 * 1024 * 1024)
+    size: int = Field(..., gt=0, le=1024 * 1024 * 1024)
+    original_size: int = Field(..., gt=0, le=1024 * 1024 * 1024)
     transfer_encoding: Literal["identity", "gzip"] = "identity"
 
     @field_validator("file_name", "mime_type", mode="before")

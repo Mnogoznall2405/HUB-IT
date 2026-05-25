@@ -8,16 +8,13 @@ from anyio import to_thread
 
 from backend.chat.realtime import chat_realtime
 from backend.chat.service import chat_service
+from backend.chat.utils import normalize_text as _normalize_text
 
 
 CHAT_EVENT_SCOPE_INBOX = "inbox"
 CHAT_EVENT_SCOPE_CONVERSATION = "conversation"
 CHAT_EVENT_SCOPE_BOTH = "both"
 
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
 
 
 async def _run_chat_call(func, *args, **kwargs):

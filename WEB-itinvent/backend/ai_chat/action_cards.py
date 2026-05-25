@@ -43,8 +43,10 @@ ACTION_OFFICE_MAIL_REPLY = "office.mail.reply"
 ACTION_OFFICE_TASK_CREATE = "office.task.create"
 ACTION_OFFICE_TASK_COMMENT = "office.task.comment"
 ACTION_OFFICE_TASK_STATUS = "office.task.status"
+ACTION_REPORT_FORMAT_CHOICE = "ai.report.format_choice"
 
 DRAFT_EXPIRES_IN = timedelta(hours=1)
+REPORT_FORMAT_CHOICES = ("xlsx", "pdf", "docx", "csv")
 
 
 def _utc_now() -> datetime:
@@ -377,6 +379,117 @@ def _build_office_task_preview(*, action_type: str, payload: dict[str, Any]) -> 
             "comment": _normalize_text(payload.get("comment")) or None,
         },
     }
+
+
+def _normalize_report_format(value: Any) -> str:
+    file_format = _normalize_text(value).lower().lstrip(".")
+    aliases = {
+        "excel": "xlsx",
+        "xls": "xlsx",
+        "word": "docx",
+        "document": "docx",
+    }
+    file_format = aliases.get(file_format, file_format)
+    if file_format not in REPORT_FORMAT_CHOICES:
+        raise ValueError(f"Unsupported report format: {file_format or 'empty'}")
+    return file_format
+
+
+def _normalize_report_sections(value: Any) -> list[dict[str, str]]:
+    sections: list[dict[str, str]] = []
+    for item in list(value or []):
+        payload = item if isinstance(item, dict) else {}
+        heading = _normalize_text(payload.get("heading") or payload.get("title")) or "Section"
+        body = _normalize_text(payload.get("body") or payload.get("content") or payload.get("text"))
+        if heading or body:
+            sections.append({"heading": heading, "body": body})
+    return sections[:20]
+
+
+def _normalize_report_tables(value: Any) -> list[dict[str, Any]]:
+    tables: list[dict[str, Any]] = []
+    for index, item in enumerate(list(value or []), start=1):
+        payload = item if isinstance(item, dict) else {}
+        rows = payload.get("rows")
+        if not isinstance(rows, list) or not rows:
+            continue
+        columns = payload.get("columns") if isinstance(payload.get("columns"), list) else []
+        tables.append(
+            {
+                "title": _normalize_text(payload.get("title")) or f"Table {index}",
+                "columns": list(columns or []),
+                "rows": list(rows or []),
+            }
+        )
+    return tables[:20]
+
+
+def _report_table_row_count(tables: list[dict[str, Any]]) -> int:
+    count = 0
+    for table in tables:
+        rows = list(table.get("rows") or [])
+        if rows and all(isinstance(row, list) for row in rows):
+            count += max(0, len(rows) - 1)
+        else:
+            count += len(rows)
+    return count
+
+
+def _normalize_report_payload(payload: dict[str, Any], *, database_id: str | None = None) -> dict[str, Any]:
+    source = payload if isinstance(payload, dict) else {}
+    title = _normalize_text(source.get("title")) or "Report"
+    summary = _normalize_text(source.get("summary"))
+    file_name_base = _normalize_text(source.get("file_name_base")) or title or "report"
+    normalized_database_id = _normalize_text(source.get("database_id")) or _normalize_text(database_id) or None
+    return {
+        "title": title,
+        "summary": summary,
+        "sections": _normalize_report_sections(source.get("sections")),
+        "tables": _normalize_report_tables(source.get("tables")),
+        "file_name_base": file_name_base,
+        "source_tool_results": list(source.get("source_tool_results") or [])[:20],
+        "database_id": normalized_database_id,
+    }
+
+
+def _build_report_format_preview(*, payload: dict[str, Any], database_id: str | None) -> dict[str, Any]:
+    tables = _normalize_report_tables(payload.get("tables"))
+    source_results = [item for item in list(payload.get("source_tool_results") or []) if isinstance(item, dict)]
+    source_tool_ids = sorted({_normalize_text(item.get("tool_id")) for item in source_results if _normalize_text(item.get("tool_id"))})
+    return {
+        "title": _normalize_text(payload.get("title")) or "Report",
+        "summary": _normalize_text(payload.get("summary")) or "Choose a report format.",
+        "database_id": _normalize_text(payload.get("database_id")) or _normalize_text(database_id) or None,
+        "formats": list(REPORT_FORMAT_CHOICES),
+        "report": {
+            "title": _normalize_text(payload.get("title")) or "Report",
+            "summary": _normalize_text(payload.get("summary")) or None,
+            "table_count": len(tables),
+            "row_count": _report_table_row_count(tables),
+            "source": ", ".join(source_tool_ids[:4]) or "ITinvent",
+            "formats": list(REPORT_FORMAT_CHOICES),
+        },
+    }
+
+
+def build_report_format_choice(
+    *,
+    conversation_id: str,
+    run_id: str,
+    requester_user_id: int,
+    database_id: str | None,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    normalized_payload = _normalize_report_payload(payload, database_id=database_id)
+    return create_pending_action(
+        action_type=ACTION_REPORT_FORMAT_CHOICE,
+        conversation_id=conversation_id,
+        run_id=run_id,
+        requester_user_id=requester_user_id,
+        database_id=_normalize_text(database_id) or _normalize_text(normalized_payload.get("database_id")) or None,
+        payload=normalized_payload,
+        preview=_build_report_format_preview(payload=normalized_payload, database_id=database_id),
+    )
 
 
 def create_pending_action(
@@ -758,6 +871,176 @@ def _send_transfer_acts_to_chat(
                 pass
 
 
+def _report_file_name(file_name_base: str, file_format: str) -> str:
+    base = Path(_normalize_text(file_name_base).replace("\\", "/")).name
+    base = re.sub(r"[\x00-\x1f<>:\"/\\|?*]+", "_", base).strip(" ._")
+    if not base:
+        base = "report"
+    suffix = f".{file_format}"
+    if base.lower().endswith(tuple(f".{item}" for item in REPORT_FORMAT_CHOICES)):
+        base = base.rsplit(".", 1)[0]
+    return f"{base[:150]}{suffix}"
+
+
+def _report_rows_for_table(table: dict[str, Any]) -> list[Any]:
+    rows = list(table.get("rows") or [])
+    columns = list(table.get("columns") or [])
+    if rows and all(isinstance(row, dict) for row in rows) and columns:
+        normalized_columns: list[dict[str, str]] = []
+        for column in columns:
+            if isinstance(column, dict):
+                key = _normalize_text(column.get("key") or column.get("id") or column.get("name") or column.get("field"))
+                label = _normalize_text(column.get("label") or column.get("title") or column.get("header") or key)
+            else:
+                key = _normalize_text(column)
+                label = key
+            if key or label:
+                normalized_columns.append({"key": key or label, "label": label or key})
+        if normalized_columns:
+            return [[column["label"] for column in normalized_columns]] + [
+                [_normalize_text(row.get(column["key"])) for column in normalized_columns]
+                for row in rows
+                if isinstance(row, dict)
+            ]
+    return rows
+
+
+def _report_file_spec_from_payload(payload: dict[str, Any], file_format: str) -> dict[str, Any]:
+    normalized = _normalize_report_payload(payload, database_id=_normalize_text(payload.get("database_id")) or None)
+    title = _normalize_text(normalized.get("title")) or "Report"
+    summary = _normalize_text(normalized.get("summary"))
+    sections = _normalize_report_sections(normalized.get("sections"))
+    tables = _normalize_report_tables(normalized.get("tables"))
+    report_tables = [
+        {
+            "title": _normalize_text(table.get("title")) or f"Table {index}",
+            "columns": list(table.get("columns") or []),
+            "rows": _report_rows_for_table(table),
+        }
+        for index, table in enumerate(tables, start=1)
+    ]
+    metadata = {
+        "report": True,
+        "report_title": title,
+        "report_summary": summary,
+        "report_sections": sections,
+        "report_tables": report_tables,
+        "database_id": normalized.get("database_id"),
+        "source_tool_results": normalized.get("source_tool_results") or [],
+    }
+    spec: dict[str, Any] = {
+        "format": file_format,
+        "file_name": _report_file_name(_normalize_text(normalized.get("file_name_base")) or title, file_format),
+        "title": title,
+        "metadata": metadata,
+    }
+    if file_format == "xlsx":
+        sheets: list[dict[str, Any]] = []
+        summary_rows = [["Field", "Value"]]
+        if summary:
+            summary_rows.append(["Summary", summary])
+        if normalized.get("database_id"):
+            summary_rows.append(["Database", normalized.get("database_id")])
+        summary_rows.append(["Tables", str(len(report_tables))])
+        summary_rows.append(["Rows", str(_report_table_row_count(report_tables))])
+        sheets.append({"title": "Summary", "rows": summary_rows, "header_row_index": 1})
+        for table in report_tables:
+            sheets.append({"title": table["title"], "rows": table["rows"], "header_row_index": 1})
+        spec["sheets"] = sheets
+    elif file_format == "csv":
+        spec["rows"] = list((report_tables[0] or {}).get("rows") or []) if report_tables else [["Summary"], [summary or title]]
+    else:
+        content_lines = [title]
+        if summary:
+            content_lines.extend(["", summary])
+        for section in sections:
+            content_lines.extend(["", section.get("heading") or "Section", section.get("body") or ""])
+        spec["content"] = "\n".join(content_lines)
+    return spec
+
+
+def _send_report_failure_to_chat(*, row: AppAiPendingAction, current_user: Any, error_text: str) -> None:
+    conversation_id = _normalize_text(row.conversation_id)
+    if not conversation_id:
+        return
+    try:
+        from backend.chat.service import chat_service
+
+        sender_user_id = _resolve_action_message_sender(
+            row,
+            fallback_user_id=int(_user_attr(current_user, "id", 0) or 0),
+        )
+        message = chat_service.send_message(
+            current_user_id=sender_user_id,
+            conversation_id=conversation_id,
+            body=f"Не удалось создать отчёт: {_normalize_text(error_text) or 'unknown error'}",
+            body_format="markdown",
+            reply_to_message_id=_normalize_text(row.message_id) or None,
+            defer_push_notifications=True,
+        )
+        message_id = _normalize_text(message.get("id"))
+        if message_id:
+            _publish_chat_message_created(conversation_id=conversation_id, message_id=message_id)
+    except Exception:
+        logger = __import__("logging").getLogger(__name__)
+        logger.exception("Failed to send report format choice failure message")
+
+
+def _execute_report_format_choice(
+    *,
+    row: AppAiPendingAction,
+    payload: dict[str, Any],
+    current_user: Any,
+    payload_overrides: dict[str, Any] | None,
+) -> dict[str, Any]:
+    requester_user_id = int(getattr(row, "requester_user_id", 0) or 0)
+    current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+    if requester_user_id and requester_user_id != current_user_id:
+        raise PermissionError("Only the requester can choose the report format")
+    file_format = _normalize_report_format((payload_overrides or {}).get("format"))
+    spec = _report_file_spec_from_payload(payload, file_format)
+    uploads: list[UploadFile] = []
+    try:
+        uploads = build_generated_uploads([spec])
+        from backend.chat.service import chat_service
+
+        sender_user_id = _resolve_action_message_sender(row, fallback_user_id=current_user_id)
+        message = chat_service.send_files(
+            current_user_id=sender_user_id,
+            conversation_id=_normalize_text(row.conversation_id),
+            body=_normalize_text(payload.get("title")) or "Report",
+            uploads=uploads,
+            reply_to_message_id=_normalize_text(row.message_id) or None,
+            defer_push_notifications=True,
+        )
+        message_id = _normalize_text(message.get("id"))
+        if message_id:
+            _publish_chat_message_created(conversation_id=_normalize_text(row.conversation_id), message_id=message_id)
+        return {
+            "success": True,
+            "format": file_format,
+            "message_id": message_id or None,
+            "generated_files": [
+                {
+                    "attachment_id": _normalize_text(item.get("id")) or None,
+                    "file_name": _normalize_text(item.get("file_name")) or None,
+                    "size_bytes": _to_int(item.get("file_size")),
+                }
+                for item in list(message.get("attachments") or [])
+                if isinstance(item, dict)
+            ],
+        }
+    except Exception as exc:
+        _send_report_failure_to_chat(row=row, current_user=current_user, error_text=_normalize_text(exc))
+        raise
+    finally:
+        for upload in uploads:
+            try:
+                upload.file.close()
+            except Exception:
+                pass
+
+
 def _execute_consumable(*, action_type: str, payload: dict[str, Any], database_id: str, current_user: Any) -> dict[str, Any]:
     changed_by = _normalize_text(_user_attr(current_user, "username")) or "IT-WEB"
     if action_type == ACTION_CONSUMABLE_CONSUME:
@@ -968,6 +1251,13 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
                 row.payload_json = _json_dumps(payload)
                 row.preview_json = _json_dumps(_build_office_mail_preview_v2(action_type=row.action_type, payload=payload))
                 result = _execute_office_mail(action_type=row.action_type, payload=payload, current_user=current_user, row=row)
+            elif row.action_type == ACTION_REPORT_FORMAT_CHOICE:
+                result = _execute_report_format_choice(
+                    row=row,
+                    payload=payload,
+                    current_user=current_user,
+                    payload_overrides=payload_overrides,
+                )
             elif row.action_type == ACTION_OFFICE_TASK_CREATE:
                 result = _execute_office_task_create(payload=payload, current_user=current_user)
             elif row.action_type == ACTION_OFFICE_TASK_COMMENT:

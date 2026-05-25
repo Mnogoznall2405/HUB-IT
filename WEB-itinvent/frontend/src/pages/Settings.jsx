@@ -39,6 +39,7 @@ import {
   TextField,
   Typography,
   Checkbox,
+  Tooltip,
   useMediaQuery,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
@@ -63,7 +64,10 @@ import PhoneIphoneOutlinedIcon from '@mui/icons-material/PhoneIphoneOutlined';
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
 import NotificationsActiveOutlinedIcon from '@mui/icons-material/NotificationsActiveOutlined';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
+import CameraAltOutlinedIcon from '@mui/icons-material/CameraAltOutlined';
+import DeleteOutlinedIcon from '@mui/icons-material/DeleteOutlined';
 import CircularProgress from '@mui/material/CircularProgress';
+import { PresenceAvatar } from '../components/chat/ChatCommon';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { useNavigate } from 'react-router-dom';
@@ -214,6 +218,20 @@ const permissionGroups = [
     group: 'Интеграции',
     permissions: [
       { value: 'mail.access', label: 'Почта: доступ к Exchange' },
+    ],
+  },
+  {
+    group: 'Адресная книга',
+    permissions: [
+      { value: 'address_book.read', label: 'Адресная книга: просмотр' },
+    ],
+  },
+  {
+    group: 'Билеты',
+    permissions: [
+      { value: 'tickets.read', label: 'Билеты: просмотр' },
+      { value: 'tickets.write', label: 'Билеты: создание и изменения' },
+      { value: 'tickets.personal_data.read', label: 'Билеты: персональные данные' },
     ],
   },
   {
@@ -601,6 +619,103 @@ function SettingsTabPanel({ active, children }) {
   );
 }
 
+function AvatarUploadBlock({ user }) {
+  const { refreshSession } = useAuth();
+  const { notifyApiError, notifySuccess } = useNotification();
+  const fileInputRef = useRef(null);
+  const [uploading, setUploading] = useState(false);
+
+  const handleFileChange = useCallback(async (e) => {
+    const file = e.target.files?.[0];
+    if (!fileInputRef.current) return;
+    fileInputRef.current.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      notifyApiError(null, 'Можно загружать только изображения.', { source: 'avatar' });
+      return;
+    }
+    setUploading(true);
+    try {
+      await authAPI.uploadAvatar(file);
+      await refreshSession({ suppressAuthRequired: true });
+      notifySuccess('Фото профиля обновлено.', { source: 'avatar' });
+    } catch (err) {
+      notifyApiError(err, 'Не удалось загрузить фото.', { source: 'avatar' });
+    } finally {
+      setUploading(false);
+    }
+  }, [notifyApiError, notifySuccess, refreshSession]);
+
+  const handleDelete = useCallback(async () => {
+    setUploading(true);
+    try {
+      await authAPI.deleteAvatar();
+      await refreshSession({ suppressAuthRequired: true });
+      notifySuccess('Фото профиля удалено.', { source: 'avatar' });
+    } catch (err) {
+      notifyApiError(err, 'Не удалось удалить фото.', { source: 'avatar' });
+    } finally {
+      setUploading(false);
+    }
+  }, [notifyApiError, notifySuccess, refreshSession]);
+
+  return (
+    <Stack direction="row" spacing={2} alignItems="center">
+      <Box sx={{ position: 'relative', flexShrink: 0 }}>
+        <PresenceAvatar item={user} size={72} />
+        {uploading && (
+          <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '999px', bgcolor: 'rgba(0,0,0,0.35)' }}>
+            <CircularProgress size={24} sx={{ color: '#fff' }} />
+          </Box>
+        )}
+      </Box>
+      <Stack spacing={0.75}>
+        <Typography variant="body2" sx={{ fontWeight: 600 }}>
+          {user?.full_name || user?.username || '—'}
+        </Typography>
+        <Stack direction="row" spacing={1}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept="image/*"
+            style={{ display: 'none' }}
+            onChange={handleFileChange}
+          />
+          <Tooltip title="Загрузить фото (до 2 МБ)">
+            <span>
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<CameraAltOutlinedIcon />}
+                onClick={() => fileInputRef.current?.click()}
+                disabled={uploading}
+              >
+                {user?.avatar_url ? 'Изменить' : 'Загрузить фото'}
+              </Button>
+            </span>
+          </Tooltip>
+          {user?.avatar_url && (
+            <Tooltip title="Удалить фото">
+              <span>
+                <Button
+                  size="small"
+                  variant="outlined"
+                  color="error"
+                  startIcon={<DeleteOutlinedIcon />}
+                  onClick={handleDelete}
+                  disabled={uploading}
+                >
+                  Удалить
+                </Button>
+              </span>
+            </Tooltip>
+          )}
+        </Stack>
+      </Stack>
+    </Stack>
+  );
+}
+
 function ProfileTab({ user, dbOptions }) {
   const { notifyApiError, notifySuccess } = useNotification();
   const [mailboxes, setMailboxes] = useState([]);
@@ -739,7 +854,11 @@ function ProfileTab({ user, dbOptions }) {
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1, minHeight: 0 }}>
       <SectionCard title="Профиль" description="Основные сведения об учётной записи." contentSx={{ p: 1.5 }}>
-        <Grid container spacing={2}>
+        <Stack spacing={2}>
+          <AvatarUploadBlock user={user} />
+          <Divider />
+        </Stack>
+        <Grid container spacing={2} sx={{ mt: 0 }}>
           <Grid item xs={12} md={6}><ProfileField label="Логин" value={user?.username} /></Grid>
           <Grid item xs={12} md={6}><ProfileField label="Полное имя" value={user?.full_name} /></Grid>
           <Grid item xs={12} md={6}><ProfileField label="Email" value={user?.email} /></Grid>
@@ -1572,9 +1691,10 @@ function AppearanceTab({
               <FormControl fullWidth size="small">
                 <InputLabel>Шрифт</InputLabel>
                 <Select value={fontFamily} label="Шрифт" onChange={(event) => setFontFamily(event.target.value)}>
+                  <MenuItem value="Aptos">Aptos</MenuItem>
+                  <MenuItem value="Segoe UI">Segoe UI</MenuItem>
                   <MenuItem value="Inter">Inter</MenuItem>
                   <MenuItem value="Roboto">Roboto</MenuItem>
-                  <MenuItem value="Segoe UI">Segoe UI</MenuItem>
                 </Select>
               </FormControl>
             </Grid>
@@ -3725,6 +3845,7 @@ const AI_ITINVENT_DEFAULT_TOOLS = [
 const AI_ITINVENT_MULTI_DB_TOOL_ID = 'itinvent.equipment.search_multi_db';
 const AI_FILES_CREATE_TOOL_ID = 'ai.files.create';
 const AI_FILES_REPORT_TOOL_ID = 'ai.files.report';
+const AI_AD_PASSWORD_STATUS_TOOL_ID = 'ad.user.password_status';
 
 const AI_ITINVENT_TOOL_OPTIONS = [
   { id: 'itinvent.database.current', label: 'Текущая база' },
@@ -3744,6 +3865,15 @@ const AI_ITINVENT_TOOL_OPTIONS = [
   { id: 'itinvent.action.transfer_draft', label: 'Черновик передачи' },
   { id: 'itinvent.action.consumable_consume_draft', label: 'Черновик списания расходника' },
   { id: 'itinvent.action.consumable_qty_draft', label: 'Черновик остатка расходника' },
+  { id: 'itinvent.equipment.history', label: 'История изменений оборудования' },
+  { id: 'itinvent.equipment.acts', label: 'Акты по оборудованию' },
+  { id: 'itinvent.equipment.models_search', label: 'Поиск по моделям' },
+  { id: 'itinvent.directory.vendors', label: 'Справочник вендоров' },
+  { id: 'itinvent.directory.departments', label: 'Справочник отделов' },
+  { id: 'itinvent.action.status_change_draft', label: 'Черновик смены статуса' },
+  { id: 'itinvent.action.location_change_draft', label: 'Черновик смены локации' },
+  { id: 'itinvent.user.by_name', label: 'Поиск пользователя по имени' },
+  { id: 'itinvent.user.full_context', label: 'Полный IT-контекст пользователя' },
   { id: AI_ITINVENT_MULTI_DB_TOOL_ID, label: 'Мульти-БД поиск (admin)' },
 ];
 
@@ -3759,6 +3889,9 @@ const AI_OFFICE_TOOL_OPTIONS = [
   { id: 'office.tasks.search', label: 'Поиск задач' },
   { id: 'office.tasks.get', label: 'Открыть карточку задачи' },
   { id: 'office.workday.summary', label: 'Сводка рабочего дня' },
+  { id: 'office.tasks.projects', label: 'Проекты задач' },
+  { id: 'office.announcements.list', label: 'Список объявлений' },
+  { id: 'office.announcements.get', label: 'Открыть объявление' },
 ];
 
 const AI_OFFICE_ACTION_TOOL_OPTIONS = [
@@ -3769,9 +3902,40 @@ const AI_OFFICE_ACTION_TOOL_OPTIONS = [
   { id: 'office.action.task_status_draft', label: 'Черновик смены статуса задачи' },
 ];
 
+const AI_MFU_TOOL_OPTIONS = [
+  { id: 'mfu.devices.list', label: 'Список МФУ / принтеров' },
+  { id: 'mfu.device.status', label: 'Статус МФУ (SNMP/ping)' },
+  { id: 'mfu.pages.monthly', label: 'Страницы по месяцам' },
+];
+
+export const AI_NETWORK_TOOL_OPTIONS = [
+  { id: 'network.socket.search', label: 'Поиск розеток' },
+  { id: 'network.branch.overview', label: 'Обзор филиала (сети)' },
+  { id: 'network.ports.search', label: 'Поиск портов коммутатора' },
+  { id: 'network.host.ping', label: 'Ping хоста' },
+  { id: 'network.dns.lookup', label: 'DNS-запрос' },
+  { id: 'network.ssl.check', label: 'Проверка SSL-сертификата' },
+  { id: 'network.action.wol_draft', label: 'Wake-on-LAN' },
+  { id: 'network.host.info', label: 'Информация о хосте (WMI)' },
+];
+
+export const AI_AD_TOOL_OPTIONS = [
+  { id: AI_AD_PASSWORD_STATUS_TOOL_ID, label: 'Срок смены пароля AD' },
+  { id: 'ad.users.expiring_soon', label: 'Список истекающих паролей AD' },
+  { id: 'ad.mailbox.password_status', label: 'Пароль почтового ящика AD' },
+  { id: 'ad.mailboxes.expiring_soon', label: 'Истекающие пароли ящиков AD' },
+  { id: 'ad.user.lockout_status', label: 'Статус блокировки AD' },
+  { id: 'ad.action.unlock_draft', label: 'Разблокировка учётной записи AD' },
+  { id: 'ad.user.groups', label: 'Группы пользователя AD' },
+  { id: 'ad.user.logon_history', label: 'История входов AD' },
+];
+
 const AI_ITINVENT_TOOL_IDS = new Set(AI_ITINVENT_TOOL_OPTIONS.map((item) => item.id));
 const AI_FILE_TOOL_IDS = new Set(AI_FILE_TOOL_OPTIONS.map((item) => item.id));
 const AI_OFFICE_TOOL_IDS = new Set([...AI_OFFICE_TOOL_OPTIONS, ...AI_OFFICE_ACTION_TOOL_OPTIONS].map((item) => item.id));
+const AI_MFU_TOOL_IDS = new Set(AI_MFU_TOOL_OPTIONS.map((item) => item.id));
+const AI_NETWORK_TOOL_IDS = new Set(AI_NETWORK_TOOL_OPTIONS.map((item) => item.id));
+const AI_AD_TOOL_IDS = new Set(AI_AD_TOOL_OPTIONS.map((item) => item.id));
 
 const getAiBotEnabledTools = (value) => (
   Array.isArray(value?.enabled_tools) ? value.enabled_tools.map((item) => String(item).trim()).filter(Boolean) : []
@@ -3780,6 +3944,9 @@ const getAiBotEnabledTools = (value) => (
 const getAiBotItinventTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_ITINVENT_TOOL_IDS.has(item));
 const getAiBotFileTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_FILE_TOOL_IDS.has(item));
 const getAiBotOfficeTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_OFFICE_TOOL_IDS.has(item));
+const getAiBotMfuTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_MFU_TOOL_IDS.has(item));
+const getAiBotNetworkTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_NETWORK_TOOL_IDS.has(item));
+const getAiBotAdTools = (value) => getAiBotEnabledTools(value).filter((item) => AI_AD_TOOL_IDS.has(item));
 
 const isAiBotLiveDataEnabled = (value) => getAiBotItinventTools(value).length > 0;
 
@@ -3787,7 +3954,7 @@ const shouldWarnAiBotLiveDataDisabled = (value) => (
   Boolean(value?.is_enabled ?? true) && getAiBotEnabledTools(value).length === 0
 );
 
-const createAiBotDraft = (value = {}) => ({
+export const createAiBotDraft = (value = {}) => ({
   title: String(value?.title || '').trim(),
   slug: String(value?.slug || '').trim(),
   description: String(value?.description || '').trim(),
@@ -3805,6 +3972,8 @@ const createAiBotDraft = (value = {}) => ({
   allowed_databases: Array.isArray(value?.tool_settings?.allowed_databases)
     ? value.tool_settings.allowed_databases.map((item) => String(item).trim()).filter(Boolean)
     : [],
+  max_tool_rounds: Number(value?.tool_settings?.max_tool_rounds ?? 6),
+  max_tool_calls_per_round: Number(value?.tool_settings?.max_tool_calls_per_round ?? 3),
 });
 
 export function AiBotsAdminSection({
@@ -3884,6 +4053,7 @@ export function AiBotsAdminSection({
     const liveDataEnabled = isAiBotLiveDataEnabled(draft);
     const fileToolsEnabled = getAiBotFileTools(draft).length > 0;
     const officeToolsEnabled = getAiBotOfficeTools(draft).length > 0;
+    const adToolsEnabled = getAiBotAdTools(draft).length > 0;
     const liveDataWarning = shouldWarnAiBotLiveDataDisabled(draft);
     const allowedDatabases = Array.isArray(draft?.allowed_databases) ? draft.allowed_databases : [];
 
@@ -3955,6 +4125,66 @@ export function AiBotsAdminSection({
     };
 
     const toggleOfficeTool = (toolId, checked) => {
+      const normalizedToolId = String(toolId || '').trim();
+      if (!normalizedToolId) return;
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, normalizedToolId])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => item !== normalizedToolId));
+    };
+
+    const toggleAdTools = (checked) => {
+      const adIds = AI_AD_TOOL_OPTIONS.map((item) => item.id);
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...adIds])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_AD_TOOL_IDS.has(item)));
+    };
+
+    const toggleAdTool = (toolId, checked) => {
+      const normalizedToolId = String(toolId || '').trim();
+      if (!normalizedToolId) return;
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, normalizedToolId])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => item !== normalizedToolId));
+    };
+
+    const mfuToolsEnabled = getAiBotMfuTools(draft).length > 0;
+    const networkToolsEnabled = getAiBotNetworkTools(draft).length > 0;
+
+    const toggleMfuTools = (checked) => {
+      const mfuIds = AI_MFU_TOOL_OPTIONS.map((item) => item.id);
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...mfuIds])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_MFU_TOOL_IDS.has(item)));
+    };
+
+    const toggleMfuTool = (toolId, checked) => {
+      const normalizedToolId = String(toolId || '').trim();
+      if (!normalizedToolId) return;
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, normalizedToolId])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => item !== normalizedToolId));
+    };
+
+    const toggleNetworkTools = (checked) => {
+      const networkIds = AI_NETWORK_TOOL_OPTIONS.map((item) => item.id);
+      if (checked) {
+        onChange('enabled_tools', Array.from(new Set([...enabledTools, ...networkIds])));
+        return;
+      }
+      onChange('enabled_tools', enabledTools.filter((item) => !AI_NETWORK_TOOL_IDS.has(item)));
+    };
+
+    const toggleNetworkTool = (toolId, checked) => {
       const normalizedToolId = String(toolId || '').trim();
       if (!normalizedToolId) return;
       if (checked) {
@@ -4094,6 +4324,42 @@ export function AiBotsAdminSection({
             <Stack spacing={1.1}>
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
                 <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Active Directory</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Инструменты чтения AD для AI-чата: срок смены пароля, дата последнего pwdLastSet и остаток дней по политике.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={adToolsEnabled} onChange={(event) => toggleAdTools(event.target.checked)} />}
+                  label="AD инструменты"
+                />
+              </Stack>
+              <Collapse in={adToolsEnabled} unmountOnExit>
+                <Grid container spacing={0.5}>
+                  {AI_AD_TOOL_OPTIONS.map((tool) => (
+                    <Grid item xs={12} md={6} key={tool.id}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={enabledTools.includes(tool.id)}
+                            onChange={(event) => toggleAdTool(tool.id, event.target.checked)}
+                          />
+                        )}
+                        label={tool.label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
                   <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Создание файлов</Typography>
                   <Typography variant="caption" color="text.secondary">
                     Создание файлов и отчётов как обычных вложений в чат. Работает только при включённом параметре «Генерировать файлы».
@@ -4188,6 +4454,127 @@ export function AiBotsAdminSection({
                   </Box>
                 </Stack>
               </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>МФУ и принтеры</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Инструменты мониторинга МФУ/принтеров: список устройств, SNMP/ping статус, счётчик страниц.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={mfuToolsEnabled} onChange={(event) => toggleMfuTools(event.target.checked)} />}
+                  label="МФУ инструменты"
+                />
+              </Stack>
+              <Collapse in={mfuToolsEnabled} unmountOnExit>
+                <Grid container spacing={0.5}>
+                  {AI_MFU_TOOL_OPTIONS.map((tool) => (
+                    <Grid item xs={12} md={6} key={tool.id}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={enabledTools.includes(tool.id)}
+                            onChange={(event) => toggleMfuTool(tool.id, event.target.checked)}
+                          />
+                        )}
+                        label={tool.label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ xs: 'flex-start', md: 'center' }}>
+                <Box sx={{ minWidth: 0, flex: 1 }}>
+                  <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Сетевая инфраструктура</Typography>
+                  <Typography variant="caption" color="text.secondary">
+                    Инструменты для работы с патч-панелями, розетками и портами коммутаторов.
+                  </Typography>
+                </Box>
+                <FormControlLabel
+                  control={<Switch checked={networkToolsEnabled} onChange={(event) => toggleNetworkTools(event.target.checked)} />}
+                  label="Сетевые инструменты"
+                />
+              </Stack>
+              <Collapse in={networkToolsEnabled} unmountOnExit>
+                <Grid container spacing={0.5}>
+                  {AI_NETWORK_TOOL_OPTIONS.map((tool) => (
+                    <Grid item xs={12} md={6} key={tool.id}>
+                      <FormControlLabel
+                        control={(
+                          <Checkbox
+                            size="small"
+                            checked={enabledTools.includes(tool.id)}
+                            onChange={(event) => toggleNetworkTool(tool.id, event.target.checked)}
+                          />
+                        )}
+                        label={tool.label}
+                      />
+                    </Grid>
+                  ))}
+                </Grid>
+              </Collapse>
+            </Stack>
+          </Paper>
+        </Grid>
+        <Grid item xs={12}>
+          <Paper variant="outlined" sx={getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '12px' })}>
+            <Stack spacing={1.1}>
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>Лимиты инструментов</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Максимальное количество раундов и вызовов инструментов за один ответ бота.
+                </Typography>
+              </Box>
+              <Grid container spacing={2}>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="body2" sx={{ mb: 0.5 }}>
+                    Раундов инструментов: <strong>{draft.max_tool_rounds}</strong>
+                  </Typography>
+                  <Slider
+                    value={draft.max_tool_rounds}
+                    onChange={(event, value) => onChange('max_tool_rounds', value)}
+                    min={1}
+                    max={12}
+                    step={1}
+                    marks={[{ value: 1, label: '1' }, { value: 6, label: '6' }, { value: 12, label: '12' }]}
+                    valueLabelDisplay="auto"
+                    size="small"
+                  />
+                </Grid>
+                <Grid item xs={12} md={6}>
+                  <Typography variant="body2" sx={{ mb: 0.5 }}>
+                    Вызовов за раунд: <strong>{draft.max_tool_calls_per_round}</strong>
+                  </Typography>
+                  <Slider
+                    value={draft.max_tool_calls_per_round}
+                    onChange={(event, value) => onChange('max_tool_calls_per_round', value)}
+                    min={1}
+                    max={5}
+                    step={1}
+                    marks={[{ value: 1, label: '1' }, { value: 3, label: '3' }, { value: 5, label: '5' }]}
+                    valueLabelDisplay="auto"
+                    size="small"
+                  />
+                </Grid>
+              </Grid>
+              {draft.max_tool_rounds > 8 ? (
+                <Alert severity="warning" sx={{ mt: 0.5 }}>
+                  Значение больше 8 раундов может значительно увеличить время ответа и потребление токенов.
+                </Alert>
+              ) : null}
             </Stack>
           </Paper>
         </Grid>
@@ -4605,7 +4992,7 @@ function Settings() {
   const [tab, setTab] = useState('profile');
   const [blockingError, setBlockingError] = useState('');
   const [themeMode, setThemeMode] = useState(preferences.theme_mode || 'light');
-  const [fontFamily, setFontFamily] = useState(preferences.font_family || 'Inter');
+  const [fontFamily, setFontFamily] = useState(preferences.font_family || 'Aptos');
   const [fontScale, setFontScale] = useState(Number(preferences.font_scale || 1));
   const [savingPreferences, setSavingPreferences] = useState(false);
   const [databases, setDatabases] = useState([]);
@@ -4637,7 +5024,7 @@ function Settings() {
 
   useEffect(() => {
     setThemeMode(preferences.theme_mode || 'light');
-    setFontFamily(preferences.font_family || 'Inter');
+    setFontFamily(preferences.font_family || 'Aptos');
     setFontScale(Number(preferences.font_scale || 1));
   }, [preferences]);
 
@@ -5167,6 +5554,8 @@ function Settings() {
         tool_settings: {
           multi_db_mode: String(draft?.multi_db_mode || 'single').trim() || 'single',
           allowed_databases: Array.isArray(draft?.allowed_databases) ? draft.allowed_databases : [],
+          max_tool_rounds: Number(draft?.max_tool_rounds ?? 6),
+          max_tool_calls_per_round: Number(draft?.max_tool_calls_per_round ?? 3),
         },
       });
       await loadAiBotsAdmin();
@@ -5202,6 +5591,8 @@ function Settings() {
         tool_settings: {
           multi_db_mode: String(draft?.multi_db_mode || 'single').trim() || 'single',
           allowed_databases: Array.isArray(draft?.allowed_databases) ? draft.allowed_databases : [],
+          max_tool_rounds: Number(draft?.max_tool_rounds ?? 6),
+          max_tool_calls_per_round: Number(draft?.max_tool_calls_per_round ?? 3),
         },
       });
       await loadAiBotsAdmin();

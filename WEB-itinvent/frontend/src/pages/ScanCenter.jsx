@@ -444,7 +444,7 @@ function renderTaskSummary(task) {
 function ScanCenter() {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  const incidentWorkAreaHeight = 'calc(100dvh - var(--app-shell-header-offset) - 360px)';
+  const incidentWorkAreaHeight = 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 360px)';
   const { hasPermission } = useAuth();
   const canScanRead = hasPermission('scan.read');
   const canScanAck = hasPermission('scan.ack');
@@ -1533,7 +1533,7 @@ function ScanCenter() {
 
   return (
     <MainLayout>
-      <PageShell sx={{ width: '100%', pb: 2, minHeight: 'calc(100dvh - var(--app-shell-header-offset) - 32px)' }}>
+      <PageShell sx={{ width: '100%', pb: 2, minHeight: 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 32px)' }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 2, flexWrap: 'wrap' }}>
           <Box>
             <Typography variant="h5" sx={{ fontWeight: 700 }}>Центр сканирования</Typography>

@@ -2,6 +2,8 @@ import React, { useMemo } from 'react';
 import {
   Box,
   Button,
+  Card,
+  CardActionArea,
   IconButton,
   Paper,
   Stack,
@@ -14,6 +16,7 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import AddIcon from '@mui/icons-material/Add';
@@ -130,6 +133,7 @@ export default function SocketsTab({
   deletingSocketId,
 }) {
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const tableMinWidth = canEdit ? TOTAL_W : TOTAL_W - COL.actions.w;
   const visibleColumnCount = canEdit ? Object.keys(COL).length : Object.keys(COL).length - 1;
@@ -174,27 +178,37 @@ export default function SocketsTab({
 
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 400 }}>
-      <Paper elevation={0} sx={getOfficeActionTraySx(ui, { p: 1.2, mb: 1 })}>
-        <Stack direction="row" spacing={1} alignItems="center">
-          <Typography variant="subtitle2" sx={{ whiteSpace: 'nowrap', minWidth: 110 }}>
-            Розетки ({filteredSockets.length})
-          </Typography>
+      <Paper elevation={0} sx={getOfficeActionTraySx(ui, { p: isMobile ? 0.8 : 1.2, mb: 1 })}>
+        <Stack direction="row" spacing={0.8} alignItems="center">
+          {!isMobile && (
+            <Typography variant="subtitle2" sx={{ whiteSpace: 'nowrap', minWidth: 110 }}>
+              Розетки ({filteredSockets.length})
+            </Typography>
+          )}
           <TextField
             fullWidth
             size="small"
-            placeholder="Поиск: розетка / ASW / PORT / IP / MAC / ФИО"
+            placeholder={isMobile ? 'Поиск розеток...' : 'Поиск: розетка / ASW / PORT / IP / MAC / ФИО'}
             value={socketSearch}
             onChange={(event) => setSocketSearch(event.target.value)}
           />
           {canEdit ? (
-            <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={() => onCreateSocket?.()}>
-              Добавить
-            </Button>
+            isMobile ? (
+              <Tooltip title="Добавить розетку">
+                <IconButton size="small" color="primary" onClick={() => onCreateSocket?.()}>
+                  <AddIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            ) : (
+              <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={() => onCreateSocket?.()}>
+                Добавить
+              </Button>
+            )
           ) : null}
         </Stack>
       </Paper>
 
-      <Paper elevation={0} sx={getOfficePanelSx(ui, { flexGrow: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' })}>
+      <Paper elevation={0} sx={getOfficePanelSx(ui, isMobile ? {} : { flexGrow: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' })}>
         {filteredSockets.length === 0 ? (
           <Box sx={{ px: 2, py: 3 }}>
             <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 2, textAlign: 'center' }) }}>
@@ -202,6 +216,93 @@ export default function SocketsTab({
                 Розетки не найдены.
               </Typography>
             </Box>
+          </Box>
+        ) : isMobile ? (
+          <Box sx={{ px: 1, py: 0.5 }}>
+            <Stack spacing={0.8}>
+              {filteredSockets.map((socket) => {
+                const isDeleting = Number(deletingSocketId || 0) === Number(socket.id);
+                const ips = splitBySpace(socket.endpoint_ip_raw);
+                const macs = splitBySpace(socket.mac_address || socket.endpoint_mac_raw);
+                const fios = splitValues(socket.fio);
+                const hasData = ips.length > 0 || macs.length > 0 || fios.length > 0;
+
+                return (
+                  <Card
+                    key={socket.id}
+                    variant="outlined"
+                    sx={{
+                      borderColor: isDeleting ? 'error.main' : ui.borderSoft,
+                      bgcolor: ui.panelSolid,
+                      opacity: isDeleting ? 0.6 : 1,
+                      transition: 'opacity 0.15s',
+                    }}
+                  >
+                    <CardActionArea
+                      onClick={(event) => handleSocketRowClick(socket, event)}
+                      sx={{ p: 1.2 }}
+                    >
+                      <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
+                        <Box sx={{ flex: 1, minWidth: 0 }}>
+                          <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.3 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 700, color: 'primary.main', fontFamily: 'monospace', fontSize: '0.9rem' }}>
+                              {socket.socket_code || '—'}
+                            </Typography>
+                            {socket.device_code && (
+                              <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                                {socket.device_code}{socket.port_name ? ` · ${socket.port_name}` : ''}
+                              </Typography>
+                            )}
+                          </Stack>
+                          {socket.location_code && (
+                            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                              📍 {socket.location_code}{socket.vlan_raw ? ` · VLAN ${socket.vlan_raw}` : ''}
+                            </Typography>
+                          )}
+                          {hasData && (
+                            <Stack spacing={0} sx={{ mt: 0.4 }}>
+                              {ips.length > 0 && (
+                                <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
+                                  🌐 {ips.join(' · ')}
+                                </Typography>
+                              )}
+                              {macs.length > 0 && (
+                                <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', fontSize: '0.7rem' }}>
+                                  💻 {macs.join(' · ')}
+                                </Typography>
+                              )}
+                              {fios.length > 0 && (
+                                <Typography variant="caption" color="text.secondary">
+                                  👤 {fios.join(', ')}
+                                </Typography>
+                              )}
+                            </Stack>
+                          )}
+                        </Box>
+                        {canEdit && (
+                          <Tooltip title="Удалить розетку">
+                            <span>
+                              <IconButton
+                                size="small"
+                                color="error"
+                                disabled={isDeleting}
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  onDeleteSocket?.(socket, event);
+                                }}
+                                sx={{ mt: -0.5, flexShrink: 0, minWidth: 36, minHeight: 36 }}
+                              >
+                                <DeleteOutlineIcon sx={{ fontSize: 18 }} />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        )}
+                      </Stack>
+                    </CardActionArea>
+                  </Card>
+                );
+              })}
+            </Stack>
           </Box>
         ) : (
           <TableContainer

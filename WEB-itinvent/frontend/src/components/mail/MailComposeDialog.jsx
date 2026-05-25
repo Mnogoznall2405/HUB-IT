@@ -36,15 +36,89 @@ import MailRichTextEditor from './MailRichTextEditor';
 import { buildComposeMailPreviewHtml } from './mailOutgoingPreview';
 import { sanitizeMailHtmlFragment } from './mailHtmlContent';
 import { hasQuotedHistoryMarkup } from './mailQuotedHistory';
+import { isValidEmailRecipient, normalizeMailRecipient } from './mailComposeState';
+
+const EXTERNAL_RECIPIENT_OPTION_TYPE = 'external_recipient';
+
+const isExternalRecipientOption = (option) => (
+  option && typeof option === 'object' && option.type === EXTERNAL_RECIPIENT_OPTION_TYPE
+);
 
 const renderRecipientOptionLabel = (option) => {
   if (typeof option === 'string') return option;
-  return `${option.name} <${option.email}>`;
+  if (isExternalRecipientOption(option)) return option.label || `Использовать ${option.email}`;
+  if (option?.name && option?.email && option.name !== option.email) return `${option.name} <${option.email}>`;
+  return option?.email || option?.name || '';
 };
 
 const renderRecipientTagLabel = (option) => {
   if (typeof option === 'string') return option;
-  return option.name || option.email;
+  return option.email || option.name;
+};
+
+const normalizeRecipientValue = (option) => normalizeMailRecipient(
+  typeof option === 'string' ? option : option?.email || option?.name || '',
+);
+
+const appendRecipientValues = (currentValues = [], incomingValues = []) => {
+  const result = Array.isArray(currentValues) ? [...currentValues] : [];
+  const seen = new Set(
+    result
+      .map((item) => normalizeRecipientValue(item).toLowerCase())
+      .filter(Boolean),
+  );
+  incomingValues.forEach((item) => {
+    const normalized = normalizeRecipientValue(item);
+    if (!normalized) return;
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    result.push(normalized);
+  });
+  return result;
+};
+
+const splitRecipientInput = (value) => {
+  const text = String(value || '');
+  if (!/[;,\n]/.test(text)) {
+    return { completed: [], remainder: text };
+  }
+  const endsWithSeparator = /[;,\n]\s*$/.test(text);
+  const parts = text.split(/[;,\n]+/);
+  const remainder = endsWithSeparator ? '' : String(parts.pop() || '');
+  return {
+    completed: parts.map((item) => normalizeMailRecipient(item)).filter(Boolean),
+    remainder,
+  };
+};
+
+const buildRecipientAutocompleteOptions = ({ options = [], inputValue = '', selectedValues = [] } = {}) => {
+  const baseOptions = Array.isArray(options) ? options : [];
+  const candidate = normalizeMailRecipient(String(inputValue || '').replace(/[;,]+$/g, ''));
+  if (!isValidEmailRecipient(candidate)) return baseOptions;
+
+  const candidateKey = candidate.toLowerCase();
+  const selectedKeys = new Set(
+    (Array.isArray(selectedValues) ? selectedValues : [])
+      .map((item) => normalizeRecipientValue(item).toLowerCase())
+      .filter(Boolean),
+  );
+  const optionKeys = new Set(
+    baseOptions
+      .map((item) => normalizeRecipientValue(item).toLowerCase())
+      .filter(Boolean),
+  );
+  if (selectedKeys.has(candidateKey) || optionKeys.has(candidateKey)) return baseOptions;
+
+  return [
+    {
+      type: EXTERNAL_RECIPIENT_OPTION_TYPE,
+      email: candidate,
+      name: candidate,
+      label: `Использовать ${candidate}`,
+    },
+    ...baseOptions,
+  ];
 };
 
 const getDraftStatusLabel = (state) => {
@@ -119,8 +193,6 @@ function ComposerContent({
   composeSignatureHtml,
   composeDraftAttachments,
   composeFiles,
-  composeWarnings,
-  onDismissComposeWarning,
   onComposePasteFiles,
   onSendComposeShortcut,
   formatFileSize,
@@ -142,10 +214,12 @@ function ComposerContent({
   const attachmentInputRef = useRef(null);
   const photoInputRef = useRef(null);
   const initialEditorFocusHandledRef = useRef(false);
+  const committedRecipientValuesRef = useRef({ to: null, cc: null, bcc: null });
   const [showMeta, setShowMeta] = useState(false);
   const [showFormatting, setShowFormatting] = useState(false);
   const [editorFocused, setEditorFocused] = useState(false);
   const [quoteExpanded, setQuoteExpanded] = useState(false);
+  const [recipientInputs, setRecipientInputs] = useState({ to: '', cc: '', bcc: '' });
 
   const quotePresent = Boolean(quotedOriginalHtml || hasQuotedHistoryMarkup(composeBody));
   const quoteUsesFallback = !quotedOriginalHtml && quotePresent;
@@ -197,6 +271,7 @@ function ComposerContent({
   useEffect(() => {
     if (!open) {
       initialEditorFocusHandledRef.current = false;
+      committedRecipientValuesRef.current = { to: null, cc: null, bcc: null };
       setShowFormatting(false);
       setEditorFocused(false);
       setQuoteExpanded(false);
@@ -210,6 +285,18 @@ function ComposerContent({
   }, [open, composeSubject, composeCcValues.length, composeBccValues.length, composeMode, desktopInline]);
 
   useEffect(() => {
+    committedRecipientValuesRef.current.to = null;
+  }, [composeToValues]);
+
+  useEffect(() => {
+    committedRecipientValuesRef.current.cc = null;
+  }, [composeCcValues]);
+
+  useEffect(() => {
+    committedRecipientValuesRef.current.bcc = null;
+  }, [composeBccValues]);
+
+  useEffect(() => {
     if (!open || initialEditorFocusHandledRef.current) return undefined;
     const timeoutId = window.setTimeout(() => {
       quillRef.current?.focus?.();
@@ -220,6 +307,67 @@ function ComposerContent({
   }, [open]);
 
   const fieldSx = getMailTextFieldSx(tokens);
+
+  const setRecipientInput = (fieldKey, nextValue) => {
+    setRecipientInputs((current) => (
+      current[fieldKey] === nextValue
+        ? current
+        : { ...current, [fieldKey]: nextValue }
+    ));
+  };
+
+  const commitRecipientInput = ({
+    fieldKey,
+    value,
+    onChange,
+    draft,
+    commitInvalid = false,
+  }) => {
+    const baseValue = committedRecipientValuesRef.current[fieldKey] || (Array.isArray(value) ? value : []);
+    const candidate = normalizeMailRecipient(String(draft ?? recipientInputs[fieldKey] ?? '').replace(/[;,]+$/g, ''));
+    if (!candidate) {
+      setRecipientInput(fieldKey, '');
+      return baseValue;
+    }
+    if (!commitInvalid && !isValidEmailRecipient(candidate)) {
+      return baseValue;
+    }
+    const nextValue = appendRecipientValues(baseValue, [candidate]);
+    committedRecipientValuesRef.current[fieldKey] = nextValue;
+    onChange?.(nextValue);
+    setRecipientInput(fieldKey, '');
+    onComposeToSearchChange?.('');
+    return nextValue;
+  };
+
+  const commitAllRecipientInputs = ({ commitInvalid = true } = {}) => ({
+    composeToValues: commitRecipientInput({
+      fieldKey: 'to',
+      value: composeToValues,
+      onChange: onComposeToValuesChange,
+      commitInvalid,
+    }),
+    composeCcValues: commitRecipientInput({
+      fieldKey: 'cc',
+      value: composeCcValues,
+      onChange: onComposeCcValuesChange,
+      commitInvalid,
+    }),
+    composeBccValues: commitRecipientInput({
+      fieldKey: 'bcc',
+      value: composeBccValues,
+      onChange: onComposeBccValuesChange,
+      commitInvalid,
+    }),
+  });
+
+  const sendComposeWithFlushedRecipients = () => {
+    onSendCompose?.(commitAllRecipientInputs({ commitInvalid: true }));
+  };
+
+  const sendComposeShortcutWithFlushedRecipients = () => {
+    onSendComposeShortcut?.(commitAllRecipientInputs({ commitInvalid: true }));
+  };
 
   const inlineLabelSx = {
     width: { xs: 56, md: 72 },
@@ -257,19 +405,51 @@ function ComposerContent({
     onChange,
     errorKey,
     placeholder,
-  }) => (
-    <Autocomplete
+  }) => {
+    const inputValue = recipientInputs[errorKey] || '';
+    const recipientOptions = buildRecipientAutocompleteOptions({
+      options: composeToOptions,
+      inputValue,
+      selectedValues: value,
+    });
+
+    return (
+      <Autocomplete
       multiple
       freeSolo
       size="small"
       sx={recipientFieldSx}
-      options={composeToOptions}
+      options={recipientOptions}
       loading={composeToLoading}
       filterOptions={(options) => options}
       getOptionLabel={renderRecipientOptionLabel}
       value={value}
-      onChange={(event, newValue) => onChange?.(newValue)}
-      onInputChange={(event, newInputValue) => onComposeToSearchChange?.(newInputValue)}
+      inputValue={inputValue}
+      noOptionsText="Контакты не найдены"
+      onChange={(event, newValue) => {
+        committedRecipientValuesRef.current[errorKey] = null;
+        onChange?.(newValue);
+        setRecipientInput(errorKey, '');
+      }}
+      onInputChange={(event, newInputValue, reason) => {
+        if (reason === 'reset' || reason === 'clear') {
+          setRecipientInput(errorKey, '');
+          onComposeToSearchChange?.('');
+          return;
+        }
+        const { completed, remainder } = splitRecipientInput(newInputValue);
+        const completedValidRecipients = completed.filter((item) => isValidEmailRecipient(item));
+        if (completedValidRecipients.length > 0) {
+          const nextValue = appendRecipientValues(
+            committedRecipientValuesRef.current[errorKey] || value,
+            completedValidRecipients,
+          );
+          committedRecipientValuesRef.current[errorKey] = nextValue;
+          onChange?.(nextValue);
+        }
+        setRecipientInput(errorKey, remainder);
+        onComposeToSearchChange?.(remainder);
+      }}
       renderTags={(items, getTagProps) => (
         items.map((option, index) => (
           <Chip
@@ -293,10 +473,24 @@ function ComposerContent({
               px: 0.3,
             },
           }}
+          inputProps={{
+            ...params.inputProps,
+            onBlur: (event) => {
+              params.inputProps?.onBlur?.(event);
+              commitRecipientInput({
+                fieldKey: errorKey,
+                value,
+                onChange,
+                draft: event.target.value,
+                commitInvalid: false,
+              });
+            },
+          }}
         />
       )}
-    />
-  );
+      />
+    );
+  };
 
   const renderInlineFieldRow = ({ label, children, noBorder = false, align = 'center' }) => (
     <Stack
@@ -338,7 +532,7 @@ function ComposerContent({
       onKeyDown={(event) => {
         if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') {
           event.preventDefault();
-          onSendComposeShortcut?.();
+          sendComposeShortcutWithFlushedRecipients();
         }
       }}
     >
@@ -360,7 +554,7 @@ function ComposerContent({
               data-testid="mail-compose-send-action"
               variant="contained"
               startIcon={<SendRoundedIcon fontSize="small" />}
-              onClick={onSendCompose}
+              onClick={sendComposeWithFlushedRecipients}
               disabled={composeSending}
               sx={{ textTransform: 'none', fontWeight: 700 }}
             >
@@ -424,7 +618,7 @@ function ComposerContent({
           <IconButton
             data-testid="mail-compose-send-action"
             aria-label="Отправить"
-            onClick={onSendCompose}
+            onClick={sendComposeWithFlushedRecipients}
             disabled={composeSending}
             sx={{
               width: 40,
@@ -472,17 +666,6 @@ function ComposerContent({
               {composeError}
             </Alert>
           ) : null}
-
-          {(Array.isArray(composeWarnings) ? composeWarnings : []).map((warning) => (
-            <Alert
-              key={warning.id || warning.message}
-              severity={warning.severity || 'warning'}
-              onClose={warning.dismissible === false ? undefined : () => onDismissComposeWarning?.(warning.id)}
-              sx={{ borderRadius: '10px' }}
-            >
-              {warning.message}
-            </Alert>
-          ))}
 
           {desktopInline ? (
             <Box

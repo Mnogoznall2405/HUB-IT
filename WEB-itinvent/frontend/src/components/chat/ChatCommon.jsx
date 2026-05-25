@@ -1,7 +1,9 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Box } from '@mui/material';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Box, CircularProgress } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
+import PauseRoundedIcon from '@mui/icons-material/PauseRounded';
+import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 
 import {
@@ -31,6 +33,7 @@ const FILE_EXTENSION_COLORS = {
 
 const IMAGE_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 const VIDEO_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v']);
+const AUDIO_EXTENSIONS = new Set(['ogg', 'webm', 'mp3', 'wav', 'aac', 'm4a', 'opus', 'flac']);
 const EMPTY_URL_LIST = [];
 
 const clampFileName = (value, maxLength = 28) => {
@@ -50,6 +53,7 @@ const resolveAttachmentKind = ({ fileName, fileType, mimeType }) => {
   const normalizedMimeType = String(mimeType || '').trim().toLowerCase();
   const normalizedFileType = String(fileType || '').trim().toLowerCase();
   if (normalizedMimeType.startsWith('image/') || IMAGE_EXTENSIONS.has(normalizedExtension) || normalizedFileType === 'image') return 'image';
+  if (normalizedMimeType.startsWith('audio/') || normalizedFileType === 'audio') return 'audio';
   if (normalizedMimeType.startsWith('video/') || VIDEO_EXTENSIONS.has(normalizedExtension) || normalizedFileType === 'video') return 'video';
   return 'file';
 };
@@ -62,6 +66,7 @@ const getDisplayExtension = (fileName, mimeType) => {
   const normalizedMimeType = String(mimeType || '').trim().toLowerCase();
   if (normalizedMimeType.startsWith('image/')) return 'IMG';
   if (normalizedMimeType.startsWith('video/')) return 'VID';
+  if (normalizedMimeType.startsWith('audio/')) return 'AUD';
   return 'FILE';
 };
 
@@ -101,6 +106,14 @@ const compactUrlList = (...items) => {
 export function PresenceAvatar({ item, online = false, size = 48, sx = {} }) {
   const label = avatarLabel(item);
   const theme = useTheme();
+  const avatarUrl = item?.avatar_url || null;
+  const [imgFailed, setImgFailed] = useState(false);
+
+  const handleImgError = useCallback(() => setImgFailed(true), []);
+
+  useEffect(() => { setImgFailed(false); }, [avatarUrl]);
+
+  const showPhoto = Boolean(avatarUrl && !imgFailed);
 
   return (
     <Box
@@ -108,6 +121,8 @@ export function PresenceAvatar({ item, online = false, size = 48, sx = {} }) {
         position: 'relative',
         width: size,
         height: size,
+        minWidth: size,
+        minHeight: size,
         flexShrink: 0,
         ...sx,
       }}
@@ -120,6 +135,7 @@ export function PresenceAvatar({ item, online = false, size = 48, sx = {} }) {
           width: '100%',
           height: '100%',
           borderRadius: '999px',
+          overflow: 'hidden',
           fontSize: '0.875rem',
           fontWeight: 700,
           letterSpacing: '-0.02em',
@@ -130,7 +146,14 @@ export function PresenceAvatar({ item, online = false, size = 48, sx = {} }) {
             : 'inset 0 1px 0 rgba(255,255,255,0.72)',
         })}
       >
-        {label}
+        {showPhoto ? (
+          <img
+            src={avatarUrl}
+            alt={label}
+            onError={handleImgError}
+            style={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
+          />
+        ) : label}
       </Box>
       {online ? (
         <span
@@ -226,6 +249,199 @@ export function TaskShareCard({ task, navigate, ui, theme }) {
   );
 }
 
+const VOICE_WAVEFORM_BARS = 32;
+const VOICE_FONT_FAMILY = '"SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif';
+
+function formatAudioDuration(seconds) {
+  const s = Math.max(0, Math.floor(Number(seconds || 0)));
+  const m = Math.floor(s / 60);
+  const sec = s % 60;
+  return `${m}:${sec < 10 ? '0' : ''}${sec}`;
+}
+
+function VoiceMessagePlayer({ fileUrl, fileName, fileSize, durationSeconds, theme, ui, isOwn }) {
+  const audioRef = useRef(null);
+  const durationResolvedRef = useRef(false);
+  const maxSeenTimeRef = useRef(0);
+  const [playing, setPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(() => {
+    const d = Number(durationSeconds || 0);
+    return Number.isFinite(d) && d > 0 ? d : 0;
+  });
+  const [waveform] = useState(() => Array.from({ length: VOICE_WAVEFORM_BARS }, () => 0.18 + Math.random() * 0.82));
+
+  const tryResolveDuration = useCallback((audio) => {
+    if (durationResolvedRef.current) return;
+    if (!audio) return;
+    const d = audio.duration;
+    if (d && Number.isFinite(d) && d > 0 && d < 86400) {
+      durationResolvedRef.current = true;
+      setDuration(d);
+    }
+  }, []);
+
+  const probeDuration = useCallback((audio) => {
+    if (durationResolvedRef.current) return;
+    if (!audio) return;
+    const d = audio.duration;
+    if (!d || !Number.isFinite(d) || d <= 0) {
+      const onSeeked = () => {
+        audio.removeEventListener('seeked', onSeeked);
+        const realDuration = audio.currentTime;
+        if (realDuration > 0 && Number.isFinite(realDuration)) {
+          durationResolvedRef.current = true;
+          setDuration(realDuration);
+          maxSeenTimeRef.current = realDuration;
+        }
+        audio.currentTime = 0;
+      };
+      audio.addEventListener('seeked', onSeeked);
+      audio.currentTime = 1e7;
+    }
+  }, []);
+
+  const accentColor = isOwn
+    ? (ui.bubbleOwnText || '#fff')
+    : (ui.accentText || theme.palette.primary.main);
+  const trackBg = isOwn
+    ? alpha(ui.bubbleOwnText || '#fff', 0.2)
+    : alpha(ui.accentText || theme.palette.primary.main, 0.18);
+  const textColor = isOwn
+    ? alpha(ui.bubbleOwnText || '#fff', 0.7)
+    : (ui.textSecondary || theme.palette.text.secondary);
+
+  const effectiveDuration = duration > 0 ? duration : maxSeenTimeRef.current > 0 ? maxSeenTimeRef.current * 1.15 : 0;
+  const progress = effectiveDuration > 0 ? Math.min(1, currentTime / effectiveDuration) : 0;
+
+  const togglePlay = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return;
+    if (playing) {
+      audio.pause();
+    } else {
+      audio.play().catch(() => {});
+    }
+  }, [playing]);
+
+  const handleSeek = useCallback((event) => {
+    const audio = audioRef.current;
+    if (!audio || !duration || !Number.isFinite(duration)) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = (event.clientX || event.touches?.[0]?.clientX || 0) - rect.left;
+    const ratio = Math.max(0, Math.min(1, x / rect.width));
+    audio.currentTime = ratio * duration;
+    setCurrentTime(audio.currentTime);
+  }, [duration]);
+
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: 0, width: '100%', minWidth: 220 }}>
+      <audio
+        ref={audioRef}
+        src={fileUrl}
+        preload="metadata"
+        onLoadedMetadata={(e) => {
+          tryResolveDuration(e.currentTarget);
+          probeDuration(e.currentTarget);
+        }}
+        onDurationChange={(e) => tryResolveDuration(e.currentTarget)}
+        onTimeUpdate={(e) => {
+          const audio = e.currentTarget;
+          setCurrentTime(audio.currentTime);
+          tryResolveDuration(audio);
+          if (audio.currentTime > maxSeenTimeRef.current) {
+            maxSeenTimeRef.current = audio.currentTime;
+          }
+        }}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={(e) => {
+          setPlaying(false);
+          if (!durationResolvedRef.current && e.currentTarget.currentTime > 0) {
+            durationResolvedRef.current = true;
+            setDuration(e.currentTarget.currentTime);
+          }
+          setCurrentTime(0);
+        }}
+      />
+      <button
+        type="button"
+        onClick={togglePlay}
+        aria-label={playing ? 'Пауза' : 'Воспроизвести'}
+        style={{
+          width: 40,
+          height: 40,
+          flexShrink: 0,
+          borderRadius: '50%',
+          border: 'none',
+          cursor: 'pointer',
+          backgroundColor: accentColor,
+          color: isOwn ? (ui.bubbleOwnBg || theme.palette.primary.main) : '#fff',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          padding: 0,
+        }}
+      >
+        {playing
+          ? <PauseRoundedIcon sx={{ fontSize: 20 }} />
+          : <PlayArrowRoundedIcon sx={{ fontSize: 20 }} />}
+      </button>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          role="slider"
+          tabIndex={0}
+          aria-label="Прогресс воспроизведения"
+          aria-valuenow={Math.round(currentTime)}
+          aria-valuemin={0}
+          aria-valuemax={Math.round(duration)}
+          onClick={handleSeek}
+          onTouchStart={handleSeek}
+          style={{
+            display: 'flex',
+            alignItems: 'flex-end',
+            gap: 2,
+            height: 24,
+            cursor: 'pointer',
+            userSelect: 'none',
+          }}
+        >
+          {waveform.map((h, i) => {
+            const barProgress = progress * VOICE_WAVEFORM_BARS;
+            const filled = i < barProgress;
+            return (
+              <div
+                key={i}
+                style={{
+                  flex: 1,
+                  height: `${Math.round(h * 100)}%`,
+                  minHeight: 2,
+                  borderRadius: 1,
+                  backgroundColor: filled ? accentColor : trackBg,
+                  transition: 'background-color 80ms ease',
+                }}
+              />
+            );
+          })}
+        </div>
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          marginTop: 3,
+          fontFamily: VOICE_FONT_FAMILY,
+          fontSize: 11,
+          fontVariantNumeric: 'tabular-nums',
+          color: textColor,
+          lineHeight: 1,
+          userSelect: 'none',
+        }}>
+          <span>{formatAudioDuration(playing || currentTime > 0 ? currentTime : duration)}</span>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function FileAttachment({
   fileName,
   fileSize,
@@ -237,6 +453,7 @@ export function FileAttachment({
   theme,
   ui,
   isOwn = false,
+  isSending = false,
   onOpenPreview,
   previewWidth,
   previewHeight,
@@ -355,6 +572,7 @@ export function FileAttachment({
       >
         <div
           style={{
+            position: 'relative',
             width: '100%',
             aspectRatio,
             maxHeight: hasNumericMediaMaxHeight ? `${mediaMaxHeight}px` : mediaMaxHeight,
@@ -365,6 +583,21 @@ export function FileAttachment({
           }}
         >
           {content}
+          {isSending ? (
+            <div
+              style={{
+                position: 'absolute',
+                inset: 0,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                backgroundColor: 'rgba(0,0,0,0.35)',
+                pointerEvents: 'none',
+              }}
+            >
+              <CircularProgress size={44} thickness={3} sx={{ color: '#fff' }} />
+            </div>
+          ) : null}
         </div>
       </button>
     ) : (
@@ -465,23 +698,25 @@ export function FileAttachment({
               pointerEvents: 'none',
             }}
           >
-            <div
-              style={{
-                width: 54,
-                height: 54,
-                borderRadius: '999px',
-                backgroundColor: 'rgba(15,23,42,0.58)',
-                boxShadow: '0 10px 26px rgba(2,6,23,0.32)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#fff',
-                fontSize: 24,
-                paddingLeft: 3,
-              }}
-            >
-              в–¶
-            </div>
+            {isSending ? (
+              <CircularProgress size={44} thickness={3} sx={{ color: '#fff' }} />
+            ) : (
+              <div
+                style={{
+                  width: 54,
+                  height: 54,
+                  borderRadius: '999px',
+                  backgroundColor: 'rgba(15,23,42,0.58)',
+                  boxShadow: '0 10px 26px rgba(2,6,23,0.32)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#fff',
+                }}
+              >
+                <PlayArrowRoundedIcon sx={{ fontSize: 30 }} />
+              </div>
+            )}
           </div>
           {resolvedDuration ? (
             <div
@@ -572,23 +807,25 @@ export function FileAttachment({
               pointerEvents: 'none',
             }}
           >
-            <div
-              style={{
-                width: 54,
-                height: 54,
-                borderRadius: '999px',
-                backgroundColor: 'rgba(15,23,42,0.58)',
-                boxShadow: '0 10px 26px rgba(2,6,23,0.32)',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                color: '#fff',
-                fontSize: 24,
-                paddingLeft: 3,
-              }}
-            >
-              ▶
-            </div>
+            {isSending ? (
+              <CircularProgress size={44} thickness={3} sx={{ color: '#fff' }} />
+            ) : (
+              <div
+                style={{
+                  width: 54,
+                  height: 54,
+                  borderRadius: '999px',
+                  backgroundColor: 'rgba(15,23,42,0.58)',
+                  boxShadow: '0 10px 26px rgba(2,6,23,0.32)',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  color: '#fff',
+                }}
+              >
+                <PlayArrowRoundedIcon sx={{ fontSize: 30 }} />
+              </div>
+            )}
           </div>
           {resolvedDuration ? (
             <div
@@ -610,6 +847,20 @@ export function FileAttachment({
           ) : null}
         </div>
       </a>
+    );
+  }
+
+  if (attachmentKind === 'audio') {
+    return (
+      <VoiceMessagePlayer
+        fileUrl={fileUrl || resolvedOpenUrl}
+        fileName={fileName}
+        fileSize={fileSize}
+        durationSeconds={durationSeconds}
+        theme={theme}
+        ui={ui}
+        isOwn={isOwn}
+      />
     );
   }
 
@@ -713,7 +964,7 @@ export function FileAttachment({
   );
 }
 
-export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview, isOwn = false }) {
+export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview, isOwn = false, isSending = false }) {
   const normalizedMessageId = String(messageId || '').trim();
   const attachmentId = String(attachment?.id || '').trim();
   const canBuildAttachmentUrl = Boolean(normalizedMessageId && attachmentId);
@@ -754,6 +1005,7 @@ export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview
       theme={theme}
       ui={ui}
       isOwn={isOwn}
+      isSending={isSending}
       onOpenPreview={previewable && typeof onOpenPreview === 'function'
         ? () => onOpenPreview(messageId, attachment)
         : undefined}

@@ -13,7 +13,7 @@ import { createTheme, responsiveFontSizes } from '@mui/material/styles';
  * - Success: Green (#2e7d32) - success states
  *
  * Typography:
- * - Font: Inter (system font stack)
+ * - Font: Aptos (system font stack)
  * - Scale: 12/14/16/20/24px (mobile adjusted)
  *
  * Spacing:
@@ -80,51 +80,50 @@ const theme = createTheme({
     fontFamily: [
       '-apple-system',
       'BlinkMacSystemFont',
+      'Aptos',
       '"Segoe UI"',
-      'Roboto',
-      '"Helvetica Neue"',
       'Arial',
       'sans-serif',
     ].join(','),
     fontSize: 14, // Base font size
     h1: {
       fontSize: '2rem',
-      fontWeight: 600,
+      fontWeight: 500,
       '@media (min-width:600px)': {
         fontSize: '2.5rem',
       },
     },
     h2: {
       fontSize: '1.5rem',
-      fontWeight: 600,
+      fontWeight: 500,
       '@media (min-width:600px)': {
         fontSize: '2rem',
       },
     },
     h3: {
       fontSize: '1.25rem',
-      fontWeight: 600,
+      fontWeight: 500,
       '@media (min-width:600px)': {
         fontSize: '1.75rem',
       },
     },
     h4: {
       fontSize: '1.125rem',
-      fontWeight: 600,
+      fontWeight: 500,
       '@media (min-width:600px)': {
         fontSize: '1.5rem',
       },
     },
     h5: {
       fontSize: '1rem',
-      fontWeight: 600,
+      fontWeight: 500,
       '@media (min-width:600px)': {
         fontSize: '1.25rem',
       },
     },
     h6: {
       fontSize: '0.875rem',
-      fontWeight: 600,
+      fontWeight: 500,
       '@media (min-width:600px)': {
         fontSize: '1rem',
       },
@@ -249,7 +248,7 @@ const theme = createTheme({
           borderBottomColor: 'rgba(0,0,0,0.06)',
         },
         head: {
-          fontWeight: 600,
+          fontWeight: 500,
           color: 'rgba(0,0,0,0.6)',
         },
       },

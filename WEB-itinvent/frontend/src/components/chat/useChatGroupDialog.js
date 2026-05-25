@@ -6,6 +6,11 @@ import { sortByName } from './chatHelpers';
 
 const DEFAULT_SEARCH_DEBOUNCE_MS = 250;
 
+// Module-level cache: показываем мгновенно при повторном открытии
+let _cachedUsers = null;
+let _cacheTs = 0;
+const CACHE_TTL_MS = 5 * 60 * 1000; // 5 минут
+
 const normalizeGroupMemberIds = (values) => (
   [...new Set(
     (Array.isArray(values) ? values : [])
@@ -43,10 +48,31 @@ export default function useChatGroupDialog({
 
   const loadGroupUsers = useCallback(async (query = '') => {
     if (!CHAT_FEATURE_ENABLED) return;
+    const isEmptyQuery = !String(query || '').trim();
+    // Показываем кеш мгновенно для пустого запроса
+    if (isEmptyQuery && _cachedUsers && (Date.now() - _cacheTs) < CACHE_TTL_MS) {
+      setGroupUsers(_cachedUsers);
+      setGroupUsersLoading(false);
+      // Обновляем в фоне без спиннера
+      chatAPI.getUsers({ q: '', limit: 200 })
+        .then((data) => {
+          const sorted = sortByName(Array.isArray(data?.items) ? data.items : []);
+          _cachedUsers = sorted;
+          _cacheTs = Date.now();
+          setGroupUsers(sorted);
+        })
+        .catch(() => {});
+      return;
+    }
     setGroupUsersLoading(true);
     try {
-      const data = await chatAPI.getUsers({ q: query, limit: 100 });
-      setGroupUsers(sortByName(Array.isArray(data?.items) ? data.items : []));
+      const data = await chatAPI.getUsers({ q: query, limit: 200 });
+      const sorted = sortByName(Array.isArray(data?.items) ? data.items : []);
+      if (isEmptyQuery) {
+        _cachedUsers = sorted;
+        _cacheTs = Date.now();
+      }
+      setGroupUsers(sorted);
     } catch (error) {
       setGroupUsers([]);
       notifyApiError(error, 'Не удалось загрузить пользователей для группового чата.');
@@ -113,19 +139,34 @@ export default function useChatGroupDialog({
 
   const openGroupDialog = useCallback(() => {
     void loadChatDialogsModule();
-    resetGroupDialogState();
+    setGroupTitle('');
+    setGroupSearch('');
+    setGroupSelectedUsers([]);
+    setGroupMemberIds([]);
+    if (_cachedUsers && (Date.now() - _cacheTs) < CACHE_TTL_MS) {
+      setGroupUsers(_cachedUsers);
+    } else {
+      setGroupUsers([]);
+    }
     skipNextGroupSearchRef.current = true;
     setGroupOpen(true);
     void loadGroupUsers('');
-  }, [loadChatDialogsModule, loadGroupUsers, resetGroupDialogState]);
+  }, [loadChatDialogsModule, loadGroupUsers]);
 
-  const createGroup = useCallback(async () => {
+  const createGroup = useCallback(async (avatarFile = null) => {
     const title = String(groupTitle || '').trim();
     const memberIds = normalizeGroupMemberIds(groupMemberIds);
     if (!title || memberIds.length < 2) return;
     setCreatingConversation(true);
     try {
       const created = await chatAPI.createGroupConversation({ title, member_user_ids: memberIds });
+      if (avatarFile && created?.id) {
+        try {
+          await chatAPI.uploadGroupAvatar(created.id, avatarFile);
+        } catch {
+          // avatar upload failure is non-critical
+        }
+      }
       setGroupOpen(false);
       resetGroupDialogState();
       const loadConversations = loadConversationsRef?.current;

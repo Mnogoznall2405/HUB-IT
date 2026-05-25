@@ -15,6 +15,7 @@ const renderSelectionBar = (props = {}) => {
   const ui = buildOfficeUiTokens(theme);
   const handlers = {
     onClearSelection: vi.fn(),
+    onOpenLocationTransfer: vi.fn(),
     onOpenTransfer: vi.fn(),
     onOpenTransferAct: vi.fn(),
     onOpenCartridge: vi.fn(),
@@ -65,12 +66,16 @@ describe('DatabaseSelectionBar', () => {
     expect(handlers.onClearSelection).toHaveBeenCalledTimes(1);
   });
 
-  it('calls transfer handler', () => {
+  it('calls the three transfer-related handlers', () => {
     const { handlers } = renderSelectionBar();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Переместить' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Перемещение' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Перемещение с актом' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Акт без перемещения' }));
 
+    expect(handlers.onOpenLocationTransfer).toHaveBeenCalledTimes(1);
     expect(handlers.onOpenTransfer).toHaveBeenCalledTimes(1);
+    expect(handlers.onOpenTransferAct).toHaveBeenCalledTimes(1);
   });
 
   it('disables cartridge, battery, and component actions by capabilities', () => {

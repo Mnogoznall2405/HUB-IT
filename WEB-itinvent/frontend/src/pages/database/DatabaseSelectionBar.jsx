@@ -1,5 +1,5 @@
 import { memo } from 'react';
-import { Button, IconButton, Paper, Typography } from '@mui/material';
+import { Button, IconButton, Paper, Tooltip, Typography } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
 
 import { getOfficeQuietActionSx } from '../../theme/officeUiTokens';
@@ -25,6 +25,7 @@ function DatabaseSelectionBar({
   selectedHiddenCount = 0,
   selectedItemsCapabilities = defaultCapabilities,
   onClearSelection = noop,
+  onOpenLocationTransfer = noop,
   onOpenTransfer = noop,
   onOpenTransferAct = noop,
   onOpenCartridge = noop,
@@ -73,24 +74,39 @@ function DatabaseSelectionBar({
           {`В фильтре видно: ${selectedVisibleCount}, скрыто: ${selectedHiddenCount}`}
         </Typography>
       ) : null}
-      <Button
-        size="small"
-        variant="outlined"
-        color="primary"
-        sx={getOfficeQuietActionSx(ui, theme, 'primary')}
-        onClick={onOpenTransfer}
-      >
-        Переместить
-      </Button>
-      <Button
-        size="small"
-        variant="outlined"
-        color="primary"
-        sx={getOfficeQuietActionSx(ui, theme, 'primary')}
-        onClick={onOpenTransferAct}
-      >
-        Акт
-      </Button>
+      <Tooltip title="Меняет только филиал и локацию в базе. Сотрудник и акты не меняются." arrow describeChild>
+        <Button
+          size="small"
+          variant="outlined"
+          color="primary"
+          sx={getOfficeQuietActionSx(ui, theme, 'primary')}
+          onClick={onOpenLocationTransfer}
+        >
+          Перемещение
+        </Button>
+      </Tooltip>
+      <Tooltip title="Меняет сотрудника/филиал/локацию, создаёт акт и напоминание на загрузку подписанного акта." arrow describeChild>
+        <Button
+          size="small"
+          variant="outlined"
+          color="primary"
+          sx={getOfficeQuietActionSx(ui, theme, 'primary')}
+          onClick={onOpenTransfer}
+        >
+          Перемещение с актом
+        </Button>
+      </Tooltip>
+      <Tooltip title="Создаёт акт по выбранной технике без изменения данных в базе." arrow describeChild>
+        <Button
+          size="small"
+          variant="outlined"
+          color="primary"
+          sx={getOfficeQuietActionSx(ui, theme, 'primary')}
+          onClick={onOpenTransferAct}
+        >
+          Акт без перемещения
+        </Button>
+      </Tooltip>
       <Button
         size="small"
         variant="outlined"

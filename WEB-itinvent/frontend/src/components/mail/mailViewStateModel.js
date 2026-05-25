@@ -3,8 +3,27 @@ export const MAIL_LIST_VIEW_STATE_STORAGE_KEY = 'mail_list_view_state_v1';
 
 export const normalizeMailViewMode = (value) => (value === 'conversations' ? 'conversations' : 'messages');
 
+const STANDARD_FOLDER_ALIASES = new Set([
+  'inbox',
+  'sent',
+  'sentitems',
+  'drafts',
+  'trash',
+  'deleted',
+  'junk',
+  'spam',
+  'archive',
+]);
+
+export const normalizeMailFolder = (value) => {
+  const normalized = String(value || 'inbox').trim();
+  if (!normalized) return 'inbox';
+  const lower = normalized.toLowerCase();
+  return STANDARD_FOLDER_ALIASES.has(lower) ? lower : normalized;
+};
+
 export const normalizeMailViewState = (value = {}, { defaultAdvancedFilters = {} } = {}) => ({
-  folder: String(value?.folder || 'inbox').trim().toLowerCase() || 'inbox',
+  folder: normalizeMailFolder(value?.folder),
   viewMode: normalizeMailViewMode(value?.viewMode),
   search: String(value?.search || ''),
   unreadOnly: Boolean(value?.unreadOnly),
@@ -27,7 +46,7 @@ export const buildMailViewStateStorageKey = (mailboxId = '') => (
 
 export const buildMailRoute = ({ folder = 'inbox', messageId = '', mailboxId = '' } = {}) => {
   const params = new URLSearchParams();
-  params.set('folder', String(folder || 'inbox').trim().toLowerCase() || 'inbox');
+  params.set('folder', normalizeMailFolder(folder));
   const normalizedMessageId = String(messageId || '').trim();
   const normalizedMailboxId = normalizeMailboxId(mailboxId);
   if (normalizedMessageId) params.set('message', normalizedMessageId);

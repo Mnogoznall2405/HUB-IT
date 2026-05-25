@@ -124,6 +124,25 @@ describe('mailListModel cache keys', () => {
       advancedFilters: { folder_scope: 'current' },
     }).usesBootstrapList).toBe(false);
   });
+
+  it('preserves case-sensitive custom folder ids in list requests and cache keys', () => {
+    const customFolderId = 'bWFpbGJveDo6QWJjREVfMTIz';
+    const context = buildMailListRequestContext({
+      scope: 'user-1',
+      folder: ` ${customFolderId} `,
+      viewMode: 'messages',
+    });
+
+    expect(context.folder).toBe(customFolderId);
+    expect(context.params.folder).toBe(customFolderId);
+    expect(context.cacheKey[4]).toBe(customFolderId);
+    expect(buildMailConversationDetailCacheKey({
+      scope: 'user-1',
+      conversationId: 'c1',
+      folder: ` ${customFolderId} `,
+      folderScope: '',
+    })).toEqual(['mail', 'user-1', 'conversation-detail', 'c1', customFolderId, 'current']);
+  });
 });
 
 describe('normalizeMailListResponse', () => {

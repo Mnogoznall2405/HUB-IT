@@ -67,6 +67,7 @@ class AppUser(AppBase):
     twofa_enabled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     password_hash: Mapped[str] = mapped_column(Text, nullable=False, default="")
     password_salt: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -219,7 +220,7 @@ class AppUserSetting(AppBase):
     user_id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False)
     pinned_database: Mapped[str | None] = mapped_column(String(128), nullable=True)
     theme_mode: Mapped[str] = mapped_column(String(16), nullable=False, default="light")
-    font_family: Mapped[str] = mapped_column(String(32), nullable=False, default="Inter")
+    font_family: Mapped[str] = mapped_column(String(32), nullable=False, default="Aptos")
     font_scale: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     dashboard_mobile_sections_json: Mapped[str | None] = mapped_column("dashboard_mobile_sections", Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

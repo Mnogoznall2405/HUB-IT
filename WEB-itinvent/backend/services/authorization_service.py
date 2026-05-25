@@ -35,12 +35,17 @@ PERM_MAIL_ACCESS = "mail.access"
 PERM_CHAT_READ = "chat.read"
 PERM_CHAT_WRITE = "chat.write"
 PERM_CHAT_AI_USE = "chat.ai.use"
+PERM_ADDRESS_BOOK_READ = "address_book.read"
 
 PERM_AD_USERS_READ = "ad_users.read"
 PERM_AD_USERS_MANAGE = "ad_users.manage"
 
 PERM_VCS_READ = "vcs.read"
 PERM_VCS_MANAGE = "vcs.manage"
+
+PERM_TICKETS_READ = "tickets.read"
+PERM_TICKETS_WRITE = "tickets.write"
+PERM_TICKETS_PERSONAL_DATA_READ = "tickets.personal_data.read"
 
 _VIEWER_PERMISSIONS = {
     PERM_DASHBOARD_READ,
@@ -83,6 +88,10 @@ _ADMIN_EXTRA_PERMISSIONS = {
     PERM_AD_USERS_READ,
     PERM_AD_USERS_MANAGE,
     PERM_VCS_MANAGE,
+    PERM_ADDRESS_BOOK_READ,
+    PERM_TICKETS_READ,
+    PERM_TICKETS_WRITE,
+    PERM_TICKETS_PERSONAL_DATA_READ,
 }
 
 
@@ -169,3 +178,35 @@ class AuthorizationService:
 
 
 authorization_service = AuthorizationService()
+
+
+def has_permission(
+    role: str | None,
+    permission: str | None,
+    *,
+    use_custom_permissions: bool = False,
+    custom_permissions: Iterable[str] | None = None,
+) -> bool:
+    """Compatibility facade for callers that imported this module as the service."""
+    return authorization_service.has_permission(
+        role,
+        permission,
+        use_custom_permissions=use_custom_permissions,
+        custom_permissions=custom_permissions,
+    )
+
+
+def has_any_permission(
+    role: str | None,
+    permissions: Iterable[str],
+    *,
+    use_custom_permissions: bool = False,
+    custom_permissions: Iterable[str] | None = None,
+) -> bool:
+    """Compatibility facade for callers that imported this module as the service."""
+    return authorization_service.has_any_permission(
+        role,
+        permissions,
+        use_custom_permissions=use_custom_permissions,
+        custom_permissions=custom_permissions,
+    )

@@ -8,10 +8,7 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Callable, Optional
 
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
+from backend.chat.utils import normalize_text as _normalize_text
 
 
 def _parse_dt(value: object) -> Optional[datetime]:

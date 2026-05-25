@@ -31,6 +31,7 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
 import CheckCircleOutlineRoundedIcon from '@mui/icons-material/CheckCircleOutlineRounded';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
@@ -43,6 +44,9 @@ import LinkRoundedIcon from '@mui/icons-material/LinkRounded';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PhotoLibraryRoundedIcon from '@mui/icons-material/PhotoLibraryRounded';
+import PhotoCameraRoundedIcon from '@mui/icons-material/PhotoCameraRounded';
+import AddAPhotoRoundedIcon from '@mui/icons-material/AddAPhotoRounded';
+import InsertDriveFileRoundedIcon from '@mui/icons-material/InsertDriveFileRounded';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
@@ -79,7 +83,8 @@ const TELEGRAM_CHAT_FONT_FAMILY = [
   'sans-serif',
 ].join(', ');
 
-const LazyEmojiPicker = lazy(() => import('emoji-picker-react'));
+const LazyEmojiPickerModule = lazy(() => import('emoji-picker-react'));
+const LazyEmojiPicker = LazyEmojiPickerModule;
 
 const MobileInfoTransition = forwardRef(function MobileInfoTransition(props, ref) {
   return (
@@ -190,7 +195,7 @@ function GroupUserRow({
 }) {
   const accentColor = ui.accentText || '#3390ec';
   const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
-  const selectedBg = ui.sidebarRowSoftActive || ui.accentSoft || alpha(accentColor, 0.12);
+  const hoverBg = ui.drawerHover || ui.surfaceHover || alpha(primaryText, 0.06);
   return (
     <Paper
       elevation={0}
@@ -202,41 +207,51 @@ function GroupUserRow({
       onClick={() => onAction?.(item)}
       sx={{
         width: '100%',
-        px: 1.4,
-        py: 1.15,
+        px: 1.35,
+        py: 0.9,
         borderRadius: 0,
         display: 'flex',
         alignItems: 'center',
-        gap: 1.15,
+        gap: 1.35,
         textAlign: 'left',
         color: primaryText,
         cursor: 'pointer',
-        bgcolor: checked ? selectedBg : 'transparent',
-        transition: 'background-color 140ms ease, opacity 100ms ease, transform 120ms ease',
-        '&:active': {
-          opacity: 0.78,
-          transform: 'scale(0.995)',
-        },
+        bgcolor: 'transparent',
+        transition: 'background-color 120ms ease',
+        '&:hover': { bgcolor: hoverBg },
+        '&:active': { opacity: 0.76 },
       }}
     >
-      <Checkbox
-        checked={checked}
-        tabIndex={-1}
-        disableRipple
-        sx={{
-          p: 0.25,
-          color: alpha(primaryText, 0.38),
-          '&.Mui-checked': {
-            color: accentColor,
-          },
-        }}
-      />
-      <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={40} />
+      {/* Avatar with check overlay */}
+      <Box sx={{ position: 'relative', flexShrink: 0 }}>
+        <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={46} />
+        {checked ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              inset: 0,
+              borderRadius: '50%',
+              bgcolor: accentColor,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              animation: 'fadeIn 120ms ease',
+              '@keyframes fadeIn': { from: { opacity: 0, transform: 'scale(0.7)' }, to: { opacity: 1, transform: 'scale(1)' } },
+            }}
+          >
+            <CheckRoundedIcon sx={{ fontSize: 26, color: '#fff' }} />
+          </Box>
+        ) : null}
+      </Box>
       <Box sx={{ minWidth: 0, flex: 1 }}>
-        <Typography variant="body2" sx={{ fontWeight: 800, color: primaryText }} noWrap>
+        <Typography
+          variant="body1"
+          sx={{ fontWeight: checked ? 700 : 600, color: checked ? accentColor : primaryText, fontFamily: 'inherit', lineHeight: 1.35 }}
+          noWrap
+        >
           {item?.full_name || item?.username || 'Пользователь'}
         </Typography>
-        <Typography variant="caption" sx={{ color: ui.textSecondary }} noWrap>
+        <Typography variant="body2" sx={{ color: ui.textSecondary, fontSize: '0.82rem', lineHeight: 1.3 }} noWrap>
           {getPersonStatusLine(item)}
         </Typography>
       </Box>
@@ -244,113 +259,53 @@ function GroupUserRow({
   );
 }
 
-function GroupUserCheckboxRow({
-  item,
-  ui,
-  checked = false,
-  onToggle,
-  compact = false,
-}) {
-  const accentColor = ui.accentText || '#3390ec';
-  const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
-  const selectedBg = ui.sidebarRowSoftActive || ui.accentSoft || alpha(accentColor, 0.12);
-  return (
-    <Paper
-      elevation={0}
-      component="button"
-      type="button"
-      role="checkbox"
-      aria-checked={checked}
-      onClick={() => onToggle?.(item)}
-      data-user-id={String(item?.id || '')}
-      sx={{
-        width: '100%',
-        px: compact ? 1.15 : 1.4,
-        py: compact ? 1 : 1.2,
-        borderRadius: 0,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 1.15,
-        textAlign: 'left',
-        color: primaryText,
-        cursor: 'pointer',
-        bgcolor: checked ? selectedBg : 'transparent',
-        transition: 'background-color 140ms ease, opacity 100ms ease, transform 120ms ease',
-        '&:active': {
-          opacity: 0.78,
-          transform: 'scale(0.995)',
-        },
-      }}
-    >
-      <Checkbox
-        checked={checked}
-        tabIndex={-1}
-        disableRipple
-        sx={{
-          p: 0.25,
-          color: alpha(primaryText, 0.38),
-          '&.Mui-checked': {
-            color: accentColor,
-          },
-        }}
-      />
-      <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={compact ? 40 : 44} />
-      <Box sx={{ minWidth: 0, flex: 1 }}>
-        <Typography variant={compact ? 'body2' : 'body1'} sx={{ fontWeight: 700, color: primaryText }} noWrap>
-          {item?.full_name || item?.username || 'Пользователь'}
-        </Typography>
-        <Typography variant="body2" sx={{ color: ui.textSecondary }} noWrap>
-          {getPersonStatusLine(item)}
-        </Typography>
-      </Box>
-    </Paper>
-  );
+function GroupUserCheckboxRow({ item, ui, checked = false, onToggle, compact = false }) {
+  return <GroupUserRow item={item} ui={ui} checked={checked} onAction={onToggle} />;
 }
 
-function SelectedUserPill({ item, ui, onRemove, compact = false }) {
+function SelectedUserPill({ item, ui, onRemove }) {
   const accentColor = ui.accentText || '#3390ec';
   const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
+  const bgColor = ui.drawerBg || ui.panelBg || '#17212b';
+  const shortName = String(item?.full_name || item?.username || 'Участник').split(' ')[0];
   return (
     <Stack
-      direction="row"
-      spacing={0.9}
       alignItems="center"
-      sx={{
-        pl: 0.6,
-        pr: onRemove ? 0.35 : 0.95,
-        py: 0.55,
-        borderRadius: 999,
-        border: `1px solid ${alpha(accentColor, 0.22)}`,
-        bgcolor: ui.accentSoft || alpha(accentColor, 0.12),
-        minWidth: 0,
-        flex: '0 0 auto',
-      }}
+      spacing={0.4}
+      sx={{ flex: '0 0 auto', width: 68, cursor: onRemove ? 'pointer' : 'default', pt: 0.5, pb: 0.25 }}
+      onClick={() => onRemove?.(item)}
     >
-      <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={compact ? 28 : 32} />
-      <Box sx={{ minWidth: 0, maxWidth: compact ? 136 : 168 }}>
-        <Typography variant="caption" sx={{ display: 'block', fontWeight: 800, color: primaryText }} noWrap>
-          {item?.full_name || item?.username || 'Участник'}
-        </Typography>
-        <Typography variant="caption" sx={{ display: 'block', color: ui.textSecondary }} noWrap>
-          {item?.username ? `@${item.username}` : getPersonStatusLine(item)}
-        </Typography>
+      {/* Extra padding so presence dot + close badge don't clip */}
+      <Box sx={{ position: 'relative', p: '3px' }}>
+        <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={46} />
+        {onRemove ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 0,
+              right: 0,
+              width: 18,
+              height: 18,
+              borderRadius: '50%',
+              bgcolor: bgColor,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              border: `2px solid ${bgColor}`,
+              zIndex: 2,
+            }}
+          >
+            <CloseRoundedIcon sx={{ fontSize: 11, color: accentColor }} />
+          </Box>
+        ) : null}
       </Box>
-      {onRemove ? (
-        <IconButton
-          size="small"
-          aria-label={`Удалить ${item?.full_name || item?.username || 'участника'}`}
-          onClick={() => onRemove(item)}
-          sx={{
-            width: 28,
-            height: 28,
-            color: alpha(primaryText, 0.62),
-            '&:hover': { bgcolor: alpha(primaryText, 0.06) },
-            '&:active': { opacity: 0.72 },
-          }}
-        >
-          <CloseRoundedIcon sx={{ fontSize: 16 }} />
-        </IconButton>
-      ) : null}
+      <Typography
+        variant="caption"
+        sx={{ color: primaryText, fontWeight: 600, fontSize: '0.74rem', lineHeight: 1.2, textAlign: 'center', width: '100%', px: 0.25 }}
+        noWrap
+      >
+        {shortName}
+      </Typography>
     </Stack>
   );
 }
@@ -368,6 +323,7 @@ export default function ChatDialogs({
   messageMenuAnchor,
   messageMenuMessage,
   onCloseMessageMenu,
+  onToggleReactionFromMenu,
   onReplyFromMessageMenu,
   onCopyMessage,
   onTogglePinMessageFromMenu,
@@ -467,11 +423,15 @@ export default function ChatDialogs({
   onOpenSearchResult,
 }) {
   const previewFullScreen = useMediaQuery(theme.breakpoints.down('sm'));
+  const isMobileEmojiLayout = useMediaQuery(theme.breakpoints.down('md'));
   const prefersReducedMotion = typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
     && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   const groupSearchInputRef = useRef(null);
   const [groupStep, setGroupStep] = useState('members');
+  const [groupAvatarFile, setGroupAvatarFile] = useState(null);
+  const [groupAvatarPreview, setGroupAvatarPreview] = useState(null);
+  const groupAvatarInputRef = useRef(null);
   const selectedGroupUsers = Array.isArray(groupSelectedUsers) ? groupSelectedUsers : [];
   const availableGroupUsers = Array.isArray(groupUsers) ? groupUsers : [];
   const activeConversationKind = String(activeConversation?.kind || '').trim();
@@ -543,15 +503,15 @@ export default function ChatDialogs({
   const popupDangerColor = ui.dangerText || (isDarkTheme ? '#ff6666' : '#d94d4d');
   const popupShadow = ui.shadowStrong || (isDarkTheme ? '0 20px 56px rgba(0, 0, 0, 0.42)' : '0 18px 48px rgba(15, 23, 42, 0.18)');
   const dialogPaperSx = useMemo(() => ({
-    borderRadius: { xs: 3, sm: 3.5 },
-    border: `1px solid ${alpha(ui.borderSoft || '#334155', 0.95)}`,
+    borderRadius: { xs: 2, sm: 2 },
+    border: 'none',
     bgcolor: alpha(ui.drawerBg || ui.panelBg || '#0f172a', 0.97),
     color: dialogTextColor,
     fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
     backgroundImage: 'none',
     boxShadow: ui.shadowStrong || (theme.palette.mode === 'dark' ? '0 28px 72px rgba(2, 6, 23, 0.5)' : '0 24px 64px rgba(15, 23, 42, 0.16)'),
     backdropFilter: 'blur(22px) saturate(1.08)',
-  }), [dialogTextColor, theme.palette.mode, ui.borderSoft, ui.drawerBg, ui.panelBg, ui.shadowStrong]);
+  }), [dialogTextColor, theme.palette.mode, ui.drawerBg, ui.panelBg, ui.shadowStrong]);
   const dialogTitleSx = useMemo(() => ({
     px: 3,
     pt: 2.5,
@@ -699,24 +659,40 @@ export default function ChatDialogs({
   useEffect(() => {
     if (!groupOpen) {
       setGroupStep('members');
+      setGroupAvatarFile(null);
+      setGroupAvatarPreview(null);
     }
   }, [groupOpen]);
+
+  const handleGroupAvatarChange = (event) => {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    setGroupAvatarFile(file);
+    const reader = new FileReader();
+    reader.onload = (e) => setGroupAvatarPreview(e.target.result);
+    reader.readAsDataURL(file);
+    event.target.value = '';
+  };
 
   const handleAddGroupMember = (item) => {
     if (!item?.id || selectedGroupMemberIds.has(String(item.id))) return;
     onAddGroupMember?.(item);
     onGroupSearchChange?.('');
-    window.requestAnimationFrame(() => {
-      groupSearchInputRef.current?.focus?.();
-    });
+    if (!previewFullScreen) {
+      window.requestAnimationFrame(() => {
+        groupSearchInputRef.current?.focus?.();
+      });
+    }
   };
 
   const handleRemoveGroupMember = (item) => {
     if (!item?.id) return;
     onRemoveGroupMember?.(item.id);
-    window.requestAnimationFrame(() => {
-      groupSearchInputRef.current?.focus?.();
-    });
+    if (!previewFullScreen) {
+      window.requestAnimationFrame(() => {
+        groupSearchInputRef.current?.focus?.();
+      });
+    }
   };
 
   const handleToggleGroupMember = (item) => {
@@ -766,6 +742,21 @@ export default function ChatDialogs({
           sx: messageMenuPaperSx,
         }}
       >
+        {typeof onToggleReactionFromMenu === 'function' ? (
+          <Box sx={{ display: 'flex', gap: '2px', px: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
+            {['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => (
+              <Box
+                key={emoji}
+                component="button"
+                type="button"
+                onClick={() => { onToggleReactionFromMenu?.(messageMenuMessage, emoji); onCloseMessageMenu?.(); }}
+                sx={{ fontSize: '22px', lineHeight: 1, cursor: 'pointer', border: 'none', bgcolor: 'transparent', p: '4px', borderRadius: 1.5, transition: 'transform 100ms ease', '&:hover': { transform: 'scale(1.3)' }, '&:active': { transform: 'scale(0.9)' } }}
+              >
+                {emoji}
+              </Box>
+            ))}
+          </Box>
+        ) : null}
         <MenuItem onClick={() => onReplyFromMessageMenu?.(messageMenuMessage)} disabled={!messageMenuMessage}>
           <ReplyRoundedIcon />
           Ответить
@@ -922,7 +913,7 @@ export default function ChatDialogs({
               mt: -1,
               ml: 0.5,
               minWidth: 228,
-              borderRadius: 3.5,
+              borderRadius: 2,
               bgcolor: popupSurface,
               color: popupTextColor,
               backgroundImage: 'none',
@@ -1249,31 +1240,55 @@ export default function ChatDialogs({
         anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
         transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
       >
-        <MenuItem onClick={runComposerMenuAction(onOpenShare)} disabled={!activeConversationId}>Поделиться задачей</MenuItem>
-        <MenuItem onClick={runComposerMenuAction(onOpenFilePicker)} disabled={!activeConversationId}>Отправить файлы</MenuItem>
+        <MenuItem onClick={runComposerMenuAction(onOpenMediaPicker)} disabled={!activeConversationId}>
+          <PhotoLibraryRoundedIcon sx={{ mr: 1.2, fontSize: 20 }} />
+          Фото или видео
+        </MenuItem>
+        <MenuItem onClick={runComposerMenuAction(onOpenFilePicker)} disabled={!activeConversationId}>
+          <InsertDriveFileRoundedIcon sx={{ mr: 1.2, fontSize: 20 }} />
+          Файл
+        </MenuItem>
+        <MenuItem onClick={runComposerMenuAction(onOpenShare)} disabled={!activeConversationId}>
+          <TaskAltRoundedIcon sx={{ mr: 1.2, fontSize: 20 }} />
+          Задача
+        </MenuItem>
       </Menu>
 
+      {/* Desktop: Popover emoji picker */}
       <Popover
-        open={emojiPickerOpen}
+        open={emojiPickerOpen && !isMobileEmojiLayout}
         anchorEl={emojiAnchorEl}
         onClose={onCloseEmojiPicker}
         anchorOrigin={{ vertical: 'top', horizontal: 'left' }}
         transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        slotProps={{ paper: { elevation: 8 } }}
         PaperProps={{
-          elevation: 12,
           sx: {
-            borderRadius: 3,
-            border: `1px solid ${alpha(ui.borderSoft, 0.96)}`,
-            bgcolor: alpha(ui.panelBg, 0.98),
-            backdropFilter: 'blur(10px)',
+            borderRadius: '8px',
+            border: `1px solid ${ui.borderSoft}`,
+            bgcolor: ui.composerBg || ui.panelBg || theme.palette.background.paper,
+            backdropFilter: 'blur(12px)',
             overflow: 'hidden',
+            '& .EmojiPickerReact': {
+              '--epr-bg-color': ui.composerBg || ui.panelBg || theme.palette.background.paper,
+              '--epr-category-label-bg-color': ui.composerBg || ui.panelBg || theme.palette.background.paper,
+              '--epr-hover-bg-color': alpha(ui.accentText || theme.palette.primary.main, 0.1),
+              '--epr-search-bg-color': alpha(theme.palette.mode === 'dark' ? '#fff' : '#000', 0.06),
+              '--epr-text-color': ui.textPrimary || theme.palette.text.primary,
+              '--epr-search-input-bg-color': alpha(theme.palette.mode === 'dark' ? '#fff' : '#000', 0.06),
+              '--epr-search-border-color': ui.borderSoft || theme.palette.divider,
+              '--epr-category-icon-active-color': ui.accentText || theme.palette.primary.main,
+              '--epr-highlight-color': ui.accentText || theme.palette.primary.main,
+              border: 'none',
+              borderRadius: 0,
+            },
           },
         }}
       >
-        {emojiPickerOpen ? (
+        {emojiPickerOpen && !isMobileEmojiLayout ? (
           <Suspense
             fallback={(
-              <Box sx={{ width: 320, height: 360, display: 'grid', placeItems: 'center' }}>
+              <Box sx={{ width: 352, height: 400, display: 'grid', placeItems: 'center' }}>
                 <CircularProgress size={24} />
               </Box>
             )}
@@ -1281,16 +1296,32 @@ export default function ChatDialogs({
             <LazyEmojiPicker
               onEmojiClick={(emojiData) => onInsertEmoji?.(emojiData?.emoji || '')}
               autoFocusSearch={false}
-              searchPlaceholder="Найти эмодзи"
+              searchPlaceholder="Поиск"
               skinTonesDisabled={false}
               previewConfig={{ showPreview: false }}
-              width={320}
-              height={360}
+              emojiStyle="native"
+              suggestedEmojisMode="recent"
+              lazyLoadEmojis
+              width={352}
+              height={400}
               theme={theme.palette.mode === 'dark' ? 'dark' : 'light'}
+              categories={[
+                { category: 'suggested', name: 'Недавние' },
+                { category: 'smileys_people', name: 'Смайлы и люди' },
+                { category: 'animals_nature', name: 'Животные' },
+                { category: 'food_drink', name: 'Еда' },
+                { category: 'travel_places', name: 'Путешествия' },
+                { category: 'activities', name: 'Активности' },
+                { category: 'objects', name: 'Объекты' },
+                { category: 'symbols', name: 'Символы' },
+                { category: 'flags', name: 'Флаги' },
+              ]}
             />
           </Suspense>
         ) : null}
       </Popover>
+
+      {/* Mobile emoji panel moved to ChatComposer dock */}
 
       <ChatFileUploadDialog
         caption={fileCaption}
@@ -1314,7 +1345,7 @@ export default function ChatDialogs({
         onClose={onCloseGroup}
         fullScreen={previewFullScreen}
         fullWidth
-        maxWidth="lg"
+        maxWidth="xs"
         PaperProps={{
           sx: previewFullScreen
             ? {
@@ -1331,359 +1362,289 @@ export default function ChatDialogs({
         }}
       >
         <DialogTitle
-          sx={previewFullScreen ? {
+          sx={{
             ...dialogTitleSx,
-            px: 1.6,
-            pt: 'max(env(safe-area-inset-top), 10px)',
-            pb: 1.2,
+            px: previewFullScreen ? 1.6 : 3,
+            pt: previewFullScreen ? 'max(env(safe-area-inset-top), 10px)' : 2.5,
+            pb: 1.5,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
-            borderBottom: `1px solid ${alpha(ui.borderSoft || '#334155', 0.72)}`,
-            bgcolor: alpha(fullScreenDialogBg, 0.94),
-            backdropFilter: 'blur(18px)',
-            position: 'sticky',
-            top: 0,
-            zIndex: 2,
-          } : dialogTitleSx}
+            gap: 1,
+            ...(previewFullScreen ? {
+              bgcolor: alpha(fullScreenDialogBg, 0.94),
+              backdropFilter: 'blur(18px)',
+              position: 'sticky',
+              top: 0,
+              zIndex: 2,
+            } : {}),
+          }}
         >
           {previewFullScreen ? (
-            <>
-              <IconButton
-                aria-label={isGroupDetailsStep ? 'Назад к выбору участников' : 'Закрыть создание группы'}
-                onClick={isGroupDetailsStep ? () => setGroupStep('members') : onCloseGroup}
-                sx={{ color: dialogTextColor }}
-              >
-                <ChevronLeftRoundedIcon />
-              </IconButton>
-              <Typography component="span" variant="subtitle1" sx={{ fontWeight: 900 }}>
-                {isGroupDetailsStep ? 'Новая группа' : 'Выбор участников'}
+            <IconButton
+              aria-label={isGroupDetailsStep ? 'Назад к выбору участников' : 'Закрыть создание группы'}
+              onClick={isGroupDetailsStep ? () => setGroupStep('members') : onCloseGroup}
+              sx={{ color: dialogTextColor, ml: -0.5 }}
+            >
+              <ChevronLeftRoundedIcon />
+            </IconButton>
+          ) : null}
+          <Box sx={{ flex: 1 }}>
+            <Typography component="div" variant="subtitle1" sx={{ fontWeight: 800, fontSize: '1rem', lineHeight: 1.2 }}>
+              {isGroupDetailsStep ? 'Новая группа' : 'Добавить участников'}
+            </Typography>
+            {!isGroupDetailsStep ? (
+              <Typography component="div" variant="caption" sx={{ color: ui.textSecondary, fontWeight: 500 }}>
+                {selectedGroupUsers.length} / 200000
               </Typography>
-              <Button
-                onClick={isGroupDetailsStep ? () => void onCreateGroup() : () => setGroupStep('details')}
-                disabled={isGroupDetailsStep ? groupCreateDisabled : !canProceedToGroupDetails}
-                sx={{
-                  textTransform: 'none',
-                  fontWeight: 900,
-                  minWidth: 0,
-                  px: 1.2,
-                  visibility: 'hidden',
-                }}
-              >
-                {isGroupDetailsStep ? 'Создать' : 'Далее'}
-              </Button>
-            </>
-          ) : 'Новый групповой чат'}
+            ) : null}
+          </Box>
         </DialogTitle>
         <DialogContent
-          sx={previewFullScreen ? {
-            px: 1.5,
-            py: 1.5,
+          sx={{
+            px: 0,
+            py: 0,
             bgcolor: 'transparent',
-          } : dialogContentSx}
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+            overflow: 'hidden',
+          }}
         >
           {!isGroupDetailsStep ? (
-            <Stack spacing={2} sx={{ pt: previewFullScreen ? 0 : 1 }} data-testid="group-dialog-members-step">
+            <Box data-testid="group-dialog-members-step" sx={{ display: 'flex', flexDirection: 'column', height: '100%', minHeight: 0 }}>
+
+              {/* Selected users strip */}
               {selectedGroupUsers.length > 0 ? (
-                <Stack
-                  direction="row"
-                  spacing={0.75}
+                <Box
+                  data-testid="group-selected-users"
                   sx={{
+                    display: 'flex',
+                    flexDirection: 'row',
+                    alignItems: 'flex-start',
+                    gap: 0.5,
                     overflowX: 'auto',
-                    pb: 0.35,
+                    px: 1,
+                    pt: 1.25,
+                    pb: 1,
+                    minHeight: 88,
+                    borderBottom: `1px solid ${ui.borderSoft || alpha(accentColor, 0.1)}`,
                     scrollbarWidth: 'none',
                     '&::-webkit-scrollbar': { display: 'none' },
                   }}
-                  data-testid="group-selected-users"
                 >
                   {selectedGroupUsers.map((item) => (
                     <SelectedUserPill
                       key={item.id}
                       item={item}
                       ui={ui}
-                      compact={previewFullScreen}
                       onRemove={handleRemoveGroupMember}
                     />
                   ))}
-                </Stack>
-              ) : (
-                <Box data-testid="group-selected-users-empty">
-                  <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                    Пока никого не выбрано
-                  </Typography>
-                  <Typography variant="caption" sx={{ color: ui.textSecondary }}>
-                    Добавь минимум двух участников.
-                  </Typography>
                 </Box>
-              )}
+              ) : null}
 
-              <TextField
-                inputRef={groupSearchInputRef}
-                size="small"
-                label="Поиск участников"
-                value={groupSearch}
-                onChange={(event) => onGroupSearchChange(event.target.value)}
+              {/* Search */}
+              <Box
                 sx={{
-                  '& .MuiOutlinedInput-root': {
-                    borderRadius: previewFullScreen ? 3 : 2.5,
-                    bgcolor: groupInputBg,
-                  },
+                  px: 1,
+                  py: 1,
+                  borderBottom: `1px solid ${ui.borderSoft || alpha(accentColor, 0.1)}`,
                 }}
-              />
-
-              <Stack
-                direction={{ xs: 'column', md: previewFullScreen ? 'column' : 'row' }}
-                spacing={2}
-                alignItems="stretch"
-                data-testid={!previewFullScreen ? 'group-dialog-desktop-layout' : undefined}
               >
-              <Paper elevation={0} sx={{ ...surfaceCardSx, flex: 1, minWidth: 0 }}>
-                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 1.5, py: 1 }}>
-                  <Typography variant="caption" sx={{ color: ui.textSecondary, fontWeight: 800 }}>
-                    {String(groupSearch || '').trim() ? 'Результаты поиска' : 'Доступные участники'}
-                  </Typography>
-                  {!groupUsersLoading ? (
-                    <Typography variant="caption" sx={{ color: ui.textSecondary }}>
-                      {availableGroupUsers.length}
-                    </Typography>
-                  ) : null}
-                </Stack>
-                <Box sx={{ borderTop: `1px solid ${ui.borderSoft}` }} />
-                {groupUsersLoading ? (
-                  <DialogListSkeleton ui={ui} rows={5} compact={previewFullScreen} />
-                ) : availableGroupUsers.length === 0 ? (
-                  <Box sx={{ px: 1.5, py: 2.2 }}>
-                    <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                      Никого не найдено
-                    </Typography>
-                    <Typography variant="caption" sx={{ color: ui.textSecondary }}>
-                      Попробуй другое имя или логин.
-                    </Typography>
-                  </Box>
-                ) : (
-                  <Box
-                    sx={{
-                      maxHeight: previewFullScreen ? 'calc(100dvh - 188px)' : 236,
-                      overflowY: 'auto',
-                      pb: previewFullScreen ? '96px' : 0,
-                    }}
-                    data-testid="group-user-search-results"
-                  >
-                    {availableGroupUsers.map((item, index) => (
-                      <Box key={item.id}>
-                        {index > 0 ? <Box sx={{ borderTop: `1px solid ${ui.borderSoft}` }} /> : null}
-                        <GroupUserCheckboxRow
-                          item={item}
-                          ui={ui}
-                          checked={selectedGroupMemberIds.has(String(item.id))}
-                          onToggle={handleToggleGroupMember}
-                          compact={previewFullScreen}
-                        />
-                      </Box>
-                    ))}
-                  </Box>
-                )}
-              </Paper>
-
-              {previewFullScreen ? (
-                <Fab
-                  color="primary"
-                  aria-label="Next group step"
-                  onClick={() => setGroupStep('details')}
-                  disabled={!canProceedToGroupDetails}
+                <Box
                   sx={{
-                    position: 'fixed',
-                    right: 22,
-                    bottom: 'max(calc(env(safe-area-inset-bottom) + 22px), 28px)',
-                    width: 60,
-                    height: 60,
-                    boxShadow: '0 18px 40px rgba(37, 99, 235, 0.32)',
-                    zIndex: 4,
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: 1,
+                    bgcolor: groupInputBg,
+                    borderRadius: 3,
+                    px: 1.2,
+                    py: 0.6,
                   }}
                 >
-                  <ChevronRightRoundedIcon />
-                </Fab>
-              ) : null}
+                  <SearchRoundedIcon sx={{ fontSize: 20, color: ui.textSecondary, flexShrink: 0 }} />
+                  <InputBase
+                    inputRef={groupSearchInputRef}
+                    fullWidth
+                    autoFocus={!previewFullScreen}
+                    value={groupSearch}
+                    onChange={(event) => onGroupSearchChange(event.target.value)}
+                    placeholder="Поиск"
+                    inputProps={{ 'aria-label': 'Поиск участников', enterKeyHint: 'search' }}
+                    sx={{
+                      fontSize: '0.97rem',
+                      color: dialogTextColor,
+                      '& input::placeholder': { color: ui.textSecondary, opacity: 1 },
+                    }}
+                  />
+                  {groupSearch ? (
+                    <IconButton size="small" onClick={() => onGroupSearchChange('')} sx={{ p: 0.2 }}>
+                      <CloseRoundedIcon sx={{ fontSize: 16, color: ui.textSecondary }} />
+                    </IconButton>
+                  ) : null}
+                </Box>
+              </Box>
 
-              {!previewFullScreen ? (
-                <Paper elevation={0} sx={{ ...surfaceCardSx, width: { xs: '100%', md: 280 }, flexShrink: 0 }}>
-                  <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 1.5, py: 1 }}>
-                    <Typography variant="caption" sx={{ color: ui.textSecondary, fontWeight: 800 }}>
-                      Выбранные участники
-                    </Typography>
-                    <Typography variant="caption" sx={{ color: ui.textSecondary }}>
-                      {selectedGroupUsers.length}
+              {/* User list */}
+              <Box
+                sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
+                data-testid="group-user-search-results"
+                data-testid2={!previewFullScreen ? 'group-dialog-desktop-layout' : undefined}
+              >
+                {groupUsersLoading ? (
+                  <DialogListSkeleton ui={ui} rows={7} compact />
+                ) : availableGroupUsers.length === 0 ? (
+                  <Stack alignItems="center" justifyContent="center" sx={{ py: 5 }}>
+                    <Typography variant="body2" sx={{ color: ui.textSecondary }}>
+                      Никого не найдено
                     </Typography>
                   </Stack>
-                  <Box sx={{ borderTop: `1px solid ${ui.borderSoft}` }} />
-                  {selectedGroupUsers.length === 0 ? (
-                    <Box sx={{ px: 1.5, py: 2.2 }}>
-                      <Typography variant="body2" sx={{ fontWeight: 700 }}>
-                        Пока никого не выбрано
-                      </Typography>
-                      <Typography variant="caption" sx={{ color: ui.textSecondary }}>
-                        Добавь участников из поиска выше.
-                      </Typography>
+                ) : (
+                  availableGroupUsers.map((item, index) => (
+                    <Box key={item.id}>
+                      {index > 0 ? <Box sx={{ borderTop: `1px solid ${alpha(ui.borderSoft || '#334155', 0.5)}` }} /> : null}
+                      <GroupUserCheckboxRow
+                        item={item}
+                        ui={ui}
+                        checked={selectedGroupMemberIds.has(String(item.id))}
+                        onToggle={handleToggleGroupMember}
+                        compact={previewFullScreen}
+                      />
                     </Box>
-                  ) : (
-                    <Box>
-                      {selectedGroupUsers.map((item, index) => (
-                        <Box key={item.id}>
-                          {index > 0 ? <Box sx={{ borderTop: `1px solid ${ui.borderSoft}` }} /> : null}
-                          <GroupUserCheckboxRow
-                            item={item}
-                            ui={ui}
-                            checked
-                            onToggle={handleToggleGroupMember}
-                            compact
-                          />
-                        </Box>
-                      ))}
-                    </Box>
-                  )}
-                </Paper>
-              ) : null}
-
-              <Typography variant="caption" sx={{ color: ui.textSecondary, px: 0.5 }}>
-                Для новой группы сначала выбери минимум 2 участников.
-              </Typography>
-            </Stack>
-          </Stack>
+                  ))
+                )}
+              </Box>
+            </Box>
           ) : (
-            <Stack spacing={2} sx={{ pt: previewFullScreen ? 0.5 : 1 }} data-testid="group-dialog-details-step">
-              <Stack direction={{ xs: 'column', md: 'row' }} spacing={2.2} alignItems="stretch">
-                <Paper
-                  elevation={0}
+            <Box
+              data-testid="group-dialog-details-step"
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                flex: 1,
+                minHeight: 0,
+                overflowY: 'auto',
+              }}
+            >
+              {/* Hidden file input */}
+              <input
+                ref={groupAvatarInputRef}
+                type="file"
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={handleGroupAvatarChange}
+              />
+
+              {/* Avatar + title row */}
+              <Box
+                sx={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  gap: 2.5,
+                  px: 2.5,
+                  pt: 2.5,
+                  pb: 1.5,
+                }}
+              >
+                {/* Avatar button */}
+                <Box
+                  component="button"
+                  type="button"
+                  onClick={() => groupAvatarInputRef.current?.click()}
                   sx={{
-                    ...surfaceCardSx,
-                    width: { xs: '100%', md: 240 },
                     flexShrink: 0,
-                    px: 2.4,
-                    py: 2.6,
+                    width: 72,
+                    height: 72,
+                    borderRadius: '50%',
+                    border: 'none',
+                    cursor: 'pointer',
+                    bgcolor: accentColor,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
+                    overflow: 'hidden',
+                    transition: 'opacity 120ms ease',
+                    '&:hover': { opacity: 0.88 },
+                    '&:active': { opacity: 0.72 },
+                    p: 0,
                   }}
                 >
-                  <Stack alignItems="center" spacing={1.25}>
+                  {groupAvatarPreview ? (
                     <Box
-                      sx={{
-                        width: 88,
-                        height: 88,
-                        borderRadius: '50%',
-                        display: 'grid',
-                        placeItems: 'center',
-                        bgcolor: accentSoft,
-                        color: accentColor,
-                        fontSize: '1.5rem',
-                        fontWeight: 900,
-                        letterSpacing: '0.04em',
-                      }}
-                    >
-                      {groupTitle ? String(groupTitle).trim().slice(0, 2).toUpperCase() : `${selectedGroupUsers.length}`}
-                    </Box>
-                    <Typography variant="body2" sx={{ color: ui.textSecondary }}>
-                      Название и состав можно изменить позже.
-                    </Typography>
-                  </Stack>
-                </Paper>
-                <Paper
-                  elevation={0}
-                  sx={{
-                    ...surfaceCardSx,
-                    flex: 1,
-                    p: { xs: 1.6, md: 2.1 },
-                  }}
-                >
-                  <Stack spacing={1.7}>
-                    <TextField
-                      inputProps={{ 'data-testid': 'group-dialog-title-input' }}
-                      label="Название группы"
-                      value={groupTitle}
-                      onChange={(event) => onGroupTitleChange(event.target.value)}
+                      component="img"
+                      src={groupAvatarPreview}
+                      alt=""
+                      sx={{ width: '100%', height: '100%', objectFit: 'cover', display: 'block' }}
                     />
-                    <Stack direction="row" alignItems="center" justifyContent="space-between">
-                      <Typography variant="caption" sx={{ color: ui.textSecondary, fontWeight: 800 }}>
-                        Участники
-                      </Typography>
-                      <Typography variant="caption" sx={{ color: ui.textSecondary }}>
-                        {selectedGroupUsers.length}
-                      </Typography>
-                    </Stack>
-                    <Stack direction="row" spacing={0.9} flexWrap="wrap" useFlexGap data-testid="group-selected-users">
-                      {selectedGroupUsers.map((item) => (
-                        <Chip
-                          key={item.id}
-                          label={item?.full_name || item?.username || 'Участник'}
-                          sx={{
-                            bgcolor: accentSoft,
-                            color: dialogTextColor,
-                            borderRadius: 999,
-                            fontWeight: 700,
-                          }}
-                        />
-                      ))}
-                    </Stack>
-                  </Stack>
-                </Paper>
-              </Stack>
-            </Stack>
+                  ) : (
+                    <AddAPhotoRoundedIcon sx={{ fontSize: 30, color: '#fff' }} />
+                  )}
+                </Box>
+
+                {/* Title input */}
+                <Box sx={{ flex: 1, minWidth: 0 }}>
+                  <InputBase
+                    inputProps={{ 'data-testid': 'group-dialog-title-input' }}
+                    fullWidth
+                    autoFocus
+                    value={groupTitle}
+                    onChange={(event) => onGroupTitleChange(event.target.value)}
+                    placeholder="Название группы"
+                    sx={{
+                      fontSize: '1rem',
+                      fontWeight: 500,
+                      color: dialogTextColor,
+                      '& input': {
+                        borderBottom: `1.5px solid ${accentColor}`,
+                        pb: 0.5,
+                      },
+                      '& input::placeholder': { color: ui.textSecondary, opacity: 1 },
+                    }}
+                  />
+                </Box>
+              </Box>
+            </Box>
           )}
         </DialogContent>
         <DialogActions sx={dialogActionsSx}>
-          {previewFullScreen && isGroupDetailsStep ? (
-            <Box
-              sx={{
-                width: '100%',
-                px: 0.25,
-                pb: 'max(env(safe-area-inset-bottom), 10px)',
-                pt: 0.4,
-              }}
-            >
+          {!isGroupDetailsStep ? (
+            <>
               <Button
-                fullWidth
-                variant="contained"
-                onClick={() => void onCreateGroup()}
+                onClick={onCloseGroup}
+                sx={{ textTransform: 'none', fontWeight: 700, color: accentColor }}
+              >
+                Отмена
+              </Button>
+              <Button
+                variant="text"
+                data-testid="group-dialog-primary-action"
+                onClick={() => setGroupStep('details')}
+                disabled={!canProceedToGroupDetails}
+                sx={{ textTransform: 'none', fontWeight: 700, color: accentColor }}
+              >
+                Далее
+              </Button>
+            </>
+          ) : (
+            <>
+              <Button
+                onClick={() => setGroupStep('members')}
+                sx={{ textTransform: 'none', fontWeight: 700, color: accentColor }}
+              >
+                Назад
+              </Button>
+              <Button
+                variant="text"
+                data-testid="group-dialog-primary-action"
+                onClick={() => void onCreateGroup(groupAvatarFile)}
                 disabled={groupCreateDisabled}
-                sx={{
-                  minHeight: 48,
-                  borderRadius: 999,
-                  textTransform: 'none',
-                  fontWeight: 900,
-                  boxShadow: 'none',
-                }}
+                sx={{ textTransform: 'none', fontWeight: 700, color: accentColor }}
               >
                 Создать
               </Button>
-            </Box>
-          ) : null}
-          {!previewFullScreen ? (
-            !isGroupDetailsStep ? (
-              <>
-                <Button onClick={onCloseGroup}>Отмена</Button>
-                <Button
-                  variant="contained"
-                  data-testid="group-dialog-primary-action"
-                  onClick={() => setGroupStep('details')}
-                  disabled={!canProceedToGroupDetails}
-                >
-                  Далее
-                </Button>
-              </>
-            ) : (
-              <>
-                <Button onClick={() => setGroupStep('members')}>Назад</Button>
-                <Button
-                  variant="contained"
-                  data-testid="group-dialog-primary-action"
-                  onClick={() => void onCreateGroup()}
-                  disabled={groupCreateDisabled}
-                >
-                  Создать
-                </Button>
-              </>
-            )
-          ) : null}
+            </>
+          )}
         </DialogActions>
       </Dialog>
 

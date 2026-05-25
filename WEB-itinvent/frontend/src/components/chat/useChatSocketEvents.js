@@ -8,6 +8,7 @@ import {
   CHAT_SOCKET_CONVERSATION_UPDATED_EVENT,
   CHAT_SOCKET_MESSAGE_CREATED_EVENT,
   CHAT_SOCKET_MESSAGE_DELETED_EVENT,
+  CHAT_SOCKET_MESSAGE_REACTION_EVENT,
   CHAT_SOCKET_MESSAGE_READ_EVENT,
   CHAT_SOCKET_PRESENCE_UPDATED_EVENT,
   CHAT_SOCKET_SNAPSHOT_EVENT,
@@ -39,6 +40,7 @@ export default function useChatSocketEvents({
   promoteConversationToTop,
   queueAutoScroll,
   setAiStatusByConversation,
+  setMessages,
   setSocketStatus,
   setTypingUsers,
   setViewerLastReadAt,
@@ -107,10 +109,16 @@ export default function useChatSocketEvents({
       const conversation = payload?.conversation;
       const reason = String(payload?.reason || '').trim();
       if (!conversation?.id) return;
-      upsertConversation(conversation, {
-        promote: reason === 'message_created' || reason === 'created',
-      });
       const normalizedConversationId = String(conversation?.id || '').trim();
+      const isActiveAndAtBottom = (
+        normalizedConversationId
+        && normalizedConversationId === activeConversationIdRef.current
+        && threadNearBottomRef.current
+      );
+      upsertConversation(
+        isActiveAndAtBottom ? { ...conversation, unread_count: 0 } : conversation,
+        { promote: reason === 'message_created' || reason === 'created' },
+      );
       if (
         normalizedConversationId
         && normalizedConversationId === activeConversationIdRef.current
@@ -149,6 +157,7 @@ export default function useChatSocketEvents({
       const message = envelope?.payload || {};
       const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
       if (!message?.id || conversationId !== activeConversationIdRef.current) return;
+      const isActive = conversationId === activeConversationIdRef.current;
       const alreadyRendered = hasPersistedThreadMessageEquivalent(messagesRef.current, message);
       latestActiveThreadSocketMessageRef.current = {
         conversationId,
@@ -172,16 +181,19 @@ export default function useChatSocketEvents({
       if (!alreadyRendered) {
         mergeMessageIntoThread(message);
         startTransition(() => {
-          syncConversationPreview(conversationId, message, message?.is_own ? { unread_count: 0 } : {});
+          syncConversationPreview(conversationId, message, (message?.is_own || isActive) ? { unread_count: 0 } : {});
           promoteConversationToTop(conversationId);
         });
       }
       if (message?.is_own) {
         setViewerLastReadMessageId(String(message.id || '').trim());
         setViewerLastReadAt(String(message.created_at || '').trim());
+      } else if (isActive) {
+        setViewerLastReadMessageId(String(message.id || '').trim());
+        setViewerLastReadAt(String(message.created_at || '').trim());
       }
       if (!hasPendingInitialAnchorForConversation(conversationId)) {
-        const nextScrollMode = !alreadyRendered && (Boolean(message?.is_own) || threadNearBottomRef.current)
+        const nextScrollMode = !alreadyRendered && (Boolean(message?.is_own) || isActive)
           ? 'bottom_instant'
           : false;
         queueAutoScroll(nextScrollMode, 'socket:message_created');
@@ -315,6 +327,21 @@ export default function useChatSocketEvents({
       void loadConversations({ silent: true, force: true });
     };
 
+    const handleMessageReaction = (event) => {
+      const envelope = event?.detail || {};
+      const payload = envelope?.payload || {};
+      const conversationId = String(envelope?.conversation_id || payload?.conversation_id || '').trim();
+      if (conversationId !== activeConversationIdRef.current) return;
+      const messageId = String(payload?.message_id || '').trim();
+      const reactions = payload?.reactions;
+      if (!messageId || !Array.isArray(reactions)) return;
+      startTransition(() => {
+        setMessages?.((current) => current.map((msg) => (
+          String(msg?.id || '') === messageId ? { ...msg, reactions } : msg
+        )));
+      });
+    };
+
     window.addEventListener(CHAT_SOCKET_ACTIVITY_EVENT, handleSocketActivity);
     window.addEventListener(CHAT_SOCKET_STATUS_EVENT, handleSocketStatus);
     window.addEventListener(CHAT_SOCKET_SNAPSHOT_EVENT, handleSnapshot);
@@ -323,6 +350,7 @@ export default function useChatSocketEvents({
     window.addEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleMessageCreated);
     window.addEventListener(CHAT_SOCKET_MESSAGE_DELETED_EVENT, handleMessageDeleted);
     window.addEventListener(CHAT_SOCKET_MESSAGE_READ_EVENT, handleMessageRead);
+    window.addEventListener(CHAT_SOCKET_MESSAGE_REACTION_EVENT, handleMessageReaction);
     window.addEventListener(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, handlePresenceUpdated);
     window.addEventListener(CHAT_SOCKET_TYPING_EVENT, handleTyping);
     window.addEventListener(CHAT_SOCKET_AI_RUN_UPDATED_EVENT, handleAiRunUpdated);
@@ -336,6 +364,7 @@ export default function useChatSocketEvents({
       window.removeEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleMessageCreated);
       window.removeEventListener(CHAT_SOCKET_MESSAGE_DELETED_EVENT, handleMessageDeleted);
       window.removeEventListener(CHAT_SOCKET_MESSAGE_READ_EVENT, handleMessageRead);
+      window.removeEventListener(CHAT_SOCKET_MESSAGE_REACTION_EVENT, handleMessageReaction);
       window.removeEventListener(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, handlePresenceUpdated);
       window.removeEventListener(CHAT_SOCKET_TYPING_EVENT, handleTyping);
       window.removeEventListener(CHAT_SOCKET_AI_RUN_UPDATED_EVENT, handleAiRunUpdated);
@@ -364,6 +393,7 @@ export default function useChatSocketEvents({
     promoteConversationToTop,
     queueAutoScroll,
     setAiStatusByConversation,
+    setMessages,
     setSocketStatus,
     setTypingUsers,
     setViewerLastReadAt,

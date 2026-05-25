@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import importlib
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -17,6 +18,9 @@ from sqlalchemy import select
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 WEB_ROOT = PROJECT_ROOT / "WEB-itinvent"
+
+os.environ.setdefault("APP_ENV", "development")
+os.environ.setdefault("ENVIRONMENT", "development")
 
 if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
@@ -1046,6 +1050,157 @@ def test_ai_action_confirm_is_idempotent_and_expiry_blocks_execution(tmp_path, m
     blocked = action_cards.confirm_action(action_id=expired["id"], current_user=user)
     assert blocked["status"] == "expired"
     assert len(calls) == 1
+
+
+def test_report_format_choice_confirm_sends_one_generated_file(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_report_format_choice.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_report_format_choice(
+        conversation_id="conv-report",
+        run_id="run-report",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "title": "Inventory report",
+            "summary": "Two rows",
+            "file_name_base": "inventory-report",
+            "tables": [
+                {
+                    "title": "Equipment",
+                    "columns": [{"key": "inv_no", "label": "Inv"}, {"key": "model", "label": "Model"}],
+                    "rows": [{"inv_no": "101", "model": "Dell"}, {"inv_no": "102", "model": "HP"}],
+                }
+            ],
+            "source_tool_results": [{"tool_id": "itinvent.equipment.search", "ok": True, "database_id": "ITINVENT"}],
+            "database_id": "ITINVENT",
+        },
+    )
+    sent_files: list[dict[str, object]] = []
+
+    class FakeChatService:
+        def send_files(self, **kwargs):
+            sent_files.append(kwargs)
+            upload = kwargs["uploads"][0]
+            assert upload.filename == "inventory-report.xlsx"
+            assert upload.file.getbuffer().nbytes > 0
+            return {
+                "id": "msg-report-1",
+                "attachments": [{"id": "att-report-1", "file_name": upload.filename, "file_size": upload.file.getbuffer().nbytes}],
+            }
+
+    monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
+    monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
+
+    confirmed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use"]),
+        payload_overrides={"format": "xlsx"},
+    )
+    repeated = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use"]),
+        payload_overrides={"format": "pdf"},
+    )
+
+    assert confirmed["status"] == "confirmed"
+    assert confirmed["result"]["format"] == "xlsx"
+    assert confirmed["result"]["message_id"] == "msg-report-1"
+    assert repeated["status"] == "confirmed"
+    assert len(sent_files) == 1
+
+
+def test_report_format_choice_blocks_other_users_and_expired_actions(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_report_format_security.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    app_models = importlib.import_module("backend.appdb.models")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_report_format_choice(
+        conversation_id="conv-report",
+        run_id="run-report",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "title": "Inventory report",
+            "tables": [{"title": "Rows", "rows": [{"name": "one"}]}],
+        },
+    )
+    with pytest.raises(PermissionError):
+        action_cards.confirm_action(
+            action_id=card["id"],
+            current_user=SimpleNamespace(id=100, role="viewer", permissions=["chat.ai.use"]),
+            payload_overrides={"format": "xlsx"},
+        )
+
+    expired = action_cards.build_report_format_choice(
+        conversation_id="conv-report",
+        run_id="run-expired",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "title": "Expired report",
+            "tables": [{"title": "Rows", "rows": [{"name": "one"}]}],
+        },
+    )
+    with appdb_db.app_session(database_url) as session:
+        row = session.get(app_models.AppAiPendingAction, expired["id"])
+        row.expires_at = datetime.now(timezone.utc) - timedelta(minutes=1)
+
+    blocked = action_cards.confirm_action(
+        action_id=expired["id"],
+        current_user=_make_user(permissions=["chat.ai.use"]),
+        payload_overrides={"format": "xlsx"},
+    )
+    assert blocked["status"] == "expired"
+
+
+def test_report_format_choice_failure_marks_failed_and_sends_visible_message(tmp_path, monkeypatch):
+    database_url = _configure_local_backend_runtime(tmp_path, monkeypatch, "ai_report_format_failure.db")
+    appdb_db = importlib.import_module("backend.appdb.db")
+    action_cards = importlib.import_module("backend.ai_chat.action_cards")
+    artifact_generator = importlib.import_module("backend.ai_chat.artifact_generator")
+
+    appdb_db.initialize_app_schema(database_url)
+    card = action_cards.build_report_format_choice(
+        conversation_id="conv-report",
+        run_id="run-report",
+        requester_user_id=99,
+        database_id="ITINVENT",
+        payload={
+            "title": "Broken report",
+            "tables": [{"title": "Rows", "rows": [{"name": "one"}]}],
+        },
+    )
+    messages: list[dict[str, object]] = []
+
+    class FakeChatService:
+        def send_message(self, **kwargs):
+            messages.append(kwargs)
+            return {"id": "msg-error-1"}
+
+        def send_files(self, **kwargs):
+            raise AssertionError("send_files should not be called after generator failure")
+
+    def fail_build_uploads(_specs):
+        raise artifact_generator.GeneratedFileError("bad report", error_code="bad_report")
+
+    monkeypatch.setattr(action_cards, "build_generated_uploads", fail_build_uploads)
+    monkeypatch.setattr("backend.chat.service.chat_service", FakeChatService())
+    monkeypatch.setattr(action_cards, "_publish_chat_message_created", lambda **kwargs: None)
+
+    failed = action_cards.confirm_action(
+        action_id=card["id"],
+        current_user=_make_user(permissions=["chat.ai.use"]),
+        payload_overrides={"format": "pdf"},
+    )
+    assert failed["status"] == "failed"
+    assert "bad report" in failed["error_text"]
+    assert messages
+    assert "bad report" in messages[0]["body"]
 
 
 def test_chat_message_serialization_includes_ai_action_card(tmp_path, monkeypatch):

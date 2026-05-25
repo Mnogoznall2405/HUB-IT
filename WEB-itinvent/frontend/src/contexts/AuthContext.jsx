@@ -74,6 +74,10 @@ const rolePermissionFallback = {
     'settings.ai.manage',
     'vcs.read',
     'vcs.manage',
+    'tickets.read',
+    'tickets.write',
+    'tickets.personal_data.read',
+    'address_book.read',
   ],
 };
 

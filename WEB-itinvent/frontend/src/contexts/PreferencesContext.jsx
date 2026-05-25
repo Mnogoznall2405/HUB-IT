@@ -11,15 +11,16 @@ export const DEFAULT_DASHBOARD_MOBILE_SECTIONS = ['urgent', 'announcements', 'ta
 const DEFAULT_PREFERENCES = {
   pinned_database: null,
   theme_mode: 'light',
-  font_family: 'Segoe UI',
+  font_family: 'Aptos',
   font_scale: 1.0,
   dashboard_mobile_sections: DEFAULT_DASHBOARD_MOBILE_SECTIONS,
 };
 
 const FONT_MAP = {
-  Inter: '"Inter", "Segoe UI", "Roboto", sans-serif',
-  Roboto: '"Roboto", "Segoe UI", Arial, sans-serif',
-  'Segoe UI': '"Segoe UI", "Roboto", Arial, sans-serif',
+  Aptos: '"Aptos", "Segoe UI", Arial, sans-serif',
+  Inter: '"Aptos", "Inter", "Segoe UI", Arial, sans-serif',
+  Roboto: '"Aptos", "Roboto", "Segoe UI", Arial, sans-serif',
+  'Segoe UI': '"Aptos", "Segoe UI", Arial, sans-serif',
 };
 
 export function normalizeDashboardMobileSections(value) {
@@ -162,7 +163,7 @@ export function PreferencesProvider({ children }) {
   const theme = useMemo(() => {
     const mode = preferences.theme_mode === 'dark' ? 'dark' : 'light';
     const fontScale = Math.min(1.2, Math.max(0.9, Number(preferences.font_scale || 1)));
-    const fontFamily = FONT_MAP[preferences.font_family] || FONT_MAP['Segoe UI'];
+    const fontFamily = FONT_MAP[preferences.font_family] || FONT_MAP.Aptos;
     const isDark = mode === 'dark';
     const customAdmin = isDark
       ? {
@@ -339,7 +340,7 @@ export function PreferencesProvider({ children }) {
           styleOverrides: {
             root: ({ theme }) => ({
               textTransform: 'none',
-              fontWeight: 600,
+              fontWeight: 500,
               borderRadius: 10,
               boxShadow: 'none',
               '&.MuiButton-contained': {
@@ -453,7 +454,7 @@ export function PreferencesProvider({ children }) {
 
               return {
                 borderRadius: 999,
-                fontWeight: 600,
+                fontWeight: 500,
                 color: toneColor,
                 backgroundColor: toneBg,
                 border: `1px solid ${toneBorder}`,
@@ -480,7 +481,7 @@ export function PreferencesProvider({ children }) {
           styleOverrides: {
             root: ({ theme }) => ({
               textTransform: 'none',
-              fontWeight: 600,
+              fontWeight: 500,
               color: theme.palette.text.secondary,
               '&.Mui-selected': {
                 color: theme.palette.text.primary,
@@ -522,7 +523,7 @@ export function PreferencesProvider({ children }) {
               padding: '16px 20px',
               borderBottom: `1px solid ${theme.customAdmin.borderSoft}`,
               backgroundColor: theme.customAdmin.headerBandBg,
-              fontWeight: 700,
+              fontWeight: 600,
             }),
           },
         },
@@ -678,7 +679,7 @@ export function PreferencesProvider({ children }) {
               paddingBottom: 10,
             }),
             head: ({ theme }) => ({
-              fontWeight: 700,
+              fontWeight: 600,
               color: theme.palette.text.secondary,
               backgroundColor: theme.customAdmin.headerBandBg,
               borderBottomColor: theme.customAdmin.borderStrong,

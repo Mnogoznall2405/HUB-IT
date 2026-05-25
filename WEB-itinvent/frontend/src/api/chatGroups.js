@@ -47,6 +47,17 @@ export const chatGroupsAPI = {
     );
     return response.data;
   },
+
+  uploadGroupAvatar: async (conversationId, file) => {
+    const formData = new FormData();
+    formData.append('file', file);
+    const response = await apiClient.post(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/avatar`,
+      formData,
+      { headers: { 'Content-Type': 'multipart/form-data' } },
+    );
+    return response.data;
+  },
 };
 
 export default chatGroupsAPI;

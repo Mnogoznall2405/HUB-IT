@@ -243,6 +243,32 @@ describe('useMailListDataController', () => {
     expect(result.current.props.mailAPI.getBootstrap).not.toHaveBeenCalled();
   });
 
+  it('does not replace an explicit active mailbox with a different bootstrap-selected mailbox', async () => {
+    const mailAPI = createMailAPI({
+      getBootstrap: vi.fn(async () => ({
+        selected_mailbox: { id: 'primary', mailbox_email: 'primary@example.com' },
+        mailboxes: [
+          { id: 'primary', label: 'Primary' },
+          { id: 'shared', label: 'Shared' },
+        ],
+        messages: createEmptyListData(),
+      })),
+    });
+    const { result } = renderController({
+      scope: 'shared',
+      mailAPI,
+      initialState: {
+        selectedMailboxId: 'shared',
+      },
+    });
+
+    await act(async () => {
+      await result.current.controller.refreshBootstrap({ force: true });
+    });
+
+    expect(result.current.state.selectedMailboxId).toBe('shared');
+  });
+
   it('preserves visible items during a silent transient list refresh failure', async () => {
     const visibleList = {
       items: [createMessage('msg-visible')],

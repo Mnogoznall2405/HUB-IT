@@ -117,6 +117,11 @@ const readBlobText = async (blob) => {
   return '';
 };
 
+const getAttachmentPreviewExtension = (filename = '') => {
+  const match = String(filename || '').trim().match(/\.([a-z0-9]+)$/i);
+  return match ? String(match[1] || '').toLowerCase() : '';
+};
+
 export const buildAttachmentPreviewState = async ({
   response,
   attachment,
@@ -125,7 +130,34 @@ export const buildAttachmentPreviewState = async ({
   maxPreviewFileBytes = MAX_PREVIEW_FILE_BYTES,
 } = {}) => {
   const { blob, filename, contentType } = buildAttachmentBlobPayload({ response, attachment });
-  const kind = contentType.includes('pdf') ? 'pdf' : (contentType.startsWith('image/') ? 'image' : 'text');
+  const kind = (() => {
+    const normalizedContentType = String(contentType || '').toLowerCase();
+    const extension = getAttachmentPreviewExtension(filename);
+    if (normalizedContentType.includes('pdf') || extension === 'pdf') return 'pdf';
+    if (normalizedContentType.startsWith('image/')) return 'image';
+    if (
+      normalizedContentType.includes('officedocument')
+      || normalizedContentType.includes('msword')
+      || normalizedContentType.includes('ms-excel')
+      || normalizedContentType.includes('ms-powerpoint')
+      || ['doc', 'docx', 'dot', 'dotx', 'xls', 'xlsx', 'xlsm', 'ppt', 'pptx'].includes(extension)
+    ) {
+      return 'unsupported';
+    }
+    if (
+      normalizedContentType.startsWith('text/')
+      || normalizedContentType.includes('json')
+      || normalizedContentType.includes('xml')
+      || normalizedContentType.includes('javascript')
+      || normalizedContentType.includes('css')
+      || normalizedContentType.includes('yaml')
+      || normalizedContentType.includes('toml')
+      || ['txt', 'log', 'md', 'json', 'xml', 'yaml', 'yml', 'csv'].includes(extension)
+    ) {
+      return 'text';
+    }
+    return 'unsupported';
+  })();
   let objectUrl = '';
   let textContent = '';
   let textTruncated = false;

@@ -9,6 +9,7 @@ import ActionDialog, {
 } from './ActionDialog';
 import {
   TRANSFER_OPERATION_ACT_ONLY,
+  TRANSFER_OPERATION_LOCATION_ONLY,
   TRANSFER_OPERATION_MOVE,
 } from './equipmentModel';
 
@@ -27,7 +28,11 @@ describe('ActionDialog helpers', () => {
     expect(getActionDialogTitle({
       type: 'transfer',
       transferOperationMode: TRANSFER_OPERATION_MOVE,
-    })).toBe('Перемещение оборудования');
+    })).toBe('Перемещение с актом');
+    expect(getActionDialogTitle({
+      type: 'transfer',
+      transferOperationMode: TRANSFER_OPERATION_LOCATION_ONLY,
+    })).toBe('Перемещение');
     expect(getActionDialogTitle({ type: 'component', componentKind: 'pc' })).toBe('Замена компонента ПК');
     expect(getActionDialogTitle({ type: 'component', componentKind: 'printer' })).toBe('Замена компонента');
 
@@ -43,6 +48,10 @@ describe('ActionDialog helpers', () => {
     expect(getActionConfirmLabel({
       type: 'transfer',
       transferOperationMode: TRANSFER_OPERATION_MOVE,
+    })).toBe('Выполнить перемещение с актом');
+    expect(getActionConfirmLabel({
+      type: 'transfer',
+      transferOperationMode: TRANSFER_OPERATION_LOCATION_ONLY,
     })).toBe('Выполнить перемещение');
     expect(getActionConfirmLabel({ type: 'cleaning' })).toBe('Подтвердить');
 

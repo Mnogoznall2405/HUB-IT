@@ -2,8 +2,8 @@ import { API_V1_BASE } from '../../api/client';
 
 export const CHAT_FILE_ACCEPT = '.jpg,.jpeg,.png,.gif,.webp,.bmp,.pdf,.doc,.docx,.docm,.rtf,.odt,.xls,.xlsx,.xlsm,.ods,.ppt,.pptx,.pptm,.odp,.txt,.csv,.tsv,.log,.md,.json,.xml';
 export const CHAT_MAX_FILE_COUNT = 5;
-export const CHAT_MAX_FILE_BYTES = 25 * 1024 * 1024;
-export const CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX = 96;
+export const CHAT_MAX_FILE_BYTES = 1024 * 1024 * 1024;
+export const CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX = 180;
 export const CHAT_IMAGE_ATTACHMENT_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 export const CHAT_VIDEO_ATTACHMENT_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v']);
 export const CHAT_ARCHIVE_EXTENSIONS = new Set(['zip', 'rar', '7z', 'tar', 'gz']);
@@ -364,8 +364,8 @@ export const getReplyPreviewText = (replyPreview) => {
 
 export const getSearchResultPreview = (message) => {
   if (!message) return 'РЎРѕРѕР±С‰РµРЅРёРµ';
-  if (message?.is_deleted) return 'Сообщение удалено';
-  if (message.kind === 'system') return normalizeTrimmedChatText(message.body, 'Системное событие');
+  if (message?.is_deleted) return 'РЎРѕРѕР±С‰РµРЅРёРµ СѓРґР°Р»РµРЅРѕ';
+  if (message.kind === 'system') return normalizeTrimmedChatText(message.body, 'РЎРёСЃС‚РµРјРЅРѕРµ СЃРѕР±С‹С‚РёРµ');
   if (message.kind === 'task_share') {
     return normalizeTrimmedChatText(message?.task_preview?.title, 'РљР°СЂС‚РѕС‡РєР° Р·Р°РґР°С‡Рё');
   }

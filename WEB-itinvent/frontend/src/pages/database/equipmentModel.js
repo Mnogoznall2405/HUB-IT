@@ -2,6 +2,7 @@ export const DATA_MODE_EQUIPMENT = 'equipment';
 export const DATA_MODE_CONSUMABLES = 'consumables';
 export const TRANSFER_OPERATION_MOVE = 'move';
 export const TRANSFER_OPERATION_ACT_ONLY = 'act_only';
+export const TRANSFER_OPERATION_LOCATION_ONLY = 'location_only';
 export const DEFAULT_CARTRIDGE_COLOR = 'Универсальный';
 
 const PRINTER_MFU_KEYWORDS = [
@@ -128,7 +129,7 @@ export const getEquipmentRowActions = ({
 
   const flags = getItemCapabilityFlags(item);
   return Array.from(new Set([
-    ...(canWrite ? ['view', 'transfer'] : ['view']),
+    ...(canWrite ? ['view', 'location_transfer', 'transfer'] : ['view']),
     ...(canWrite && flags.isPrinterOrMfu ? ['cartridge', 'component'] : []),
     ...(canWrite && flags.isUps ? ['battery'] : []),
     ...(canWrite && flags.isPc && !flags.isPrinterOrMfu ? ['component'] : []),

@@ -177,12 +177,14 @@ def _forbidden_exception(permission: str) -> HTTPException:
 @lru_cache(maxsize=1)
 def _load_web_auth_runtime() -> Dict[str, Any]:
     """Import WEB-itinvent auth services only when a protected UI route is hit."""
-    services_module = import_module("backend.services")
+    authorization_module = import_module("backend.services.authorization_service")
+    session_module = import_module("backend.services.session_service")
+    user_module = import_module("backend.services.user_service")
     security_module = import_module("backend.utils.security")
     return {
-        "authorization_service": getattr(services_module, "authorization_service"),
-        "session_service": getattr(services_module, "session_service"),
-        "user_service": getattr(services_module, "user_service"),
+        "authorization_service": getattr(authorization_module, "authorization_service"),
+        "session_service": getattr(session_module, "session_service"),
+        "user_service": getattr(user_module, "user_service"),
         "decode_access_token": getattr(security_module, "decode_access_token"),
     }
 

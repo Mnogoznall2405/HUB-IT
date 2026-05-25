@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 import {
   TRANSFER_OPERATION_ACT_ONLY,
+  TRANSFER_OPERATION_LOCATION_ONLY,
   TRANSFER_OPERATION_MOVE,
 } from './equipmentModel';
 import TransferActionContent, {
@@ -129,9 +130,45 @@ describe('TransferActionContent', () => {
   it('renders move mode defaults and mixed-location warning', () => {
     renderTransferActionContent();
 
-    expect(screen.getByText('Переместить в базе и создать акт')).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Действие' })).toHaveTextContent('Перемещение с актом');
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: 'Действие' }));
+    expect(screen.getByRole('option', { name: 'Перемещение' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Перемещение с актом' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'Акт без перемещения' })).toBeInTheDocument();
     expect(screen.getByText('Текущие значения по умолчанию: Old branch / Old location')).toBeInTheDocument();
     expect(screen.getByText(/Выбраны позиции из разных филиалов/)).toBeInTheDocument();
+  });
+
+  it('renders location-only mode without employee, act, or email controls', () => {
+    renderTransferActionContent({
+      transfer: {
+        mode: TRANSFER_OPERATION_LOCATION_ONLY,
+      },
+    });
+
+    expect(screen.getByText(/Будут изменены только филиал и местоположение/)).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Филиал назначения' })).toBeInTheDocument();
+    expect(screen.getByRole('combobox', { name: 'Местоположение назначения' })).toBeInTheDocument();
+    expect(screen.queryByLabelText('Новый сотрудник')).not.toBeInTheDocument();
+    expect(screen.queryByText('Отправка акта по email')).not.toBeInTheDocument();
+  });
+
+  it('renders location-only result without email actions', () => {
+    renderTransferActionContent({
+      transfer: {
+        mode: TRANSFER_OPERATION_LOCATION_ONLY,
+        result: {
+          success_count: 1,
+          failed_count: 0,
+          transferred: [{ inv_no: '1001' }],
+          failed: [],
+          acts: [],
+        },
+      },
+    });
+
+    expect(screen.getByText('Перемещено: 1, ошибок: 0')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Отправить акт' })).not.toBeInTheDocument();
   });
 
   it('emits employee input changes without touching APIs', () => {

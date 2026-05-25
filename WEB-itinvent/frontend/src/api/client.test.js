@@ -1005,6 +1005,7 @@ describe('equipmentTransferActsAPI contract', () => {
     'commitUploadedActDraft',
     'sendUploadedActEmail',
     'transfer',
+    'transferLocation',
     'createTransferActOnly',
     'getTransferActJob',
     'sendTransferActsEmail',
@@ -1104,14 +1105,16 @@ describe('equipmentTransferActsAPI contract', () => {
     await equipmentTransferActsAPI.commitUploadedActDraft(payload);
     await equipmentTransferActsAPI.sendUploadedActEmail(payload);
     await equipmentTransferActsAPI.transfer(payload);
+    await equipmentTransferActsAPI.transferLocation(payload);
     await equipmentTransferActsAPI.createTransferActOnly(payload);
     await equipmentTransferActsAPI.sendTransferActsEmail(payload);
 
     expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/equipment/acts/upload/commit', payload);
     expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/equipment/acts/upload/email', payload);
     expect(apiClientMock.post).toHaveBeenNthCalledWith(3, '/equipment/transfer', payload);
-    expect(apiClientMock.post).toHaveBeenNthCalledWith(4, '/equipment/transfer/act-only', payload);
-    expect(apiClientMock.post).toHaveBeenNthCalledWith(5, '/equipment/transfer/email', payload);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(4, '/equipment/transfer/location', payload);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(5, '/equipment/transfer/act-only', payload);
+    expect(apiClientMock.post).toHaveBeenNthCalledWith(6, '/equipment/transfer/email', payload);
   });
 
   it('keeps client equipmentAPI methods compatible with the dedicated module and re-export', async () => {

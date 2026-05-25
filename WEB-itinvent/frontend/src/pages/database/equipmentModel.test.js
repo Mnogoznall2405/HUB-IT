@@ -45,13 +45,13 @@ describe('equipmentModel', () => {
       item: { TYPE_NAME: 'Printer' },
       canWrite: true,
       isAdmin: true,
-    })).toEqual(['view', 'transfer', 'cartridge', 'component', 'delete']);
+    })).toEqual(['view', 'location_transfer', 'transfer', 'cartridge', 'component', 'delete']);
 
     expect(getEquipmentRowActions({
       item: { TYPE_NAME: 'UPS' },
       canWrite: true,
       isAdmin: false,
-    })).toEqual(['view', 'transfer', 'battery']);
+    })).toEqual(['view', 'location_transfer', 'transfer', 'battery']);
 
     expect(getEquipmentRowActions({
       item: { TYPE_NAME: 'PC' },

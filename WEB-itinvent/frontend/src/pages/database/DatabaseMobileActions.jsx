@@ -67,6 +67,7 @@ function DatabaseMobileActions({
   onCollapseAll = noop,
   onEnterSelectionMode = noop,
   selectedItemsCapabilities = defaultCapabilities,
+  onOpenLocationTransferForSelection = noop,
   onOpenTransferForSelection = noop,
   onOpenTransferActForSelection = noop,
   onOpenCartridgeForSelection = noop,
@@ -444,11 +445,32 @@ function DatabaseMobileActions({
               {`В фильтре видно: ${selectedVisibleCount}, скрыто: ${selectedHiddenCount}`}
             </Typography>
           ) : null}
-          <Button size="medium" variant="text" color="primary" onClick={onOpenTransferForSelection}>
-            Переместить
+          <Button
+            size="medium"
+            variant="text"
+            color="primary"
+            title="Меняет только филиал и локацию в базе. Сотрудник и акты не меняются."
+            onClick={onOpenLocationTransferForSelection}
+          >
+            Перемещение
           </Button>
-          <Button size="medium" variant="text" color="primary" onClick={onOpenTransferActForSelection}>
-            Акт
+          <Button
+            size="medium"
+            variant="text"
+            color="primary"
+            title="Меняет сотрудника/филиал/локацию, создаёт акт и напоминание на загрузку подписанного акта."
+            onClick={onOpenTransferForSelection}
+          >
+            Перемещение с актом
+          </Button>
+          <Button
+            size="medium"
+            variant="text"
+            color="primary"
+            title="Создаёт акт по выбранной технике без изменения данных в базе."
+            onClick={onOpenTransferActForSelection}
+          >
+            Акт без перемещения
           </Button>
           <Button
             aria-label="Картридж"

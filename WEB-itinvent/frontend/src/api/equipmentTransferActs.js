@@ -55,6 +55,11 @@ export const equipmentTransferActsAPI = {
     return response.data;
   },
 
+  transferLocation: async (payload) => {
+    const response = await apiClient.post('/equipment/transfer/location', payload);
+    return response.data;
+  },
+
   createTransferActOnly: async (payload) => {
     const response = await apiClient.post('/equipment/transfer/act-only', payload);
     return response.data;

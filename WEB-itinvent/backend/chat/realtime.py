@@ -14,6 +14,7 @@ from uuid import uuid4
 
 from fastapi import WebSocket
 
+from backend.chat.utils import normalize_text as _normalize_text
 from backend.config import config
 
 try:  # pragma: no cover - import availability depends on runtime package extras
@@ -47,11 +48,6 @@ def _iso(value: Optional[datetime]) -> Optional[str]:
     if value.tzinfo is None:
         value = value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc).isoformat()
-
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
 
 
 def _presence_hash_key(user_id: int) -> str:

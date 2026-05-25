@@ -26,6 +26,7 @@ import {
   Tab,
   Tabs,
   TextField,
+  Tooltip,
   Typography,
   Table,
   TableBody,
@@ -46,6 +47,8 @@ import DeleteIcon from '@mui/icons-material/Delete';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import PlaceIcon from '@mui/icons-material/Place';
 import SearchIcon from '@mui/icons-material/Search';
+import LockIcon from '@mui/icons-material/Lock';
+import LockOpenIcon from '@mui/icons-material/LockOpen';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import InteractiveMapCanvas from '../components/networks/InteractiveMapCanvas';
@@ -55,6 +58,7 @@ import SocketsTab from '../components/networks/SocketsTab';
 import AuditTab from '../components/networks/AuditTab';
 import DeviceDialog from '../components/networks/DeviceDialog';
 import MapDialog from '../components/networks/MapDialog';
+import ImportExportIcon from '@mui/icons-material/ImportExport';
 
 import { CreateBranchDialog, EditBranchDialog, DeleteBranchDialog } from '../components/networks/BranchDialogs';
 
@@ -222,7 +226,9 @@ function Networks() {
   const [socketDeleteSaving, setSocketDeleteSaving] = useState(false);
   const [socketDeleteTarget, setSocketDeleteTarget] = useState(null);
 
-  const [tab, setTab] = useState('equipment');
+  const [tab, setTab] = useState(isMobile ? 'maps' : 'equipment');
+  const [mobileMapEditMode, setMobileMapEditMode] = useState(false);
+  const [mobileHeaderCollapsed, setMobileHeaderCollapsed] = useState(true);
   const [branchSearch, setBranchSearch] = useState('');
   const [portSearch, setPortSearch] = useState('');
   const [branchPortResults, setBranchPortResults] = useState([]);
@@ -258,8 +264,6 @@ function Networks() {
   const [mapTitle, setMapTitle] = useState('');
   const [mapFloor, setMapFloor] = useState('');
   const [mapSiteCode, setMapSiteCode] = useState('p19');
-
-
 
   const [createBranchOpen, setCreateBranchOpen] = useState(false);
   const [createBranchCode, setCreateBranchCode] = useState('');
@@ -561,7 +565,6 @@ function Networks() {
     });
     return sameCoords.length > 1 ? sameCoords : null;
   }, [selectedMapId, selectedPoint, mapPoints]);
-
 
   const filteredBranches = useMemo(() => {
     let result = branches;
@@ -1207,7 +1210,6 @@ function Networks() {
     };
   }, [branchIdNum, loadBranchContext, notifyError, getErrorDetail]);
 
-
   useEffect(() => {
     if (!branchIdNum) {
       setAllBranchPorts([]);
@@ -1238,6 +1240,7 @@ function Networks() {
     }
     void loadPorts(selectedDeviceId);
   }, [branchIdNum, selectedDeviceId, loadPorts]);
+
   useEffect(() => {
     if (!isBranchWidePortSearch || displayedPorts.length === 0) return;
     const currentId = Number(selectedDeviceId || 0);
@@ -1653,8 +1656,6 @@ function Networks() {
       notifyError(requestError?.response?.data?.detail || 'Ошибка удаления точки.');
     }
   };
-
-
 
   const startSocketPointCreation = (socketLike) => {
     const socketCode = String(socketLike?.socket_code || socketLike?.patch_panel_port || '').trim();
@@ -2255,7 +2256,6 @@ function Networks() {
     }
   };
 
-
   useEffect(() => {
     const handleKeyDown = (e) => {
       // Escape key
@@ -2286,6 +2286,7 @@ function Networks() {
       deviceChipRefs.current.delete(key);
     }
   }, []);
+
   const handlePortRowClick = (port, event) => {
     const target = event?.target;
     if (target instanceof Element) {
@@ -2825,24 +2826,37 @@ function Networks() {
 
   return (
     <MainLayout>
-      <PageShell fullHeight sx={{ display: 'flex', flexDirection: 'column' }}>
-        <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1.5} sx={{ mb: 2, flexShrink: 0 }}>
-          <Box>
-            <Typography variant="h4">Сети</Typography>
-            <Typography variant="body2" color="text.secondary">Филиалы, оборудование и карты сети</Typography>
+      <PageShell fullHeight={!isMobile} sx={isMobile ? {} : { display: 'flex', flexDirection: 'column' }}>
+        {!isMobile && (
+          <Stack direction="row" justifyContent="space-between" spacing={1.5} sx={{ mb: 2, flexShrink: 0 }}>
+            <Box>
+              <Typography variant="h4">Сети</Typography>
+              <Typography variant="body2" color="text.secondary">Филиалы, оборудование и карты сети</Typography>
+            </Box>
+            {canEdit && (
+              <Stack direction="row" spacing={1}>
+                {!branchIdNum && (
+                  <Button variant="contained" onClick={() => { setCreateBranchDefaultSiteCode(''); setCreateBranchOpen(true); }}>
+                    Создать филиал
+                  </Button>
+                )}
+                {branchIdNum && <Button variant="contained" onClick={openMapDialogCreate}>Добавить карту</Button>}
+              </Stack>
+            )}
+          </Stack>
+        )}
+        {isMobile && canEdit && !branchIdNum && (
+          <Box sx={{ mb: 1 }}>
+            <Button fullWidth variant="contained" onClick={() => { setCreateBranchDefaultSiteCode(''); setCreateBranchOpen(true); }}>
+              Создать филиал
+            </Button>
           </Box>
-          {canEdit && (
-            <Stack direction="row" spacing={1}>
-              {!branchIdNum && (
-                <Button variant="contained" onClick={() => { setCreateBranchDefaultSiteCode(''); setCreateBranchOpen(true); }}>
-                  Создать филиал
-                </Button>
-              )}
-
-              {branchIdNum && <Button variant="contained" onClick={openMapDialogCreate}>Добавить карту</Button>}
-            </Stack>
-          )}
-        </Stack>
+        )}
+        {isMobile && canEdit && branchIdNum && (
+          <Box sx={{ mb: 1 }}>
+            <Button fullWidth variant="outlined" size="small" onClick={openMapDialogCreate}>Добавить карту</Button>
+          </Box>
+        )}
 
         {!branchIdNum && (
           <>
@@ -2867,42 +2881,89 @@ function Networks() {
         )}
 
         {branchIdNum && (
-          <Paper elevation={0} sx={getOfficePanelSx(ui, { p: 2, display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 })}>
-            <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={1.2} sx={{ mb: 1.5, flexShrink: 0 }}>
-              <Stack direction="row" spacing={1} alignItems="center">
-                <IconButton onClick={() => navigate('/networks')}><ArrowBackIcon /></IconButton>
-                <Box>
-                  <Typography variant="h6">{selectedBranch?.name || overview?.branch?.name || 'Филиал'}</Typography>
-                  <Typography variant="body2" color="text.secondary">{selectedBranch?.branch_code || overview?.branch?.branch_code || '-'}</Typography>
-                </Box>
+          <Paper elevation={0} sx={getOfficePanelSx(ui, isMobile
+            ? { p: 1 }
+            : { p: 2, display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }
+          )}>
+            {isMobile ? (
+              <Box sx={{ mb: 1, flexShrink: 0 }}>
+                {/* Компактная строка: назад + название + кнопка разворота */}
+                <Stack direction="row" alignItems="center" spacing={0.5}>
+                  <IconButton size="small" onClick={() => navigate('/networks')} sx={{ flexShrink: 0 }}>
+                    <ArrowBackIcon fontSize="small" />
+                  </IconButton>
+                  <Box sx={{ flex: 1, minWidth: 0 }}>
+                    <Typography variant="subtitle1" fontWeight={700} noWrap>
+                      {selectedBranch?.name || overview?.branch?.name || 'Филиал'}
+                    </Typography>
+                  </Box>
+                  <IconButton
+                    size="small"
+                    onClick={() => setMobileHeaderCollapsed((v) => !v)}
+                    sx={{ flexShrink: 0, transition: 'transform 0.2s', transform: mobileHeaderCollapsed ? 'rotate(0deg)' : 'rotate(180deg)' }}
+                  >
+                    <ExpandMoreIcon fontSize="small" />
+                  </IconButton>
+                </Stack>
+                {/* Схлопываемый блок с метриками */}
+                <Collapse in={!mobileHeaderCollapsed}>
+                  <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap" alignItems="center" sx={{ mt: 0.8 }}>
+                    <Chip size="small" label={`Уст: ${overview?.metrics?.devices_count || 0}`} />
+                    <Chip size="small" label={`Порты: ${overview?.metrics?.ports_count || 0}`} />
+                    <Chip size="small" label={`Роз: ${overview?.metrics?.sockets_count || 0}`} />
+                    <Chip size="small" label={`Занято: ${overview?.metrics?.occupied_ports || 0}`} />
+                    <Chip size="small" label={`Карты: ${overview?.metrics?.maps_count || 0}`} />
+                    {canEdit && (
+                      <>
+                        <input hidden type="file" accept=".xlsx,.xlsm" ref={equipImportRef} onChange={handleEquipImport} />
+                        <Tooltip title={equipImportLoading ? 'Импорт...' : 'Импорт xlsx'}>
+                          <span>
+                            <Button size="small" variant="outlined" disabled={equipImportLoading}
+                              onClick={() => setTimeout(() => equipImportRef.current?.click(), 0)}
+                              startIcon={<ImportExportIcon />} sx={{ minWidth: 40 }}>
+                              xlsx
+                            </Button>
+                          </span>
+                        </Tooltip>
+                      </>
+                    )}
+                  </Stack>
+                </Collapse>
+              </Box>
+            ) : (
+              <Stack direction="row" justifyContent="space-between" spacing={1.2} sx={{ mb: 1.5, flexShrink: 0 }}>
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <IconButton onClick={() => navigate('/networks')}><ArrowBackIcon /></IconButton>
+                  <Box>
+                    <Typography variant="h6">{selectedBranch?.name || overview?.branch?.name || 'Филиал'}</Typography>
+                    <Typography variant="body2" color="text.secondary">{selectedBranch?.branch_code || overview?.branch?.branch_code || '-'}</Typography>
+                  </Box>
+                </Stack>
+                <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" alignItems="center">
+                  <Chip size="small" label={`Уст: ${overview?.metrics?.devices_count || 0}`} />
+                  <Chip size="small" label={`Порты: ${overview?.metrics?.ports_count || 0}`} />
+                  <Chip size="small" label={`Розетки: ${overview?.metrics?.sockets_count || 0}`} />
+                  <Chip size="small" label={`Занято: ${overview?.metrics?.occupied_ports || 0}`} />
+                  <Chip size="small" label={`Карты: ${overview?.metrics?.maps_count || 0}`} />
+                  {canEdit && (
+                    <>
+                      <input hidden type="file" accept=".xlsx,.xlsm" ref={equipImportRef} onChange={handleEquipImport} />
+                      <Tooltip title={equipImportLoading ? 'Импорт...' : 'Импорт xlsx'}>
+                        <span>
+                          <Button size="small" variant="outlined" disabled={equipImportLoading}
+                            onClick={() => setTimeout(() => equipImportRef.current?.click(), 0)}
+                            startIcon={<ImportExportIcon />} sx={{ minWidth: { xs: 40, sm: 'auto' } }}>
+                            <Box component="span" sx={{ display: { xs: 'none', sm: 'inline' } }}>
+                              {equipImportLoading ? 'Импорт...' : 'xlsx'}
+                            </Box>
+                          </Button>
+                        </span>
+                      </Tooltip>
+                    </>
+                  )}
+                </Stack>
               </Stack>
-              <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap" alignItems="center">
-                <Chip size="small" label={`Устройства: ${overview?.metrics?.devices_count || 0}`} />
-                <Chip size="small" label={`Порты: ${overview?.metrics?.ports_count || 0}`} />
-                <Chip size="small" label={`Розетки: ${overview?.metrics?.sockets_count || 0}`} />
-                <Chip size="small" label={`Занято: ${overview?.metrics?.occupied_ports || 0}`} />
-                <Chip size="small" label={`Карты: ${overview?.metrics?.maps_count || 0}`} />
-                {canEdit && (
-                  <>
-                    <input
-                      hidden
-                      type="file"
-                      accept=".xlsx,.xlsm"
-                      ref={equipImportRef}
-                      onChange={handleEquipImport}
-                    />
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      disabled={equipImportLoading}
-                      onClick={() => setTimeout(() => equipImportRef.current?.click(), 0)}
-                    >
-                      {equipImportLoading ? 'Импорт...' : 'Импорт xlsx'}
-                    </Button>
-                  </>
-                )}
-              </Stack>
-            </Stack>
+            )}
 
             <Tabs
               value={tab}
@@ -2911,14 +2972,15 @@ function Networks() {
               variant={isMobile ? 'scrollable' : 'standard'}
               allowScrollButtonsMobile
             >
+              {isMobile && <Tab value="maps" label="Карта" />}
               <Tab value="equipment" label="Оборудование" />
               <Tab value="sockets" label="Розетки" />
-              <Tab value="maps" label="Карта" />
+              {!isMobile && <Tab value="maps" label="Карта" />}
               <Tab value="history" label="История" />
             </Tabs>
 
             {tab === 'equipment' && (
-              <Box sx={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }}>
+              <Box sx={isMobile ? {} : { display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }}>
                 <EquipmentTab
                   isMobile={isMobile}
                   canEdit={canEdit}
@@ -2956,7 +3018,7 @@ function Networks() {
             )}
 
             {tab === 'sockets' && (
-              <Box sx={{ display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }}>
+              <Box sx={isMobile ? {} : { display: 'flex', flexDirection: 'column', flexGrow: 1, minHeight: 0 }}>
                 <SocketsTab
                   canEdit={canEdit}
                   socketSearch={socketSearch}
@@ -2987,33 +3049,68 @@ function Networks() {
                       </Paper>
                     ) : (
                       <Stack spacing={1}>
-                        {mapRenderedFrom === 'pdf' && (
-                          <Alert severity="info">
-                            PDF-карта автоматически конвертирована в изображение. Интерактивная разметка включена.
-                          </Alert>
+                        {isMobile ? (
+                          <Box sx={{ mx: -1, mt: -0.5 }}>
+                            <InteractiveMapCanvas
+                              imageUrl={mapBlobUrl}
+                              points={pointsForMap}
+                              selectedPointId={selectedPointId}
+                              focusPointId={focusMapPointId}
+                              onPointSelect={onMapPointSelect}
+                              onPointDrop={mobileMapEditMode ? onMapPointDrop : undefined}
+                              onCanvasClick={mobileMapEditMode ? onMapClickAddPoint : undefined}
+                              disabled={!selectedMapId}
+                              mobile={true}
+                              height={{ xs: 'calc(100dvh - 148px)' }}
+                            />
+                          </Box>
+                        ) : (
+                          <InteractiveMapCanvas
+                            imageUrl={mapBlobUrl}
+                            points={pointsForMap}
+                            selectedPointId={selectedPointId}
+                            focusPointId={focusMapPointId}
+                            onPointSelect={onMapPointSelect}
+                            onPointDrop={onMapPointDrop}
+                            onCanvasClick={onMapClickAddPoint}
+                            disabled={!selectedMapId}
+                            mobile={false}
+                            height={{ xs: 500, md: 780, lg: 860 }}
+                          />
                         )}
-                        <InteractiveMapCanvas
-                          imageUrl={mapBlobUrl}
-                          points={pointsForMap}
-                          selectedPointId={selectedPointId}
-                          focusPointId={focusMapPointId}
-                          onPointSelect={onMapPointSelect}
-                          onPointDrop={onMapPointDrop}
-                          onCanvasClick={onMapClickAddPoint}
-                          disabled={!selectedMapId}
-                          mobile={isMobile}
-                          height={{ xs: isMobile ? 430 : 500, md: 780, lg: 860 }}
-                        />
                       </Stack>
                     )}
                     {isMobile && (
-                      <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
-                        <Button variant="contained" onClick={() => setMobileMapPanelOpen(true)} fullWidth>
+                      <Stack direction="row" spacing={0.8} sx={{ mt: 1, px: 0 }}>
+                        <Button
+                          variant="contained"
+                          onClick={() => setMobileMapPanelOpen(true)}
+                          sx={{ flex: 2, minHeight: 44 }}
+                        >
                           Панель карты
                         </Button>
-                        <Button variant="outlined" onClick={() => setPointDetailsOpen(true)} disabled={!selectedPoint}>
-                          Точка
+                        <Button
+                          variant="outlined"
+                          onClick={() => setPointDetailsOpen(true)}
+                          disabled={!selectedPoint}
+                          sx={{ flex: 2, minHeight: 44 }}
+                        >
+                          {selectedPoint
+                            ? String(selectedPoint.patch_panel_port || selectedPoint.port_name || '…').slice(0, 10)
+                            : 'Точка'}
                         </Button>
+                        {canEdit && (
+                          <Tooltip title={mobileMapEditMode ? 'Режим просмотра (редактирование вкл.)' : 'Включить редактирование карты'}>
+                            <Button
+                              variant={mobileMapEditMode ? 'contained' : 'outlined'}
+                              color={mobileMapEditMode ? 'warning' : 'inherit'}
+                              onClick={() => setMobileMapEditMode((v) => !v)}
+                              sx={{ flex: 1, minHeight: 44, minWidth: 44, px: 1 }}
+                            >
+                              {mobileMapEditMode ? <LockOpenIcon /> : <LockIcon />}
+                            </Button>
+                          </Tooltip>
+                        )}
                       </Stack>
                     )}
                   </Grid>
@@ -3047,15 +3144,20 @@ function Networks() {
                       sx: getOfficeDrawerPaperSx(ui, {
                         borderLeft: 'none',
                         borderTop: '1px solid',
-                        borderTopLeftRadius: 16,
-                        borderTopRightRadius: 16,
-                        maxHeight: '82vh',
-                        p: 1.2,
+                        borderTopLeftRadius: 20,
+                        borderTopRightRadius: 20,
+                        maxHeight: '90vh',
+                        p: 0,
                         overflowY: 'auto',
                       }),
                     }}
                   >
-                    {mapSidePanelContent}
+                    <Box sx={{ display: 'flex', justifyContent: 'center', pt: 1, pb: 0.5, flexShrink: 0 }}>
+                      <Box sx={{ width: 36, height: 4, borderRadius: 2, bgcolor: 'divider' }} />
+                    </Box>
+                    <Box sx={{ px: 1.5, pb: 1.5, overflowY: 'auto' }}>
+                      {mapSidePanelContent}
+                    </Box>
                   </Drawer>
                 )}
               </>
@@ -3070,117 +3172,150 @@ function Networks() {
         {isMobile && (
           <Drawer
             anchor="bottom"
-            open={mobilePortEditorOpen && Boolean(editingPort)}
-            onClose={cancelEditPort}
+            open={pointDetailsOpen}
+            onClose={() => { setPointDetailsOpen(false); setPointEditMode(false); }}
             PaperProps={{
               sx: getOfficeDrawerPaperSx(ui, {
                 borderLeft: 'none',
                 borderTop: '1px solid',
-                borderTopLeftRadius: 16,
-                borderTopRightRadius: 16,
-                maxHeight: '80vh',
+                borderTopLeftRadius: 20,
+                borderTopRightRadius: 20,
+                maxHeight: '88vh',
+                p: 0,
               }),
             }}
           >
-            <Stack spacing={1.1} sx={{ p: 2 }}>
-              <Typography variant="subtitle1">Редактирование порта</Typography>
-              <Typography variant="caption" color="text.secondary">
-                {editingPort?.device_code || '-'} · {editingPort?.port_name || '-'}
-              </Typography>
-              <TextField size="small" label="PORT" value={portDraft?.port_name || ''} onChange={(event) => updatePortDraftField('port_name', event.target.value)} />
-              <TextField size="small" label="PORT P/P" value={portDraft?.patch_panel_port || ''} onChange={(event) => updatePortDraftField('patch_panel_port', event.target.value)} />
-              <TextField size="small" label="LOCATION" value={portDraft?.location_code || ''} onChange={(event) => updatePortDraftField('location_code', event.target.value)} />
-              <TextField size="small" label="VLAN" value={portDraft?.vlan_raw || ''} onChange={(event) => updatePortDraftField('vlan_raw', event.target.value)} />
-              <TextField size="small" multiline maxRows={3} label="NAME" value={portDraft?.endpoint_name_raw || ''} onChange={(event) => updatePortDraftField('endpoint_name_raw', event.target.value)} />
-              <TextField size="small" multiline minRows={2} maxRows={6} label="IP ADDRESS" value={portDraft?.endpoint_ip_raw || ''} onChange={(event) => updatePortDraftField('endpoint_ip_raw', event.target.value)} />
-              <TextField size="small" multiline minRows={2} maxRows={6} label="MAC ADDRESS" helperText="По одному MAC на строку. Допустимы ':' и '-'." value={portDraft?.endpoint_mac_raw || ''} onChange={(event) => updatePortDraftField('endpoint_mac_raw', event.target.value)} />
-              <Stack direction="row" spacing={1}>
-                <Button
-                  variant="contained"
-                  disabled={portSaving || !editingPort || !portDraft}
-                  onClick={() => {
-                    if (!editingPort) return;
-                    void savePortEdit(editingPort);
-                  }}
-                >
-                  Сохранить
-                </Button>
-                <Button variant="outlined" onClick={cancelEditPort}>Отмена</Button>
-              </Stack>
+            <Box sx={{ display: 'flex', justifyContent: 'center', pt: 1, pb: 0.5, flexShrink: 0 }}>
+              <Box sx={{ width: 36, height: 4, borderRadius: 2, bgcolor: 'divider' }} />
+            </Box>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 2, pb: 1, flexShrink: 0 }}>
+              <Typography variant="subtitle1" fontWeight={700}>Детали точки</Typography>
+              <IconButton size="small" onClick={() => { setPointDetailsOpen(false); setPointEditMode(false); }}>
+                <CloseIcon fontSize="small" />
+              </IconButton>
             </Stack>
+            <Box sx={{ overflowY: 'auto', px: 2, pb: 2 }}>
+              {selectedPoint ? (
+                <Stack spacing={1} sx={{ mt: 0.5 }}>
+                  {selectedCluster && selectedCluster.length > 1 && (
+                    <Stack direction="row" spacing={0.5} sx={{ mb: 1, flexWrap: 'wrap', gap: 0.5 }}>
+                      {selectedCluster.map((p) => {
+                        const isSelf = Number(p.id) === Number(selectedPoint.id);
+                        const label = String(p.patch_panel_port || p.device_code || p.id);
+                        return (
+                          <Chip
+                            key={p.id}
+                            label={label}
+                            size="small"
+                            color={isSelf ? 'primary' : 'default'}
+                            onClick={() => setSelectedPointId(Number(p.id))}
+                            sx={{ cursor: 'pointer', height: 24, fontSize: '0.75rem' }}
+                          />
+                        );
+                      })}
+                    </Stack>
+                  )}
+                  <Typography variant="body2" fontWeight={600} color="primary.main">
+                    {formatSocketPort(selectedPoint)}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    📡 {selectedPoint.device_code || '-'}{selectedPoint.device_model ? ` · ${selectedPoint.device_model}` : ''}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    📍 {selectedPoint.port_location_code || '-'} · 🌐 {selectedPoint.endpoint_ip_raw || '-'}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    💻 {selectedPoint.endpoint_mac_raw || '-'}
+                  </Typography>
+                  <Typography variant="body2" color="text.secondary">
+                    👤 {(() => {
+                      const pId = Number(selectedPoint.port_id || 0);
+                      const sId = Number(selectedPoint.socket_id || 0);
+                      let foundFio = selectedPoint.fio;
+                      if (!foundFio && pId) { const port = allPortsWithSocket?.find(p => Number(p.id) === pId); if (port?.fio) foundFio = port.fio; }
+                      if (!foundFio && sId) { const sock = sockets?.find(s => Number(s.id) === sId); if (sock?.fio) foundFio = sock.fio; }
+                      return foundFio || '-';
+                    })()}
+                  </Typography>
+
+                  <Divider sx={{ my: 0.5 }} />
+
+                  {pointEditMode ? (
+                    <>
+                      <TextField
+                        size="small"
+                        label="PORT P/P"
+                        placeholder="Введите розетку, чтобы найти PORT"
+                        value={selectedPointSocketInput}
+                        onChange={(event) => setSelectedPointSocketInput(event.target.value)}
+                        helperText={selectedPointSocketInput
+                          ? (selectedPointSocketMatches.length === 1
+                            ? 'Найден 1 PORT и подставлен автоматически'
+                            : selectedPointSocketMatches.length > 1
+                              ? `Найдено ${selectedPointSocketMatches.length} портов, выберите нужный PORT`
+                              : 'Совпадений не найдено')
+                          : 'Идентичность точки определяется PORT P/P'}
+                      />
+                      <TextField
+                        select
+                        size="small"
+                        label="PORT для точки"
+                        value={selectedPointPortValue}
+                        SelectProps={{ MenuProps: mapPanelSelectMenuProps }}
+                        onChange={(event) => {
+                          const nextPortId = Number(event.target.value) || null;
+                          const nextPort = selectedPointPortOptions.find((port) => Number(port.id) === Number(nextPortId)) || null;
+                          setMapPoints((prev) =>
+                            prev.map((p) => (p.id === selectedPoint.id
+                              ? {
+                                ...p,
+                                port_id: nextPortId,
+                                port_name: nextPort?.port_name || '',
+                                patch_panel_port: nextPort?.patch_panel_port || '',
+                                port_location_code: nextPort?.location_code || '',
+                                endpoint_ip_raw: nextPort?.endpoint_ip_raw || '',
+                                endpoint_mac_raw: nextPort?.endpoint_mac_raw || '',
+                              }
+                              : p))
+                          );
+                          if (nextPort?.patch_panel_port) {
+                            setSelectedPointSocketInput(String(nextPort.patch_panel_port));
+                          }
+                        }}
+                        helperText="Идентичность точки задается PORT P/P выбранного порта"
+                      >
+                        {selectedPointPortOptions.map((port) => (
+                          <MenuItem key={port.id} value={String(port.id)}>
+                            {formatSocketPort(port)}
+                          </MenuItem>
+                        ))}
+                      </TextField>
+                      <TextField size="small" label="Название точки" value={selectedPoint.label || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, label: event.target.value } : p)))} />
+                      <TextField size="small" label="Примечание" value={selectedPoint.note || ''} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, note: event.target.value } : p)))} />
+                      <TextField size="small" type="color" label="Цвет" value={selectedPoint.color || '#1976d2'} onChange={(event) => setMapPoints((prev) => prev.map((p) => (p.id === selectedPoint.id ? { ...p, color: event.target.value } : p)))} sx={{ width: 140 }} />
+                      <Stack direction="row" spacing={1} sx={{ mt: 1 }}>
+                        <Button size="large" variant="contained" fullWidth onClick={() => void saveSelectedPoint()}>Сохранить</Button>
+                        <Button size="large" variant="outlined" fullWidth onClick={() => setPointEditMode(false)}>Отмена</Button>
+                      </Stack>
+                      <Button size="large" color="error" variant="outlined" fullWidth onClick={() => void removeSelectedPoint()}>Удалить точку</Button>
+                    </>
+                  ) : (
+                    <Stack spacing={1} sx={{ mt: 0.5 }}>
+                      <Button size="large" variant="outlined" fullWidth startIcon={<EditIcon />} onClick={() => setPointEditMode(true)}>Изменить</Button>
+                      <Button size="large" color="error" variant="outlined" fullWidth startIcon={<DeleteIcon />} onClick={() => void removeSelectedPoint()}>Удалить</Button>
+                    </Stack>
+                  )}
+                </Stack>
+              ) : (
+                <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                  Выберите точку на карте, чтобы увидеть информацию.
+                </Typography>
+              )}
+            </Box>
           </Drawer>
         )}
-
-        <MapDialog
-          open={mapDialogOpen}
-          onClose={() => setMapDialogOpen(false)}
-          mapEditId={mapEditId}
-          mapFile={mapFile}
-          setMapFile={setMapFile}
-          mapTitle={mapTitle}
-          setMapTitle={setMapTitle}
-          mapFloor={mapFloor}
-          setMapFloor={setMapFloor}
-          mapSiteCode={mapSiteCode}
-          setMapSiteCode={setMapSiteCode}
-          saveMap={saveMap}
-          sites={availableSites}
-        />
-
-
-
-        <CreateBranchDialog
-          open={createBranchOpen}
-          onClose={() => setCreateBranchOpen(false)}
-          createBranchDbId={createBranchDbId}
-          setCreateBranchDbId={setCreateBranchDbId}
-          availableDatabases={availableDatabases}
-          createBranchName={createBranchName}
-          setCreateBranchName={setCreateBranchName}
-          createBranchDefaultSiteCode={createBranchDefaultSiteCode}
-          createPanelMode={createPanelMode}
-          setCreatePanelMode={setCreatePanelMode}
-          createPanelCount={createPanelCount}
-          setCreatePanelCount={setCreatePanelCount}
-          createPortsPerPanel={createPortsPerPanel}
-          setCreatePortsPerPanel={setCreatePortsPerPanel}
-          createPanels={createPanels}
-          addPanel={addPanel}
-          removePanel={removePanel}
-          updatePanelIndex={updatePanelIndex}
-          updatePanelPortCount={updatePanelPortCount}
-          createFillMode={createFillMode}
-          setCreateFillMode={setCreateFillMode}
-          createTemplateFile={createTemplateFile}
-          setCreateTemplateFile={setCreateTemplateFile}
-          createBranchSaving={createBranchSaving}
-          createBranchWithProfile={createBranchWithProfile}
-        />
-
-        <EditBranchDialog
-          open={branchEditDialogOpen}
-          onClose={() => setBranchEditDialogOpen(false)}
-          branchEditName={branchEditName}
-          setBranchEditName={setBranchEditName}
-          branchDefaultSiteCode={branchDefaultSiteCode}
-          setBranchDefaultSiteCode={setBranchDefaultSiteCode}
-          branchEditDbId={branchEditDbId}
-          setBranchEditDbId={setBranchEditDbId}
-          branchEditLoading={branchEditLoading}
-          availableDatabases={availableDatabases}
-          branchEditSaving={branchEditSaving}
-          saveBranchEdit={saveBranchEdit}
-        />
-
-        <DeleteBranchDialog
-          open={branchDeleteDialogOpen}
-          onClose={() => setBranchDeleteDialogOpen(false)}
-          branchDeleteName={branchDeleteName}
-          branchDeleteSaving={branchDeleteSaving}
-          confirmDeleteBranch={confirmDeleteBranch}
-        />
-
-        <Dialog open={pointDetailsOpen} onClose={() => setPointDetailsOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
+        {!isMobile && (
+          <Dialog open={pointDetailsOpen} onClose={() => setPointDetailsOpen(false)} maxWidth="sm" fullWidth PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
           <DialogTitle>Детали точки карты</DialogTitle>
           <DialogContent>
             {selectedPoint ? (
@@ -3217,14 +3352,8 @@ function Networks() {
                     const pId = Number(selectedPoint.port_id || 0);
                     const sId = Number(selectedPoint.socket_id || 0);
                     let foundFio = selectedPoint.fio;
-                    if (!foundFio && pId) {
-                      const port = allPortsWithSocket?.find(p => Number(p.id) === pId);
-                      if (port?.fio) foundFio = port.fio;
-                    }
-                    if (!foundFio && sId) {
-                      const sock = sockets?.find(s => Number(s.id) === sId);
-                      if (sock?.fio) foundFio = sock.fio;
-                    }
+                    if (!foundFio && pId) { const port = allPortsWithSocket?.find(p => Number(p.id) === pId); if (port?.fio) foundFio = port.fio; }
+                    if (!foundFio && sId) { const sock = sockets?.find(s => Number(s.id) === sId); if (sock?.fio) foundFio = sock.fio; }
                     return foundFio || '-';
                   })()}
                 </Typography>
@@ -3307,6 +3436,7 @@ function Networks() {
             <Button onClick={() => setPointDetailsOpen(false)}>Закрыть</Button>
           </DialogActions>
         </Dialog>
+        )}
 
         <Dialog open={socketCreateOpen} onClose={closeCreateSocketDialog} maxWidth="sm" fullWidth PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
           <DialogTitle>Добавить розетку</DialogTitle>

@@ -58,23 +58,35 @@ function buildProps(overrides = {}) {
 }
 
 describe('MailPreviewHeader', () => {
-  it('keeps recipients collapsed by default and opens secondary actions in the mobile bottom sheet', () => {
+  it('keeps recipients collapsed by default and exposes primary mobile actions in a bottom bar', () => {
     const props = buildProps();
     renderWithTheme(<MailPreviewHeader {...props} />);
 
     expect(screen.getByLabelText('Назад к списку')).toBeTruthy();
     expect(screen.getByText('Boss Name')).toBeTruthy();
     expect(screen.queryByText(/user@example.com/i)).toBeNull();
+    expect(screen.queryByTestId('mail-preview-mobile-more')).toBeNull();
+    expect(screen.getByTestId('mail-preview-mobile-bottom-bar')).toBeVisible();
 
     fireEvent.click(screen.getByRole('button', { name: /Кому: 1 получателей/i }));
     expect(screen.getByText(/User Name <user@example\.com>/i)).toBeTruthy();
 
-    fireEvent.click(screen.getByTestId('mail-preview-mobile-more'));
-    expect(screen.getByTestId('mail-preview-mobile-actions-sheet')).toBeVisible();
-    expect(screen.getByText('Удалить')).toBeTruthy();
-
-    fireEvent.click(screen.getByText('Ответить'));
+    fireEvent.click(screen.getByRole('button', { name: /^Ответить$/i }));
     expect(props.onOpenComposeFromMessage).toHaveBeenCalledWith('reply');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Переслать$/i }));
+    expect(props.onOpenComposeFromMessage).toHaveBeenCalledWith('forward');
+
+    fireEvent.click(screen.getByRole('button', { name: /^Прочитано$/i }));
+    expect(props.onToggleReadState).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Удалить$/i }));
+    expect(props.onDeleteSelectedMessage).toHaveBeenCalledWith(false);
+
+    fireEvent.click(screen.getByRole('button', { name: /^Ещё$/i }));
+    expect(screen.getByTestId('mail-preview-mobile-actions-sheet')).toBeVisible();
+    expect(screen.getByText('Ответить всем')).toBeTruthy();
+    expect(screen.getAllByText('Архив').length).toBeGreaterThan(0);
   });
 
   it('does not render a permanent desktop action row and exposes secondary actions through the menu', () => {
@@ -104,7 +116,7 @@ describe('MailPreviewHeader', () => {
 
     renderWithTheme(<MailPreviewHeader {...props} />);
 
-    fireEvent.click(screen.getByTestId('mail-preview-mobile-more'));
+    fireEvent.click(screen.getByRole('button', { name: /^Ещё$/i }));
     fireEvent.click(screen.getByTestId('mail-preview-mobile-open-move-sheet'));
 
     const moveSheet = screen.getByTestId('mail-preview-mobile-move-sheet');

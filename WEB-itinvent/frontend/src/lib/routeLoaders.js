@@ -44,6 +44,7 @@ const defineRouteLoader = (loader) => () => loadRouteWithReloadFallback(loader);
 export const loadLoginRoute = defineRouteLoader(() => import('../pages/Login'));
 export const loadDashboardRoute = defineRouteLoader(() => import('../pages/Dashboard'));
 export const loadTasksRoute = defineRouteLoader(() => import('../pages/Tasks'));
+export const loadTicketsRoute = defineRouteLoader(() => import('../pages/Tickets'));
 export const loadChatRoute = defineRouteLoader(() => import('../pages/Chat'));
 export const loadDatabaseRoute = defineRouteLoader(() => import('../pages/Database'));
 export const loadNetworksRoute = defineRouteLoader(() => import('../pages/Networks'));
@@ -56,11 +57,13 @@ export const loadMailRoute = defineRouteLoader(() => import('../pages/Mail'));
 export const loadAdUsersRoute = defineRouteLoader(() => import('../pages/AdUsers'));
 export const loadVcsRoute = defineRouteLoader(() => import('../pages/Vcs'));
 export const loadKnowledgeBaseRoute = defineRouteLoader(() => import('../pages/KnowledgeBase'));
+export const loadAddressBookRoute = defineRouteLoader(() => import('../pages/AddressBook'));
 
 const ROUTE_LOADERS = new Map([
   ['/login', loadLoginRoute],
   ['/dashboard', loadDashboardRoute],
   ['/tasks', loadTasksRoute],
+  ['/tickets', loadTicketsRoute],
   ['/chat', loadChatRoute],
   ['/database', loadDatabaseRoute],
   ['/networks', loadNetworksRoute],
@@ -73,6 +76,7 @@ const ROUTE_LOADERS = new Map([
   ['/ad-users', loadAdUsersRoute],
   ['/vcs', loadVcsRoute],
   ['/kb', loadKnowledgeBaseRoute],
+  ['/address-book', loadAddressBookRoute],
 ]);
 
 export const normalizeRouteLoaderPath = (path) => {

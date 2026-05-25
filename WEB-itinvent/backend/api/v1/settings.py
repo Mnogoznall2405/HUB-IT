@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 class UserSettingsResponse(BaseModel):
     pinned_database: Optional[str] = None
     theme_mode: str = "light"
-    font_family: str = "Inter"
+    font_family: str = "Aptos"
     font_scale: float = 1.0
     dashboard_mobile_sections: list[str] = Field(default_factory=lambda: ["urgent", "announcements", "tasks"])
 

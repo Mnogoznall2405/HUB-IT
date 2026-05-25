@@ -4,9 +4,15 @@ import {
   Box,
   Button,
   ButtonBase,
+  Dialog,
+  DialogActions,
+  DialogContent,
+  DialogTitle,
   IconButton,
+  InputBase,
   Menu,
   MenuItem,
+  Paper,
   Skeleton,
   Stack,
   Switch,
@@ -17,6 +23,7 @@ import { alpha } from '@mui/material/styles';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import AudiotrackRoundedIcon from '@mui/icons-material/AudiotrackRounded';
+import CheckRoundedIcon from '@mui/icons-material/CheckRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ChevronLeftRoundedIcon from '@mui/icons-material/ChevronLeftRounded';
 import ChevronRightRoundedIcon from '@mui/icons-material/ChevronRightRounded';
@@ -36,6 +43,7 @@ import EditRoundedIcon from '@mui/icons-material/EditRounded';
 import CakeRoundedIcon from '@mui/icons-material/CakeRounded';
 
 import { chatAPI } from '../../api/client';
+import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { PresenceAvatar } from './ChatCommon';
 import {
   buildAttachmentUrl,
@@ -810,6 +818,108 @@ function ParticipantRow({ person }) {
   );
 }
 
+// Компоненты для диалога добавления участников
+function AddMemberUserRow({ item, ui, checked, onToggle, accentColor }) {
+  const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
+  const statusLine = formatPresenceText(item?.presence) || (item?.role || 'Участник');
+  return (
+    <Paper
+      elevation={0}
+      component="button"
+      type="button"
+      onClick={() => onToggle?.(item)}
+      sx={{
+        width: '100%',
+        px: 1.4,
+        py: 1.2,
+        borderRadius: 0,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 1.15,
+        textAlign: 'left',
+        color: primaryText,
+        cursor: 'pointer',
+        bgcolor: 'transparent',
+        transition: 'background-color 140ms ease, opacity 100ms ease',
+        '&:active': { opacity: 0.78 },
+        border: 'none',
+      }}
+    >
+      <Box sx={{ position: 'relative', flexShrink: 0 }}>
+        <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={44} />
+        {checked ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              inset: 0,
+              borderRadius: '50%',
+              bgcolor: 'rgba(0,0,0,0.35)',
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+          >
+            <CheckRoundedIcon sx={{ fontSize: 24, color: '#fff' }} />
+          </Box>
+        ) : null}
+      </Box>
+      <Box sx={{ minWidth: 0, flex: 1 }}>
+        <Typography variant="body1" sx={{ fontWeight: 700, color: primaryText }} noWrap>
+          {item?.full_name || item?.username || 'Пользователь'}
+        </Typography>
+        <Typography variant="body2" sx={{ color: ui.textSecondary }} noWrap>
+          {statusLine}
+        </Typography>
+      </Box>
+    </Paper>
+  );
+}
+
+function SelectedUserChip({ item, ui, onRemove }) {
+  const accentColor = ui.accentText || '#3390ec';
+  const bgColor = ui.drawerBg || ui.panelBg || '#17212b';
+  const shortName = String(item?.full_name || item?.username || 'Участник').split(' ')[0];
+  return (
+    <Stack
+      alignItems="center"
+      spacing={0.4}
+      sx={{ flex: '0 0 auto', width: 68, cursor: onRemove ? 'pointer' : 'default', pt: 0.5, pb: 0.25 }}
+      onClick={() => onRemove?.(item)}
+    >
+      <Box sx={{ position: 'relative', p: '3px' }}>
+        <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={46} />
+        {onRemove ? (
+          <Box
+            sx={{
+              position: 'absolute',
+              top: 0,
+              right: 0,
+              width: 18,
+              height: 18,
+              borderRadius: '50%',
+              bgcolor: bgColor,
+              display: 'flex',
+              alignItems: 'center',
+              justifyContent: 'center',
+              border: `2px solid ${bgColor}`,
+              zIndex: 2,
+            }}
+          >
+            <CloseRoundedIcon sx={{ fontSize: 11, color: accentColor }} />
+          </Box>
+        ) : null}
+      </Box>
+      <Typography
+        variant="caption"
+        sx={{ color: ui.textStrong, fontWeight: 600, fontSize: '0.74rem', lineHeight: 1.2, textAlign: 'center', width: '100%', px: 0.25 }}
+        noWrap
+      >
+        {shortName}
+      </Typography>
+    </Stack>
+  );
+}
+
 function SettingRow({ icon, label, value, active, onClick, disabled }) {
   return (
     <ButtonBase
@@ -1236,16 +1346,80 @@ export default function ChatContextPanel({
     }
   }, [closeMemberActionMenu]);
 
-  const handlePromptAddMembers = useCallback(() => {
-    if (!canManageMembers || typeof window === 'undefined') return;
-    const raw = window.prompt('Введите ID пользователей через запятую');
-    const memberUserIds = String(raw || '')
-      .split(',')
-      .map((item) => Number(String(item || '').trim()))
-      .filter((item) => Number.isFinite(item) && item > 0);
+  // Состояния для диалога добавления участников
+  const [addMembersOpen, setAddMembersOpen] = useState(false);
+  const [addMembersSearch, setAddMembersSearch] = useState('');
+  const [addMembersUsers, setAddMembersUsers] = useState([]);
+  const [addMembersLoading, setAddMembersLoading] = useState(false);
+  const [selectedAddMembers, setSelectedAddMembers] = useState([]);
+  const addMembersSearchRef = useRef(null);
+
+  // Загрузка пользователей для диалога добавления
+  const loadAddMembersUsers = useCallback(async (query = '') => {
+    if (!CHAT_FEATURE_ENABLED) return;
+    setAddMembersLoading(true);
+    try {
+      const data = await chatAPI.getUsers({ q: query, limit: 200 });
+      setAddMembersUsers(sortByName(Array.isArray(data?.items) ? data.items : []));
+    } catch {
+      setAddMembersUsers([]);
+    } finally {
+      setAddMembersLoading(false);
+    }
+  }, []);
+
+  // Открыть диалог добавления участников
+  const handleOpenAddMembers = useCallback(() => {
+    if (!canManageMembers) return;
+    setAddMembersOpen(true);
+    setAddMembersSearch('');
+    setSelectedAddMembers([]);
+    void loadAddMembersUsers('');
+  }, [canManageMembers, loadAddMembersUsers]);
+
+  // Закрыть диалог
+  const handleCloseAddMembers = useCallback(() => {
+    setAddMembersOpen(false);
+    setAddMembersSearch('');
+    setSelectedAddMembers([]);
+    setAddMembersUsers([]);
+  }, []);
+
+  // Выбрать/снять выбор пользователя
+  const handleToggleAddMember = useCallback((user) => {
+    const userId = String(user?.id || '');
+    if (!userId) return;
+    setSelectedAddMembers((current) => {
+      const exists = current.some((u) => String(u?.id || '') === userId);
+      if (exists) {
+        return current.filter((u) => String(u?.id || '') !== userId);
+      }
+      return sortByName([...current, user]);
+    });
+  }, []);
+
+  // Удалить из выбранных
+  const handleRemoveSelectedAddMember = useCallback((user) => {
+    const userId = String(user?.id || '');
+    setSelectedAddMembers((current) => current.filter((u) => String(u?.id || '') !== userId));
+  }, []);
+
+  // Подтвердить добавление
+  const handleConfirmAddMembers = useCallback(async () => {
+    const memberUserIds = selectedAddMembers.map((u) => Number(u?.id || 0)).filter((id) => id > 0);
     if (!memberUserIds.length) return;
-    void runGroupAction(() => onAddGroupMembers?.(memberUserIds));
-  }, [canManageMembers, onAddGroupMembers, runGroupAction]);
+    await runGroupAction(() => onAddGroupMembers?.(memberUserIds));
+    handleCloseAddMembers();
+  }, [selectedAddMembers, onAddGroupMembers, runGroupAction, handleCloseAddMembers]);
+
+  // Поиск с debounce
+  useEffect(() => {
+    if (!addMembersOpen) return undefined;
+    const timeoutId = window.setTimeout(() => {
+      void loadAddMembersUsers(addMembersSearch);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [addMembersOpen, addMembersSearch, loadAddMembersUsers]);
 
   const handleRenameGroup = useCallback(() => {
     if (!canManageOwners || typeof window === 'undefined') return;
@@ -1901,7 +2075,7 @@ export default function ChatContextPanel({
                       <Button
                         fullWidth
                         variant="contained"
-                        onClick={handlePromptAddMembers}
+                        onClick={handleOpenAddMembers}
                         disabled={groupActionBusy}
                         sx={{
                           borderRadius: 999,
@@ -2415,7 +2589,7 @@ export default function ChatContextPanel({
                     <Button
                       fullWidth
                       variant="contained"
-                      onClick={handlePromptAddMembers}
+                      onClick={handleOpenAddMembers}
                       disabled={groupActionBusy}
                       sx={{
                         mb: 1,
@@ -2493,6 +2667,162 @@ export default function ChatContextPanel({
           </Box>
         </Box>
       </Box>
+
+      {/* Диалог добавления участников */}
+      <Dialog
+        open={addMembersOpen}
+        onClose={handleCloseAddMembers}
+        fullWidth
+        maxWidth="sm"
+        PaperProps={{
+          sx: {
+            bgcolor: ui.panelBg || ui.drawerBg,
+            color: ui.textStrong,
+            borderRadius: 2,
+          },
+        }}
+      >
+        <DialogTitle sx={{ px: 2, py: 1.5, display: 'flex', alignItems: 'center', gap: 1 }}>
+          <Typography variant="subtitle1" sx={{ fontWeight: 800, flex: 1 }}>
+            Добавить участников
+          </Typography>
+          <IconButton onClick={handleCloseAddMembers} size="small">
+            <CloseRoundedIcon />
+          </IconButton>
+        </DialogTitle>
+
+        <DialogContent sx={{ px: 0, py: 0, minHeight: 400, display: 'flex', flexDirection: 'column' }}>
+          {/* Полоска выбранных */}
+          {selectedAddMembers.length > 0 ? (
+            <Box
+              sx={{
+                display: 'flex',
+                flexDirection: 'row',
+                alignItems: 'flex-start',
+                gap: 0.5,
+                overflowX: 'auto',
+                px: 1,
+                pt: 1.25,
+                pb: 1,
+                minHeight: 88,
+                borderBottom: `1px solid ${ui.borderSoft || alpha(ui.accentText || '#3390ec', 0.1)}`,
+                scrollbarWidth: 'none',
+                '&::-webkit-scrollbar': { display: 'none' },
+              }}
+            >
+              {selectedAddMembers.map((item) => (
+                <SelectedUserChip
+                  key={item.id}
+                  item={item}
+                  ui={ui}
+                  onRemove={handleRemoveSelectedAddMember}
+                />
+              ))}
+            </Box>
+          ) : null}
+
+          {/* Поиск */}
+          <Box
+            sx={{
+              px: 1,
+              py: 1,
+              borderBottom: `1px solid ${ui.borderSoft || alpha(ui.accentText || '#3390ec', 0.1)}`,
+            }}
+          >
+            <Box
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 1,
+                bgcolor: alpha(ui.textSecondary || '#6b7280', 0.12),
+                borderRadius: 3,
+                px: 1.2,
+                py: 0.6,
+              }}
+            >
+              <SearchRoundedIcon sx={{ fontSize: 20, color: ui.textSecondary, flexShrink: 0 }} />
+              <InputBase
+                inputRef={addMembersSearchRef}
+                fullWidth
+                autoFocus={!mobileScreen}
+                value={addMembersSearch}
+                onChange={(event) => setAddMembersSearch(event.target.value)}
+                placeholder="Поиск"
+                inputProps={{ 'aria-label': 'Поиск участников', enterKeyHint: 'search' }}
+                sx={{
+                  fontSize: '0.97rem',
+                  color: ui.textStrong,
+                  '& input::placeholder': { color: ui.textSecondary, opacity: 1 },
+                }}
+              />
+              {addMembersSearch ? (
+                <IconButton size="small" onClick={() => setAddMembersSearch('')} sx={{ p: 0.2 }}>
+                  <CloseRoundedIcon sx={{ fontSize: 16, color: ui.textSecondary }} />
+                </IconButton>
+              ) : null}
+            </Box>
+          </Box>
+
+          {/* Список пользователей */}
+          <Box sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}>
+            {addMembersLoading ? (
+              <Stack spacing={1} sx={{ p: 2 }}>
+                {[...Array(5)].map((_, i) => (
+                  <Skeleton key={i} variant="rectangular" height={56} sx={{ borderRadius: 1 }} />
+                ))}
+              </Stack>
+            ) : addMembersUsers.length === 0 ? (
+              <Stack alignItems="center" justifyContent="center" sx={{ py: 5 }}>
+                <Typography variant="body2" sx={{ color: ui.textSecondary }}>
+                  Никого не найдено
+                </Typography>
+              </Stack>
+            ) : (
+              addMembersUsers.map((item, index) => {
+                // Не показывать уже добавленных участников
+                const isAlreadyMember = participantMembers.some(
+                  (m) => String(m?.user?.id || '') === String(item?.id || '')
+                );
+                if (isAlreadyMember) return null;
+
+                const isSelected = selectedAddMembers.some(
+                  (u) => String(u?.id || '') === String(item?.id || '')
+                );
+                return (
+                  <Box key={item.id}>
+                    {index > 0 ? <Box sx={{ borderTop: `1px solid ${alpha(ui.borderSoft || '#334155', 0.5)}` }} /> : null}
+                    <AddMemberUserRow
+                      item={item}
+                      ui={ui}
+                      checked={isSelected}
+                      onToggle={handleToggleAddMember}
+                      accentColor={ui.accentText || '#3390ec'}
+                    />
+                  </Box>
+                );
+              })
+            )}
+          </Box>
+        </DialogContent>
+
+        <DialogActions sx={{ px: 2, py: 1.5, gap: 1 }}>
+          <Button
+            onClick={handleCloseAddMembers}
+            sx={{ textTransform: 'none', fontWeight: 700, color: ui.accentText }}
+          >
+            Отмена
+          </Button>
+          <Button
+            variant="text"
+            onClick={handleConfirmAddMembers}
+            disabled={selectedAddMembers.length === 0 || groupActionBusy}
+            sx={{ textTransform: 'none', fontWeight: 700, color: ui.accentText }}
+          >
+            Добавить {selectedAddMembers.length > 0 ? `(${selectedAddMembers.length})` : ''}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       {memberActionsMenu}
     </Box>
   );

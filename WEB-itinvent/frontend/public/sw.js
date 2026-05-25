@@ -1,6 +1,6 @@
-const SW_VERSION = '2026-04-26T23:10:00+05:00';
-const APP_SHELL_CACHE = 'hubit-app-shell-v2026-04-26-23';
-const APP_ASSET_CACHE = 'hubit-app-assets-v2026-04-26-23';
+const SW_VERSION = '2026-05-10T14:00:00+05:00';
+const APP_SHELL_CACHE = 'hubit-app-shell-v2026-05-10-14';
+const APP_ASSET_CACHE = 'hubit-app-assets-v2026-05-10-14';
 const CHAT_MEDIA_CACHE = 'hubit-chat-media-v2026-04-17-1';
 const PUSH_RUNTIME_CACHE = 'itinvent-push-runtime-v1';
 const PUSH_PENDING_SYNC_URL = `${self.location.origin}/__push/pending-sync`;
@@ -616,7 +616,7 @@ self.addEventListener('push', (event) => {
     const route = normalizeRoute(data?.route || '/');
     const tag = String(
       payload?.tag
-      || `${String(payload?.channel || 'system').trim() || 'system'}:${String(data?.message_id || data?.notification_id || '').trim()}`
+      || `${String(payload?.channel || 'system').trim() || 'system'}:${String(data?.conversation_id || data?.message_id || data?.notification_id || '').trim()}`
     ).trim() || 'system';
     const clientSnapshot = await collectClientVisibilitySnapshot();
     const shouldForwardToVisibleClientOnly = Boolean(clientSnapshot.has_focused_visible_client);

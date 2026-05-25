@@ -12,8 +12,13 @@ import { alpha } from '@mui/material/styles';
 import AttachFileRoundedIcon from '@mui/icons-material/AttachFileRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import InsertEmoticonRoundedIcon from '@mui/icons-material/InsertEmoticonRounded';
+import KeyboardRoundedIcon from '@mui/icons-material/KeyboardRounded';
+import MicRoundedIcon from '@mui/icons-material/MicRounded';
 import SendRoundedIcon from '@mui/icons-material/SendRounded';
+import StopRoundedIcon from '@mui/icons-material/StopRounded';
+import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 
+import ChatEmojiPanel from './ChatEmojiPanel';
 import {
   formatFileSize,
   getPersonStatusLine,
@@ -21,6 +26,11 @@ import {
 } from './chatHelpers';
 
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
+const formatVoiceDuration = (seconds) => {
+  const m = Math.floor(seconds / 60);
+  const s = Math.floor(seconds % 60);
+  return `${m}:${s < 10 ? '0' : ''}${s}`;
+};
 const TELEGRAM_CHAT_FONT_FAMILY = [
   '"SF Pro Text"',
   '"SF Pro Display"',
@@ -127,6 +137,7 @@ const ChatComposer = memo(function ChatComposer({
   onComposerKeyDown,
   onComposerSelectionSync,
   onOpenEmojiPicker,
+  onCloseEmojiPicker,
   onSendMessage,
   onComposerPaste,
   onComposerDrop,
@@ -137,6 +148,15 @@ const ChatComposer = memo(function ChatComposer({
   onSearchMentionPeople,
   composerDockRef,
   keyboardInset = 0,
+  mobileEmojiPickerOpen = false,
+  onInsertEmoji,
+  onSendSticker,
+  onSendGif,
+  voiceRecording = false,
+  voiceRecordingDuration = 0,
+  onStartVoiceRecording,
+  onStopVoiceRecording,
+  onCancelVoiceRecording,
 }) {
   const contentMaxWidth = Number(ui.contentMaxWidth || 980);
   const composerBg = ui.composerBg || (theme.palette.mode === 'dark' ? '#1c1c1e' : '#ffffff');
@@ -303,9 +323,10 @@ const ChatComposer = memo(function ChatComposer({
       sx={{
         px: { xs: compactMobile ? 0.8 : 1.1, md: 1.6 },
         pt: compactMobile ? 0.55 : 0.95,
+        pb: compactMobile ? 0.55 : 0.95,
         bgcolor: composerBg,
         backdropFilter: 'blur(22px) saturate(1.08)',
-        position: 'sticky',
+        position: 'relative',
         bottom: 0,
         zIndex: 5,
         borderTop: theme.palette.mode === 'dark' ? `0.5px solid ${ui.borderSoft}` : 'none',
@@ -316,62 +337,7 @@ const ChatComposer = memo(function ChatComposer({
       }}
     >
       <Box sx={{ maxWidth: { xs: '100%', md: `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
-        {selectedFiles.length > 0 || preparingFiles ? (
-          <div
-            className={joinClasses(
-              'mb-3 border px-4 py-3',
-              compactMobile ? 'rounded-[20px]' : 'rounded-[14px]',
-            )}
-            style={{
-              backgroundColor: alpha(ui.composerDockBg, 0.94),
-              borderColor: ui.borderSoft,
-              borderLeft: `3px solid ${ui.accentText}`,
-              boxShadow: ui.shadowSoft,
-            }}
-          >
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0 flex-1">
-                <p className="text-[12px] font-semibold" style={{ color: ui.accentText, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: CHAT_FONT_SIZES.composerAux }}>
-                  {preparingFiles ? 'Подготовка фото...' : sendingFiles ? 'Загрузка файлов...' : 'Вложения готовы к отправке'}
-                </p>
-                <p className="mt-0.5 text-[12px]" style={{ color: ui.textSecondary, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: CHAT_FONT_SIZES.composerAux }}>
-                  {selectedFiles.length > 0
-                    ? `${selectedFiles.length} ${selectedFiles.length === 1 ? 'файл' : selectedFiles.length < 5 ? 'файла' : 'файлов'}`
-                    : 'Готовим выбранные изображения перед отправкой'}
-                  {selectedFilesTotalLabel ? ` | ${selectedFilesTotalLabel}` : ''}
-                  {sendingFiles ? ` | ${Math.max(0, Math.min(100, Math.round(Number(fileUploadProgress || 0))))}%` : ''}
-                  {fileCaption ? ' | есть подпись' : ''}
-                </p>
-              </div>
-              <div className="flex items-center gap-2">
-                <button type="button" onClick={onOpenFileDialog} disabled={filesBusy} className="text-[12px] font-medium disabled:opacity-50" style={{ color: ui.accentText, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: CHAT_FONT_SIZES.composerAux }}>
-                  Изменить
-                </button>
-                <button type="button" onClick={onClearSelectedFiles} disabled={filesBusy} className="text-[12px] font-medium disabled:opacity-50" style={{ color: composerAuxColor, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: CHAT_FONT_SIZES.composerAux }}>
-                  Очистить
-                </button>
-              </div>
-            </div>
-            {selectedFiles.length > 0 ? (
-              <div className="mt-3 flex flex-wrap gap-2">
-              {selectedFiles.slice(0, 3).map((file) => (
-                <span
-                  key={`${file.name}-${file.size}`}
-                  className="inline-flex max-w-full rounded-full px-3 py-1 text-[12px] font-medium"
-                  style={{ backgroundColor: ui.composerInputBg, color: composerPrimaryText }}
-                >
-                  <span className="truncate">{file.name}</span>
-                </span>
-              ))}
-              {selectedFiles.length > 3 ? (
-                <span className="inline-flex rounded-full px-3 py-1 text-[12px] font-medium" style={{ backgroundColor: ui.composerInputBg, color: composerPrimaryText }}>
-                  +{selectedFiles.length - 3}
-                </span>
-              ) : null}
-              </div>
-            ) : null}
-          </div>
-        ) : null}
+        {/* File attachment status bar removed — upload dialog handles everything */}
 
         {replyMessage ? (
           <div
@@ -510,127 +476,212 @@ const ChatComposer = memo(function ChatComposer({
               },
             }}
           >
-            <Tooltip disableHoverListener={compactMobile} disableFocusListener={compactMobile} disableTouchListener={compactMobile} title="Emoji">
-              <span>
+            {voiceRecording ? (
+              <>
                 <button
                   type="button"
-                  data-testid="chat-composer-emoji-button"
-                  aria-label="Emoji"
-                  onClick={onOpenEmojiPicker}
-                  onMouseDown={preserveComposerKeyboard}
-                  onPointerDown={preserveComposerKeyboard}
-                  disabled={!activeConversationId}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
+                  aria-label="Отменить запись"
+                  onClick={onCancelVoiceRecording}
+                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
                   style={{
                     backgroundColor: 'transparent',
-                    color: composerIconColor,
+                    color: theme.palette.error.main,
                     transform: compactMobile ? undefined : 'translateY(-4px)',
                   }}
-                  onMouseEnter={(event) => {
-                    if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
-                  }}
-                  onMouseLeave={(event) => {
-                    event.currentTarget.style.backgroundColor = 'transparent';
-                  }}
                 >
-                  <InsertEmoticonRoundedIcon sx={{ fontSize: 21 }} />
+                  <DeleteOutlineRoundedIcon sx={{ fontSize: 21 }} />
                 </button>
-              </span>
-            </Tooltip>
-
-            <Box
-              className="flex min-w-0 flex-1 items-end py-[11px]"
-              sx={{ minHeight: 38 }}
-            >
-              <TextareaAutosize
-                ref={composerRef}
-                data-testid="chat-composer-textarea"
-                minRows={1}
-                maxRows={6}
-                aria-label="Message"
-                placeholder="Message"
-                value={messageText}
-                onChange={handleComposerChange}
-                onKeyDown={handleComposerKeyDown}
-                onSelect={handleComposerSelection}
-                onClick={handleComposerSelection}
-                onKeyUp={handleComposerSelection}
-                onFocus={handleFocus}
-                onBlur={handleBlur}
-                onPaste={onComposerPaste}
-                style={{
-                  width: '100%',
-                  resize: 'none',
-                  border: 'none',
-                  outline: 'none',
-                  background: 'transparent',
-                  color: theme.palette.text.primary,
-                  fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-                  fontSize: compactMobile ? '16px' : CHAT_FONT_SIZES.composer,
-                  lineHeight: '1.34',
-                  padding: 0,
-                  margin: 0,
-                  overflowY: 'auto',
-                  maxHeight: '120px',
-                  minHeight: compactMobile ? '18px' : '19px',
-                }}
-              />
-            </Box>
-
-            <Tooltip title="Меню вложений">
-              <span>
-                <button
-                  type="button"
-                  aria-label="Меню вложений"
-                  data-testid="chat-composer-menu-button"
-                  onClick={onOpenComposerMenu}
-                  onMouseDown={preserveComposerKeyboard}
-                  onPointerDown={preserveComposerKeyboard}
-                  disabled={!activeConversationId}
-                  className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
-                  style={{
-                    backgroundColor: 'transparent',
-                    color: composerIconColor,
-                    transform: compactMobile ? undefined : 'translateY(-4px)',
-                  }}
-                  onMouseEnter={(event) => {
-                    if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
-                  }}
-                  onMouseLeave={(event) => {
-                    event.currentTarget.style.backgroundColor = 'transparent';
-                  }}
+                <Box
+                  className="flex min-w-0 flex-1 items-center py-[11px]"
+                  sx={{ minHeight: 38, gap: 1 }}
                 >
-                  <AttachFileRoundedIcon sx={{ fontSize: 21 }} />
-                </button>
-              </span>
-            </Tooltip>
+                  <Box
+                    sx={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: '50%',
+                      bgcolor: theme.palette.error.main,
+                      animation: 'pulse 1.2s ease-in-out infinite',
+                      '@keyframes pulse': {
+                        '0%, 100%': { opacity: 1 },
+                        '50%': { opacity: 0.3 },
+                      },
+                    }}
+                  />
+                  <Typography
+                    sx={{
+                      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                      fontSize: compactMobile ? '16px' : CHAT_FONT_SIZES.composer,
+                      fontVariantNumeric: 'tabular-nums',
+                      color: theme.palette.text.primary,
+                      lineHeight: 1.34,
+                      userSelect: 'none',
+                    }}
+                  >
+                    {formatVoiceDuration(voiceRecordingDuration)}
+                  </Typography>
+                </Box>
+              </>
+            ) : (
+              <>
+                <Tooltip disableHoverListener={compactMobile} disableFocusListener={compactMobile} disableTouchListener={compactMobile} title="Emoji">
+                  <span>
+                    <button
+                      type="button"
+                      data-testid="chat-composer-emoji-button"
+                      aria-label={mobileEmojiPickerOpen ? 'Клавиатура' : 'Emoji'}
+                      onClick={mobileEmojiPickerOpen ? onCloseEmojiPicker : onOpenEmojiPicker}
+                      disabled={!activeConversationId}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
+                      style={{
+                        backgroundColor: 'transparent',
+                        color: composerIconColor,
+                        transform: compactMobile ? undefined : 'translateY(-4px)',
+                      }}
+                      onMouseEnter={(event) => {
+                        if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
+                      }}
+                      onMouseLeave={(event) => {
+                        event.currentTarget.style.backgroundColor = 'transparent';
+                      }}
+                    >
+                      {mobileEmojiPickerOpen
+                        ? <KeyboardRoundedIcon sx={{ fontSize: 21 }} />
+                        : <InsertEmoticonRoundedIcon sx={{ fontSize: 21 }} />}
+                    </button>
+                  </span>
+                </Tooltip>
+
+                <Box
+                  className="flex min-w-0 flex-1 items-end py-[11px]"
+                  sx={{ minHeight: 38 }}
+                >
+                  <TextareaAutosize
+                    ref={composerRef}
+                    data-testid="chat-composer-textarea"
+                    minRows={1}
+                    maxRows={6}
+                    aria-label="Message"
+                    placeholder="Сообщение..."
+                    value={messageText}
+                    onChange={handleComposerChange}
+                    onKeyDown={handleComposerKeyDown}
+                    onSelect={handleComposerSelection}
+                    onClick={handleComposerSelection}
+                    onKeyUp={handleComposerSelection}
+                    onFocus={handleFocus}
+                    onBlur={handleBlur}
+                    onPaste={onComposerPaste}
+                    style={{
+                      width: '100%',
+                      resize: 'none',
+                      border: 'none',
+                      outline: 'none',
+                      background: 'transparent',
+                      color: theme.palette.text.primary,
+                      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                      fontSize: compactMobile ? '16px' : CHAT_FONT_SIZES.composer,
+                      lineHeight: '1.34',
+                      padding: 0,
+                      margin: 0,
+                      overflowY: 'auto',
+                      overflowWrap: 'anywhere',
+                      wordBreak: 'break-word',
+                      maxHeight: '120px',
+                      minHeight: compactMobile ? '18px' : '19px',
+                    }}
+                  />
+                </Box>
+
+                {!canSendComposerMessage ? (
+                  <Tooltip title="Меню вложений">
+                    <span>
+                      <button
+                        type="button"
+                        aria-label="Меню вложений"
+                        data-testid="chat-composer-menu-button"
+                        onClick={onOpenComposerMenu}
+                        onMouseDown={preserveComposerKeyboard}
+                        onPointerDown={preserveComposerKeyboard}
+                        disabled={!activeConversationId}
+                        className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
+                        style={{
+                          backgroundColor: 'transparent',
+                          color: composerIconColor,
+                          transform: compactMobile ? undefined : 'translateY(-4px)',
+                        }}
+                        onMouseEnter={(event) => {
+                          if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
+                        }}
+                        onMouseLeave={(event) => {
+                          event.currentTarget.style.backgroundColor = 'transparent';
+                        }}
+                      >
+                        <AttachFileRoundedIcon sx={{ fontSize: 21 }} />
+                      </button>
+                    </span>
+                  </Tooltip>
+                ) : null}
+              </>
+            )}
           </Box>
 
-          <Tooltip title="Отправить">
-            <span>
-              <button
-                type="button"
-                aria-label="Отправить"
-                onClick={() => void onSendMessage()}
-                onMouseDown={preserveComposerKeyboard}
-                onPointerDown={preserveComposerKeyboard}
-                // A pending forward without extra text is still a valid send action.
-                disabled={!canSendComposerMessage}
-                data-testid="chat-composer-send-button"
-                className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:cursor-not-allowed"
-                style={{
-                  backgroundColor: !canSendComposerMessage ? alpha(composerActionBg, 0.34) : composerActionBg,
-                  color: composerActionText,
-                  boxShadow: !canSendComposerMessage ? 'none' : `0 6px 16px ${alpha(composerActionBg, 0.24)}`,
-                  transform: compactMobile ? undefined : 'translateY(-2px)',
-                }}
-              >
-                <SendRoundedIcon sx={{ fontSize: 20 }} />
-              </button>
-            </span>
-          </Tooltip>
+          {canSendComposerMessage || voiceRecording ? (
+            <Tooltip title={voiceRecording ? 'Отправить' : 'Отправить'}>
+              <span>
+                <button
+                  type="button"
+                  aria-label="Отправить"
+                  onClick={voiceRecording ? onStopVoiceRecording : () => void onSendMessage()}
+                  onMouseDown={preserveComposerKeyboard}
+                  onPointerDown={preserveComposerKeyboard}
+                  data-testid="chat-composer-send-button"
+                  className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
+                  style={{
+                    backgroundColor: composerActionBg,
+                    color: composerActionText,
+                    boxShadow: `0 6px 16px ${alpha(composerActionBg, 0.24)}`,
+                    transform: compactMobile ? undefined : 'translateY(-2px)',
+                  }}
+                >
+                  <SendRoundedIcon sx={{ fontSize: 20 }} />
+                </button>
+              </span>
+            </Tooltip>
+          ) : (
+            <Tooltip title="Голосовое сообщение">
+              <span>
+                <button
+                  type="button"
+                  aria-label="Голосовое сообщение"
+                  onClick={onStartVoiceRecording}
+                  disabled={!activeConversationId}
+                  data-testid="chat-composer-voice-button"
+                  className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
+                  style={{
+                    backgroundColor: alpha(composerActionBg, 0.12),
+                    color: composerActionBg,
+                    transform: compactMobile ? undefined : 'translateY(-2px)',
+                  }}
+                >
+                  <MicRoundedIcon sx={{ fontSize: 22 }} />
+                </button>
+              </span>
+            </Tooltip>
+          )}
         </div>
+
       </Box>
+
+      <ChatEmojiPanel
+        open={mobileEmojiPickerOpen}
+        theme={theme}
+        ui={ui}
+        onInsertEmoji={onInsertEmoji}
+        onSendSticker={onSendSticker}
+        onSendGif={onSendGif}
+        onClose={onCloseEmojiPicker}
+      />
     </Box>
   );
 });

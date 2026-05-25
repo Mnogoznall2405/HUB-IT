@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { clearSWRCache } from '../lib/swrCache';
 import { writeMailRecentMessageDetail } from '../lib/mailRecentCache';
+import { MAIL_SELECTED_MAILBOX_STORAGE_KEY } from '../components/mail/mailMailboxModel';
 
 const {
   mockGetBootstrap,
@@ -35,6 +36,9 @@ const {
   mockMarkConversationAsUnread,
   mockGetUnreadCount,
   mockBulkMessageAction,
+  mockNotifySuccess,
+  mockNotifyInfo,
+  mockNotifyWarning,
   mockRenderStats,
 } = vi.hoisted(() => ({
   mockGetBootstrap: vi.fn(),
@@ -67,6 +71,9 @@ const {
   mockMarkConversationAsUnread: vi.fn(),
   mockGetUnreadCount: vi.fn(),
   mockBulkMessageAction: vi.fn(),
+  mockNotifySuccess: vi.fn(),
+  mockNotifyInfo: vi.fn(),
+  mockNotifyWarning: vi.fn(),
   mockRenderStats: {
     folderRail: 0,
     messageList: 0,
@@ -75,6 +82,14 @@ const {
       this.messageList = 0;
     },
   },
+}));
+
+vi.mock('../contexts/NotificationContext', () => ({
+  useNotification: () => ({
+    notifySuccess: mockNotifySuccess,
+    notifyInfo: mockNotifyInfo,
+    notifyWarning: mockNotifyWarning,
+  }),
 }));
 
 function installMatchMedia({ mobile = false } = {}) {
@@ -754,6 +769,9 @@ describe('Mail read-state behavior', () => {
     mockMarkConversationAsUnread.mockReset();
     mockGetUnreadCount.mockReset();
     mockBulkMessageAction.mockReset();
+    mockNotifySuccess.mockReset();
+    mockNotifyInfo.mockReset();
+    mockNotifyWarning.mockReset();
 
     mockGetBootstrap.mockResolvedValue(buildBootstrapPayload());
     mockGetMyConfig.mockResolvedValue({
@@ -2548,6 +2566,37 @@ describe('Mail read-state behavior', () => {
     });
   });
 
+  it('restores the last selected mailbox when returning to the mail route without mailbox query params', async () => {
+    window.sessionStorage.setItem(MAIL_SELECTED_MAILBOX_STORAGE_KEY, 'shared');
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      mailboxInfo: {
+        mailbox_id: 'shared',
+        mailbox_email: 'shared@example.com',
+        mailbox_login: 'shared@zsgp.corp',
+        effective_mailbox_login: 'shared@zsgp.corp',
+      },
+      mailboxes: [
+        { id: 'primary', label: 'Primary', mailbox_email: 'user@example.com', is_primary: true },
+        { id: 'shared', label: 'Shared', mailbox_email: 'shared@example.com' },
+      ],
+    }));
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(mockGetBootstrap).toHaveBeenCalledWith(expect.objectContaining({
+        mailbox_id: 'shared',
+      }));
+    });
+    expect(window.sessionStorage.getItem(MAIL_SELECTED_MAILBOX_STORAGE_KEY)).toBe('shared');
+  });
+
   it('opens desktop compose inline in the preview pane from the floating action button', async () => {
     render(
       <MemoryRouter initialEntries={['/mail']}>
@@ -2665,6 +2714,7 @@ describe('Mail read-state behavior', () => {
       });
 
       fireEvent.click(screen.getByTestId('mail-compose-close-action'));
+      fireEvent.click(await screen.findByRole('button', { name: 'Не сохранять' }));
 
       await waitFor(() => {
         expect(screen.getByTestId('mail-preview-header')).toBeTruthy();
@@ -3008,6 +3058,7 @@ describe('Mail read-state behavior', () => {
         scope: 'mailbox',
       });
     });
+    expect(mockNotifySuccess).toHaveBeenCalledWith('Папка создана.', expect.objectContaining({ source: 'mail' }));
   });
 
   it('renames and favorites folders from the folder rail', async () => {

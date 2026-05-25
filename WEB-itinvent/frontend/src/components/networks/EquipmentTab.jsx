@@ -3,6 +3,8 @@ import {
   Autocomplete,
   Box,
   Button,
+  Card,
+  CardActionArea,
   Chip,
   Divider,
   Drawer,
@@ -238,19 +240,15 @@ export default function EquipmentTab({
   return (
     <>
       <Box sx={{ display: 'flex', flexDirection: 'column', gap: 2, height: '100%', minHeight: 0 }}>
-        <Paper elevation={0} sx={getOfficePanelSx(ui, { width: '100%', flexShrink: 0, p: 1.5, display: 'flex', flexDirection: 'column' })}>
-          <Stack direction="row" alignItems="center" justifyContent="space-between" mb={1.5}>
-            <Typography variant="subtitle2">Оборудование ({devices.length})</Typography>
+        <Paper elevation={0} sx={getOfficePanelSx(ui, { width: '100%', flexShrink: 0, p: isMobile ? 1 : 1.5, display: 'flex', flexDirection: 'column' })}>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" mb={isMobile ? 0.8 : 1.5}>
+            <Typography variant={isMobile ? 'caption' : 'subtitle2'} color="text.secondary">
+              Устройства: {devices.length}
+            </Typography>
             {canEdit && (
-              <Button
-                variant="outlined"
-                size="small"
-                onClick={openCreateDeviceDialog}
-                startIcon={<AddIcon />}
-                sx={getOfficeQuietActionSx(ui, theme, 'primary')}
-              >
-                Добавить
-              </Button>
+              <IconButton size="small" onClick={openCreateDeviceDialog} color="primary">
+                <AddIcon fontSize="small" />
+              </IconButton>
             )}
           </Stack>
           <Box>
@@ -296,38 +294,33 @@ export default function EquipmentTab({
         </Paper>
 
         <Box sx={{ flexGrow: 1, minWidth: 0, minHeight: 0, display: 'flex', flexDirection: 'column' }}>
-          <Paper elevation={0} sx={getOfficeActionTraySx(ui, { p: 1.2, mb: 1, display: 'flex', alignItems: 'center', gap: 1 })}>
-            <Typography variant="subtitle2" sx={{ whiteSpace: 'nowrap', minWidth: 100 }}>
-              {selectedDeviceId === null ? 'Все порты' : `Порты: ${selectedDevice?.device_code || ''}`}
-            </Typography>
+          <Paper elevation={0} sx={getOfficeActionTraySx(ui, { p: isMobile ? 0.8 : 1.2, mb: 1, display: 'flex', alignItems: 'center', gap: 0.8 })}>
+            {!isMobile && (
+              <Typography variant="subtitle2" sx={{ whiteSpace: 'nowrap', minWidth: 100 }}>
+                {selectedDeviceId === null ? 'Все порты' : `Порты: ${selectedDevice?.device_code || ''}`}
+              </Typography>
+            )}
             <TextField
               size="small"
               fullWidth
-              placeholder="Поиск: ASW / PORT / розетка / IP / MAC / Имя / ФИО"
+              placeholder={isMobile ? 'Поиск портов...' : 'Поиск: ASW / PORT / розетка / IP / MAC / Имя / ФИО'}
               value={portSearch}
               onChange={(event) => setPortSearch(event.target.value)}
               sx={{ bgcolor: ui.actionBg }}
             />
-            <Button
-              variant="outlined"
-              size="small"
-              startIcon={<DownloadIcon />}
-              onClick={handleExportCSV}
-              sx={{ ...getOfficeQuietActionSx(ui, theme), whiteSpace: 'nowrap' }}
-              disabled={!displayedPorts?.length}
-            >
-              CSV ({displayedPorts?.length || 0})
-            </Button>
+            <Tooltip title={`Скачать CSV (${displayedPorts?.length || 0})`}>
+              <span>
+                <IconButton size="small" onClick={handleExportCSV} disabled={!displayedPorts?.length}>
+                  <DownloadIcon fontSize="small" />
+                </IconButton>
+              </span>
+            </Tooltip>
             {canEdit && selectedDeviceId !== null && (
-              <Button
-                variant="outlined"
-                size="small"
-                onClick={() => openEditDeviceDialog(selectedDevice)}
-                startIcon={<EditIcon />}
-                sx={getOfficeQuietActionSx(ui, theme, 'primary')}
-              >
-                Изменить
-              </Button>
+              <Tooltip title="Изменить устройство">
+                <IconButton size="small" color="primary" onClick={() => openEditDeviceDialog(selectedDevice)}>
+                  <EditIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
             )}
           </Paper>
 
@@ -354,6 +347,91 @@ export default function EquipmentTab({
                 <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 2, textAlign: 'center' }) }}>
                   <Typography variant="body2" color="text.secondary">Порты не найдены.</Typography>
                 </Box>
+              </Box>
+            ) : isMobile ? (
+              <Box
+                sx={{
+                  px: 1,
+                  py: 0.5,
+                }}
+              >
+                <Stack spacing={0.8}>
+                  {displayedPorts.map((port) => {
+                    const isEditing = Number(editingPortId) === Number(port.id);
+                    const ips = splitBySpace(port.endpoint_ip_raw);
+                    const macs = splitBySpace(port.endpoint_mac_raw);
+                    const fios = splitValues(port.fio);
+                    const hasData = ips.length > 0 || macs.length > 0 || fios.length > 0;
+
+                    return (
+                      <Card
+                        key={port.id}
+                        variant="outlined"
+                        sx={{
+                          borderColor: isEditing ? 'primary.main' : ui.borderSoft,
+                          bgcolor: isEditing ? ui.selectedBg : ui.panelSolid,
+                          transition: 'border-color 0.15s',
+                        }}
+                      >
+                        <CardActionArea
+                          onClick={(event) => handlePortRowClick(port, event)}
+                          sx={{ p: 1.2 }}
+                        >
+                          <Stack direction="row" alignItems="flex-start" justifyContent="space-between" spacing={1}>
+                            <Box sx={{ flex: 1, minWidth: 0 }}>
+                              <Stack direction="row" spacing={1} alignItems="center" sx={{ mb: 0.3 }}>
+                                <Typography variant="body2" sx={{ fontWeight: 700, color: 'primary.main', fontFamily: 'monospace', fontSize: '0.9rem' }}>
+                                  {port.patch_panel_port || '—'}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" sx={{ fontFamily: 'monospace' }}>
+                                  {port.device_code || selectedDevice?.device_code || ''}
+                                  {port.port_name ? ` · ${port.port_name}` : ''}
+                                </Typography>
+                              </Stack>
+                              {port.location_code && (
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                  📍 {port.location_code}{port.vlan_raw ? ` · VLAN ${port.vlan_raw}` : ''}
+                                </Typography>
+                              )}
+                              {hasData && (
+                                <Stack spacing={0} sx={{ mt: 0.4 }}>
+                                  {ips.length > 0 && (
+                                    <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary' }}>
+                                      🌐 {ips.join(' · ')}
+                                    </Typography>
+                                  )}
+                                  {macs.length > 0 && (
+                                    <Typography variant="caption" sx={{ fontFamily: 'monospace', color: 'text.secondary', fontSize: '0.7rem' }}>
+                                      💻 {macs.join(' · ')}
+                                    </Typography>
+                                  )}
+                                  {fios.length > 0 && (
+                                    <Typography variant="caption" color="text.secondary">
+                                      👤 {fios.join(', ')}
+                                    </Typography>
+                                  )}
+                                </Stack>
+                              )}
+                            </Box>
+                            {canEdit && (
+                              <IconButton
+                                size="small"
+                                color="primary"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  startEditPort(port, event);
+                                }}
+                                sx={{ mt: -0.5, flexShrink: 0, minWidth: 36, minHeight: 36 }}
+                              >
+                                <EditIcon sx={{ fontSize: 18 }} />
+                              </IconButton>
+                            )}
+                          </Stack>
+                        </CardActionArea>
+                      </Card>
+                    );
+                  })}
+                </Stack>
               </Box>
             ) : (
               <TableContainer

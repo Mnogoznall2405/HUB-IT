@@ -22,8 +22,18 @@ const getEquipmentCardActionMeta = (action) => {
   switch (action) {
     case 'view':
       return { label: 'Подробнее', icon: <OpenInNewIcon fontSize="small" /> };
+    case 'location_transfer':
+      return {
+        label: 'Перемещение',
+        tooltip: 'Меняет только филиал и локацию в базе. Сотрудник и акты не меняются.',
+        icon: <MyLocationIcon fontSize="small" />,
+      };
     case 'transfer':
-      return { label: 'Переместить', icon: <TransferIcon fontSize="small" /> };
+      return {
+        label: 'Перемещение с актом',
+        tooltip: 'Меняет сотрудника/филиал/локацию, создаёт акт и напоминание на загрузку подписанного акта.',
+        icon: <TransferIcon fontSize="small" />,
+      };
     case 'cartridge':
       return { label: 'Картридж', icon: <PrintIcon fontSize="small" /> };
     case 'battery':
@@ -544,6 +554,7 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
                     key={actionConfig.action}
                     size="small"
                     startIcon={actionConfig.icon}
+                    title={actionConfig.tooltip || actionConfig.label}
                     onClick={(e) => {
                       e.stopPropagation();
                       onAction(actionConfig.action, item);

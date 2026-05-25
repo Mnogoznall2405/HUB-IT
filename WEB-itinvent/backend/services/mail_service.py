@@ -3088,6 +3088,31 @@ class MailService:
         except MailMessageContentError as exc:
             raise MailServiceError(str(exc)) from exc
 
+    def _collect_forwarded_attachments(
+        self,
+        *,
+        item: Any,
+        account: Any,
+        retain_attachment_ids: set[str] | None = None,
+    ) -> list[tuple[str, bytes]]:
+        forwarded_attachments: list[tuple[str, bytes]] = []
+        for attachment in (getattr(item, "attachments", None) or []):
+            attachment_id = self._extract_attachment_raw_id(attachment)
+            if retain_attachment_ids is not None and attachment_id not in retain_attachment_ids:
+                continue
+            content_id = self._normalize_attachment_content_id(getattr(attachment, "content_id", None))
+            if bool(getattr(attachment, "is_inline", False)) or content_id:
+                continue
+            if not self._is_downloadable_attachment(attachment):
+                continue
+            payload = self._build_attachment_download_payload(attachment=attachment, account=account)
+            if payload is None:
+                continue
+            filename, _content_type, content = payload
+            if content:
+                forwarded_attachments.append((filename, content))
+        return forwarded_attachments
+
     def get_message_source(self, *, user_id: int, mailbox_id: str | None = None, message_id: str) -> tuple[str, bytes]:
         context = self._get_message_context(user_id=int(user_id), mailbox_id=mailbox_id, message_id=message_id)
         try:
@@ -3830,12 +3855,13 @@ class MailService:
         reply_to_message_id: str = "",
         forward_message_id: str = "",
         draft_id: str = "",
+        retain_existing_attachments: list[str] | None = None,
     ) -> dict[str, Any]:
         try:
             recipient_set = build_recipient_set(to=to, cc=cc, bcc=bcc, require_to=True)
         except ComposeValidationError as exc:
             raise MailServiceError(str(exc)) from exc
-        safe_attachments = attachments or []
+        safe_attachments = list(attachments or [])
         self._validate_outgoing_attachments_dynamic(safe_attachments)
         effective_mailbox_id = self._resolve_outbound_mailbox_id(
             mailbox_id=mailbox_id,
@@ -3903,6 +3929,33 @@ class MailService:
             reply_message_id_value = ""
             reply_references = ""
             forward_message_id_value = ""
+            retain_attachment_ids = (
+                {
+                    self.resolve_attachment_id(token)
+                    for token in (retain_existing_attachments or [])
+                    if _normalize_text(token)
+                }
+                if retain_existing_attachments is not None
+                else None
+            )
+
+            if send_plan.draft_id:
+                draft_folder_key, draft_exchange_id = self._decode_message_id(send_plan.draft_id)
+                if draft_folder_key != "drafts":
+                    raise MailServiceError("Draft id must point to drafts folder")
+                draft_folder_obj, _ = self._resolve_folder(account, draft_folder_key)
+                try:
+                    draft_item = draft_folder_obj.get(id=draft_exchange_id)
+                except Exception as exc:
+                    raise MailServiceError(f"Draft source message not found: {exc}") from exc
+                safe_attachments.extend(
+                    self._collect_forwarded_attachments(
+                        item=draft_item,
+                        account=account,
+                        retain_attachment_ids=retain_attachment_ids,
+                    )
+                )
+                self._validate_outgoing_attachments_dynamic(safe_attachments)
 
             if send_plan.reply_to_message_id:
                 reply_folder_key, reply_exchange_id = self._decode_message_id(send_plan.reply_to_message_id)
@@ -3922,6 +3975,10 @@ class MailService:
                 except Exception as exc:
                     raise MailServiceError(f"Forward source message not found: {exc}") from exc
                 forward_message_id_value = self._item_message_id(forward_item)
+                safe_attachments.extend(
+                    self._collect_forwarded_attachments(item=forward_item, account=account)
+                )
+                self._validate_outgoing_attachments_dynamic(safe_attachments)
 
             msg_kwargs.update(
                 build_reply_forward_reference_headers(

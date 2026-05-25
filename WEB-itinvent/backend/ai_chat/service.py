@@ -5,6 +5,8 @@ import copy
 import io
 import json
 import logging
+import os
+import re
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -24,9 +26,18 @@ from backend.ai_chat.tools.context import (
     AI_TOOL_MULTI_DB_MODE_SINGLE,
     AI_TOOL_FILES_CREATE,
     AI_TOOL_FILES_REPORT,
+    AI_TOOL_GROUP_ITINVENT,
+    AI_TOOL_GROUP_OFFICE,
+    AI_TOOL_GROUP_FILES,
+    AI_TOOL_GROUP_MFU,
+    AI_TOOL_GROUP_NETWORK,
+    AI_TOOL_GROUP_AD,
+    AI_TOOL_GROUP_OTHER,
     AiToolExecutionContext,
     DEFAULT_ITINVENT_TOOL_IDS,
     get_available_database_options,
+    get_enabled_tool_groups,
+    get_tool_group,
     normalize_enabled_tools,
     normalize_tool_settings,
     resolve_effective_database_id,
@@ -68,12 +79,19 @@ DEFAULT_BOT_MODEL = ""
 DEFAULT_BOT_TITLE = "AI Ассистент"
 DEFAULT_BOT_DESCRIPTION = "Корпоративный AI-чат с ответами по базе знаний и документам."
 DEFAULT_BOT_PROMPT = (
-    "Ты корпоративный AI-ассистент. "
-    "Отвечай по-русски, кратко и по делу. "
-    "Если дан контекст из базы знаний или файлов, опирайся на него и не выдумывай факты. "
-    "Если информации недостаточно, явно скажи об этом. "
-    "Основной ответ возвращай в markdown. "
-    "Генерируй artifacts только когда пользователь явно просит создать файл."
+    "Ты корпоративный AI-ассистент IT-команды. "
+    "Отвечай по-русски: чётко, структурированно, по делу. "
+    "Опирайся ТОЛЬКО на: контекст из базы знаний, прикреплённые файлы и результаты вызовов инструментов. "
+    "Не выдумывай факты. Если данных недостаточно — явно сообщи и предложи как уточнить запрос. "
+    "Используй инструменты, когда вопрос требует живых данных (ITinvent, AD, почта, задачи, MFU/сеть). "
+    "Не отвечай 'сейчас проверю' или 'подождите' — либо вызывай инструмент сразу, либо давай финальный ответ. "
+    "Структура ответа:\n"
+    "1) Сначала короткое резюме (1-2 строки).\n"
+    "2) Потом подробности в виде разделов markdown (## Заголовок) или таблицы.\n"
+    "3) В конце — источник: 'Источник: ITinvent / <database_id>' или 'Источник: KB / <article_title>'.\n"
+    "Если данных по инструменту нет — скажи об этом прямо, без воды. "
+    "Не показывай чувствительные поля (пароли, хеши, raw LDAP). "
+    "Генерируй artifacts только когда пользователь явно просит создать файл (xlsx/pdf/docx/csv)."
 )
 AI_RUN_TERMINAL_STATUSES = {"completed", "failed"}
 AI_RUN_STAGE_QUEUED = "queued"
@@ -81,6 +99,7 @@ AI_RUN_STAGE_ANALYZING_REQUEST = "analyzing_request"
 AI_RUN_STAGE_READING_FILES = "reading_files"
 AI_RUN_STAGE_RETRIEVING_KB = "retrieving_kb"
 AI_RUN_STAGE_CHECKING_ITINVENT = "checking_itinvent"
+AI_RUN_STAGE_CHECKING_AD = "checking_ad"
 AI_RUN_STAGE_SEARCHING_EQUIPMENT = "searching_equipment"
 AI_RUN_STAGE_OPENING_EQUIPMENT_CARD = "opening_equipment_card"
 AI_RUN_STAGE_GENERATING_ANSWER = "generating_answer"
@@ -95,17 +114,23 @@ AI_RUN_STAGE_STATUS_TEXTS = {
     AI_RUN_STAGE_GENERATING_ANSWER: "Формирую ответ.",
     AI_RUN_STAGE_GENERATING_FILES: "Подготавливаю итоговые файлы.",
     AI_RUN_STAGE_CHECKING_ITINVENT: "Проверяю данные ITinvent.",
+    AI_RUN_STAGE_CHECKING_AD: "Проверяю данные Active Directory.",
     AI_RUN_STAGE_SEARCHING_EQUIPMENT: "Ищу оборудование.",
     AI_RUN_STAGE_OPENING_EQUIPMENT_CARD: "Открываю карточку устройства.",
     AI_RUN_STAGE_FAILED: "Не удалось обработать запрос.",
 }
-AI_CONTEXT_DB_MESSAGE_WINDOW = 12
-AI_CONTEXT_RENDERED_MESSAGE_WINDOW = 10
-AI_CONTEXT_ATTACHMENT_NAME_LIMIT = 3
-AI_FILE_CONTEXT_TEXT_LIMIT = 9000
-AI_TOOL_CALL_LIMIT = 3
-AI_TOOL_ROUND_LIMIT = 3
-DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY = "ai_chat.default_bot_live_data_seed_v1"
+AI_CONTEXT_DB_MESSAGE_WINDOW = int(os.environ.get("AI_CONTEXT_DB_MESSAGE_WINDOW", "12"))
+AI_CONTEXT_RENDERED_MESSAGE_WINDOW = int(os.environ.get("AI_CONTEXT_RENDERED_MESSAGE_WINDOW", "10"))
+AI_CONTEXT_ATTACHMENT_NAME_LIMIT = int(os.environ.get("AI_CONTEXT_ATTACHMENT_NAME_LIMIT", "3"))
+AI_FILE_CONTEXT_TEXT_LIMIT = int(os.environ.get("AI_FILE_CONTEXT_TEXT_LIMIT", "9000"))
+AI_TOOL_CALL_LIMIT = int(os.environ.get("AI_TOOL_CALL_LIMIT", "3"))
+AI_TOOL_ROUND_LIMIT = int(os.environ.get("AI_TOOL_ROUND_LIMIT", "6"))
+AI_MODEL_CONTEXT_WINDOW = int(os.environ.get("AI_MODEL_CONTEXT_WINDOW", "128000"))
+AI_TOKEN_BUDGET_SAFETY_MARGIN = int(os.environ.get("AI_TOKEN_BUDGET_SAFETY_MARGIN", "2000"))
+# When the LLM invokes a tool with invalid args, allow up to N self-correction passes
+# (the model is shown the validation error and asked to retry the same logical step).
+AI_TOOL_VALIDATION_RETRY_LIMIT = int(os.environ.get("AI_TOOL_VALIDATION_RETRY_LIMIT", "1"))
+DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY = "ai_chat.default_bot_live_data_seed_v4"
 AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "Tool routing for live ITinvent requests:\n"
     "- ITinvent tools use the current selected database by default. If the user is admin and the bot is in admin_multi_db mode, "
@@ -114,6 +139,8 @@ AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "Do not answer database availability questions from assumptions.\n"
     "- Exact inventory numbers, serial numbers, hardware serials, MAC addresses, hostnames or domains: "
     "use equipment search first, then equipment card for a single concrete device.\n"
+    "- When the user asks about online/offline status of a computer by its hostname (e.g., 'TMN-IT-0009') or network name: "
+    "use itinvent.equipment.online_status with hostname argument, NOT inv_no.\n"
     "- Employee or department questions: use employee search, then employee equipment list.\n"
     "- Broad equipment questions about categories, vendors, models, departments, branches or locations: "
     "use universal equipment search.\n"
@@ -127,13 +154,22 @@ AI_ITINVENT_TOOL_ROUTING_GUIDE = (
     "If an inventory number or employee is ambiguous or missing, ask a clarifying question instead of drafting.\n"
     "- Consume, write off or stock quantity changes: resolve exact consumable first, then use a draft action tool. "
     "Draft action tools only create confirmation cards; they do not modify ITinvent.\n"
-    "- Use type/status/branch/location directory tools to clarify canonical labels before asking the user."
+    "- Use type/status/branch/location directory tools to clarify canonical labels before asking the user.\n"
+    "- When the user asks 'which computer belongs to [employee]' or 'what device is assigned to [name]': use itinvent.user.computer with the employee name.\n"
+    "- To resolve a person's identity by name, surname, or login before equipment lookup: use itinvent.user.by_name first.\n"
+    "- For questions like 'where does [name] work' or 'find employee [name]': use itinvent.user.by_name.\n"
+    "- COMPUTER/OUTLOOK SEARCH: When user asks 'где архив', 'где PST', 'где outlook', 'где почта' followed by ANY identifier (email like kozlovskii.me, name, or filename): immediately use itinvent.computers.outlook_search with query parameter.\n"
+    "- Examples that MUST trigger outlook_search: 'РіРґРµ Р°СЂС…РёРІ kozlovskii.me', 'РіРґРµ PST РРІР°РЅРѕРІР°', 'РіРґРµ Р»РµР¶РёС‚ archive.pst', 'outlook РЅР° РєРѕРјРїСЊСЋС‚РµСЂРµ РџРµС‚СЂРѕРІР°'.\n"
+    "- PROFILE SEARCH: When user asks 'где профиль', 'на каком компьютере сидит', 'за каким ПК', 'где работает' followed by Russian surname or login: use itinvent.computers.profile_search.\n"
+    "- Examples: 'РіРґРµ РїСЂРѕС„РёР»СЊ РљРѕР·Р»РѕРІСЃРєРёР№', 'РЅР° РєР°РєРѕРј РєРѕРјРїСЊСЋС‚РµСЂРµ СЃРёРґРёС‚ РРІР°РЅРѕРІ', 'Р·Р° РєР°РєРёРј РџРљ РџРµС‚СЂРѕРІ' в†’ use itinvent.computers.profile_search.\n"
+    "- DO NOT interpret email-like strings (e.g., kozlovskii.me) as external websites when asked about archives/PST location.\n"
+    "- NEVER say you lack access to computer data вЂ” the computers.outlook_search and computers.profile_search tools are available."
 )
 AI_FILE_TOOL_ROUTING_GUIDE = (
     "File generation routing:\n"
     "- When the user asks to create/export/send a polished report, inventory report, summary document, PDF or Excel report, prefer ai.files.report.\n"
     "- Use ai.files.create for simpler raw files, one-off text/JSON/CSV exports, or when you already have exact file rows/content.\n"
-    "- If the file needs live ITinvent data, call the needed ITinvent tools first, then create the file from accumulated tool results.\n"
+    "- If the file needs live ITinvent data, call the needed ITinvent tools first with a high limit (e.g., limit=1000 or omit limit for default 250), then create the file from accumulated tool results.\n"
     "- For ITinvent equipment exports, always include these columns: \u0418\u043d\u0432. \u043d\u043e\u043c\u0435\u0440, \u0421\u0435\u0440\u0438\u0439\u043d\u044b\u0439 \u043d\u043e\u043c\u0435\u0440, \u0422\u0438\u043f, \u041c\u043e\u0434\u0435\u043b\u044c, \u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a, \u0421\u0442\u0430\u0442\u0443\u0441, \u0424\u0438\u043b\u0438\u0430\u043b, \u041b\u043e\u043a\u0430\u0446\u0438\u044f. Use serial_no from tool results; if empty, use \u2014.\n"
     "- Markdown tables and generated Excel/CSV tables must have the same columns, same order and same rows. Pass rows as arrays of row arrays or row objects; never pass a flat list of cells.\n"
     "- For report tables, use tables[].columns when you need fixed order or translated column labels; keep tables[].rows as row objects or row arrays.\n"
@@ -151,8 +187,59 @@ AI_OFFICE_TOOL_ROUTING_GUIDE = (
     "- Task questions like find/show/status/comments: use office.tasks.search, then office.tasks.get for one concrete task.\n"
     "- Task create/comment/status requests: create the matching office.action.* draft. Never claim a task was created or changed before confirmation.\n"
     "- Workday summary, urgent items, unread mail or what needs attention: use office.workday.summary.\n"
+    "- List available task projects/boards: use office.tasks.projects.\n"
+    "- Announcements/news questions: use office.announcements.list to search, then office.announcements.get for a specific announcement.\n"
     "- If recipient, task, assignee, controller, project, message or due date is ambiguous, resolve first or ask a short clarification."
 )
+AI_MFU_TOOL_ROUTING_GUIDE = (
+    "MFU/printer tool routing:\n"
+    "- Questions about printers, MFU, plotters, their list, status or location: use mfu.devices.list.\n"
+    "- Current SNMP/ping status, toner level, drum level, page counter for a specific device: use mfu.device.status with inv_no or ip_address.\n"
+    "- Monthly page count history or print volume trends: use mfu.pages.monthly with inv_no or ip_address.\n"
+    "- If the device is not identified, use mfu.devices.list first to find inv_no or ip_address, then proceed."
+)
+AI_NETWORK_TOOL_ROUTING_GUIDE = (
+    "Network infrastructure tool routing:\n"
+    "- Questions about patch-panel sockets, which user is connected to a socket, socket codes, MAC/FIO at a socket: use network.socket.search.\n"
+    "- Overview of a branch network: devices count, ports, occupied ports, sites: use network.branch.overview.\n"
+    "- Switch ports, VLANs, occupied/free ports, endpoint IP/MAC: use network.ports.search.\n"
+    "- Always provide branch_id or branch_query (branch name or code) to identify the branch."
+)
+AI_AD_TOOL_ROUTING_GUIDE = (
+    "Active Directory tool routing:\n"
+    "- Questions about when a user's password was changed, when it expires, how many days remain before password rotation, "
+    "or pwdLastSet: use ad.user.password_status with the employee name, login, or email-like identifier from the user request.\n"
+    "- The query can be a Russian name (Козловский Максим), a surname (Козловский), a login (kozlovskii_me), "
+    "or an email-like identifier (kozlovskii.me). All forms are supported.\n"
+    "- Questions about who needs to change password soon, list of expiring passwords, bulk expiry check: "
+    "use ad.users.expiring_soon with days_threshold (default 3).\n"
+    "- Examples: 'у кого скоро закончится пароль' → ad.users.expiring_soon; "
+    "'у кого пароль истекает в ближайшие 5 дней' → ad.users.expiring_soon with days_threshold=5.\n"
+    "- Do not answer AD password-age questions from assumptions. Use the tool when it is enabled.\n"
+    "- If the tool returns status=matched, answer in Russian with: display name/login, last change date, password age in days, "
+    "policy_days, days_to_expire and expiration date. If expired or must_change_now, say that the password must be changed now.\n"
+    "- If the tool returns status=ambiguous, list the candidates briefly and ask the user to clarify. Do not guess.\n"
+    "- For ad.users.expiring_soon results, show a markdown table with columns: ФИО, Логин, Отдел, Дней до истечения, Дата истечения.\n"
+    "- Never mention or expose password values, hashes, raw LDAP payloads, or sensitive attributes outside the returned safe fields."
+)
+AI_ANSWER_STYLE_GUIDE = (
+    "Answer style and structure rules (Russian):\n"
+    "- Start with a 1-2 line summary that directly answers the question.\n"
+    "- Then use markdown sections '## Заголовок' or a markdown table for details.\n"
+    "- For lists of equipment, prefer a table with columns: 'Инв. номер', 'Серийный номер', 'Тип', 'Модель', 'Сотрудник', 'Статус', 'Филиал', 'Локация'.\n"
+    "  Use '—' for empty cells. Take the serial value from serial_no.\n"
+    "- For a single device card, use sections 'Устройство', 'Закрепление', 'Локация', 'Сеть', 'Статус', 'Примечание'.\n"
+    "- For an employee answer, show '## Итог' (count, department, branch) and '## Устройства' table.\n"
+    "- For analytics, show totals first, then top-N groups in a table.\n"
+    "- Always end with a single source line, e.g. 'Источник: ITinvent / <database_id>' or 'Источник: KB / <article_title>'.\n"
+    "- If a tool result has truncated=true, explicitly state 'показано N из M' (N returned out of M total).\n"
+    "- Hide owner email and network fields by default; show them only for an exact single-device card.\n"
+    "- Never expose passwords, hashes or raw LDAP payloads.\n"
+    "- Do not use phrases like 'сейчас проверю' or 'подождите'. Either return tool_calls now or give the final answer.\n"
+    "- If you cannot fulfill the request with available tools, say it once, briefly, and suggest a concrete next step."
+)
+
+
 AI_REQUEST_UNDERSTANDING_GUIDE = (
     "User request understanding and query coaching:\n"
     "- Users may write with typos, missing punctuation, mixed Russian/English terms, or short phrases. Infer the likely business intent from context and enabled tools.\n"
@@ -169,7 +256,7 @@ AI_ITINVENT_STRUCTURED_RESPONSE_GUIDE = (
     "For any equipment markdown table, use columns '\u0418\u043d\u0432. \u043d\u043e\u043c\u0435\u0440', '\u0421\u0435\u0440\u0438\u0439\u043d\u044b\u0439 \u043d\u043e\u043c\u0435\u0440', '\u0422\u0438\u043f', '\u041c\u043e\u0434\u0435\u043b\u044c', '\u0421\u043e\u0442\u0440\u0443\u0434\u043d\u0438\u043a', '\u0421\u0442\u0430\u0442\u0443\u0441', '\u0424\u0438\u043b\u0438\u0430\u043b', '\u041b\u043e\u043a\u0430\u0446\u0438\u044f'. "
     "Always take the serial value from serial_no; if it is empty, keep the column and write \u2014. "
     "When creating an Excel or CSV from a markdown table, use the same columns, order and rows in the file tool. "
-    "For employee equipment answers use sections like '## Итог' and '## Устройства' with type/model, inventory number, "
+    "For employee equipment answers use sections like '## РС‚РѕРі' and '## РЈСЃС‚СЂРѕР№СЃС‚РІР°' with type/model, inventory number, "
     "serial number, status and location. For exact device cards use sections 'Устройство', 'Закрепление', 'Локация', "
     "'Сеть', 'Статус', 'Примечание'. For broad search answers use '## Найдено', a short grouped summary, a few relevant "
     "examples, and one narrowing suggestion when the result set is broad. For consumables include model, type, quantity, "
@@ -243,6 +330,32 @@ AI_CHAT_RESPONSE_SCHEMA_FINAL = {
 }
 
 
+@dataclass
+class TokenBudget:
+    """Tracks cumulative token usage across tool rounds and signals exhaustion."""
+
+    model_context_window: int = AI_MODEL_CONTEXT_WINDOW
+    safety_margin: int = AI_TOKEN_BUDGET_SAFETY_MARGIN
+    accumulated_prompt_tokens: int = 0
+    accumulated_completion_tokens: int = 0
+
+    @property
+    def remaining(self) -> int:
+        used = self.accumulated_prompt_tokens + self.accumulated_completion_tokens
+        return max(0, self.model_context_window - self.safety_margin - used)
+
+    @property
+    def exhausted(self) -> bool:
+        return self.remaining <= 0
+
+    def add_usage(self, usage: dict[str, Any]) -> None:
+        """Accumulate prompt and completion tokens from an OpenRouter usage response."""
+        if not isinstance(usage, dict):
+            return
+        self.accumulated_prompt_tokens += int(usage.get("prompt_tokens") or 0)
+        self.accumulated_completion_tokens += int(usage.get("completion_tokens") or 0)
+
+
 def _utc_now() -> datetime:
     return datetime.now(timezone.utc)
 
@@ -285,6 +398,18 @@ def _is_office_tool_id(tool_id: object) -> bool:
     return _normalize_text(tool_id).startswith("office.")
 
 
+def _is_mfu_tool_id(tool_id: object) -> bool:
+    return _normalize_text(tool_id).startswith("mfu.")
+
+
+def _is_network_tool_id(tool_id: object) -> bool:
+    return _normalize_text(tool_id).startswith("network.")
+
+
+def _is_ad_tool_id(tool_id: object) -> bool:
+    return _normalize_text(tool_id).startswith("ad.")
+
+
 def _default_bot_tool_settings() -> dict[str, Any]:
     return normalize_tool_settings(
         {
@@ -296,6 +421,389 @@ def _default_bot_tool_settings() -> dict[str, Any]:
 
 def _is_live_data_enabled(enabled_tools: Any) -> bool:
     return any(_is_itinvent_tool_id(tool_id) for tool_id in normalize_enabled_tools(enabled_tools))
+
+
+REPORT_FORMAT_CHOICES = {"xlsx", "pdf", "docx", "csv"}
+REPORT_FORMAT_ALIASES = {
+    "xlsx": "xlsx",
+    "xls": "xlsx",
+    "excel": "xlsx",
+    "эксель": "xlsx",
+    "ексель": "xlsx",
+    "таблицу excel": "xlsx",
+    "pdf": "pdf",
+    "пдф": "pdf",
+    "docx": "docx",
+    "doc": "docx",
+    "word": "docx",
+    "ворд": "docx",
+    "csv": "csv",
+}
+# Strong file/report intent keywords - reliable on their own (no false positives on tasks/comments).
+FILE_REPORT_INTENT_KEYWORDS = (
+    "report",
+    "export",
+    "download",
+    "xlsx",
+    "excel",
+    "pdf",
+    "docx",
+    "csv",
+    "отчет",
+    "отчёт",
+    "выгруз",
+    "экспорт",
+    "сформир",
+    "эксель",
+    "ексель",
+    "пдф",
+    "ворд",
+    "сохрани в файл",
+    "save to file",
+    "скачать файл",
+    "скачать отчет",
+    "скачать отчёт",
+)
+# Soft tokens that only count as file intent when paired with a noun like "файл/таблица/отчёт"
+# or together with a format alias. Prevents "создай задачу" from triggering file generation.
+FILE_REPORT_INTENT_SOFT_VERBS = (
+    "создай",
+    "создать",
+    "сделай",
+    "сделать",
+    "построй",
+    "построить",
+    "make",
+    "build",
+    "create",
+    "generate",
+)
+FILE_REPORT_INTENT_SOFT_NOUNS = (
+    "файл",
+    "файлы",
+    "таблиц",
+    "отчет",
+    "отчёт",
+    "документ",
+    "выгрузк",
+    "report",
+    "file",
+    "spreadsheet",
+    "table",
+    "excel",
+    "xlsx",
+    "pdf",
+    "docx",
+    "csv",
+    "эксель",
+    "пдф",
+    "ворд",
+)
+AD_PASSWORD_INTENT_KEYWORDS = (
+    "password",
+    "pwdlastset",
+    "expire password",
+    "password expiry",
+    "ad password",
+    "парол",
+    "смена парол",
+    "менялся парол",
+    "менять парол",
+    "истекает парол",
+    "истек парол",
+    "закончится парол",
+    "закончиться парол",
+    "у кого скоро",
+    "expiring soon",
+    "кому менять",
+    # Lockout / unlock
+    "заблокирован",
+    "блокировк",
+    "разблокир",
+    "lockout",
+    "locked",
+    "unlock",
+    "bad password",
+    # Groups
+    "в каких группах",
+    "группы пользователя",
+    "группы ad",
+    "memberof",
+    "member of",
+    "группах состоит",
+    # Logon history
+    "когда входил",
+    "последний вход",
+    "история входов",
+    "logon history",
+    "last logon",
+    "lastlogon",
+    "ни разу не входил",
+    "logon count",
+    # Mailbox
+    "пароль ящика",
+    "пароль почтового",
+    "mailbox password",
+    "ящик ad",
+    "почтовый ящик ad",
+)
+
+
+def _has_report_file_intent(text: object) -> bool:
+    normalized = _normalize_text(text).casefold().replace("ё", "е")
+    if not normalized:
+        return False
+    # Strong keywords always trigger.
+    if any(keyword.replace("ё", "е") in normalized for keyword in FILE_REPORT_INTENT_KEYWORDS):
+        return True
+    # Soft verb + noun pairing must co-occur (e.g. "создай файл", "сделай таблицу").
+    has_soft_verb = any(
+        re.search(rf"(?<![\wа-я]){re.escape(verb)}", normalized)
+        for verb in FILE_REPORT_INTENT_SOFT_VERBS
+    )
+    if not has_soft_verb:
+        return False
+    has_soft_noun = any(noun.replace("ё", "е") in normalized for noun in FILE_REPORT_INTENT_SOFT_NOUNS)
+    return has_soft_noun
+
+
+def _has_ad_password_intent(text: object) -> bool:
+    """Detect if the user message is about AD operations (passwords, lockout, groups, logon)."""
+    normalized = _normalize_text(text).casefold().replace("ё", "е")
+    return any(keyword.casefold().replace("ё", "е") in normalized for keyword in AD_PASSWORD_INTENT_KEYWORDS)
+
+
+def _detect_requested_report_format(text: object) -> str | None:
+    normalized = f" {_normalize_text(text).casefold().replace('ё', 'е')} "
+    for alias, file_format in REPORT_FORMAT_ALIASES.items():
+        alias_text = alias.casefold().replace("ё", "е")
+        if re.search(rf"(?<![\wа-я]){re.escape(alias_text)}(?![\wа-я])", normalized, flags=re.IGNORECASE):
+            return file_format
+    return None
+
+
+AI_ROUTING_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "groups": {
+            "type": "array",
+            "items": {"type": "string"},
+        }
+    },
+    "required": ["groups"],
+    "additionalProperties": False,
+}
+
+_ROUTING_MAX_TOKENS = int(os.environ.get("AI_ROUTING_MAX_TOKENS", "80"))
+
+
+def _route_tool_groups(
+    *,
+    trigger_text: str,
+    available_groups: set[str],
+    model: str,
+) -> set[str]:
+    force_files = AI_TOOL_GROUP_FILES in available_groups and _has_report_file_intent(trigger_text)
+    force_ad = AI_TOOL_GROUP_AD in available_groups and _has_ad_password_intent(trigger_text)
+    if len(available_groups) <= 1:
+        return set(available_groups)
+    if force_ad:
+        routed = {AI_TOOL_GROUP_AD}
+        if force_files:
+            routed.add(AI_TOOL_GROUP_FILES)
+        return routed
+
+    # Hardcoded routing: computer/outlook/profile/equipment-related queries MUST include itinvent group.
+    normalized_trigger = _normalize_text(trigger_text).lower().replace("ё", "е")
+    itinvent_keywords = (
+        # Computer / profile / outlook lookups
+        "где архив",
+        "где pst",
+        "где outlook",
+        "где профил",
+        "где почта",
+        "где работает",
+        "где сидит",
+        "на каком компьютере",
+        "за каким пк",
+        "за каким компьютер",
+        "за каким устройством",
+        "под каким пользователем",
+        "архив outlook",
+        "pst файл",
+        "найди pst",
+        "покажи архив",
+        # Direct asset / inventory mentions
+        "инвентар",
+        "инв.",
+        "инв ",
+        "серийн",
+        "серийный номер",
+        "оборудование",
+        "техник",
+        "монитор",
+        "ноутбук",
+        "принтер",
+        "мфу",
+        "сканер",
+        "ибп",
+        "телефон",
+        "компьютер",
+        "профил",
+        "филиал",
+        "локаци",
+        "сотрудник",
+        # Common ITinvent verbs
+        "найди инв",
+        "найди серийник",
+        "карточка устройства",
+        "переместить оборудование",
+        "переместить технику",
+        "история устройства",
+    )
+    if AI_TOOL_GROUP_ITINVENT in available_groups:
+        for keyword in itinvent_keywords:
+            if keyword in normalized_trigger:
+                routed = {AI_TOOL_GROUP_ITINVENT}
+                if force_files:
+                    routed.add(AI_TOOL_GROUP_FILES)
+                return routed
+
+    # Hardcoded routing: mail/task hints map to office.
+    office_keywords = (
+        "почт",
+        "письм",
+        "email",
+        "e-mail",
+        "outlook",
+        "задач",
+        "task",
+        "проект",
+        "комментар",
+        "ответ",
+        "напиш",
+        "отправь почту",
+        "отправь письмо",
+        "напомнан",
+        "анонс",
+        "новост",
+    )
+    if AI_TOOL_GROUP_OFFICE in available_groups:
+        for keyword in office_keywords:
+            if keyword in normalized_trigger:
+                routed = {AI_TOOL_GROUP_OFFICE}
+                if force_files:
+                    routed.add(AI_TOOL_GROUP_FILES)
+                return routed
+
+    # Hardcoded routing: mfu / printer keywords.
+    mfu_keywords = (
+        "тонер",
+        "картридж",
+        "мфу",
+        "принтер",
+        "snmp",
+        "счетчик страниц",
+        "счётчик страниц",
+        "печать",
+        "плоттер",
+    )
+    if AI_TOOL_GROUP_MFU in available_groups:
+        for keyword in mfu_keywords:
+            if keyword in normalized_trigger:
+                routed = {AI_TOOL_GROUP_MFU}
+                if force_files:
+                    routed.add(AI_TOOL_GROUP_FILES)
+                return routed
+
+    # Hardcoded routing: network keywords.
+    network_keywords = (
+        "розетк",
+        "патч",
+        "коммутатор",
+        "vlan",
+        "порт",
+        "ip ",
+        "mac ",
+        "хост",
+        "switch",
+        "patch panel",
+        # New network tools
+        "ping",
+        "пинг",
+        "пингани",
+        "пингуй",
+        "dns",
+        "nslookup",
+        "resolve",
+        "ssl",
+        "сертификат",
+        "certificate",
+        "wake on lan",
+        "wake-on-lan",
+        "wol",
+        "включи компьютер",
+        "разбуди компьютер",
+        "wmi",
+        "uptime",
+        "аптайм",
+        "состояние компьютера",
+        "состояние сервера",
+        "диски сервера",
+        "память сервера",
+    )
+    if AI_TOOL_GROUP_NETWORK in available_groups:
+        for keyword in network_keywords:
+            if keyword in normalized_trigger:
+                routed = {AI_TOOL_GROUP_NETWORK}
+                if force_files:
+                    routed.add(AI_TOOL_GROUP_FILES)
+                return routed
+
+    groups_list = sorted(available_groups)
+    system_prompt = (
+        "You are a tool-group router. Given a user message and available tool groups, "
+        "decide which groups are needed to answer. Reply with the minimal set. "
+        "Respond with JSON only: {\"groups\": [\"group1\", ...]}"
+    )
+    user_prompt = (
+        f"Available groups: {groups_list}\n"
+        f"User message: {trigger_text[:500]}"
+    )
+    try:
+        payload, _ = openrouter_client.complete_json(
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            model=model,
+            temperature=0.0,
+            max_tokens=_ROUTING_MAX_TOKENS,
+            response_schema=AI_ROUTING_SCHEMA,
+            schema_name="ai_tool_routing",
+            response_healing=False,
+        )
+        routed = [
+            g for g in list(payload.get("groups") or [])
+            if isinstance(g, str) and g.strip() in available_groups
+        ]
+        if routed:
+            result = set(routed)
+            if force_files:
+                result.add(AI_TOOL_GROUP_FILES)
+            return result
+        logger.warning("ai_tool_routing returned no valid groups; using narrow fallback")
+    except Exception as exc:
+        logger.warning("ai_tool_routing failed; using narrow fallback: %s", exc)
+    # Narrow fallback: prefer itinvent when available; only widen if itinvent is disabled.
+    # This is much cheaper than enabling every tool group.
+    fallback: set[str] = set()
+    if AI_TOOL_GROUP_ITINVENT in available_groups:
+        fallback.add(AI_TOOL_GROUP_ITINVENT)
+    elif available_groups:
+        # Pick the first deterministic group to avoid full fan-out.
+        fallback.add(sorted(available_groups)[0])
+    if force_files and AI_TOOL_GROUP_FILES in available_groups:
+        fallback.add(AI_TOOL_GROUP_FILES)
+    return fallback or set(available_groups)
 
 
 def _truncate(value: object, limit: int = 12000) -> str:
@@ -338,6 +846,178 @@ def _normalize_tool_calls(value: Any, *, limit: int = AI_TOOL_CALL_LIMIT) -> lis
             }
         )
     return normalized_calls
+
+
+# ---------------------------------------------------------------------------
+# Parallel tool execution helpers
+# ---------------------------------------------------------------------------
+
+
+def _detect_data_dependencies(tool_calls: list[dict[str, Any]]) -> list[list[int]]:
+    """Partition tool_calls into dependency groups for parallel execution.
+
+    Returns a list of groups (each group is a list of indices into tool_calls).
+    Calls within the same group are independent and can run in parallel.
+    Groups must be executed sequentially (later groups may depend on earlier ones).
+
+    Dependency detection heuristic:
+    - If a tool's args contain a string value that matches another tool's tool_id
+      or references a pattern like "result_of:<tool_id>", it depends on that tool.
+    - Tools of the same tool_id with different args are considered independent
+      (e.g., two ping calls to different hosts).
+    - If tool B's args reference tool A's tool_id as a substring, B depends on A.
+    """
+    if not tool_calls:
+        return []
+    if len(tool_calls) == 1:
+        return [[0]]
+
+    # Build a set of tool_ids at each position for dependency checking
+    tool_ids_at_index = [_normalize_text(call.get("tool_id")) for call in tool_calls]
+
+    # Check if call at index j depends on call at index i (i < j)
+    def _has_dependency(j: int, i: int) -> bool:
+        """Return True if call[j] appears to depend on the output of call[i]."""
+        source_tool_id = tool_ids_at_index[i]
+        target_args = tool_calls[j].get("args") or {}
+
+        # Serialize args to check for references to the source tool
+        args_str = json.dumps(target_args, ensure_ascii=False).lower()
+
+        # Check for explicit result references
+        if f"result_of:{source_tool_id}" in args_str:
+            return True
+
+        # Check if args contain the source tool_id as a value (suggesting chaining)
+        # e.g., tool B uses output from tool A where A's ID appears in B's args
+        for value in target_args.values():
+            if isinstance(value, str) and source_tool_id in value.lower():
+                return True
+
+        # Heuristic: sequential dependency patterns
+        # If tool A is a "search" and tool B is a "card"/"get"/"detail" of the same prefix,
+        # B likely depends on A's results
+        source_parts = source_tool_id.split(".")
+        target_parts = tool_ids_at_index[j].split(".")
+        if len(source_parts) >= 2 and len(target_parts) >= 2:
+            if source_parts[0] == target_parts[0]:  # same group prefix
+                search_suffixes = {"search", "list", "by_name"}
+                detail_suffixes = {"card", "get", "detail", "equipment_list", "status"}
+                if (
+                    source_parts[-1] in search_suffixes
+                    and target_parts[-1] in detail_suffixes
+                ):
+                    return True
+
+        return False
+
+    # Build dependency graph and partition into sequential groups
+    # Each call tracks which earlier calls it depends on
+    depends_on: list[set[int]] = [set() for _ in range(len(tool_calls))]
+    for j in range(1, len(tool_calls)):
+        for i in range(j):
+            if _has_dependency(j, i):
+                depends_on[j].add(i)
+
+    # Topological grouping: assign each call to the earliest group
+    # where all its dependencies are in earlier groups
+    groups: list[list[int]] = []
+
+    remaining = set(range(len(tool_calls)))
+    while remaining:
+        # Find all calls whose dependencies are already assigned
+        current_group: list[int] = []
+        for idx in sorted(remaining):
+            if all(dep not in remaining for dep in depends_on[idx]):
+                current_group.append(idx)
+        if not current_group:
+            # Circular dependency fallback: just take the first remaining
+            current_group = [min(remaining)]
+        for idx in current_group:
+            remaining.discard(idx)
+        groups.append(current_group)
+
+    return groups
+
+
+def _detect_truncated_result(result: dict[str, Any]) -> dict[str, Any] | None:
+    """Detect if a tool result is truncated and return pagination info.
+
+    Returns a dict with tool_id, current offset/page, and total count if truncated.
+    Returns None if the result is not truncated.
+    """
+    if not isinstance(result, dict) or not bool(result.get("ok")):
+        return None
+    data = result.get("data") if isinstance(result.get("data"), dict) else {}
+    if not data.get("truncated"):
+        return None
+    tool_id = _normalize_text(result.get("tool_id"))
+    total = data.get("total")
+    returned_count = data.get("returned_count") or data.get("count")
+    offset = data.get("offset") or 0
+    limit = data.get("limit")
+    if total is None or returned_count is None:
+        return None
+    next_offset = int(offset or 0) + int(returned_count or 0)
+    if next_offset >= int(total or 0):
+        return None  # Already have all data
+    return {
+        "tool_id": tool_id,
+        "next_offset": next_offset,
+        "limit": int(limit or returned_count or 50),
+        "total": int(total),
+        "returned_so_far": next_offset,
+    }
+
+
+def _build_running_summary(accumulated_results: list[dict[str, Any]]) -> str:
+    """Build a concise running summary of facts gathered across tool rounds.
+
+    This helps the LLM avoid redundant tool calls by showing what data
+    has already been retrieved.
+    """
+    if not accumulated_results:
+        return ""
+
+    facts: list[str] = []
+    seen_tool_ids: dict[str, int] = {}
+    total_items_retrieved = 0
+
+    for result in accumulated_results:
+        if not isinstance(result, dict):
+            continue
+        tool_id = _normalize_text(result.get("tool_id"))
+        ok = bool(result.get("ok"))
+        seen_tool_ids[tool_id] = seen_tool_ids.get(tool_id, 0) + 1
+
+        if not ok:
+            error = _normalize_text(result.get("error"))
+            facts.append(f"- {tool_id}: FAILED ({error[:80]})" if error else f"- {tool_id}: FAILED")
+            continue
+
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        # Summarize key facts from the result
+        summary_parts: list[str] = [f"- {tool_id}: OK"]
+        if data.get("total") is not None:
+            summary_parts.append(f"total={data['total']}")
+        if data.get("returned_count") is not None:
+            summary_parts.append(f"returned={data['returned_count']}")
+            total_items_retrieved += int(data.get("returned_count") or 0)
+        if data.get("truncated"):
+            summary_parts.append("TRUNCATED")
+        if data.get("query"):
+            summary_parts.append(f"query='{_normalize_text(data['query'])[:40]}'")
+        if data.get("display_name"):
+            summary_parts.append(f"name='{_normalize_text(data['display_name'])[:30]}'")
+        if data.get("login"):
+            summary_parts.append(f"login='{_normalize_text(data['login'])}'")
+        facts.append(", ".join(summary_parts))
+
+    if not facts:
+        return ""
+
+    header = f"Running summary ({len(accumulated_results)} tool calls, {total_items_retrieved} items retrieved):"
+    return "\n".join([header] + facts[:20])  # Cap at 20 entries to avoid bloat
 
 
 def _format_tool_results_for_prompt(results: list[dict[str, Any]]) -> str:
@@ -582,6 +1262,129 @@ def _summarize_generated_files_message(files_message: dict[str, Any] | None) -> 
             }
         )
     return rows
+
+
+def _first_tool_database_id(results: list[dict[str, Any]], fallback: str | None = None) -> str | None:
+    for result in list(results or []):
+        if not isinstance(result, dict):
+            continue
+        database_id = _normalize_text(result.get("database_id"))
+        if database_id:
+            return database_id
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        database_id = _normalize_text(data.get("database_id"))
+        if database_id:
+            return database_id
+    return _normalize_text(fallback) or None
+
+
+def _safe_report_file_name_base(title: object) -> str:
+    base = _normalize_text(title) or "report"
+    base = re.sub(r"[\x00-\x1f<>:\"/\\|?*]+", "_", base).strip(" ._")
+    return base[:120] or "report"
+
+
+def _report_columns_from_rows(rows: list[dict[str, Any]]) -> list[dict[str, str]]:
+    keys: list[str] = []
+    for row in rows:
+        for key in row.keys():
+            normalized = _normalize_text(key)
+            if normalized and normalized not in keys:
+                keys.append(normalized)
+        if len(keys) >= 20:
+            break
+    return [{"key": key, "label": key} for key in keys[:20]]
+
+
+def _generic_report_tables_from_tool_results(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    best_title = ""
+    best_rows: list[dict[str, Any]] = []
+    for result in list(results or []):
+        if not isinstance(result, dict) or not bool(result.get("ok")):
+            continue
+        if _is_file_tool_id(result.get("tool_id")):
+            continue
+        data = result.get("data") if isinstance(result.get("data"), dict) else {}
+        candidates: list[Any] = []
+        for key in ("items", "rows", "results", "data"):
+            value = data.get(key)
+            if isinstance(value, list):
+                candidates.append(value)
+        for candidate in candidates:
+            rows = [item for item in list(candidate or []) if isinstance(item, dict)]
+            if len(rows) > len(best_rows):
+                best_rows = rows
+                best_title = _normalize_text(result.get("tool_id")) or "Data"
+    if not best_rows:
+        return []
+    return [
+        {
+            "title": best_title or "Data",
+            "columns": _report_columns_from_rows(best_rows),
+            "rows": best_rows,
+        }
+    ]
+
+
+def _build_report_choice_payload(
+    *,
+    trigger_text: str,
+    results: list[dict[str, Any]],
+    database_id: str | None,
+) -> dict[str, Any] | None:
+    successful_live_results = [
+        item
+        for item in list(results or [])
+        if isinstance(item, dict) and bool(item.get("ok")) and not _is_file_tool_id(item.get("tool_id"))
+    ]
+    if not successful_live_results:
+        return None
+    equipment_items = _collect_best_equipment_items(successful_live_results)
+    if equipment_items:
+        rows = [_equipment_export_row(item) for item in equipment_items]
+        tables = [
+            {
+                "title": "Equipment",
+                "columns": [{"key": column, "label": column} for column in _EQUIPMENT_EXPORT_COLUMNS],
+                "rows": rows,
+            }
+        ]
+    else:
+        tables = _generic_report_tables_from_tool_results(successful_live_results)
+    if not tables:
+        return None
+    total_rows = sum(len(list(table.get("rows") or [])) for table in tables)
+    resolved_database_id = _first_tool_database_id(successful_live_results, database_id)
+    return {
+        "title": "ITinvent report",
+        "summary": f"Prepared {total_rows} rows in {len(tables)} table(s). Choose the file format.",
+        "sections": [
+            {
+                "heading": "Source",
+                "body": f"ITinvent / {resolved_database_id}" if resolved_database_id else "ITinvent",
+            }
+        ],
+        "tables": tables,
+        "file_name_base": _safe_report_file_name_base(trigger_text) or "itinvent-report",
+        "source_tool_results": successful_live_results,
+        "database_id": resolved_database_id,
+    }
+
+
+def _build_report_choice_answer(payload: dict[str, Any]) -> str:
+    title = _normalize_text(payload.get("title")) or "ITinvent report"
+    summary = _normalize_text(payload.get("summary"))
+    database_id = _normalize_text(payload.get("database_id"))
+    return "\n".join(
+        [
+            f"## {title}",
+            "",
+            summary or "Данные собраны. Выберите формат файла в карточке ниже.",
+            f"Источник: ITinvent / {database_id}" if database_id else "Источник: ITinvent",
+            "",
+            "Выберите формат файла в карточке ниже: XLSX, PDF, DOCX или CSV.",
+        ]
+    )
 
 
 def _log_ai_run_timing(stage: str, started_at: float, **context: Any) -> None:
@@ -834,6 +1637,25 @@ class AiChatService:
                     )
                     if current_enabled_tools:
                         if not seeded_once:
+                            # v4 seed: replace old user-context tools with unified full_context tool
+                            # and merge any new default tools into existing enabled_tools.
+                            _OLD_REPLACED_TOOL_IDS = {
+                                "itinvent.user.computer",
+                                "itinvent.computers.profile_search",
+                                "itinvent.computers.outlook_search",
+                                "itinvent.equipment.online_status",
+                            }
+                            merged = [t for t in current_enabled_tools if t not in _OLD_REPLACED_TOOL_IDS]
+                            for tool_id in default_enabled_tools:
+                                if tool_id not in merged:
+                                    merged.append(tool_id)
+                            if merged != current_enabled_tools:
+                                bot.enabled_tools_json = _json_dumps(merged)
+                                bot.updated_at = _utc_now()
+                                logger.info(
+                                    "AI default bot seed v2: added %d new tools to existing bot",
+                                    len(merged) - len(current_enabled_tools),
+                                )
                             self._write_bool_setting(session, DEFAULT_BOT_LIVE_DATA_SEED_SETTING_KEY, True)
                     elif not seeded_once:
                         bot.enabled_tools_json = _json_dumps(default_enabled_tools)
@@ -1374,7 +2196,7 @@ class AiChatService:
                 )
 
             execute_started_at = time.perf_counter()
-            answer_markdown, artifacts, kb_attachment_send, usage, extracted_context, tool_traces, generated_file_specs = self._execute_run(
+            answer_markdown, artifacts, kb_attachment_send, usage, extracted_context, tool_traces, generated_file_specs, routed_groups = self._execute_run(
                 bot=bot,
                 run_payload=run_payload,
                 request_context=request_context,
@@ -1452,12 +2274,35 @@ class AiChatService:
                 except GeneratedFileError as exc:
                     logger.warning("AI generated files failed: run_id=%s error=%s", run.id, exc)
                     file_generation_errors.append(exc.to_payload())
+                except Exception as exc:
+                    logger.warning("AI generated file delivery failed: run_id=%s error=%s", run.id, exc)
+                    file_generation_errors.append(
+                        {
+                            "error_code": "file_delivery_failed",
+                            "message": _normalize_text(exc) or "Generated file delivery failed",
+                            "field_path": None,
+                            "suggested_fix": None,
+                        }
+                    )
                 finally:
                     for upload in uploads:
                         try:
                             upload.file.close()
                         except Exception:
                             pass
+            if file_generation_errors:
+                visible_error = _normalize_text((file_generation_errors[-1] or {}).get("message")) or "unknown error"
+                error_message = chat_service.send_message(
+                    current_user_id=bot_user_id,
+                    conversation_id=run.conversation_id,
+                    body=f"Не удалось создать или прикрепить файл: {visible_error}",
+                    body_format="markdown",
+                    defer_push_notifications=True,
+                )
+                self._enqueue_message_side_effects_after_send(
+                    conversation_id=run.conversation_id,
+                    message_id=_normalize_text(error_message.get("id")),
+                )
             completed_at = _utc_now()
             with app_session() as session:
                 row = session.get(AppAiBotRun, run.id)
@@ -1476,6 +2321,7 @@ class AiChatService:
                             "kb_attachment_send": kb_attachment_send,
                             "kb_attachment_delivered": delivered_kb_attachment,
                             "tool_traces": tool_traces,
+                            "routed_groups": list(routed_groups or []),
                         },
                         ensure_ascii=False,
                     )
@@ -1557,9 +2403,27 @@ class AiChatService:
         tool_context: AiToolExecutionContext,
         report_stage=None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        """Execute tool calls with parallel execution for independent calls.
+
+        Detects data dependencies between tool calls and executes independent
+        calls concurrently using asyncio.gather. Dependent calls are serialized.
+        Continues processing all calls even if individual ones fail.
+        """
+        from backend.ai_chat.tools.base import AiToolValidationError
+
         tool_results: list[dict[str, Any]] = []
         tool_traces: list[dict[str, Any]] = []
-        for call in list(tool_calls or [])[:AI_TOOL_CALL_LIMIT]:
+        max_calls = tool_context.max_tool_calls_per_round if tool_context else AI_TOOL_CALL_LIMIT
+        limited_calls = list(tool_calls or [])[:max_calls]
+
+        if not limited_calls:
+            return tool_results, tool_traces
+
+        # Detect dependency groups for parallel execution
+        dep_groups = _detect_data_dependencies(limited_calls)
+
+        def _execute_single_call(call: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+            """Execute a single tool call, returning (result, trace). Never raises."""
             tool_id = _normalize_text(call.get("tool_id"))
             tool = ai_tool_registry.get(tool_id)
             if callable(report_stage):
@@ -1573,15 +2437,56 @@ class AiChatService:
                 payload = result.to_payload()
                 payload_data = payload.get("data") if isinstance(payload.get("data"), dict) else {}
                 diagnostic = payload_data.get("diagnostic") if isinstance(payload_data.get("diagnostic"), dict) else None
-                tool_results.append(payload)
-                tool_traces.append(
-                    {
-                        **audit_row,
-                        "args": dict(call.get("args") or {}),
-                        "error": _normalize_text(payload.get("error")) or None,
-                        "diagnostic": diagnostic,
-                    }
+                trace = {
+                    **audit_row,
+                    "args": dict(call.get("args") or {}),
+                    "error": _normalize_text(payload.get("error")) or None,
+                    "diagnostic": diagnostic,
+                }
+                return payload, trace
+            except AiToolValidationError as exc:
+                error_text = _truncate(exc, limit=400)
+                logger.warning(
+                    "AI tool validation failed: run_id=%s tool_id=%s error=%s args=%s",
+                    tool_context.run_id,
+                    tool_id or "-",
+                    error_text,
+                    dict(call.get("args") or {}),
                 )
+                diagnostic = {
+                    "error_code": "invalid_arguments",
+                    "message": error_text,
+                    "suggested_fix": (
+                        "Re-call the same tool with corrected args matching the input_schema. "
+                        "Common fixes: ensure required fields are present, types match, and "
+                        "string fields stay within length limits."
+                    ),
+                }
+                payload = {
+                    "tool_id": tool_id or "unknown",
+                    "ok": False,
+                    "database_id": _normalize_text(tool_context.effective_database_id) or None,
+                    "data": {"diagnostic": diagnostic},
+                    "error": error_text,
+                    "sources": (
+                        [{"database_id": _normalize_text(tool_context.effective_database_id)}]
+                        if _normalize_text(tool_context.effective_database_id)
+                        else []
+                    ),
+                }
+                trace = {
+                    "tool_id": tool_id or "unknown",
+                    "database_id": _normalize_text(tool_context.effective_database_id) or None,
+                    "status": "error",
+                    "latency_ms": None,
+                    "conversation_id": tool_context.conversation_id,
+                    "bot_id": tool_context.bot_id,
+                    "user_id": int(tool_context.user_id or 0),
+                    "args": dict(call.get("args") or {}),
+                    "error": error_text,
+                    "diagnostic": diagnostic,
+                }
+                return payload, trace
             except Exception as exc:
                 error_text = _truncate(exc, limit=400)
                 logger.warning(
@@ -1590,33 +2495,80 @@ class AiChatService:
                     tool_id or "-",
                     error_text,
                 )
-                tool_results.append(
-                    {
-                        "tool_id": tool_id or "unknown",
-                        "ok": False,
-                        "database_id": _normalize_text(tool_context.effective_database_id) or None,
-                        "data": None,
-                        "error": error_text,
-                        "sources": (
-                            [{"database_id": _normalize_text(tool_context.effective_database_id)}]
-                            if _normalize_text(tool_context.effective_database_id)
-                            else []
-                        ),
-                    }
-                )
-                tool_traces.append(
-                    {
-                        "tool_id": tool_id or "unknown",
-                        "database_id": _normalize_text(tool_context.effective_database_id) or None,
-                        "status": "error",
-                        "latency_ms": None,
-                        "conversation_id": tool_context.conversation_id,
-                        "bot_id": tool_context.bot_id,
-                        "user_id": int(tool_context.user_id or 0),
-                        "args": dict(call.get("args") or {}),
-                        "error": error_text,
-                    }
-                )
+                payload = {
+                    "tool_id": tool_id or "unknown",
+                    "ok": False,
+                    "database_id": _normalize_text(tool_context.effective_database_id) or None,
+                    "data": None,
+                    "error": error_text,
+                    "sources": (
+                        [{"database_id": _normalize_text(tool_context.effective_database_id)}]
+                        if _normalize_text(tool_context.effective_database_id)
+                        else []
+                    ),
+                }
+                trace = {
+                    "tool_id": tool_id or "unknown",
+                    "database_id": _normalize_text(tool_context.effective_database_id) or None,
+                    "status": "error",
+                    "latency_ms": None,
+                    "conversation_id": tool_context.conversation_id,
+                    "bot_id": tool_context.bot_id,
+                    "user_id": int(tool_context.user_id or 0),
+                    "args": dict(call.get("args") or {}),
+                    "error": error_text,
+                }
+                return payload, trace
+
+        # Execute dependency groups sequentially; within each group, run in parallel
+        # We store results indexed by original position to maintain order
+        indexed_results: dict[int, tuple[dict[str, Any], dict[str, Any]]] = {}
+
+        for group in dep_groups:
+            if len(group) == 1:
+                # Single call in group — execute directly (no async overhead)
+                idx = group[0]
+                result_payload, result_trace = _execute_single_call(limited_calls[idx])
+                indexed_results[idx] = (result_payload, result_trace)
+            else:
+                # Multiple independent calls — execute in parallel using asyncio
+                async def _run_parallel(indices: list[int]) -> list[tuple[int, tuple[dict[str, Any], dict[str, Any]]]]:
+                    async def _run_one(i: int) -> tuple[int, tuple[dict[str, Any], dict[str, Any]]]:
+                        result = await asyncio.to_thread(_execute_single_call, limited_calls[i])
+                        return i, result
+
+                    tasks = [_run_one(i) for i in indices]
+                    return await asyncio.gather(*tasks, return_exceptions=False)
+
+                try:
+                    # Try to get existing event loop (if we're already in async context)
+                    try:
+                        asyncio.get_running_loop()
+                        # We're in an async context — can't use asyncio.run
+                        # Fall back to sequential execution in this case
+                        for idx in group:
+                            result_payload, result_trace = _execute_single_call(limited_calls[idx])
+                            indexed_results[idx] = (result_payload, result_trace)
+                    except RuntimeError:
+                        # No running loop — safe to use asyncio.run
+                        parallel_results = asyncio.run(_run_parallel(group))
+                        for idx, (result_payload, result_trace) in parallel_results:
+                            indexed_results[idx] = (result_payload, result_trace)
+                except Exception as exc:
+                    # Fallback: if parallel execution fails for any reason, run sequentially
+                    logger.warning("Parallel tool execution failed, falling back to sequential: %s", exc)
+                    for idx in group:
+                        if idx not in indexed_results:
+                            result_payload, result_trace = _execute_single_call(limited_calls[idx])
+                            indexed_results[idx] = (result_payload, result_trace)
+
+        # Collect results in original order
+        for idx in range(len(limited_calls)):
+            if idx in indexed_results:
+                result_payload, result_trace = indexed_results[idx]
+                tool_results.append(result_payload)
+                tool_traces.append(result_trace)
+
         return tool_results, tool_traces
 
     def _execute_run(
@@ -1626,7 +2578,7 @@ class AiChatService:
         run_payload: dict[str, Any],
         request_context: dict[str, Any] | None = None,
         report_stage=None,
-    ) -> tuple[str, list[dict[str, Any]], dict[str, str] | None, dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]]]:
+    ) -> tuple[str, list[dict[str, Any]], dict[str, str] | None, dict[str, Any], dict[str, Any], list[dict[str, Any]], list[dict[str, Any]], list[str]]:
         run_id = _normalize_text(run_payload.get("id")) or "-"
         runtime = self._get_runtime_by_conversation(run_payload["conversation_id"])
         if runtime is None:
@@ -1671,7 +2623,27 @@ class AiChatService:
             ]
         ) or "No template candidates."
         template_delivery_allowed = bool(extracted_context.get("template_delivery_allowed"))
-        tool_specs = ai_tool_registry.list_specs(tool_ids=tool_context.enabled_tools)
+        all_tool_specs = ai_tool_registry.list_specs(tool_ids=tool_context.enabled_tools)
+        available_tool_groups = get_enabled_tool_groups(tool_context.enabled_tools)
+        trigger_text_for_routing = _normalize_text(extracted_context.get("trigger_text"))
+        report_file_intent = _has_report_file_intent(trigger_text_for_routing)
+        requested_report_format = _detect_requested_report_format(trigger_text_for_routing)
+        routing_started_at = time.perf_counter()
+        # Variant A: pass ALL enabled tools to the LLM (no routing).
+        # With ~50 tools modern models (GPT-4o, Claude 3.5+) handle this well.
+        # The LLM decides which tools to call based on the user's message.
+        routed_groups = set(available_tool_groups)
+        _log_ai_run_timing("tool_routing", routing_started_at, run_id=run_id)
+        logger.info(
+            "ai_tool_routing run_id=%s available=%s routed=%s",
+            run_id,
+            sorted(available_tool_groups),
+            sorted(routed_groups),
+        )
+        tool_specs = [
+            item for item in all_tool_specs
+            if get_tool_group((item or {}).get("tool_id")) in routed_groups
+        ]
         itinvent_tool_specs = [
             item for item in tool_specs if _is_itinvent_tool_id((item or {}).get("tool_id"))
         ]
@@ -1681,16 +2653,31 @@ class AiChatService:
         office_tool_specs = [
             item for item in tool_specs if _is_office_tool_id((item or {}).get("tool_id"))
         ]
+        mfu_tool_specs = [
+            item for item in tool_specs if _is_mfu_tool_id((item or {}).get("tool_id"))
+        ]
+        network_tool_specs = [
+            item for item in tool_specs if _is_network_tool_id((item or {}).get("tool_id"))
+        ]
+        ad_tool_specs = [
+            item for item in tool_specs if _is_ad_tool_id((item or {}).get("tool_id"))
+        ]
         other_tool_specs = [
             item
             for item in tool_specs
             if not _is_itinvent_tool_id((item or {}).get("tool_id"))
             and not _is_file_tool_id((item or {}).get("tool_id"))
             and not _is_office_tool_id((item or {}).get("tool_id"))
+            and not _is_mfu_tool_id((item or {}).get("tool_id"))
+            and not _is_network_tool_id((item or {}).get("tool_id"))
+            and not _is_ad_tool_id((item or {}).get("tool_id"))
         ]
         itinvent_tool_specs_text = _format_tool_results_for_prompt(itinvent_tool_specs)
         file_tool_specs_text = _format_tool_results_for_prompt(file_tool_specs)
         office_tool_specs_text = _format_tool_results_for_prompt(office_tool_specs)
+        mfu_tool_specs_text = _format_tool_results_for_prompt(mfu_tool_specs)
+        network_tool_specs_text = _format_tool_results_for_prompt(network_tool_specs)
+        ad_tool_specs_text = _format_tool_results_for_prompt(ad_tool_specs)
         other_tool_specs_text = _format_tool_results_for_prompt(other_tool_specs)
         file_tools_available = bool(file_tool_specs) and bool(tool_context.allow_generated_artifacts)
         current_database_meta = next(
@@ -1721,13 +2708,17 @@ class AiChatService:
                     ),
                     (
                         "Use tool_calls only for enabled tools: ITinvent live-data lookups/actions or file generation; "
+                        "AD password-status lookups are also available when AD tools are enabled. "
                         "office mail/task work is also available when office tools are enabled. "
                         "Do not invent live database facts without tool results. "
                         "If you request tool_calls, leave answer_markdown empty or brief and wait for tool results. "
                         "Never promise to make another live query later unless you return the needed tool_calls now. "
                         "When file tools are available and the user explicitly asks to create/export/send a file, "
-                        "call ai.files.report or ai.files.create; do not only describe that a file can be created."
+                        "call ai.files.report or ai.files.create; do not only describe that a file can be created. "
+                        "If the user asks for a file/report but does not specify xlsx, pdf, docx or csv, gather live data first, "
+                        "then return a short summary and do not call file tools yet; the app will ask the user to choose a format."
                     ),
+                    AI_ANSWER_STYLE_GUIDE,
                     AI_REQUEST_UNDERSTANDING_GUIDE,
                 ]
                 if part
@@ -1746,7 +2737,7 @@ class AiChatService:
                     f"Template auto-send allowed now: {'yes' if template_delivery_allowed else 'no'}.",
                     (
                         "Write a useful markdown answer in Russian. "
-                        "If the user asks for a file and file tools are available, create it with a file tool. "
+                        "If the user asks for a file and file tools are available, create it with a file tool only when the user specified a concrete file format. "
                         "Use artifacts only as a legacy fallback when file tools are not available. "
                         "If template auto-send is allowed and one suitable template should be sent now, "
                         "set kb_attachment_send to its ids. If candidates are ambiguous or auto-send is not allowed, "
@@ -1792,6 +2783,42 @@ class AiChatService:
                         else ""
                     ),
                     (
+                        f"Enabled MFU tools:\n{mfu_tool_specs_text}"
+                        if mfu_tool_specs
+                        else ""
+                    ),
+                    (
+                        AI_MFU_TOOL_ROUTING_GUIDE
+                        if mfu_tool_specs
+                        else ""
+                    ),
+                    (
+                        f"Enabled network tools:\n{network_tool_specs_text}"
+                        if network_tool_specs
+                        else ""
+                    ),
+                    (
+                        AI_NETWORK_TOOL_ROUTING_GUIDE
+                        if network_tool_specs
+                        else ""
+                    ),
+                    (
+                        f"Enabled Active Directory tools:\n{ad_tool_specs_text}"
+                        if ad_tool_specs
+                        else (
+                            "Active Directory tools are NOT enabled for this bot. "
+                            "If the user asks about AD passwords, password expiry or pwdLastSet, "
+                            "say that AD tools are disabled and suggest the admin enable them in bot settings."
+                            if _has_ad_password_intent(_normalize_text(extracted_context.get("trigger_text")))
+                            else ""
+                        )
+                    ),
+                    (
+                        AI_AD_TOOL_ROUTING_GUIDE
+                        if ad_tool_specs
+                        else ""
+                    ),
+                    (
                         f"Other enabled tools:\n{other_tool_specs_text}"
                         if other_tool_specs
                         else ""
@@ -1803,7 +2830,7 @@ class AiChatService:
                     ),
                     (
                         "If you use live ITinvent data in the final answer, explicitly cite the source as "
-                        "'Источник: ITinvent / <database_id>'."
+                        "'РСЃС‚РѕС‡РЅРёРє: ITinvent / <database_id>'."
                         if itinvent_tool_specs
                         else ""
                     ),
@@ -1860,9 +2887,27 @@ class AiChatService:
         final_usage = usage or {}
         accumulated_tool_results: list[dict[str, Any]] = []
         tool_rounds_used = 0
-        while tool_specs and tool_rounds_used < AI_TOOL_ROUND_LIMIT:
-            tool_calls = _normalize_tool_calls(final_payload.get("tool_calls"))
+        # Per-bot limits from context (with env fallback)
+        max_rounds = tool_context.max_tool_rounds if tool_context else AI_TOOL_ROUND_LIMIT
+        max_calls_per_round = tool_context.max_tool_calls_per_round if tool_context else AI_TOOL_CALL_LIMIT
+        # Token budget tracking
+        token_budget = TokenBudget(
+            model_context_window=AI_MODEL_CONTEXT_WINDOW,
+            safety_margin=AI_TOKEN_BUDGET_SAFETY_MARGIN,
+        )
+        token_budget.add_usage(final_usage)
+        budget_exhausted = False
+        while tool_specs and tool_rounds_used < max_rounds:
+            tool_calls = _normalize_tool_calls(final_payload.get("tool_calls"), limit=max_calls_per_round)
             if not tool_calls:
+                break
+            # Check token budget before executing more tools
+            if token_budget.exhausted:
+                budget_exhausted = True
+                logger.info(
+                    "AI run token budget exhausted before tool round: run_id=%s rounds_used=%s remaining=%s",
+                    run_id, tool_rounds_used, token_budget.remaining,
+                )
                 break
             tool_started_at = time.perf_counter()
             tool_results, round_traces = self._execute_tool_calls(
@@ -1880,6 +2925,57 @@ class AiChatService:
             accumulated_tool_results.extend(tool_results)
             tool_traces.extend(round_traces)
             tool_rounds_used += 1
+
+            # Auto-pagination: detect truncated results and inject next-page calls
+            # if the user's request implies they need complete data (e.g., file export, report)
+            auto_pagination_calls: list[dict[str, Any]] = []
+            if report_file_intent or "все" in _normalize_text(extracted_context.get("trigger_text")).lower():
+                for result in tool_results:
+                    pagination_info = _detect_truncated_result(result)
+                    if pagination_info is not None:
+                        # Find the original call args to build the next-page request
+                        original_call = next(
+                            (c for c in tool_calls if _normalize_text(c.get("tool_id")) == pagination_info["tool_id"]),
+                            None,
+                        )
+                        if original_call:
+                            next_args = dict(original_call.get("args") or {})
+                            next_args["offset"] = pagination_info["next_offset"]
+                            if "limit" in next_args or pagination_info.get("limit"):
+                                next_args["limit"] = pagination_info.get("limit", 50)
+                            auto_pagination_calls.append({
+                                "tool_id": pagination_info["tool_id"],
+                                "args": next_args,
+                            })
+
+            # Execute auto-pagination calls if any (within the same round budget)
+            if auto_pagination_calls and tool_rounds_used < max_rounds:
+                pagination_started_at = time.perf_counter()
+                pagination_results, pagination_traces = self._execute_tool_calls(
+                    tool_calls=auto_pagination_calls[:max_calls_per_round],
+                    tool_context=tool_context,
+                    report_stage=report_stage,
+                )
+                _log_ai_run_timing(
+                    "tools_autopagination",
+                    pagination_started_at,
+                    run_id=run_id,
+                    round=tool_rounds_used,
+                    tool_count=len(auto_pagination_calls),
+                )
+                accumulated_tool_results.extend(pagination_results)
+                tool_traces.extend(pagination_traces)
+            # Detect validation errors in this round so the model can self-correct.
+            round_validation_errors: list[dict[str, Any]] = []
+            for trace in round_traces:
+                diag = trace.get("diagnostic") if isinstance(trace.get("diagnostic"), dict) else None
+                if diag and _normalize_text(diag.get("error_code")) == "invalid_arguments":
+                    round_validation_errors.append({
+                        "tool_id": _normalize_text(trace.get("tool_id")) or "unknown",
+                        "args": dict(trace.get("args") or {}),
+                        "message": _normalize_text(diag.get("message")) or _normalize_text(trace.get("error")),
+                        "field_path": _normalize_text(diag.get("field_path")) or None,
+                    })
             if callable(report_stage):
                 report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
             followup_system_prompt = "\n\n".join(
@@ -1892,14 +2988,24 @@ class AiChatService:
                         (
                             "Return JSON only. Allowed top-level keys are answer_markdown, artifacts, "
                             "kb_attachment_send, tool_calls. artifacts is optional. "
-                            "tool_calls may contain up to 3 objects with keys tool_id and args."
+                            f"tool_calls may contain up to {max_calls_per_round} objects with keys tool_id and args."
                         ),
                         (
-                            "Use the accumulated tool results. "
+                            "Use the accumulated tool results and running summary. "
+                            "Do not re-call tools for data already retrieved (check the running summary). "
                             "If more enabled-tool work is still required, return the next tool_calls now. "
                             "Do not promise another lookup, office draft action or file creation later without returning tool_calls. "
-                            "If the user asked for a generated file and the data is now sufficient, call ai.files.report or ai.files.create when available."
+                            "If the user asked for a generated file with an explicit format and the data is now sufficient, call ai.files.report or ai.files.create when available. "
+                            "If the user asked for a file/report without xlsx/pdf/docx/csv, do not call file tools; return a short summary for format selection."
                         ),
+                        (
+                            "Some previous tool calls failed argument validation. "
+                            "If you re-call the same tool, fix the arguments per the diagnostics. "
+                            "Do not repeat the exact same invalid args."
+                            if round_validation_errors
+                            else ""
+                        ),
+                        AI_ANSWER_STYLE_GUIDE,
                         AI_REQUEST_UNDERSTANDING_GUIDE,
                     ]
                     if part
@@ -1907,15 +3013,29 @@ class AiChatService:
             )
             followup_user_prompt = "\n\n".join(
                 [
-                    user_prompt,
-                    f"Accumulated tool results JSON:\n{_format_tool_results_for_prompt(accumulated_tool_results)}",
-                    (
-                        "If the available tool results are enough, return the final user-facing answer in Russian markdown. "
-                        "If another enabled tool is still required, return tool_calls for the next step instead of a placeholder. "
-                        "If the user asked for a file and the accumulated data is sufficient, return an ai.files.report or ai.files.create tool_call when available. "
-                        "When you use live ITinvent data in the final answer, cite the source as 'Источник: ITinvent / <database_id>'. "
-                        "Keep the answer structured and detailed, not a bare list."
-                    ),
+                    part
+                    for part in [
+                        user_prompt,
+                        f"Accumulated tool results JSON:\n{_format_tool_results_for_prompt(accumulated_tool_results)}",
+                        _build_running_summary(accumulated_tool_results),
+                        (
+                            f"Tool validation errors to fix:\n{_json_dumps(round_validation_errors)}"
+                            if round_validation_errors
+                            else ""
+                        ),
+                        (
+                            "If the available tool results are enough, return the final user-facing answer in Russian markdown. "
+                            "If another enabled tool is still required, return tool_calls for the next step instead of a placeholder. "
+                            "If the user asked for a file and explicitly specified xlsx/pdf/docx/csv, return an ai.files.report or ai.files.create tool_call when available. "
+                            "If the user did not specify xlsx/pdf/docx/csv, summarize the collected data and wait for the app's format choice card. "
+                            "When you use live ITinvent data in the final answer, cite the source as 'Источник: ITinvent / <database_id>'. "
+                            "Keep the answer structured: short summary first, then sections or a table, then the source line. "
+                            "Do not re-call tools for data already present in the running summary above. "
+                            "If a tool result is marked TRUNCATED and the user needs complete data, "
+                            "re-call the same tool with an increased offset to fetch the next page."
+                        ),
+                    ]
+                    if part
                 ]
             )
             try:
@@ -1951,8 +3071,73 @@ class AiChatService:
                 break
             final_payload = next_payload
             final_usage = _merge_usage(final_usage, next_usage)
+            token_budget.add_usage(next_usage)
+            # Check token budget after follow-up LLM call
+            if token_budget.exhausted:
+                budget_exhausted = True
+                logger.info(
+                    "AI run token budget exhausted after follow-up LLM call: run_id=%s rounds_used=%s",
+                    run_id, tool_rounds_used,
+                )
+                break
 
-        if tool_specs and accumulated_tool_results and _normalize_tool_calls(final_payload.get("tool_calls")):
+        # Handle budget exhaustion: make final LLM call with no tools and summary prompt
+        if budget_exhausted and accumulated_tool_results:
+            if callable(report_stage):
+                report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
+            budget_final_system_prompt = "\n\n".join(
+                [
+                    part
+                    for part in [
+                        DEFAULT_BOT_PROMPT,
+                        _normalize_text(bot.system_prompt),
+                        AI_JSON_OUTPUT_LOCK,
+                        (
+                            "Return JSON only with keys answer_markdown, artifacts, kb_attachment_send. "
+                            "Do not return tool_calls in this final pass."
+                        ),
+                        "Token budget exhausted. Summarize what was accomplished and what remains.",
+                        AI_ANSWER_STYLE_GUIDE,
+                        AI_REQUEST_UNDERSTANDING_GUIDE,
+                    ]
+                    if part
+                ]
+            )
+            budget_final_user_prompt = "\n\n".join(
+                [
+                    user_prompt,
+                    f"Accumulated tool results JSON:\n{_format_tool_results_for_prompt(accumulated_tool_results)}",
+                    (
+                        "Бюджет токенов исчерпан. Сформируй финальный ответ на русском языке в формате markdown "
+                        "на основе собранных данных. Укажи, что было выполнено и что осталось незавершённым. "
+                        "Если данные неполные, сообщи об этом явно."
+                    ),
+                ]
+            )
+            try:
+                budget_final_started_at = time.perf_counter()
+                budget_final_payload, budget_final_usage = _complete_json_step(
+                    current_system_prompt=budget_final_system_prompt,
+                    current_user_prompt=budget_final_user_prompt,
+                    response_schema=AI_CHAT_RESPONSE_SCHEMA_FINAL,
+                    schema_name="ai_chat_response_final",
+                )
+                _log_ai_run_timing("llm_budget_final", budget_final_started_at, run_id=run_id)
+                final_payload = budget_final_payload
+                final_usage = _merge_usage(final_usage, budget_final_usage)
+            except RuntimeError as exc:
+                logger.warning(
+                    "AI run budget-exhaustion final returned invalid JSON; using fallback: run_id=%s error=%s",
+                    run_id, exc,
+                )
+                final_payload = {
+                    "answer_markdown": _format_fallback_tool_answer(accumulated_tool_results),
+                    "artifacts": [],
+                    "kb_attachment_send": None,
+                }
+
+        # Handle round limit reached: inform user of partial completion
+        elif tool_specs and accumulated_tool_results and _normalize_tool_calls(final_payload.get("tool_calls")):
             if callable(report_stage):
                 report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
             forced_final_system_prompt = "\n\n".join(
@@ -1966,6 +3151,7 @@ class AiChatService:
                             "Return JSON only with keys answer_markdown, artifacts, kb_attachment_send. "
                             "Do not return tool_calls in this final pass."
                         ),
+                        AI_ANSWER_STYLE_GUIDE,
                         AI_REQUEST_UNDERSTANDING_GUIDE,
                     ]
                     if part
@@ -1976,9 +3162,11 @@ class AiChatService:
                     user_prompt,
                     f"Accumulated tool results JSON:\n{_format_tool_results_for_prompt(accumulated_tool_results)}",
                     (
-                        "Tool-call round limit is reached. Produce the best final user-facing answer in Russian markdown "
-                        "using the available tool results. Be explicit if the live data is incomplete or partially failed. "
-                        "When you use live ITinvent data, cite the source as 'Источник: ITinvent / <database_id>'. "
+                        f"Tool-call round limit ({max_rounds}) is reached. The operation was partially completed. "
+                        "Produce the best final user-facing answer in Russian markdown "
+                        "using the available tool results. Summarize what was accomplished and what remains unfinished. "
+                        "Be explicit if the live data is incomplete or partially failed. "
+                        "When you use live ITinvent data, cite the source as 'РСЃС‚РѕС‡РЅРёРє: ITinvent / <database_id>'. "
                         "If the user requested a file and no file tool result exists, say that the file was not created. "
                         "Keep the answer structured and detailed, not a bare list."
                     ),
@@ -2014,91 +3202,31 @@ class AiChatService:
         ]
         kb_attachment_send = _normalize_kb_attachment_send(final_payload.get("kb_attachment_send"))
         generated_file_specs = _extract_generated_file_specs_from_tool_results(accumulated_tool_results)
-        return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs
-        template_candidates = list(extracted_context.get("template_candidates") or [])
-        template_candidates_text = "\n".join(
-            [
-                (
-                    f"- article_id={_normalize_text(item.get('article_id'))}; "
-                    f"attachment_id={_normalize_text(item.get('attachment_id'))}; "
-                    f"title={_normalize_text(item.get('title'))}; "
-                    f"file={_normalize_text(item.get('attachment_name'))}; "
-                    f"category={_normalize_text(item.get('category'))}; "
-                    f"summary={_normalize_text(item.get('summary'))}; "
-                    f"score={int(item.get('score') or 0)}"
-                )
-                for item in template_candidates
-                if isinstance(item, dict)
-            ]
-        ) or "No template candidates."
-        template_delivery_allowed = bool(extracted_context.get("template_delivery_allowed"))
-        system_prompt = "\n\n".join(
-            part for part in [
-                DEFAULT_BOT_PROMPT,
-                _normalize_text(bot.system_prompt),
-                AI_JSON_OUTPUT_LOCK,
-                (
-                    "Верни только JSON-объект вида "
-                    "{\"answer_markdown\":\"...\",\"artifacts\":[...]} без пояснений вне JSON. "
-                    "artifacts — необязательный массив объектов с полями kind, file_name и content/rows/sheets."
-                ),
-            ] if part
-        )
-        system_prompt = "\n\n".join(
-            part for part in [
-                system_prompt,
-                (
-                    "Return JSON only with keys answer_markdown, artifacts, kb_attachment_send. "
-                    "artifacts is optional. kb_attachment_send must be null or an object with article_id and attachment_id chosen only from the provided template candidates."
-                ),
-            ]
-            if part
-        )
-        user_prompt = (
-            f"Bot title: {bot.title}\n"
-            f"Conversation summary:\n{extracted_context['conversation_text']}\n\n"
-            f"Current user request:\n{extracted_context['trigger_text']}\n\n"
-            f"Attached file context:\n{extracted_context['file_context'] or 'No extracted file context.'}\n\n"
-            f"Knowledge base context:\n{extracted_context['kb_context'] or 'No KB context.'}\n\n"
-            "Сформируй полезный markdown-ответ. "
-            "Если нужен файл, положи описание файла в artifacts."
-        )
-        user_prompt = "\n\n".join(
-            part for part in [
-                user_prompt,
-                f"Template document candidates:\n{template_candidates_text}",
-                f"Template auto-send allowed now: {'yes' if template_delivery_allowed else 'no'}.",
-                (
-                    "Write a short useful markdown answer in Russian. "
-                    "If a generated file is needed, place it into artifacts. "
-                    "If template auto-send is allowed and one suitable template should be sent now, set kb_attachment_send to its ids. "
-                    "If candidates are ambiguous or auto-send is not allowed, ask a short clarification question and keep kb_attachment_send null."
-                ),
-            ]
-            if part
-        )
-        if callable(report_stage):
-            report_stage(AI_RUN_STAGE_GENERATING_ANSWER)
-        try:
-            payload, usage = openrouter_client.complete_json(
-                system_prompt=system_prompt,
-                user_prompt=user_prompt,
-                model=_normalize_text(bot.model),
-                temperature=float(bot.temperature or 0.2),
-                max_tokens=int(bot.max_tokens or 2000),
-                response_schema=AI_CHAT_RESPONSE_SCHEMA_FINAL,
-                schema_name="ai_chat_response_final",
+        if (
+            report_file_intent
+            and requested_report_format is None
+            and file_tools_available
+            and accumulated_tool_results
+        ):
+            report_choice_payload = _build_report_choice_payload(
+                trigger_text=trigger_text_for_routing,
+                results=accumulated_tool_results,
+                database_id=tool_context.effective_database_id,
             )
-        except OpenRouterClientError as exc:
-            raise RuntimeError(str(exc)) from exc
-        answer_markdown = _truncate(payload.get("answer_markdown"), limit=12000)
-        artifacts = [
-            item
-            for item in list(payload.get("artifacts") or [])
-            if isinstance(item, dict)
-        ]
-        kb_attachment_send = _normalize_kb_attachment_send(payload.get("kb_attachment_send"))
-        return answer_markdown, artifacts, kb_attachment_send, usage, extracted_context
+            if report_choice_payload is not None:
+                from backend.ai_chat.action_cards import build_report_format_choice
+
+                build_report_format_choice(
+                    conversation_id=_normalize_text(run_payload.get("conversation_id")),
+                    run_id=_normalize_text(run_payload.get("id")),
+                    requester_user_id=int(run_payload.get("user_id") or 0),
+                    database_id=_normalize_text(report_choice_payload.get("database_id")) or tool_context.effective_database_id,
+                    payload=report_choice_payload,
+                )
+                answer_markdown = _build_report_choice_answer(report_choice_payload)
+                generated_file_specs = []
+                artifacts = []
+        return answer_markdown, artifacts, kb_attachment_send, final_usage, extracted_context, tool_traces, generated_file_specs, sorted(routed_groups)
 
     def _build_conversation_context(
         self,

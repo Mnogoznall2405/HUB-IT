@@ -17,6 +17,7 @@ import { getOfficeQuietActionSx, getOfficeSubtlePanelSx } from '../../theme/offi
 import LocationAutocompleteField from './LocationAutocompleteField';
 import {
   TRANSFER_OPERATION_ACT_ONLY,
+  TRANSFER_OPERATION_LOCATION_ONLY,
   TRANSFER_OPERATION_MOVE,
 } from './equipmentModel';
 import {
@@ -78,6 +79,8 @@ const TransferActionContent = memo(function TransferActionContent({
   const mode = transfer.mode || TRANSFER_OPERATION_MOVE;
   const result = transfer.result || null;
   const isActOnly = mode === TRANSFER_OPERATION_ACT_ONLY;
+  const isLocationOnly = mode === TRANSFER_OPERATION_LOCATION_ONLY;
+  const usesLocationFields = mode === TRANSFER_OPERATION_MOVE || isLocationOnly;
   const createLabel = `Добавить сотрудника: ${transfer.employeeInputTrimmed || ''}`;
 
   return (
@@ -85,89 +88,111 @@ const TransferActionContent = memo(function TransferActionContent({
       {!result && (
         <>
           <FormControl size={isMobile ? 'medium' : 'small'} fullWidth>
-            <InputLabel>Действие</InputLabel>
+            <InputLabel id="database-transfer-action-label">Действие</InputLabel>
             <Select
+              labelId="database-transfer-action-label"
+              id="database-transfer-action"
               label="Действие"
               value={mode}
               onChange={(event) => actions.onModeChange?.(event.target.value)}
             >
-              <MenuItem value={TRANSFER_OPERATION_MOVE}>Переместить в базе и создать акт</MenuItem>
-              <MenuItem value={TRANSFER_OPERATION_ACT_ONLY}>Только создать акт без перемещения</MenuItem>
+              <MenuItem
+                value={TRANSFER_OPERATION_LOCATION_ONLY}
+                title="Меняет только филиал и локацию в базе. Сотрудник и акты не меняются."
+              >
+                Перемещение
+              </MenuItem>
+              <MenuItem
+                value={TRANSFER_OPERATION_MOVE}
+                title="Меняет сотрудника/филиал/локацию, создаёт акт и напоминание на загрузку подписанного акта."
+              >
+                Перемещение с актом
+              </MenuItem>
+              <MenuItem
+                value={TRANSFER_OPERATION_ACT_ONLY}
+                title="Создаёт акт по выбранной технике без изменения данных в базе."
+              >
+                Акт без перемещения
+              </MenuItem>
             </Select>
           </FormControl>
           <Typography variant="caption" color="text.secondary">
             {isActOnly
               ? 'Получатель в акте будет взят из текущего владельца выбранной техники.'
+              : isLocationOnly
+                ? `Будут изменены только филиал и местоположение. Текущие значения: ${sourceDefaults.branch_name || '-'} / ${sourceDefaults.location_name || '-'}`
               : `Текущие значения по умолчанию: ${sourceDefaults.branch_name || '-'} / ${sourceDefaults.location_name || '-'}`}
           </Typography>
-          {mode === TRANSFER_OPERATION_MOVE && (sourceDefaults.mixed_branch || sourceDefaults.mixed_location) && (
+          {usesLocationFields && (sourceDefaults.mixed_branch || sourceDefaults.mixed_location) && (
             <Alert severity="info">
               Выбраны позиции из разных филиалов или локаций. Указанные ниже значения будут применены ко всем выбранным позициям.
             </Alert>
           )}
-          <Autocomplete
-            options={transfer.employeeOptions || []}
-            loading={Boolean(transfer.employeeLoading)}
-            value={transfer.selectedEmployeeOption || null}
-            inputValue={transfer.employeeInput || ''}
-            clearOnBlur={false}
-            onInputChange={(_, value, reason) => {
-              if (reason !== 'input' && reason !== 'clear') {
-                return;
-              }
-              actions.onEmployeeInputChange?.(String(value || ''));
-            }}
-            onChange={(_, value) => {
-              if (value?.__create) {
-                actions.onCreateEmployee?.();
-                return;
-              }
-              actions.onEmployeeChange?.(value);
-            }}
-            getOptionLabel={(option) => formatTransferOwnerOptionLabel(option, createLabel)}
-            renderOption={(props, option) => {
-              const { key, ...restProps } = props;
-              if (option?.__create) {
+          {!isLocationOnly && (
+            <Autocomplete
+              options={transfer.employeeOptions || []}
+              loading={Boolean(transfer.employeeLoading)}
+              value={transfer.selectedEmployeeOption || null}
+              inputValue={transfer.employeeInput || ''}
+              clearOnBlur={false}
+              onInputChange={(_, value, reason) => {
+                if (reason !== 'input' && reason !== 'clear') {
+                  return;
+                }
+                actions.onEmployeeInputChange?.(String(value || ''));
+              }}
+              onChange={(_, value) => {
+                if (value?.__create) {
+                  actions.onCreateEmployee?.();
+                  return;
+                }
+                actions.onEmployeeChange?.(value);
+              }}
+              getOptionLabel={(option) => formatTransferOwnerOptionLabel(option, createLabel)}
+              renderOption={(props, option) => {
+                const { key, ...restProps } = props;
+                if (option?.__create) {
+                  return (
+                    <li key={key} {...restProps}>
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        fullWidth
+                        sx={{ pointerEvents: 'none', justifyContent: 'flex-start' }}
+                      >
+                        {createLabel}
+                      </Button>
+                    </li>
+                  );
+                }
                 return (
                   <li key={key} {...restProps}>
-                    <Button
-                      variant="outlined"
-                      size="small"
-                      fullWidth
-                      sx={{ pointerEvents: 'none', justifyContent: 'flex-start' }}
-                    >
-                      {createLabel}
-                    </Button>
+                    {formatTransferOwnerOptionLabel(option)}
                   </li>
                 );
+              }}
+              isOptionEqualToValue={isSameTransferOwnerOption}
+              noOptionsText={
+                isActOnly
+                  ? 'Можно ввести вручную'
+                  : 'Сотрудники не найдены'
               }
-              return (
-                <li key={key} {...restProps}>
-                  {formatTransferOwnerOptionLabel(option)}
-                </li>
-              );
-            }}
-            isOptionEqualToValue={isSameTransferOwnerOption}
-            noOptionsText={
-              isActOnly
-                ? 'Можно ввести вручную'
-                : 'Сотрудники не найдены'
-            }
-            renderInput={(params) => (
-              <TextField
-                {...params}
-                autoFocus
-                label={isActOnly ? 'Кто выдал' : 'Новый сотрудник'}
-                placeholder="Начните вводить ФИО"
-                size={isMobile ? 'medium' : 'small'}
-                helperText={
-                  isActOnly
-                    ? 'Можно выбрать из списка или ввести вручную, например: Без владельца'
-                    : 'Введите минимум 2 символа для поиска'
-                }
-              />
-            )}
-          />
+              renderInput={(params) => (
+                <TextField
+                  {...params}
+                  autoFocus
+                  label={isActOnly ? 'Кто выдал' : 'Новый сотрудник'}
+                  placeholder="Начните вводить ФИО"
+                  size={isMobile ? 'medium' : 'small'}
+                  helperText={
+                    isActOnly
+                      ? 'Можно выбрать из списка или ввести вручную, например: Без владельца'
+                      : 'Введите минимум 2 символа для поиска'
+                  }
+                />
+              )}
+            />
+          )}
           {mode === TRANSFER_OPERATION_MOVE && transfer.usesManualEmployee && (
             <Alert severity="info">
               Сотрудник {transfer.newEmployee} будет создан автоматически при перемещении, если его нет в базе.
@@ -198,11 +223,13 @@ const TransferActionContent = memo(function TransferActionContent({
               </Select>
             </FormControl>
           )}
-          {mode === TRANSFER_OPERATION_MOVE && (
+          {usesLocationFields && (
             <>
               <FormControl size={isMobile ? 'medium' : 'small'} fullWidth>
-                <InputLabel>Филиал назначения</InputLabel>
+                <InputLabel id="database-transfer-branch-label">Филиал назначения</InputLabel>
                 <Select
+                  labelId="database-transfer-branch-label"
+                  id="database-transfer-branch"
                   label="Филиал назначения"
                   value={transfer.branchNo ?? ''}
                   onChange={(event) => actions.onBranchChange?.(event.target.value)}
@@ -247,7 +274,7 @@ const TransferActionContent = memo(function TransferActionContent({
           <Alert severity={getTransferResultSeverity({ result, jobPolling: transfer.jobPolling })}>
             {transfer.jobPolling || isTransferResultPending(result)
               ? (result.job_status_text || 'Акты создаются, обновите статус через несколько секунд')
-              : `${isActOnly ? 'Подготовлено позиций' : 'Перенесено'}: ${result.success_count}, ошибок: ${result.failed_count}`}
+              : `${isActOnly ? 'Подготовлено позиций' : 'Перемещено'}: ${result.success_count}, ошибок: ${result.failed_count}`}
           </Alert>
           {result.job_id && !transfer.jobPolling && isTransferResultPending(result) && (
             <Button
@@ -345,12 +372,14 @@ const TransferActionContent = memo(function TransferActionContent({
             </Box>
           )}
 
-          <Divider />
+          {!isLocationOnly && (
+            <>
+              <Divider />
 
-          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-            Отправка акта по email
-          </Typography>
-          <FormControl size={isMobile ? 'medium' : 'small'} fullWidth>
+              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                Отправка акта по email
+              </Typography>
+              <FormControl size={isMobile ? 'medium' : 'small'} fullWidth>
             <InputLabel>Кому отправить</InputLabel>
             <Select
               label="Кому отправить"
@@ -419,6 +448,8 @@ const TransferActionContent = memo(function TransferActionContent({
           >
             {email.loading ? 'Отправка...' : 'Отправить акт'}
           </Button>
+            </>
+          )}
         </Box>
       )}
     </Box>

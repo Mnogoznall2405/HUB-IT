@@ -34,6 +34,11 @@ export const chatMessageSendingAPI = {
     return response.data;
   },
 
+  getLinkPreview: async (url) => {
+    const response = await apiClient.get('/chat/link-preview', { params: { url } });
+    return response.data;
+  },
+
   shareTask: async (conversationId, taskId, options = {}) => {
     const response = await apiClient.post(
       `/chat/conversations/${encodeURIComponent(conversationId)}/messages/task-share`,

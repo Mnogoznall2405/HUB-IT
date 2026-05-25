@@ -25,6 +25,7 @@ def _clear_auth_env(monkeypatch) -> None:
         "JWT_SECRET_KEYS",
         "JWT_PREVIOUS_SECRET_KEYS",
         "AUTH_COOKIE_SECURE",
+        "AUTH_NEW_LOGIN_EMAIL_ENABLED",
     ):
         monkeypatch.delenv(key, raising=False)
 
@@ -59,6 +60,24 @@ def test_development_keeps_legacy_auth_defaults(monkeypatch):
     assert loaded.app.environment == "development"
     assert loaded.app.auth_cookie_secure is False
     assert loaded.jwt.secret_key == "your-secret-key-change-in-production"
+    assert loaded.security.new_login_email_enabled is False
+
+
+def test_new_login_email_notifications_are_disabled_by_default(monkeypatch):
+    _clear_auth_env(monkeypatch)
+
+    loaded = Config.from_env()
+
+    assert loaded.security.new_login_email_enabled is False
+
+
+def test_new_login_email_notifications_require_explicit_enable(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("AUTH_NEW_LOGIN_EMAIL_ENABLED", "1")
+
+    loaded = Config.from_env()
+
+    assert loaded.security.new_login_email_enabled is True
 
 
 def _runtime_module_for_test(monkeypatch):

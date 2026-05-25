@@ -18,7 +18,10 @@ from backend.ai_chat.tools.context import (
     OFFICE_TOOL_MAIL_SEARCH,
     OFFICE_TOOL_TASKS_GET,
     OFFICE_TOOL_TASKS_SEARCH,
+    OFFICE_TOOL_TASKS_PROJECTS,
     OFFICE_TOOL_WORKDAY_SUMMARY,
+    OFFICE_TOOL_ANNOUNCEMENTS_LIST,
+    OFFICE_TOOL_ANNOUNCEMENTS_GET,
 )
 from backend.ai_chat.tools.registry import ai_tool_registry
 from backend.services.authorization_service import (
@@ -635,6 +638,125 @@ class TaskStatusDraftTool(AiTool):
         return AiToolResult(tool_id=self.tool_id, ok=True, database_id=None, data={"action_card": card})
 
 
+class TasksProjectsArgs(BaseModel):
+    include_inactive: bool = False
+
+
+class AnnouncementsListArgs(BaseModel):
+    q: Optional[str] = Field(default=None, max_length=200)
+    priority: Optional[str] = Field(default=None, max_length=40)
+    unread_only: bool = False
+    limit: int = Field(default=20, ge=1, le=100)
+
+    @field_validator("q", "priority", mode="before")
+    @classmethod
+    def _normalize_optional(cls, value):
+        text = _normalize_text(value)
+        return text or None
+
+
+class AnnouncementsGetArgs(BaseModel):
+    announcement_id: str = Field(..., min_length=1, max_length=128)
+
+    @field_validator("announcement_id", mode="before")
+    @classmethod
+    def _normalize_id(cls, value):
+        return _normalize_text(value)
+
+
+class TasksProjectsTool(AiTool):
+    tool_id = OFFICE_TOOL_TASKS_PROJECTS
+    description = "List all active task projects (boards) available in Hub."
+    input_model = TasksProjectsArgs
+    stage = "checking_office"
+
+    def execute(self, *, context: AiToolExecutionContext, args: TasksProjectsArgs) -> AiToolResult:
+        _require_permission(context, PERM_TASKS_READ)
+        try:
+            projects = hub_service.list_task_projects(include_inactive=args.include_inactive) or []
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, data=None, error=str(exc))
+        items = [
+            {
+                "id": p.get("id"),
+                "name": p.get("name"),
+                "code": p.get("code"),
+                "is_active": p.get("is_active"),
+                "description": p.get("description"),
+            }
+            for p in (projects if isinstance(projects, list) else [])
+            if isinstance(p, dict)
+        ]
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            data={"count": len(items), "items": items},
+        )
+
+
+class AnnouncementsListTool(AiTool):
+    tool_id = OFFICE_TOOL_ANNOUNCEMENTS_LIST
+    description = "List Hub announcements visible to the current user, with optional search query and filters."
+    input_model = AnnouncementsListArgs
+    stage = "checking_office"
+
+    def execute(self, *, context: AiToolExecutionContext, args: AnnouncementsListArgs) -> AiToolResult:
+        try:
+            result = hub_service.list_announcements(
+                user_id=int(context.user_id),
+                limit=_cap_limit(args.limit),
+                q=args.q or "",
+                priority=args.priority or "",
+                unread_only=args.unread_only,
+            )
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, data=None, error=str(exc))
+        items = result.get("items") if isinstance(result, dict) else []
+        return AiToolResult(
+            tool_id=self.tool_id,
+            ok=True,
+            data={
+                "total": result.get("total") if isinstance(result, dict) else len(items or []),
+                "unread_total": result.get("unread_total") if isinstance(result, dict) else 0,
+                "count": len(items or []),
+                "items": [
+                    {
+                        "id": item.get("id"),
+                        "title": item.get("title"),
+                        "priority": item.get("priority"),
+                        "published_at": item.get("published_at"),
+                        "is_read": item.get("is_read"),
+                        "body_preview": item.get("body_preview"),
+                    }
+                    for item in (items or [])
+                    if isinstance(item, dict)
+                ],
+            },
+        )
+
+
+class AnnouncementsGetTool(AiTool):
+    tool_id = OFFICE_TOOL_ANNOUNCEMENTS_GET
+    description = "Open a Hub announcement by its ID and return full body and metadata."
+    input_model = AnnouncementsGetArgs
+    stage = "checking_office"
+
+    def execute(self, *, context: AiToolExecutionContext, args: AnnouncementsGetArgs) -> AiToolResult:
+        try:
+            item = hub_service.get_announcement(
+                args.announcement_id,
+                user_id=int(context.user_id),
+                is_admin=_is_admin(context),
+            )
+        except PermissionError as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, data=None, error=str(exc))
+        except Exception as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, data=None, error=str(exc))
+        if item is None:
+            return AiToolResult(tool_id=self.tool_id, ok=False, data=None, error="Announcement not found.")
+        return AiToolResult(tool_id=self.tool_id, ok=True, data=item)
+
+
 for tool in [
     MailSearchTool(),
     MailGetMessageTool(),
@@ -647,5 +769,8 @@ for tool in [
     TaskCreateDraftTool(),
     TaskCommentDraftTool(),
     TaskStatusDraftTool(),
+    TasksProjectsTool(),
+    AnnouncementsListTool(),
+    AnnouncementsGetTool(),
 ]:
     ai_tool_registry.register(tool)

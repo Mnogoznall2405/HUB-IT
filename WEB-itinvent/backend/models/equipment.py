@@ -197,7 +197,7 @@ class TransferItemResult(BaseModel):
     serial_no: Optional[str] = Field(None, description="Serial number")
     old_employee_no: Optional[int] = Field(None, description="Old employee ID")
     old_employee_name: Optional[str] = Field(None, description="Old employee name")
-    new_employee_no: int = Field(..., description="New employee ID")
+    new_employee_no: Optional[int] = Field(None, description="New/current employee ID")
     new_employee_name: str = Field(..., description="New employee name")
     branch_no: Optional[int | str] = Field(None, description="Final branch ID")
     loc_no: Optional[int | str] = Field(None, description="Final location ID")
@@ -242,6 +242,14 @@ class TransferActOnlyRequest(BaseModel):
     issuer_employee: str = Field(..., min_length=1, description="Employee/person who issued equipment")
     issuer_owner_no: Optional[int] = Field(None, description="Optional OWNER_NO for issuer")
     comment: Optional[str] = Field(None, description="Optional act comment")
+
+
+class TransferLocationRequest(BaseModel):
+    """Move equipment to another branch/location without changing owner or creating acts."""
+    inv_nos: List[str] = Field(..., min_length=1, description="Inventory numbers")
+    branch_no: int | str = Field(..., description="Target BRANCH_NO")
+    loc_no: int | str = Field(..., description="Target LOC_NO")
+    comment: Optional[str] = Field(None, description="Optional transfer comment")
 
 
 class TransferExecuteResponse(BaseModel):

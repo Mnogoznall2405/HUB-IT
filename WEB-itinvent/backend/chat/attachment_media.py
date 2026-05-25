@@ -13,6 +13,7 @@ from PIL import Image, ImageDraw, ImageOps, UnidentifiedImageError
 from sqlalchemy import and_, or_
 
 from backend.chat.models import ChatMessageAttachment
+from backend.chat.utils import normalize_text as _normalize_text
 
 
 _VARIANT_MAX_DIMENSIONS = {
@@ -20,10 +21,6 @@ _VARIANT_MAX_DIMENSIONS = {
     "preview": 1280,
 }
 
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
 
 
 def _iso(value: Optional[datetime]) -> Optional[str]:
@@ -143,6 +140,7 @@ class ChatAttachmentMedia:
         *,
         conversation_id: str,
         attachment: ChatMessageAttachment,
+        source_path: Path | None = None,
     ) -> dict[str, str]:
         variant = "poster"
         variant_path = self.resolve_variant_path(
@@ -155,38 +153,88 @@ class ChatAttachmentMedia:
             return {
                 "path": str(variant_path),
                 "file_name": variant_path.name,
-                "mime_type": "image/png",
+                "mime_type": "image/jpeg",
             }
 
-        width = max(320, int(getattr(attachment, "width", 0) or 0) or 720)
-        height = max(180, int(getattr(attachment, "height", 0) or 0) or int(round(width * 9 / 16)))
-        canvas = Image.new("RGBA", (width, height), "#0f172a")
-        draw = ImageDraw.Draw(canvas)
-        draw.rounded_rectangle((0, 0, width, height), radius=max(18, width // 18), fill="#0f172a")
-        draw.rounded_rectangle(
-            (max(12, width // 28), max(12, height // 28), width - max(12, width // 28), height - max(12, height // 28)),
-            radius=max(14, width // 22),
-            outline="#475569",
-            width=max(2, width // 240),
-        )
-        triangle_width = max(44, width // 7)
-        triangle_height = max(52, height // 5)
-        center_x = width // 2
-        center_y = height // 2
-        draw.polygon(
-            [
-                (center_x - triangle_width // 3, center_y - triangle_height // 2),
-                (center_x - triangle_width // 3, center_y + triangle_height // 2),
-                (center_x + triangle_width // 2, center_y),
-            ],
-            fill="#e2e8f0",
-        )
-        canvas.save(variant_path, format="PNG", optimize=True)
-        self._logger.info("chat.media_variant attachment_id=%s variant=%s hit=0", attachment.id, variant)
+        video_path = source_path
+        if video_path is None:
+            video_path = (
+                self._attachments_root().resolve()
+                / _normalize_text(conversation_id)
+                / _normalize_text(attachment.storage_name)
+            )
+
+        extracted = False
+        if video_path and video_path.exists() and video_path.is_file():
+            # Try ffmpeg first (better quality, faster)
+            try:
+                from backend.chat.video_compress import extract_poster_frame
+                poster_result = extract_poster_frame(video_path, variant_path)
+                if poster_result and poster_result.exists() and poster_result.stat().st_size > 0:
+                    extracted = True
+                    self._logger.info(
+                        "chat.media_variant attachment_id=%s variant=%s hit=0 extracted via ffmpeg",
+                        attachment.id, variant,
+                    )
+            except Exception as exc:
+                self._logger.warning(
+                    "chat.video_poster_ffmpeg_error attachment_id=%s error=%s",
+                    attachment.id, str(exc),
+                )
+
+            # Fallback to cv2
+            if not extracted:
+                try:
+                    import cv2
+                    cap = cv2.VideoCapture(str(video_path))
+                    if cap.isOpened():
+                        ret, frame = cap.read()
+                        if ret and frame is not None:
+                            frame_h, frame_w = frame.shape[:2]
+                            max_dim = 720
+                            if max(frame_w, frame_h) > max_dim:
+                                scale = max_dim / max(frame_w, frame_h)
+                                new_w = int(frame_w * scale)
+                                new_h = int(frame_h * scale)
+                                frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+                            jpeg_path = variant_path.with_suffix(".jpg")
+                            cv2.imwrite(str(jpeg_path), frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            if jpeg_path != variant_path:
+                                jpeg_path.rename(variant_path)
+                            extracted = True
+                            self._logger.info(
+                                "chat.media_variant attachment_id=%s variant=%s hit=0 extracted via cv2 %dx%d",
+                                attachment.id, variant, frame_w, frame_h,
+                            )
+                        cap.release()
+                    else:
+                        cap.release()
+                except Exception as exc:
+                    self._logger.warning(
+                        "chat.video_poster_cv2_error attachment_id=%s error=%s",
+                        attachment.id, str(exc),
+                    )
+
+        if not extracted:
+            width = max(320, int(getattr(attachment, "width", 0) or 0) or 720)
+            height = max(180, int(getattr(attachment, "height", 0) or 0) or int(round(width * 9 / 16)))
+            canvas = Image.new("RGB", (width, height), "#0f172a")
+            draw = ImageDraw.Draw(canvas)
+            triangle_size = max(36, min(width, height) // 6)
+            cx, cy = width // 2, height // 2
+            draw.polygon(
+                [(cx - triangle_size // 3, cy - triangle_size // 2),
+                 (cx - triangle_size // 3, cy + triangle_size // 2),
+                 (cx + triangle_size // 2, cy)],
+                fill="#e2e8f0",
+            )
+            canvas.save(variant_path, format="PNG", optimize=True)
+            self._logger.info("chat.media_variant attachment_id=%s variant=%s hit=0 fallback", attachment.id, variant)
+
         return {
             "path": str(variant_path),
             "file_name": variant_path.name,
-            "mime_type": "image/png",
+            "mime_type": "image/jpeg" if extracted else "image/png",
         }
 
     def to_payload(self, attachment: ChatMessageAttachment) -> dict:

@@ -6,11 +6,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterator
 
 from backend.chat.upload_session_transfer import validate_upload_session_file_complete
-
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
+from backend.chat.utils import normalize_text as _normalize_text
 
 
 class UploadSessionCompletionMaterializer:
@@ -104,17 +100,34 @@ class UploadSessionCompletionMaterializer:
                     final_path.unlink(missing_ok=True)
                     raise
 
-                width, height = self._probe_image_dimensions(
-                    probe_bytes,
-                    _normalize_text(file_payload.get("mime_type")),
-                )
+                mime_type = _normalize_text(file_payload.get("mime_type"))
+                width, height = self._probe_image_dimensions(probe_bytes, mime_type)
                 moved_paths.append(final_path)
                 part_path.unlink(missing_ok=True)
+
+                # Compress video if applicable
+                if (mime_type or "").lower().startswith("video/"):
+                    try:
+                        from backend.chat.video_compress import compress_video, probe_video_info
+                        compressed_path = final_path.with_suffix(".compressed.mp4")
+                        result = compress_video(final_path, compressed_path)
+                        if result and result.exists():
+                            final_path.unlink(missing_ok=True)
+                            result.rename(final_path)
+                            file_size = final_path.stat().st_size
+                            mime_type = "video/mp4"
+                        info = probe_video_info(final_path)
+                        if info.get("width") and info.get("height"):
+                            width = info["width"]
+                            height = info["height"]
+                    except Exception:
+                        pass
+
                 prepared.append(
                     {
                         "attachment_id": _normalize_text(file_payload.get("attachment_id") or file_payload.get("file_id")),
                         "file_name": _normalize_text(file_payload.get("file_name")),
-                        "mime_type": _normalize_text(file_payload.get("mime_type")),
+                        "mime_type": mime_type,
                         "file_size": file_size,
                         "width": width,
                         "height": height,

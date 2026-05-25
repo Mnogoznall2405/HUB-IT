@@ -18,6 +18,7 @@ import {
 import { hasAnyAppPushPermission } from './lib/appPushPermissions';
 import { syncAppBadge } from './lib/appBadge';
 import {
+  loadAddressBookRoute,
   loadAdUsersRoute,
   loadChatRoute,
   loadComputersRoute,
@@ -32,6 +33,7 @@ import {
   loadSettingsRoute,
   loadStatisticsRoute,
   loadTasksRoute,
+  loadTicketsRoute,
   loadVcsRoute,
 } from './lib/routeLoaders';
 
@@ -39,6 +41,7 @@ import {
 const Login = lazy(loadLoginRoute);
 const Dashboard = lazy(loadDashboardRoute);
 const Tasks = lazy(loadTasksRoute);
+const Tickets = lazy(loadTicketsRoute);
 const Chat = lazy(loadChatRoute);
 const Database = lazy(loadDatabaseRoute);
 const Networks = lazy(loadNetworksRoute);
@@ -51,10 +54,12 @@ const Mail = lazy(loadMailRoute);
 const AdUsers = lazy(loadAdUsersRoute);
 const Vcs = lazy(loadVcsRoute);
 const KnowledgeBase = lazy(loadKnowledgeBaseRoute);
+const AddressBook = lazy(loadAddressBookRoute);
 
 const routePermissions = [
   { path: '/dashboard', permissions: ['dashboard.read'] },
   { path: '/tasks', permissions: ['tasks.read'] },
+  { path: '/tickets', permissions: ['tickets.read'] },
   ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', permissions: ['chat.read'] }] : []),
   { path: '/database', permissions: ['database.read'] },
   { path: '/networks', permissions: ['networks.read'] },
@@ -67,6 +72,7 @@ const routePermissions = [
   { path: '/ad-users', adminOnly: true },
   { path: '/vcs', permissions: ['vcs.read'] },
   { path: '/mail', permissions: ['mail.access'] },
+  { path: '/address-book', permissions: ['address_book.read'] },
 ];
 
 const canAccessAny = (hasPermission, permissions = []) => (
@@ -387,6 +393,10 @@ function App() {
                   path="/tasks"
                   element={<PermissionRoute permission="tasks.read"><Tasks /></PermissionRoute>}
                 />
+                <Route
+                  path="/tickets"
+                  element={<PermissionRoute permission="tickets.read"><Tickets /></PermissionRoute>}
+                />
                 {CHAT_FEATURE_ENABLED ? (
                   <Route
                     path="/chat"
@@ -432,6 +442,10 @@ function App() {
                 <Route
                   path="/mail"
                   element={<PermissionRoute permission="mail.access"><Mail /></PermissionRoute>}
+                />
+                <Route
+                  path="/address-book"
+                  element={<PermissionRoute permission="address_book.read"><AddressBook /></PermissionRoute>}
                 />
                 <Route
                   path="/kb"

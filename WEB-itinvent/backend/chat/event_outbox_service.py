@@ -14,6 +14,7 @@ from sqlalchemy import select
 from backend.chat.db import chat_session
 from backend.chat.models import ChatEventOutbox
 from backend.chat.realtime_side_effects import publish_event_job
+from backend.chat.utils import normalize_text as _normalize_text
 
 
 logger = logging.getLogger("backend.chat.event_outbox")
@@ -35,10 +36,6 @@ def _coerce_utc(value: datetime | None) -> datetime | None:
         return value.replace(tzinfo=timezone.utc)
     return value.astimezone(timezone.utc)
 
-
-def _normalize_text(value: object, default: str = "") -> str:
-    text = str(value or "").strip()
-    return text or default
 
 
 def _clamp_env_int(name: str, default: int, minimum: int, maximum: int) -> int:

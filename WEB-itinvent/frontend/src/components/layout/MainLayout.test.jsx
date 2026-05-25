@@ -10,6 +10,8 @@ const {
   mockHasPermission,
   mockNavigate,
   mockNotifyInfo,
+  mockToastHistory,
+  mockClearToastHistory,
   mockMarkHubNotificationsSeen,
   mockApiGet,
   mockApiPost,
@@ -30,6 +32,8 @@ const {
   mockHasPermission: vi.fn(() => true),
   mockNavigate: vi.fn(),
   mockNotifyInfo: vi.fn(),
+  mockToastHistory: [],
+  mockClearToastHistory: vi.fn(),
   mockMarkHubNotificationsSeen: vi.fn(),
   mockApiGet: vi.fn(),
   mockApiPost: vi.fn(),
@@ -69,8 +73,8 @@ vi.mock('../../contexts/NotificationContext', () => ({
   useNotification: () => ({
     notifyApiError: vi.fn(),
     notifyInfo: mockNotifyInfo,
-    toastHistory: [],
-    clearToastHistory: vi.fn(),
+    toastHistory: mockToastHistory,
+    clearToastHistory: mockClearToastHistory,
     hasSeenHubNotification: vi.fn(() => false),
     markHubNotificationsSeen: mockMarkHubNotificationsSeen,
   }),
@@ -142,10 +146,13 @@ vi.mock('./ToastHistoryList', () => ({
 
 import MainLayout from './MainLayout';
 
-function installMatchMedia({ mobile = false } = {}) {
+function installMatchMedia({ mobile = false, windowControlsOverlay = false } = {}) {
   const previousMatchMedia = window.matchMedia;
   window.matchMedia = vi.fn().mockImplementation((query) => ({
-    matches: mobile ? query.includes('max-width:599.95px') : false,
+    matches: Boolean(
+      (mobile && query.includes('max-width:599.95px'))
+      || (windowControlsOverlay && query.includes('display-mode: window-controls-overlay')),
+    ),
     media: query,
     onchange: null,
     addEventListener: () => {},
@@ -156,6 +163,31 @@ function installMatchMedia({ mobile = false } = {}) {
   }));
   return () => {
     window.matchMedia = previousMatchMedia;
+  };
+}
+
+function mockElementHeightsByTestId(heightsByTestId) {
+  const originalGetBoundingClientRect = Element.prototype.getBoundingClientRect;
+  Element.prototype.getBoundingClientRect = function getBoundingClientRectMock() {
+    const testId = this.getAttribute?.('data-testid');
+    const height = heightsByTestId[testId];
+    if (height !== undefined) {
+      return {
+        x: 0,
+        y: 0,
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: height,
+        width: 0,
+        height,
+        toJSON: () => ({}),
+      };
+    }
+    return originalGetBoundingClientRect.call(this);
+  };
+  return () => {
+    Element.prototype.getBoundingClientRect = originalGetBoundingClientRect;
   };
 }
 
@@ -178,6 +210,8 @@ describe('MainLayout hub Windows notifications', () => {
     mockHasPermission.mockImplementation(() => true);
     mockNavigate.mockReset();
     mockNotifyInfo.mockReset();
+    mockToastHistory.length = 0;
+    mockClearToastHistory.mockReset();
     mockMarkHubNotificationsSeen.mockReset();
     mockApiGet.mockReset();
     mockApiPost.mockReset();
@@ -620,6 +654,350 @@ describe('MainLayout hub Windows notifications', () => {
     expect(screen.queryByText('Read legacy item')).toBeNull();
   });
 
+  it('does not show toast history in the notification center or badge', async () => {
+    mockToastHistory.push(
+      {
+        id: 'toast-chat-1',
+        severity: 'info',
+        source: 'chat',
+        title: 'Stored chat toast',
+        message: 'Read chat toast should stay out',
+        lastSeenAt: '2026-03-21T12:00:00Z',
+      },
+      {
+        id: 'toast-mail-1',
+        severity: 'info',
+        source: 'mail',
+        title: 'Stored mail toast',
+        message: 'Read mail toast should stay out',
+        lastSeenAt: '2026-03-21T12:01:00Z',
+      },
+    );
+    mockGetNotificationFeed.mockResolvedValue({ items: [], total_unread: 0 });
+    mockGetUnreadCount.mockResolvedValue({ unread_count: 0 });
+    mockApiGet.mockImplementation(async (url, options = {}) => {
+      const params = options?.params || {};
+      if (url === '/database/list') {
+        return { data: [{ id: 'default', name: 'РћСЃРЅРѕРІРЅР°СЏ Р‘Р”' }] };
+      }
+      if (url === '/database/current') {
+        return { data: { id: 'default', name: 'РћСЃРЅРѕРІРЅР°СЏ Р‘Р”', locked: false } };
+      }
+      if (url === '/hub/notifications/unread-counts') {
+        return {
+          data: {
+            notifications_unread_total: 0,
+            announcements_unread: 0,
+            announcements_ack_pending: 0,
+            tasks_open_total: 0,
+            tasks_open: 0,
+            tasks_new: 0,
+            tasks_assignee_open: 0,
+            tasks_created_open: 0,
+            tasks_controller_open: 0,
+            tasks_review_required: 0,
+            tasks_overdue: 0,
+            tasks_with_unread_comments: 0,
+          },
+        };
+      }
+      if (url === '/hub/notifications/poll' && params.unread_only) {
+        return { data: { items: [], unread_counts: { notifications_unread_total: 0 } } };
+      }
+      if (url === '/hub/notifications/poll') {
+        return { data: { items: [], unread_counts: { notifications_unread_total: 0 } } };
+      }
+      return { data: {} };
+    });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('2')).toBeNull();
+
+    fireEvent.click(screen.getByLabelText('Открыть уведомления'));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Нет непрочитанных уведомлений')).toBeTruthy();
+    expect(screen.queryByText('Stored chat toast')).toBeNull();
+    expect(screen.queryByText('Stored mail toast')).toBeNull();
+    expect(screen.queryByText('Read chat toast should stay out')).toBeNull();
+    expect(screen.queryByText('Read mail toast should stay out')).toBeNull();
+  });
+
+  it('refreshes unread hub notifications from the chat route and hides read chat items', async () => {
+    visibilityState = 'visible';
+    mockLocation.pathname = '/chat';
+    mockLocation.search = '?conversation=conv-1';
+    mockGetNotificationFeed.mockResolvedValue({ items: [], total_unread: 0 });
+    mockGetUnreadCount.mockResolvedValue({ unread_count: 0 });
+    mockApiGet.mockImplementation(async (url, options = {}) => {
+      const params = options?.params || {};
+      if (url === '/database/list') {
+        return { data: [{ id: 'default', name: 'РћСЃРЅРѕРІРЅР°СЏ Р‘Р”' }] };
+      }
+      if (url === '/database/current') {
+        return { data: { id: 'default', name: 'РћСЃРЅРѕРІРЅР°СЏ Р‘Р”', locked: false } };
+      }
+      if (url === '/hub/notifications/unread-counts') {
+        return {
+          data: {
+            notifications_unread_total: 1,
+            announcements_unread: 0,
+            announcements_ack_pending: 0,
+            tasks_open_total: 0,
+            tasks_open: 0,
+            tasks_new: 0,
+            tasks_assignee_open: 0,
+            tasks_created_open: 0,
+            tasks_controller_open: 0,
+            tasks_review_required: 0,
+            tasks_overdue: 0,
+            tasks_with_unread_comments: 0,
+          },
+        };
+      }
+      if (url === '/hub/notifications/poll' && params.unread_only) {
+        return {
+          data: {
+            items: [
+              {
+                id: 'chat-read-1',
+                title: 'Already read chat item',
+                body: 'Old chat body',
+                entity_type: 'chat',
+                entity_id: 'conv-1',
+                event_type: 'chat.message_received',
+                created_at: '2026-03-21T10:00:00Z',
+                unread: 0,
+              },
+              {
+                id: 'chat-unread-1',
+                title: 'Unread chat item',
+                body: 'New chat body',
+                entity_type: 'chat',
+                entity_id: 'conv-2',
+                event_type: 'chat.message_received',
+                created_at: '2026-03-21T10:01:00Z',
+                unread: 1,
+              },
+            ],
+            unread_counts: { notifications_unread_total: 1 },
+          },
+        };
+      }
+      if (url === '/hub/notifications/poll') {
+        return { data: { items: [], unread_counts: { notifications_unread_total: 1 } } };
+      }
+      return { data: {} };
+    });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByLabelText('Открыть уведомления'));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockApiGet).toHaveBeenCalledWith('/hub/notifications/poll', expect.objectContaining({
+      params: expect.objectContaining({ unread_only: true }),
+    }));
+    expect(screen.getByText('Unread chat item')).toBeTruthy();
+    expect(screen.queryByText('Already read chat item')).toBeNull();
+  });
+
+  it('refreshes an open notification center when chat unread state changes', async () => {
+    let hubUnreadItems = [
+      {
+        id: 'chat-unread-1',
+        title: 'Chat item before read',
+        body: 'Needs reading',
+        entity_type: 'chat',
+        entity_id: 'conv-1',
+        event_type: 'chat.message_received',
+        created_at: '2026-03-21T10:00:00Z',
+        unread: 1,
+      },
+    ];
+    let hubUnreadTotal = 1;
+    mockGetNotificationFeed.mockResolvedValue({ items: [], total_unread: 0 });
+    mockGetUnreadCount.mockResolvedValue({ unread_count: 0 });
+    mockApiGet.mockImplementation(async (url, options = {}) => {
+      const params = options?.params || {};
+      if (url === '/database/list') {
+        return { data: [{ id: 'default', name: 'РћСЃРЅРѕРІРЅР°СЏ Р‘Р”' }] };
+      }
+      if (url === '/database/current') {
+        return { data: { id: 'default', name: 'РћСЃРЅРѕРІРЅР°СЏ Р‘Р”', locked: false } };
+      }
+      if (url === '/hub/notifications/unread-counts') {
+        return {
+          data: {
+            notifications_unread_total: hubUnreadTotal,
+            announcements_unread: 0,
+            announcements_ack_pending: 0,
+            tasks_open_total: 0,
+            tasks_open: 0,
+            tasks_new: 0,
+            tasks_assignee_open: 0,
+            tasks_created_open: 0,
+            tasks_controller_open: 0,
+            tasks_review_required: 0,
+            tasks_overdue: 0,
+            tasks_with_unread_comments: 0,
+          },
+        };
+      }
+      if (url === '/hub/notifications/poll' && params.unread_only) {
+        return { data: { items: hubUnreadItems, unread_counts: { notifications_unread_total: hubUnreadTotal } } };
+      }
+      if (url === '/hub/notifications/poll') {
+        return { data: { items: [], unread_counts: { notifications_unread_total: hubUnreadTotal } } };
+      }
+      return { data: {} };
+    });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByLabelText('Открыть уведомления'));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Chat item before read')).toBeTruthy();
+
+    hubUnreadItems = [];
+    hubUnreadTotal = 0;
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('chat-unread-needs-refresh'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('Chat item before read')).toBeNull();
+    expect(screen.getByText('Нет непрочитанных уведомлений')).toBeTruthy();
+  });
+
+  it('refreshes an open notification center when mail read state changes', async () => {
+    let mailItems = [
+      {
+        id: 'mail-1',
+        subject: 'Mail item before read',
+        sender: 'boss@example.com',
+        body_preview: 'Please check',
+        received_at: '2026-03-21T11:05:00Z',
+        is_read: false,
+      },
+    ];
+    let mailUnreadCount = 1;
+    mockGetUnreadCount.mockImplementation(async () => ({ unread_count: mailUnreadCount }));
+    mockGetNotificationFeed.mockImplementation(async () => ({
+      items: mailItems,
+      total_unread: mailUnreadCount,
+    }));
+    mockApiGet.mockImplementation(async (url, options = {}) => {
+      const params = options?.params || {};
+      if (url === '/database/list') {
+        return { data: [{ id: 'default', name: 'РћСЃРЅРѕРІРЅР°СЏ Р‘Р”' }] };
+      }
+      if (url === '/database/current') {
+        return { data: { id: 'default', name: 'РћСЃРЅРѕРІРЅР°СЏ Р‘Р”', locked: false } };
+      }
+      if (url === '/hub/notifications/unread-counts') {
+        return {
+          data: {
+            notifications_unread_total: 0,
+            announcements_unread: 0,
+            announcements_ack_pending: 0,
+            tasks_open_total: 0,
+            tasks_open: 0,
+            tasks_new: 0,
+            tasks_assignee_open: 0,
+            tasks_created_open: 0,
+            tasks_controller_open: 0,
+            tasks_review_required: 0,
+            tasks_overdue: 0,
+            tasks_with_unread_comments: 0,
+          },
+        };
+      }
+      if (url === '/hub/notifications/poll' && params.unread_only) {
+        return { data: { items: [], unread_counts: { notifications_unread_total: 0 } } };
+      }
+      if (url === '/hub/notifications/poll') {
+        return { data: { items: [], unread_counts: { notifications_unread_total: 0 } } };
+      }
+      return { data: {} };
+    });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    fireEvent.click(screen.getByLabelText('Открыть уведомления'));
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText('Mail item before read')).toBeTruthy();
+
+    mailItems = [];
+    mailUnreadCount = 0;
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('mail-read'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText('Mail item before read')).toBeNull();
+    expect(screen.getByText('Нет непрочитанных уведомлений')).toBeTruthy();
+  });
+
   it('uses a single in-app mail toast when the app is visible', async () => {
     visibilityState = 'visible';
     mockHasPermission.mockImplementation((permission) => permission === 'mail.access');
@@ -857,6 +1235,102 @@ describe('MainLayout hub Windows notifications', () => {
 
     expect(mockMarkMailAsRead).toHaveBeenCalledWith('mail-1', '');
     expect(mockNavigate).toHaveBeenCalledWith('/mail?folder=inbox&message=mail-1');
+  });
+
+  it('creates a measured top spacer for the fixed header', async () => {
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const shell = screen.getByTestId('main-layout-shell');
+    const spacer = screen.getByTestId('main-layout-top-spacer');
+
+    expect(screen.getByTestId('main-layout-app-bar')).toBeInTheDocument();
+    expect(spacer).toHaveStyle({ height: 'var(--app-shell-top-offset)' });
+    expect(shell.style.getPropertyValue('--app-shell-top-offset')).toBe(
+      'calc(var(--app-shell-banner-offset) + var(--app-shell-measured-header-offset))',
+    );
+    expect(shell.style.getPropertyValue('--app-shell-measured-header-offset')).toBe('var(--app-shell-header-offset)');
+  });
+
+  it('uses the measured AppBar height when it is larger than the default shell offset', async () => {
+    const restoreRects = mockElementHeightsByTestId({
+      'main-layout-app-bar': 88,
+      'main-layout-top-banner': 0,
+    });
+
+    try {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const shell = screen.getByTestId('main-layout-shell');
+      expect(shell).toHaveAttribute('data-app-bar-height', '88');
+      expect(shell.style.getPropertyValue('--app-shell-measured-header-offset')).toBe('88px');
+    } finally {
+      restoreRects();
+    }
+  });
+
+  it('keeps window-controls-overlay header space based on the measured AppBar box', async () => {
+    const restoreMatchMedia = installMatchMedia({ windowControlsOverlay: true });
+    const restoreRects = mockElementHeightsByTestId({
+      'main-layout-app-bar': 96,
+      'main-layout-top-banner': 0,
+    });
+
+    try {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const shell = screen.getByTestId('main-layout-shell');
+      expect(shell).toHaveAttribute('data-app-bar-height', '96');
+      expect(shell.style.getPropertyValue('--app-shell-measured-header-offset')).toBe('96px');
+    } finally {
+      restoreRects();
+      restoreMatchMedia();
+    }
+  });
+
+  it('does not reserve AppBar space when the header is hidden', async () => {
+    render(
+      <MainLayout headerMode="hidden">
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    const shell = screen.getByTestId('main-layout-shell');
+    expect(screen.queryByTestId('main-layout-app-bar')).toBeNull();
+    expect(screen.queryByTestId('main-layout-top-spacer')).toBeNull();
+    expect(shell).toHaveAttribute('data-app-bar-height', '0');
+    expect(shell.style.getPropertyValue('--app-shell-measured-header-offset')).toBe('0px');
   });
 
   it('uses edge-to-edge mobile content mode only on phones', async () => {

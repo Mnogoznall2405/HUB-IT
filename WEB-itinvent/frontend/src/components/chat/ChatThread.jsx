@@ -35,6 +35,7 @@ import {
 export {
   ChatBubble,
   isMobileMessageLongPress,
+  shouldAnimateChatBubble,
   shouldCancelLongPressMove,
   shouldSuppressNativeMessageGesture,
 } from './ChatBubble';
@@ -45,6 +46,7 @@ const BLUR_SCROLL_DELTA_PX = 12;
 const BACK_SWIPE_EDGE_PX = 28;
 const BACK_SWIPE_START_PX = 14;
 const BACK_SWIPE_TRIGGER_PX = 84;
+const HISTORY_AUTO_LOAD_ARM_DISTANCE_PX = 160;
 const TELEGRAM_CHAT_FONT_FAMILY = [
   '"SF Pro Text"',
   '"SF Pro Display"',
@@ -68,6 +70,22 @@ const CHAT_FONT_SIZES = {
   composerAux: '13px',
 };
 
+const getMessageReactionSignature = (message) => {
+  const reactions = Array.isArray(message?.reactions) ? message.reactions : [];
+  if (reactions.length === 0) return '';
+  return reactions
+    .map((reaction) => {
+      const emoji = String(reaction?.emoji || '').trim();
+      const count = Number(reaction?.count || 0);
+      const users = Array.isArray(reaction?.user_ids)
+        ? reaction.user_ids.map((value) => String(value || '').trim()).filter(Boolean).sort().join(',')
+        : '';
+      return `${emoji}:${count}:${users}`;
+    })
+    .sort()
+    .join('|');
+};
+
 export const getChatKeyboardBottomSpacer = ({ compactMobile = false, keyboardInset = 0, composerHeight = 0 } = {}) => {
   if (!compactMobile || Number(keyboardInset || 0) <= 0) return 0;
   const measuredComposerHeight = Number(composerHeight || 0);
@@ -75,6 +93,21 @@ export const getChatKeyboardBottomSpacer = ({ compactMobile = false, keyboardIns
     ? Math.round(measuredComposerHeight * 0.18)
     : 12;
   return Math.max(16, Math.min(32, baseGap));
+};
+
+export const getChatThreadBottomPadding = ({
+  compactMobile = false,
+  keyboardInset = 0,
+  composerHeight = 0,
+} = {}) => {
+  const measuredComposerHeight = Math.max(0, Number(composerHeight || 0));
+  const baseGap = compactMobile ? 8 : 18;
+  const keyboardSpacer = getChatKeyboardBottomSpacer({
+    compactMobile,
+    keyboardInset,
+    composerHeight: measuredComposerHeight,
+  });
+  return Math.max(baseGap, Math.round(baseGap + keyboardSpacer));
 };
 
 function HeaderAction({ title, children, onClick, active = false, compactMobile = false, hidden = false, disabled = false }) {
@@ -255,7 +288,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
       width: 38,
       height: 38,
       borderRadius: 0,
-      color: alpha('#ffffff', 0.96),
+      color: theme.palette.text.primary,
       bgcolor: 'transparent',
       transition: 'opacity 120ms ease, transform 120ms ease',
       '&:active': {
@@ -275,9 +308,9 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
           ...headerShellSx,
           px: 0.65,
           pb: 0.3,
-          bgcolor: alpha(ui.threadTopbarBg || '#202434', 0.98),
+          bgcolor: alpha(ui.threadTopbarBg || theme.palette.background.paper, 0.98),
           backdropFilter: 'blur(18px) saturate(1.06)',
-          borderBottom: `1px solid ${alpha('#ffffff', 0.06)}`,
+          borderBottom: `1px solid ${ui.borderSoft || alpha(theme.palette.divider, 0.14)}`,
           boxShadow: 'none',
         }}
       >
@@ -302,7 +335,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
             <Typography
               data-testid="chat-selection-count-badge"
               sx={{
-                color: alpha('#ffffff', 0.96),
+                color: theme.palette.text.primary,
                 fontSize: 21,
                 fontWeight: 700,
                 lineHeight: 1,
@@ -636,7 +669,7 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
   );
 });
 
-export default function ChatThread({
+function ChatThread({
   theme,
   ui,
   isMobile,
@@ -686,6 +719,7 @@ export default function ChatThread({
   onComposerKeyDown,
   onComposerSelectionSync,
   onOpenEmojiPicker,
+  onCloseEmojiPicker,
   onSendMessage,
   onComposerPaste,
   onComposerDrop,
@@ -698,8 +732,8 @@ export default function ChatThread({
   onJumpToLatest,
   replyMessage,
   onClearReply,
+  aiTypingStatus,
   aiStatus,
-  aiStatusDisplay,
   pinnedMessage,
   onOpenPinnedMessage,
   onUnpinPinnedMessage,
@@ -716,6 +750,19 @@ export default function ChatThread({
   fileUploadProgress,
   selectedFilesSummary,
   getReadTargetRef,
+  onComposerFocusChange,
+  onToggleReaction,
+  onScrollToMessage,
+  currentUserId,
+  mobileEmojiPickerOpen = false,
+  onInsertEmoji,
+  onSendSticker,
+  onSendGif,
+  voiceRecording = false,
+  voiceRecordingDuration = 0,
+  onStartVoiceRecording,
+  onStopVoiceRecording,
+  onCancelVoiceRecording,
 }) {
   const { openDrawer, headerMode } = useMainLayoutShell();
   const resolvedMobileInteractionsEnabled = Boolean(mobileInteractionsEnabled || isMobile);
@@ -724,6 +771,7 @@ export default function ChatThread({
   const composerFocusedRef = useRef(false);
   const threadPinnedToBottomRef = useRef(true);
   const previousComposerLayoutRef = useRef({ composerHeight: null, keyboardInset: null });
+  const messageReactionMetricsRef = useRef(new Map());
   const previousSelectionModeRef = useRef(false);
   const backSwipeRef = useRef({ tracking: false, engaged: false, startX: 0, startY: 0 });
   const [composerHeight, setComposerHeight] = useState(compactMobile ? 92 : 102);
@@ -738,17 +786,37 @@ export default function ChatThread({
   const jumpPillBg = ui.jumpPillBg || theme.palette.primary.main;
   const jumpPillText = ui.jumpPillText || theme.palette.primary.contrastText;
   const contentMaxWidth = Number(ui.contentMaxWidth || 980);
-  const keyboardBottomSpacer = getChatKeyboardBottomSpacer({
+  const scrollBottomPadding = getChatThreadBottomPadding({
     compactMobile,
     keyboardInset,
     composerHeight,
   });
-  const scrollBottomPadding = compactMobile ? 8 + keyboardBottomSpacer : 8;
   const messageCount = Array.isArray(messages) ? messages.length : 0;
   const [stickyDateLabel, setStickyDateLabel] = useState('');
+  const [historyAutoLoadEnabled, setHistoryAutoLoadEnabled] = useState(false);
   const stickyDateLabelRef = useRef('');
   const stickyDateFrameRef = useRef(null);
   const stickyDateAnchorsRef = useRef([]);
+
+  useEffect(() => {
+    setHistoryAutoLoadEnabled(false);
+  }, [activeConversationId]);
+
+  const armHistoryAutoLoadIfNearTop = useCallback((event) => {
+    if (historyAutoLoadEnabled) return;
+    const node = event?.currentTarget;
+    if (!node) return;
+    const scrollTop = Number(node.scrollTop || 0);
+    if (scrollTop > HISTORY_AUTO_LOAD_ARM_DISTANCE_PX) return;
+    setHistoryAutoLoadEnabled(true);
+  }, [historyAutoLoadEnabled]);
+
+  const handleThreadWheel = useCallback((event) => {
+    const deltaY = Number(event?.deltaY ?? event?.nativeEvent?.deltaY ?? 0);
+    if (deltaY <= 0) {
+      armHistoryAutoLoadIfNearTop(event);
+    }
+  }, [armHistoryAutoLoadIfNearTop]);
 
   useLayoutEffect(() => {
     const previousSelectionMode = previousSelectionModeRef.current;
@@ -826,6 +894,64 @@ export default function ChatThread({
 
     scrollPinnedThreadToBottom({ settleFrames: 2 });
   }, [composerHeight, keyboardInset, scrollPinnedThreadToBottom]);
+
+  useLayoutEffect(() => {
+    const container = threadScrollRef.current;
+    const content = threadContentRef?.current;
+    if (!container || !content) return;
+
+    const previousMetrics = messageReactionMetricsRef.current;
+    const nextMetrics = new Map();
+    const messageElements = Array.from(content.querySelectorAll('[data-message-id]'));
+    const messageById = new Map((Array.isArray(messages) ? messages : []).map((message) => [
+      String(message?.id || '').trim(),
+      message,
+    ]));
+    const scrollTop = Number(container.scrollTop || 0);
+    const viewportBottom = scrollTop + Number(container.clientHeight || 0);
+    let compensation = 0;
+
+    messageElements.forEach((element) => {
+      const messageId = String(element.getAttribute('data-message-id') || '').trim();
+      if (!messageId || !messageById.has(messageId)) return;
+
+      const message = messageById.get(messageId);
+      const signature = getMessageReactionSignature(message);
+      const rect = element.getBoundingClientRect?.();
+      const height = Math.round(Number(rect?.height || element.offsetHeight || 0));
+      const elementTop = Number(element.offsetTop || 0);
+      const previous = previousMetrics.get(messageId);
+
+      if (previous && previous.signature !== signature && Number.isFinite(previous.height)) {
+        const delta = height - Number(previous.height || 0);
+        if (Math.abs(delta) > 1 && elementTop <= viewportBottom + 1) {
+          compensation += delta;
+        }
+      }
+
+      nextMetrics.set(messageId, { height, signature });
+    });
+
+    messageReactionMetricsRef.current = nextMetrics;
+    if (compensation < 0) {
+      const alreadyReducedScroll = Math.max(0, Number(lastScrollTopRef.current || 0) - scrollTop);
+      compensation = Math.min(0, compensation + alreadyReducedScroll);
+    }
+
+    if (Math.abs(compensation) <= 1) {
+      lastScrollTopRef.current = scrollTop;
+      const distanceFromBottom = Number(container.scrollHeight || 0) - scrollTop - Number(container.clientHeight || 0);
+      threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
+      return;
+    }
+
+    const maxScrollTop = Math.max(0, Number(container.scrollHeight || 0) - Number(container.clientHeight || 0));
+    const nextScrollTop = Math.max(0, Math.min(maxScrollTop, scrollTop + compensation));
+    container.scrollTop = nextScrollTop;
+    lastScrollTopRef.current = nextScrollTop;
+    const distanceFromBottom = Number(container.scrollHeight || 0) - nextScrollTop - Number(container.clientHeight || 0);
+    threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
+  }, [messages, threadContentRef, threadScrollRef]);
 
   // Простое отслеживание клавиатуры через resize окна
   useEffect(() => {
@@ -908,6 +1034,7 @@ export default function ChatThread({
   // На Android клавиатура сжимает visualViewport — скроллим при каждом изменении
   const handleComposerFocusChange = useCallback((focused) => {
     composerFocusedRef.current = Boolean(focused);
+    onComposerFocusChange?.(focused);
     if (!focused) return;
     if (!threadPinnedToBottomRef.current) return;
 
@@ -938,7 +1065,7 @@ export default function ChatThread({
         }
       }, 2000);
     }
-  }, [scrollPinnedThreadToBottom]);
+  }, [onComposerFocusChange, scrollPinnedThreadToBottom]);
 
   const handleThreadTouchStart = useCallback((event) => {
     if (!compactMobile || typeof onBack !== 'function') return;
@@ -997,6 +1124,14 @@ export default function ChatThread({
     const currentScrollTop = Number(node.scrollTop || 0);
     const distanceFromBottom = node.scrollHeight - currentScrollTop - node.clientHeight;
     threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
+    if (
+      !historyAutoLoadEnabled
+      && currentScrollTop <= HISTORY_AUTO_LOAD_ARM_DISTANCE_PX
+      && currentScrollTop < previousScrollTop - 1
+      && event?.nativeEvent?.isTrusted
+    ) {
+      setHistoryAutoLoadEnabled(true);
+    }
 
     if (
       composerFocusedRef.current
@@ -1008,7 +1143,7 @@ export default function ChatThread({
 
     lastScrollTopRef.current = currentScrollTop;
     onThreadScroll?.(event);
-  }, [composerRef, onThreadScroll]);
+  }, [composerRef, historyAutoLoadEnabled, onThreadScroll]);
 
   if (!activeConversation) {
     return (
@@ -1111,24 +1246,6 @@ export default function ChatThread({
         onForwardSelectedMessages={onForwardSelectedMessages}
       />
 
-      <AnimatePresence initial={false}>
-        {aiStatusDisplay?.visible ? (
-          <AiInteractiveStatusBanner
-            aiStatusDisplay={aiStatusDisplay}
-            theme={theme}
-            ui={ui}
-            compactMobile={compactMobile}
-          />
-        ) : aiStatus ? (
-          <AiRunStatusBanner
-            aiStatus={aiStatus}
-            theme={theme}
-            ui={ui}
-            compactMobile={compactMobile}
-          />
-        ) : null}
-      </AnimatePresence>
-
       <PinnedMessageBar
         theme={theme}
         ui={ui}
@@ -1138,11 +1255,24 @@ export default function ChatThread({
         onUnpinPinnedMessage={onUnpinPinnedMessage}
       />
 
+      <AnimatePresence initial={false}>
+        {aiStatus?.status === 'failed' ? (
+          <AiRunStatusBanner
+            aiStatus={aiStatus}
+            theme={theme}
+            ui={ui}
+            compactMobile={compactMobile}
+          />
+        ) : null}
+      </AnimatePresence>
+
       <Box
         ref={threadScrollRef}
         data-testid="chat-thread-scroll"
         className="chat-scroll-hidden chat-native-shell"
         onScroll={handleThreadScroll}
+        onWheel={handleThreadWheel}
+        onTouchMove={armHistoryAutoLoadIfNearTop}
         onDrop={onComposerDrop}
         onDragOver={onComposerDragOver}
         onDragLeave={onComposerDragLeave}
@@ -1153,7 +1283,7 @@ export default function ChatThread({
           overflowY: 'auto',
           overflowAnchor: 'none',
           overscrollBehaviorY: compactMobile ? 'none' : 'contain',
-          px: { xs: compactMobile ? 0.7 : 1.1, md: 2.2 },
+          px: { xs: compactMobile ? 0.7 : 1.8, md: 3.5 },
           pt: { xs: 0.5, md: 1.8 },
           pb: {
             xs: `${scrollBottomPadding}px`,
@@ -1161,7 +1291,7 @@ export default function ChatThread({
           },
           scrollPaddingBottom: {
             xs: `${Math.max(24, scrollBottomPadding + 16)}px`,
-            md: '28px',
+            md: `${Math.max(28, scrollBottomPadding + 10)}px`,
           },
           position: 'relative',
           userSelect: 'none',
@@ -1202,6 +1332,7 @@ export default function ChatThread({
             messagesHasMore={messagesHasMore}
             loadingOlder={loadingOlder}
             onLoadOlder={onLoadOlder}
+            historyAutoLoadEnabled={historyAutoLoadEnabled}
             threadContentRef={threadContentRef}
             bottomRef={bottomRef}
             onOpenReads={onOpenReads}
@@ -1217,6 +1348,10 @@ export default function ChatThread({
             highlightedMessageId={highlightedMessageId}
             isFileDragActive={isFileDragActive}
             getReadTargetRef={getReadTargetRef}
+            onToggleReaction={onToggleReaction}
+            onScrollToMessage={onScrollToMessage}
+            currentUserId={currentUserId}
+            aiTypingStatus={aiTypingStatus}
           />
         </Box>
       </Box>
@@ -1306,6 +1441,7 @@ export default function ChatThread({
           onComposerKeyDown={onComposerKeyDown}
           onComposerSelectionSync={onComposerSelectionSync}
           onOpenEmojiPicker={onOpenEmojiPicker}
+          onCloseEmojiPicker={onCloseEmojiPicker}
           onSendMessage={onSendMessage}
           onComposerPaste={onComposerPaste}
           onComposerDrop={onComposerDrop}
@@ -1316,8 +1452,19 @@ export default function ChatThread({
           onSearchMentionPeople={onSearchMentionPeople}
           composerDockRef={composerDockRef}
           keyboardInset={keyboardInset}
+          mobileEmojiPickerOpen={mobileEmojiPickerOpen}
+          onInsertEmoji={onInsertEmoji}
+          onSendSticker={onSendSticker}
+          onSendGif={onSendGif}
+          voiceRecording={voiceRecording}
+          voiceRecordingDuration={voiceRecordingDuration}
+          onStartVoiceRecording={onStartVoiceRecording}
+          onStopVoiceRecording={onStopVoiceRecording}
+          onCancelVoiceRecording={onCancelVoiceRecording}
         />
       )}
     </Box>
   );
 }
+
+export default memo(ChatThread);

@@ -367,4 +367,63 @@ describe('AiBotsAdminSection', () => {
     expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('itinvent.database.current');
     expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('ai.files.create');
   });
+
+  it('shows and saves AD password status tools only when explicitly enabled', () => {
+    const onSave = vi.fn();
+    const bot = {
+      id: 'bot-5',
+      slug: 'ad-assistant',
+      title: 'AD Assistant',
+      description: 'AD bot',
+      model: 'openai/gpt-4o-mini',
+      allow_file_input: true,
+      allow_generated_artifacts: false,
+      allow_kb_document_delivery: false,
+      is_enabled: true,
+      configured: true,
+      live_data_enabled: false,
+      bot_user_id: 91,
+      system_prompt: 'Prompt',
+      temperature: 0.2,
+      max_tokens: 2000,
+      allowed_kb_scope: [],
+      enabled_tools: [],
+      tool_settings: {
+        multi_db_mode: 'single',
+        allowed_databases: [],
+      },
+      updated_at: '2026-04-22T20:32:00Z',
+      latest_run_status: 'completed',
+      latest_run_error: null,
+    };
+
+    render(
+      <ThemeProvider theme={theme}>
+        <AiBotsAdminSection
+          bots={[bot]}
+          loading={false}
+          savingBotId=""
+          runsByBotId={{}}
+          onRefresh={vi.fn()}
+          onCreate={vi.fn()}
+          onSave={onSave}
+          openrouterConfigured
+          dbOptions={[{ id: 'ITINVENT', name: 'ITINVENT' }]}
+        />
+      </ThemeProvider>,
+    );
+
+    fireEvent.click(screen.getByText('AD Assistant'));
+    expect(screen.getAllByLabelText(/AD инструменты/i).slice(-1)[0]).not.toBeChecked();
+
+    fireEvent.click(screen.getAllByLabelText(/AD инструменты/i).slice(-1)[0]);
+    expect(screen.getByLabelText(/Срок смены пароля AD/i)).toBeChecked();
+    fireEvent.click(screen.getAllByRole('button').slice(-1)[0]);
+
+    expect(onSave).toHaveBeenCalledWith('bot-5', expect.objectContaining({
+      enabled_tools: expect.arrayContaining(['ad.user.password_status']),
+    }));
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('itinvent.database.current');
+    expect(onSave.mock.calls[0][1].enabled_tools).not.toContain('ai.files.create');
+  });
 });

@@ -227,4 +227,48 @@ describe('MailComposeDialog', () => {
     expect(screen.getByTestId('mail-compose-attach-action')).toBeTruthy();
     expect(screen.queryByTestId('mail-compose-final-preview')).toBeNull();
   });
+
+  it('commits a typed external recipient on mobile blur without Enter', () => {
+    const props = buildProps({ composeToValues: [] });
+    renderWithTheme(<MailComposeDialog {...props} />);
+
+    const toInput = screen.getAllByRole('combobox')[0];
+    fireEvent.change(toInput, { target: { value: 'external@example.com' } });
+    fireEvent.blur(toInput);
+
+    expect(props.onComposeToValuesChange).toHaveBeenCalledWith(['external@example.com']);
+  });
+
+  it('flushes a typed external recipient before sending', () => {
+    const props = buildProps({ composeToValues: [] });
+    renderWithTheme(<MailComposeDialog {...props} />);
+
+    const toInput = screen.getAllByRole('combobox')[0];
+    fireEvent.change(toInput, { target: { value: 'external@example.com' } });
+    fireEvent.click(screen.getByTestId('mail-compose-send-action'));
+
+    expect(props.onComposeToValuesChange).toHaveBeenCalledWith(['external@example.com']);
+    expect(props.onSendCompose).toHaveBeenCalledWith(expect.objectContaining({
+      composeToValues: ['external@example.com'],
+    }));
+  });
+
+  it('offers a typed external recipient as a selectable autocomplete option', () => {
+    const props = buildProps({ composeToValues: [], composeToOptions: [] });
+    renderWithTheme(<MailComposeDialog {...props} />);
+
+    const toInput = screen.getAllByRole('combobox')[0];
+    act(() => {
+      fireEvent.focus(toInput);
+      fireEvent.change(toInput, { target: { value: 'external@example.com' } });
+    });
+    fireEvent.click(screen.getByRole('option', { name: /Использовать external@example\.com/i }));
+
+    expect(props.onComposeToValuesChange).toHaveBeenCalledWith([
+      expect.objectContaining({
+        type: 'external_recipient',
+        email: 'external@example.com',
+      }),
+    ]);
+  });
 });

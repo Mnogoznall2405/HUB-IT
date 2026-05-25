@@ -1125,7 +1125,7 @@ function Dashboard() {
         }}
       >
         <Stack direction="row" justifyContent="space-between" spacing={1}>
-          <Typography sx={{ fontWeight: 800, fontSize: '0.9rem', lineHeight: 1.3, minWidth: 0, flex: 1, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          <Typography sx={{ fontWeight: 600, fontSize: '0.9rem', lineHeight: 1.3, minWidth: 0, flex: 1, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             {item?.title || '-'}
           </Typography>
           {canManage && !isMobile && (
@@ -1144,13 +1144,13 @@ function Dashboard() {
           )}
         </Stack>
         <Stack direction="row" spacing={0.45} sx={{ mt: 0.8, flexWrap: 'wrap', gap: 0.4 }}>
-          <Chip size="small" label={priorityMeta.label} sx={{ height: 20, fontSize: '0.64rem', fontWeight: 700, bgcolor: priorityMeta.bg, color: priorityMeta.color, border: 'none' }} />
-          {item?.is_updated && <Chip size="small" label="Обновлено" sx={{ height: 20, fontSize: '0.62rem', fontWeight: 800, bgcolor: 'rgba(124,58,237,0.14)', color: '#7c3aed', border: 'none' }} />}
-          {!item?.is_updated && item?.is_unread && <Chip size="small" label="Новое" sx={{ height: 20, fontSize: '0.62rem', fontWeight: 800, bgcolor: 'rgba(37,99,235,0.14)', color: '#2563eb', border: 'none' }} />}
-          {item?.requires_ack && <Chip size="small" label={isMobile ? 'Подтвердить' : 'Требует подтверждения'} sx={{ height: 20, fontSize: '0.62rem', fontWeight: 800, bgcolor: 'rgba(5,150,105,0.14)', color: '#059669', border: 'none' }} />}
-          {item?.is_pinned_active && <Chip size="small" icon={<PushPinOutlinedIcon sx={{ fontSize: '12px !important' }} />} label={isMobile ? 'Закреп' : 'Закреплено'} sx={{ height: 20, fontSize: '0.62rem', fontWeight: 800, bgcolor: ui.actionBg, color: ui.mutedText, border: 'none', '& .MuiChip-icon': { ml: '2px' } }} />}
-          {Number(item?.attachments_count || 0) > 0 && <Chip size="small" icon={<AttachFileIcon sx={{ fontSize: '11px !important' }} />} label={item.attachments_count} sx={{ height: 20, fontSize: '0.62rem', fontWeight: 700, bgcolor: ui.actionBg, color: ui.mutedText, border: 'none', '& .MuiChip-icon': { ml: '2px' } }} />}
-          {item?.expires_at && <Chip size="small" icon={<AccessTimeIcon sx={{ fontSize: '11px !important' }} />} label={`${isMobile ? '' : 'До '}${fmtShortDate(item.expires_at)}`} sx={{ height: 20, fontSize: '0.62rem', fontWeight: 700, bgcolor: 'rgba(217,119,6,0.12)', color: '#d97706', border: 'none', '& .MuiChip-icon': { ml: '2px' } }} />}
+          <Chip size="small" label={priorityMeta.label} sx={{ height: 20, fontSize: '0.64rem', fontWeight: 600, bgcolor: priorityMeta.bg, color: priorityMeta.color, border: 'none' }} />
+          {item?.is_updated && <Chip size="small" label="Обновлено" sx={{ height: 20, fontSize: '0.62rem', fontWeight: 600, bgcolor: 'rgba(124,58,237,0.14)', color: '#7c3aed', border: 'none' }} />}
+          {!item?.is_updated && item?.is_unread && <Chip size="small" label="Новое" sx={{ height: 20, fontSize: '0.62rem', fontWeight: 600, bgcolor: 'rgba(37,99,235,0.14)', color: '#2563eb', border: 'none' }} />}
+          {item?.requires_ack && <Chip size="small" label={isMobile ? 'Подтвердить' : 'Требует подтверждения'} sx={{ height: 20, fontSize: '0.62rem', fontWeight: 600, bgcolor: 'rgba(5,150,105,0.14)', color: '#059669', border: 'none' }} />}
+          {item?.is_pinned_active && <Chip size="small" icon={<PushPinOutlinedIcon sx={{ fontSize: '12px !important' }} />} label={isMobile ? 'Закреп' : 'Закреплено'} sx={{ height: 20, fontSize: '0.62rem', fontWeight: 600, bgcolor: ui.actionBg, color: ui.mutedText, border: 'none', '& .MuiChip-icon': { ml: '2px' } }} />}
+          {Number(item?.attachments_count || 0) > 0 && <Chip size="small" icon={<AttachFileIcon sx={{ fontSize: '11px !important' }} />} label={item.attachments_count} sx={{ height: 20, fontSize: '0.62rem', fontWeight: 600, bgcolor: ui.actionBg, color: ui.mutedText, border: 'none', '& .MuiChip-icon': { ml: '2px' } }} />}
+          {item?.expires_at && <Chip size="small" icon={<AccessTimeIcon sx={{ fontSize: '11px !important' }} />} label={`${isMobile ? '' : 'До '}${fmtShortDate(item.expires_at)}`} sx={{ height: 20, fontSize: '0.62rem', fontWeight: 600, bgcolor: 'rgba(217,119,6,0.12)', color: '#d97706', border: 'none', '& .MuiChip-icon': { ml: '2px' } }} />}
         </Stack>
         <Typography sx={{ mt: 0.7, color: ui.mutedText, fontSize: isMobile ? '0.74rem' : '0.78rem', lineHeight: 1.45, display: '-webkit-box', WebkitLineClamp: isMobile ? 2 : 3, WebkitBoxOrient: 'vertical', overflow: 'hidden', minHeight: isMobile ? 0 : 54 }}>
           {item?.preview || '-'}
@@ -1166,7 +1166,7 @@ function Dashboard() {
                   {item?.recipients_summary || 'Без аудитории'}
                 </Typography>
               )}
-              <Typography variant="caption" sx={{ color: ui.mutedText, fontWeight: 700, display: 'block', maxWidth: 160, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              <Typography variant="caption" sx={{ color: ui.mutedText, fontWeight: 600, display: 'block', maxWidth: 160, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                 {item?.author_full_name || item?.author_username || '-'}
               </Typography>
             </Box>
@@ -1217,7 +1217,7 @@ function Dashboard() {
       >
         <Stack spacing={0.78}>
           <Stack direction="row" spacing={0.45} sx={{ flexWrap: 'wrap', gap: 0.35 }}>
-            <Chip size="small" label={status.label} sx={{ height: 19, fontSize: '0.62rem', fontWeight: 700, bgcolor: status.bg, color: status.color, border: 'none' }} />
+            <Chip size="small" label={status.label} sx={{ height: 19, fontSize: '0.62rem', fontWeight: 600, bgcolor: status.bg, color: status.color, border: 'none' }} />
             {priority?.value !== 'normal' && (
               <Chip
                 size="small"
@@ -1226,7 +1226,7 @@ function Dashboard() {
                 sx={{
                   height: 19,
                   fontSize: '0.62rem',
-                  fontWeight: 800,
+                  fontWeight: 600,
                   bgcolor: alpha(priority.dotColor, 0.12),
                   color: priority.dotColor,
                   border: 'none',
@@ -1234,13 +1234,13 @@ function Dashboard() {
                 }}
               />
             )}
-            {isTransferReminder && <Chip size="small" label={getTransferActReminderLabel(task)} sx={{ height: 19, fontSize: '0.62rem', fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb', border: 'none' }} />}
-            {task?.is_overdue && <Chip size="small" label="Просрочено" sx={{ height: 19, fontSize: '0.62rem', fontWeight: 800, bgcolor: 'rgba(220,38,38,0.12)', color: '#dc2626', border: 'none' }} />}
-            {task?.has_unread_comments && <Chip size="small" label={isMobile ? 'Комментарий' : 'Новый комментарий'} sx={{ height: 19, fontSize: '0.62rem', fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb', border: 'none' }} />}
-            {Number(task?.attachments_count || 0) > 0 && <Chip size="small" icon={<AttachFileIcon sx={{ fontSize: '11px !important' }} />} label={task.attachments_count} sx={{ height: 19, fontSize: '0.62rem', fontWeight: 700, bgcolor: ui.actionBg, color: ui.mutedText, border: 'none', '& .MuiChip-icon': { ml: '2px' } }} />}
+            {isTransferReminder && <Chip size="small" label={getTransferActReminderLabel(task)} sx={{ height: 19, fontSize: '0.62rem', fontWeight: 600, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb', border: 'none' }} />}
+            {task?.is_overdue && <Chip size="small" label="Просрочено" sx={{ height: 19, fontSize: '0.62rem', fontWeight: 600, bgcolor: 'rgba(220,38,38,0.12)', color: '#dc2626', border: 'none' }} />}
+            {task?.has_unread_comments && <Chip size="small" label={isMobile ? 'Комментарий' : 'Новый комментарий'} sx={{ height: 19, fontSize: '0.62rem', fontWeight: 600, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb', border: 'none' }} />}
+            {Number(task?.attachments_count || 0) > 0 && <Chip size="small" icon={<AttachFileIcon sx={{ fontSize: '11px !important' }} />} label={task.attachments_count} sx={{ height: 19, fontSize: '0.62rem', fontWeight: 600, bgcolor: ui.actionBg, color: ui.mutedText, border: 'none', '& .MuiChip-icon': { ml: '2px' } }} />}
           </Stack>
 
-          <Typography sx={{ fontWeight: 900, fontSize: '0.86rem', lineHeight: 1.28, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          <Typography sx={{ fontWeight: 600, fontSize: '0.86rem', lineHeight: 1.28, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             {task?.title || '-'}
           </Typography>
 
@@ -1249,7 +1249,7 @@ function Dashboard() {
             sx={{
               display: 'block',
               color: canOpenTransferActUpload(task) ? '#2563eb' : ui.subtleText,
-              fontWeight: 800,
+              fontWeight: 600,
               lineHeight: 1.25,
             }}
           >
@@ -1283,7 +1283,7 @@ function Dashboard() {
                   event.stopPropagation();
                   openTransferActReminder(task);
                 }}
-                sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}
+                sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}
               >
                 Загрузить подписанный акт
               </Button>
@@ -1301,7 +1301,7 @@ function Dashboard() {
                   display: 'block',
                   mt: 0.18,
                   color: ui.mutedText,
-                  fontWeight: 700,
+                  fontWeight: 600,
                   maxWidth: 170,
                   whiteSpace: 'nowrap',
                   overflow: 'hidden',
@@ -1315,7 +1315,7 @@ function Dashboard() {
               <Typography variant="caption" sx={{ display: 'block', color: ui.subtleText, lineHeight: 1 }}>
                 Срок
               </Typography>
-              <Typography variant="caption" sx={{ display: 'block', mt: 0.18, color: task?.is_overdue ? '#dc2626' : ui.mutedText, fontWeight: 700 }}>
+              <Typography variant="caption" sx={{ display: 'block', mt: 0.18, color: task?.is_overdue ? '#dc2626' : ui.mutedText, fontWeight: 600 }}>
                 {task?.due_at ? fmtShortDate(task.due_at) : 'Без срока'}
               </Typography>
             </Box>
@@ -1688,12 +1688,12 @@ function Dashboard() {
           <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.2, borderRadius: '12px', bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.10 : 0.04) }) }}>
             <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" alignItems={{ xs: 'stretch', sm: 'center' }} spacing={1}>
               <Box>
-                <Typography sx={{ fontWeight: 700, fontSize: '0.9rem' }}>Вложения</Typography>
+                <Typography sx={{ fontWeight: 600, fontSize: '0.9rem' }}>Вложения</Typography>
                 <Typography variant="caption" sx={{ color: ui.subtleText }}>
                   Документы и файлы для заметки.
                 </Typography>
               </Box>
-              <Button component="label" variant="outlined" startIcon={<AttachFileIcon />} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
+              <Button component="label" variant="outlined" startIcon={<AttachFileIcon />} sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}>
                 Добавить файлы
                 <input
                   hidden
@@ -1754,7 +1754,7 @@ function Dashboard() {
         <Button
           variant="outlined"
           onClick={resetFilters}
-          sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px', minWidth: mobile ? 0 : 160, width: mobile ? '100%' : 'auto' }}
+          sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px', minWidth: mobile ? 0 : 160, width: mobile ? '100%' : 'auto' }}
         >
           Сбросить фильтры
         </Button>
@@ -1924,14 +1924,14 @@ function Dashboard() {
       </Box>
       <Box sx={{ minWidth: 0, flex: 1 }}>
         <Stack direction="row" spacing={0.6} alignItems="center">
-          <Typography sx={{ fontWeight: 900, fontSize: compact ? '0.82rem' : '0.88rem', lineHeight: 1.15, minWidth: 0 }}>
+          <Typography sx={{ fontWeight: 600, fontSize: compact ? '0.82rem' : '0.88rem', lineHeight: 1.15, minWidth: 0 }}>
             {item.label}
           </Typography>
           {Number(item.badge || 0) > 0 ? (
             <Chip
               size="small"
               label={item.badge}
-              sx={{ height: 18, minWidth: 18, fontSize: '0.62rem', fontWeight: 900, bgcolor: alpha(item.color, 0.14), color: item.color, border: 'none' }}
+              sx={{ height: 18, minWidth: 18, fontSize: '0.62rem', fontWeight: 600, bgcolor: alpha(item.color, 0.14), color: item.color, border: 'none' }}
             />
           ) : null}
         </Stack>
@@ -1976,13 +1976,13 @@ function Dashboard() {
               alignSelf: 'flex-start',
               height: 20,
               fontSize: '0.62rem',
-              fontWeight: 800,
+              fontWeight: 600,
               bgcolor: alpha(accentColor, theme.palette.mode === 'dark' ? 0.18 : 0.12),
               color: accentColor,
               border: 'none',
             }}
           />
-          <Typography sx={{ fontWeight: 900, fontSize: '0.84rem', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+          <Typography sx={{ fontWeight: 600, fontSize: '0.84rem', lineHeight: 1.3, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
             {entry?.title || '-'}
           </Typography>
           <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', lineHeight: 1.3, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -1996,7 +1996,7 @@ function Dashboard() {
   const renderMobileSectionHeader = useCallback((title, description, action = null) => (
     <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
       <Box sx={{ minWidth: 0 }}>
-        <Typography sx={{ fontWeight: 900, fontSize: '0.94rem', lineHeight: 1.15 }}>
+        <Typography sx={{ fontWeight: 600, fontSize: '0.94rem', lineHeight: 1.15 }}>
           {title}
         </Typography>
         {description ? (
@@ -2013,7 +2013,7 @@ function Dashboard() {
     flexShrink: 0,
     height: 34,
     borderRadius: '12px',
-    fontWeight: 850,
+    fontWeight: 650,
     color: selected ? ui.textPrimary : ui.mutedText,
     bgcolor: selected
       ? alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.075 : 0.58)
@@ -2065,7 +2065,7 @@ function Dashboard() {
                 <Stack spacing={1}>
                   <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
                     <Box sx={{ minWidth: 0 }}>
-                      <Typography sx={{ fontWeight: 900, fontSize: '1rem', lineHeight: 1.15 }}>Главная</Typography>
+                      <Typography sx={{ fontWeight: 600, fontSize: '1rem', lineHeight: 1.15 }}>Главная</Typography>
                       <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.25 }}>
                         Важное, новости, почта и мои задачи.
                       </Typography>
@@ -2077,7 +2077,7 @@ function Dashboard() {
                     value={mobileView}
                     onChange={(_, nextValue) => setMobileViewWithDirection(nextValue)}
                     variant="fullWidth"
-                    sx={{ minHeight: 38, '& .MuiTab-root': { minHeight: 38, textTransform: 'none', fontWeight: 800 } }}
+                    sx={{ minHeight: 38, '& .MuiTab-root': { minHeight: 38, textTransform: 'none', fontWeight: 600 } }}
                   >
                     {DASHBOARD_MOBILE_VIEW_OPTIONS.map((item) => (
                       <Tab key={item.key} value={item.key} label={item.label} data-testid={`dashboard-mobile-tab-${item.key}`} />
@@ -2155,7 +2155,7 @@ function Dashboard() {
                           </Stack>
                         ) : (
                           <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
-                            <Typography sx={{ fontWeight: 800, mb: 0.35 }}>Срочных элементов сейчас нет.</Typography>
+                            <Typography sx={{ fontWeight: 600, mb: 0.35 }}>Срочных элементов сейчас нет.</Typography>
                             <Typography variant="body2" sx={{ color: ui.mutedText }}>
                               Ни одной просроченной задачи, задач на проверке или заметок с обязательным подтверждением.
                             </Typography>
@@ -2194,7 +2194,7 @@ function Dashboard() {
                           </Stack>
                         ) : (
                           <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
-                            <Typography sx={{ fontWeight: 800, mb: 0.35 }}>
+                            <Typography sx={{ fontWeight: 600, mb: 0.35 }}>
                               {activeMobileOverviewAnnouncementSection?.empty || 'Подходящих заметок пока нет.'}
                             </Typography>
                           </Box>
@@ -2205,7 +2205,7 @@ function Dashboard() {
                             setMobileViewWithDirection('announcements');
                             setMobileAnnouncementSection(mobileOverviewAnnouncementSection);
                           }}
-                          sx={{ alignSelf: 'flex-start', px: 0, textTransform: 'none', fontWeight: 800 }}
+                          sx={{ alignSelf: 'flex-start', px: 0, textTransform: 'none', fontWeight: 600 }}
                         >
                           Открыть все заметки
                         </Button>
@@ -2242,7 +2242,7 @@ function Dashboard() {
                           </Stack>
                         ) : (
                           <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
-                            <Typography sx={{ fontWeight: 800, mb: 0.35 }}>
+                            <Typography sx={{ fontWeight: 600, mb: 0.35 }}>
                               {activeMobileTaskSection?.empty || 'Открытых задач сейчас нет.'}
                             </Typography>
                           </Box>
@@ -2251,14 +2251,14 @@ function Dashboard() {
                           <Button
                             variant="text"
                             onClick={() => setMobileViewWithDirection('tasks')}
-                            sx={{ px: 0, textTransform: 'none', fontWeight: 800 }}
+                            sx={{ px: 0, textTransform: 'none', fontWeight: 600 }}
                           >
                             Открыть triage
                           </Button>
                           <Button
                             variant="text"
                             onClick={() => navigate('/tasks')}
-                            sx={{ px: 0, textTransform: 'none', fontWeight: 800 }}
+                            sx={{ px: 0, textTransform: 'none', fontWeight: 600 }}
                           >
                             Открыть все задачи
                           </Button>
@@ -2301,7 +2301,7 @@ function Dashboard() {
                             '& .MuiInputBase-input': {
                               py: 0,
                               fontSize: '0.9rem',
-                              fontWeight: 700,
+                              fontWeight: 600,
                               '&::placeholder': {
                                 color: ui.subtleText,
                                 opacity: 0.85,
@@ -2358,7 +2358,7 @@ function Dashboard() {
                                 bgcolor: ui.textPrimary,
                                 color: ui.panelSolid,
                                 fontSize: '0.58rem',
-                                fontWeight: 900,
+                                fontWeight: 600,
                                 lineHeight: 1,
                               }}
                             >
@@ -2398,12 +2398,12 @@ function Dashboard() {
                       </Stack>
                     ) : (
                       <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.5 }) }}>
-                        <Typography sx={{ fontWeight: 800, mb: 0.4 }}>{activeMobileAnnouncementSection?.empty || 'Заметки не найдены.'}</Typography>
+                        <Typography sx={{ fontWeight: 600, mb: 0.4 }}>{activeMobileAnnouncementSection?.empty || 'Заметки не найдены.'}</Typography>
                         <Typography variant="body2" sx={{ color: ui.mutedText }}>
                           Измените фильтры или переключите сегмент, чтобы увидеть другие заметки.
                         </Typography>
                         {mobileAnnouncementSection === 'all' && canWriteAnn && (
-                          <Button sx={{ mt: 1, textTransform: 'none', fontWeight: 800, borderRadius: '10px' }} variant="contained" startIcon={<AddIcon />} onClick={openCreateAnnouncement}>
+                          <Button sx={{ mt: 1, textTransform: 'none', fontWeight: 600, borderRadius: '10px' }} variant="contained" startIcon={<AddIcon />} onClick={openCreateAnnouncement}>
                             Создать заметку
                           </Button>
                         )}
@@ -2414,7 +2414,7 @@ function Dashboard() {
               ) : (
                 <Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '16px' }) }}>
                   <Stack spacing={1}>
-                    <Typography sx={{ fontWeight: 900, fontSize: '0.94rem' }}>Мои задачи</Typography>
+                    <Typography sx={{ fontWeight: 600, fontSize: '0.94rem' }}>Мои задачи</Typography>
 
                     <Stack direction="row" spacing={0.65} sx={{ overflowX: 'auto', pb: 0.1 }}>
                       {[
@@ -2445,7 +2445,7 @@ function Dashboard() {
                       </Stack>
                     ) : (
                       <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.5 }) }}>
-                        <Typography sx={{ fontWeight: 800, mb: 0.4 }}>{activeMobileTaskSection?.empty || 'Открытых задач нет.'}</Typography>
+                        <Typography sx={{ fontWeight: 600, mb: 0.4 }}>{activeMobileTaskSection?.empty || 'Открытых задач нет.'}</Typography>
                         <Typography variant="body2" sx={{ color: ui.mutedText }}>
                           Переключите очередь или откройте полный список задач.
                         </Typography>
@@ -2470,18 +2470,18 @@ function Dashboard() {
                       <NotificationsIcon />
                     </Avatar>
                     <Box>
-                      <Typography sx={{ fontWeight: 900, fontSize: '0.98rem', lineHeight: 1.1 }}>Главная</Typography>
+                      <Typography sx={{ fontWeight: 600, fontSize: '0.98rem', lineHeight: 1.1 }}>Главная</Typography>
                       <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.2 }}>
                         Корпоративная лента, мои дела и быстрый доступ к рабочим разделам.
                       </Typography>
                     </Box>
                   </Stack>
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8}>
-                    <Button size="small" variant="outlined" startIcon={<RefreshIcon />} onClick={() => void loadDashboard()} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
+                    <Button size="small" variant="outlined" startIcon={<RefreshIcon />} onClick={() => void loadDashboard()} sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}>
                       Обновить
                     </Button>
                     {canWriteAnn && (
-                      <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={openCreateAnnouncement} sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}>
+                      <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={openCreateAnnouncement} sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px', boxShadow: 'none' }}>
                         Новая заметка
                       </Button>
                     )}
@@ -2494,11 +2494,11 @@ function Dashboard() {
                       <Box sx={{ ...getOfficeMetricBlockSx(ui, item.color, { p: 0.8, minHeight: 66, bgcolor: alpha(item.color, theme.palette.mode === 'dark' ? 0.10 : 0.06) }) }}>
                         <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={0.6}>
                           <Box sx={{ color: item.color }}>{item.icon}</Box>
-                          <Typography sx={{ fontWeight: 900, color: item.color, fontSize: '1rem', lineHeight: 1 }}>
+                          <Typography sx={{ fontWeight: 600, color: item.color, fontSize: '1rem', lineHeight: 1 }}>
                             {item.value}
                           </Typography>
                         </Stack>
-                        <Typography sx={{ mt: 0.55, fontWeight: 800, fontSize: '0.72rem', lineHeight: 1.2 }}>{item.label}</Typography>
+                        <Typography sx={{ mt: 0.55, fontWeight: 600, fontSize: '0.72rem', lineHeight: 1.2 }}>{item.label}</Typography>
                       </Box>
                     </Grid>
                   ))}
@@ -2508,7 +2508,7 @@ function Dashboard() {
                   <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 0.8, borderRadius: '14px' }) }}>
                     <Stack direction={{ xs: 'column', xl: 'row' }} justifyContent="space-between" spacing={0.8}>
                       <Box sx={{ minWidth: { xl: 180 }, pt: { xl: 0.35 } }}>
-                        <Typography sx={{ fontWeight: 900, fontSize: '0.86rem', lineHeight: 1.15 }}>Быстрый доступ</Typography>
+                        <Typography sx={{ fontWeight: 600, fontSize: '0.86rem', lineHeight: 1.15 }}>Быстрый доступ</Typography>
                         <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.25 }}>
                           Общие разделы для всех сотрудников.
                         </Typography>
@@ -2525,7 +2525,7 @@ function Dashboard() {
                 )}
 
                 <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={0.8}>
-                  <Button size="small" variant="text" startIcon={<FilterListIcon />} onClick={() => setFiltersOpen((prev) => !prev)} sx={{ alignSelf: 'flex-start', textTransform: 'none', fontWeight: 800, py: 0.25 }}>
+                  <Button size="small" variant="text" startIcon={<FilterListIcon />} onClick={() => setFiltersOpen((prev) => !prev)} sx={{ alignSelf: 'flex-start', textTransform: 'none', fontWeight: 600, py: 0.25 }}>
                     {filtersOpen ? 'Свернуть фильтры' : `Развернуть фильтры${activeFilterCount ? ` (${activeFilterCount})` : ''}`}
                   </Button>
                   <Typography variant="caption" sx={{ color: ui.subtleText, alignSelf: 'center', lineHeight: 1.2 }}>
@@ -2549,13 +2549,13 @@ function Dashboard() {
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { px: 1.1, py: 0.9, borderRadius: '14px' }) }}>
                   <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
                     <Box sx={{ minWidth: 0 }}>
-                      <Typography sx={{ fontWeight: 900, fontSize: '0.95rem', lineHeight: 1.15 }}>Новости компании</Typography>
+                      <Typography sx={{ fontWeight: 600, fontSize: '0.95rem', lineHeight: 1.15 }}>Новости компании</Typography>
                       <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.2 }}>
                         Закрепленные объявления, важные изменения и сообщения для сотрудников.
                       </Typography>
                     </Box>
                     <Stack direction="row" spacing={0.6} alignItems="center" sx={{ flexShrink: 0 }}>
-                      <Chip size="small" label={filteredAnnouncements.length} sx={{ fontWeight: 900 }} />
+                      <Chip size="small" label={filteredAnnouncements.length} sx={{ fontWeight: 600 }} />
                       {extraQuickActions.map((item) => (
                         <Button
                           key={item.key}
@@ -2564,7 +2564,7 @@ function Dashboard() {
                           variant="contained"
                           startIcon={item.icon}
                           onClick={item.action}
-                          sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
+                          sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px', boxShadow: 'none' }}
                         >
                           {item.label}
                         </Button>
@@ -2584,20 +2584,20 @@ function Dashboard() {
                       <Stack direction="row" justifyContent="space-between" alignItems="center">
                         <Stack direction="row" spacing={0.8} alignItems="center">
                           <CampaignIcon sx={{ fontSize: 18, color: theme.palette.primary.main }} />
-                          <Typography sx={{ fontWeight: 900 }}>{section.title}</Typography>
+                          <Typography sx={{ fontWeight: 600 }}>{section.title}</Typography>
                         </Stack>
-                        <Chip size="small" label={section.items.length} sx={{ fontWeight: 800 }} />
+                        <Chip size="small" label={section.items.length} sx={{ fontWeight: 600 }} />
                       </Stack>
                       {section.items.length === 0 ? (
                         <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.6 }) }}>
-                          <Typography sx={{ fontWeight: 700, mb: 0.4 }}>{section.empty}</Typography>
+                          <Typography sx={{ fontWeight: 600, mb: 0.4 }}>{section.empty}</Typography>
                           <Typography variant="body2" sx={{ color: ui.mutedText }}>
                             {section.key === 'all' && canWriteAnn
                               ? 'Создайте новую заметку или ослабьте фильтры, чтобы увидеть больше сообщений.'
                               : 'Когда появятся подходящие элементы, они окажутся в этой секции.'}
                           </Typography>
                           {section.key === 'all' && canWriteAnn && (
-                            <Button sx={{ mt: 1, textTransform: 'none', fontWeight: 800, borderRadius: '10px' }} variant="contained" startIcon={<AddIcon />} onClick={openCreateAnnouncement}>
+                            <Button sx={{ mt: 1, textTransform: 'none', fontWeight: 600, borderRadius: '10px' }} variant="contained" startIcon={<AddIcon />} onClick={openCreateAnnouncement}>
                               Создать заметку
                             </Button>
                           )}
@@ -2618,13 +2618,13 @@ function Dashboard() {
                   <Stack direction="row" spacing={0.8} alignItems="center">
                     <AssignmentIcon sx={{ fontSize: 18, color: theme.palette.primary.main }} />
                     <Box>
-                      <Typography sx={{ fontWeight: 900, lineHeight: 1.15 }}>Мои задачи</Typography>
+                      <Typography sx={{ fontWeight: 600, lineHeight: 1.15 }}>Мои задачи</Typography>
                       <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.15 }}>
                         Проверка, сроки и новые комментарии.
                       </Typography>
                     </Box>
                   </Stack>
-                  <Button size="small" variant="outlined" startIcon={<OpenInNewIcon />} onClick={() => navigate('/tasks')} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
+                  <Button size="small" variant="outlined" startIcon={<OpenInNewIcon />} onClick={() => navigate('/tasks')} sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}>
                     Все задачи
                   </Button>
                 </Stack>
@@ -2635,7 +2635,7 @@ function Dashboard() {
                   </Stack>
                 ) : taskQueues.every((section) => section.items.length === 0) ? (
                   <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.6 }) }}>
-                    <Typography sx={{ fontWeight: 800, mb: 0.4 }}>Открытых задач сейчас нет.</Typography>
+                    <Typography sx={{ fontWeight: 600, mb: 0.4 }}>Открытых задач сейчас нет.</Typography>
                     <Typography variant="body2" sx={{ color: ui.mutedText }}>
                       Здесь показываются задачи к проверке, просроченные и с новыми комментариями.
                     </Typography>
@@ -2646,8 +2646,8 @@ function Dashboard() {
                       {taskQueues.map((section) => (
                         <Box key={section.key}>
                           <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.7 }}>
-                            <Typography sx={{ fontWeight: 800, fontSize: '0.88rem' }}>{section.title}</Typography>
-                            <Chip size="small" label={section.items.length} sx={{ fontWeight: 800 }} />
+                            <Typography sx={{ fontWeight: 600, fontSize: '0.88rem' }}>{section.title}</Typography>
+                            <Chip size="small" label={section.items.length} sx={{ fontWeight: 600 }} />
                           </Stack>
                           {section.items.length === 0 ? (
                             <Typography variant="body2" sx={{ color: ui.subtleText, mb: 0.6 }}>{section.empty}</Typography>
@@ -2675,7 +2675,7 @@ function Dashboard() {
           >
             <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 2, py: 1.5 }), position: 'sticky', top: 0, zIndex: 1 }}>
               <Stack spacing={0.35}>
-                <Typography sx={{ fontWeight: 900, fontSize: '1.02rem' }}>Фильтры заметок</Typography>
+                <Typography sx={{ fontWeight: 600, fontSize: '1.02rem' }}>Фильтры заметок</Typography>
                 <Typography variant="body2" sx={{ color: ui.mutedText }}>
                   Поиск, приоритет и быстрые ограничения для ленты.
                 </Typography>
@@ -2685,7 +2685,7 @@ function Dashboard() {
               {renderAnnouncementFilters({ mobile: true })}
             </DialogContent>
             <DialogActions sx={{ px: 2, py: 1.2, borderTop: '1px solid', borderColor: ui.borderSoft, position: 'sticky', bottom: 0, bgcolor: ui.panelSolid }}>
-              <Button onClick={() => setMobileFiltersOpen(false)} sx={{ textTransform: 'none', fontWeight: 700, width: '100%' }}>
+              <Button onClick={() => setMobileFiltersOpen(false)} sx={{ textTransform: 'none', fontWeight: 600, width: '100%' }}>
                 Закрыть
               </Button>
             </DialogActions>
@@ -2704,7 +2704,7 @@ function Dashboard() {
               sx={{ ...getOfficeHeaderBandSx(ui, { px: 2, py: 1.5 }), position: 'sticky', top: 0, zIndex: 1 }}
             >
               <Stack spacing={0.35}>
-                <Typography sx={{ fontWeight: 900, fontSize: '1.02rem' }}>Настроить экран</Typography>
+                <Typography sx={{ fontWeight: 600, fontSize: '1.02rem' }}>Настроить экран</Typography>
                 <Typography variant="body2" sx={{ color: ui.mutedText }}>
                   Покажите только нужные секции и поменяйте их порядок для мобильного режима.
                 </Typography>
@@ -2724,7 +2724,7 @@ function Dashboard() {
                     >
                       <Stack direction="row" justifyContent="space-between" spacing={1} alignItems="flex-start">
                         <Box sx={{ minWidth: 0 }}>
-                          <Typography sx={{ fontWeight: 800, fontSize: '0.92rem' }}>
+                          <Typography sx={{ fontWeight: 600, fontSize: '0.92rem' }}>
                             {meta?.title || sectionKey}
                           </Typography>
                           <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.25 }}>
@@ -2736,7 +2736,7 @@ function Dashboard() {
                           label={hidden ? 'Скрыта' : 'Показана'}
                           color={hidden ? 'default' : 'primary'}
                           variant={hidden ? 'outlined' : 'filled'}
-                          sx={{ fontWeight: 800 }}
+                          sx={{ fontWeight: 600 }}
                         />
                       </Stack>
                       <Stack direction="row" spacing={0.8} sx={{ mt: 1, flexWrap: 'wrap', gap: 0.8 }}>
@@ -2745,7 +2745,7 @@ function Dashboard() {
                           variant="outlined"
                           onClick={() => handleMoveMobileSection(sectionKey, -1)}
                           disabled={index === 0}
-                          sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}
+                          sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}
                         >
                           Выше
                         </Button>
@@ -2754,7 +2754,7 @@ function Dashboard() {
                           variant="outlined"
                           onClick={() => handleMoveMobileSection(sectionKey, 1)}
                           disabled={index === mobileSectionsDraft.length - 1}
-                          sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}
+                          sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}
                         >
                           Ниже
                         </Button>
@@ -2763,7 +2763,7 @@ function Dashboard() {
                           variant={hidden ? 'contained' : 'outlined'}
                           onClick={() => handleToggleMobileSection(sectionKey)}
                           disabled={!hidden && visibleCount <= 1}
-                          sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px', boxShadow: 'none' }}
+                          sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px', boxShadow: 'none' }}
                         >
                           {hidden ? 'Показать' : 'Скрыть'}
                         </Button>
@@ -2778,7 +2778,7 @@ function Dashboard() {
                 <Button
                   variant="outlined"
                   onClick={() => setMobileCustomizeOpen(false)}
-                  sx={{ textTransform: 'none', fontWeight: 700, width: { xs: '100%', sm: 'auto' } }}
+                  sx={{ textTransform: 'none', fontWeight: 600, width: { xs: '100%', sm: 'auto' } }}
                 >
                   Отмена
                 </Button>
@@ -2787,7 +2787,7 @@ function Dashboard() {
                   data-testid="dashboard-mobile-customize-save"
                   onClick={() => void handleSaveMobileCustomize()}
                   disabled={mobileCustomizeSaving}
-                  sx={{ textTransform: 'none', fontWeight: 800, boxShadow: 'none', width: { xs: '100%', sm: 'auto' } }}
+                  sx={{ textTransform: 'none', fontWeight: 600, boxShadow: 'none', width: { xs: '100%', sm: 'auto' } }}
                 >
                   {mobileCustomizeSaving ? 'Сохранение...' : 'Сохранить экран'}
                 </Button>
@@ -2820,7 +2820,7 @@ function Dashboard() {
                     ) : null}
                   </Stack>
                   <Box sx={{ minWidth: 0 }}>
-                    <Typography sx={{ fontWeight: 900, fontSize: '1rem', lineHeight: 1.22, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
+                    <Typography sx={{ fontWeight: 600, fontSize: '1rem', lineHeight: 1.22, display: '-webkit-box', WebkitLineClamp: 2, WebkitBoxOrient: 'vertical', overflow: 'hidden' }}>
                       {announcementDetails?.title || 'Просмотр заметки'}
                     </Typography>
                     {announcementDetails?.preview ? (
@@ -2833,7 +2833,7 @@ function Dashboard() {
               ) : (
                 <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
                   <Box sx={{ minWidth: 0 }}>
-                    <Typography sx={{ fontWeight: 900, fontSize: '1.1rem', lineHeight: 1.2 }}>
+                    <Typography sx={{ fontWeight: 600, fontSize: '1.1rem', lineHeight: 1.2 }}>
                       {announcementDetails?.title || 'Просмотр заметки'}
                     </Typography>
                     <Typography variant="body2" sx={{ color: ui.mutedText, mt: 0.35 }}>
@@ -2848,12 +2848,12 @@ function Dashboard() {
                         startIcon={<VisibilityIcon />}
                         onClick={() => void loadAnnouncementReads(announcementDetails.id)}
                         disabled={!announcementDetails?.can_manage}
-                        sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}
+                        sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}
                       >
                         Кто прочитал
                       </Button>
                     )}
-                    <Button onClick={closeAnnouncementDetails} sx={{ textTransform: 'none', fontWeight: 700, minWidth: 0 }}>
+                    <Button onClick={closeAnnouncementDetails} sx={{ textTransform: 'none', fontWeight: 600, minWidth: 0 }}>
                       Закрыть
                     </Button>
                   </Stack>
@@ -2865,39 +2865,39 @@ function Dashboard() {
               {announcementDetails ? (
                 <Stack spacing={1.4}>
                   <Stack direction="row" spacing={0.6} sx={{ flexWrap: 'wrap', gap: 0.6 }}>
-                    <Chip size="small" label={announcementPriorityMeta(announcementDetails.priority).label} sx={{ fontWeight: 800, bgcolor: announcementPriorityMeta(announcementDetails.priority).bg, color: announcementPriorityMeta(announcementDetails.priority).color }} />
-                    {announcementDetails.is_updated && <Chip size="small" label="Обновлено" sx={{ fontWeight: 800, bgcolor: 'rgba(124,58,237,0.14)', color: '#7c3aed' }} />}
-                    {!announcementDetails.is_updated && announcementDetails.is_unread && <Chip size="small" label="Новое" sx={{ fontWeight: 800, bgcolor: 'rgba(37,99,235,0.14)', color: '#2563eb' }} />}
-                    {announcementDetails.requires_ack && <Chip size="small" label="Требует подтверждения" sx={{ fontWeight: 800, bgcolor: 'rgba(5,150,105,0.14)', color: '#059669' }} />}
-                    {announcementDetails.is_ack_pending && <Chip size="small" label="Ожидает подтверждения" sx={{ fontWeight: 800, bgcolor: 'rgba(220,38,38,0.12)', color: '#dc2626' }} />}
-                    {announcementDetails.is_pinned_active && <Chip size="small" icon={<PushPinOutlinedIcon sx={{ fontSize: '12px !important' }} />} label="Закреплено" sx={{ fontWeight: 800 }} />}
-                    {announcementDetails.is_scheduled && <Chip size="small" label="Запланирована" sx={{ fontWeight: 800, bgcolor: 'rgba(217,119,6,0.12)', color: '#d97706' }} />}
+                    <Chip size="small" label={announcementPriorityMeta(announcementDetails.priority).label} sx={{ fontWeight: 600, bgcolor: announcementPriorityMeta(announcementDetails.priority).bg, color: announcementPriorityMeta(announcementDetails.priority).color }} />
+                    {announcementDetails.is_updated && <Chip size="small" label="Обновлено" sx={{ fontWeight: 600, bgcolor: 'rgba(124,58,237,0.14)', color: '#7c3aed' }} />}
+                    {!announcementDetails.is_updated && announcementDetails.is_unread && <Chip size="small" label="Новое" sx={{ fontWeight: 600, bgcolor: 'rgba(37,99,235,0.14)', color: '#2563eb' }} />}
+                    {announcementDetails.requires_ack && <Chip size="small" label="Требует подтверждения" sx={{ fontWeight: 600, bgcolor: 'rgba(5,150,105,0.14)', color: '#059669' }} />}
+                    {announcementDetails.is_ack_pending && <Chip size="small" label="Ожидает подтверждения" sx={{ fontWeight: 600, bgcolor: 'rgba(220,38,38,0.12)', color: '#dc2626' }} />}
+                    {announcementDetails.is_pinned_active && <Chip size="small" icon={<PushPinOutlinedIcon sx={{ fontSize: '12px !important' }} />} label="Закреплено" sx={{ fontWeight: 600 }} />}
+                    {announcementDetails.is_scheduled && <Chip size="small" label="Запланирована" sx={{ fontWeight: 600, bgcolor: 'rgba(217,119,6,0.12)', color: '#d97706' }} />}
                   </Stack>
 
                   <Grid container spacing={1.2}>
                     <Grid item xs={12} sm={6} md={4}>
                       <Typography variant="caption" sx={{ color: ui.subtleText }}>Автор</Typography>
-                      <Typography sx={{ fontWeight: 700 }}>{announcementDetails.author_full_name || announcementDetails.author_username || '-'}</Typography>
+                      <Typography sx={{ fontWeight: 600 }}>{announcementDetails.author_full_name || announcementDetails.author_username || '-'}</Typography>
                     </Grid>
                     <Grid item xs={12} sm={6} md={4}>
                       <Typography variant="caption" sx={{ color: ui.subtleText }}>Аудитория</Typography>
-                      <Typography sx={{ fontWeight: 700 }}>{announcementDetails.recipients_summary || 'Всем'}</Typography>
+                      <Typography sx={{ fontWeight: 600 }}>{announcementDetails.recipients_summary || 'Всем'}</Typography>
                     </Grid>
                     <Grid item xs={12} sm={6} md={4}>
                       <Typography variant="caption" sx={{ color: ui.subtleText }}>Версия</Typography>
-                      <Typography sx={{ fontWeight: 700 }}>v{announcementDetails.version || 1}</Typography>
+                      <Typography sx={{ fontWeight: 600 }}>v{announcementDetails.version || 1}</Typography>
                     </Grid>
                     <Grid item xs={12} sm={6} md={4}>
                       <Typography variant="caption" sx={{ color: ui.subtleText }}>Опубликована</Typography>
-                      <Typography sx={{ fontWeight: 700 }}>{fmtDateTime(announcementDetails.published_at)}</Typography>
+                      <Typography sx={{ fontWeight: 600 }}>{fmtDateTime(announcementDetails.published_at)}</Typography>
                     </Grid>
                     <Grid item xs={12} sm={6} md={4}>
                       <Typography variant="caption" sx={{ color: ui.subtleText }}>Обновлена</Typography>
-                      <Typography sx={{ fontWeight: 700 }}>{fmtDateTime(announcementDetails.updated_at)}</Typography>
+                      <Typography sx={{ fontWeight: 600 }}>{fmtDateTime(announcementDetails.updated_at)}</Typography>
                     </Grid>
                     <Grid item xs={12} sm={6} md={4}>
                       <Typography variant="caption" sx={{ color: ui.subtleText }}>Подтверждение</Typography>
-                      <Typography sx={{ fontWeight: 700 }}>{announcementDetails.acknowledged_at ? fmtDateTime(announcementDetails.acknowledged_at) : 'Нет'}</Typography>
+                      <Typography sx={{ fontWeight: 600 }}>{announcementDetails.acknowledged_at ? fmtDateTime(announcementDetails.acknowledged_at) : 'Нет'}</Typography>
                     </Grid>
                   </Grid>
 
@@ -2913,7 +2913,7 @@ function Dashboard() {
 
                   {Array.isArray(announcementDetails.attachments) && announcementDetails.attachments.length > 0 && (
                     <Box sx={{ ...getOfficePanelSx(ui, { p: 1.2, borderRadius: '14px', boxShadow: 'none' }) }}>
-                      <Typography sx={{ fontWeight: 800, mb: 0.8 }}>Вложения</Typography>
+                      <Typography sx={{ fontWeight: 600, mb: 0.8 }}>Вложения</Typography>
                       <List disablePadding dense>
                         {announcementDetails.attachments.map((attachment) => (
                           <ListItem
@@ -2943,24 +2943,24 @@ function Dashboard() {
               <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8} sx={{ width: '100%', justifyContent: 'space-between' }}>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8}>
                   {announcementDetails?.is_ack_pending && (
-                    <Button variant="contained" startIcon={<TaskAltIcon />} onClick={handleAckAnnouncement} sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none', width: { xs: '100%', sm: 'auto' } }}>
+                    <Button variant="contained" startIcon={<TaskAltIcon />} onClick={handleAckAnnouncement} sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px', boxShadow: 'none', width: { xs: '100%', sm: 'auto' } }}>
                       Подтвердить ознакомление
                     </Button>
                   )}
                 </Stack>
                 <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8}>
                   {!isMobile && announcementDetails?.can_manage && canWriteAnn && (
-                    <Button variant="outlined" startIcon={<EditOutlinedIcon />} onClick={() => void openEditAnnouncement(announcementDetails)} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
+                    <Button variant="outlined" startIcon={<EditOutlinedIcon />} onClick={() => void openEditAnnouncement(announcementDetails)} sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}>
                       Редактировать
                     </Button>
                   )}
                   {!isMobile && announcementDetails?.can_manage && canWriteAnn && (
-                    <Button variant="outlined" color="warning" onClick={() => void handleArchiveAnnouncement(announcementDetails)} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
+                    <Button variant="outlined" color="warning" onClick={() => void handleArchiveAnnouncement(announcementDetails)} sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}>
                       Снять с публикации
                     </Button>
                   )}
                   {!isMobile && announcementDetails?.id && isAdmin && (
-                    <Button variant="outlined" color="error" startIcon={<DeleteOutlineIcon />} onClick={() => void handleDeleteAnnouncement(announcementDetails)} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
+                    <Button variant="outlined" color="error" startIcon={<DeleteOutlineIcon />} onClick={() => void handleDeleteAnnouncement(announcementDetails)} sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px' }}>
                       Удалить
                     </Button>
                   )}
@@ -2977,17 +2977,17 @@ function Dashboard() {
             maxWidth="sm"
             PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}
           >
-            <DialogTitle sx={{ fontWeight: 900, position: 'sticky', top: 0, zIndex: 1, bgcolor: ui.panelSolid }}>Статусы ознакомления</DialogTitle>
+            <DialogTitle sx={{ fontWeight: 600, position: 'sticky', top: 0, zIndex: 1, bgcolor: ui.panelSolid }}>Статусы ознакомления</DialogTitle>
             <DialogContent dividers>
               {readsLoading ? (
                 <LinearProgress sx={{ borderRadius: 999 }} />
               ) : (
                 <Stack spacing={1.2}>
                   <Grid container spacing={1}>
-                    <Grid item xs={6}><Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '12px', boxShadow: 'none' }) }}><Typography variant="caption" sx={{ color: ui.subtleText }}>Получателей</Typography><Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>{readsPayload?.summary?.recipients_total || 0}</Typography></Card></Grid>
-                    <Grid item xs={6}><Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '12px', boxShadow: 'none' }) }}><Typography variant="caption" sx={{ color: ui.subtleText }}>Прочитали</Typography><Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>{readsPayload?.summary?.seen_total || 0}</Typography></Card></Grid>
-                    <Grid item xs={6}><Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '12px', boxShadow: 'none' }) }}><Typography variant="caption" sx={{ color: ui.subtleText }}>Подтвердили</Typography><Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>{readsPayload?.summary?.ack_total || 0}</Typography></Card></Grid>
-                    <Grid item xs={6}><Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '12px', boxShadow: 'none' }) }}><Typography variant="caption" sx={{ color: ui.subtleText }}>Ожидают</Typography><Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>{readsPayload?.summary?.pending_ack_total || 0}</Typography></Card></Grid>
+                    <Grid item xs={6}><Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '12px', boxShadow: 'none' }) }}><Typography variant="caption" sx={{ color: ui.subtleText }}>Получателей</Typography><Typography sx={{ fontWeight: 600, fontSize: '1.05rem' }}>{readsPayload?.summary?.recipients_total || 0}</Typography></Card></Grid>
+                    <Grid item xs={6}><Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '12px', boxShadow: 'none' }) }}><Typography variant="caption" sx={{ color: ui.subtleText }}>Прочитали</Typography><Typography sx={{ fontWeight: 600, fontSize: '1.05rem' }}>{readsPayload?.summary?.seen_total || 0}</Typography></Card></Grid>
+                    <Grid item xs={6}><Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '12px', boxShadow: 'none' }) }}><Typography variant="caption" sx={{ color: ui.subtleText }}>Подтвердили</Typography><Typography sx={{ fontWeight: 600, fontSize: '1.05rem' }}>{readsPayload?.summary?.ack_total || 0}</Typography></Card></Grid>
+                    <Grid item xs={6}><Card sx={{ ...getOfficePanelSx(ui, { p: 1, borderRadius: '12px', boxShadow: 'none' }) }}><Typography variant="caption" sx={{ color: ui.subtleText }}>Ожидают</Typography><Typography sx={{ fontWeight: 600, fontSize: '1.05rem' }}>{readsPayload?.summary?.pending_ack_total || 0}</Typography></Card></Grid>
                   </Grid>
                   <List disablePadding>
                     {readsPayload.items.map((item) => (
@@ -3008,7 +3008,7 @@ function Dashboard() {
               )}
             </DialogContent>
             <DialogActions sx={{ position: isMobile ? 'sticky' : 'static', bottom: 0, bgcolor: ui.panelSolid }}>
-              <Button onClick={() => setReadsOpen(false)} sx={{ textTransform: 'none', fontWeight: 700, width: { xs: '100%', sm: 'auto' } }}>Закрыть</Button>
+              <Button onClick={() => setReadsOpen(false)} sx={{ textTransform: 'none', fontWeight: 600, width: { xs: '100%', sm: 'auto' } }}>Закрыть</Button>
             </DialogActions>
           </Dialog>
 
@@ -3021,7 +3021,7 @@ function Dashboard() {
             PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}
           >
             <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 2.2, py: 1.7 }), position: 'sticky', top: 0, zIndex: 1 }}>
-              <Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>Новая заметка</Typography>
+              <Typography sx={{ fontWeight: 600, fontSize: '1.05rem' }}>Новая заметка</Typography>
               <Typography variant="body2" sx={{ color: ui.mutedText, mt: 0.35 }}>
                 Создайте адресное сообщение, закрепите его или запросите подтверждение ознакомления.
               </Typography>
@@ -3034,12 +3034,12 @@ function Dashboard() {
               })}
             </DialogContent>
             <DialogActions sx={{ px: 2.2, py: 1.4, borderTop: '1px solid', borderColor: ui.borderSoft, position: isMobile ? 'sticky' : 'static', bottom: 0, bgcolor: ui.panelSolid }}>
-              <Button onClick={() => setCreateOpen(false)} sx={{ textTransform: 'none', fontWeight: 700, width: { xs: '100%', sm: 'auto' } }}>Отмена</Button>
+              <Button onClick={() => setCreateOpen(false)} sx={{ textTransform: 'none', fontWeight: 600, width: { xs: '100%', sm: 'auto' } }}>Отмена</Button>
               <Button
                 variant="contained"
                 onClick={() => void handleCreateAnnouncement()}
                 disabled={createSaving || String(createPayload?.title || '').trim().length < 3}
-                sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none', width: { xs: '100%', sm: 'auto' } }}
+                sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px', boxShadow: 'none', width: { xs: '100%', sm: 'auto' } }}
               >
                 {createSaving ? 'Сохранение...' : 'Создать заметку'}
               </Button>
@@ -3055,7 +3055,7 @@ function Dashboard() {
             PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}
           >
             <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 2.2, py: 1.7 }), position: 'sticky', top: 0, zIndex: 1 }}>
-              <Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>Редактирование заметки</Typography>
+              <Typography sx={{ fontWeight: 600, fontSize: '1.05rem' }}>Редактирование заметки</Typography>
               <Typography variant="body2" sx={{ color: ui.mutedText, mt: 0.35 }}>
                 Любое обновление создаёт новую версию и снова делает заметку новой для получателей.
               </Typography>
@@ -3064,12 +3064,12 @@ function Dashboard() {
               {renderAnnouncementEditorFields(editPayload, setEditPayload)}
             </DialogContent>
             <DialogActions sx={{ px: 2.2, py: 1.4, borderTop: '1px solid', borderColor: ui.borderSoft, position: isMobile ? 'sticky' : 'static', bottom: 0, bgcolor: ui.panelSolid }}>
-              <Button onClick={() => setEditOpen(false)} sx={{ textTransform: 'none', fontWeight: 700, width: { xs: '100%', sm: 'auto' } }}>Отмена</Button>
+              <Button onClick={() => setEditOpen(false)} sx={{ textTransform: 'none', fontWeight: 600, width: { xs: '100%', sm: 'auto' } }}>Отмена</Button>
               <Button
                 variant="contained"
                 onClick={() => void handleSaveAnnouncement()}
                 disabled={editSaving || String(editPayload?.title || '').trim().length < 3}
-                sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none', width: { xs: '100%', sm: 'auto' } }}
+                sx={{ textTransform: 'none', fontWeight: 600, borderRadius: '10px', boxShadow: 'none', width: { xs: '100%', sm: 'auto' } }}
               >
                 {editSaving ? 'Сохранение...' : 'Сохранить изменения'}
               </Button>

@@ -10,6 +10,7 @@ import {
 
 import {
   TRANSFER_OPERATION_ACT_ONLY,
+  TRANSFER_OPERATION_LOCATION_ONLY,
 } from './equipmentModel';
 import MaintenanceActionContent from './MaintenanceActionContent';
 import TransferActionContent from './TransferActionContent';
@@ -20,9 +21,9 @@ export const getActionDialogTitle = ({
   transferOperationMode,
 } = {}) => {
   if (type === 'transfer') {
-    return transferOperationMode === TRANSFER_OPERATION_ACT_ONLY
-      ? 'Акт без перемещения'
-      : 'Перемещение оборудования';
+    if (transferOperationMode === TRANSFER_OPERATION_ACT_ONLY) return 'Акт без перемещения';
+    if (transferOperationMode === TRANSFER_OPERATION_LOCATION_ONLY) return 'Перемещение';
+    return 'Перемещение с актом';
   }
   if (type === 'cartridge') return 'Замена картриджа';
   if (type === 'battery') return 'Замена батареи';
@@ -44,9 +45,9 @@ export const getActionConfirmLabel = ({
 } = {}) => {
   if (loading) return 'Выполнение...';
   if (type !== 'transfer') return 'Подтвердить';
-  return transferOperationMode === TRANSFER_OPERATION_ACT_ONLY
-    ? 'Создать акт'
-    : 'Выполнить перемещение';
+  if (transferOperationMode === TRANSFER_OPERATION_ACT_ONLY) return 'Создать акт';
+  if (transferOperationMode === TRANSFER_OPERATION_LOCATION_ONLY) return 'Выполнить перемещение';
+  return 'Выполнить перемещение с актом';
 };
 
 export const shouldShowActionConfirm = ({

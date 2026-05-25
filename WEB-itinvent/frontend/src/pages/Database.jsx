@@ -28,6 +28,7 @@ import {
   PC_COMPONENT_OPTIONS,
   PRINTER_COMPONENT_OPTIONS,
   TRANSFER_OPERATION_ACT_ONLY,
+  TRANSFER_OPERATION_LOCATION_ONLY,
   getItemCapabilityFlags,
   toInvNo,
 } from './database/equipmentModel';
@@ -692,8 +693,11 @@ function Database() {
       const item = (itemOrInvNo && typeof itemOrInvNo === 'object') ? itemOrInvNo : findEquipmentByInvNo(invNo);
       openDeleteEquipmentDialog({ invNo, item });
     } else {
-      if (actionType === 'transfer') {
+      if (actionType === 'transfer' || actionType === 'location_transfer') {
         resetTransferState();
+        if (actionType === 'location_transfer') {
+          setTransferOperationMode(TRANSFER_OPERATION_LOCATION_ONLY);
+        }
       }
       const item = findEquipmentByInvNo(invNo);
       const flags = getItemCapabilityFlags(item);
@@ -704,9 +708,14 @@ function Database() {
       if (actionType === 'component') {
         setComponentType(componentKind === 'pc' ? PC_COMPONENT_OPTIONS[0].value : PRINTER_COMPONENT_OPTIONS[0].value);
       }
-      setActionModal({ open: true, type: actionType, invNo, componentKind });
+      setActionModal({
+        open: true,
+        type: actionType === 'location_transfer' ? 'transfer' : actionType,
+        invNo,
+        componentKind,
+      });
     }
-  }, [canDatabaseWrite, dataMode, findEquipmentByInvNo, isAdmin, openDeleteEquipmentDialog, openDetailView, resetTransferState]);
+  }, [canDatabaseWrite, dataMode, findEquipmentByInvNo, isAdmin, openDeleteEquipmentDialog, openDetailView, resetTransferState, setTransferOperationMode]);
 
   const handleActionConfirm = useCallback(async () => {
     if (!canDatabaseWrite) {
@@ -933,6 +942,11 @@ function Database() {
             onCollapseAll={handleCollapseAll}
             onEnterSelectionMode={() => setMobileSelectionMode(true)}
             selectedItemsCapabilities={selectedItemsCapabilities}
+            onOpenLocationTransferForSelection={() => {
+              resetTransferState();
+              setTransferOperationMode(TRANSFER_OPERATION_LOCATION_ONLY);
+              setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
+            }}
             onOpenTransferForSelection={() => {
               resetTransferState();
               setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
@@ -963,6 +977,11 @@ function Database() {
             onClearSelection={() => {
               setSelectedItems([]);
               setMobileSelectionMode(false);
+            }}
+            onOpenLocationTransfer={() => {
+              resetTransferState();
+              setTransferOperationMode(TRANSFER_OPERATION_LOCATION_ONLY);
+              setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
             }}
             onOpenTransfer={() => {
               resetTransferState();

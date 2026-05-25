@@ -7,12 +7,14 @@ import { normalizeText, toIdOrNull, toNumberOrNull } from './databaseRecordModel
 import { toOwnerOption } from './detailModel';
 import {
   TRANSFER_OPERATION_ACT_ONLY,
+  TRANSFER_OPERATION_LOCATION_ONLY,
   TRANSFER_OPERATION_MOVE,
 } from './equipmentModel';
 import {
   buildTransferActOnlyPayload,
   buildTransferEmailPayload,
   buildTransferEmployeeInputState,
+  buildTransferLocationPayload,
   buildTransferMovePayload,
   buildTransferSourceDefaults,
   getSelectedTransferEmployeeOption,
@@ -212,7 +214,7 @@ export function useDatabaseTransferAction({
 
   useEffect(() => {
     if (!actionModal?.open || actionModal?.type !== 'transfer' || transferResult) return undefined;
-    if (transferOperationMode !== TRANSFER_OPERATION_MOVE) return undefined;
+    if (![TRANSFER_OPERATION_MOVE, TRANSFER_OPERATION_LOCATION_ONLY].includes(transferOperationMode)) return undefined;
 
     let canceled = false;
     setTransferDepartmentLoading(true);
@@ -259,7 +261,7 @@ export function useDatabaseTransferAction({
 
   useEffect(() => {
     if (!actionModal?.open || actionModal?.type !== 'transfer' || transferResult) return undefined;
-    if (transferOperationMode !== TRANSFER_OPERATION_MOVE) return undefined;
+    if (![TRANSFER_OPERATION_MOVE, TRANSFER_OPERATION_LOCATION_ONLY].includes(transferOperationMode)) return undefined;
     if (!transferBranchNo) {
       setTransferLocations([]);
       setTransferLocationsLoading(false);
@@ -535,6 +537,34 @@ export function useDatabaseTransferAction({
       return response;
     }
 
+    if (transferOperationMode === TRANSFER_OPERATION_LOCATION_ONLY) {
+      const { error: payloadError, payload } = buildTransferLocationPayload({
+        targetInvNos,
+        branchNo: transferBranchNo,
+        locationNo: transferLocationNo,
+      });
+      if (payloadError) {
+        setActionError?.(payloadError);
+        return null;
+      }
+
+      const response = await equipmentAPI.transferLocation(payload);
+      setTransferResult(response);
+      setTransferEmailStatus('');
+      setTransferEmailError('');
+      setSelectedItems?.([]);
+
+      if (
+        Number(response?.success_count || 0) > 0 &&
+        targetInvNos.includes(String(detailInvNo || '').trim())
+      ) {
+        resetDetailHistory?.();
+      }
+      await fetchAllEquipment?.({ force: true });
+      setActionError?.(getTransferResultActionError(response, 'Перемещено'));
+      return response;
+    }
+
     const { error: payloadError, payload } = buildTransferMovePayload({
       targetInvNos,
       employeeName: newEmployee,
@@ -641,7 +671,10 @@ export function useDatabaseTransferAction({
       setActionError?.('');
     },
     onBranchChange: (value) => {
-      setTransferBranchNo(toIdOrNull(value));
+      const nextBranchNo = toIdOrNull(value);
+      setTransferBranchNo(nextBranchNo);
+      setTransferLocationNo(null);
+      setTransferLocations([]);
       setActionError?.('');
     },
     onLocationChange: (locNo) => {

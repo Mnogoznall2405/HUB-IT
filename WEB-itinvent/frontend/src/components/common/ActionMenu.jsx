@@ -1,7 +1,8 @@
 ﻿import { useState, useCallback, memo } from 'react';
-import { IconButton, Menu, MenuItem, ListItemIcon, ListItemText, Divider } from '@mui/material';
+import { IconButton, Menu, MenuItem, ListItemIcon, ListItemText, Divider, Tooltip } from '@mui/material';
 import MoreVertIcon from '@mui/icons-material/MoreVert';
 import SwapHorizIcon from '@mui/icons-material/SwapHoriz';
+import MyLocationIcon from '@mui/icons-material/MyLocation';
 import PrintIcon from '@mui/icons-material/Print';
 import BatteryChargingFullIcon from '@mui/icons-material/BatteryChargingFull';
 import CleaningServicesIcon from '@mui/icons-material/CleaningServices';
@@ -13,13 +14,14 @@ import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
  *
  * Props:
  * - onAction: Callback when action is selected (actionType, item)
- * - actions: Array of actions to show ['view', 'transfer', 'cartridge', 'battery', 'component', 'cleaning', 'delete']
+ * - actions: Array of actions to show ['view', 'location_transfer', 'transfer', 'cartridge', 'battery', 'component', 'cleaning', 'delete']
  * - item: The data item (optional, passed to onAction)
  * - label: ARIA label for the button
  *
  * Actions:
  * - view: Open detail modal
- * - transfer: Transfer equipment
+ * - location_transfer: Change branch/location only
+ * - transfer: Transfer equipment with act
  * - cartridge: Replace cartridge
  * - battery: Replace battery
  * - component: Replace printer component
@@ -92,15 +94,27 @@ function ActionMenu({ onAction, actions = ['view'], item = null, label = 'Дей
             <ListItemText>Просмотр</ListItemText>
           </MenuItem>
         )}
-        {actions.includes('transfer') && (
-          <MenuItem onClick={() => handleAction('transfer')}>
-            <ListItemIcon>
-              <SwapHorizIcon fontSize="small" />
-            </ListItemIcon>
-            <ListItemText>Переместить</ListItemText>
-          </MenuItem>
+        {actions.includes('location_transfer') && (
+          <Tooltip title="Меняет только филиал и локацию в базе. Сотрудник и акты не меняются." placement="left" arrow>
+            <MenuItem onClick={() => handleAction('location_transfer')}>
+              <ListItemIcon>
+                <MyLocationIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText>Перемещение</ListItemText>
+            </MenuItem>
+          </Tooltip>
         )}
-        {(actions.includes('view') || actions.includes('transfer')) &&
+        {actions.includes('transfer') && (
+          <Tooltip title="Меняет сотрудника/филиал/локацию, создаёт акт и напоминание на загрузку подписанного акта." placement="left" arrow>
+            <MenuItem onClick={() => handleAction('transfer')}>
+              <ListItemIcon>
+                <SwapHorizIcon fontSize="small" />
+              </ListItemIcon>
+              <ListItemText>Перемещение с актом</ListItemText>
+            </MenuItem>
+          </Tooltip>
+        )}
+        {(actions.includes('view') || actions.includes('location_transfer') || actions.includes('transfer')) &&
          (actions.includes('cartridge') || actions.includes('battery') || actions.includes('component') || actions.includes('cleaning')) && (
           <Divider />
         )}

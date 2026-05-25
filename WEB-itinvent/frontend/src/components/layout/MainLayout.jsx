@@ -40,13 +40,14 @@ import ShieldIcon from '@mui/icons-material/Policy';
 import MenuBookIcon from '@mui/icons-material/MenuBook';
 import DashboardIcon from '@mui/icons-material/Dashboard';
 import TaskAltIcon from '@mui/icons-material/TaskAlt';
+import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
 import NotificationsIcon from '@mui/icons-material/Notifications';
 import NotificationsNoneIcon from '@mui/icons-material/NotificationsNone';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import GroupIcon from '@mui/icons-material/Group';
+import ContactPhoneIcon from '@mui/icons-material/ContactPhone';
 import VideocamIcon from '@mui/icons-material/Videocam';
-import HistoryRoundedIcon from '@mui/icons-material/HistoryRounded';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -54,7 +55,6 @@ import apiClient, { chatAPI, mailAPI } from '../../api/client';
 import { databaseAPI } from '../../api/database';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { buildOfficeUiTokens, getOfficeEmptyStateSx, getOfficePanelSx, getOfficeQuietActionSx } from '../../theme/officeUiTokens';
-import ToastHistoryList from './ToastHistoryList';
 import BrandedRouteLoader from './BrandedRouteLoader';
 import {
   TOAST_ACTION_EXECUTE_EVENT,
@@ -103,8 +103,10 @@ const HUB_POLL_INTERVAL_MS = 20_000;
 const navigationItems = [
   { path: '/dashboard', label: 'Главная', icon: <DashboardIcon />, permission: 'dashboard.read' },
   { path: '/tasks', label: 'Задачи', icon: <TaskAltIcon />, permission: 'tasks.read' },
+  { path: '/tickets', label: 'Билеты', icon: <ConfirmationNumberIcon />, permission: 'tickets.read' },
   ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', label: 'Chat', icon: <ForumOutlinedIcon />, permission: 'chat.read' }] : []),
   { path: '/mail', label: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access' },
+  { path: '/address-book', label: 'Адресная книга', icon: <ContactPhoneIcon />, permission: 'address_book.read' },
   { path: '/database', label: 'IT-invent WEB', icon: <StorageIcon />, permission: 'database.read' },
   { path: '/networks', label: 'Сети', icon: <LanIcon />, permission: 'networks.read' },
   { path: '/ad-users', label: 'Пользователи AD', icon: <GroupIcon />, adminOnly: true },
@@ -167,8 +169,6 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
     notifyApiError,
     notifyInfo,
     notifyWarning,
-    toastHistory,
-    clearToastHistory,
     hasSeenHubNotification,
     markHubNotificationsSeen,
   } = useNotification();
@@ -201,7 +201,9 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
   const [isOffline, setIsOffline] = useState(() => (typeof navigator !== 'undefined' ? !navigator.onLine : false));
   const [notificationPermissionBannerDismissed, setNotificationPermissionBannerDismissed] = useState(false);
   const topBannerRef = useRef(null);
+  const appBarRef = useRef(null);
   const [topBannerOffset, setTopBannerOffset] = useState(0);
+  const [appBarHeight, setAppBarHeight] = useState(0);
   const notificationsOpenRef = useRef(false);
   const pendingNavigationTimerRef = useRef(null);
   const pendingNavigationTimeoutRef = useRef(null);
@@ -232,6 +234,7 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
   const hasTasksPermission = hasPermission('tasks.read');
   const hasChatPermission = CHAT_FEATURE_ENABLED && hasPermission('chat.read');
   const hasMailPermission = hasPermission('mail.access');
+  const hasHubNotificationPermission = hasDashboardPermission || hasTasksPermission || hasChatPermission;
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
   const activeChatConversationId = useMemo(
     () => String(new URLSearchParams(location.search).get('conversation') || '').trim(),
@@ -272,10 +275,8 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
   const visibleNavigationItems = navigationItems.filter(
     (item) => (!item.adminOnly || isAdmin) && (!item.permission || hasPermission(item.permission))
   );
-  const showNotificationsButton = hasDashboardPermission || hasTasksPermission || hasMailPermission || toastHistory.length > 0;
-  const notificationsBadgeValue = (hasDashboardPermission || hasTasksPermission || hasMailPermission)
-    ? Number(unreadCounts?.notifications_unread_total || 0)
-    : toastHistory.length;
+  const showNotificationsButton = hasHubNotificationPermission || hasMailPermission;
+  const notificationsBadgeValue = Number(unreadCounts?.notifications_unread_total || 0);
   const appBadgeValue = Number(unreadCounts?.notifications_unread_total || 0);
   const showNotificationPermissionBanner = Boolean(
     windowsNotificationState?.supported
@@ -377,6 +378,37 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
       window.removeEventListener('resize', updateBannerOffset);
     };
   }, [showNotificationPermissionBanner, showOfflineBanner, showPwaUpdateBanner]);
+
+  useEffect(() => {
+    if (hiddenHeader) {
+      setAppBarHeight(0);
+      return undefined;
+    }
+
+    const updateAppBarHeight = () => {
+      const nextHeight = Math.ceil(appBarRef.current?.getBoundingClientRect?.().height || 0);
+      setAppBarHeight((currentHeight) => (currentHeight === nextHeight ? currentHeight : nextHeight));
+    };
+    updateAppBarHeight();
+    if (typeof ResizeObserver !== 'function' || !appBarRef.current) {
+      window.addEventListener('resize', updateAppBarHeight);
+      return () => window.removeEventListener('resize', updateAppBarHeight);
+    }
+    const observer = new ResizeObserver(updateAppBarHeight);
+    observer.observe(appBarRef.current);
+    window.addEventListener('resize', updateAppBarHeight);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', updateAppBarHeight);
+    };
+  }, [
+    hiddenHeader,
+    isWindowControlsOverlay,
+    isStandaloneShell,
+    headerMode,
+    isPhone,
+    sidebarCollapsed,
+  ]);
 
   useEffect(() => {
     void syncAppBadge(appBadgeValue);
@@ -844,7 +876,6 @@ useEffect(() => {
       forceMailUnread = false,
     } = {},
   ) => {
-    if (isChatRoute) return unreadCountsRef.current || null;
     if (!hasDashboardPermission && !hasTasksPermission && !hasMailPermission && !hasChatPermission) return;
     if (fetchUnreadCountsInFlightRef.current) return fetchUnreadCountsInFlightRef.current;
 
@@ -885,7 +916,7 @@ useEffect(() => {
         };
 
         const promises = [];
-        if (hasDashboardPermission || hasTasksPermission) {
+        if (hasHubNotificationPermission) {
           if (hubCountsOverride && typeof hubCountsOverride === 'object') {
             applyHubCounts(hubCountsOverride);
           } else {
@@ -977,19 +1008,14 @@ useEffect(() => {
     hasDashboardPermission,
     hasTasksPermission,
     hasChatPermission,
+    hasHubNotificationPermission,
     hasMailPermission,
-    isChatRoute,
     isMailRoute,
     showMailArrivalNotifications,
   ]);
 
   const refreshBellInbox = useCallback(async () => {
-    if (isChatRoute) {
-      setNotifications([]);
-      setMailNotifications([]);
-      return;
-    }
-    if (!hasDashboardPermission && !hasTasksPermission && !hasMailPermission) {
+    if (!hasHubNotificationPermission && !hasMailPermission) {
       setNotifications([]);
       setMailNotifications([]);
       return;
@@ -998,7 +1024,7 @@ useEffect(() => {
       let nextHubItems = [];
       let nextMailItems = [];
       const requests = [];
-      if (hasDashboardPermission || hasTasksPermission) {
+      if (hasHubNotificationPermission) {
         requests.push(
           apiClient.get('/hub/notifications/poll', {
             params: {
@@ -1029,7 +1055,7 @@ useEffect(() => {
     } catch (error) {
       console.error('Bell inbox refresh failed:', error);
     }
-  }, [hasDashboardPermission, hasTasksPermission, hasMailPermission, isChatRoute]);
+  }, [hasHubNotificationPermission, hasMailPermission]);
 
   useEffect(() => {
     fetchUnreadCountsRef.current = fetchUnreadCounts;
@@ -1040,7 +1066,6 @@ useEffect(() => {
   }, [refreshBellInbox]);
 
   useEffect(() => {
-    if (isChatRoute) return undefined;
     if (!hasDashboardPermission && !hasTasksPermission && !hasMailPermission && !hasChatPermission) return undefined;
 
     const pollNotifications = async ({ forceFull = false, enableToasts = true, ignoreBackoff = false } = {}) => {
@@ -1164,7 +1189,7 @@ useEffect(() => {
     let onVisible = null;
     let onHubRefresh = null;
 
-    if (hasDashboardPermission || hasTasksPermission) {
+    if (hasHubNotificationPermission) {
       pollNotificationsRef.current = pollNotifications;
       lastPollRef.current = '';
       hubPollBackoffUntilRef.current = 0;
@@ -1208,6 +1233,9 @@ useEffect(() => {
     };
     const onChatUnreadRefresh = () => {
       fetchUnreadCounts(null, { reason: 'chat-unread' });
+      if (notificationsOpenRef.current) {
+        refreshBellInboxRef.current?.();
+      }
     };
     window.addEventListener('mail-read', onMailChange);
     window.addEventListener('mail-list-refreshed', onMailChange);
@@ -1227,8 +1255,8 @@ useEffect(() => {
     hasDashboardPermission,
     hasTasksPermission,
     hasChatPermission,
+    hasHubNotificationPermission,
     hasMailPermission,
-    isChatRoute,
     refreshBellInbox,
     navigate,
   ]);
@@ -1438,11 +1466,6 @@ useEffect(() => {
     }
   }, [hasPermission, user]);
 
-  const toastHistoryItems = useMemo(
-    () => toastHistory.slice(0, 12),
-    [toastHistory],
-  );
-
   const drawerContent = (
     <Box sx={{ height: '100%', bgcolor: ui.navBg }}>
       {hiddenHeader ? (
@@ -1532,10 +1555,23 @@ useEffect(() => {
     closeDrawer: () => setDrawerOpen(false),
     toggleDrawer: () => setDrawerOpen((current) => !current),
   }), [drawerOpen, headerMode]);
+  const shouldRenderTopSpacer = !hiddenHeader || topBannerOffset > 0;
 
   return (
     <MainLayoutShellContext.Provider value={shellValue}>
       <Box
+        data-testid="main-layout-shell"
+        data-app-bar-height={appBarHeight}
+        data-top-banner-offset={topBannerOffset}
+        style={{
+          '--app-shell-banner-offset': `${topBannerOffset}px`,
+          '--app-shell-measured-header-offset': hiddenHeader
+            ? '0px'
+            : appBarHeight > 0
+              ? `${appBarHeight}px`
+              : 'var(--app-shell-header-offset)',
+          '--app-shell-top-offset': 'calc(var(--app-shell-banner-offset) + var(--app-shell-measured-header-offset))',
+        }}
         sx={{
           display: 'flex',
           minHeight: isFixedHeightRoute ? 0 : '100dvh',
@@ -1550,6 +1586,7 @@ useEffect(() => {
       >
       <Stack
         ref={topBannerRef}
+        data-testid="main-layout-top-banner"
         spacing={0}
         sx={{
           position: 'fixed',
@@ -1617,6 +1654,8 @@ useEffect(() => {
       {/* AppBar */}
         {!hiddenHeader ? (
           <AppBar
+            ref={appBarRef}
+            data-testid="main-layout-app-bar"
             position="fixed"
             sx={{
               top: topBannerOffset,
@@ -1768,7 +1807,7 @@ useEffect(() => {
                   ) : (
                     <>
                       <Stack direction="row" spacing={1.2} alignItems="center" sx={{ flexGrow: 1, minWidth: 0 }}>
-                        {!shouldHideHeaderContext && (
+                        {!shouldHideHeaderContext && !isPhone && (
                           <>
                             <Box
                               sx={{
@@ -1782,7 +1821,7 @@ useEffect(() => {
                                 flexShrink: 0,
                               }}
                             >
-                              <Typography sx={{ fontWeight: 900, letterSpacing: '0.04em', fontSize: '0.9rem', lineHeight: 1, color: theme.palette.primary.main }}>
+                              <Typography sx={{ fontWeight: 600, letterSpacing: '0.04em', fontSize: '0.9rem', lineHeight: 1, color: theme.palette.primary.main }}>
                                 ITINVENT
                               </Typography>
                             </Box>
@@ -1790,7 +1829,7 @@ useEffect(() => {
                               <Typography variant="caption" sx={{ display: 'block', color: ui.subtleText, textTransform: 'uppercase', letterSpacing: '0.08em', lineHeight: 1.1 }}>
                                 Рабочая область
                               </Typography>
-                              <Typography variant="subtitle1" noWrap sx={{ fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
+                              <Typography variant="subtitle1" noWrap sx={{ fontWeight: 600, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
                                 {currentTitle}
                               </Typography>
                             </Box>
@@ -1881,7 +1920,7 @@ useEffect(() => {
                           sx={{ mr: 2, border: 'none' }}
                         />
                       )}
-                      {!minimalHeader && (
+                      {!minimalHeader && !isPhone && (
                         <Button
                           color="inherit"
                           variant="outlined"
@@ -1965,7 +2004,14 @@ useEffect(() => {
           }),
         }}
       >
-        {!hiddenHeader ? <Toolbar sx={{ minHeight: 'var(--app-shell-header-offset) !important', px: 0 }} /> : null}
+        {shouldRenderTopSpacer ? (
+          <Box
+            aria-hidden="true"
+            data-testid="main-layout-top-spacer"
+            style={{ height: 'var(--app-shell-top-offset)' }}
+            sx={{ flexShrink: 0 }}
+          />
+        ) : null}
         {children}
         {pendingNavigation ? (
           <BrandedRouteLoader
@@ -1987,22 +2033,13 @@ useEffect(() => {
           <Box sx={{ px: 2.5, py: 2, borderBottom: '1px solid', borderColor: ui.borderSoft, bgcolor: ui.headerBandBg }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center">
               <Stack direction="row" spacing={1} alignItems="center">
-                <Typography variant="subtitle1" sx={{ fontWeight: 800, fontSize: '1.05rem' }}>Уведомления</Typography>
+                <Typography variant="subtitle1" sx={{ fontWeight: 600, fontSize: '1.05rem' }}>Уведомления</Typography>
                 {Number(unreadCounts?.notifications_unread_total || 0) > 0 && (
                   <Chip size="small" label={unreadCounts.notifications_unread_total}
-                    sx={{ height: 20, fontSize: '0.65rem', fontWeight: 700, bgcolor: ui.selectedBg, color: 'primary.main', border: 'none' }} />
+                    sx={{ height: 20, fontSize: '0.65rem', fontWeight: 600, bgcolor: ui.selectedBg, color: 'primary.main', border: 'none' }} />
                 )}
               </Stack>
               <Stack direction="row" spacing={0.75}>
-                {toastHistoryItems.length > 0 && (
-                  <Button
-                    size="small"
-                    onClick={clearToastHistory}
-                    sx={{ textTransform: 'none', fontSize: '0.72rem', fontWeight: 600 }}
-                  >
-                    Очистить журнал
-                  </Button>
-                )}
                 {unreadBellInboxCount > 0 && (
                   <Button size="small" onClick={handleMarkAllNotificationsRead}
                     sx={{ textTransform: 'none', fontSize: '0.72rem', fontWeight: 600 }}>
@@ -2015,10 +2052,10 @@ useEffect(() => {
 
           {/* Content */}
           <Box sx={{ flex: 1, overflow: 'auto', px: 2, py: 1.5 }}>
-            {notificationSections.length === 0 && mailNotificationSections.length === 0 && toastHistoryItems.length === 0 ? (
+            {notificationSections.length === 0 && mailNotificationSections.length === 0 ? (
               <Box sx={{ ...getOfficeEmptyStateSx(ui, { textAlign: 'center', py: 6 }) }}>
                 <NotificationsNoneIcon sx={{ fontSize: 48, color: 'text.disabled', mb: 1 }} />
-                <Typography variant="body2" sx={{ color: 'text.secondary' }}>Нет уведомлений и системных событий</Typography>
+                <Typography variant="body2" sx={{ color: 'text.secondary' }}>Нет непрочитанных уведомлений</Typography>
               </Box>
             ) : (
               <>
@@ -2028,14 +2065,14 @@ useEffect(() => {
                       <NotificationsNoneIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
                       <Typography
                         variant="overline"
-                        sx={{ color: 'text.disabled', fontWeight: 700, fontSize: '0.6rem', letterSpacing: '0.1em' }}
+                        sx={{ color: 'text.disabled', fontWeight: 600, fontSize: '0.6rem', letterSpacing: '0.1em' }}
                       >
                         Центр управления
                       </Typography>
                     </Stack>
                     {notificationSections.map((section) => (
                       <Box key={section.key} sx={{ mb: 2 }}>
-                        <Typography variant="overline" sx={{ color: 'text.disabled', fontWeight: 700, fontSize: '0.6rem', letterSpacing: '0.1em', display: 'block', mb: 0.8, px: 0.5 }}>
+                        <Typography variant="overline" sx={{ color: 'text.disabled', fontWeight: 600, fontSize: '0.6rem', letterSpacing: '0.1em', display: 'block', mb: 0.8, px: 0.5 }}>
                           {section.label}
                         </Typography>
                         <Stack spacing={0.5}>
@@ -2115,14 +2152,14 @@ useEffect(() => {
                       <MailOutlineIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
                       <Typography
                         variant="overline"
-                        sx={{ color: 'text.disabled', fontWeight: 700, fontSize: '0.6rem', letterSpacing: '0.1em' }}
+                        sx={{ color: 'text.disabled', fontWeight: 600, fontSize: '0.6rem', letterSpacing: '0.1em' }}
                       >
                         Почта
                       </Typography>
                     </Stack>
                     {mailNotificationSections.map((section) => (
                       <Box key={`mail-${section.key}`} sx={{ mb: 2 }}>
-                        <Typography variant="overline" sx={{ color: 'text.disabled', fontWeight: 700, fontSize: '0.6rem', letterSpacing: '0.1em', display: 'block', mb: 0.8, px: 0.5 }}>
+                        <Typography variant="overline" sx={{ color: 'text.disabled', fontWeight: 600, fontSize: '0.6rem', letterSpacing: '0.1em', display: 'block', mb: 0.8, px: 0.5 }}>
                           {section.label}
                         </Typography>
                         <Stack spacing={0.5}>
@@ -2154,7 +2191,7 @@ useEffect(() => {
                                   <Box sx={{ flex: 1, minWidth: 0 }}>
                                     <Stack direction="row" justifyContent="space-between" alignItems="center">
                                       <Typography variant="body2" sx={{
-                                        fontWeight: 700, fontSize: '0.82rem', lineHeight: 1.3,
+                                        fontWeight: 600, fontSize: '0.82rem', lineHeight: 1.3,
                                         color: 'text.primary',
                                         overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
                                       }}>
@@ -2194,24 +2231,6 @@ useEffect(() => {
                       </Box>
                     ))}
                   </Box>
-                ) : null}
-
-                {toastHistoryItems.length > 0 ? (
-                  <>
-                    <Divider sx={{ my: 1.5 }} />
-                    <Box sx={{ mb: 1.2 }}>
-                      <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 0.4, mb: 1 }}>
-                        <HistoryRoundedIcon sx={{ fontSize: 16, color: 'text.secondary' }} />
-                        <Typography
-                          variant="overline"
-                          sx={{ color: 'text.disabled', fontWeight: 700, fontSize: '0.6rem', letterSpacing: '0.1em' }}
-                        >
-                          Системные события
-                        </Typography>
-                      </Stack>
-                      <ToastHistoryList items={toastHistoryItems} />
-                    </Box>
-                  </>
                 ) : null}
               </>
             )}

@@ -116,6 +116,38 @@ describe('mailMessageFileActions', () => {
     });
   });
 
+  it('marks office documents (Word, Excel) as unsupported for preview', async () => {
+    const wordPreview = await buildAttachmentPreviewState({
+      attachment: { name: 'report.docx', content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      response: {
+        data: 'word-binary',
+        headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
+      },
+    });
+    const excelPreview = await buildAttachmentPreviewState({
+      attachment: { name: 'table.xlsx', content_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+      response: {
+        data: 'excel-binary',
+        headers: { 'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' },
+      },
+    });
+
+    expect(wordPreview).toMatchObject({
+      open: true,
+      kind: 'unsupported',
+      filename: 'report.docx',
+      objectUrl: '',
+      textContent: '',
+    });
+    expect(excelPreview).toMatchObject({
+      open: true,
+      kind: 'unsupported',
+      filename: 'table.xlsx',
+      objectUrl: '',
+      textContent: '',
+    });
+  });
+
   it('provides empty preview state and print document shell', () => {
     expect(createEmptyAttachmentPreview()).toMatchObject({
       open: false,

@@ -122,7 +122,7 @@ export default function useMailListDataController({
     const messagesPayload = payload?.messages || {};
     setMailboxInfo(configPayload);
     setMailboxes(nextMailboxEntries);
-    if (resolvedMailboxId) {
+    if (resolvedMailboxId && (!activeMailboxId || resolvedMailboxId === activeMailboxId)) {
       setSelectedMailboxId(resolvedMailboxId);
     }
     const nextPreferences = { ...defaultMailPreferences, ...(preferencesPayload || {}) };

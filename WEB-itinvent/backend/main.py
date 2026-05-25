@@ -27,8 +27,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, ad_users, vcs, ai_bots, departments
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, ad_users, vcs, ai_bots, departments, tickets, address_book
 from backend.services.ad_sync_service import background_ad_sync_loop
+from backend.services.address_book_service import background_address_book_sync_loop
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
@@ -53,6 +54,7 @@ MAIL_MODULE_ENABLED = _env_flag("MAIL_MODULE_ENABLED", "0")
 MAIL_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("MAIL_NOTIFICATION_BACKGROUND_ENABLED", "1")
 LDAP_SYNC_BACKGROUND_ENABLED = _env_flag("LDAP_SYNC_BACKGROUND_ENABLED", "1")
 MFU_RUNTIME_MONITOR_ENABLED = _env_flag("MFU_RUNTIME_MONITOR_ENABLED", "1")
+ADDRESS_BOOK_SYNC_ENABLED = _env_flag("ADDRESS_BOOK_SYNC_ENABLED", "0")
 SUPPRESS_NOISY_ACCESS_LOGS = _env_flag("SUPPRESS_NOISY_ACCESS_LOGS", "1")
 ANYIO_THREAD_TOKENS = _env_positive_int("ANYIO_THREAD_TOKENS", 120, 40)
 
@@ -151,8 +153,11 @@ async def lifespan(app: FastAPI):
     _install_application_logger_bridge()
     thread_tokens = _configure_anyio_thread_limiter()
     sync_task: asyncio.Task | None = None
+    address_book_sync_task: asyncio.Task | None = None
     if LDAP_SYNC_BACKGROUND_ENABLED:
         sync_task = asyncio.create_task(background_ad_sync_loop())
+    if ADDRESS_BOOK_SYNC_ENABLED:
+        address_book_sync_task = asyncio.create_task(background_address_book_sync_loop())
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.start()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
@@ -163,6 +168,7 @@ async def lifespan(app: FastAPI):
     print(
         "Background jobs:"
         f" ldap_sync={LDAP_SYNC_BACKGROUND_ENABLED}"
+        f" address_book_sync={ADDRESS_BOOK_SYNC_ENABLED}"
         f" mfu_monitor={MFU_RUNTIME_MONITOR_ENABLED}"
         f" mail_notifications={MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED}"
     )
@@ -227,6 +233,8 @@ async def lifespan(app: FastAPI):
     print("Shutting down...")
     if sync_task is not None:
         sync_task.cancel()
+    if address_book_sync_task is not None:
+        address_book_sync_task.cancel()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.stop()
     if MFU_RUNTIME_MONITOR_ENABLED:
@@ -243,6 +251,11 @@ async def lifespan(app: FastAPI):
     if sync_task is not None:
         try:
             await sync_task
+        except asyncio.CancelledError:
+            pass
+    if address_book_sync_task is not None:
+        try:
+            await address_book_sync_task
         except asyncio.CancelledError:
             pass
 
@@ -322,6 +335,8 @@ app.include_router(ad_users.router, prefix="/api/v1/ad-users", tags=["AD Users"]
 app.include_router(mail.router, prefix="/api/v1/mail", tags=["Mail"])
 app.include_router(vcs.router, prefix="/api/v1/vcs", tags=["VCS"])
 app.include_router(ai_bots.router, prefix="/api/v1/ai-bots", tags=["AI Bots"])
+app.include_router(tickets.router, prefix="/api/v1/tickets", tags=["Tickets"])
+app.include_router(address_book.router, prefix="/api/v1/address-book", tags=["Address Book"])
 if config.chat.enabled:
     try:
         from backend.api.v1 import chat

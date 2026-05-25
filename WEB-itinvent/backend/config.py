@@ -202,7 +202,7 @@ class AuthSecurityConfig:
     webauthn_rp_name: str = "HUB-IT"
     webauthn_origin: Optional[str] = None
     trusted_device_ttl_days: int = 90
-    new_login_email_enabled: bool = True
+    new_login_email_enabled: bool = False
     rate_limit_storage_url: Optional[str] = None
 
     def __post_init__(self):
@@ -327,7 +327,7 @@ class Config:
                 webauthn_rp_name=(str(os.getenv("WEBAUTHN_RP_NAME", "HUB-IT") or "").strip() or "HUB-IT"),
                 webauthn_origin=(str(os.getenv("WEBAUTHN_ORIGIN", "") or "").strip() or None),
                 trusted_device_ttl_days=int(os.getenv("AUTH_TRUSTED_DEVICE_TTL_DAYS", "90")),
-                new_login_email_enabled=str(os.getenv("AUTH_NEW_LOGIN_EMAIL_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"},
+                new_login_email_enabled=str(os.getenv("AUTH_NEW_LOGIN_EMAIL_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
                 rate_limit_storage_url=(str(os.getenv("RATE_LIMIT_STORAGE_URL", "") or "").strip() or None),
             ),
         )

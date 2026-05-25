@@ -1,8 +1,8 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { equipmentAPI } from '../../api/client';
-import { TRANSFER_OPERATION_ACT_ONLY, TRANSFER_OPERATION_MOVE } from './equipmentModel';
+import { TRANSFER_OPERATION_ACT_ONLY, TRANSFER_OPERATION_LOCATION_ONLY, TRANSFER_OPERATION_MOVE } from './equipmentModel';
 import { useDatabaseTransferAction } from './useDatabaseTransferAction';
 
 vi.mock('../../api/client', () => ({
@@ -12,6 +12,7 @@ vi.mock('../../api/client', () => ({
     getTransferActJob: vi.fn(),
     sendTransferActsEmail: vi.fn(),
     transfer: vi.fn(),
+    transferLocation: vi.fn(),
   },
 }));
 
@@ -172,5 +173,79 @@ describe('useDatabaseTransferAction', () => {
     expect(props.resetDetailHistory).toHaveBeenCalled();
     expect(props.fetchAllEquipment).toHaveBeenCalledWith({ force: true });
     expect(props.setActionError).toHaveBeenLastCalledWith('');
+  });
+
+  it('submits location-only transfers without creating acts or changing employee', async () => {
+    equipmentAPI.transferLocation.mockResolvedValue({
+      success_count: 1,
+      failed_count: 0,
+      transferred: [{ inv_no: '1001' }],
+      failed: [],
+      acts: [],
+    });
+    const props = createProps();
+    const { result } = renderHook(() => useDatabaseTransferAction(props));
+
+    act(() => {
+      result.current.transferActionHandlers.onModeChange(TRANSFER_OPERATION_LOCATION_ONLY);
+      result.current.transferActionHandlers.onBranchChange('10');
+      result.current.transferActionHandlers.onLocationChange('20');
+    });
+
+    await act(async () => {
+      await result.current.handleTransferActionSubmit();
+    });
+
+    expect(equipmentAPI.transferLocation).toHaveBeenCalledWith({
+      inv_nos: ['1001'],
+      branch_no: '10',
+      loc_no: '20',
+    });
+    expect(equipmentAPI.transfer).not.toHaveBeenCalled();
+    expect(equipmentAPI.createTransferActOnly).not.toHaveBeenCalled();
+    expect(props.resetDetailHistory).toHaveBeenCalled();
+    expect(props.fetchAllEquipment).toHaveBeenCalledWith({ force: true });
+    expect(result.current.transferResult).toMatchObject({ success_count: 1, acts: [] });
+  });
+
+  it('loads branch locations in location-only transfer mode', async () => {
+    const props = createProps({
+      actionModal: { open: true, type: 'transfer', invNo: '1001', componentKind: null },
+      getLocationsCached: vi.fn().mockResolvedValue([{ LOC_NO: '20', LOC_NAME: 'Office' }]),
+    });
+    const { result } = renderHook(() => useDatabaseTransferAction(props));
+
+    act(() => {
+      result.current.transferActionHandlers.onModeChange(TRANSFER_OPERATION_LOCATION_ONLY);
+    });
+
+    await waitFor(() => {
+      expect(props.getLocationsCached).toHaveBeenCalledWith('10');
+    });
+
+    await waitFor(() => {
+      expect(result.current.transferLocationOptions).toEqual([
+        expect.objectContaining({ loc_no: '20', loc_name: 'Office' }),
+      ]);
+    });
+    expect(result.current.transferLocationOptions).toEqual([
+      expect.objectContaining({ loc_no: '20', loc_name: 'Office' }),
+    ]);
+    expect(result.current.transferLocationNo).toBe('20');
+  });
+
+  it('clears the previous location when branch changes', async () => {
+    const props = createProps();
+    const { result } = renderHook(() => useDatabaseTransferAction(props));
+
+    act(() => {
+      result.current.transferActionHandlers.onModeChange(TRANSFER_OPERATION_LOCATION_ONLY);
+      result.current.transferActionHandlers.onLocationChange('20');
+      result.current.transferActionHandlers.onBranchChange('11');
+    });
+
+    expect(result.current.transferBranchNo).toBe('11');
+    expect(result.current.transferLocationNo).toBeNull();
+    expect(result.current.transferLocations).toEqual([]);
   });
 });

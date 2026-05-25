@@ -184,6 +184,7 @@ class SendMessageRequest(BaseModel):
     reply_to_message_id: str = Field(default="")
     forward_message_id: str = Field(default="")
     draft_id: str = Field(default="")
+    retain_existing_attachments: Optional[list[str]] = None
 
 
 class MoveMessagePayload(BaseModel):
@@ -1107,6 +1108,7 @@ async def send_message(
             reply_to_message_id=_normalize_text(payload.reply_to_message_id),
             forward_message_id=_normalize_text(payload.forward_message_id),
             draft_id=_normalize_text(payload.draft_id),
+            retain_existing_attachments=payload.retain_existing_attachments,
         )
     except MailPayloadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
@@ -1217,6 +1219,7 @@ async def send_message_multipart(
     reply_to_message_id: str = Form(""),
     forward_message_id: str = Form(""),
     draft_id: str = Form(""),
+    retain_existing_attachments_json: str = Form(""),
     files: list[UploadFile] = File(default=[]),
     current_user: User = Depends(get_current_mail_user),
 ):
@@ -1232,6 +1235,15 @@ async def send_message_multipart(
         to_list = [t.strip() for t in to.split(";") if t.strip()]
         cc_list = [t.strip() for t in cc.split(";") if t.strip()]
         bcc_list = [t.strip() for t in bcc.split(";") if t.strip()]
+        retain_existing_attachments = None
+        if _normalize_text(retain_existing_attachments_json):
+            try:
+                retain_raw = json.loads(_normalize_text(retain_existing_attachments_json, "[]"))
+            except Exception as exc:
+                raise MailServiceError("retain_existing_attachments_json must contain valid JSON array") from exc
+            if not isinstance(retain_raw, list):
+                raise MailServiceError("retain_existing_attachments_json must be a JSON array")
+            retain_existing_attachments = [_normalize_text(item) for item in retain_raw if _normalize_text(item)]
 
         return await _run_mail_call(
             mail_service.send_message,
@@ -1247,6 +1259,7 @@ async def send_message_multipart(
             reply_to_message_id=_normalize_text(reply_to_message_id),
             forward_message_id=_normalize_text(forward_message_id),
             draft_id=_normalize_text(draft_id),
+            retain_existing_attachments=retain_existing_attachments,
         )
     except MailPayloadTooLargeError as exc:
         raise HTTPException(status_code=413, detail=str(exc)) from exc
