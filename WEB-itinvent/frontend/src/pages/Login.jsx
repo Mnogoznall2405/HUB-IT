@@ -3,7 +3,6 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 
 import { authAPI } from '../api/client';
-import PasskeyDiagnosticsPanel from '../components/PasskeyDiagnosticsPanel';
 import { useAuth } from '../contexts/AuthContext';
 import {
   encodeCredential,
@@ -1046,15 +1045,6 @@ function Login() {
             </div>
           </div>
         )}
-
-        <PasskeyDiagnosticsPanel
-          webAuthnReady={webAuthnReady}
-          webAuthnWebApiReady={webAuthnWebApiReady}
-          webAuthnNativeReady={webAuthnNativeReady}
-          webAuthnTimedOut={webAuthnTimedOut}
-          networkZone={networkZone}
-          biometricLoginEnabled={biometricLoginEnabled}
-        />
 
         {passwordAssistMessage ? <InfoBanner tone="info">{passwordAssistMessage}</InfoBanner> : null}
 

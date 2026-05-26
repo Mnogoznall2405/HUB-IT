@@ -9,7 +9,7 @@ import {
 vi.mock('./passkeyWebAuthn', () => ({
   createPasskeyCredential: vi.fn(async () => ({ id: 'cred-1', rawId: 'cred-1', type: 'public-key', response: {} })),
   encodeCredential: vi.fn((value) => value),
-  isPasskeySurfaceAvailable: vi.fn(async () => false),
+  isPasskeyRegistrationAvailable: vi.fn(async () => false),
 }));
 
 describe('trustedDeviceEnrollment', () => {
@@ -54,5 +54,14 @@ describe('trustedDeviceEnrollment', () => {
 
   it('maps InvalidStateError to a friendly message', () => {
     expect(extractWebAuthnErrorMessage({ name: 'InvalidStateError' }, 'fallback')).toMatch(/уже запомнено/i);
+  });
+
+  it('maps PhenotypeContext errors to a Google Play Services hint', () => {
+    expect(
+      extractWebAuthnErrorMessage(
+        { message: 'Must call PhenotypeContext.setContext() first' },
+        'fallback',
+      ),
+    ).toMatch(/Google Play Services/i);
   });
 });

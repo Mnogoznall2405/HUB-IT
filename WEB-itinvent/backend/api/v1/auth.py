@@ -941,7 +941,7 @@ async def trusted_device_register_options(
         display_name=current_user.full_name or current_user.username,
         rp_id=rp_id,
         rp_name=str(config.security.webauthn_rp_name or "HUB-IT").strip() or "HUB-IT",
-        exclude_devices=trusted_device_service.list_devices(int(current_user.id), active_only=False),
+        exclude_devices=trusted_device_service.list_devices(int(current_user.id), active_only=True),
         platform_only=bool(payload.platform_only),
     )
     challenge_id = uuid.uuid4().hex

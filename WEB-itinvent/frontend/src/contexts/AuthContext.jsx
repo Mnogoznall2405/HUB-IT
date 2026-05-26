@@ -4,7 +4,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { authAPI } from '../api/client';
 import { disableChatPushSubscription } from '../lib/chatNotifications';
-import { disableNativePushNotifications } from '../lib/nativePushNotifications';
 import { clearAllMailRecentCache } from '../lib/mailRecentCache';
 
 const AuthContext = createContext(null);
@@ -329,11 +328,6 @@ export const AuthProvider = ({ children }) => {
       await disableChatPushSubscription({ removeServer: true });
     } catch (cleanupError) {
       console.error('Chat push cleanup error:', cleanupError);
-    }
-    try {
-      await disableNativePushNotifications({ removeServer: true });
-    } catch (cleanupError) {
-      console.error('Native push cleanup error:', cleanupError);
     }
       try {
         await authAPI.logout();

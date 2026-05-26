@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { equipmentAPI } from '../../api/client';
-import { ensureNativeCameraPermission } from '../../lib/hubitPermissionsNative';
 import {
   getQrScannerErrorMessage,
   getQrboxDimensions,
@@ -138,8 +137,6 @@ export const useDatabaseQrScanner = ({
         if (typeof navigator === 'undefined' || !navigator.mediaDevices?.getUserMedia) {
           throw new Error('браузер не поддерживает доступ к камере');
         }
-
-        await ensureNativeCameraPermission();
 
         await new Promise((resolve) => {
           setTimeout(resolve, 350);

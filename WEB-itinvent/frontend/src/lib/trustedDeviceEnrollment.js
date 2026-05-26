@@ -1,7 +1,7 @@
 import {
   createPasskeyCredential,
   encodeCredential,
-  isPasskeySurfaceAvailable,
+  isPasskeyRegistrationAvailable,
 } from './passkeyWebAuthn';
 import { isWebAuthnApiAvailable } from './useWebAuthnAvailability';
 
@@ -54,7 +54,11 @@ export function extractWebAuthnErrorMessage(error, fallbackMessage) {
   if (name === 'NotSupportedError') {
     return 'Этот браузер или способ аутентификации не поддерживает создание доверенного устройства.';
   }
-  return String(error?.message || '').trim() || fallbackMessage;
+  const message = String(error?.message || '').trim();
+  if (/PhenotypeContext/i.test(message)) {
+    return 'Сбой Google Play Services на телефоне. Обновите «Сервисы Google Play», перезагрузите устройство и повторите привязку. Если ошибка останется — удалите старые passkey HUB-IT в Google Password Manager и попробуйте снова.';
+  }
+  return message || fallbackMessage;
 }
 
 export function buildDefaultTrustedDeviceLabel() {
@@ -79,7 +83,7 @@ export function buildDefaultTrustedDeviceLabel() {
 }
 
 export async function resolveTrustedDeviceRegistrationMode() {
-  const webAuthnAvailable = isWebAuthnApiAvailable() || await isPasskeySurfaceAvailable();
+  const webAuthnAvailable = await isPasskeyRegistrationAvailable();
   if (!webAuthnAvailable) {
     return {
       mode: 'unsupported',

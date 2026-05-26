@@ -1,10 +1,4 @@
 import { isWebAuthnApiAvailable } from './useWebAuthnAvailability';
-import {
-  getHubitPasskeyPlugin,
-  isHubitPasskeyNativeAvailable,
-  nativeCreatePasskey,
-  nativeGetPasskeyAssertion,
-} from './hubitPasskeyNative';
 
 export function b64urlToBuffer(value) {
   const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
@@ -78,39 +72,39 @@ export function normalizeAuthenticationOptions(publicKey) {
   return normalized;
 }
 
+export function isUserCancelledWebAuthnError(error) {
+  const name = String(error?.name || '').trim();
+  return name === 'NotAllowedError' || name === 'AbortError';
+}
+
 export async function isPasskeySurfaceAvailable() {
-  if (isWebAuthnApiAvailable()) {
-    return true;
-  }
-  return isHubitPasskeyNativeAvailable();
+  return isWebAuthnApiAvailable();
+}
+
+export async function isPasskeyRegistrationAvailable() {
+  return isWebAuthnApiAvailable();
+}
+
+async function createPasskeyViaWebView(publicKeyOptions) {
+  const credential = await navigator.credentials.create({
+    publicKey: normalizeRegistrationOptions(publicKeyOptions),
+  });
+  return encodeCredential(credential);
 }
 
 export async function getPasskeyAssertion(publicKeyOptions) {
-  if (isWebAuthnApiAvailable()) {
-    const credential = await navigator.credentials.get({
-      publicKey: normalizeAuthenticationOptions(publicKeyOptions),
-    });
-    return encodeCredential(credential);
-  }
-
-  const plugin = getHubitPasskeyPlugin();
-  if (!plugin) {
+  if (!isWebAuthnApiAvailable()) {
     throw new Error('PasskeyUnavailable');
   }
-  return nativeGetPasskeyAssertion(publicKeyOptions);
+  const credential = await navigator.credentials.get({
+    publicKey: normalizeAuthenticationOptions(publicKeyOptions),
+  });
+  return encodeCredential(credential);
 }
 
 export async function createPasskeyCredential(publicKeyOptions) {
-  if (isWebAuthnApiAvailable()) {
-    const credential = await navigator.credentials.create({
-      publicKey: normalizeRegistrationOptions(publicKeyOptions),
-    });
-    return encodeCredential(credential);
-  }
-
-  const plugin = getHubitPasskeyPlugin();
-  if (!plugin) {
+  if (!isWebAuthnApiAvailable()) {
     throw new Error('PasskeyUnavailable');
   }
-  return nativeCreatePasskey(publicKeyOptions);
+  return createPasskeyViaWebView(publicKeyOptions);
 }

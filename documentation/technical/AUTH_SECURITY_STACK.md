@@ -63,7 +63,7 @@ The in-memory fallback is for dev/test only. It is not safe for multi-process pr
    - Password change, 2FA reset, or explicit revoke invalidates trusted devices.
    - **External network only:** 2FA (`AUTH_2FA_POLICY=external_only`) and passkey login/registration apply when `network_zone=external`. Internal `10.x` stays password-only unless `AUTH_PASSKEY_ALLOW_INTERNAL=1`.
    - **Multiple devices:** the backend allows several active trusted devices per user. After the first passkey, add another phone/PC from **Settings → Security → «Привязать это устройство»** (visible only on external network) or accept the optional prompt after password+2FA login.
-   - **Revoke vs phone passkey list:** revoking a device in HUB-IT disables the server key only. Old passkeys may remain in Android/Google Password Manager until removed manually (Settings → Passwords / Passkeys → `hubit.zsgp.ru`). Registration sends `excludeCredentials` for all known credential IDs (including revoked) to reduce duplicate keys on the same device.
+   - **Revoke vs phone passkey list:** revoking a device in HUB-IT disables the server key only. Old passkeys may remain in Android/Google Password Manager until removed manually (Settings → Passwords / Passkeys → `hubit.zsgp.ru`). Registration sends `excludeCredentials` only for **active** server credentials (duplicate protection in DB). Stale passkeys in the phone OS vault are not removed by revoke; delete them manually if the picker shows obsolete entries.
 
 ## IIS Boundary
 Recommended baseline:

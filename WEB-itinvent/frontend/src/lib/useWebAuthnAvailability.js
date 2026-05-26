@@ -1,32 +1,12 @@
 import { useEffect, useState } from 'react';
 
-import { isHubitPasskeyNativeAvailable } from './hubitPasskeyNative';
-import { isNativeShellRuntime } from './platform';
-
 export const WEBAUTHN_READY_EVENT = 'hubit:webauthn-ready';
 
-const CAPACITOR_POLL_INTERVAL_MS = 100;
-const CAPACITOR_POLL_TIMEOUT_MS = 8000;
 const WEB_POLL_INTERVAL_MS = 50;
 const WEB_POLL_TIMEOUT_MS = 500;
 
 export function isCapacitorNativeRuntime() {
-  if (typeof window === 'undefined') {
-    return false;
-  }
-  const capacitor = window.Capacitor;
-  if (!capacitor) {
-    return false;
-  }
-  if (typeof capacitor.isNativePlatform === 'function') {
-    return Boolean(capacitor.isNativePlatform());
-  }
-  const platform = String(capacitor.getPlatform?.() || capacitor.platform || '').trim().toLowerCase();
-  return platform === 'android' || platform === 'ios';
-}
-
-function usesNativeShellPolling() {
-  return isNativeShellRuntime() || isCapacitorNativeRuntime();
+  return false;
 }
 
 export function isWebAuthnApiAvailable() {
@@ -38,7 +18,6 @@ export function isWebAuthnApiAvailable() {
 
 export function useWebAuthnAvailability() {
   const [webApiReady, setWebApiReady] = useState(() => isWebAuthnApiAvailable());
-  const [nativeReady, setNativeReady] = useState(false);
   const [timedOut, setTimedOut] = useState(false);
 
   useEffect(() => {
@@ -58,53 +37,27 @@ export function useWebAuthnAvailability() {
       }
     };
 
-    const markNativeReady = async () => {
-      if (cancelled) {
-        return;
-      }
-      const available = await isHubitPasskeyNativeAvailable();
-      if (!available) {
-        return;
-      }
-      setNativeReady(true);
-      setTimedOut(false);
-    };
-
     if (isWebAuthnApiAvailable()) {
       setWebApiReady(true);
     }
 
-    markNativeReady();
-
-    const onNativeReady = () => {
+    const onWebAuthnReady = () => {
       markWebReady();
-      markNativeReady();
     };
 
-    window.addEventListener(WEBAUTHN_READY_EVENT, onNativeReady);
+    window.addEventListener(WEBAUTHN_READY_EVENT, onWebAuthnReady);
 
-    const pollIntervalMs = usesNativeShellPolling() ? CAPACITOR_POLL_INTERVAL_MS : WEB_POLL_INTERVAL_MS;
-    const pollTimeoutMs = usesNativeShellPolling() ? CAPACITOR_POLL_TIMEOUT_MS : WEB_POLL_TIMEOUT_MS;
-
-    intervalId = window.setInterval(() => {
-      markWebReady();
-      markNativeReady();
-    }, pollIntervalMs);
+    intervalId = window.setInterval(markWebReady, WEB_POLL_INTERVAL_MS);
 
     timeoutId = window.setTimeout(() => {
-      if (cancelled || isWebAuthnApiAvailable()) {
-        return;
+      if (!cancelled && !isWebAuthnApiAvailable()) {
+        setTimedOut(true);
       }
-      isHubitPasskeyNativeAvailable().then((nativeAvailable) => {
-        if (!cancelled && !nativeAvailable) {
-          setTimedOut(true);
-        }
-      });
-    }, pollTimeoutMs);
+    }, WEB_POLL_TIMEOUT_MS);
 
     return () => {
       cancelled = true;
-      window.removeEventListener(WEBAUTHN_READY_EVENT, onNativeReady);
+      window.removeEventListener(WEBAUTHN_READY_EVENT, onWebAuthnReady);
       if (intervalId !== null) {
         window.clearInterval(intervalId);
       }
@@ -114,21 +67,16 @@ export function useWebAuthnAvailability() {
     };
   }, []);
 
-  const webAuthnReady = webApiReady || nativeReady;
-
   return {
-    webAuthnReady,
+    webAuthnReady: webApiReady,
     webAuthnWebApiReady: webApiReady,
-    webAuthnNativeReady: nativeReady,
-    webAuthnTimedOut: timedOut && !nativeReady,
+    webAuthnNativeReady: false,
+    webAuthnTimedOut: timedOut && !webApiReady,
   };
 }
 
 export async function waitForWebAuthnApi({ delayMs = 500, maxWaitMs = 2500 } = {}) {
   if (isWebAuthnApiAvailable()) {
-    return true;
-  }
-  if (await isHubitPasskeyNativeAvailable()) {
     return true;
   }
 
@@ -140,10 +88,7 @@ export async function waitForWebAuthnApi({ delayMs = 500, maxWaitMs = 2500 } = {
     if (isWebAuthnApiAvailable()) {
       return true;
     }
-    if (await isHubitPasskeyNativeAvailable()) {
-      return true;
-    }
   }
 
-  return isWebAuthnApiAvailable() || await isHubitPasskeyNativeAvailable();
+  return isWebAuthnApiAvailable();
 }

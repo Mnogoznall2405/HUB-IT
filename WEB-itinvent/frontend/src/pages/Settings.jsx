@@ -85,8 +85,7 @@ import {
   registerTrustedDevice,
   resolveTrustedDeviceRegistrationMode,
 } from '../lib/trustedDeviceEnrollment';
-import { isPasskeySurfaceAvailable } from '../lib/passkeyWebAuthn';
-import { isWebAuthnApiAvailable } from '../lib/useWebAuthnAvailability';
+import { isPasskeyRegistrationAvailable } from '../lib/passkeyWebAuthn';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
 import {
   getWindowsNotificationState,
@@ -5356,7 +5355,7 @@ function Settings() {
         }
         return;
       }
-      const available = isWebAuthnApiAvailable() || await isPasskeySurfaceAvailable();
+      const available = await isPasskeyRegistrationAvailable();
       if (!cancelled) {
         setPasskeyLinkAvailable(Boolean(available));
       }

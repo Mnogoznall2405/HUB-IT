@@ -12,7 +12,6 @@ import {
 describe('useWebAuthnAvailability', () => {
   beforeEach(() => {
     delete window.PublicKeyCredential;
-    delete window.Capacitor;
     window.navigator.credentials = {
       create: vi.fn(),
       get: vi.fn(),
@@ -65,42 +64,17 @@ describe('useWebAuthnAvailability', () => {
       vi.useRealTimers();
     }
   });
-
-  it('marks ready when native HubitPasskey plugin is available', async () => {
-    window.Capacitor = {
-      isNativePlatform: () => true,
-      getPlatform: () => 'android',
-      Plugins: {
-        HubitPasskey: {
-          isAvailable: async () => ({ available: true }),
-        },
-      },
-    };
-
-    const { result } = renderHook(() => useWebAuthnAvailability());
-
-    await waitFor(() => {
-      expect(result.current.webAuthnNativeReady).toBe(true);
-      expect(result.current.webAuthnReady).toBe(true);
-      expect(result.current.webAuthnTimedOut).toBe(false);
-    });
-  });
 });
 
 describe('isCapacitorNativeRuntime', () => {
-  it('detects Capacitor Android shell without VITE_PLATFORM', () => {
-    window.Capacitor = {
-      isNativePlatform: () => true,
-      getPlatform: () => 'android',
-    };
-    expect(isCapacitorNativeRuntime()).toBe(true);
+  it('is always false after APK removal', () => {
+    expect(isCapacitorNativeRuntime()).toBe(false);
   });
 });
 
 describe('waitForWebAuthnApi', () => {
   beforeEach(() => {
     delete window.PublicKeyCredential;
-    delete window.Capacitor;
   });
 
   it('waits and resolves when API appears', async () => {

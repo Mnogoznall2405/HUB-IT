@@ -1,7 +1,5 @@
 import QRCode from 'qrcode';
 
-import { isCapacitorNativeRuntime } from '../../lib/useWebAuthnAvailability';
-
 const readFirst = (data, keys, fallback = '') => {
   for (const key of keys) {
     const value = data?.[key];
@@ -64,12 +62,6 @@ export const getQrScannerErrorMessage = (err) => {
     || name === 'CameraPermissionPluginMissing'
     || /NotAllowedError|Permission denied|CameraPermissionDenied|CameraPermissionPluginMissing/i.test(rawMessage)
   ) {
-    if (rawMessage === 'CameraPermissionPluginMissing' && isCapacitorNativeRuntime()) {
-      return 'Камера в приложении недоступна. Установите последнюю версию APK HUB-IT и повторите попытку.';
-    }
-    if (isCapacitorNativeRuntime()) {
-      return 'Доступ к камере запрещён. Откройте Настройки → Приложения → HUB-IT → Разрешения, включите «Камера» и откройте сканер снова.';
-    }
     return 'Доступ к камере запрещён. Разрешите доступ к камере в браузере.';
   }
   if (name === 'NotFoundError' || name === 'DevicesNotFoundError') {
