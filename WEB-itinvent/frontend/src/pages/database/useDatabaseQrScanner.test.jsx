@@ -10,6 +10,10 @@ vi.mock('../../api/client', () => ({
   },
 }));
 
+vi.mock('../../lib/hubitPermissionsNative', () => ({
+  ensureNativeCameraPermission: vi.fn().mockResolvedValue(true),
+}));
+
 const renderQrHook = (options = {}) => renderHook(() => useDatabaseQrScanner({
   autoStart: false,
   ...options,

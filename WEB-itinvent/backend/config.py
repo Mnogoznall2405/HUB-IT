@@ -176,6 +176,25 @@ class WebPushConfig:
 
 
 @dataclass
+class FcmPushConfig:
+    """Firebase Cloud Messaging configuration for native Android push."""
+
+    project_id: Optional[str] = None
+    service_account_json: Optional[str] = None
+    service_account_file: Optional[str] = None
+
+    @property
+    def configured(self) -> bool:
+        return bool(
+            str(self.project_id or "").strip()
+            and (
+                str(self.service_account_json or "").strip()
+                or str(self.service_account_file or "").strip()
+            )
+        )
+
+
+@dataclass
 class RedisConfig:
     """Redis-compatible runtime state storage."""
 
@@ -201,6 +220,7 @@ class AuthSecurityConfig:
     webauthn_rp_id: Optional[str] = None
     webauthn_rp_name: str = "HUB-IT"
     webauthn_origin: Optional[str] = None
+    passkey_allow_internal: bool = False
     trusted_device_ttl_days: int = 90
     new_login_email_enabled: bool = False
     rate_limit_storage_url: Optional[str] = None
@@ -222,6 +242,7 @@ class Config:
     app_db: AppDatabaseConfig
     chat: ChatConfig
     web_push: WebPushConfig
+    fcm_push: FcmPushConfig
     redis: RedisConfig
     security: AuthSecurityConfig
 
@@ -303,6 +324,11 @@ class Config:
                 private_key=(str(os.getenv("WEB_PUSH_PRIVATE_KEY", "") or "").strip() or None),
                 subject=(str(os.getenv("WEB_PUSH_SUBJECT", "") or "").strip() or None),
             ),
+            fcm_push=FcmPushConfig(
+                project_id=(str(os.getenv("FCM_PROJECT_ID", "") or "").strip() or None),
+                service_account_json=(str(os.getenv("FCM_SERVICE_ACCOUNT_JSON", "") or "").strip() or None),
+                service_account_file=(str(os.getenv("FCM_SERVICE_ACCOUNT_FILE", "") or "").strip() or None),
+            ),
             redis=RedisConfig(
                 url=(str(os.getenv("REDIS_URL", "") or "").strip() or None),
                 password=(str(os.getenv("REDIS_PASSWORD", "") or "").strip() or None),
@@ -326,6 +352,7 @@ class Config:
                 webauthn_rp_id=(str(os.getenv("WEBAUTHN_RP_ID", "") or "").strip() or None),
                 webauthn_rp_name=(str(os.getenv("WEBAUTHN_RP_NAME", "HUB-IT") or "").strip() or "HUB-IT"),
                 webauthn_origin=(str(os.getenv("WEBAUTHN_ORIGIN", "") or "").strip() or None),
+                passkey_allow_internal=str(os.getenv("AUTH_PASSKEY_ALLOW_INTERNAL", "0")).strip().lower() in {"1", "true", "yes", "on"},
                 trusted_device_ttl_days=int(os.getenv("AUTH_TRUSTED_DEVICE_TTL_DAYS", "90")),
                 new_login_email_enabled=str(os.getenv("AUTH_NEW_LOGIN_EMAIL_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
                 rate_limit_storage_url=(str(os.getenv("RATE_LIMIT_STORAGE_URL", "") or "").strip() or None),

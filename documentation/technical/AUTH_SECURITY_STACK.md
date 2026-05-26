@@ -29,6 +29,7 @@
 - `WEBAUTHN_RP_ID`
 - `WEBAUTHN_RP_NAME`
 - `WEBAUTHN_ORIGIN`
+- `AUTH_PASSKEY_ALLOW_INTERNAL=0` (keep `0` so passkey stays external-only; corp `10.x` stays password-only)
 - `AUTH_TRUSTED_DEVICE_TTL_DAYS=90`
 
 ## Runtime Storage
@@ -60,6 +61,9 @@ The in-memory fallback is for dev/test only. It is not safe for multi-process pr
    - Devices expire after `AUTH_TRUSTED_DEVICE_TTL_DAYS`.
    - Successful use extends the device expiry.
    - Password change, 2FA reset, or explicit revoke invalidates trusted devices.
+   - **External network only:** 2FA (`AUTH_2FA_POLICY=external_only`) and passkey login/registration apply when `network_zone=external`. Internal `10.x` stays password-only unless `AUTH_PASSKEY_ALLOW_INTERNAL=1`.
+   - **Multiple devices:** the backend allows several active trusted devices per user. After the first passkey, add another phone/PC from **Settings → Security → «Привязать это устройство»** (visible only on external network) or accept the optional prompt after password+2FA login.
+   - **Revoke vs phone passkey list:** revoking a device in HUB-IT disables the server key only. Old passkeys may remain in Android/Google Password Manager until removed manually (Settings → Passwords / Passkeys → `hubit.zsgp.ru`). Registration sends `excludeCredentials` for all known credential IDs (including revoked) to reduce duplicate keys on the same device.
 
 ## IIS Boundary
 Recommended baseline:

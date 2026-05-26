@@ -3086,7 +3086,7 @@ function Mail() {
           canRenderMailArea ? mainMailArea : mailCredentialsPanel
         )}
 
-        {canRenderMailArea && !isMobileFullscreenPreview ? (
+        {canRenderMailArea && !isMobileFullscreenPreview && !composeOpen ? (
           <IconButton
             data-testid="mail-compose-fab"
             data-mobile-bulk-offset={isMobile && selectedMessageIds.length > 0 ? 'true' : 'false'}

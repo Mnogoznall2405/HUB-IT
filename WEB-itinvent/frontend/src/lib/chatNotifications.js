@@ -1,4 +1,5 @@
 import { settingsAPI } from '../api/client';
+import { isNativeShellRuntime } from './platform';
 import { getBrowserNotificationPermission, isBrowserNotificationSupported, requestBrowserNotificationPermission } from './windowsNotifications';
 
 export const CHAT_NOTIFICATIONS_ENABLED_KEY = 'itinvent_chat_notifications_enabled';
@@ -138,6 +139,7 @@ function detectBrowserFamily() {
 }
 
 function isPushSupported() {
+  if (isNativeShellRuntime()) return false;
   return typeof window !== 'undefined'
     && Boolean(window.isSecureContext)
     && typeof navigator !== 'undefined'

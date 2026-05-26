@@ -97,8 +97,17 @@ def _is_passkey_login_available() -> bool:
     return bool(rp_id and origin)
 
 
+def _is_passkey_allowed_for_zone(network_zone: str) -> bool:
+    zone = str(network_zone or "").strip().lower()
+    if zone == "external":
+        return True
+    if zone == "internal" and bool(config.security.passkey_allow_internal):
+        return True
+    return False
+
+
 def _ensure_external_passkey_login(network_zone: str) -> None:
-    if str(network_zone or "").strip().lower() == "internal":
+    if not _is_passkey_allowed_for_zone(network_zone):
         raise HTTPException(status_code=403, detail="Biometric login is disabled for internal network")
 
 
@@ -536,8 +545,8 @@ async def login(payload: LoginRequest, request: Request, response: Response):
 async def get_login_mode(request: Request):
     network_context = build_request_network_context(request)
     biometric_enabled = (
-        str(network_context.network_zone or "").strip().lower() == "external"
-        and _is_passkey_login_available()
+        _is_passkey_login_available()
+        and _is_passkey_allowed_for_zone(network_context.network_zone)
     )
     return LoginModeResponse(
         network_zone=str(network_context.network_zone or "external").strip().lower() or "external",
@@ -932,7 +941,7 @@ async def trusted_device_register_options(
         display_name=current_user.full_name or current_user.username,
         rp_id=rp_id,
         rp_name=str(config.security.webauthn_rp_name or "HUB-IT").strip() or "HUB-IT",
-        exclude_devices=trusted_device_service.list_devices(int(current_user.id), active_only=True),
+        exclude_devices=trusted_device_service.list_devices(int(current_user.id), active_only=False),
         platform_only=bool(payload.platform_only),
     )
     challenge_id = uuid.uuid4().hex

@@ -16,6 +16,7 @@ from backend.services.app_settings_service import app_settings_service
 from backend.services.env_settings_service import env_settings_service
 from backend.services.settings_service import settings_service
 from backend.services.app_push_service import app_push_service
+from backend.services.native_push_service import native_push_service
 from backend.services.notification_preferences_service import notification_preferences_service
 
 
@@ -105,6 +106,34 @@ class NotificationPushSubscriptionStatusResponse(BaseModel):
     subscribed: bool = False
     push_enabled: bool = False
     removed: bool = False
+
+
+class NativePushTokenPayload(BaseModel):
+    token: str = Field(..., min_length=1)
+    platform: str = "android"
+    device_id: Optional[str] = None
+    device_label: Optional[str] = None
+    app_version: Optional[str] = None
+
+
+class NativePushTokenDeletePayload(BaseModel):
+    token: str = Field(..., min_length=1)
+
+
+class NativePushTokenStatusResponse(BaseModel):
+    ok: bool = True
+    registered: bool = False
+    push_enabled: bool = False
+    configured: bool = False
+    removed: bool = False
+
+
+class NativePushRuntimeStatusResponse(BaseModel):
+    enabled: bool = False
+    configured: bool = False
+    storage_available: bool = False
+    project_id_present: bool = False
+    service_account_present: bool = False
 
 
 class NotificationPushDebugPayload(BaseModel):
@@ -216,6 +245,48 @@ async def post_notification_push_debug(
         flush=True,
     )
     return {"ok": True}
+
+
+@router.get("/notifications/native-push-status", response_model=NativePushRuntimeStatusResponse)
+async def get_native_push_status(
+    current_user: User = Depends(get_current_active_user),
+):
+    _ = current_user
+    return NativePushRuntimeStatusResponse(**native_push_service.get_runtime_status())
+
+
+@router.put("/notifications/native-push-token", response_model=NativePushTokenStatusResponse)
+async def put_native_push_token(
+    payload: NativePushTokenPayload,
+    request: Request,
+    current_user: User = Depends(get_current_active_user),
+):
+    try:
+        data = native_push_service.upsert_token(
+            user_id=int(current_user.id),
+            token=payload.token,
+            platform=payload.platform,
+            device_id=payload.device_id,
+            device_label=payload.device_label or request.headers.get("user-agent") or None,
+            app_version=payload.app_version,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    return NativePushTokenStatusResponse(**data)
+
+
+@router.delete("/notifications/native-push-token", response_model=NativePushTokenStatusResponse)
+async def delete_native_push_token(
+    payload: NativePushTokenDeletePayload,
+    current_user: User = Depends(get_current_active_user),
+):
+    data = native_push_service.delete_token(
+        user_id=int(current_user.id),
+        token=payload.token,
+    )
+    return NativePushTokenStatusResponse(**data)
 
 
 @router.get("/notifications/preferences", response_model=NotificationPreferencesResponse)

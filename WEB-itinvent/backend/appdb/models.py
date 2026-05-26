@@ -235,6 +235,35 @@ class AppGlobalSetting(AppBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppNativePushToken(AppBase):
+    __tablename__ = "native_push_tokens"
+    __table_args__ = _table_args(
+        UniqueConstraint("token_hash", name="uq_app_native_push_tokens_token_hash"),
+        Index("ix_app_native_push_tokens_user_active", "user_id", "is_active"),
+        Index("ix_app_native_push_tokens_device_id", "device_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    provider: Mapped[str] = mapped_column(String(32), nullable=False, default="fcm", index=True)
+    platform: Mapped[str] = mapped_column(String(32), nullable=False, default="android", index=True)
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    token_text: Mapped[str] = mapped_column(Text, nullable=False)
+    device_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    device_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    app_version: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, index=True)
+    failure_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_push_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error_text: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+
 class AppAiBot(AppBase):
     __tablename__ = "ai_bots"
     __table_args__ = _table_args(

@@ -147,6 +147,9 @@ bot.log*
 
 # OpenCode
 .opencode/
+
+# Cursor project skills (junction -> .opencode/skills); recreate: scripts/link-cursor-skills.ps1
+.cursor/skills
 *.7z
 
 # Local agent/runtime artifacts

@@ -2104,7 +2104,7 @@ describe('ChatThread composer', () => {
     expect(screen.getByTestId('chat-composer-voice-button')).toBeEnabled();
   });
 
-  it('keeps bottom scroll padding to the visual gap instead of the full composer height', () => {
+  it('keeps bottom scroll padding above an overlaid mobile keyboard', () => {
     expect(getChatThreadBottomPadding({
       compactMobile: true,
       keyboardInset: 0,
@@ -2115,7 +2115,7 @@ describe('ChatThread composer', () => {
       compactMobile: true,
       keyboardInset: 280,
       composerHeight: 168,
-    })).toBe(38);
+    })).toBe(318);
 
     expect(getChatThreadBottomPadding({
       compactMobile: false,

@@ -486,6 +486,35 @@ def test_login_mode_returns_internal_password_only(monkeypatch):
     }
 
 
+def test_login_mode_returns_internal_passkey_when_internal_allowed(monkeypatch):
+    monkeypatch.setattr(
+        auth,
+        "build_request_network_context",
+        lambda request: SimpleNamespace(client_ip="10.12.13.14", network_zone="internal"),
+    )
+    original_rp_id = auth.config.security.webauthn_rp_id
+    original_origin = auth.config.security.webauthn_origin
+    original_allow_internal = auth.config.security.passkey_allow_internal
+    auth.config.security.webauthn_rp_id = "hubit.zsgp.ru"
+    auth.config.security.webauthn_origin = "https://hubit.zsgp.ru"
+    auth.config.security.passkey_allow_internal = True
+    try:
+        app = FastAPI()
+        app.include_router(auth.router, prefix="/auth")
+
+        response = TestClient(app).get("/auth/login-mode")
+    finally:
+        auth.config.security.webauthn_rp_id = original_rp_id
+        auth.config.security.webauthn_origin = original_origin
+        auth.config.security.passkey_allow_internal = original_allow_internal
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "network_zone": "internal",
+        "biometric_login_enabled": True,
+    }
+
+
 def test_login_mode_returns_external_passkey_when_webauthn_is_configured(monkeypatch):
     monkeypatch.setattr(
         auth,

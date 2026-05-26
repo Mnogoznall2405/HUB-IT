@@ -159,6 +159,7 @@ const ChatComposer = memo(function ChatComposer({
   onCancelVoiceRecording,
 }) {
   const contentMaxWidth = Number(ui.contentMaxWidth || 980);
+  const safeKeyboardInset = compactMobile ? Math.max(0, Math.round(Number(keyboardInset || 0))) : 0;
   const composerBg = ui.composerBg || (theme.palette.mode === 'dark' ? '#1c1c1e' : '#ffffff');
   const composerActionBg = ui.composerActionBg || theme.palette.primary.main;
   const composerActionText = ui.composerActionText || theme.palette.primary.contrastText;
@@ -323,11 +324,14 @@ const ChatComposer = memo(function ChatComposer({
       sx={{
         px: { xs: compactMobile ? 0.8 : 1.1, md: 1.6 },
         pt: compactMobile ? 0.55 : 0.95,
-        pb: compactMobile ? 0.55 : 0.95,
+        pb: compactMobile ? 'max(calc(env(safe-area-inset-bottom, 0px) + 6px), 10px)' : 0.95,
         bgcolor: composerBg,
         backdropFilter: 'blur(22px) saturate(1.08)',
         position: 'relative',
         bottom: 0,
+        transform: safeKeyboardInset > 0 ? `translate3d(0, -${safeKeyboardInset}px, 0)` : 'none',
+        transition: safeKeyboardInset > 0 ? 'transform 80ms ease-out' : 'transform 120ms ease-in',
+        willChange: compactMobile ? 'transform' : 'auto',
         zIndex: 5,
         borderTop: theme.palette.mode === 'dark' ? `0.5px solid ${ui.borderSoft}` : 'none',
         boxShadow: theme.palette.mode === 'dark'

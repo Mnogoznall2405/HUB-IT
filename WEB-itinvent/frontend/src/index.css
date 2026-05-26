@@ -15,6 +15,8 @@
 
 html {
   font-size: 16px;
+  min-height: 100%;
+  background-color: #f5f7fa;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
@@ -27,8 +29,12 @@ body {
   background-color: #f5f7fa;
   color: rgba(0, 0, 0, 0.87);
   line-height: 1.5;
-  min-height: 100vh;
+  min-height: 100dvh;
   overscroll-behavior: none;
+}
+
+#root {
+  min-height: 100dvh;
 }
 
 ::-webkit-scrollbar {

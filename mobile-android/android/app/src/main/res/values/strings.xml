@@ -1,0 +1,8 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">HUB-IT</string>
+    <string name="title_activity_main">HUB-IT</string>
+    <string name="package_name">ru.zsgp.hubit</string>
+    <string name="custom_url_scheme">ru.zsgp.hubit</string>
+    <string name="asset_statements" translatable="false">[{\"include\":\"https://hubit.zsgp.ru/.well-known/assetlinks.json\"}]</string>
+</resources>

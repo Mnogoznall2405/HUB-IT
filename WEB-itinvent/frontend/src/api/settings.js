@@ -49,6 +49,20 @@ export const settingsAPI = {
     });
     return response.data;
   },
+  getNativePushStatus: async () => {
+    const response = await apiClient.get('/settings/notifications/native-push-status');
+    return response.data;
+  },
+  upsertNativePushToken: async (payload) => {
+    const response = await apiClient.put('/settings/notifications/native-push-token', payload);
+    return response.data;
+  },
+  deleteNativePushToken: async (token) => {
+    const response = await apiClient.delete('/settings/notifications/native-push-token', {
+      data: { token },
+    });
+    return response.data;
+  },
   getNotificationPreferences: async () => {
     const response = await apiClient.get('/settings/notifications/preferences');
     return response.data;

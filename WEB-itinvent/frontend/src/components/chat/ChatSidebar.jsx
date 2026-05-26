@@ -449,6 +449,7 @@ function ChatSidebar({
   ui,
   isMobile,
   compactMobile = false,
+  disableMotion = false,
   health,
   user,
   unreadTotal,
@@ -480,7 +481,8 @@ function ChatSidebar({
   openingAiBotId = '',
 }) {
   const { openDrawer, headerMode } = useMainLayoutShell();
-  const reducedMotion = useReducedMotion();
+  const prefersReducedMotion = useReducedMotion();
+  const reducedMotion = disableMotion || prefersReducedMotion;
   const [filterAnchorEl, setFilterAnchorEl] = useState(null);
   const [searchFocused, setSearchFocused] = useState(false);
   const showEmbeddedMenuButton = compactMobile && headerMode !== 'notifications-only';

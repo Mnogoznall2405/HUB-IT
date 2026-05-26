@@ -3,7 +3,24 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 
 import { authAPI } from '../api/client';
+import PasskeyDiagnosticsPanel from '../components/PasskeyDiagnosticsPanel';
 import { useAuth } from '../contexts/AuthContext';
+import {
+  encodeCredential,
+  getPasskeyAssertion,
+  isPasskeySurfaceAvailable,
+} from '../lib/passkeyWebAuthn';
+import {
+  extractWebAuthnErrorMessage,
+  normalizeWebAuthnErrorName,
+  registerTrustedDevice,
+  resolveTrustedDeviceRegistrationMode,
+} from '../lib/trustedDeviceEnrollment';
+import {
+  isWebAuthnApiAvailable,
+  useWebAuthnAvailability,
+  waitForWebAuthnApi,
+} from '../lib/useWebAuthnAvailability';
 
 const CANONICAL_HOST = 'hubit.zsgp.ru';
 const CANONICAL_ORIGIN = `https://${CANONICAL_HOST}`;
@@ -25,127 +42,6 @@ function shouldForceCanonicalHost() {
 
 function buildCanonicalUrl(pathname = '/', search = '', hash = '') {
   return `${CANONICAL_ORIGIN}${pathname || '/'}${search || ''}${hash || ''}`;
-}
-
-function b64urlToBuffer(value) {
-  const normalized = String(value || '').replace(/-/g, '+').replace(/_/g, '/');
-  const padded = normalized + '='.repeat((4 - (normalized.length % 4 || 4)) % 4);
-  const binary = window.atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let index = 0; index < binary.length; index += 1) {
-    bytes[index] = binary.charCodeAt(index);
-  }
-  return bytes.buffer;
-}
-
-function bufferToB64url(value) {
-  const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : new Uint8Array(value.buffer);
-  let binary = '';
-  bytes.forEach((byte) => {
-    binary += String.fromCharCode(byte);
-  });
-  return window.btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
-}
-
-function encodeCredential(credential) {
-  if (!credential) return null;
-  const response = credential.response || {};
-  return {
-    id: credential.id,
-    rawId: bufferToB64url(credential.rawId),
-    type: credential.type,
-    response: {
-      clientDataJSON: response.clientDataJSON ? bufferToB64url(response.clientDataJSON) : undefined,
-      attestationObject: response.attestationObject ? bufferToB64url(response.attestationObject) : undefined,
-      authenticatorData: response.authenticatorData ? bufferToB64url(response.authenticatorData) : undefined,
-      signature: response.signature ? bufferToB64url(response.signature) : undefined,
-      userHandle: response.userHandle ? bufferToB64url(response.userHandle) : undefined,
-      transports: typeof response.getTransports === 'function' ? response.getTransports() : undefined,
-    },
-  };
-}
-
-function normalizeRegistrationOptions(publicKey) {
-  return {
-    ...publicKey,
-    challenge: b64urlToBuffer(publicKey.challenge),
-    user: {
-      ...publicKey.user,
-      id: b64urlToBuffer(publicKey.user.id),
-    },
-    excludeCredentials: Array.isArray(publicKey.excludeCredentials)
-      ? publicKey.excludeCredentials.map((item) => ({
-        ...item,
-        id: b64urlToBuffer(item.id),
-      }))
-      : [],
-  };
-}
-
-function normalizeAuthenticationOptions(publicKey) {
-  const normalized = {
-    ...publicKey,
-    challenge: b64urlToBuffer(publicKey.challenge),
-  };
-  if (Array.isArray(publicKey.allowCredentials) && publicKey.allowCredentials.length > 0) {
-    normalized.allowCredentials = publicKey.allowCredentials.map((item) => ({
-      ...item,
-      id: b64urlToBuffer(item.id),
-    }));
-  }
-  return normalized;
-}
-
-function isWindowsDesktopEnvironment() {
-  if (typeof navigator === 'undefined') return false;
-  const userAgent = String(navigator.userAgent || '');
-  const platform = String(navigator.userAgentData?.platform || navigator.platform || '');
-  const isWindows = /windows/i.test(platform) || /windows/i.test(userAgent);
-  const isMobile = /android|iphone|ipad|mobile/i.test(userAgent);
-  return isWindows && !isMobile;
-}
-
-async function isPlatformAuthenticatorAvailable() {
-  if (typeof window === 'undefined' || !window.PublicKeyCredential || !navigator.credentials) {
-    return false;
-  }
-  const checker = window.PublicKeyCredential?.isUserVerifyingPlatformAuthenticatorAvailable;
-  if (typeof checker !== 'function') {
-    return false;
-  }
-  try {
-    return Boolean(await checker.call(window.PublicKeyCredential));
-  } catch {
-    return false;
-  }
-}
-
-function normalizeWebAuthnErrorName(error) {
-  return String(error?.name || '').trim();
-}
-
-function extractWebAuthnErrorMessage(error, fallbackMessage) {
-  const serverDetail = String(error?.response?.data?.detail || '').trim();
-  if (serverDetail) {
-    return serverDetail;
-  }
-  const name = normalizeWebAuthnErrorName(error);
-  if (name === 'InvalidStateError') {
-    return 'Это устройство уже запомнено в системном менеджере passkey. Повторная регистрация не требуется.';
-  }
-  if (name === 'NotAllowedError') {
-    return 'Системное биометрическое подтверждение было отменено или не завершено. Повторите попытку и завершите Face ID, Touch ID или другой системный запрос.';
-  }
-  if (name === 'SecurityError') {
-    return 'WebAuthn доступен только на защищённом адресе приложения. Проверьте, что открыт https://hubit.zsgp.ru.';
-  }
-  if (name === 'AbortError') {
-    return 'Системный запрос на биометрическое подтверждение был прерван. Повторите попытку.';
-  }
-  if (name === 'NotSupportedError') {
-    return 'Этот браузер или способ аутентификации не поддерживает создание доверенного устройства.';
-  }
-  return String(error?.message || '').trim() || fallbackMessage;
 }
 
 function cn(...parts) {
@@ -426,13 +322,19 @@ function Login() {
   const passkeyAttemptedRef = useRef(false);
   const authenticatedUserRef = useRef(null);
   const prefersReducedMotion = useReducedMotion();
+  const {
+    webAuthnReady,
+    webAuthnWebApiReady,
+    webAuthnNativeReady,
+    webAuthnTimedOut,
+  } = useWebAuthnAvailability();
 
-  const canUseWebAuthn = typeof window !== 'undefined' && !!window.PublicKeyCredential && !!navigator.credentials;
-  const isWindowsDesktop = useMemo(() => isWindowsDesktopEnvironment(), []);
   const isPasswordSubmitDisabled = loading || !username.trim() || !password.trim();
   const isTwofaSubmitDisabled = loading || !(useBackupCode ? backupCode.trim() : totpCode.trim());
   const rememberDeviceUnsupported = rememberDeviceMode === 'unsupported';
   const canUseTrustedDeviceHero = step === 'password' && networkZone === 'external' && biometricLoginEnabled;
+  const passkeyPrepPending = canUseTrustedDeviceHero && !webAuthnReady && !webAuthnTimedOut;
+  const passkeyPrepFailed = canUseTrustedDeviceHero && !webAuthnReady && webAuthnTimedOut;
   const keyboardOpen = keyboardInset > 120 || inputFocused;
   const heroCompact = keyboardOpen && step !== 'setup_complete';
   const contentLift = keyboardOpen ? Math.min(Math.max(keyboardInset * 0.35, 56), 156) : 0;
@@ -679,6 +581,7 @@ function Login() {
       || step !== 'password'
       || networkZone !== 'external'
       || !biometricLoginEnabled
+      || !webAuthnReady
       || showPasswordForm
       || passkeyAttemptedRef.current
     ) {
@@ -686,7 +589,7 @@ function Login() {
     }
     passkeyAttemptedRef.current = true;
     void attemptPasskeyLogin({ auto: true });
-  }, [loginModeLoading, step, networkZone, biometricLoginEnabled, showPasswordForm]);
+  }, [loginModeLoading, step, networkZone, biometricLoginEnabled, webAuthnReady, showPasswordForm]);
 
   const redirectToDashboard = () => {
     if (shouldForceCanonicalHost()) {
@@ -716,30 +619,37 @@ function Login() {
     closeRememberDevicePrompt();
   };
 
+  const applyRememberDeviceRegistrationMode = async ({ required = false } = {}) => {
+    const registrationMode = await resolveTrustedDeviceRegistrationMode();
+    if (registrationMode.mode === 'unsupported') {
+      if (!required) {
+        redirectToDashboard();
+        return false;
+      }
+      setRememberDeviceMode('unsupported');
+      setRememberDeviceHint(registrationMode.hint);
+      setRememberDeviceOpen(true);
+      return true;
+    }
+    setRememberDeviceMode(registrationMode.mode);
+    setRememberDeviceHint(registrationMode.hint);
+    setRememberDeviceOpen(true);
+    return true;
+  };
+
   const maybeOpenRememberDevicePrompt = async (enabled) => {
     setRememberDeviceError('');
-    if (!enabled || !canUseWebAuthn) {
+    setRememberDeviceRequired(false);
+    if (!enabled) {
       redirectToDashboard();
       return;
     }
-
-    if (isWindowsDesktop) {
-      const available = await isPlatformAuthenticatorAvailable();
-      if (!available) {
-        setRememberDeviceMode('unsupported');
-        setRememberDeviceHint('Windows Hello не настроен на этом ПК. Сохранение доверенного устройства недоступно, продолжайте входить через TOTP.');
-        setRememberDeviceOpen(true);
-        return;
-      }
-      setRememberDeviceMode('platform');
-      setRememberDeviceHint('После сохранения этот ПК сможет входить напрямую через Windows Hello без логина, пароля и ручного ввода TOTP.');
-      setRememberDeviceOpen(true);
-      return;
+    const opened = await applyRememberDeviceRegistrationMode({ required: false });
+    if (opened) {
+      setRememberDeviceHint(
+        'У вас уже есть passkey на другом устройстве. Привяжите это устройство, чтобы входить здесь без TOTP.',
+      );
     }
-
-    setRememberDeviceMode('generic');
-    setRememberDeviceHint('Следующий вход на этом устройстве можно будет завершать напрямую через системную биометрию и менеджер passkey без логина, пароля и TOTP.');
-    setRememberDeviceOpen(true);
   };
 
   const openRememberDevicePrompt = async ({ enabled, required = false } = {}) => {
@@ -749,40 +659,23 @@ function Login() {
       redirectToDashboard();
       return;
     }
-    if (!canUseWebAuthn) {
-      if (!required) {
-        redirectToDashboard();
-        return;
-      }
-      setRememberDeviceMode('unsupported');
-      setRememberDeviceHint('На этом устройстве нельзя создать passkey. Продолжайте входить снаружи через логин, пароль и 2FA.');
-      setRememberDeviceOpen(true);
-      return;
+    const opened = await applyRememberDeviceRegistrationMode({ required: Boolean(required) });
+    if (!opened && !required) {
+      redirectToDashboard();
     }
-
-    if (isWindowsDesktop) {
-      const available = await isPlatformAuthenticatorAvailable();
-      if (!available) {
-        setRememberDeviceMode('unsupported');
-        setRememberDeviceHint('Windows Hello не настроен на этом ПК. Сохранение доверенного устройства недоступно, продолжайте входить снаружи через пароль и 2FA.');
-        setRememberDeviceOpen(true);
-        return;
-      }
-      setRememberDeviceMode('platform');
-      setRememberDeviceHint('После сохранения этот ПК сможет входить напрямую через Windows Hello без логина, пароля и ручного ввода TOTP.');
-      setRememberDeviceOpen(true);
-      return;
-    }
-
-    setRememberDeviceMode('generic');
-    setRememberDeviceHint('Следующий вход на этом устройстве можно будет завершать напрямую через системную биометрию и менеджер passkey без логина, пароля и TOTP.');
-    setRememberDeviceOpen(true);
   };
 
   const revealPasswordFallback = (message = '') => {
     setShowPasswordForm(true);
     setPasswordAssistMessage(String(message || ''));
   };
+
+  useEffect(() => {
+    if (!passkeyPrepFailed || showPasswordForm) {
+      return;
+    }
+    revealPasswordFallback('Passkey в приложении не инициализировался. Войдите по логину и паролю ниже.');
+  }, [passkeyPrepFailed, showPasswordForm]);
 
   const attemptPasskeyLogin = async ({ auto = false } = {}) => {
     if (step !== 'password') {
@@ -792,9 +685,17 @@ function Login() {
     if (!auto) {
       setPasswordAssistMessage('');
     }
-    if (!canUseWebAuthn) {
+    const webAuthnAvailable = webAuthnReady || await waitForWebAuthnApi({
+      delayMs: webAuthnReady ? 0 : 300,
+      maxWaitMs: webAuthnReady ? 500 : 3000,
+    }) || await isPasskeySurfaceAvailable();
+    if (!webAuthnAvailable) {
       revealPasswordFallback(
-        auto ? '' : 'На этом устройстве системный passkey недоступен. Продолжите вход по логину и паролю.',
+        auto
+          ? ''
+          : (webAuthnTimedOut
+            ? 'На этом устройстве системный passkey недоступен. Продолжите вход по логину и паролю.'
+            : 'Passkey ещё инициализируется. Подождите секунду и нажмите «Войти через passkey» снова.'),
       );
       return false;
     }
@@ -811,9 +712,7 @@ function Login() {
     }
 
     try {
-      const credential = await navigator.credentials.get({
-        publicKey: normalizeAuthenticationOptions(optionsResult.public_key),
-      });
+      const credential = await getPasskeyAssertion(optionsResult.public_key);
       const verifyResult = await verifyPasskeyLogin(
         optionsResult.challenge_id,
         encodeCredential(credential),
@@ -846,10 +745,19 @@ function Login() {
     && Number(userPayload?.discoverable_trusted_devices_count || 0) <= 0
   );
 
+  const shouldOfferOptionalTrustedDeviceEnrollment = (userPayload) => (
+    networkZone === 'external'
+    && Number(userPayload?.discoverable_trusted_devices_count || 0) > 0
+  );
+
   const completeAuthenticatedRedirect = async (userPayload) => {
     authenticatedUserRef.current = userPayload || null;
     if (shouldRequireTrustedDeviceEnrollment(userPayload)) {
       await openRememberDevicePrompt({ enabled: true, required: true });
+      return;
+    }
+    if (shouldOfferOptionalTrustedDeviceEnrollment(userPayload)) {
+      await maybeOpenRememberDevicePrompt(true);
       return;
     }
     redirectToDashboard();
@@ -953,9 +861,7 @@ function Login() {
     }
 
     try {
-      const credential = await navigator.credentials.get({
-        publicKey: normalizeAuthenticationOptions(optionsResult.public_key),
-      });
+      const credential = await getPasskeyAssertion(optionsResult.public_key);
       const verifyResult = await verifyTrustedDeviceAuth(
         loginChallengeId,
         optionsResult.challenge_id,
@@ -978,18 +884,11 @@ function Login() {
     setError(null);
     setRememberDeviceError('');
     try {
-      const options = await authAPI.getTrustedDeviceRegistrationOptions(
-        deviceLabel.trim() || undefined,
-        { platformOnly: rememberDeviceMode === 'platform' },
-      );
-      const credential = await navigator.credentials.create({
-        publicKey: normalizeRegistrationOptions(options.public_key),
+      await registerTrustedDevice({
+        authAPI,
+        label: deviceLabel,
+        platformOnly: rememberDeviceMode === 'platform',
       });
-      await authAPI.verifyTrustedDeviceRegistration(
-        options.challenge_id,
-        encodeCredential(credential),
-        deviceLabel.trim() || undefined,
-      );
       closeRememberDevicePrompt();
     } catch (registerError) {
       console.error('Trusted device registration failed:', registerError);
@@ -1107,12 +1006,26 @@ function Login() {
       <div className="space-y-4">
         {canUseTrustedDeviceHero ? (
           <HeroAction
-            title={trustedDeviceBusy ? 'Подтверждаем passkey' : 'Войти через passkey'}
-            subtitle="Быстрый вход с доверенного телефона или ПК."
+            title={
+              trustedDeviceBusy
+                ? 'Подтверждаем passkey'
+                : (webAuthnReady
+                  ? 'Войти через passkey'
+                  : (passkeyPrepFailed ? 'Passkey не готов' : 'Подготовка passkey'))
+            }
+            subtitle={
+              webAuthnReady
+                ? 'Быстрый вход с доверенного телефона или ПК.'
+                : (passkeyPrepFailed
+                  ? (webAuthnNativeReady
+                    ? 'Вход через системный passkey (Credential Manager).'
+                    : 'Обновите Android System WebView или войдите по паролю ниже.')
+                  : 'Инициализация входа по отпечатку в приложении…')
+            }
             detail="Пароль остается ниже как запасной путь."
             onClick={() => attemptPasskeyLogin({ auto: false })}
-            disabled={trustedDeviceBusy || loading}
-            busy={trustedDeviceBusy}
+            disabled={trustedDeviceBusy || loading || passkeyPrepPending}
+            busy={trustedDeviceBusy || passkeyPrepPending}
             compact={heroCompact}
             mode={isCompactViewport ? 'fingerprint' : 'face'}
           />
@@ -1133,6 +1046,15 @@ function Login() {
             </div>
           </div>
         )}
+
+        <PasskeyDiagnosticsPanel
+          webAuthnReady={webAuthnReady}
+          webAuthnWebApiReady={webAuthnWebApiReady}
+          webAuthnNativeReady={webAuthnNativeReady}
+          webAuthnTimedOut={webAuthnTimedOut}
+          networkZone={networkZone}
+          biometricLoginEnabled={biometricLoginEnabled}
+        />
 
         {passwordAssistMessage ? <InfoBanner tone="info">{passwordAssistMessage}</InfoBanner> : null}
 

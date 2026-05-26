@@ -1565,12 +1565,13 @@ useEffect(() => {
         data-top-banner-offset={topBannerOffset}
         style={{
           '--app-shell-banner-offset': `${topBannerOffset}px`,
+          '--app-shell-safe-top-offset': 'env(safe-area-inset-top, 0px)',
           '--app-shell-measured-header-offset': hiddenHeader
             ? '0px'
             : appBarHeight > 0
               ? `${appBarHeight}px`
               : 'var(--app-shell-header-offset)',
-          '--app-shell-top-offset': 'calc(var(--app-shell-banner-offset) + var(--app-shell-measured-header-offset))',
+          '--app-shell-top-offset': 'calc(var(--app-shell-safe-top-offset) + var(--app-shell-banner-offset) + var(--app-shell-measured-header-offset))',
         }}
         sx={{
           display: 'flex',
@@ -1590,7 +1591,7 @@ useEffect(() => {
         spacing={0}
         sx={{
           position: 'fixed',
-          top: 0,
+          top: 'var(--app-shell-safe-top-offset)',
           left: 0,
           right: 0,
           zIndex: theme.zIndex.appBar + 1,
@@ -1658,7 +1659,7 @@ useEffect(() => {
             data-testid="main-layout-app-bar"
             position="fixed"
             sx={{
-              top: topBannerOffset,
+              top: `calc(var(--app-shell-safe-top-offset) + ${topBannerOffset}px)`,
               bgcolor: alpha(ui.shellBg, theme.palette.mode === 'dark' ? 0.94 : 0.9),
               color: theme.palette.text.primary,
               boxShadow: 'none',

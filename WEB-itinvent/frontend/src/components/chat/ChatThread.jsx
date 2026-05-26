@@ -101,13 +101,15 @@ export const getChatThreadBottomPadding = ({
   composerHeight = 0,
 } = {}) => {
   const measuredComposerHeight = Math.max(0, Number(composerHeight || 0));
+  const measuredKeyboardInset = Math.max(0, Number(keyboardInset || 0));
+  const effectiveKeyboardInset = compactMobile ? measuredKeyboardInset : 0;
   const baseGap = compactMobile ? 8 : 18;
   const keyboardSpacer = getChatKeyboardBottomSpacer({
     compactMobile,
-    keyboardInset,
+    keyboardInset: effectiveKeyboardInset,
     composerHeight: measuredComposerHeight,
   });
-  return Math.max(baseGap, Math.round(baseGap + keyboardSpacer));
+  return Math.max(baseGap, Math.round(baseGap + effectiveKeyboardInset + keyboardSpacer));
 };
 
 function HeaderAction({ title, children, onClick, active = false, compactMobile = false, hidden = false, disabled = false }) {
@@ -771,6 +773,7 @@ function ChatThread({
   const composerFocusedRef = useRef(false);
   const threadPinnedToBottomRef = useRef(true);
   const previousComposerLayoutRef = useRef({ composerHeight: null, keyboardInset: null });
+  const keyboardViewportBaselineRef = useRef(0);
   const messageReactionMetricsRef = useRef(new Map());
   const previousSelectionModeRef = useRef(false);
   const backSwipeRef = useRef({ tracking: false, engaged: false, startX: 0, startY: 0 });
@@ -956,21 +959,46 @@ function ChatThread({
   // Простое отслеживание клавиатуры через resize окна
   useEffect(() => {
     if (!compactMobile) {
+      keyboardViewportBaselineRef.current = 0;
       setKeyboardInset(0);
       return undefined;
     }
 
-    let lastHeight = window.innerHeight;
-    const onResize = () => {
-      const diff = lastHeight - window.innerHeight;
-      if (Math.abs(diff) > 50) {
-        lastHeight = window.innerHeight;
-        setKeyboardInset(diff > 0 ? diff : 0);
+    const measureKeyboardInset = () => {
+      const layoutHeight = Math.round(
+        Number(window.innerHeight || document.documentElement?.clientHeight || 0),
+      );
+      if (layoutHeight > keyboardViewportBaselineRef.current) {
+        keyboardViewportBaselineRef.current = layoutHeight;
       }
+
+      const visualViewport = window.visualViewport;
+      if (!visualViewport) {
+        setKeyboardInset(0);
+        return;
+      }
+
+      const baselineHeight = Math.max(keyboardViewportBaselineRef.current, layoutHeight);
+      const viewportHeight = Math.round(Number(visualViewport.height || 0));
+      const viewportOffsetTop = Math.max(0, Math.round(Number(visualViewport.offsetTop || 0)));
+      const layoutResizeDelta = Math.max(0, baselineHeight - layoutHeight);
+      const overlayInset = Math.max(0, layoutHeight - viewportHeight - viewportOffsetTop);
+      const nextInset = layoutResizeDelta > 80 ? 0 : (overlayInset > 80 ? overlayInset : 0);
+
+      setKeyboardInset((currentInset) => (
+        Math.abs(Number(currentInset || 0) - nextInset) > 1 ? nextInset : currentInset
+      ));
     };
 
-    window.addEventListener('resize', onResize);
-    return () => window.removeEventListener('resize', onResize);
+    measureKeyboardInset();
+    window.addEventListener('resize', measureKeyboardInset);
+    window.visualViewport?.addEventListener?.('resize', measureKeyboardInset);
+    window.visualViewport?.addEventListener?.('scroll', measureKeyboardInset);
+    return () => {
+      window.removeEventListener('resize', measureKeyboardInset);
+      window.visualViewport?.removeEventListener?.('resize', measureKeyboardInset);
+      window.visualViewport?.removeEventListener?.('scroll', measureKeyboardInset);
+    };
   }, [compactMobile]);
 
   useLayoutEffect(() => {

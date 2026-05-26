@@ -78,6 +78,15 @@ import OverflowMenu from '../components/common/OverflowMenu';
 import { useAuth } from '../contexts/AuthContext';
 import { usePreferences } from '../contexts/PreferencesContext';
 import { useNotification } from '../contexts/NotificationContext';
+import {
+  buildDefaultTrustedDeviceLabel,
+  extractWebAuthnErrorMessage,
+  normalizeWebAuthnErrorName,
+  registerTrustedDevice,
+  resolveTrustedDeviceRegistrationMode,
+} from '../lib/trustedDeviceEnrollment';
+import { isPasskeySurfaceAvailable } from '../lib/passkeyWebAuthn';
+import { isWebAuthnApiAvailable } from '../lib/useWebAuthnAvailability';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
 import {
   getWindowsNotificationState,
@@ -101,6 +110,7 @@ import {
   refreshPwaInstallState,
   subscribePwaInstallState,
 } from '../lib/pwaInstall';
+import { isNativeShellRuntime } from '../lib/platform';
 import {
   buildOfficeUiTokens,
   getOfficeHeaderBandSx,
@@ -1049,6 +1059,15 @@ function SecurityTab({
   trustedDevices,
   loading,
   resettingTwoFactor,
+  linkingTrustedDevice,
+  linkTrustedDeviceOpen,
+  linkTrustedDeviceLabel,
+  linkTrustedDeviceError,
+  passkeyLinkAvailable,
+  onLinkTrustedDeviceLabelChange,
+  onOpenLinkTrustedDevice,
+  onCloseLinkTrustedDevice,
+  onConfirmLinkTrustedDevice,
   onReload,
   onRegenerateBackupCodes,
   onRevokeTrustedDevice,
@@ -1097,8 +1116,26 @@ function SecurityTab({
         </Stack>
       </SectionCard>
 
-      <SectionCard title="Доверенные устройства" description="Эти устройства могут подтверждать вход через WebAuthn без ручного ввода TOTP-кода.">
+      <SectionCard
+        title="Доверенные устройства"
+        description="Эти устройства могут подтверждать вход через WebAuthn без ручного ввода TOTP-кода. Привязка доступна только при входе из внешней сети."
+      >
         <Stack spacing={1}>
+          {passkeyLinkAvailable ? (
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }}>
+              <Button
+                variant="contained"
+                startIcon={linkingTrustedDevice ? <CircularProgress size={16} color="inherit" /> : <AddOutlinedIcon />}
+                onClick={onOpenLinkTrustedDevice}
+                disabled={loading || linkingTrustedDevice}
+              >
+                Привязать это устройство
+              </Button>
+              <Typography variant="body2" color="text.secondary">
+                Добавьте passkey на этом телефоне или ПК для входа без TOTP.
+              </Typography>
+            </Stack>
+          ) : null}
           {loading ? (
             <Stack direction="row" spacing={1} alignItems="center">
               <CircularProgress size={18} />
@@ -1140,6 +1177,38 @@ function SecurityTab({
           ))}
         </Stack>
       </SectionCard>
+
+      <Dialog open={linkTrustedDeviceOpen} onClose={onCloseLinkTrustedDevice} fullWidth maxWidth="sm">
+        <DialogTitle>Привязать это устройство</DialogTitle>
+        <DialogContent>
+          <Stack spacing={1.5} sx={{ pt: 0.5 }}>
+            <DialogContentText>
+              После привязки вход снаружи можно подтверждать отпечатком или системным passkey без ручного ввода TOTP.
+            </DialogContentText>
+            {linkTrustedDeviceError ? <Alert severity="error">{linkTrustedDeviceError}</Alert> : null}
+            <TextField
+              label="Название устройства"
+              value={linkTrustedDeviceLabel}
+              onChange={(event) => onLinkTrustedDeviceLabelChange(event.target.value)}
+              fullWidth
+              disabled={linkingTrustedDevice}
+            />
+          </Stack>
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={onCloseLinkTrustedDevice} disabled={linkingTrustedDevice}>
+            Отмена
+          </Button>
+          <Button
+            variant="contained"
+            onClick={onConfirmLinkTrustedDevice}
+            disabled={linkingTrustedDevice}
+            startIcon={linkingTrustedDevice ? <CircularProgress size={16} color="inherit" /> : null}
+          >
+            Привязать
+          </Button>
+        </DialogActions>
+      </Dialog>
     </Box>
   );
 }
@@ -1366,6 +1435,8 @@ function PwaInstallSettingsCard() {
 }
 
 function HubItPwaSettingsCard() {
+  if (isNativeShellRuntime()) return null;
+
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
@@ -1856,6 +1927,8 @@ export function NotificationChannelsSettingsCard() {
 }
 
 export function ChatNotificationsSettingsCard() {
+  if (isNativeShellRuntime()) return null;
+
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const { user } = useAuth();
@@ -2130,6 +2203,8 @@ export function ChatNotificationsSettingsCard() {
 }
 
 export function BrowserNotificationsSettingsCard() {
+  if (isNativeShellRuntime()) return null;
+
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [notificationState, setNotificationState] = useState(() => getWindowsNotificationState());
@@ -5021,6 +5096,12 @@ function Settings() {
   const [trustedDevices, setTrustedDevices] = useState([]);
   const [backupCodes, setBackupCodes] = useState([]);
   const [backupCodesDialogOpen, setBackupCodesDialogOpen] = useState(false);
+  const [linkTrustedDeviceOpen, setLinkTrustedDeviceOpen] = useState(false);
+  const [linkTrustedDeviceLabel, setLinkTrustedDeviceLabel] = useState('');
+  const [linkTrustedDeviceError, setLinkTrustedDeviceError] = useState('');
+  const [linkingTrustedDevice, setLinkingTrustedDevice] = useState(false);
+  const [passkeyLinkAvailable, setPasskeyLinkAvailable] = useState(false);
+  const linkTrustedDeviceModeRef = useRef({ platformOnly: false });
 
   useEffect(() => {
     setThemeMode(preferences.theme_mode || 'light');
@@ -5265,6 +5346,76 @@ function Settings() {
     }
     await loadSecurity();
   }, [loadSecurity, refreshSession]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const evaluatePasskeyLink = async () => {
+      if (user?.network_zone !== 'external') {
+        if (!cancelled) {
+          setPasskeyLinkAvailable(false);
+        }
+        return;
+      }
+      const available = isWebAuthnApiAvailable() || await isPasskeySurfaceAvailable();
+      if (!cancelled) {
+        setPasskeyLinkAvailable(Boolean(available));
+      }
+    };
+    evaluatePasskeyLink();
+    return () => {
+      cancelled = true;
+    };
+  }, [user?.network_zone]);
+
+  const handleOpenLinkTrustedDevice = useCallback(async () => {
+    setLinkTrustedDeviceError('');
+    setLinkTrustedDeviceLabel(buildDefaultTrustedDeviceLabel());
+    const registrationMode = await resolveTrustedDeviceRegistrationMode();
+    if (registrationMode.mode === 'unsupported') {
+      setLinkTrustedDeviceError(registrationMode.hint);
+      setLinkTrustedDeviceOpen(true);
+      linkTrustedDeviceModeRef.current = { platformOnly: false };
+      return;
+    }
+    linkTrustedDeviceModeRef.current = { platformOnly: registrationMode.platformOnly };
+    setLinkTrustedDeviceOpen(true);
+  }, []);
+
+  const handleCloseLinkTrustedDevice = useCallback(() => {
+    if (linkingTrustedDevice) {
+      return;
+    }
+    setLinkTrustedDeviceOpen(false);
+    setLinkTrustedDeviceError('');
+  }, [linkingTrustedDevice]);
+
+  const handleConfirmLinkTrustedDevice = useCallback(async () => {
+    setLinkingTrustedDevice(true);
+    setLinkTrustedDeviceError('');
+    try {
+      await registerTrustedDevice({
+        authAPI,
+        label: linkTrustedDeviceLabel,
+        platformOnly: linkTrustedDeviceModeRef.current.platformOnly,
+      });
+      setLinkTrustedDeviceOpen(false);
+      notifySuccess('Это устройство привязано. Теперь можно входить через passkey снаружи.', { dedupeMode: 'none' });
+      await refreshSession({ suppressAuthRequired: true });
+      await loadSecurity();
+    } catch (error) {
+      if (normalizeWebAuthnErrorName(error) === 'InvalidStateError') {
+        setLinkTrustedDeviceOpen(false);
+        notifySuccess('Passkey на этом устройстве уже сохранён.', { dedupeMode: 'none' });
+        await loadSecurity();
+        return;
+      }
+      setLinkTrustedDeviceError(
+        extractWebAuthnErrorMessage(error, 'Не удалось привязать это устройство.'),
+      );
+    } finally {
+      setLinkingTrustedDevice(false);
+    }
+  }, [linkTrustedDeviceLabel, loadSecurity, notifySuccess, refreshSession]);
 
   const handleResetTwoFactor = useCallback(async () => {
     if (!user?.id) return;
@@ -5708,6 +5859,15 @@ function Settings() {
                   trustedDevices={trustedDevices}
                   loading={securityLoading}
                   resettingTwoFactor={resettingTwoFactor}
+                  linkingTrustedDevice={linkingTrustedDevice}
+                  linkTrustedDeviceOpen={linkTrustedDeviceOpen}
+                  linkTrustedDeviceLabel={linkTrustedDeviceLabel}
+                  linkTrustedDeviceError={linkTrustedDeviceError}
+                  passkeyLinkAvailable={passkeyLinkAvailable}
+                  onLinkTrustedDeviceLabelChange={setLinkTrustedDeviceLabel}
+                  onOpenLinkTrustedDevice={handleOpenLinkTrustedDevice}
+                  onCloseLinkTrustedDevice={handleCloseLinkTrustedDevice}
+                  onConfirmLinkTrustedDevice={handleConfirmLinkTrustedDevice}
                   onReload={handleReloadSecurity}
                   onRegenerateBackupCodes={handleRegenerateBackupCodes}
                   onRevokeTrustedDevice={handleRevokeTrustedDevice}

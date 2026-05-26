@@ -32,6 +32,7 @@ _SENSITIVE_MARKERS = (
     "API_KEY",
     "DATABASE_URL",
     "PRIVATE_KEY",
+    "SERVICE_ACCOUNT",
     "MAIL_CREDENTIALS_KEY",
 )
 _AUDIT_TABLE = "env_settings_audit"
@@ -101,6 +102,9 @@ _DIRECT_DESCRIPTIONS = {
     "CHAT_PUSH_OUTBOX_RETRY_BASE_SEC": ("Chat", "Базовая пауза retry/backoff для chat push outbox worker."),
     "CHAT_PUSH_OUTBOX_PROCESSING_TIMEOUT_SEC": ("Chat", "Сколько ждать stale processing job перед возвратом в queue."),
     "CHAT_PUSH_OUTBOX_HEARTBEAT_SEC": ("Chat", "Интервал heartbeat-логов chat push outbox worker."),
+    "FCM_PROJECT_ID": ("Native push", "Firebase project id for Android FCM push."),
+    "FCM_SERVICE_ACCOUNT_FILE": ("Native push", "Path to Firebase service-account JSON for FCM HTTP v1."),
+    "FCM_SERVICE_ACCOUNT_JSON": ("Native push", "Inline Firebase service-account JSON for FCM HTTP v1."),
     "VITE_API_URL": ("Frontend", "Базовый адрес API, который встраивается в frontend-сборку."),
     "VITE_BACKEND_HOST": ("Frontend", "Хост backend для dev/build конфигурации frontend."),
     "VITE_BACKEND_PORT": ("Frontend", "Порт backend для dev/build конфигурации frontend."),
@@ -173,6 +177,7 @@ _CATEGORY_ORDER = [
     "ИИ и интеграции",
     "Inventory ingest",
     "Scan backend",
+    "Native push",
     "Telegram bot",
     "Frontend",
     "Документы",

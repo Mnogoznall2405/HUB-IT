@@ -1,8 +1,8 @@
 /**
  * Main App component with routing and authentication.
  */
-import { Component, lazy, Suspense, useCallback, useEffect } from 'react';
-import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation } from 'react-router-dom';
+import { Component, lazy, Suspense, useCallback, useEffect, useRef } from 'react';
+import { BrowserRouter, Routes, Route, Navigate, Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { Box } from '@mui/material';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CHAT_FEATURE_ENABLED } from './lib/chatFeature';
@@ -15,8 +15,22 @@ import {
   requestChatPushSyncDrain,
   syncChatPushSubscription,
 } from './lib/chatNotifications';
+import {
+  disableNativePushNotifications,
+  syncNativePushNotifications,
+} from './lib/nativePushNotifications';
 import { hasAnyAppPushPermission } from './lib/appPushPermissions';
 import { syncAppBadge } from './lib/appBadge';
+import {
+  configureCapacitorStatusBar,
+  getCapacitorPlugin,
+  removeCapacitorListener,
+} from './lib/capacitorRuntime';
+import {
+  normalizeCapacitorAppUrl,
+  normalizePushNotificationRoute,
+} from './lib/capacitorLinks';
+import { isNativeShellRuntime } from './lib/platform';
 import {
   loadAddressBookRoute,
   loadAdUsersRoute,
@@ -139,6 +153,15 @@ const AppPushBootstrap = () => {
   const isChatRoute = String(location?.pathname || '').startsWith('/chat');
 
   const runPushSync = useCallback((force = false) => {
+    if (isNativeShellRuntime()) {
+      if (!hasAppPushPermission || !user) {
+        void disableNativePushNotifications({ removeServer: Boolean(user) }).catch(() => {});
+        return;
+      }
+      void syncNativePushNotifications({ user, enabled: true }).catch(() => {});
+      return;
+    }
+
     if (!hasAppPushPermission || !user) {
       void disableChatPushSubscription({ removeServer: Boolean(user) }).catch(() => {
         refreshChatNotificationState();
@@ -300,11 +323,143 @@ const AppPushBootstrap = () => {
   return null;
 };
 
+const rootBackPaths = new Set(['/', '/dashboard', '/login']);
+
+const dispatchEscapeForOpenOverlay = () => {
+  if (typeof document === 'undefined' || typeof window === 'undefined') {
+    return false;
+  }
+
+  const openOverlay = document.querySelector([
+    '.MuiModal-root:not([aria-hidden="true"])',
+    '[role="dialog"]',
+    '[role="menu"]',
+    '[role="listbox"]',
+  ].join(','));
+
+  if (!openOverlay) {
+    return false;
+  }
+
+  const target = document.activeElement || document.body || document;
+  target.dispatchEvent(new KeyboardEvent('keydown', {
+    key: 'Escape',
+    code: 'Escape',
+    keyCode: 27,
+    which: 27,
+    bubbles: true,
+    cancelable: true,
+  }));
+  return true;
+};
+
+const CapacitorShellBridge = () => {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const locationRef = useRef(location);
+
+  useEffect(() => {
+    locationRef.current = location;
+  }, [location]);
+
+  useEffect(() => {
+    if (!isNativeShellRuntime()) {
+      return undefined;
+    }
+
+    configureCapacitorStatusBar();
+
+    const appPlugin = getCapacitorPlugin('App');
+    if (!appPlugin || typeof appPlugin.addListener !== 'function') {
+      return undefined;
+    }
+
+    const listeners = [];
+    const navigateToNativeRoute = (target) => {
+      const nextRoute = normalizeCapacitorAppUrl(target, {
+        currentOrigin: typeof window !== 'undefined' ? window.location.origin : undefined,
+      });
+      if (!nextRoute) {
+        return;
+      }
+      const current = locationRef.current || {};
+      const currentRoute = `${current.pathname || '/'}${current.search || ''}${current.hash || ''}`;
+      if (nextRoute === currentRoute) {
+        return;
+      }
+      navigate(nextRoute);
+    };
+
+    const backButtonListener = appPlugin.addListener('backButton', (event) => {
+      if (dispatchEscapeForOpenOverlay()) {
+        return;
+      }
+
+      const pathname = locationRef.current?.pathname || '/';
+      if (rootBackPaths.has(pathname)) {
+        if (typeof appPlugin.minimizeApp === 'function') {
+          appPlugin.minimizeApp();
+        }
+        return;
+      }
+
+      if (event?.canGoBack) {
+        navigate(-1);
+        return;
+      }
+
+      navigate('/dashboard', { replace: true });
+    });
+    listeners.push(backButtonListener);
+
+    if (typeof appPlugin.addListener === 'function') {
+      listeners.push(appPlugin.addListener('appUrlOpen', (event) => {
+        navigateToNativeRoute(event?.url);
+      }));
+    }
+
+    if (typeof appPlugin.getLaunchUrl === 'function') {
+      Promise.resolve(appPlugin.getLaunchUrl())
+        .then((event) => {
+          navigateToNativeRoute(event?.url);
+        })
+        .catch(() => {});
+    }
+
+    const pushNotificationsPlugin = getCapacitorPlugin('PushNotifications');
+    if (pushNotificationsPlugin && typeof pushNotificationsPlugin.addListener === 'function') {
+      listeners.push(pushNotificationsPlugin.addListener('pushNotificationActionPerformed', (event) => {
+        const nextRoute = normalizePushNotificationRoute(event, {
+          currentOrigin: typeof window !== 'undefined' ? window.location.origin : undefined,
+        });
+        navigateToNativeRoute(nextRoute);
+      }));
+    }
+
+    return () => {
+      listeners.forEach(removeCapacitorListener);
+    };
+  }, [navigate]);
+
+  return null;
+};
+
 const PageFallback = () => (
-  <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
+  <Box sx={{ minHeight: '100dvh', bgcolor: 'background.default' }}>
     <BrandedRouteLoader label="Загружаем раздел..." sublabel="Подготавливаем интерфейс HUB-IT" />
   </Box>
 );
+
+const openNativeBrowserFallback = () => {
+  if (typeof window === 'undefined') {
+    return;
+  }
+  const fallbackUrl = window.location?.href || 'https://hubit.zsgp.ru/';
+  const opened = window.open(fallbackUrl, '_system', 'noopener,noreferrer');
+  if (!opened && typeof window.location?.assign === 'function') {
+    window.location.assign(fallbackUrl);
+  }
+};
 
 class RouteErrorBoundary extends Component {
   constructor(props) {
@@ -325,7 +480,7 @@ class RouteErrorBoundary extends Component {
       return (
         <Box
           sx={{
-            minHeight: '100vh',
+            minHeight: '100dvh',
             display: 'grid',
             placeItems: 'center',
             bgcolor: '#07090c',
@@ -354,6 +509,15 @@ class RouteErrorBoundary extends Component {
             >
               Обновить
             </button>
+            {isNativeShellRuntime() ? (
+              <button
+                type="button"
+                onClick={openNativeBrowserFallback}
+                className="mt-2 min-h-12 rounded-[16px] border border-white/20 px-5 text-sm font-semibold text-white"
+              >
+                Open in browser
+              </button>
+            ) : null}
           </Box>
         </Box>
       );
@@ -377,7 +541,8 @@ function App() {
     >
       <AuthProvider>
         <AppPushBootstrap />
-        <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100vh' }}>
+        <CapacitorShellBridge />
+        <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh' }}>
           <RouteErrorBoundary>
           <Suspense fallback={<PageFallback />}>
             <Routes>

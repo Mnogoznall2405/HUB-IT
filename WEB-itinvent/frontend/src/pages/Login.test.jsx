@@ -1,6 +1,6 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const {
   mockLogin,
@@ -119,6 +119,10 @@ async function ensurePasswordFormVisible() {
 }
 
 describe('Login hybrid internal/external flow', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   beforeEach(() => {
     mockLogin.mockReset();
     mockStartTwoFactorSetup.mockReset();
@@ -191,6 +195,35 @@ describe('Login hybrid internal/external flow', () => {
     expect(await screen.findByTestId('login-mobile-layout')).toBeInTheDocument();
     expect(await ensurePasswordFormVisible()).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Войти' })).toBeInTheDocument();
+  });
+
+  it('does not auto-attempt passkey until WebAuthn API is available', async () => {
+    delete window.PublicKeyCredential;
+
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: true,
+    });
+    mockStartPasskeyLogin.mockResolvedValue({
+      success: false,
+      error: 'Deferred passkey test',
+    });
+
+    render(<Login />);
+
+    await waitFor(() => {
+      expect(mockGetLoginMode).toHaveBeenCalled();
+    });
+    expect(mockStartPasskeyLogin).not.toHaveBeenCalled();
+
+    window.PublicKeyCredential = {
+      isUserVerifyingPlatformAuthenticatorAvailable: vi.fn().mockResolvedValue(false),
+    };
+    window.dispatchEvent(new Event('hubit:webauthn-ready'));
+
+    await waitFor(() => {
+      expect(mockStartPasskeyLogin).toHaveBeenCalledTimes(1);
+    });
   });
 
   it('auto-attempts passkey login for external network and redirects on success', async () => {
@@ -360,7 +393,7 @@ describe('Login hybrid internal/external flow', () => {
     expect(mockGetTrustedDeviceRegistrationOptions).not.toHaveBeenCalled();
   });
 
-  it('skips enrollment prompt after external 2FA when discoverable trusted device already exists', async () => {
+  it('offers optional enrollment prompt after external 2FA when discoverable trusted device already exists', async () => {
     mockGetLoginMode.mockResolvedValue({
       network_zone: 'external',
       biometric_login_enabled: true,
@@ -376,6 +409,7 @@ describe('Login hybrid internal/external flow', () => {
       },
     });
     window.navigator.credentials.get.mockRejectedValue(makeNotAllowedError());
+    window.PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable.mockResolvedValue(true);
     mockLogin.mockResolvedValue({
       success: true,
       status: '2fa_required',
@@ -403,10 +437,17 @@ describe('Login hybrid internal/external flow', () => {
     setInputValue('login-totp-verify', '654321');
     fireEvent.submit(await screen.findByTestId('verify-fallback-form'));
 
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog).toBeInTheDocument();
+    expect(within(dialog).getByText(/другом устройстве/i)).toBeInTheDocument();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+
+    const dialogButtons = within(dialog).getAllByRole('button');
+    fireEvent.click(dialogButtons[0]);
+
     await waitFor(() => {
       expect(locationAssignMock).toHaveBeenCalledWith('/dashboard');
     });
-    expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
   });
 
   it('keeps backup-code completion and opens enrollment prompt before redirect for external first setup', async () => {

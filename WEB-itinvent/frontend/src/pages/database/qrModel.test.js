@@ -58,6 +58,19 @@ describe('qrModel', () => {
     expect(isIgnorableQrFrameError('fatal camera error')).toBe(false);
   });
 
+  it('shows Android settings hint for denied camera permission in Capacitor', () => {
+    window.Capacitor = {
+      isNativePlatform: () => true,
+      getPlatform: () => 'android',
+    };
+    const message = getQrScannerErrorMessage(new Error(
+      'Error getting userMedia, error = NotAllowedError: Permission denied',
+    ));
+    expect(message).toContain('HUB-IT');
+    expect(message).toContain('Камера');
+    delete window.Capacitor;
+  });
+
   it('keeps QR scanner box dimensions bounded', () => {
     expect(getQrboxDimensions(0, 0)).toEqual({ width: 220, height: 220 });
     expect(getQrboxDimensions(100, 100)).toEqual({ width: 140, height: 140 });

@@ -470,29 +470,6 @@ class ChatPushService:
         ttl: int = 90,
     ) -> ChatPushSendResult:
         subscriptions = self._get_active_subscriptions(recipient_user_id=int(recipient_user_id))
-        if not subscriptions:
-            logger.info(
-                "APP_PUSH_SEND user_id=%s channel=%s subscriptions=0 sent=0 disabled=0 failed=0 tag=%s route=%s",
-                int(recipient_user_id),
-                _normalize_text(channel) or "system",
-                _normalize_text(tag),
-                _normalize_text(route) or "/",
-            )
-            print(
-                "APP_PUSH_SEND",
-                {
-                    "user_id": int(recipient_user_id),
-                    "channel": _normalize_text(channel) or "system",
-                    "subscriptions": 0,
-                    "sent": 0,
-                    "disabled": 0,
-                    "failed": 0,
-                    "tag": _normalize_text(tag),
-                    "route": _normalize_text(route) or "/",
-                },
-                flush=True,
-            )
-            return ChatPushSendResult()
         normalized_channel = _normalize_text(channel) or "system"
         headers: dict[str, Any] = {}
         if normalized_channel in {"chat", "mail"}:
@@ -517,17 +494,42 @@ class ChatPushService:
                 data=payload_data,
             ),
         }
-        result = self._send_payload_to_subscriptions(
-            subscriptions=subscriptions,
-            payload=payload,
-            ttl=ttl,
-            headers=headers or None,
-        )
+        result = ChatPushSendResult()
+        if subscriptions:
+            result = self._send_payload_to_subscriptions(
+                subscriptions=subscriptions,
+                payload=payload,
+                ttl=ttl,
+                headers=headers or None,
+            )
+        native_tokens = 0
+        try:
+            from backend.services.native_push_service import native_push_service
+
+            native_result = native_push_service.send_notification(
+                recipient_user_id=int(recipient_user_id),
+                title=payload["title"],
+                body=payload["body"],
+                channel=normalized_channel,
+                route=normalized_route,
+                tag=normalized_tag,
+                data=payload_data,
+                ttl=ttl,
+            )
+            native_tokens = int(getattr(native_result, "tokens", 0) or 0)
+            result.sent += int(getattr(native_result, "sent", 0) or 0)
+            result.disabled += int(getattr(native_result, "disabled", 0) or 0)
+            result.failed += int(getattr(native_result, "failed", 0) or 0)
+        except Exception:
+            logger.warning("Native push send failed", exc_info=True)
+            result.failed += 1
+
+        subscription_count = len(subscriptions) + native_tokens
         logger.info(
             "APP_PUSH_SEND user_id=%s channel=%s subscriptions=%s sent=%s disabled=%s failed=%s tag=%s route=%s",
             int(recipient_user_id),
             normalized_channel,
-            len(subscriptions),
+            subscription_count,
             int(result.sent),
             int(result.disabled),
             int(result.failed),
@@ -539,7 +541,7 @@ class ChatPushService:
             {
                 "user_id": int(recipient_user_id),
                 "channel": normalized_channel,
-                "subscriptions": len(subscriptions),
+                "subscriptions": subscription_count,
                 "sent": int(result.sent),
                 "disabled": int(result.disabled),
                 "failed": int(result.failed),

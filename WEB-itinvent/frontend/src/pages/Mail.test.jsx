@@ -2642,6 +2642,7 @@ describe('Mail read-state behavior', () => {
     await waitFor(() => {
       expect(screen.getByTestId('mail-compose-inline-pane')).toBeTruthy();
     });
+    expect(screen.queryByTestId('mail-compose-fab')).toBeNull();
 
     fireEvent.click(screen.getByTestId('mail-compose-open-signature'));
 
@@ -2684,6 +2685,7 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByTestId('mail-compose-dialog')).toBeTruthy();
     });
 
+    expect(screen.queryByTestId('mail-compose-fab')).toBeNull();
     expect(screen.queryByTestId('mail-compose-inline-pane')).toBeNull();
   });
 

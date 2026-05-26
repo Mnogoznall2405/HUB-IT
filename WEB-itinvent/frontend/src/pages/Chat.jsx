@@ -64,6 +64,7 @@ import { sanitizeMailHtmlFragment } from '../components/mail/mailHtmlContent';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../lib/chatFeature';
+import { isNativeShellRuntime } from '../lib/platform';
 import { getOrFetchSWR, invalidateSWRCacheByPrefix, peekSWRCache, setSWRCache } from '../lib/swrCache';
 import { chatSocket } from '../lib/chatSocket';
 import { buildChatUiTokens } from '../components/chat/chatUiTokens';
@@ -725,6 +726,44 @@ export const filterSidebarConversations = (conversations, conversationFilter) =>
   });
 };
 
+export const buildThreadPrefetchQueue = (
+  conversations,
+  activeConversationId,
+  {
+    limit = 6,
+  } = {},
+) => {
+  const items = Array.isArray(conversations) ? conversations : [];
+  const normalizedActiveConversationId = String(activeConversationId || '').trim();
+  const maxItems = Math.max(0, Number.isFinite(Number(limit)) ? Math.floor(Number(limit)) : 0);
+  if (maxItems <= 0) return [];
+
+  const seen = new Set();
+  const queue = [];
+  const addConversation = (conversation) => {
+    const conversationId = String(conversation?.id || '').trim();
+    if (!conversationId || conversationId === normalizedActiveConversationId || seen.has(conversationId)) return;
+    if (conversation?.is_archived) return;
+    seen.add(conversationId);
+    queue.push(conversationId);
+  };
+
+  const activeIndex = normalizedActiveConversationId
+    ? items.findIndex((item) => String(item?.id || '').trim() === normalizedActiveConversationId)
+    : -1;
+  if (activeIndex >= 0) {
+    addConversation(items[activeIndex + 1]);
+    addConversation(items[activeIndex - 1]);
+  }
+
+  for (const item of items) {
+    if (queue.length >= maxItems) break;
+    addConversation(item);
+  }
+
+  return queue.slice(0, maxItems);
+};
+
 export const normalizeForwardMessageQueue = (messages) => {
   const source = Array.isArray(messages) ? messages : [messages];
   const seenIds = new Set();
@@ -825,6 +864,8 @@ export default function Chat() {
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
   const prefersReducedMotion = useReducedMotion();
+  const nativeShellRuntime = isNativeShellRuntime();
+  const mobileMotionDisabled = prefersReducedMotion || (nativeShellRuntime && isMobile);
   const navigate = useNavigate();
   const location = useLocation();
   const { user, hasPermission } = useAuth();
@@ -1420,7 +1461,7 @@ export default function Chat() {
   );
   const contextPanelEnterDuration = prefersReducedMotion ? 1 : CONTEXT_PANEL_ENTER_MS;
   const contextPanelExitDuration = prefersReducedMotion ? 1 : CONTEXT_PANEL_EXIT_MS;
-  const mobileScreenTransition = prefersReducedMotion
+  const mobileScreenTransition = mobileMotionDisabled
     ? { duration: 0.01 }
     : { type: 'spring', stiffness: 430, damping: 38, mass: 0.9 };
   const resolvedMobileView = isMobile
@@ -3394,14 +3435,30 @@ export default function Chat() {
   }, [abortActiveThreadLoad, applyLatestThreadPayload, logChatDebug, notifyApiError, resolvePendingInitialAnchorFromPayload, userCacheId]);
 
   useEffect(() => {
-    if (!CHAT_FEATURE_ENABLED || sidebarSearchActive) return undefined;
-    const firstConversationId = String(conversations?.[0]?.id || '').trim();
-    if (!firstConversationId) return undefined;
+    if (!CHAT_FEATURE_ENABLED || sidebarSearchActive || conversationsLoading) return undefined;
+    const prefetchQueue = buildThreadPrefetchQueue(conversations, activeConversationId, {
+      limit: isMobile ? 4 : 8,
+    });
+    if (prefetchQueue.length === 0) return undefined;
+
+    let cancelled = false;
     const timeoutId = window.setTimeout(() => {
-      void prefetchThreadBootstrap(firstConversationId);
-    }, 140);
-    return () => window.clearTimeout(timeoutId);
-  }, [conversations, prefetchThreadBootstrap, sidebarSearchActive]);
+      const prefetchSequentially = async () => {
+        for (const conversationId of prefetchQueue) {
+          if (cancelled) return;
+          await prefetchThreadBootstrap(conversationId);
+          if (cancelled) return;
+          await new Promise((resolve) => window.setTimeout(resolve, 80));
+        }
+      };
+      void prefetchSequentially();
+    }, isMobile ? 220 : 140);
+
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeoutId);
+    };
+  }, [activeConversationId, conversations, conversationsLoading, isMobile, prefetchThreadBootstrap, sidebarSearchActive]);
 
   const loadMessages = useCallback(async (conversationId, {
     silent = false,
@@ -5053,8 +5110,8 @@ export default function Chat() {
 
   const mobileScreenVariants = {
     enter: (direction) => ({
-      x: prefersReducedMotion ? 0 : (direction > 0 ? '100%' : '-16%'),
-      opacity: prefersReducedMotion ? 1 : (direction > 0 ? 1 : 0.96),
+      x: mobileMotionDisabled ? 0 : (direction > 0 ? '100%' : '-16%'),
+      opacity: mobileMotionDisabled ? 1 : (direction > 0 ? 1 : 0.96),
       scale: 1,
     }),
     center: {
@@ -5063,8 +5120,8 @@ export default function Chat() {
       scale: 1,
     },
     exit: (direction) => ({
-      x: prefersReducedMotion ? 0 : (direction > 0 ? '-14%' : '100%'),
-      opacity: prefersReducedMotion ? 1 : (direction > 0 ? 0.95 : 1),
+      x: mobileMotionDisabled ? 0 : (direction > 0 ? '-14%' : '100%'),
+      opacity: mobileMotionDisabled ? 1 : (direction > 0 ? 0.95 : 1),
       scale: 1,
     }),
   };
@@ -5075,6 +5132,7 @@ export default function Chat() {
       ui={ui}
       isMobile={isMobile}
       compactMobile={isPhone}
+      disableMotion={mobileMotionDisabled}
       health={health}
       user={user}
       unreadTotal={unreadTotal}

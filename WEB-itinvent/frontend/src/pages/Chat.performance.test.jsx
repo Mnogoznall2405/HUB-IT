@@ -5,6 +5,7 @@ import {
   buildChatLastConversationSessionKey,
   buildChatLastMobileViewSessionKey,
   buildChatThreadCacheKeyParts,
+  buildThreadPrefetchQueue,
   reconcileThreadMessages,
   shouldSkipActiveThreadRevalidate,
 } from './Chat';
@@ -91,5 +92,28 @@ describe('Chat page cache helpers', () => {
     });
 
     expect(next.map((message) => message.id)).toEqual(['msg-2']);
+  });
+
+  it('prioritizes nearby and recent conversations for thread prefetch', () => {
+    const queue = buildThreadPrefetchQueue([
+      { id: 'conv-1' },
+      { id: 'conv-2' },
+      { id: 'conv-3' },
+      { id: 'conv-4', is_archived: true },
+      { id: 'conv-5' },
+    ], 'conv-2', { limit: 4 });
+
+    expect(queue).toEqual(['conv-3', 'conv-1', 'conv-5']);
+  });
+
+  it('does not prefetch the active thread or duplicate conversation ids', () => {
+    const queue = buildThreadPrefetchQueue([
+      { id: 'conv-1' },
+      { id: 'conv-2' },
+      { id: 'conv-2' },
+      { id: 'conv-3' },
+    ], 'conv-1', { limit: 3 });
+
+    expect(queue).toEqual(['conv-2', 'conv-3']);
   });
 });
