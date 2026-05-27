@@ -15,6 +15,10 @@ const mockApi = vi.hoisted(() => ({
     getByInvNos: vi.fn(),
     getEquipmentHistory: vi.fn(),
     getEquipmentActs: vi.fn(),
+    getRecentCards: vi.fn(),
+    touchRecentCard: vi.fn(),
+    removeRecentCard: vi.fn(),
+    clearRecentCards: vi.fn(),
     identifyWorkspace: vi.fn(),
   },
   databaseAPI: {
@@ -170,6 +174,18 @@ beforeEach(() => {
     requested: 1,
   });
   mockApi.equipmentAPI.getEquipmentActs.mockResolvedValue({ acts: [], total: 0 });
+  mockApi.equipmentAPI.getRecentCards.mockResolvedValue({ items: [] });
+  mockApi.equipmentAPI.touchRecentCard.mockResolvedValue({
+    inv_no: '1001',
+    db_id: 'main',
+    last_action: 'view',
+    last_action_label: 'Открыта',
+    last_activity_at: '2026-05-27T08:00:00+00:00',
+    activity_count: 1,
+    snapshot: { INV_NO: '1001', MODEL_NAME: 'OptiPlex' },
+  });
+  mockApi.equipmentAPI.removeRecentCard.mockResolvedValue({ removed: 1 });
+  mockApi.equipmentAPI.clearRecentCards.mockResolvedValue({ removed: 1 });
   mockApi.equipmentAPI.getEquipmentHistory.mockResolvedValue({
     inv_no: '1001',
     item_id: 1,
@@ -322,6 +338,87 @@ describe('Database equipment row helpers', () => {
 
     expect(await screen.findByText('Part Number')).toBeInTheDocument();
     expect(screen.getByText('PN-1001')).toBeInTheDocument();
+  });
+
+  it('shows recent equipment cards under search and opens detail from the card', async () => {
+    mockApi.equipmentAPI.getRecentCards.mockResolvedValue({
+      items: [
+        {
+          inv_no: '1001',
+          db_id: 'main',
+          last_action: 'view',
+          last_action_label: 'Открыта',
+          last_activity_at: '2026-05-27T08:00:00+00:00',
+          activity_count: 1,
+          snapshot: {
+            INV_NO: '1001',
+            SERIAL_NO: 'SN-1001',
+            MODEL_NAME: 'OptiPlex Recent',
+            OWNER_DISPLAY_NAME: 'Recent Holder',
+            BRANCH_NAME: 'HQ',
+            LOCATION_NAME: 'Office',
+            STATUS_NAME: 'Active',
+          },
+        },
+      ],
+    });
+
+    renderDatabase();
+
+    expect(await screen.findByTestId('database-recent-cards')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('OptiPlex Recent'));
+
+    await waitFor(() => {
+      expect(mockApi.equipmentAPI.touchRecentCard).toHaveBeenCalledWith(expect.objectContaining({
+        invNo: '1001',
+        actionType: 'view',
+      }));
+    });
+    await waitFor(() => {
+      expect(mockApi.equipmentAPI.getByInvNos).toHaveBeenCalledWith(['1001']);
+    });
+  });
+
+  it('records a recent view when a row action opens a card', async () => {
+    renderDatabase();
+
+    fireEvent.click(await screen.findByText('HQ'));
+    fireEvent.click(await screen.findByText('Office'));
+    const actionButtons = await screen.findAllByRole('button', { name: 'actions' });
+    fireEvent.click(actionButtons[0]);
+
+    await waitFor(() => {
+      expect(mockApi.equipmentAPI.touchRecentCard).toHaveBeenCalledWith(expect.objectContaining({
+        invNo: '1001',
+        actionType: 'view',
+      }));
+    });
+  });
+
+  it('hides recent equipment cards on the consumables tab', async () => {
+    mockApi.equipmentAPI.getRecentCards.mockResolvedValue({
+      items: [
+        {
+          inv_no: '1001',
+          db_id: 'main',
+          last_action: 'view',
+          last_action_label: 'Открыта',
+          last_activity_at: '2026-05-27T08:00:00+00:00',
+          activity_count: 1,
+          snapshot: { INV_NO: '1001', MODEL_NAME: 'OptiPlex Recent' },
+        },
+      ],
+    });
+
+    renderDatabase();
+
+    expect(await screen.findByTestId('database-recent-cards')).toBeInTheDocument();
+    fireEvent.click(screen.getAllByRole('tab')[1]);
+
+    await waitFor(() => {
+      expect(mockApi.equipmentAPI.getAllConsumablesGrouped).toHaveBeenCalled();
+    });
+    expect(screen.queryByTestId('database-recent-cards')).not.toBeInTheDocument();
   });
 
   it('switches desktop quick action to consumables add button on the consumables tab', async () => {

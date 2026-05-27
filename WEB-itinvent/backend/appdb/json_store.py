@@ -13,7 +13,6 @@ from backend.appdb.models import AppJsonDocument, AppJsonRecord
 
 
 FILE_KIND_MAP: dict[str, str] = {
-    "unfound_equipment.json": "list",
     "equipment_transfers.json": "list",
     "cartridge_replacements.json": "list",
     "battery_replacements.json": "list",

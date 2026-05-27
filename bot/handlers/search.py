@@ -267,22 +267,8 @@ async def find_by_serial_input(update: Update, context: ContextTypes.DEFAULT_TYP
                 search_inv_no or "-",
                 search_serial_no or "-",
             )
-            # Сохраняем только serial, чтобы сценарий add_unfound не получил INV вместо serial.
-            if search_serial_no:
-                context.user_data["last_search_serial"] = search_serial_no
-            else:
-                context.user_data.pop("last_search_serial", None)
-
             keyboard = InlineKeyboardMarkup(
-                [
-                    [
-                        InlineKeyboardButton(
-                            "📝 Добавить информацию об оборудовании",
-                            callback_data="add_unfound",
-                        )
-                    ],
-                    [InlineKeyboardButton("🔄 Обработать еще", callback_data="search_again")],
-                ]
+                [[InlineKeyboardButton("🔄 Обработать еще", callback_data="search_again")]]
             )
 
             target_label = search_hint or "переданным данным"
@@ -296,8 +282,7 @@ async def find_by_serial_input(update: Update, context: ContextTypes.DEFAULT_TYP
                 )
 
             await update.message.reply_text(
-                f"❌ Оборудование с {target_label} не найдено в базе данных.{extra}\n\n"
-                f"Вы можете добавить информацию об этом оборудовании:",
+                f"❌ Оборудование с {target_label} не найдено в учётной базе ITINVENT.{extra}",
                 parse_mode="HTML",
                 reply_markup=keyboard,
             )

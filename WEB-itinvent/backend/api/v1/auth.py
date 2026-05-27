@@ -11,7 +11,7 @@ import uuid
 
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, status, HTTPException, Request, Response, Cookie, UploadFile
+from fastapi import APIRouter, Body, Depends, File, status, HTTPException, Request, Response, Cookie, UploadFile
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -25,6 +25,8 @@ from backend.models.auth import (
     LoginModeResponse,
     ChangePasswordRequest,
     RefreshResponse,
+    MobileRefreshRequest,
+    LogoutRequest,
     TwoFactorSetupStartRequest,
     TwoFactorSetupResponse,
     TwoFactorSetupVerifyRequest,
@@ -356,6 +358,86 @@ def _set_auth_cookies(response: Response, *, access_token: str, refresh_token: s
     )
 
 
+_MOBILE_AUTH_CLIENT_HEADER = "x-auth-client"
+_MOBILE_AUTH_CLIENT_VALUE = "mobile"
+
+
+def _is_mobile_auth_client(request: Request) -> bool:
+    return str(request.headers.get(_MOBILE_AUTH_CLIENT_HEADER) or "").strip().lower() == _MOBILE_AUTH_CLIENT_VALUE
+
+
+def _apply_auth_delivery(
+    request: Request,
+    response: Response,
+    *,
+    access_token: str,
+    refresh_token: str,
+    access_ttl_seconds: int,
+    refresh_ttl_seconds: int,
+) -> tuple[Optional[str], Optional[str]]:
+    """Issue cookies for web clients; return bearer tokens in JSON for mobile clients."""
+    normalized_access = str(access_token or "").strip()
+    normalized_refresh = str(refresh_token or "").strip()
+    if _is_mobile_auth_client(request):
+        return normalized_access or None, normalized_refresh or None
+    if normalized_access and normalized_refresh:
+        _set_auth_cookies(
+            response,
+            access_token=normalized_access,
+            refresh_token=normalized_refresh,
+            access_ttl_seconds=access_ttl_seconds,
+            refresh_ttl_seconds=refresh_ttl_seconds,
+        )
+    return None, None
+
+
+def _build_login_response(
+    request: Request,
+    response: Response,
+    login_result: dict[str, Any],
+) -> LoginResponse:
+    body_access: Optional[str] = None
+    body_refresh: Optional[str] = None
+    if str(login_result.get("status") or "") == "authenticated":
+        body_access, body_refresh = _apply_auth_delivery(
+            request,
+            response,
+            access_token=str(login_result.get("access_token") or ""),
+            refresh_token=str(login_result.get("refresh_token") or ""),
+            access_ttl_seconds=int(login_result.get("access_ttl_seconds") or 0),
+            refresh_ttl_seconds=int(login_result.get("refresh_ttl_seconds") or 0),
+        )
+    return LoginResponse(
+        status=login_result["status"],
+        access_token=body_access,
+        refresh_token=body_refresh,
+        token_type="bearer",
+        user=User(**login_result["user"]) if login_result.get("user") else None,
+        session_id=login_result.get("session_id"),
+        login_challenge_id=login_result.get("login_challenge_id"),
+        available_second_factors=list(login_result.get("available_second_factors") or []),
+        trusted_devices_available=bool(login_result.get("trusted_devices_available")),
+    )
+
+
+def _resolve_refresh_token(
+    *,
+    request: Request,
+    refresh_token_cookie: Optional[str],
+    mobile_payload: Optional[MobileRefreshRequest],
+) -> str:
+    cookie_token = str(refresh_token_cookie or "").strip()
+    if cookie_token:
+        return cookie_token
+    if mobile_payload is not None:
+        body_token = str(mobile_payload.refresh_token or "").strip()
+        if body_token:
+            return body_token
+    if _is_mobile_auth_client(request):
+        raise HTTPException(status_code=401, detail="Refresh token is invalid")
+    return ""
+
+
 def _clear_auth_cookies(response: Response) -> None:
     response.delete_cookie(
         key=config.app.auth_cookie_name,
@@ -503,13 +585,6 @@ async def login(payload: LoginRequest, request: Request, response: Response):
                 network_zone=network_context.network_zone,
             )
         if login_result["status"] == "authenticated":
-            _set_auth_cookies(
-                response,
-                access_token=str(login_result.get("access_token") or ""),
-                refresh_token=str(login_result.get("refresh_token") or ""),
-                access_ttl_seconds=int(login_result.get("access_ttl_seconds") or 0),
-                refresh_ttl_seconds=int(login_result.get("refresh_ttl_seconds") or 0),
-            )
             await run_in_threadpool(_apply_default_database, login_result["user"])
         logger.info(
             "Auth login decision username=%s client_ip=%s remote_host=%s xff=%s zone=%s trusted_proxy=%s via_xff=%s https=%s xfp=%s policy=%s status=%s challenge=%s cookies_set=%s",
@@ -527,16 +602,7 @@ async def login(payload: LoginRequest, request: Request, response: Response):
             str(login_result.get("login_challenge_id") or ""),
             bool(login_result.get("status") == "authenticated"),
         )
-        return LoginResponse(
-            status=login_result["status"],
-            access_token=None,
-            token_type="bearer",
-            user=User(**login_result["user"]) if login_result.get("user") else None,
-            session_id=login_result.get("session_id"),
-            login_challenge_id=login_result.get("login_challenge_id"),
-            available_second_factors=list(login_result.get("available_second_factors") or []),
-            trusted_devices_available=bool(login_result.get("trusted_devices_available")),
-        )
+        return _build_login_response(request, response, login_result)
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -670,30 +736,31 @@ async def passkey_login_verify(payload: PasskeyLoginVerifyRequest, request: Requ
             reason="passkey_complete",
         )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _set_auth_cookies(
-        response,
-        access_token=str(result.get("access_token") or ""),
-        refresh_token=str(result.get("refresh_token") or ""),
-        access_ttl_seconds=int(result.get("access_ttl_seconds") or 0),
-        refresh_ttl_seconds=int(result.get("refresh_ttl_seconds") or 0),
-    )
     await run_in_threadpool(_apply_default_database, result["user"])
-    return LoginResponse(
-        status="authenticated",
-        access_token=None,
-        token_type="bearer",
-        user=User(**result["user"]),
-        session_id=result.get("session_id"),
+    return _build_login_response(
+        request,
+        response,
+        {
+            "status": "authenticated",
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),
+            "access_ttl_seconds": result.get("access_ttl_seconds"),
+            "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
+            "user": result["user"],
+            "session_id": result.get("session_id"),
+        },
     )
 
 
 @router.post("/logout")
 async def logout(
+    request: Request,
     response: Response,
     current_user: User = Depends(get_current_user),
     credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
     access_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_cookie_name),
     refresh_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_refresh_cookie_name),
+    payload: Optional[LogoutRequest] = Body(None),
 ):
     """
     Logout endpoint.
@@ -709,12 +776,16 @@ async def logout(
         session_service.close_session(token_data.session_id)
         session_auth_context_service.delete_session_context(token_data.session_id)
     _revoke_token_if_present(token)
-    _revoke_token_if_present(refresh_token_cookie)
-    if refresh_token_cookie:
-        refresh_data = decode_access_token(refresh_token_cookie, expected_token_type="refresh")
+    refresh_token_value = str(refresh_token_cookie or "").strip()
+    if not refresh_token_value and payload is not None:
+        refresh_token_value = str(payload.refresh_token or "").strip()
+    _revoke_token_if_present(refresh_token_value or None)
+    if refresh_token_value:
+        refresh_data = decode_access_token(refresh_token_value, expected_token_type="refresh")
         if refresh_data and refresh_data.jti:
             auth_runtime_store_service.consume_refresh_token(refresh_data.jti)
-    _clear_auth_cookies(response)
+    if not _is_mobile_auth_client(request):
+        _clear_auth_cookies(response)
     return {"message": "Successfully logged out", "username": current_user.username}
 
 
@@ -790,20 +861,27 @@ async def verify_twofa_setup(payload: TwoFactorSetupVerifyRequest, request: Requ
         )
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _set_auth_cookies(
+    login_response = _build_login_response(
+        request,
         response,
-        access_token=str(result.get("access_token") or ""),
-        refresh_token=str(result.get("refresh_token") or ""),
-        access_ttl_seconds=int(result.get("access_ttl_seconds") or 0),
-        refresh_ttl_seconds=int(result.get("refresh_ttl_seconds") or 0),
+        {
+            "status": "authenticated",
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),
+            "access_ttl_seconds": result.get("access_ttl_seconds"),
+            "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
+            "user": result["user"],
+            "session_id": result.get("session_id"),
+        },
     )
     await run_in_threadpool(_apply_default_database, result["user"])
     return TwoFactorSetupVerifyResponse(
-        status="authenticated",
-        access_token=None,
-        token_type="bearer",
-        user=User(**result["user"]),
-        session_id=result.get("session_id"),
+        status=login_response.status,
+        access_token=login_response.access_token,
+        refresh_token=login_response.refresh_token,
+        token_type=login_response.token_type,
+        user=login_response.user,
+        session_id=login_response.session_id,
         backup_codes=list(result.get("backup_codes") or []),
     )
 
@@ -827,20 +905,19 @@ async def verify_twofa_login(payload: TwoFactorLoginVerifyRequest, request: Requ
         )
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _set_auth_cookies(
-        response,
-        access_token=str(result.get("access_token") or ""),
-        refresh_token=str(result.get("refresh_token") or ""),
-        access_ttl_seconds=int(result.get("access_ttl_seconds") or 0),
-        refresh_ttl_seconds=int(result.get("refresh_ttl_seconds") or 0),
-    )
     await run_in_threadpool(_apply_default_database, result["user"])
-    return LoginResponse(
-        status="authenticated",
-        access_token=None,
-        token_type="bearer",
-        user=User(**result["user"]),
-        session_id=result.get("session_id"),
+    return _build_login_response(
+        request,
+        response,
+        {
+            "status": "authenticated",
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),
+            "access_ttl_seconds": result.get("access_ttl_seconds"),
+            "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
+            "user": result["user"],
+            "session_id": result.get("session_id"),
+        },
     )
 
 
@@ -849,9 +926,15 @@ async def refresh_auth_tokens(
     request: Request,
     response: Response,
     refresh_token_cookie: Optional[str] = Cookie(None, alias=config.app.auth_refresh_cookie_name),
+    mobile_payload: Optional[MobileRefreshRequest] = Body(None),
 ):
     network_context = build_request_network_context(request)
-    token_data = decode_access_token(refresh_token_cookie or "", expected_token_type="refresh")
+    refresh_token_raw = _resolve_refresh_token(
+        request=request,
+        refresh_token_cookie=refresh_token_cookie,
+        mobile_payload=mobile_payload,
+    )
+    token_data = decode_access_token(refresh_token_raw, expected_token_type="refresh")
     if token_data is None or not token_data.jti or not token_data.session_id or not token_data.user_id:
         await run_in_threadpool(
             _enforce_rate_limit,
@@ -890,7 +973,8 @@ async def refresh_auth_tokens(
         )
     except AuthSecurityError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
-    _set_auth_cookies(
+    body_access, body_refresh = _apply_auth_delivery(
+        request,
         response,
         access_token=str(refreshed.get("access_token") or ""),
         refresh_token=str(refreshed.get("refresh_token") or ""),
@@ -898,7 +982,8 @@ async def refresh_auth_tokens(
         refresh_ttl_seconds=int(refreshed.get("refresh_ttl_seconds") or 0),
     )
     return RefreshResponse(
-        access_token=None,
+        access_token=body_access,
+        refresh_token=body_refresh,
         token_type="bearer",
         user=User(**refreshed["user"]),
         session_id=refreshed.get("session_id"),
@@ -1091,20 +1176,19 @@ async def trusted_device_auth_verify(payload: TrustedDeviceAuthVerifyRequest, re
             reason="trusted_device_verify",
         )
         raise HTTPException(status_code=400, detail=str(exc)) from exc
-    _set_auth_cookies(
+    await run_in_threadpool(_apply_default_database, result["user"])
+    return _build_login_response(
+        request,
         response,
-        access_token=str(result.get("access_token") or ""),
-        refresh_token=str(result.get("refresh_token") or ""),
-        access_ttl_seconds=int(result.get("access_ttl_seconds") or 0),
-        refresh_ttl_seconds=int(result.get("refresh_ttl_seconds") or 0),
-    )
-    _apply_default_database(result["user"])
-    return LoginResponse(
-        status="authenticated",
-        access_token=None,
-        token_type="bearer",
-        user=User(**result["user"]),
-        session_id=result.get("session_id"),
+        {
+            "status": "authenticated",
+            "access_token": result.get("access_token"),
+            "refresh_token": result.get("refresh_token"),
+            "access_ttl_seconds": result.get("access_ttl_seconds"),
+            "refresh_ttl_seconds": result.get("refresh_ttl_seconds"),
+            "user": result["user"],
+            "session_id": result.get("session_id"),
+        },
     )
 
 

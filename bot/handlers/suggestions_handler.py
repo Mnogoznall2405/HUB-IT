@@ -32,7 +32,7 @@ async def handle_employee_suggestion_generic(
     Параметры:
         update: Объект обновления от Telegram API
         context: Контекст выполнения
-        mode: Режим работы ('unfound', 'transfer', и т.д.)
+        mode: Режим работы ('transfer', 'work', и т.д.)
         storage_key: Ключ для сохранения выбранного значения
         pending_key: Ключ для временного хранения ввода
         suggestions_key: Ключ для хранения списка подсказок
@@ -157,7 +157,7 @@ async def show_employee_suggestions(
         update: Объект обновления от Telegram API
         context: Контекст выполнения
         employee_name: Введённое ФИО
-        mode: Режим работы ('unfound', 'transfer', и т.д.)
+        mode: Режим работы ('transfer', 'work', и т.д.)
         pending_key: Ключ для временного хранения
         suggestions_key: Ключ для хранения подсказок
         
@@ -348,7 +348,7 @@ async def show_location_suggestions(
     context.user_data[pending_key] = location
 
     # Проверяем, был ли выбран филиал
-    branch = context.user_data.get('unfound_branch') or context.user_data.get('work_branch') or context.user_data.get('transfer_branch')
+    branch = context.user_data.get('work_branch') or context.user_data.get('transfer_branch')
 
     if len(location) >= 2:
         try:

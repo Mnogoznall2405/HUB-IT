@@ -47,6 +47,7 @@ def test_delete_equipment_route_allows_admin_success(monkeypatch, equipment_dele
         return {"success": True, "inv_no": "1001", "item_id": 77, "message": "Equipment deleted"}
 
     monkeypatch.setattr(equipment_api.queries, "delete_equipment_by_inv", fake_delete)
+    monkeypatch.setattr(equipment_api, "_remove_recent_card_for_equipment_safely", lambda **kwargs: None)
 
     response = equipment_delete_env["client"].delete("/equipment/1001")
 

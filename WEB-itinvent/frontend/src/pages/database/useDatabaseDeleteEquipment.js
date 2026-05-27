@@ -13,6 +13,7 @@ export function useDatabaseDeleteEquipment({
   setTotal,
   detailInvNo = '',
   onDetailDeleted,
+  onEquipmentDeleted,
   notifyDatabaseSuccess,
 } = {}) {
   const [deleteTarget, setDeleteTarget] = useState(null);
@@ -52,6 +53,7 @@ export function useDatabaseDeleteEquipment({
       if (String(detailInvNo || '').trim() === invNo) {
         onDetailDeleted?.();
       }
+      onEquipmentDeleted?.(invNo);
       setDeleteTarget(null);
       notifyDatabaseSuccess?.(`Оборудование ${invNo} удалено.`);
     } catch (error) {
@@ -66,6 +68,7 @@ export function useDatabaseDeleteEquipment({
     isAdmin,
     notifyDatabaseSuccess,
     onDetailDeleted,
+    onEquipmentDeleted,
     setAllEquipment,
     setFilteredData,
     setLoadedCount,

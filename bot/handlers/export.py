@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Обработчики экспорта данных
-Экспорт ненайденного оборудования и перемещений, отправка на email.
+Обработчики экспорта данных: перемещения, работы, отправка на email.
 """
 import logging
 import os
@@ -26,7 +25,6 @@ equipment_manager = EquipmentDataManager()
 
 def _build_export_menu_keyboard() -> InlineKeyboardMarkup:
     keyboard = [
-        [InlineKeyboardButton("📦 Экспорт ненайденного оборудования", callback_data="export_type:unfound")],
         [InlineKeyboardButton("🔄 Экспорт перемещений", callback_data="export_type:transfers")],
         [InlineKeyboardButton("🔋 Экспорт замены батареи ИБП", callback_data="export_type:battery")],
         [InlineKeyboardButton("🖥️ Экспорт чистки ПК", callback_data="export_type:pc_cleaning")],
@@ -127,7 +125,7 @@ async def show_export_period(update: Update, context: ContextTypes.DEFAULT_TYPE)
     Возвращает:
         int: Следующее состояние
     """
-    export_type = context.user_data.get('export_type', 'unfound')
+    export_type = context.user_data.get('export_type', 'transfers')
 
     # Разные клавиатуры для разных типов экспорта
     if export_type in ('battery', 'pc_cleaning', 'pc_components'):
@@ -149,7 +147,6 @@ async def show_export_period(update: Update, context: ContextTypes.DEFAULT_TYPE)
     reply_markup = InlineKeyboardMarkup(keyboard)
 
     type_names = {
-        'unfound': 'ненайденного оборудования',
         'transfers': 'перемещений',
         'battery': 'замен батареи ИБП',
         'pc_cleaning': 'чистки ПК',
@@ -191,7 +188,7 @@ async def handle_export_period(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     callback_data = query.data
-    export_type = context.user_data.get('export_type', 'unfound')
+    export_type = context.user_data.get('export_type', 'transfers')
 
     if callback_data.startswith("export_period:"):
         period = callback_data.split(":")[1]
@@ -275,7 +272,7 @@ async def handle_export_database(update: Update, context: ContextTypes.DEFAULT_T
     if callback_data.startswith("export_db:"):
         db_name = callback_data.split(":")[1]
         
-        export_type = context.user_data.get('export_type', 'unfound')
+        export_type = context.user_data.get('export_type', 'transfers')
         period = context.user_data.get('export_period', 'full')
         
         # Выполняем экспорт
@@ -285,29 +282,7 @@ async def handle_export_database(update: Update, context: ContextTypes.DEFAULT_T
             only_new = (period == 'new')
             db_filter = None if db_name == 'all' else db_name
             
-            if export_type == 'unfound':
-                # Экспорт ненайденного оборудования
-                exported_files = equipment_manager.export_to_csv(
-                    date_filter=None,
-                    db_filter=db_filter,
-                    only_new=only_new
-                )
-                
-                unfound_csv = exported_files.get('unfound')
-                
-                if unfound_csv and os.path.exists(unfound_csv):
-                    # Сохраняем путь к файлу
-                    context.user_data['export_file'] = unfound_csv
-                    
-                    # Показываем опции доставки
-                    return await show_delivery_options(update, context, unfound_csv)
-                else:
-                    await query.edit_message_text(
-                        "❌ Нет данных для экспорта или ошибка создания файла."
-                    )
-                    return ConversationHandler.END
-            
-            elif export_type == 'transfers':
+            if export_type == 'transfers':
                 # Экспорт перемещений
                 text_file = equipment_manager.export_transfers_to_text(
                     date_filter=None,

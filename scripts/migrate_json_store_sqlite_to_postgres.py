@@ -7,7 +7,6 @@ from pathlib import Path
 
 
 JSON_FILES = [
-    "unfound_equipment.json",
     "equipment_transfers.json",
     "cartridge_replacements.json",
     "battery_replacements.json",

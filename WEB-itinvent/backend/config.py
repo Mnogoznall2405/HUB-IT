@@ -129,7 +129,12 @@ class AppConfig:
     def __post_init__(self):
         self.environment = _normalize_environment(self.environment)
         if self.cors_origins is None:
-            self.cors_origins = ["http://localhost:5173", "http://localhost:3000"]
+            self.cors_origins = [
+                "http://localhost:5173",
+                "http://localhost:3000",
+                "http://localhost:8081",
+                "http://127.0.0.1:8081",
+            ]
 
     @property
     def is_production(self) -> bool:

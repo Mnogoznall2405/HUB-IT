@@ -59,6 +59,8 @@ const EQUIPMENT_CONSUMABLES_MODULE = './equipmentConsumables.js';
 const importEquipmentConsumablesAPI = () => import(EQUIPMENT_CONSUMABLES_MODULE);
 const EQUIPMENT_RECORDS_MODULE = './equipmentRecords.js';
 const importEquipmentRecordsAPI = () => import(EQUIPMENT_RECORDS_MODULE);
+const EQUIPMENT_RECENT_CARDS_MODULE = './equipmentRecentCards.js';
+const importEquipmentRecentCardsAPI = () => import(EQUIPMENT_RECENT_CARDS_MODULE);
 const EQUIPMENT_SEARCH_MODULE = './equipmentSearch.js';
 const importEquipmentSearchAPI = () => import(EQUIPMENT_SEARCH_MODULE);
 const EQUIPMENT_DIRECTORIES_MODULE = './equipmentDirectories.js';
@@ -665,6 +667,67 @@ describe('equipmentRecordsAPI contract', () => {
 
     expect(spy).toHaveBeenCalledWith('1001', payload);
     spy.mockRestore();
+  });
+});
+
+describe('equipmentRecentCardsAPI contract', () => {
+  const equipmentRecentCardMethods = [
+    'getRecentCards',
+    'touchRecentCard',
+    'removeRecentCard',
+    'clearRecentCards',
+  ];
+
+  beforeEach(() => {
+    apiClientMock.get.mockReset();
+    apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.delete = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.get.mockResolvedValue({ data: { items: [] } });
+    window.localStorage.clear();
+  });
+
+  it('loads recent cards and posts touch events through the dedicated module', async () => {
+    const { equipmentRecentCardsAPI } = await importEquipmentRecentCardsAPI();
+    const snapshot = { MODEL_NAME: 'OptiPlex' };
+
+    await expect(equipmentRecentCardsAPI.getRecentCards({ limit: 4 })).resolves.toEqual({ items: [] });
+    await expect(equipmentRecentCardsAPI.touchRecentCard({
+      invNo: 'INV/100 A',
+      actionType: 'view',
+      snapshot,
+    })).resolves.toEqual({ ok: true });
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/equipment/recent-cards', {
+      params: { limit: 4 },
+    });
+    expect(apiClientMock.post).toHaveBeenCalledWith('/equipment/recent-cards/touch', {
+      inv_no: 'INV/100 A',
+      action_type: 'view',
+      snapshot,
+    });
+  });
+
+  it('removes and clears recent cards through encoded recent routes', async () => {
+    const { equipmentRecentCardsAPI } = await importEquipmentRecentCardsAPI();
+
+    await expect(equipmentRecentCardsAPI.removeRecentCard('INV/100 A')).resolves.toEqual({ ok: true });
+    await expect(equipmentRecentCardsAPI.clearRecentCards()).resolves.toEqual({ ok: true });
+
+    expect(apiClientMock.delete).toHaveBeenNthCalledWith(1, '/equipment/recent-cards/INV%2F100%20A');
+    expect(apiClientMock.delete).toHaveBeenNthCalledWith(2, '/equipment/recent-cards');
+  });
+
+  it('keeps client equipment recent cards compatibility through the dedicated module and getters', async () => {
+    const { equipmentRecentCardsAPI } = await importEquipmentRecentCardsAPI();
+    const {
+      equipmentAPI,
+      equipmentRecentCardsAPI: clientEquipmentRecentCardsAPI,
+    } = await import('./client');
+
+    expect(clientEquipmentRecentCardsAPI).toBe(equipmentRecentCardsAPI);
+    equipmentRecentCardMethods.forEach((methodName) => {
+      expect(equipmentAPI[methodName]).toBe(equipmentRecentCardsAPI[methodName]);
+    });
   });
 });
 

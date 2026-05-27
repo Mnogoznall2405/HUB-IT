@@ -76,6 +76,7 @@ export function useDatabaseTransferAction({
   resetDetailHistory,
   navigate,
   openUploadActModalForReminder,
+  onTransferJobDone,
   pollingMaxAttempts = 240,
 } = {}) {
   const [transferOperationMode, setTransferOperationMode] = useState(TRANSFER_OPERATION_MOVE);
@@ -443,6 +444,13 @@ export function useDatabaseTransferAction({
             }
             await fetchAllEquipment?.({ force: true });
           }
+          if (status === 'done') {
+            await Promise.resolve(onTransferJobDone?.({
+              result,
+              targetInvNos: Array.isArray(options.targetInvNos) ? options.targetInvNos : [],
+              operationMode: options.operationMode || transferOperationMode,
+            }));
+          }
           return result;
         }
       } catch (error) {
@@ -460,7 +468,15 @@ export function useDatabaseTransferAction({
       setActionError?.(JOB_TIMEOUT_ERROR);
     }
     return null;
-  }, [detailInvNo, fetchAllEquipment, pollingMaxAttempts, resetDetailHistory, setActionError]);
+  }, [
+    detailInvNo,
+    fetchAllEquipment,
+    onTransferJobDone,
+    pollingMaxAttempts,
+    resetDetailHistory,
+    setActionError,
+    transferOperationMode,
+  ]);
 
   const handleTransferEmailSend = useCallback(async () => {
     if (!canDatabaseWrite) {
@@ -528,7 +544,10 @@ export function useDatabaseTransferAction({
       const response = await equipmentAPI.createTransferActOnly(payload);
       setTransferResult(response);
       if (isTransferJobPending(response)) {
-        void pollTransferActJob(response.job_id);
+        void pollTransferActJob(response.job_id, {
+          operationMode: TRANSFER_OPERATION_ACT_ONLY,
+          targetInvNos,
+        });
       }
       setTransferEmailStatus('');
       setTransferEmailError('');
@@ -582,6 +601,7 @@ export function useDatabaseTransferAction({
     setTransferResult(response);
     if (isTransferJobPending(response)) {
       void pollTransferActJob(response.job_id, {
+        operationMode: TRANSFER_OPERATION_MOVE,
         refreshEquipment: true,
         targetInvNos,
       });

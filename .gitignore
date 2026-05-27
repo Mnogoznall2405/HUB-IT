@@ -134,9 +134,10 @@ data/scan_server/*.backup_*
 /backups/
 /htmlcov/
 /cxfreeze-*/
-/tools/*.zip
-/tools/node-*/
-/tools/nodejs/
+/tools/
+.build-tmp/
+.gradle-hub/
+mobile-hub-build/
 bot.log*
 
 # Claude

@@ -1,9 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Модуль для управления данными о ненайденном оборудовании и перемещениях сотрудников.
-Обрабатывает случаи, когда серийный номер не найден в базе данных,
-и управляет данными о перемещениях техники между сотрудниками.
+Модуль для управления JSON-данными о перемещениях оборудования между сотрудниками.
 """
 
 import csv
@@ -21,26 +19,20 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class EquipmentDataManager:
-    """
-    Класс для управления данными о ненайденном оборудовании и перемещениях.
-    """
-    
+    """Управление JSON-данными о перемещениях оборудования."""
+
     def __init__(
         self,
-        unfound_file: str = "data/unfound_equipment.json",
         transfers_file: str = "data/equipment_transfers.json",
         export_state_file: str = "data/export_state.json",
     ):
-        self.unfound_file = unfound_file
         self.transfers_file = transfers_file
         self.export_state_file = export_state_file
-        self.unfound_name = os.path.basename(self.unfound_file)
         self.transfers_name = os.path.basename(self.transfers_file)
         self.export_state_name = os.path.basename(self.export_state_file)
         self._ensure_files_exist()
 
     def _ensure_files_exist(self):
-        load_json_data(self.unfound_name, default_content=[])
         load_json_data(self.transfers_name, default_content=[])
         load_json_data(self.export_state_name, default_content={})
 
@@ -153,116 +145,6 @@ class EquipmentDataManager:
         s = prefix_re.sub('', s)
         return s.strip()
     
-    def exists_unfound_serial(self, serial_number: str) -> bool:
-        """
-        Проверяет, существует ли запись с данным серийным номером в файле ненайденного оборудования.
-        Использует очистку префиксов для корректного сравнения.
-        """
-        cleaned = self.extract_serial_value(serial_number)
-        if not cleaned:
-            return False
-        data = self._load_data(self.unfound_file)
-        for record in data:
-            if record.get('serial_number') == cleaned:
-                return True
-        return False
-    
-    def add_unfound_equipment(self, 
-                             serial_number: str, 
-                             model_name: str, 
-                             employee_name: str,
-                             location: str = None,
-                             equipment_type: str = None,
-                             description: str = None,
-                             inventory_number: str = None,
-                             batch_number: str = None,
-                             ip_address: str = None,
-                             status: str = None,
-                             branch: str = None,
-                             company: str = None,
-                             additional_data: Optional[Dict] = None) -> bool:
-        """
-        Добавляет запись о ненайденном оборудовании.
-        
-        Args:
-            serial_number: Серийный номер
-            model_name: Название модели
-            employee_name: ФИО сотрудника
-
-            location: Локация оборудования
-            equipment_type: Тип оборудования
-            description: Описание оборудования
-            inventory_number: Инвентарный номер (не обязателен)
-            ip_address: IP адрес
-            status: Статус оборудования
-            branch: Филиал
-            company: Компания
-            additional_data: Дополнительные данные
-            
-        Returns:
-            bool: True если запись добавлена успешно
-        """
-        # Валидация входных данных
-        cleaned_serial = self.extract_serial_value(serial_number)
-        if not validate_serial_number(cleaned_serial):
-            logger.error(f"Невалидный серийный номер: {serial_number}")
-            return False
-        
-        if not self.validate_employee_name(employee_name):
-            logger.error(f"Невалидное ФИО сотрудника: {employee_name}")
-            return False
-        
-        if not model_name or len(model_name.strip()) == 0:
-            logger.error("Название модели не может быть пустым")
-            return False
-        
-        # Валидация IP адреса если указан
-        if ip_address and not self.validate_ip_address(ip_address):
-            logger.error(f"Невалидный IP адрес: {ip_address}")
-            return False
-        
-        # Валидация инвентарного номера если указан
-        if inventory_number and not self.validate_inventory_number(inventory_number):
-            logger.error(f"Невалидный инвентарный номер: {inventory_number}")
-            return False
-        
-        # Загружаем существующие данные
-        data = self._load_data(self.unfound_file)
-        
-        # Проверяем, не существует ли уже такая запись
-        for record in data:
-            if record.get('serial_number') == cleaned_serial:
-                logger.warning(f"Запись с серийным номером {cleaned_serial} уже существует")
-                return False
-        
-        # Создаем новую запись (без brand_name)
-        new_record = {
-            'serial_number': cleaned_serial.strip(),
-            'model_name': model_name.strip(),
-            'employee_name': employee_name.strip(),
-            'location': location.strip() if location else '',
-            'equipment_type': equipment_type.strip() if equipment_type else '',
-            'description': description.strip() if description else '',
-            'inventory_number': inventory_number.strip() if inventory_number else '',
-            'batch_number': batch_number.strip() if batch_number else '',
-            'ip_address': ip_address.strip() if ip_address else '',
-            'status': status.strip() if status else '',
-            'branch': branch.strip() if branch else '',
-            'company': (company.strip() if company else 'ООО "Запсибгазпром-Газификация"'),
-            'timestamp': datetime.now().isoformat(),
-            'additional_data': additional_data or {},
-            'db_name': (additional_data or {}).get('db_name', '')
-        }
-        
-        # Добавляем запись
-        data.append(new_record)
-        
-        # Сохраняем данные
-        self._save_data(self.unfound_file, data)
-        
-        logger.info(f"Добавлена запись о ненайденном оборудовании: {serial_number}")
-        return True
-    
     def add_equipment_transfer(self, 
                              serial_number: str, 
                              new_employee: str,
@@ -320,146 +202,9 @@ class EquipmentDataManager:
                    (f" (акт: {act_pdf_path})" if act_pdf_path else ""))
         return True
     
-    def get_unfound_equipment(self) -> List[Dict[str, Any]]:
-        """Возвращает список ненайденного оборудования."""
-        return self._load_data(self.unfound_file)
-    
     def get_equipment_transfers(self) -> List[Dict[str, Any]]:
         """Возвращает список перемещений оборудования."""
         return self._load_data(self.transfers_file)
-    
-    def export_to_csv(self, output_dir: str = "exports", date_filter: str = None, db_filter: Optional[str] = None, only_new: bool = False) -> Dict[str, str]:
-        """
-        Экспортирует данные в CSV файлы.
-        
-        Args:
-            output_dir: Директория для сохранения файлов
-            date_filter: Фильтр по дате в формате YYYY-MM-DD (только для текущего дня)
-            db_filter: Имя базы для фильтрации
-            only_new: Экспортировать только новые записи (с момента последней выгрузки)
-            
-        Returns:
-            Dict с путями к созданным файлам
-        """
-        # Создаем директорию, если она не существует
-        os.makedirs(output_dir, exist_ok=True)
-        
-        # Формируем имя файла в формате "export_дата"
-        current_date = datetime.now().strftime("%Y-%m-%d")
-        files_created = {}
-        
-        # Экспорт ненайденного оборудования
-        unfound_data = self.get_unfound_equipment()
-        # Фильтр по дате
-        if date_filter and unfound_data:
-            unfound_data = [r for r in unfound_data 
-                            if r.get('timestamp', '').startswith(date_filter)]
-        # Фильтр по базе
-        if db_filter:
-            unfound_data = [r for r in unfound_data 
-                            if r.get('db_name') == db_filter]
-        # Экспорт только новых записей, если указано
-        if only_new:
-            last_ts = self._get_last_export_ts('unfound', db_filter)
-            if last_ts:
-                try:
-                    from datetime import datetime as dt
-                    last_dt = dt.fromisoformat(last_ts)
-                    unfound_data = [r for r in unfound_data if r.get('timestamp') and dt.fromisoformat(r['timestamp']) > last_dt]
-                except Exception:
-                    # В случае ошибки парсинга даты не фильтруем
-                    pass
-        
-        if unfound_data:
-            suffix = f"_{db_filter}" if db_filter else ""
-            # Используем формат Excel (.xls) - старый формат
-            unfound_xls = os.path.join(output_dir, f"export_{current_date}_unfound{suffix}.xls")
-
-            # Создаем заголовки и данные для Excel (без brand_name)
-            headers = ['Компания', 'Тип', 'Модель', 'Описание', 'Серийный Номер', 'Инвентарный Номер', 'Сотрудник', 'IP Адрес', 'Статус', 'Местоположение', 'Филиал']
-            rows = []
-            for record in unfound_data:
-                row_values = [
-                    record.get('company', ''),
-                    record.get('equipment_type', ''),
-                    record.get('model_name', ''),
-                    record.get('description', ''),
-                    record.get('serial_number', ''),
-                    record.get('inventory_number', ''),
-                    record.get('employee_name', ''),
-                    record.get('ip_address', ''),
-                    record.get('status', ''),
-                    record.get('location', ''),
-                    record.get('branch', ''),
-                ]
-                rows.append(row_values)
-
-            # Используем xlwt напрямую для создания файла формата Excel (.xls)
-            try:
-                import xlwt
-                # Создаем книгу и лист
-                workbook = xlwt.Workbook(encoding='utf-8')
-                worksheet = workbook.add_sheet('Ненайденное оборудование')
-                
-                # Записываем заголовки
-                for col, header in enumerate(headers):
-                    worksheet.write(0, col, header)
-                
-                # Записываем данные
-                for row, row_data in enumerate(rows, start=1):
-                    for col, cell_data in enumerate(row_data):
-                        worksheet.write(row, col, cell_data)
-                
-                # Сохраняем файл
-                workbook.save(unfound_xls)
-                
-                # Фиксируем последнюю выгрузку
-                try:
-                    latest_ts = max((r.get('timestamp') or '') for r in unfound_data)
-                    if latest_ts:
-                        self._set_last_export_ts('unfound', db_filter, latest_ts)
-                except Exception:
-                    pass
-                files_created['unfound'] = unfound_xls
-            except ImportError:
-                # Если xlwt не доступен, используем pandas с openpyxl для создания .xlsx файла
-                try:
-                    import pandas as pd
-                    df = pd.DataFrame(rows, columns=headers)
-                    # Создаем файл с расширением .xlsx
-                    unfound_xlsx = os.path.join(output_dir, f"export_{current_date}_unfound{suffix}.xlsx")
-                    df.to_excel(unfound_xlsx, index=False, engine='openpyxl')
-                    
-                    # Фиксируем последнюю выгрузку
-                    try:
-                        latest_ts = max((r.get('timestamp') or '') for r in unfound_data)
-                        if latest_ts:
-                            self._set_last_export_ts('unfound', db_filter, latest_ts)
-                    except Exception:
-                        pass
-                    files_created['unfound'] = unfound_xlsx
-                except ImportError:
-                    # Если pandas не доступен, создаем CSV файл как запасной вариант
-                    unfound_csv = os.path.join(output_dir, f"export_{current_date}_unfound{suffix}.csv")
-                    import csv
-                    with open(unfound_csv, 'w', newline='', encoding='utf-8-sig') as f:
-                        writer = csv.writer(f, delimiter=';')
-                        writer.writerow(headers)
-                        writer.writerows(rows)
-                    
-                    # Фиксируем последнюю выгрузку
-                    try:
-                        latest_ts = max((r.get('timestamp') or '') for r in unfound_data)
-                        if latest_ts:
-                            self._set_last_export_ts('unfound', db_filter, latest_ts)
-                    except Exception:
-                        pass
-                    files_created['unfound'] = unfound_csv
-        
-        logger.info(f"Экспорт завершен. Созданы файлы: {files_created}")
-        return files_created
-
-
     
     def export_transfers_to_text(self, output_dir: str = "exports", date_filter: str = None, db_filter: Optional[str] = None, only_new: bool = False) -> str:
         """
@@ -558,14 +303,11 @@ class EquipmentDataManager:
         Returns:
             Dict со статистикой
         """
-        unfound_data = self.get_unfound_equipment()
         transfers_data = self.get_equipment_transfers()
-        
+
         return {
-            'unfound_count': len(unfound_data),
             'transfers_count': len(transfers_data),
-            'total_records': len(unfound_data) + len(transfers_data),
-            'last_unfound': unfound_data[-1]['timestamp'] if unfound_data else None,
+            'total_records': len(transfers_data),
             'last_transfer': transfers_data[-1]['timestamp'] if transfers_data else None
         }
     def _load_export_state(self) -> Dict[str, Any]:
@@ -602,24 +344,6 @@ class EquipmentDataManager:
         state[data_type] = bucket
         self._save_export_state(state)
 
-# Удобные функции для использования
-def add_unfound_equipment_record(serial: str, model: str, employee: str, 
-                               data_file: str = "data/unfound_equipment.json") -> bool:
-    """
-    Удобная функция для добавления записи о ненайденном оборудовании.
-    
-    Args:
-        serial: Серийный номер
-        model: Название модели
-        employee: ФИО сотрудника
-        data_file: Путь к файлу данных
-        
-    Returns:
-        bool: True если запись добавлена успешно
-    """
-    manager = EquipmentDataManager(unfound_file=data_file)
-    return manager.add_unfound_equipment(serial, model, employee)
-
 def add_transfer_record(serial: str, new_employee: str, old_employee: str = None,
                        data_file: str = "data/equipment_transfers.json",
                        act_pdf_path: str = None) -> bool:
@@ -641,30 +365,12 @@ def add_transfer_record(serial: str, new_employee: str, old_employee: str = None
 
 # Пример использования
 if __name__ == "__main__":
-    # Создаем менеджер данных
     manager = EquipmentDataManager()
-    
-    # Пример добавления ненайденного оборудования
-    success = manager.add_unfound_equipment(
-        serial_number="ABC123",
-        model_name="Laptop Dell Latitude",
-        employee_name="Иванов Иван Иванович"
-    )
-    print(f"Добавление ненайденного оборудования: {success}")
-    
-    # Пример добавления перемещения
     success = manager.add_equipment_transfer(
         serial_number="XYZ789",
         new_employee="Петров Петр Петрович",
         old_employee="Сидоров Сидор Сидорович"
     )
     print(f"Добавление перемещения: {success}")
-    
-    # Получение статистики
-    stats = manager.get_statistics()
-    print(f"Статистика: {stats}")
-    
-    # Экспорт в CSV
-    exported_files = manager.export_to_csv()
-    print(f"Экспортированные файлы: {exported_files}")
+    print(f"Статистика: {manager.get_statistics()}")
 

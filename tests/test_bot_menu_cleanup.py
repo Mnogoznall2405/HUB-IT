@@ -87,7 +87,6 @@ async def test_export_menu_has_no_mfu_export():
 
     assert "export_type:cartridges" not in callback_data
     assert callback_data == [
-        "export_type:unfound",
         "export_type:transfers",
         "export_type:battery",
         "export_type:pc_cleaning",

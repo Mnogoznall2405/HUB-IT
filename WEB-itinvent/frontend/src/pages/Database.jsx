@@ -42,6 +42,7 @@ import QrScannerDialog from './database/QrScannerDialog';
 import EquipmentActFieldsDialog from './database/EquipmentActFieldsDialog';
 import AddConsumableDialog from './database/AddConsumableDialog';
 import AddEquipmentDialog from './database/AddEquipmentDialog';
+import DatabaseRecentCards from './database/DatabaseRecentCards';
 import EquipmentDetailDialog from './database/EquipmentDetailDialog';
 import {
   normalizeDbId,
@@ -73,6 +74,7 @@ import { useDatabaseDeleteEquipment } from './database/useDatabaseDeleteEquipmen
 import { useDatabaseDetailRuntime } from './database/useDatabaseDetailRuntime';
 import { useDatabaseListNavigation } from './database/useDatabaseListNavigation';
 import { useDatabaseQrScanner } from './database/useDatabaseQrScanner';
+import { useDatabaseRecentCards } from './database/useDatabaseRecentCards';
 import { useDatabaseTransferAction } from './database/useDatabaseTransferAction';
 import { useDatabaseUploadActWorkflow } from './database/useDatabaseUploadActWorkflow';
 import { useDatabaseWorkspaceIdentity } from './database/useDatabaseWorkspaceIdentity';
@@ -367,6 +369,27 @@ function Database() {
     return equipmentIndex.get(String(invNo)) || null;
   }, [equipmentIndex]);
   const {
+    recentCards,
+    recentCardsLoading,
+    refreshRecentCards,
+    touchRecentCard,
+    removeRecentCard,
+    clearRecentCards,
+  } = useDatabaseRecentCards({
+    enabled: !isConsumablesMode,
+    dbName: db_name,
+  });
+  const handleDetailRecentActivity = useCallback(() => {
+    void refreshRecentCards();
+  }, [refreshRecentCards]);
+  const handleTransferJobDone = useCallback(() => {
+    void refreshRecentCards();
+  }, [refreshRecentCards]);
+  useEffect(() => {
+    if (isConsumablesMode || !uploadActCommitResult?.doc_no) return;
+    void refreshRecentCards();
+  }, [isConsumablesMode, refreshRecentCards, uploadActCommitResult?.doc_no]);
+  const {
     visibleLocationKeys,
     hasExpandedVisible,
     selectedItemsSet,
@@ -452,7 +475,19 @@ function Database() {
     getLocationsCached,
     getModelsCached,
     setAllEquipment,
+    onRecentActivity: handleDetailRecentActivity,
   });
+  const handleRecentCardOpen = useCallback((item) => {
+    const snapshot = (item?.snapshot && typeof item.snapshot === 'object') ? item.snapshot : null;
+    const invNo = toInvNo(item) || toInvNo(snapshot);
+    if (!invNo) return;
+    void touchRecentCard({
+      invNo,
+      actionType: 'view',
+      snapshot: snapshot || findEquipmentByInvNo(invNo),
+    });
+    openDetailView(snapshot || invNo, { invNo, loading: !snapshot });
+  }, [findEquipmentByInvNo, openDetailView, touchRecentCard]);
 
   const statusOptions = useMemo(() => buildStatusOptions(statuses), [statuses]);
 
@@ -525,6 +560,7 @@ function Database() {
     resetDetailHistory,
     navigate,
     openUploadActModalForReminder,
+    onTransferJobDone: handleTransferJobDone,
   });
 
   const {
@@ -620,6 +656,7 @@ function Database() {
     setTotal,
     detailInvNo: detailModal?.invNo,
     onDetailDeleted: handleDetailClose,
+    onEquipmentDeleted: removeRecentCard,
     notifyDatabaseSuccess,
   });
 
@@ -688,7 +725,9 @@ function Database() {
     if (actionType === 'delete' && !isAdmin) return;
     const invNo = toInvNo(itemOrInvNo);
     if (actionType === 'view') {
-      openDetailView(invNo, { loading: true });
+      const item = (itemOrInvNo && typeof itemOrInvNo === 'object') ? itemOrInvNo : findEquipmentByInvNo(invNo);
+      void touchRecentCard({ invNo, actionType: 'view', snapshot: item });
+      openDetailView(item || invNo, { invNo, loading: !item });
     } else if (actionType === 'delete') {
       const item = (itemOrInvNo && typeof itemOrInvNo === 'object') ? itemOrInvNo : findEquipmentByInvNo(invNo);
       openDeleteEquipmentDialog({ invNo, item });
@@ -715,7 +754,17 @@ function Database() {
         componentKind,
       });
     }
-  }, [canDatabaseWrite, dataMode, findEquipmentByInvNo, isAdmin, openDeleteEquipmentDialog, openDetailView, resetTransferState, setTransferOperationMode]);
+  }, [
+    canDatabaseWrite,
+    dataMode,
+    findEquipmentByInvNo,
+    isAdmin,
+    openDeleteEquipmentDialog,
+    openDetailView,
+    resetTransferState,
+    setTransferOperationMode,
+    touchRecentCard,
+  ]);
 
   const handleActionConfirm = useCallback(async () => {
     if (!canDatabaseWrite) {
@@ -726,9 +775,13 @@ function Database() {
       setActionLoading(true);
       setActionError('');
       const effectiveDbName = normalizeDbId(db_name || localStorage.getItem('selected_database'));
+      const targetInvNos = normalizeActionTargets(selectedItems, actionModal.invNo);
 
       if (actionModal.type === 'transfer') {
-        await handleTransferActionSubmit();
+        const transferResponse = await handleTransferActionSubmit({ targetInvNos });
+        if (Number(transferResponse?.success_count || 0) > 0 && !transferResponse?.job_id) {
+          await refreshRecentCards();
+        }
         return;
       }
 
@@ -756,6 +809,7 @@ function Database() {
         await fetchAllEquipment({ force: true });
       }
 
+      await refreshRecentCards();
       closeActionModal({ clearSelection: true });
     } catch (error) {
       console.error('Action error:', error);
@@ -777,6 +831,7 @@ function Database() {
     getItemBranch,
     handleTransferActionSubmit,
     loadDetailedItemsByInvNos,
+    refreshRecentCards,
     selectedItems,
     selectedWorkConsumable,
   ]);
@@ -881,6 +936,17 @@ function Database() {
           onKeyDown={handleSearchKeyDown}
           onClear={clearSearch}
         />
+
+        {!isConsumablesMode && (
+          <DatabaseRecentCards
+            items={recentCards}
+            loading={recentCardsLoading}
+            theme={theme}
+            onOpen={handleRecentCardOpen}
+            onRemove={removeRecentCard}
+            onClear={clearRecentCards}
+          />
+        )}
 
         {!isMobile && (
           <DatabaseDesktopToolbar

@@ -226,6 +226,27 @@ class AppUserSetting(AppBase):
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppEquipmentRecentCard(AppBase):
+    __tablename__ = "equipment_recent_cards"
+    __table_args__ = _table_args(
+        UniqueConstraint("user_id", "db_id", "inv_no", name="uq_app_equipment_recent_cards_user_db_inv"),
+        Index("ix_app_equipment_recent_cards_user_db_activity", "user_id", "db_id", "last_activity_at"),
+        Index("ix_app_equipment_recent_cards_user_activity", "user_id", "last_activity_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    db_id: Mapped[str] = mapped_column(String(128), nullable=False, default="default")
+    inv_no: Mapped[str] = mapped_column(String(64), nullable=False)
+    last_action: Mapped[str] = mapped_column(String(64), nullable=False, default="view")
+    last_action_label: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    snapshot_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    activity_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppGlobalSetting(AppBase):
     __tablename__ = "app_settings"
     __table_args__ = _table_args(schema=APP_SCHEMA)

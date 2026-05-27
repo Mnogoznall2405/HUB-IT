@@ -64,6 +64,7 @@ class LoginResponse(BaseModel):
     """Login response with token and user info."""
     status: Literal["authenticated", "2fa_required", "2fa_setup_required"] = "authenticated"
     access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     user: Optional[User] = None
     session_id: Optional[str] = None
@@ -125,9 +126,18 @@ class BackupCodesResponse(BaseModel):
 
 class RefreshResponse(BaseModel):
     access_token: Optional[str] = None
+    refresh_token: Optional[str] = None
     token_type: str = "bearer"
     user: Optional[User] = None
     session_id: Optional[str] = None
+
+
+class MobileRefreshRequest(BaseModel):
+    refresh_token: str = Field(..., min_length=1)
+
+
+class LogoutRequest(BaseModel):
+    refresh_token: Optional[str] = None
 
 
 class TrustedDeviceRegistrationOptionsRequest(BaseModel):

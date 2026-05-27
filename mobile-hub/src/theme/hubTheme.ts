@@ -1,0 +1,15 @@
+export const hubTheme = {
+  primary: '#1976d2',
+  primaryDark: '#004ba0',
+  secondary: '#00796b',
+  background: '#f5f7fa',
+  paper: '#ffffff',
+  error: '#d32f2f',
+  warning: '#ed6c02',
+  success: '#2e7d32',
+  textPrimary: 'rgba(0, 0, 0, 0.87)',
+  textSecondary: 'rgba(0, 0, 0, 0.6)',
+  spacing: 8,
+  borderRadius: 8,
+  minTouch: 44,
+} as const;

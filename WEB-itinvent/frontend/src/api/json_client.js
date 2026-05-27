@@ -11,49 +11,6 @@ import apiClient from './client';
  * JSON Operations API methods
  */
 export const jsonAPI = {
-  // ========== Unfound Equipment ==========
-
-  /**
-   * Add a new unfound equipment record
-   * @param {Object} data - Equipment data
-   * @param {string} data.serial_number - Serial number
-   * @param {string} data.model_name - Model name
-   * @param {string} data.employee_name - Employee name
-   * @param {string} [data.brand_name] - Brand name
-   * @param {string} [data.location] - Location code
-   * @param {string} [data.equipment_type] - Equipment type
-   * @param {string} [data.description] - Description
-   * @param {string} [data.inventory_number] - Inventory number
-   * @param {string} [data.ip_address] - IP address
-   * @param {string} [data.status] - Status
-   * @param {string} [data.branch] - Branch name
-   * @param {string} [data.company] - Company name
-   * @param {string} [data.db_name] - Database name
-   * @param {Object} [data.additional_data] - Additional metadata
-   * @returns {Promise<Object>} Created record
-   */
-  addUnfoundEquipment: (data) =>
-    apiClient.post('/json/unfound', data),
-
-  /**
-   * Get unfound equipment records
-   * @param {Object} [params] - Query parameters
-   * @param {string} [params.db_name] - Filter by database name
-   * @param {string} [params.branch] - Filter by branch
-   * @param {string} [params.employee] - Filter by employee name
-   * @param {number} [params.limit] - Maximum records to return
-   * @returns {Promise<Array>} List of unfound equipment records
-   */
-  getUnfoundEquipment: (params) =>
-    apiClient.get('/json/unfound', { params }),
-
-  /**
-   * Get unfound equipment statistics
-   * @returns {Promise<Object>} Statistics data
-   */
-  getUnfoundStatistics: () =>
-    apiClient.get('/json/unfound/statistics'),
-
   // ========== Transfers ==========
 
   /**

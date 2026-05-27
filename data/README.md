@@ -4,30 +4,6 @@
 
 ## Файлы
 
-### unfound_equipment.json
-Хранит информацию о ненайденном оборудовании.
-
-**Структура:**
-```json
-[
-  {
-    "serial_number": "ABC123",
-    "model_name": "Dell Latitude 5420",
-    "employee_name": "Иванов Иван Иванович",
-    "location": "Офис 301",
-    "equipment_type": "Ноутбук",
-    "description": "Рабочий ноутбук",
-    "inventory_number": "INV-2024-001",
-    "ip_address": "192.168.1.100",
-    "status": "В работе",
-    "branch": "Москва",
-    "company": "ООО \"Запсибгазпром-Газификация\"",
-    "db_name": "ITINVENT",
-    "timestamp": "2024-01-15T10:30:00"
-  }
-]
-```
-
 ### equipment_transfers.json
 Хранит информацию о перемещениях оборудования.
 
@@ -85,10 +61,6 @@
 **Структура:**
 ```json
 {
-  "unfound": {
-    "ITINVENT": "2024-01-15T10:30:00",
-    "__all__": "2024-01-15T10:30:00"
-  },
   "transfers": {
     "ITINVENT": "2024-01-15T14:20:00"
   }

@@ -65,6 +65,15 @@ The in-memory fallback is for dev/test only. It is not safe for multi-process pr
    - **Multiple devices:** the backend allows several active trusted devices per user. After the first passkey, add another phone/PC from **Settings → Security → «Привязать это устройство»** (visible only on external network) or accept the optional prompt after password+2FA login.
    - **Revoke vs phone passkey list:** revoking a device in HUB-IT disables the server key only. Old passkeys may remain in Android/Google Password Manager until removed manually (Settings → Passwords / Passkeys → `hubit.zsgp.ru`). Registration sends `excludeCredentials` only for **active** server credentials (duplicate protection in DB). Stale passkeys in the phone OS vault are not removed by revoke; delete them manually if the picker shows obsolete entries.
 
+## Mobile client (Expo / React Native)
+
+Native clients do not use httpOnly cookies. Send `X-Auth-Client: mobile` on auth routes that complete a session.
+
+- `POST /api/v1/auth/login`, `verify-2fa`, `verify-2fa-login`, `refresh`, `passkey-login/verify`, `trusted-devices/auth/verify` — JSON body includes `access_token` and `refresh_token` when `status=authenticated` (web keeps `access_token: null` and cookies).
+- `POST /api/v1/auth/refresh` — body `{ "refresh_token": "..." }` (cookie optional for web only).
+- `POST /api/v1/auth/logout` — `Authorization: Bearer` + optional body `{ "refresh_token": "..." }` to revoke refresh without cookies.
+- Store tokens in platform secure storage (Android Keystore), not plain AsyncStorage.
+
 ## IIS Boundary
 Recommended baseline:
 - FastAPI/PM2 bind: `BACKEND_HOST=127.0.0.1`, `BACKEND_PORT=8001`.

@@ -28,7 +28,6 @@ JSON_RECOVERY_FILES = [
     "pc_cleanings.json",
     "printer_color_cache.json",
     "printer_component_cache.json",
-    "unfound_equipment.json",
     "user_db_selection.json",
     "web_sessions.json",
     "web_user_settings.json",

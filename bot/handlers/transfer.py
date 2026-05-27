@@ -601,7 +601,7 @@ async def receive_transfer_branch(update: Update, context: ContextTypes.DEFAULT_
 async def show_transfer_location_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE, branch: str) -> None:
     """
     Показывает кнопки выбора локации для выбранного филиала (при перемещении) с пагинацией.
-    Использует универсальную функцию из unfound.py с mode='transfer'.
+    Использует show_location_buttons с mode='transfer'.
     """
     user_id = update.effective_user.id
     context._user_id = user_id  # Сохраняем для show_location_buttons

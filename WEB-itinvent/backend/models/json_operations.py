@@ -3,53 +3,11 @@
 """
 Pydantic models for JSON operations validation.
 
-Defines request and response models for all JSON-based operations
-including unfound equipment, transfers, and works.
+Defines request and response models for JSON-based operations (transfers, works, and related).
 """
 
 from typing import Optional, Dict, Any, List
 from pydantic import BaseModel, Field, field_validator
-
-
-# ========== Unfound Equipment Models ==========
-
-class UnfoundEquipmentCreate(BaseModel):
-    """Request model for creating unfound equipment record."""
-    serial_number: str = Field(..., min_length=1, description="Serial number of the equipment")
-    model_name: str = Field(..., min_length=1, description="Model name")
-    employee_name: str = Field(..., min_length=1, description="Employee name")
-    brand_name: Optional[str] = Field(None, description="Brand/manufacturer name")
-    location: Optional[str] = Field(None, description="Location code")
-    equipment_type: Optional[str] = Field(None, description="Equipment type")
-    description: Optional[str] = Field(None, description="Equipment description")
-    inventory_number: Optional[str] = Field(None, description="Inventory number")
-    batch_number: Optional[str] = Field(None, description="Batch number")
-    ip_address: Optional[str] = Field(None, description="IP address")
-    status: Optional[str] = Field(None, description="Equipment status")
-    branch: Optional[str] = Field(None, description="Branch name")
-    company: Optional[str] = Field(None, description="Company name")
-    db_name: Optional[str] = Field(None, description="Database name")
-    additional_data: Optional[Dict[str, Any]] = Field(default_factory=dict, description="Additional metadata")
-
-
-class UnfoundEquipmentResponse(BaseModel):
-    """Response model for unfound equipment record."""
-    serial_number: str
-    model_name: str
-    employee_name: str
-    brand_name: Optional[str] = None
-    location: Optional[str] = None
-    equipment_type: Optional[str] = None
-    description: Optional[str] = None
-    inventory_number: Optional[str] = None
-    batch_number: Optional[str] = None
-    ip_address: Optional[str] = None
-    status: Optional[str] = None
-    branch: Optional[str] = None
-    company: Optional[str] = None
-    timestamp: str
-    additional_data: Optional[Dict[str, Any]] = None
-    db_name: Optional[str] = None
 
 
 # ========== Transfer Models ==========
@@ -292,13 +250,6 @@ class PrinterComponentsResponse(BaseModel):
 
 
 # ========== Statistics Models ==========
-
-class UnfoundStatisticsResponse(BaseModel):
-    """Response model for unfound equipment statistics."""
-    total: int
-    by_type: Dict[str, int]
-    by_branch: Dict[str, int]
-
 
 class TransferStatisticsResponse(BaseModel):
     """Response model for transfer statistics."""

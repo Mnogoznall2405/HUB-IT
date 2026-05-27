@@ -19,7 +19,6 @@ from local_store import get_local_store
 
 
 RUNTIME_JSON_FILES = [
-    "unfound_equipment.json",
     "equipment_transfers.json",
     "cartridge_replacements.json",
     "battery_replacements.json",

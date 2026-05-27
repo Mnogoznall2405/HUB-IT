@@ -33,7 +33,6 @@ MAX_BACKUPS = 30  # Хранить максимум 30 резервных коп
 
 # JSON файлы для резервирования
 JSON_FILES = [
-    "unfound_equipment.json",
     "equipment_transfers.json",
     "cartridge_replacements.json",
     "battery_replacements.json",

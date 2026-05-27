@@ -122,7 +122,6 @@ The web application works with JSON data files located in the parent `data/` dir
 |------|---------|------------|
 | `cartridge_database.json` | Cartridge database for printer model matching | manufacturer, model, cartridges |
 | `equipment_transfers.json` | Equipment transfer records | inv_no, serial, from_employee, to_employee, date |
-| `unfound_equipment.json` | Equipment not found in main database | serial, employee, type, model, location |
 | `pc_cleanings.json` | PC cleaning operations | serial, employee, date, branch, location |
 | `cartridge_replacements.json` | Cartridge replacement records | serial, printer_model, color, date |
 | `battery_replacements.json` | Battery replacement records | serial, date, branch, location |

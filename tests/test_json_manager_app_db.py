@@ -103,20 +103,20 @@ def test_json_data_manager_allows_explicit_app_db_in_production(monkeypatch, tem
 def test_json_data_manager_supports_app_db_backend(temp_dir):
     manager = JSONDataManager(data_dir=Path(temp_dir) / "data", database_url=_sqlite_url(temp_dir))
 
-    assert manager.save_json("unfound_equipment.json", [{"serial_number": "SN-1", "employee_name": "Petrov"}]) is True
-    assert manager.append_to_json("unfound_equipment.json", {"serial_number": "SN-2", "employee_name": "Sidorov"}) is True
+    assert manager.save_json("equipment_transfers.json", [{"serial_number": "SN-1", "new_employee": "Petrov"}]) is True
+    assert manager.append_to_json("equipment_transfers.json", {"serial_number": "SN-2", "new_employee": "Sidorov"}) is True
 
     updated = manager.update_json_array(
-        "unfound_equipment.json",
+        "equipment_transfers.json",
         lambda row: str(row.get("serial_number")) == "SN-1",
-        lambda row: {**row, "employee_name": "Ivanov"},
+        lambda row: {**row, "new_employee": "Ivanov"},
     )
     assert updated == 1
 
-    unfound = manager.load_json("unfound_equipment.json", default_content=[])
-    assert isinstance(unfound, list)
-    assert [item["serial_number"] for item in unfound] == ["SN-1", "SN-2"]
-    assert unfound[0]["employee_name"] == "Ivanov"
+    transfers = manager.load_json("equipment_transfers.json", default_content=[])
+    assert isinstance(transfers, list)
+    assert [item["serial_number"] for item in transfers] == ["SN-1", "SN-2"]
+    assert transfers[0]["new_employee"] == "Ivanov"
 
     cartridge_db = {
         "hp laserjet 400": {
@@ -136,6 +136,6 @@ def test_json_data_manager_supports_app_db_backend(temp_dir):
     assert len(manager.load_json("kb_articles.json", default_content=[])) == 2
 
     files = manager.get_json_files()
-    assert "unfound_equipment.json" in files
+    assert "equipment_transfers.json" in files
     assert "cartridge_database.json" in files
     assert "kb_articles.json" in files

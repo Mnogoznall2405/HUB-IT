@@ -280,7 +280,6 @@ WHERE TABLE_NAME IN ('ITEMS', 'OWNERS', 'CI_TYPES', 'CI_MODELS')
 **Решения:**
 1. Проверьте фильтры (дата, БД)
 2. Убедитесь, что есть данные в JSON-файлах:
-   - `data/unfound_equipment.json`
    - `data/equipment_transfers.json`
 3. Попробуйте экспорт без фильтров
 

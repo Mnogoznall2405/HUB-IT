@@ -2,10 +2,12 @@
 from __future__ import annotations
 
 import logging
+import sys
 import threading
 import time
 from collections.abc import Callable
 from contextlib import contextmanager
+from pathlib import Path
 from typing import TypeVar
 
 from sqlalchemy import create_engine, text
@@ -139,6 +141,26 @@ def _run_postgres_app_schema_maintenance(connection) -> None:
             logger.warning("Skipped app schema maintenance statement: %s", exc)
 
 
+def _refresh_pg_schema_docs_after_dev_init(database_url: str) -> None:
+    if not str(database_url or "").startswith("postgresql"):
+        return
+    repo_root = Path(__file__).resolve().parents[3]
+    scripts_dir = repo_root / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        from pg_schema_docs import try_refresh_pg_schema_documentation
+
+        if try_refresh_pg_schema_documentation(
+            database_url=database_url,
+            repo_root=repo_root,
+            quiet=True,
+        ):
+            logger.info("PostgreSQL schema documentation refreshed")
+    except Exception as exc:
+        logger.debug("PostgreSQL schema docs refresh skipped: %s", exc)
+
+
 def _postgres_has_alembic_version(engine) -> bool:
     try:
         with engine.connect() as connection:
@@ -170,6 +192,7 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
             connection.execute(text('CREATE SCHEMA IF NOT EXISTS "system"'))
             AppBase.metadata.create_all(bind=connection)
             _run_postgres_app_schema_maintenance(connection)
+        _refresh_pg_schema_docs_after_dev_init(resolved_url)
         return
 
     AppBase.metadata.create_all(bind=engine)

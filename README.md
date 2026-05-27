@@ -133,9 +133,12 @@ Copy-Item .env.example .env
 - `.env` не хранится в git;
 - для production нельзя оставлять demo/default secrets.
 
-### 3. Запуск по подсистемам
+### 3. Запуск по подсистемам (только разработка на своей машине)
 
-Web backend:
+> **На сервере приложений (`TMN-SRV-APP-*` и аналоги) backend поднимается только через PM2.**  
+> Не запускайте вручную `uvicorn` / `start_server.py` на порту **8001**, если уже работает `itinvent-backend` в PM2 — иначе порт занят и PM2 уходит в бесконечные перезапуски (см. раздел [Порт 8001 и PM2](#порт-8001-и-pm2-типичная-ошибка) ниже).
+
+Web backend (локальная отладка, **без PM2** на этом же порту):
 
 ```powershell
 cd C:\Project\Image_scan\WEB-itinvent\backend
@@ -178,22 +181,118 @@ cd C:\Project\Image_scan
 python agent.py --once
 ```
 
-## PM2 / серверный старт
+## Запуск на сервере (production)
 
-Для Windows-сервера у тебя уже есть готовые скрипты в [scripts/pm2](./scripts/pm2).
+**Один способ для API backend на `127.0.0.1:8001` — PM2.** IIS проксирует `/api/*` на этот порт.
 
-Основные:
+### Что поднимать
 
-- [start-all.ps1](./scripts/pm2/start-all.ps1)
-- [restart-all.ps1](./scripts/pm2/restart-all.ps1)
-- [stop-all.ps1](./scripts/pm2/stop-all.ps1)
+| Процесс PM2 | Назначение | Порт / примечание |
+|-------------|------------|-------------------|
+| `itinvent-backend` | Web API (FastAPI) | **8001** (`127.0.0.1`) |
+| `itinvent-chat-push-worker` | Web Push для чата | без HTTP-порта |
+| `itinvent-ai-chat-worker` | AI-ответы в чате | без HTTP-порта |
+| `itinvent-inventory` | Ingest inventory с агентов | см. `inventory_server` |
+| `itinvent-scan` | Scan API | **8011** (типично) |
+| `itinvent-scan-worker` | OCR/PDF worker scan | — |
+| `itinvent-bot` | Telegram-бот | — |
 
-По текущей конфигурации под PM2 обычно живут:
+Frontend (React) — **IIS**, не PM2.
 
-- `itinvent-backend`
-- `itinvent-inventory`
-- `itinvent-scan`
-- `itinvent-bot`
+### Команды (из корня репозитория)
+
+Первый старт или после смены конфигурации:
+
+```powershell
+cd C:\Project\Image_scan
+powershell -File scripts\pm2\start-all.ps1
+```
+
+Перезапуск всего пакета:
+
+```powershell
+powershell -File scripts\pm2\restart-all.ps1
+```
+
+Остановка:
+
+```powershell
+powershell -File scripts\pm2\stop-all.ps1
+```
+
+Только backend:
+
+```powershell
+pm2 restart itinvent-backend
+pm2 logs itinvent-backend --lines 50
+```
+
+Проверка здоровья:
+
+```powershell
+powershell -File scripts\pm2\health-check.ps1
+pm2 list
+```
+
+Подробный runbook: [scripts/pm2/README.md](./scripts/pm2/README.md).
+
+### Правила (чтобы не ловить конфликт порта)
+
+1. **На сервере не запускать** `python start_server.py`, `uvicorn … --port 8001` и не держать второй PM2-профиль `itinvent-backend-a/b`, если не настроен scale-out.
+2. **Перед ручной отладкой backend** на этой же машине: `pm2 stop itinvent-backend`, после отладки — снова `pm2 start itinvent-backend`.
+3. **Не дублировать** службу NSSM/IIS `itinvent-backend` ([install_backend_service.ps1](./scripts/iis/install_backend_service.ps1)) и PM2 на одном порту **8001**.
+4. В `pm2 list` у `itinvent-backend` нормальный признак — **uptime минуты/дни**, счётчик `↺` почти не растёт. Если `↺` тысячи и uptime секунды — см. раздел ниже.
+
+---
+
+## Порт 8001 и PM2: типичная ошибка
+
+**Симптом:** в PM2 `itinvent-backend` — `online`, но `↺` (restarts) тысячи, uptime 1–10 с; в логе:
+
+```text
+ERROR: [Errno 10048] error while attempting to bind on address ('127.0.0.1', 8001)
+```
+
+**Причина:** порт **8001** уже занят другим `python.exe start_server.py` (старый процесс после сбоя, ручной запуск или «осиротевший» дочерний процесс). PM2 поднимает новый экземпляр → не может забиндить порт → падает → снова стартует.
+
+### Восстановление (копировать в PowerShell)
+
+```powershell
+# 1. Остановить цикл перезапусков PM2
+pm2 stop itinvent-backend
+
+# 2. Найти, кто держит 8001 (последний столбец — PID)
+netstat -ano | findstr ":8001.*LISTENING"
+
+# 3. Завершить зависший python (подставьте PID из netstat, не PID PM2)
+taskkill /PID <PID> /F
+
+# 4. Убедиться, что порт свободен (пустой вывод — хорошо)
+netstat -ano | findstr ":8001.*LISTENING"
+
+# 5. Запустить backend снова
+pm2 start itinvent-backend
+
+# 6. Проверка: в логе должно быть "Uvicorn running on http://127.0.0.1:8001"
+pm2 logs itinvent-backend --lines 20 --nostream
+pm2 list
+```
+
+После стабилизации (по желанию) сбросить счётчик рестартов: `pm2 reset itinvent-backend`.
+
+Логи PM2: `%USERPROFILE%\.pm2\logs\itinvent-backend-error.log`.
+
+---
+
+## PM2 / серверный старт (кратко)
+
+Скрипты: [scripts/pm2](./scripts/pm2) — `start-all.ps1`, `restart-all.ps1`, `stop-all.ps1`.
+
+Процессы PM2 на типичном app-сервере:
+
+- `itinvent-backend` — **только один** listener на **8001**
+- `itinvent-chat-push-worker`, `itinvent-ai-chat-worker`
+- `itinvent-inventory`, `itinvent-scan`, `itinvent-scan-worker`, `itinvent-bot`
 
 ## Агенты и MSI
 

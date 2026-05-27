@@ -102,32 +102,6 @@ def register_handlers(application: Application) -> None:
         handle_employee_export_email_input,
         handle_employee_search_suggestion
     )
-    from bot.handlers.unfound import (
-        start_unfound_equipment,
-        unfound_employee_input,
-        unfound_type_input,
-        unfound_model_input,
-        unfound_description_input,
-        unfound_inventory_input,
-        unfound_ip_input,
-        unfound_location_input,
-        unfound_status_input,
-        unfound_branch_input,
-        handle_unfound_confirmation,
-        handle_skip_callback,
-        handle_unfound_employee_suggestion,
-        handle_unfound_type_suggestion,
-        handle_unfound_model_suggestion,
-        handle_unfound_location_suggestion,
-        handle_unfound_location_button_suggestion,
-        handle_unfound_status_suggestion,
-        handle_unfound_branch_suggestion,
-        handle_edit_unfound,
-        handle_edit_field,
-        handle_back_to_confirmation,
-        handle_create_new_employee,
-        handle_retry_employee_input
-    )
     from bot.handlers.transfer import (
         start_transfer,
         receive_transfer_photos,
@@ -237,109 +211,6 @@ def register_handlers(application: Application) -> None:
         allow_reentry=True
     )
     
-    # ConversationHandler для ненайденного оборудования
-    unfound_conv_handler = ConversationHandler(
-        entry_points=[
-            # Убрали кнопку из главного меню, доступ только через поиск
-        ],
-        states={
-            States.UNFOUND_EMPLOYEE_INPUT: [
-                CallbackQueryHandler(handle_unfound_employee_suggestion, pattern="^unfound_emp:"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, unfound_employee_input)
-            ],
-            States.UNFOUND_EMPLOYEE_CONFIRMATION: [
-                CallbackQueryHandler(handle_create_new_employee, pattern="^create_new_employee$"),
-                CallbackQueryHandler(handle_retry_employee_input, pattern="^retry_employee_input$")
-            ],
-            States.UNFOUND_TYPE_INPUT: [
-                CallbackQueryHandler(handle_unfound_type_suggestion, pattern="^unfound_type:"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, unfound_type_input)
-            ],
-            States.UNFOUND_MODEL_INPUT: [
-                CallbackQueryHandler(handle_unfound_model_suggestion, pattern="^unfound_model:"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, unfound_model_input)
-            ],
-            States.UNFOUND_DESCRIPTION_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, unfound_description_input),
-                CallbackQueryHandler(handle_skip_callback, pattern="^skip_description$")
-            ],
-            States.UNFOUND_INVENTORY_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, unfound_inventory_input),
-                CallbackQueryHandler(handle_skip_callback, pattern="^skip_inventory$")
-            ],
-            States.UNFOUND_IP_INPUT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, unfound_ip_input),
-                CallbackQueryHandler(handle_skip_callback, pattern="^skip_ip$")
-            ],
-            States.UNFOUND_LOCATION_INPUT: [
-                CallbackQueryHandler(handle_unfound_location_suggestion, pattern="^unfound_loc:"),
-                CallbackQueryHandler(handle_unfound_location_button_suggestion, pattern="^unfound_location:"),
-                CallbackQueryHandler(handle_unfound_location_button_suggestion, pattern="^unfound_location_(prev|next|page_info)$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, unfound_location_input),
-                CallbackQueryHandler(handle_skip_callback, pattern="^skip_location$")
-            ],
-            States.UNFOUND_STATUS_INPUT: [
-                CallbackQueryHandler(handle_unfound_status_suggestion, pattern="^unfound_status:"),
-                CallbackQueryHandler(handle_unfound_status_suggestion, pattern="^unfound_status_(prev|next|page_info)$"),
-                CallbackQueryHandler(handle_skip_callback, pattern="^skip_status$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, unfound_status_input)
-            ],
-            States.UNFOUND_BRANCH_INPUT: [
-                CallbackQueryHandler(handle_unfound_branch_suggestion, pattern="^unfound_branch:"),
-                CallbackQueryHandler(handle_skip_callback, pattern="^skip_branch$"),
-                MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, unfound_branch_input)
-            ],
-            States.UNFOUND_CONFIRMATION: [
-                CallbackQueryHandler(handle_unfound_confirmation, pattern="^(confirm|cancel)_unfound$"),
-                CallbackQueryHandler(handle_edit_unfound, pattern="^edit_unfound$"),
-                CallbackQueryHandler(handle_edit_field, pattern="^edit_field:"),
-                CallbackQueryHandler(handle_back_to_confirmation, pattern="^back_to_confirmation$")
-            ]
-        },
-        fallbacks=[
-            CommandHandler("cancel", cancel),
-            CommandHandler("start", start),
-            
-            
-            
-            
-            
-            
-        ],
-        name="unfound_conversation",
-        persistent=False,
-        allow_reentry=True
-    )
-    
-    # Обработчик перехода к добавлению ненайденного из поиска
-    async def handle_add_unfound_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Переход к добавлению ненайденного оборудования"""
-        query = update.callback_query
-        await query.answer()
-        
-        serial_number = context.user_data.get('last_search_serial', '')
-        
-        if serial_number:
-            context.user_data['unfound_serial'] = serial_number
-            await query.edit_message_text(
-                f"📝 Добавление информации об оборудовании\n"
-                f"Серийный номер: <b>{serial_number}</b>\n\n"
-                f"👤 Введите ФИО сотрудника:",
-                parse_mode='HTML'
-            )
-        else:
-            await query.edit_message_text(
-                "📝 Добавление ненайденного оборудования\n\n"
-                "👤 Введите ФИО сотрудника:"
-            )
-        
-        return States.UNFOUND_EMPLOYEE_INPUT
-    
-    # Добавляем callback в unfound_conv_handler
-    unfound_conv_handler.entry_points.append(
-        CallbackQueryHandler(handle_add_unfound_callback, pattern="^add_unfound$")
-    )
-    
     # ConversationHandler для перемещения оборудования
     transfer_conv_handler = ConversationHandler(
         entry_points=[
@@ -425,7 +296,7 @@ def register_handlers(application: Application) -> None:
                 CallbackQueryHandler(handle_delivery, pattern="^delivery:"),
                 CallbackQueryHandler(handle_export_type, pattern="^back_to_main$")
             ],
-            States.UNFOUND_EMPLOYEE_INPUT: [
+            States.EMPLOYEE_EMAIL_INPUT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, handle_email_input)
             ]
         },
@@ -503,7 +374,6 @@ def register_handlers(application: Application) -> None:
     # Кнопки главного меню обрабатываются через entry_points каждого ConversationHandler
     application.add_handler(search_conv_handler)
     application.add_handler(employee_conv_handler)
-    application.add_handler(unfound_conv_handler)
     application.add_handler(transfer_conv_handler)
     application.add_handler(database_conv_handler)
     application.add_handler(export_conv_handler)
@@ -543,7 +413,7 @@ def register_handlers(application: Application) -> None:
     from bot.handlers.start import handle_database_selection
     application.add_handler(CallbackQueryHandler(handle_database_selection, pattern="^select_db:"))
 
-    logger.info("Обработчики зарегистрированы: start, help, cancel, search, employee, unfound, transfer, database, export, act_email, db_selection")
+    logger.info("Обработчики зарегистрированы: start, help, cancel, search, employee, transfer, database, export, act_email, db_selection")
 
 
 def main() -> None:

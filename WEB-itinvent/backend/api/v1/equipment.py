@@ -56,6 +56,7 @@ from backend.services.equipment_transfer_execution_service import (
     EquipmentTransferExecutionError,
     execute_equipment_transfer,
 )
+from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
 from backend.services import transfer_act_job_service
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 from backend.services.act_upload_service import (
@@ -72,6 +73,43 @@ import logging
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+
+def _current_user_id(current_user: Any) -> int:
+    try:
+        return int(getattr(current_user, "id", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _touch_recent_card_safely(
+    *,
+    current_user: Any,
+    db_id: Optional[str],
+    inv_no: Any,
+    action_type: str,
+    snapshot: Any = None,
+) -> None:
+    user_id = _current_user_id(current_user)
+    if user_id <= 0:
+        return
+    try:
+        equipment_recent_cards_service.touch(
+            user_id=user_id,
+            db_id=db_id,
+            inv_no=inv_no,
+            action_type=action_type,
+            snapshot=snapshot,
+        )
+    except Exception:
+        logger.warning("Failed to record equipment recent card activity", exc_info=True)
+
+
+def _remove_recent_card_for_equipment_safely(*, db_id: Optional[str], inv_no: Any) -> None:
+    try:
+        equipment_recent_cards_service.remove_for_equipment(db_id=db_id, inv_no=inv_no)
+    except Exception:
+        logger.warning("Failed to remove deleted equipment from recent cards", exc_info=True)
 
 
 def _to_int(value: Any) -> Optional[int]:
@@ -91,6 +129,16 @@ def _normalize_inv_nos(raw_items: Any) -> list[str]:
         if normalized and normalized not in inv_nos:
             inv_nos.append(normalized)
     return inv_nos
+
+
+def _item_inv_no(item: Any) -> str:
+    if not isinstance(item, dict):
+        return ""
+    for key in ("inv_no", "INV_NO"):
+        value = str(item.get(key) or "").strip()
+        if value:
+            return value
+    return ""
 
 
 def _queued_transfer_response(job: dict[str, Any]) -> TransferExecuteResponse:
@@ -134,6 +182,14 @@ def _run_transfer_job(
             current_user=current_user,
             allow_create_owner=True,
         )
+        for item in result.get("transferred") or []:
+            _touch_recent_card_safely(
+                current_user=current_user,
+                db_id=db_id,
+                inv_no=_item_inv_no(item),
+                action_type="transfer",
+                snapshot=item,
+            )
         transfer_act_job_service.mark_done(job_id, _result_with_act_records(result))
         logger.info(
             "Transfer act job done job_id=%s operation=transfer success=%s failed=%s acts=%s",
@@ -165,6 +221,7 @@ def _run_act_only_job(
     job_id: str,
     payload: TransferActOnlyRequest,
     db_id: Optional[str],
+    current_user: Optional[User] = None,
 ) -> None:
     inv_nos = _normalize_inv_nos(payload.inv_nos)
     logger.info("Transfer act job started job_id=%s operation=act_only inv_count=%s", job_id, len(inv_nos))
@@ -225,6 +282,14 @@ def _run_act_only_job(
             "failed": failed,
             "acts": acts,
         }
+        for item in resolved_items:
+            _touch_recent_card_safely(
+                current_user=current_user,
+                db_id=db_id,
+                inv_no=_item_inv_no(item),
+                action_type="act",
+                snapshot=item,
+            )
         transfer_act_job_service.mark_done(job_id, _result_with_act_records(result))
         logger.info(
             "Transfer act job done job_id=%s operation=act_only success=%s failed=%s acts=%s",
@@ -348,6 +413,28 @@ class EquipmentUpdateRequest(BaseModel):
 class EquipmentByInvNosRequest(BaseModel):
     """Batch load equipment cards by inventory numbers."""
     inv_nos: List[str] = Field(..., min_length=1, max_length=500)
+
+
+class EquipmentRecentCardTouchRequest(BaseModel):
+    """Record a user activity event for an equipment card."""
+    inv_no: str = Field(..., min_length=1, max_length=64)
+    action_type: str = Field(default="view", max_length=64)
+    snapshot: Optional[dict[str, Any]] = None
+
+
+class EquipmentRecentCardResponse(BaseModel):
+    inv_no: str
+    db_id: str
+    last_action: str
+    last_action_label: str
+    last_activity_at: Optional[str] = None
+    activity_count: int = 0
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class EquipmentRecentCardsListResponse(BaseModel):
+    items: list[EquipmentRecentCardResponse] = Field(default_factory=list)
+    total: int = 0
 
 
 @router.get("/search/serial", response_model=EquipmentSearchResponse)
@@ -506,6 +593,64 @@ async def get_equipment_by_inv_nos(
         "not_found": not_found,
         "requested": len(normalized_inv_nos),
     }
+
+
+@router.get("/recent-cards", response_model=EquipmentRecentCardsListResponse)
+async def get_recent_equipment_cards(
+    limit: int = Query(8, ge=1, le=50),
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Get the current user's recent equipment cards for the selected ITINVENT database."""
+    items = equipment_recent_cards_service.list_recent(
+        user_id=current_user.id,
+        db_id=db_id,
+        limit=limit,
+    )
+    return EquipmentRecentCardsListResponse(items=items, total=len(items))
+
+
+@router.post("/recent-cards/touch", response_model=EquipmentRecentCardResponse)
+async def touch_recent_equipment_card(
+    payload: EquipmentRecentCardTouchRequest,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Upsert a current-user recent equipment card event."""
+    try:
+        item = equipment_recent_cards_service.touch(
+            user_id=current_user.id,
+            db_id=db_id,
+            inv_no=payload.inv_no,
+            action_type=payload.action_type,
+            snapshot=payload.snapshot,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
+    return EquipmentRecentCardResponse(**item)
+
+
+@router.delete("/recent-cards/{inv_no}", response_model=dict)
+async def remove_recent_equipment_card(
+    inv_no: str,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Remove one recent equipment card from the current user's selected database scope."""
+    return equipment_recent_cards_service.remove(
+        user_id=current_user.id,
+        db_id=db_id,
+        inv_no=inv_no,
+    )
+
+
+@router.delete("/recent-cards", response_model=dict)
+async def clear_recent_equipment_cards(
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Clear all current-user recent equipment cards for the selected database."""
+    return equipment_recent_cards_service.clear(user_id=current_user.id, db_id=db_id)
 
 
 @router.get("/branches", response_model=list[Branch])
@@ -1243,6 +1388,13 @@ async def update_equipment_by_inv(
             detail="Equipment updated but failed to read updated data",
         )
 
+    _touch_recent_card_safely(
+        current_user=current_user,
+        db_id=db_id,
+        inv_no=inv_no,
+        action_type="edit",
+        snapshot=equipment_after,
+    )
     invalidate_equipment_cache(db_id)
     return equipment_after
 
@@ -1256,6 +1408,7 @@ async def delete_equipment_by_inv(
     """Hard-delete one equipment card from ITEMS for admin users only."""
     result = queries.delete_equipment_by_inv(inv_no, db_id=db_id)
     if result.get("success"):
+        _remove_recent_card_for_equipment_safely(db_id=db_id, inv_no=result.get("inv_no") or inv_no)
         invalidate_equipment_cache(db_id)
         return result
 
@@ -1355,6 +1508,14 @@ async def transfer_equipment_location(
             })
 
     if transferred:
+        for item in transferred:
+            _touch_recent_card_safely(
+                current_user=current_user,
+                db_id=db_id,
+                inv_no=_item_inv_no(item),
+                action_type="location_transfer",
+                snapshot=item,
+            )
         invalidate_equipment_cache(db_id)
 
     return TransferExecuteResponse(
@@ -1371,7 +1532,7 @@ async def create_transfer_act_without_move(
     payload: TransferActOnlyRequest,
     background_tasks: BackgroundTasks,
     db_id: Optional[str] = Depends(get_current_database_id),
-    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
     """
     Generate handover acts for selected equipment without changing ITEMS or CI_HISTORY.
@@ -1390,7 +1551,7 @@ async def create_transfer_act_without_move(
         operation="act_only",
         payload=payload.model_dump(mode="json"),
         db_id=db_id,
-        user=_,
+        user=current_user,
         request_count=len(inv_nos),
     )
     background_tasks.add_task(
@@ -1398,6 +1559,7 @@ async def create_transfer_act_without_move(
         job_id=str(job.get("id") or ""),
         payload=payload,
         db_id=db_id,
+        current_user=current_user,
     )
     return _queued_transfer_response(job)
 
@@ -1584,6 +1746,14 @@ async def commit_uploaded_act(
         "reminder_pending_groups": int(reminder_result.get("reminder_pending_groups") or 0),
         "reminder_warning": reminder_result.get("warning"),
     }
+    for linked_inv_no in response_payload["linked_inv_nos"]:
+        _touch_recent_card_safely(
+            current_user=current_user,
+            db_id=db_id,
+            inv_no=linked_inv_no,
+            action_type="act",
+            snapshot=queries.get_equipment_by_inv(linked_inv_no, db_id) or {"inv_no": linked_inv_no},
+        )
     return UploadedActCommitResponse(**response_payload)
 
 

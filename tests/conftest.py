@@ -95,23 +95,6 @@ def sample_equipment():
     }
 
 
-@pytest.fixture
-def sample_unfound_equipment():
-    """Образец ненайденного оборудования"""
-    return {
-        'serial_no': 'UNKNOWN123',
-        'employee_name': 'Тестовый Тест',
-        'type_name': 'Компьютер',
-        'model_name': 'Unknown Model',
-        'description': 'Test',
-        'inventory_number': 'INV001',
-        'ip_address': '192.168.1.1',
-        'location': 'Office',
-        'status_name': 'В эксплуатации',
-        'branch_name': 'Москва',
-        'timestamp': '2024-01-01T12:00:00'
-    }
-
 
 # Патчи для общих зависимостей
 @pytest.fixture(autouse=True)

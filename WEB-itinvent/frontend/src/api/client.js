@@ -24,6 +24,7 @@ import { chatFileUploadsAPI } from './chatFileUploads';
 import { equipmentComputersAPI } from './equipmentComputers';
 import { equipmentConsumablesAPI } from './equipmentConsumables';
 import { equipmentDirectoriesAPI } from './equipmentDirectories';
+import { equipmentRecentCardsAPI } from './equipmentRecentCards';
 import { equipmentRecordsAPI } from './equipmentRecords';
 import { equipmentSearchAPI } from './equipmentSearch';
 import { equipmentTransferActsAPI, UPLOADED_ACT_PARSE_TIMEOUT_MS } from './equipmentTransferActs';
@@ -856,6 +857,7 @@ export {
   equipmentComputersAPI,
   equipmentConsumablesAPI,
   equipmentDirectoriesAPI,
+  equipmentRecentCardsAPI,
   equipmentRecordsAPI,
   equipmentSearchAPI,
   equipmentTransferActsAPI,
@@ -1168,6 +1170,22 @@ export const equipmentAPI = {
 
   get getByInvNos() {
     return equipmentRecordsAPI.getByInvNos;
+  },
+
+  get getRecentCards() {
+    return equipmentRecentCardsAPI.getRecentCards;
+  },
+
+  get touchRecentCard() {
+    return equipmentRecentCardsAPI.touchRecentCard;
+  },
+
+  get removeRecentCard() {
+    return equipmentRecentCardsAPI.removeRecentCard;
+  },
+
+  get clearRecentCards() {
+    return equipmentRecentCardsAPI.clearRecentCards;
   },
 
   get identifyWorkspace() {

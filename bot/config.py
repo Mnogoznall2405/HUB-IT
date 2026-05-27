@@ -129,7 +129,6 @@ class StorageKeys:
     BRANCHES_LIST = 'branches_list'
     TEMP_PHOTOS = 'temp_photos'
     TEMP_SERIALS = 'temp_serials'
-    UNFOUND_DATA = 'unfound_data'
     TRANSFER_DATA = 'transfer_data'
     CALLBACK_PAYLOADS = 'cb_payloads'
     DB_STATUS_MESSAGES = 'db_status_messages'

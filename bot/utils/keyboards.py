@@ -130,7 +130,7 @@ def create_employee_suggestions_keyboard(
     
     Параметры:
         suggestions: Список ФИО сотрудников
-        mode: Режим работы (transfer, unfound, change, search)
+        mode: Режим работы (transfer, change, search)
         
     Возвращает:
         InlineKeyboardMarkup: Клавиатура с кнопками выбора сотрудника
@@ -169,7 +169,7 @@ def create_employee_suggestions_keyboard(
 
 def create_model_suggestions_keyboard(
     suggestions: List[str],
-    mode: str = "unfound"
+    mode: str = "transfer"
 ) -> InlineKeyboardMarkup:
     """
     Создает клавиатуру с подсказками моделей оборудования

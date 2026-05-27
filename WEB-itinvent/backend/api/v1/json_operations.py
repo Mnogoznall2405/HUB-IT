@@ -8,14 +8,11 @@ that are shared with the Telegram bot.
 """
 
 import logging
-from typing import Optional, List
+from typing import Any, Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Query, status
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from backend.models.json_operations import (
-    # Unfound equipment
-    UnfoundEquipmentCreate,
-    UnfoundEquipmentResponse,
     # Transfers
     TransferCreate,
     TransferResponse,
@@ -49,17 +46,16 @@ from backend.models.json_operations import (
     BulkWorkRequest,
     BulkOperationResponse,
     # Statistics
-    UnfoundStatisticsResponse,
     TransferStatisticsResponse,
     WorksStatisticsResponse,
 )
 
-from backend.json_db.unfound import UnfoundEquipmentManager
 from backend.json_db.transfers import TransferManager
 from backend.json_db.works import WorksManager
 from backend.json_db.cartridges import CartridgeDatabase, CartridgeInfo
 from backend.services.excel_export_service import build_statistics_excel
 from backend.services.authorization_service import PERM_DATABASE_WRITE
+from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
 from backend.models.auth import User
 
 from backend.api.deps import get_current_active_user, get_current_database_id, require_permission
@@ -70,9 +66,34 @@ router = APIRouter()
 
 # ========== Initialize Managers ==========
 
-def get_unfound_manager():
-    """Dependency injection for UnfoundEquipmentManager."""
-    return UnfoundEquipmentManager()
+def _current_user_id(current_user: Any) -> int:
+    try:
+        return int(getattr(current_user, "id", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _touch_recent_card_safely(
+    *,
+    current_user: Any,
+    db_id: Any,
+    inv_no: Any,
+    action_type: str,
+    snapshot: Any = None,
+) -> None:
+    user_id = _current_user_id(current_user)
+    if user_id <= 0:
+        return
+    try:
+        equipment_recent_cards_service.touch(
+            user_id=user_id,
+            db_id=db_id,
+            inv_no=inv_no,
+            action_type=action_type,
+            snapshot=snapshot,
+        )
+    except Exception:
+        logger.warning("Failed to record equipment recent card activity", exc_info=True)
 
 def get_transfer_manager():
     """Dependency injection for TransferManager."""
@@ -85,78 +106,6 @@ def get_works_manager():
 def get_cartridge_database():
     """Dependency injection for CartridgeDatabase."""
     return CartridgeDatabase()
-
-
-# ========== Unfound Equipment Endpoints ==========
-
-@router.post("/unfound", response_model=UnfoundEquipmentResponse, status_code=status.HTTP_201_CREATED)
-async def add_unfound_equipment(
-    data: UnfoundEquipmentCreate,
-    manager: UnfoundEquipmentManager = Depends(get_unfound_manager),
-    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
-):
-    """Add a new unfound equipment record."""
-    try:
-        record = manager.add_unfound_equipment(
-            serial_number=data.serial_number,
-            model_name=data.model_name,
-            employee_name=data.employee_name,
-            brand_name=data.brand_name,
-            location=data.location,
-            equipment_type=data.equipment_type,
-            description=data.description,
-            inventory_number=data.inventory_number,
-            batch_number=data.batch_number,
-            ip_address=data.ip_address,
-            status=data.status,
-            branch=data.branch,
-            company=data.company,
-            db_name=data.db_name,
-            additional_data=data.additional_data,
-        )
-        return UnfoundEquipmentResponse(**record)
-    except ValueError as e:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
-    except Exception as e:
-        logger.error(f"Error adding unfound equipment: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
-
-
-@router.get("/unfound", response_model=List[UnfoundEquipmentResponse])
-async def get_unfound_equipment(
-    db_name: Optional[str] = None,
-    branch: Optional[str] = None,
-    employee: Optional[str] = None,
-    limit: Optional[int] = None,
-    manager: UnfoundEquipmentManager = Depends(get_unfound_manager),
-    current_user: User = Depends(get_current_active_user),
-):
-    """Get unfound equipment records with optional filtering."""
-    try:
-        records = manager.get_unfound_equipment(
-            db_name=db_name,
-            branch=branch,
-            employee=employee,
-            limit=limit,
-        )
-        return [UnfoundEquipmentResponse(**r) for r in records]
-    except Exception as e:
-        logger.error(f"Error getting unfound equipment: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
-
-
-@router.get("/unfound/statistics", response_model=UnfoundStatisticsResponse)
-async def get_unfound_statistics(
-    manager: UnfoundEquipmentManager = Depends(get_unfound_manager),
-    current_user: User = Depends(get_current_active_user),
-):
-    """Get statistics about unfound equipment."""
-    try:
-        stats = manager.get_unfound_statistics()
-        return UnfoundStatisticsResponse(**stats)
-    except Exception as e:
-        logger.error(f"Error getting unfound statistics: {e}")
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail="Internal server error")
 
 
 # ========== Transfer Endpoints ==========
@@ -297,6 +246,13 @@ async def add_cartridge_replacement(
             manufacturer=data.manufacturer,
             employee=data.employee,
         )
+        _touch_recent_card_safely(
+            current_user=current_user,
+            db_id=data.db_name,
+            inv_no=data.inv_no,
+            action_type="cartridge",
+            snapshot=record,
+        )
         return CartridgeReplacementResponse(**record)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -381,6 +337,13 @@ async def add_battery_replacement(
             manufacturer=data.manufacturer,
             employee=data.employee,
         )
+        _touch_recent_card_safely(
+            current_user=current_user,
+            db_id=data.db_name,
+            inv_no=data.inv_no,
+            action_type="battery",
+            snapshot=record,
+        )
         return BatteryReplacementResponse(**record)
     except ValueError as e:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
@@ -462,6 +425,13 @@ async def add_component_replacement(
             employee=data.employee,
             component_name=data.component_name,
             equipment_kind=data.equipment_kind,
+        )
+        _touch_recent_card_safely(
+            current_user=current_user,
+            db_id=data.db_name,
+            inv_no=data.inv_no,
+            action_type="component",
+            snapshot=record,
         )
         return ComponentReplacementResponse(**record)
     except ValueError as e:
@@ -546,6 +516,13 @@ async def add_pc_cleaning(
             hw_serial_no=data.hw_serial_no,
             model_name=data.model_name,
             manufacturer=data.manufacturer,
+        )
+        _touch_recent_card_safely(
+            current_user=current_user,
+            db_id=data.db_name,
+            inv_no=data.inv_no,
+            action_type="cleaning",
+            snapshot=record,
         )
         return PcCleaningResponse(**record)
     except ValueError as e:

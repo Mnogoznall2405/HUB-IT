@@ -26,7 +26,8 @@
 
 ## Хранилища данных
 
-- `data/unfound_equipment.json`
+- [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md) — обзор схем `app` / `chat` / `system`
+- [POSTGRES_APP_SCHEMA_DDL.md](./POSTGRES_APP_SCHEMA_DDL.md) — колонки, PK/FK, индексы (live introspection)
 - `data/equipment_transfers.json`
 - `data/battery_replacements.json`
 - `data/pc_cleanings.json`

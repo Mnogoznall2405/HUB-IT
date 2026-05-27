@@ -60,6 +60,7 @@ export function useDatabaseDetailRuntime({
   getLocationsCached,
   getModelsCached,
   setAllEquipment,
+  onRecentActivity,
 } = {}) {
   const [detailModal, setDetailModal] = useState({ open: false, data: null, loading: false, invNo: null });
   const [detailEditMode, setDetailEditMode] = useState(false);
@@ -518,13 +519,18 @@ export function useDatabaseDetailRuntime({
       setDetailEditMode(false);
       setDetailSuccess('Изменения сохранены.');
       setAllEquipment?.((prev) => upsertItemInGrouped(prev, toGroupedItem(updated)));
+      onRecentActivity?.({
+        invNo: detailModal.invNo,
+        actionType: 'edit',
+        snapshot: updated,
+      });
     } catch (error) {
       const apiDetail = error?.response?.data?.detail;
       setDetailError(typeof apiDetail === 'string' ? apiDetail : SAVE_ERROR);
     } finally {
       setDetailSaving(false);
     }
-  }, [canDatabaseWrite, detailModal?.invNo, detailForm, detailInitialForm, setAllEquipment]);
+  }, [canDatabaseWrite, detailModal?.invNo, detailForm, detailInitialForm, onRecentActivity, setAllEquipment]);
 
   const handleDetailEditKeyDown = useCallback((event) => {
     if (event.key !== 'Enter') return;

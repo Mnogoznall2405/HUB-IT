@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+import os
 import sys
 from logging.config import fileConfig
 from pathlib import Path
@@ -75,6 +77,31 @@ def run_migrations_offline() -> None:
         context.run_migrations()
 
 
+def _refresh_pg_schema_documentation_after_migration() -> None:
+    if os.getenv("SKIP_PG_SCHEMA_DOCS", "").strip().lower() in {"1", "true", "yes", "on"}:
+        return
+    database_url = _database_url()
+    if not database_url.startswith("postgresql"):
+        return
+    repo_root = Path(__file__).resolve().parents[3]
+    scripts_dir = repo_root / "scripts"
+    if str(scripts_dir) not in sys.path:
+        sys.path.insert(0, str(scripts_dir))
+    try:
+        from pg_schema_docs import refresh_pg_schema_documentation
+
+        refresh_pg_schema_documentation(
+            database_url=database_url,
+            repo_root=repo_root,
+            quiet=True,
+        )
+    except Exception as exc:
+        logging.getLogger("alembic.runtime.migration").warning(
+            "Could not refresh PostgreSQL schema docs: %s",
+            exc,
+        )
+
+
 def run_migrations_online() -> None:
     configuration = config.get_section(config.config_ini_section) or {}
     database_url = _database_url()
@@ -97,6 +124,8 @@ def run_migrations_online() -> None:
 
         with context.begin_transaction():
             context.run_migrations()
+
+    _refresh_pg_schema_documentation_after_migration()
 
 
 if context.is_offline_mode():

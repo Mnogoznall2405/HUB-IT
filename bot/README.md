@@ -44,7 +44,6 @@ python -m bot.main
 
 ## Основные данные
 
-- `data/unfound_equipment.json` — ненайденное оборудование
 - `data/equipment_transfers.json` — история перемещений
 - `data/battery_replacements.json` — замены батареи ИБП
 - `data/pc_cleanings.json` — чистки ПК
