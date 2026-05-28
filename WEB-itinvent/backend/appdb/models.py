@@ -247,6 +247,70 @@ class AppEquipmentRecentCard(AppBase):
     last_activity_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppPasswordVaultEntry(AppBase):
+    __tablename__ = "password_vault_entries"
+    __table_args__ = _table_args(
+        Index("ix_app_password_vault_entries_group_archived", "group_name", "is_archived"),
+        Index("ix_app_password_vault_entries_login_archived", "login", "is_archived"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    group_name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    tags_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    login: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    password_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    is_archived: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    updated_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppPasswordVaultGroup(AppBase):
+    __tablename__ = "password_vault_groups"
+    __table_args__ = _table_args(
+        UniqueConstraint("name", name="uq_app_password_vault_groups_name"),
+        Index("ix_app_password_vault_groups_active_sort", "is_active", "sort_order", "name"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    name: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    updated_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    updated_by_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppPasswordVaultAudit(AppBase):
+    __tablename__ = "password_vault_audit"
+    __table_args__ = _table_args(
+        Index("ix_app_password_vault_audit_entry_created", "entry_id", "created_at"),
+        Index("ix_app_password_vault_audit_actor_created", "actor_user_id", "created_at"),
+        Index("ix_app_password_vault_audit_action_created", "action", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    entry_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    actor_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    entry_group: Mapped[str] = mapped_column(String(120), nullable=False, default="")
+    entry_login: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    ip_address: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    user_agent: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppGlobalSetting(AppBase):
     __tablename__ = "app_settings"
     __table_args__ = _table_args(schema=APP_SCHEMA)

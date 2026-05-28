@@ -6,6 +6,7 @@ import {
   AI_NETWORK_TOOL_OPTIONS,
   createAiBotDraft,
   AiBotsAdminSection,
+  PasswordVaultGroupsSettingsCard,
 } from './Settings';
 
 const theme = createTheme();
@@ -134,5 +135,38 @@ describe('AiBotsAdminSection warning display', () => {
     expect(
       screen.queryByText(/больше 8 раундов может значительно увеличить время ответа/i)
     ).not.toBeInTheDocument();
+  });
+});
+
+describe('PasswordVaultGroupsSettingsCard', () => {
+  it('shows empty warning when groups list is empty', () => {
+    renderWithTheme(
+      <PasswordVaultGroupsSettingsCard
+        groups={[]}
+        loading={false}
+        saving={false}
+        onRefresh={vi.fn()}
+        onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        onArchive={vi.fn()}
+      />,
+    );
+    expect(screen.getByText(/список групп пуст/i)).toBeInTheDocument();
+  });
+
+  it('renders active group row', () => {
+    renderWithTheme(
+      <PasswordVaultGroupsSettingsCard
+        groups={[{ id: 'g-1', name: 'VPN', is_active: true, sort_order: 0 }]}
+        loading={false}
+        saving={false}
+        onRefresh={vi.fn()}
+        onCreate={vi.fn()}
+        onUpdate={vi.fn()}
+        onArchive={vi.fn()}
+      />,
+    );
+    expect(screen.getByDisplayValue('VPN')).toBeInTheDocument();
+    expect(screen.getByText('Сохранить')).toBeInTheDocument();
   });
 });

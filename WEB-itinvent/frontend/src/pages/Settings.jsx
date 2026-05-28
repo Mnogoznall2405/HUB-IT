@@ -72,6 +72,7 @@ import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { useNavigate } from 'react-router-dom';
 import { authAPI, mailAPI, settingsAPI } from '../api/client';
+import { passwordsAPI } from '../api/passwords';
 import { databaseAPI } from '../api/database';
 import { departmentsAPI } from '../api/departments';
 import OverflowMenu from '../components/common/OverflowMenu';
@@ -263,6 +264,14 @@ const permissionGroups = [
   },
 ];
 
+const PASSWORDS_PERMISSION_GROUP = {
+  group: 'Пароли',
+  permissions: [
+    { value: 'passwords.read', label: 'Пароли: просмотр' },
+    { value: 'passwords.write', label: 'Пароли: создание и редактирование' },
+  ],
+};
+
 const AI_PERMISSION_GROUP = {
   group: 'AI',
   permissions: [
@@ -273,6 +282,7 @@ const AI_PERMISSION_GROUP = {
 
 export const SETTINGS_PERMISSION_GROUPS = [
   ...permissionGroups,
+  PASSWORDS_PERMISSION_GROUP,
   AI_PERMISSION_GROUP,
 ];
 
@@ -3900,6 +3910,104 @@ export function TransferActReminderSettingsCard({ appSettings, loading, saving, 
   );
 }
 
+export function PasswordVaultGroupsSettingsCard({
+  groups,
+  loading,
+  saving,
+  onRefresh,
+  onCreate,
+  onUpdate,
+  onArchive,
+}) {
+  const [newGroupName, setNewGroupName] = useState('');
+
+  return (
+    <SectionCard
+      title="Группы хранилища паролей"
+      description="Админ задаёт централизованный список групп для страницы Пароли."
+      action={(
+        <Button size="small" startIcon={<RefreshOutlinedIcon />} onClick={onRefresh} disabled={loading || saving}>
+          Обновить
+        </Button>
+      )}
+      sx={{ flexShrink: 0 }}
+      contentSx={{ p: 1.1 }}
+    >
+      <Stack spacing={1.1}>
+        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
+          <TextField
+            size="small"
+            label="Новая группа"
+            value={newGroupName}
+            onChange={(event) => setNewGroupName(event.target.value)}
+            fullWidth
+          />
+          <Button
+            variant="contained"
+            disabled={saving || !String(newGroupName || '').trim()}
+            onClick={async () => {
+              const ok = await onCreate({ name: String(newGroupName || '').trim(), sort_order: groups.length });
+              if (ok) setNewGroupName('');
+            }}
+          >
+            Добавить
+          </Button>
+        </Stack>
+        {!groups.length && !loading ? (
+          <Alert severity="warning">
+            Список групп пуст. Пользователи не смогут создать запись пароля, пока админ не добавит хотя бы одну группу.
+          </Alert>
+        ) : null}
+        <Stack spacing={0.8}>
+          {groups.map((item) => (
+            <Paper key={item.id} variant="outlined" sx={{ p: 1 }}>
+              <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} alignItems={{ md: 'center' }}>
+                <TextField
+                  size="small"
+                  label="Название"
+                  value={item.name}
+                  onChange={(event) => onUpdate(item.id, { name: event.target.value, sort_order: Number(item.sort_order || 0) }, { autosave: true })}
+                  fullWidth
+                  disabled={saving || !item.is_active}
+                />
+                <TextField
+                  size="small"
+                  label="Порядок"
+                  type="number"
+                  value={Number(item.sort_order || 0)}
+                  onChange={(event) => onUpdate(item.id, { name: item.name, sort_order: Math.max(0, Number(event.target.value || 0)) }, { autosave: true })}
+                  sx={{ width: { xs: '100%', md: 120 } }}
+                  disabled={saving || !item.is_active}
+                />
+                <Chip
+                  size="small"
+                  color={item.is_active ? 'success' : 'default'}
+                  label={item.is_active ? 'Активна' : 'Архив'}
+                  variant={item.is_active ? 'filled' : 'outlined'}
+                />
+                {item.is_active ? (
+                  <>
+                    <Button
+                      size="small"
+                      onClick={() => onUpdate(item.id, { name: item.name, sort_order: Math.max(0, Number(item.sort_order || 0)) })}
+                      disabled={saving || !String(item.name || '').trim()}
+                    >
+                      Сохранить
+                    </Button>
+                    <Button size="small" color="warning" onClick={() => onArchive(item)} disabled={saving}>
+                      Архив
+                    </Button>
+                  </>
+                ) : null}
+              </Stack>
+            </Paper>
+          ))}
+        </Stack>
+      </Stack>
+    </SectionCard>
+  );
+}
+
 const AI_ITINVENT_DEFAULT_TOOLS = [
   'itinvent.database.current',
   'itinvent.equipment.search',
@@ -5100,6 +5208,9 @@ function Settings() {
   const [linkTrustedDeviceError, setLinkTrustedDeviceError] = useState('');
   const [linkingTrustedDevice, setLinkingTrustedDevice] = useState(false);
   const [passkeyLinkAvailable, setPasskeyLinkAvailable] = useState(false);
+  const [passwordGroups, setPasswordGroups] = useState([]);
+  const [passwordGroupsLoading, setPasswordGroupsLoading] = useState(false);
+  const [passwordGroupsSaving, setPasswordGroupsSaving] = useState(false);
   const linkTrustedDeviceModeRef = useRef({ platformOnly: false });
 
   useEffect(() => {
@@ -5222,6 +5333,21 @@ function Settings() {
     }
   }, [isAdmin]);
 
+  const loadPasswordGroups = useCallback(async () => {
+    if (!isAdmin) return;
+    setPasswordGroupsLoading(true);
+    try {
+      const data = await passwordsAPI.getGroups({ include_inactive: true });
+      setPasswordGroups(Array.isArray(data?.items) ? data.items : []);
+      setBlockingError('');
+    } catch (error) {
+      console.error(error);
+      setBlockingError('Не удалось загрузить группы хранилища паролей.');
+    } finally {
+      setPasswordGroupsLoading(false);
+    }
+  }, [isAdmin]);
+
   const loadAiBotsAdmin = useCallback(async () => {
     if (!canManageAiBots) return;
     setAiBotsLoading(true);
@@ -5288,11 +5414,12 @@ function Settings() {
     if (tab === 'env' && isAdmin) {
       loadEnv();
       loadAppSettings();
+      loadPasswordGroups();
     }
     if (tab === 'ai-bots' && canManageAiBots) {
       loadAiBotsAdmin();
     }
-  }, [tab, canManageUsers, canManageSessions, canManageAiBots, isAdmin, loadUsers, loadSessions, loadEnv, loadAppSettings, loadAiBotsAdmin, loadSecurity]);
+  }, [tab, canManageUsers, canManageSessions, canManageAiBots, isAdmin, loadUsers, loadSessions, loadEnv, loadAppSettings, loadAiBotsAdmin, loadSecurity, loadPasswordGroups]);
 
   const handleSavePreferences = useCallback(async () => {
     setSavingPreferences(true);
@@ -5687,6 +5814,62 @@ function Settings() {
     }
   }, [notifyApiError, notifySuccess]);
 
+  const handleCreatePasswordGroup = useCallback(async (payload) => {
+    setPasswordGroupsSaving(true);
+    try {
+      await passwordsAPI.createGroup(payload);
+      await loadPasswordGroups();
+      notifySuccess('Группа паролей создана.', { dedupeMode: 'none' });
+      return true;
+    } catch (error) {
+      notifyApiError(error, 'Не удалось создать группу паролей.', { dedupeMode: 'none' });
+      return false;
+    } finally {
+      setPasswordGroupsSaving(false);
+    }
+  }, [loadPasswordGroups, notifyApiError, notifySuccess]);
+
+  const handleUpdatePasswordGroup = useCallback(async (groupId, payload, options = {}) => {
+    const autosave = Boolean(options?.autosave);
+    setPasswordGroups((current) => current.map((item) => (
+      item.id === groupId
+        ? {
+          ...item,
+          ...(payload?.name !== undefined ? { name: String(payload.name || '') } : {}),
+          ...(payload?.sort_order !== undefined ? { sort_order: Number(payload.sort_order || 0) } : {}),
+        }
+        : item
+    )));
+    if (autosave) return true;
+    setPasswordGroupsSaving(true);
+    try {
+      await passwordsAPI.updateGroup(groupId, payload);
+      await loadPasswordGroups();
+      notifySuccess('Группа паролей обновлена.', { dedupeMode: 'none' });
+      return true;
+    } catch (error) {
+      notifyApiError(error, 'Не удалось обновить группу паролей.', { dedupeMode: 'none' });
+      await loadPasswordGroups();
+      return false;
+    } finally {
+      setPasswordGroupsSaving(false);
+    }
+  }, [loadPasswordGroups, notifyApiError, notifySuccess]);
+
+  const handleArchivePasswordGroup = useCallback(async (group) => {
+    if (!window.confirm(`Архивировать группу "${group?.name || ''}"?`)) return;
+    setPasswordGroupsSaving(true);
+    try {
+      await passwordsAPI.archiveGroup(group.id);
+      await loadPasswordGroups();
+      notifySuccess('Группа паролей отправлена в архив.', { dedupeMode: 'none' });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось архивировать группу паролей.', { dedupeMode: 'none' });
+    } finally {
+      setPasswordGroupsSaving(false);
+    }
+  }, [loadPasswordGroups, notifyApiError, notifySuccess]);
+
   const handleCreateAiBot = useCallback(async (draft) => {
     setSavingAiBotId('new');
     try {
@@ -5959,6 +6142,15 @@ function Settings() {
                   saving={savingEnv}
                   onRefresh={loadEnv}
                   onSave={handleSaveEnv}
+                />
+                <PasswordVaultGroupsSettingsCard
+                  groups={passwordGroups}
+                  loading={passwordGroupsLoading}
+                  saving={passwordGroupsSaving}
+                  onRefresh={loadPasswordGroups}
+                  onCreate={handleCreatePasswordGroup}
+                  onUpdate={handleUpdatePasswordGroup}
+                  onArchive={handleArchivePasswordGroup}
                 />
               </Box>
             </SettingsTabPanel>
