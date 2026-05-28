@@ -1817,21 +1817,21 @@ function Mail() {
     }
   }, [composeDraftKey, openComposeSession, resolveComposeMailboxId, selectedMessage]);
 
-  const openComposeFromDraft = useCallback(() => {
-    if (!selectedMessage || String(selectedMessage.folder || '').toLowerCase() !== 'drafts') return;
-    const draftContext = selectedMessage?.draft_context || {};
-    const splitDraftBody = splitQuotedHistoryHtml(selectedMessage.body_html || '');
+  const openComposeFromDraftMessage = useCallback((sourceMessage) => {
+    if (!sourceMessage || String(sourceMessage.folder || '').toLowerCase() !== 'drafts') return;
+    const draftContext = sourceMessage?.draft_context || {};
+    const splitDraftBody = splitQuotedHistoryHtml(sourceMessage.body_html || '');
     openComposeSession({
       composeMode: String(draftContext.compose_mode || 'draft'),
-      composeFromMailboxId: resolveComposeMailboxId(draftContext.mailbox_id || selectedMessage?.mailbox_id),
-      to: selectedMessage.to,
-      cc: selectedMessage.cc,
-      bcc: selectedMessage.bcc,
-      subject: String(selectedMessage.subject || ''),
+      composeFromMailboxId: resolveComposeMailboxId(draftContext.mailbox_id || sourceMessage?.mailbox_id),
+      to: sourceMessage.to,
+      cc: sourceMessage.cc,
+      bcc: sourceMessage.bcc,
+      subject: String(sourceMessage.subject || ''),
       composeBody: String(splitDraftBody?.primaryHtml || ''),
       composeQuotedOriginalHtml: String(splitDraftBody?.quotedHtml || ''),
-      draftAttachments: Array.isArray(selectedMessage.attachments) ? selectedMessage.attachments : [],
-      draftId: String(selectedMessage.id || ''),
+      draftAttachments: Array.isArray(sourceMessage.attachments) ? sourceMessage.attachments : [],
+      draftId: String(sourceMessage.id || ''),
       replyToMessageId: String(draftContext.reply_to_message_id || ''),
       forwardMessageId: String(draftContext.forward_message_id || ''),
       draftSyncState: 'synced',
@@ -1841,7 +1841,11 @@ function Mail() {
     } catch {
       // ignore local storage issues
     }
-  }, [composeDraftKey, openComposeSession, resolveComposeMailboxId, selectedMessage]);
+  }, [composeDraftKey, openComposeSession, resolveComposeMailboxId]);
+
+  const openComposeFromDraft = useCallback(() => {
+    openComposeFromDraftMessage(selectedMessage);
+  }, [openComposeFromDraftMessage, selectedMessage]);
 
   const handleComposeSent = useCallback(async () => {
     setComposeSession(null);
@@ -2485,6 +2489,33 @@ function Mail() {
                 ? prev.filter((selectedItem) => selectedItem !== nextId)
                 : [...prev, nextId]
             ));
+            return;
+          }
+          const isDraftFolderSelection = (
+            viewMode === 'messages'
+            && String(folder || '').toLowerCase() === 'drafts'
+            && Boolean(nextId)
+          );
+          if (isDraftFolderSelection) {
+            setDetailLoading(true);
+            try {
+              const recentDetail = getRecentMessageDetailSnapshot(nextId);
+              const draftDetail = recentDetail || await mailAPI.getMessage(nextId, { mailboxId: activeMailboxId });
+              if (draftDetail) {
+                setSelectedConversation(null);
+                setSelectedMessage(draftDetail);
+                openComposeFromDraftMessage(draftDetail);
+              }
+            } catch (requestError) {
+              setError(getMailErrorDetail(requestError, 'Не удалось открыть черновик.'));
+            } finally {
+              setDetailLoading(false);
+            }
+            selectedIdRef.current = nextId;
+            setSelectedId(nextId);
+            setSelectedByMode((prev) => ({ ...(prev || {}), [viewMode]: nextId }));
+            setMoveTarget('');
+            closeMobileNavigationIfNeeded();
             return;
           }
           if (viewMode === 'messages') {

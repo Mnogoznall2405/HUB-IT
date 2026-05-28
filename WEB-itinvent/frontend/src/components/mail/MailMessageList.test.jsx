@@ -174,6 +174,37 @@ describe('MailMessageList', () => {
     expect(props.onToggleSelectedListItem).toHaveBeenCalledWith('msg-1');
   });
 
+  it('shows recipient line instead of sender in drafts folder', () => {
+    const props = buildProps({
+      folder: 'drafts',
+      listData: {
+        items: [
+          {
+            id: 'msg-1',
+            sender: 'sender@example.com',
+            sender_email: 'sender@example.com',
+            sender_display: 'Sender Name',
+            to_people: [{ display: 'Recipient Name', email: 'recipient@example.com' }],
+            recipients: ['recipient@example.com'],
+            subject: 'Draft subject',
+            body_preview: 'Draft preview',
+            received_at: '2026-04-08T10:00:00Z',
+            is_read: false,
+            has_attachments: false,
+            attachments_count: 0,
+          },
+        ],
+        has_more: false,
+      },
+      isMobile: false,
+    });
+
+    renderWithTheme(<MailMessageList {...props} />);
+
+    expect(screen.getByText('Recipient Name')).toBeTruthy();
+    expect(screen.queryByText('Sender Name')).toBeNull();
+  });
+
   it('keeps swipe labels hidden at rest, reveals parked actions and commits full swipe on mobile', () => {
     vi.useFakeTimers();
     const props = buildProps();

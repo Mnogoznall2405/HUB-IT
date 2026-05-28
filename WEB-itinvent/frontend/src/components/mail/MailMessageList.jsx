@@ -201,14 +201,25 @@ function MessageRow({
   const canLongPressSelect = isMobile && viewMode === 'messages' && Boolean(onToggleSelected);
   const canDesktopActions = !isMobile;
   const canDragHandle = !isMobile && viewMode === 'messages';
+  const isDraftMessagesView = viewMode === 'messages' && String(folder || '').toLowerCase() === 'drafts';
   const senderPerson = item?.sender_person || {
     display: item?.sender_display,
     name: item?.sender_name,
     email: item?.sender_email || item?.sender,
   };
+  const draftRecipientLine = isDraftMessagesView
+    ? formatMailPeopleLine(
+      item?.to_people
+      || item?.recipient_people
+      || item?.to
+      || item?.recipients,
+      '',
+    )
+    : '';
+  const fallbackSenderLine = getMailPersonDisplay(senderPerson, item?.sender || '-');
   const senderLine = viewMode === 'conversations'
     ? formatParticipantLine(item?.participant_people || item?.participants)
-    : getMailPersonDisplay(senderPerson, item?.sender || '-');
+    : (isDraftMessagesView ? (draftRecipientLine || fallbackSenderLine) : fallbackSenderLine);
   const title = item.subject || '(без темы)';
   const previewLine = viewMode === 'conversations'
     ? (item.preview || '')
