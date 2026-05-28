@@ -215,5 +215,10 @@ describe('mailMailboxModel', () => {
     expect(resolveComposeMailboxId({
       composeFromOptions: [{ mailbox_id: 'option-mb' }],
     })).toBe('option-mb');
+    expect(resolveComposeMailboxId({
+      candidate: { id: 'from-object', mailbox_email: 'x@y.z' },
+      activeMailboxId: 'active-mb',
+      composeFromOptions: [{ id: 'option-mb' }],
+    })).toBe('from-object');
   });
 });

@@ -77,7 +77,15 @@ MAIL_TABLE_SPECS: tuple[MailTableSpec, ...] = (
     ),
     MailTableSpec(
         name="mail_draft_context",
-        columns=("draft_exchange_id", "user_id", "compose_mode", "reply_to_message_id", "forward_message_id", "updated_at"),
+        columns=(
+            "draft_exchange_id",
+            "user_id",
+            "compose_mode",
+            "reply_to_message_id",
+            "forward_message_id",
+            "compose_mailbox_id",
+            "updated_at",
+        ),
         primary_key=("draft_exchange_id",),
     ),
     MailTableSpec(

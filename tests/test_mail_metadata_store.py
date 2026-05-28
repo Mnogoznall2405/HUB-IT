@@ -64,6 +64,7 @@ def _build_store(temp_dir: str):
                 compose_mode TEXT NOT NULL DEFAULT 'draft',
                 reply_to_message_id TEXT NULL,
                 forward_message_id TEXT NULL,
+                compose_mailbox_id TEXT NULL,
                 updated_at TEXT NOT NULL
             )
             """
@@ -167,7 +168,19 @@ def test_metadata_store_scopes_draft_context_by_mailbox_and_keeps_legacy_fallbac
     assert scoped is not None
     assert scoped["compose_mode"] == "reply"
     assert scoped["reply_to_message_id"] == "msg-1"
+    assert scoped.get("mailbox_id") is None
     assert store.get_draft_context(user_id=8, mailbox_id="mailbox-b", draft_exchange_id="draft-1") is None
+
+    store.save_draft_context(
+        user_id=8,
+        mailbox_id="mailbox-a",
+        draft_exchange_id="draft-compose-mb",
+        compose_mode="draft",
+        compose_mailbox_id="stored-mb-1",
+    )
+    with_mb = store.get_draft_context(user_id=8, mailbox_id="mailbox-a", draft_exchange_id="draft-compose-mb")
+    assert with_mb is not None
+    assert with_mb["mailbox_id"] == "stored-mb-1"
 
     store.save_draft_context(
         user_id=8,
@@ -179,6 +192,7 @@ def test_metadata_store_scopes_draft_context_by_mailbox_and_keeps_legacy_fallbac
     assert legacy is not None
     assert legacy["compose_mode"] == "forward"
     assert legacy["forward_message_id"] == "msg-2"
+    assert legacy.get("mailbox_id") is None
 
     store.delete_draft_context(mailbox_id="mailbox-a", draft_exchange_id="draft-1")
     assert store.get_draft_context(user_id=8, mailbox_id="mailbox-a", draft_exchange_id="draft-1") is None

@@ -27,6 +27,21 @@ class _Query:
         return self._items[key]
 
 
+class _ServerFilteringQuery(_Query):
+    def __init__(self, items, calls):
+        super().__init__(items)
+        self._calls = calls
+
+    def filter(self, *args, **kwargs):
+        if args:
+            self._calls["server_filter_used"] = self._calls.get("server_filter_used", 0) + 1
+            return _ServerFilteringQuery(
+                [item for item in self._items if "needle" in item.subject.lower()],
+                self._calls,
+            )
+        return super().filter(**kwargs)
+
+
 def _item(
     item_id: str,
     *,
@@ -69,7 +84,7 @@ def _build_listing(*, folders: dict[str, list[object]], search_window_limit=50, 
         search_target_folders=_search_target_folders,
         folder_queryset=_folder_queryset,
         folder_total_hint=lambda folder_obj, unread_only=False: len(folder_obj),
-        serialize_message_preview=lambda *, item, folder_key, mailbox_id=None: {
+        serialize_message_preview=lambda *, item, folder_key, mailbox_id=None, mailbox_email="": {
             "id": item.id,
             "received_at": item.datetime_received.isoformat(),
             "folder": folder_key,
@@ -141,6 +156,40 @@ def test_message_listing_filters_and_limits_multi_folder_scan():
 
     assert result.searched_window == 2
     assert result.search_limited is True
+    assert [item["id"] for item in result.payload["items"]] == ["keep"]
+
+
+def test_message_listing_pushes_supported_search_to_server_side_filter():
+    calls = {}
+    items = [
+        _item("skip", subject="Other", minute=1),
+        _item("keep", subject="Needle", minute=2),
+    ]
+
+    listing = MailMessageListBuilder(
+        search_target_folders=lambda _account, folder="inbox", folder_scope="current": [(items, "inbox")],
+        folder_queryset=lambda folder_obj, folder_key, preview_only=False: _ServerFilteringQuery(folder_obj, calls),
+        folder_total_hint=lambda folder_obj, unread_only=False: len(folder_obj),
+        serialize_message_preview=lambda *, item, folder_key, mailbox_id=None, mailbox_email="": {
+            "id": item.id,
+            "received_at": item.datetime_received.isoformat(),
+            "folder": folder_key,
+        },
+        message_matches_filters=lambda item, **filters: message_matches_filters(
+            item,
+            item_sender=lambda value: value.sender,
+            item_recipients=lambda value: value.recipients,
+            item_importance=lambda value: value.importance,
+            **filters,
+        ),
+        parse_date_filter=lambda value: None,
+        search_batch_size=10,
+        search_window_limit=lambda: 50,
+    )
+
+    result = listing.list_messages(account=object(), folder="inbox", q="needle")
+
+    assert calls["server_filter_used"] == 1
     assert [item["id"] for item in result.payload["items"]] == ["keep"]
 
 

@@ -99,6 +99,7 @@ def test_mail_service_supports_app_db_backend(temp_dir, monkeypatch):
     assert draft_context is not None
     assert draft_context["compose_mode"] == "reply"
     assert draft_context["reply_to_message_id"] == "msg-1"
+    assert draft_context.get("mailbox_id") is None
 
 
 def test_mail_service_caches_message_detail_payload(temp_dir, monkeypatch):
@@ -281,7 +282,7 @@ def test_mail_service_limits_filtered_message_scan_window(temp_dir, monkeypatch)
     monkeypatch.setattr(
         service,
         "_serialize_message_preview_for_mailbox",
-        lambda *, item, folder_key, mailbox_id=None: {
+        lambda *, item, folder_key, mailbox_id=None, mailbox_email="": {
             "id": item.id,
             "received_at": item.id,
             "folder": folder_key,

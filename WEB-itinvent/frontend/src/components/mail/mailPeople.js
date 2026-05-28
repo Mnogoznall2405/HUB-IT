@@ -12,6 +12,7 @@ export function getMailPersonEmail(value) {
       || value.value
     ).toLowerCase();
     if (email) return email;
+    return '';
   }
   const text = normalizeText(value);
   if (!text) return '';
@@ -39,6 +40,7 @@ export function getMailPersonDisplay(value, fallback = '-') {
     if (display) return display;
     const email = getMailPersonEmail(value);
     if (email) return email;
+    return fallback;
   }
   const text = normalizeText(value);
   if (!text) return fallback;

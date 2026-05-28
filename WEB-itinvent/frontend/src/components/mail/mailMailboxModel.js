@@ -137,7 +137,10 @@ export const resolveComposeMailboxId = ({
   activeMailboxId = '',
   composeFromOptions = [],
 } = {}) => {
-  const normalizedCandidate = normalizeMailboxId(candidate);
+  const candidateId = typeof candidate === 'object' && candidate !== null
+    ? getMailboxEntryId(candidate)
+    : '';
+  const normalizedCandidate = normalizeMailboxId(candidateId || candidate);
   if (normalizedCandidate) return normalizedCandidate;
   const normalizedActiveMailboxId = normalizeMailboxId(activeMailboxId);
   if (normalizedActiveMailboxId) return normalizedActiveMailboxId;

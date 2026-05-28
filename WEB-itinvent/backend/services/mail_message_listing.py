@@ -31,8 +31,12 @@ def message_matches_filters(
     body_filter: str = "",
     importance_filter: str = "",
 ) -> bool:
-    if has_attachments and not bool(getattr(item, "attachments", None) or []):
-        return False
+    if has_attachments:
+        has_attachment_flag = getattr(item, "has_attachments", None)
+        if has_attachment_flag is None:
+            has_attachment_flag = bool(getattr(item, "attachments", None) or [])
+        if not bool(has_attachment_flag):
+            return False
 
     received = getattr(item, "datetime_received", None) or getattr(item, "datetime_created", None)
     if received is not None:
@@ -72,8 +76,14 @@ def message_matches_filters(
     if query_text:
         subject = _normalize_text(getattr(item, "subject", "")).lower()
         sender = item_sender(item).lower()
+        recipients = " ".join(item_recipients(item)).lower()
         body_preview = _normalize_text(getattr(item, "text_body", "")).lower()
-        if query_text not in subject and query_text not in sender and query_text not in body_preview:
+        if (
+            query_text not in subject
+            and query_text not in sender
+            and query_text not in recipients
+            and query_text not in body_preview
+        ):
             return False
 
     return True
@@ -108,11 +118,100 @@ class MailMessageListBuilder:
         self.search_batch_size = max(1, int(search_batch_size))
         self.search_window_limit = search_window_limit
 
+    @staticmethod
+    def _combine_or(filters: list[Any]) -> Any:
+        if not filters:
+            return None
+        current = filters[0]
+        for item in filters[1:]:
+            current = current | item
+        return current
+
+    @staticmethod
+    def _combine_and(filters: list[Any]) -> Any:
+        if not filters:
+            return None
+        current = filters[0]
+        for item in filters[1:]:
+            current = current & item
+        return current
+
+    def _server_side_restriction(
+        self,
+        *,
+        query_text: str,
+        has_attachments: bool,
+        from_filter: str,
+        to_filter: str,
+        subject_filter: str,
+        body_filter: str,
+        importance_filter: str,
+    ) -> Any:
+        try:
+            from exchangelib import Q
+        except Exception:
+            return None
+
+        restrictions: list[Any] = []
+        if query_text:
+            query_restrictions = [
+                Q(subject__icontains=query_text),
+                Q(text_body__icontains=query_text),
+                Q(body__icontains=query_text),
+                Q(sender__name__icontains=query_text),
+                Q(sender__email_address__icontains=query_text),
+                Q(author__name__icontains=query_text),
+                Q(author__email_address__icontains=query_text),
+                Q(display_to__icontains=query_text),
+            ]
+            combined_query = self._combine_or(query_restrictions)
+            if combined_query is not None:
+                restrictions.append(combined_query)
+        if has_attachments:
+            restrictions.append(Q(has_attachments=True))
+        if from_filter:
+            from_restriction = self._combine_or(
+                [
+                    Q(sender__name__icontains=from_filter),
+                    Q(sender__email_address__icontains=from_filter),
+                    Q(author__name__icontains=from_filter),
+                    Q(author__email_address__icontains=from_filter),
+                ]
+            )
+            if from_restriction is not None:
+                restrictions.append(from_restriction)
+        if to_filter:
+            restrictions.append(Q(display_to__icontains=to_filter))
+        if subject_filter:
+            restrictions.append(Q(subject__icontains=subject_filter))
+        if body_filter:
+            body_restriction = self._combine_or(
+                [
+                    Q(text_body__icontains=body_filter),
+                    Q(body__icontains=body_filter),
+                ]
+            )
+            if body_restriction is not None:
+                restrictions.append(body_restriction)
+        if importance_filter:
+            restrictions.append(Q(importance=importance_filter.capitalize()))
+        return self._combine_and(restrictions)
+
+    def _apply_server_side_filters(self, queryset: Any, **filters: Any) -> tuple[Any, bool]:
+        restriction = self._server_side_restriction(**filters)
+        if restriction is None:
+            return queryset, False
+        try:
+            return queryset.filter(restriction), True
+        except Exception:
+            return queryset, False
+
     def list_messages(
         self,
         *,
         account: Any,
         mailbox_id: str | None = None,
+        mailbox_email: str = "",
         folder: str = "inbox",
         folder_scope: str = "current",
         limit: int = 50,
@@ -174,6 +273,7 @@ class MailMessageListBuilder:
                     item=item,
                     folder_key=folder_key,
                     mailbox_id=mailbox_id,
+                    mailbox_email=mailbox_email,
                 )
                 for item in page_items
             ]
@@ -184,17 +284,38 @@ class MailMessageListBuilder:
         else:
             serialized_items: list[dict[str, Any]] = []
             search_budget = max(1, int(self.search_window_limit()))
+            target_count = safe_offset + safe_limit + 1
+            can_stop_after_page = normalized_scope.lower() != "all"
+            needs_full_body = bool(normalized_body)
             for folder_obj, folder_key in targets:
-                queryset = self.folder_queryset(folder_obj, folder_key)
+                base_queryset = self.folder_queryset(folder_obj, folder_key, preview_only=not needs_full_body)
                 if unread_only:
-                    queryset = queryset.filter(is_read=False)
+                    base_queryset = base_queryset.filter(is_read=False)
+                queryset, server_filter_active = self._apply_server_side_filters(
+                    base_queryset,
+                    query_text=query_text,
+                    has_attachments=bool(has_attachments),
+                    from_filter=normalized_from,
+                    to_filter=normalized_to,
+                    subject_filter=normalized_subject,
+                    body_filter=normalized_body,
+                    importance_filter=normalized_importance,
+                )
                 scanned = 0
                 while True:
                     if searched_window >= search_budget:
                         search_limited = True
                         break
                     batch_limit = min(self.search_batch_size, search_budget - searched_window)
-                    batch_items = list(queryset[scanned: scanned + batch_limit])
+                    try:
+                        batch_items = list(queryset[scanned: scanned + batch_limit])
+                    except Exception:
+                        if server_filter_active:
+                            queryset = base_queryset
+                            server_filter_active = False
+                            scanned = 0
+                            continue
+                        raise
                     if not batch_items:
                         break
                     for item in batch_items:
@@ -216,13 +337,20 @@ class MailMessageListBuilder:
                                 item=item,
                                 folder_key=folder_key,
                                 mailbox_id=mailbox_id,
+                                mailbox_email=mailbox_email,
                             )
                         )
+                        if can_stop_after_page and len(serialized_items) >= target_count:
+                            break
                     searched_window += len(batch_items)
                     scanned += len(batch_items)
+                    if can_stop_after_page and len(serialized_items) >= target_count:
+                        break
                     if len(batch_items) < batch_limit:
                         break
                 if search_limited:
+                    break
+                if can_stop_after_page and len(serialized_items) >= target_count:
                     break
             serialized_items.sort(
                 key=lambda item: (

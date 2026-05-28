@@ -132,19 +132,21 @@ class MailMetadataStore:
         compose_mode: str,
         reply_to_message_id: str | None = None,
         forward_message_id: str | None = None,
+        compose_mailbox_id: str | None = None,
     ) -> None:
         scoped_draft_exchange_id = self._scoped_key(mailbox_id=mailbox_id, value=draft_exchange_id)
         with self._lock, self._connect() as conn:
             conn.execute(
                 f"""
                 INSERT INTO {self._draft_context_table}
-                (draft_exchange_id, user_id, compose_mode, reply_to_message_id, forward_message_id, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?)
+                (draft_exchange_id, user_id, compose_mode, reply_to_message_id, forward_message_id, compose_mailbox_id, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(draft_exchange_id) DO UPDATE SET
                     user_id = excluded.user_id,
                     compose_mode = excluded.compose_mode,
                     reply_to_message_id = excluded.reply_to_message_id,
                     forward_message_id = excluded.forward_message_id,
+                    compose_mailbox_id = excluded.compose_mailbox_id,
                     updated_at = excluded.updated_at
                 """,
                 (
@@ -153,6 +155,7 @@ class MailMetadataStore:
                     _normalize_text(compose_mode, "draft"),
                     _normalize_text(reply_to_message_id) or None,
                     _normalize_text(forward_message_id) or None,
+                    _normalize_text(compose_mailbox_id) or None,
                     _utc_now_iso(),
                 ),
             )
@@ -167,7 +170,7 @@ class MailMetadataStore:
     ) -> dict[str, Any] | None:
         row = self._get_by_scoped_or_legacy_key(
             table=self._draft_context_table,
-            columns="compose_mode, reply_to_message_id, forward_message_id, updated_at",
+            columns="compose_mode, reply_to_message_id, forward_message_id, updated_at, compose_mailbox_id",
             user_id=int(user_id),
             mailbox_id=mailbox_id,
             key_column="draft_exchange_id",
@@ -180,6 +183,7 @@ class MailMetadataStore:
             "reply_to_message_id": _normalize_text(row["reply_to_message_id"]) or None,
             "forward_message_id": _normalize_text(row["forward_message_id"]) or None,
             "updated_at": _normalize_text(row["updated_at"]) or None,
+            "mailbox_id": _normalize_text(row["compose_mailbox_id"]) or None,
         }
 
     def delete_draft_context(

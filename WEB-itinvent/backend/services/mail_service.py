@@ -254,6 +254,7 @@ _MAIL_REQUIRED_COLUMNS = {
         "compose_mode",
         "reply_to_message_id",
         "forward_message_id",
+        "compose_mailbox_id",
         "updated_at",
     },
     "mail_folder_favorites": {"user_id", "folder_id", "created_at"},
@@ -504,10 +505,11 @@ class MailService:
                 folder_obj,
                 unread_only=bool(unread_only),
             ),
-            serialize_message_preview=lambda *, item, folder_key, mailbox_id=None: self._serialize_message_preview_for_mailbox(
+            serialize_message_preview=lambda *, item, folder_key, mailbox_id=None, mailbox_email="": self._serialize_message_preview_for_mailbox(
                 item=item,
                 folder_key=folder_key,
                 mailbox_id=mailbox_id,
+                mailbox_email=mailbox_email,
             ),
             message_matches_filters=lambda item, **filters: self._message_matches_filters(item, **filters),
             parse_date_filter=_parse_date_filter,
@@ -953,6 +955,7 @@ class MailService:
                     compose_mode TEXT NOT NULL DEFAULT 'draft',
                     reply_to_message_id TEXT NULL,
                     forward_message_id TEXT NULL,
+                    compose_mailbox_id TEXT NULL,
                     updated_at TEXT NOT NULL
                 );
 
@@ -1013,6 +1016,7 @@ class MailService:
                 """
             )
             conn.commit()
+        self._migrate_mail_draft_context_compose_mailbox_column()
         self._migrate_legacy_user_mailboxes()
 
     @property
@@ -1120,6 +1124,20 @@ class MailService:
         if not seed:
             return
         self._mailbox_store.insert_legacy_seed(user_id=normalized_user_id, seed=seed)
+
+    def _migrate_mail_draft_context_compose_mailbox_column(self) -> None:
+        if self._use_app_db and self._database_url:
+            engine = get_app_engine(self._database_url)
+            if self._is_production_postgres_app_db(engine):
+                return
+        try:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    f"ALTER TABLE {self._DRAFT_CONTEXT_TABLE} ADD COLUMN compose_mailbox_id TEXT NULL",
+                )
+                conn.commit()
+        except Exception:
+            pass
 
     def _migrate_legacy_user_mailboxes(self) -> None:
         try:
@@ -2255,6 +2273,7 @@ class MailService:
         compose_mode: str,
         reply_to_message_id: str | None = None,
         forward_message_id: str | None = None,
+        compose_mailbox_id: str | None = None,
     ) -> None:
         self._metadata_store.save_draft_context(
             user_id=int(user_id),
@@ -2263,6 +2282,7 @@ class MailService:
             compose_mode=compose_mode,
             reply_to_message_id=reply_to_message_id,
             forward_message_id=forward_message_id,
+            compose_mailbox_id=compose_mailbox_id,
         )
 
     def _get_draft_context(self, *, user_id: int, mailbox_id: str | None = None, draft_exchange_id: str) -> dict[str, Any] | None:
@@ -2281,11 +2301,19 @@ class MailService:
     def _serialize_message_preview(self, item, folder_key: str) -> dict[str, Any]:
         return self._serialize_message_preview_for_mailbox(item=item, folder_key=folder_key, mailbox_id="")
 
-    def _serialize_message_preview_for_mailbox(self, *, item, folder_key: str, mailbox_id: str | None = None) -> dict[str, Any]:
+    def _serialize_message_preview_for_mailbox(
+        self,
+        *,
+        item,
+        folder_key: str,
+        mailbox_id: str | None = None,
+        mailbox_email: str = "",
+    ) -> dict[str, Any]:
         return self._message_serializer.serialize_message_preview(
             item=item,
             folder_key=folder_key,
             mailbox_id=mailbox_id,
+            mailbox_email=_normalize_text(mailbox_email),
         )
 
     def _message_matches_filters(
@@ -2323,6 +2351,7 @@ class MailService:
         *,
         account,
         mailbox_id: str | None = None,
+        mailbox_email: str = "",
         folder: str = "inbox",
         folder_scope: str = "current",
         limit: int = 50,
@@ -2341,6 +2370,7 @@ class MailService:
         result = self._message_listing.list_messages(
             account=account,
             mailbox_id=mailbox_id,
+            mailbox_email=mailbox_email,
             folder=folder,
             folder_scope=folder_scope,
             limit=limit,
@@ -2470,9 +2500,11 @@ class MailService:
                 require_password=True,
             )
             account = mail_context["account"]
+            profile = mail_context["profile"]
             result = self._list_messages_from_account(
                 account=account,
                 mailbox_id=resolved_mailbox_id,
+                mailbox_email=_normalize_text(profile.get("email")),
                 folder=normalized_folder,
                 folder_scope=normalized_scope,
                 limit=safe_limit,
@@ -3443,6 +3475,7 @@ class MailService:
                     require_password=True,
                 )
                 account = mail_context["account"]
+                profile = mail_context["profile"]
                 if next_summary is None:
                     next_summary = self._cache_set(
                         user_id=int(user_id),
@@ -3477,6 +3510,7 @@ class MailService:
                         value=self._list_messages_from_account(
                             account=account,
                             mailbox_id=resolved_mailbox_id or None,
+                            mailbox_email=_normalize_text(profile.get("email")),
                             folder=normalized_folder,
                             folder_scope=normalized_scope,
                             limit=safe_limit,
@@ -3697,6 +3731,7 @@ class MailService:
                 compose_mode=draft_plan.compose_mode,
                 reply_to_message_id=draft_plan.reply_to_message_id or None,
                 forward_message_id=draft_plan.forward_message_id or None,
+                compose_mailbox_id=resolved_mailbox_id or None,
             )
             detail = self._serialize_message_detail(
                 item=draft_item,

@@ -73,6 +73,21 @@ def item_sender(item: Any) -> str:
     return _normalize_text(item_sender_person(item).get("email")).lower()
 
 
+def draft_sender_person_fallback(
+    folder_key: str,
+    mailbox_email: str,
+    base_person: dict[str, str | None],
+) -> dict[str, str | None]:
+    if _normalize_text(folder_key).lower() != "drafts":
+        return base_person
+    if _normalize_text(base_person.get("email")) or _normalize_text(base_person.get("display")):
+        return base_person
+    email = _normalize_text(mailbox_email).lower()
+    if not email:
+        return base_person
+    return {"name": None, "email": email, "display": email}
+
+
 def item_recipient_people(
     item: Any,
     attrs: tuple[str, ...] = ("to_recipients", "cc_recipients"),
@@ -303,23 +318,24 @@ class MailMessageSerializer:
                 }
             )
 
-        sender_person = item_sender_person(item)
+        sender_person = draft_sender_person_fallback(folder_key, mailbox_email, item_sender_person(item))
         to_people = item_recipient_people(item, attrs=("to_recipients",))
         cc_people = item_recipient_people(item, attrs=("cc_recipients",))
         bcc_people = item_bcc_recipient_people(item)
         compose_context = self.build_compose_context(item, mailbox_email, resolved_mailbox_id)
 
+        sender_email = _normalize_text(sender_person.get("email")).lower()
         return {
             "id": encoded_message_id,
             "mailbox_id": resolved_mailbox_id or None,
             "exchange_id": _normalize_text(getattr(item, "id", "")),
             "folder": folder_key,
             "subject": _normalize_text(getattr(item, "subject", "")),
-            "sender": item_sender(item),
+            "sender": sender_email,
             "sender_person": sender_person,
             "sender_name": sender_person.get("name"),
             "sender_email": sender_person.get("email"),
-            "sender_display": sender_person.get("display") or item_sender(item),
+            "sender_display": sender_person.get("display") or sender_email,
             "to": [
                 _normalize_text(person.get("email")).lower()
                 for person in to_people
@@ -361,7 +377,14 @@ class MailMessageSerializer:
             "can_move": True,
         }
 
-    def serialize_message_preview(self, *, item: Any, folder_key: str, mailbox_id: str | None = None) -> dict[str, Any]:
+    def serialize_message_preview(
+        self,
+        *,
+        item: Any,
+        folder_key: str,
+        mailbox_id: str | None = None,
+        mailbox_email: str = "",
+    ) -> dict[str, Any]:
         received = getattr(item, "datetime_received", None) or getattr(item, "datetime_created", None)
         received_iso = received.isoformat() if received else None
         body_text = _normalize_text(getattr(item, "text_body", None))
@@ -369,19 +392,20 @@ class MailMessageSerializer:
             body_text = _normalize_text(getattr(item, "body", None))
         body_preview = body_text[:350]
         has_attachments = bool(getattr(item, "has_attachments", False))
-        sender_person = item_sender_person(item)
+        sender_person = draft_sender_person_fallback(folder_key, mailbox_email, item_sender_person(item))
         recipient_people = item_recipient_people(item)
+        sender_email = _normalize_text(sender_person.get("email")).lower()
         return {
             "id": encode_message_id(folder_key, _normalize_text(getattr(item, "id", "")), _normalize_text(mailbox_id)),
             "mailbox_id": _normalize_text(mailbox_id) or None,
             "exchange_id": _normalize_text(getattr(item, "id", "")),
             "folder": folder_key,
             "subject": _normalize_text(getattr(item, "subject", "")),
-            "sender": item_sender(item),
+            "sender": sender_email,
             "sender_person": sender_person,
             "sender_name": sender_person.get("name"),
             "sender_email": sender_person.get("email"),
-            "sender_display": sender_person.get("display") or item_sender(item),
+            "sender_display": sender_person.get("display") or sender_email,
             "recipients": item_recipients(item),
             "recipient_people": recipient_people,
             "received_at": received_iso,

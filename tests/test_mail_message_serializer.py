@@ -5,6 +5,7 @@ from types import SimpleNamespace
 
 from backend.services.mail_message_serializer import (
     MailMessageSerializer,
+    draft_sender_person_fallback,
     item_recipient_people,
     item_sender,
     normalize_subject_for_conversation,
@@ -85,6 +86,43 @@ def test_mail_message_serializer_detail_preserves_inline_attachment_contract():
     assert detail["attachments"][0]["downloadable"] is True
     assert detail["attachments"][0]["inline_src"].endswith("?disposition=inline")
     assert detail["attachments"][0]["inline_data_url"].startswith("data:image/png;base64,")
+
+
+def test_draft_sender_person_fallback_uses_mailbox_email_when_sender_empty():
+    base = {"name": None, "email": None, "display": None}
+    assert draft_sender_person_fallback("inbox", "owner@SITE.COM", base) is base
+    out = draft_sender_person_fallback("drafts", "Owner@SITE.COM", base)
+    assert out["email"] == "owner@site.com"
+    assert out["display"] == "owner@site.com"
+
+
+def test_mail_message_serializer_preview_fills_draft_sender_from_mailbox_email():
+    item = SimpleNamespace(
+        id="exchange-draft",
+        subject="Draft only",
+        sender=None,
+        author=None,
+        to_recipients=[],
+        cc_recipients=[],
+        datetime_created=datetime(2026, 5, 3, 12, 30, tzinfo=timezone.utc),
+        body="",
+        text_body="",
+        has_attachments=False,
+        importance="normal",
+        categories=[],
+        is_read=False,
+    )
+
+    preview = _serializer().serialize_message_preview(
+        item=item,
+        folder_key="drafts",
+        mailbox_id="mailbox-1",
+        mailbox_email="me@example.com",
+    )
+
+    assert preview["sender"] == "me@example.com"
+    assert preview["sender_email"] == "me@example.com"
+    assert preview["sender_display"] == "me@example.com"
 
 
 def test_mail_message_serializer_preview_keeps_list_payload_shape():
