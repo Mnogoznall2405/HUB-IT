@@ -27,12 +27,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, ad_users, vcs, ai_bots, departments, tickets, address_book
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, ad_users, vcs, ai_bots, departments, tickets, address_book, system
 from backend.services.ad_sync_service import background_ad_sync_loop
 from backend.services.address_book_service import background_address_book_sync_loop
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
+from backend.services.request_metrics_service import request_metrics_middleware
 from backend.json_db.manager import validate_json_runtime_storage
 from backend.rate_limit import limiter, rate_limit_exception, rate_limit_exception_handler, internal_ip_bypass_middleware
 from local_store import get_local_store
@@ -282,6 +283,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+app.middleware("http")(request_metrics_middleware)
+
 # Global SlowAPIMiddleware stays disabled.
 # Auth throttling is enforced explicitly in auth.py so internal requests can be skipped reliably.
 if rate_limit_exception is not None and rate_limit_exception_handler is not None:
@@ -337,6 +342,7 @@ app.include_router(vcs.router, prefix="/api/v1/vcs", tags=["VCS"])
 app.include_router(ai_bots.router, prefix="/api/v1/ai-bots", tags=["AI Bots"])
 app.include_router(tickets.router, prefix="/api/v1/tickets", tags=["Tickets"])
 app.include_router(address_book.router, prefix="/api/v1/address-book", tags=["Address Book"])
+app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
 if config.chat.enabled:
     try:
         from backend.api.v1 import chat

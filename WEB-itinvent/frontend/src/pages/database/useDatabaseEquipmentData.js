@@ -10,6 +10,7 @@ import {
   filterGroupedByBranch,
   mergeGroupedEquipment,
 } from './databaseListModel';
+import { normalizeDatabaseText, normalizeGroupedDatabaseData } from './textEncoding';
 
 export const DATABASE_EQUIPMENT_PAGE_LIMIT = 1000;
 export const DATABASE_EQUIPMENT_PREFETCH_PAGES = 1;
@@ -46,7 +47,15 @@ export function useDatabaseEquipmentData({
         () => equipmentAPI.getTypes(),
         { staleTimeMs, force }
       );
-      setEquipmentTypes(response || []);
+      const normalized = (Array.isArray(response) ? response : []).map((item) => {
+        if (!item || typeof item !== 'object') return item;
+        return {
+          ...item,
+          type_name: normalizeDatabaseText(item.type_name),
+          TYPE_NAME: normalizeDatabaseText(item.TYPE_NAME),
+        };
+      });
+      setEquipmentTypes(normalized);
     } catch (error) {
       console.error('Error fetching types:', error);
     }
@@ -60,7 +69,15 @@ export function useDatabaseEquipmentData({
         () => equipmentAPI.getStatuses(),
         { staleTimeMs, force }
       );
-      setStatuses(Array.isArray(response) ? response : []);
+      const normalized = (Array.isArray(response) ? response : []).map((item) => {
+        if (!item || typeof item !== 'object') return item;
+        return {
+          ...item,
+          status_name: normalizeDatabaseText(item.status_name),
+          STATUS_NAME: normalizeDatabaseText(item.STATUS_NAME),
+        };
+      });
+      setStatuses(normalized);
     } catch (error) {
       console.error('Error fetching statuses:', error);
     }
@@ -74,7 +91,15 @@ export function useDatabaseEquipmentData({
         () => equipmentAPI.getBranchesList(),
         { staleTimeMs, force }
       );
-      setBranches(Array.isArray(data) ? data : []);
+      const normalized = (Array.isArray(data) ? data : []).map((item) => {
+        if (!item || typeof item !== 'object') return item;
+        return {
+          ...item,
+          branch_name: normalizeDatabaseText(item.branch_name),
+          BRANCH_NAME: normalizeDatabaseText(item.BRANCH_NAME),
+        };
+      });
+      setBranches(normalized);
     } catch (error) {
       console.error('Error fetching branches:', error);
     }
@@ -98,7 +123,10 @@ export function useDatabaseEquipmentData({
       ),
       { staleTimeMs, force }
     );
-    return data || {};
+    return {
+      ...(data || {}),
+      grouped: normalizeGroupedDatabaseData(data?.grouped || {}),
+    };
   }, [dataMode, getDbCacheScope, pageLimit, staleTimeMs]);
 
   const loadMoreEquipmentPages = useCallback(({

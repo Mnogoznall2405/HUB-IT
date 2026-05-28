@@ -179,10 +179,10 @@ const roleOptions = [
 
 const permissionGroups = [
   {
-    group: 'Chat',
+    group: 'Корпоративный чат',
     permissions: [
-      { value: 'chat.read', label: 'Chat: просмотр' },
-      { value: 'chat.write', label: 'Chat: отправка сообщений' },
+      { value: 'chat.read', label: 'Чат: просмотр' },
+      { value: 'chat.write', label: 'Чат: отправка сообщений' },
     ],
   },
   {
@@ -194,7 +194,7 @@ const permissionGroups = [
     ],
   },
   {
-    group: 'IT-invent WEB',
+    group: 'Инвентарь',
     permissions: [
       { value: 'database.read', label: 'База: просмотр' },
       { value: 'database.write', label: 'База: изменения' },

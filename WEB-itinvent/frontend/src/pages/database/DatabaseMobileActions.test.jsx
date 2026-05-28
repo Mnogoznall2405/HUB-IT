@@ -176,11 +176,11 @@ describe('DatabaseMobileActions', () => {
       hasExpandedVisible: true,
     });
 
-    fireEvent.mouseDown(screen.getByRole('combobox', { name: /Р¤РёР»РёР°Р»/ }));
+    fireEvent.mouseDown(screen.getByRole('combobox', { name: /Филиал/ }));
     fireEvent.click(screen.getByRole('option', { name: 'HQ' }));
-    fireEvent.click(screen.getByText('Р—Р°РіСЂСѓР·РёС‚СЊ РµС‰С‘'));
-    fireEvent.click(screen.getByText('РЎРІРµСЂРЅСѓС‚СЊ СЂР°Р·РґРµР»С‹'));
-    fireEvent.click(screen.getByText((text) => text.includes('РµР¶РёРј') && text.includes('РІС‹Р±РѕСЂР°')));
+    fireEvent.click(screen.getByText('Загрузить ещё'));
+    fireEvent.click(screen.getByText('Свернуть разделы'));
+    fireEvent.click(screen.getByText((text) => text.includes('Режим') && text.includes('выбора')));
 
     expect(handlers.onBranchChange).toHaveBeenCalledWith('HQ');
     expect(handlers.onLoadMore).toHaveBeenCalledTimes(1);

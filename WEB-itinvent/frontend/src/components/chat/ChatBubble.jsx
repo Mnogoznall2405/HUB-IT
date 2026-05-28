@@ -21,6 +21,8 @@ import { useReducedMotion } from 'framer-motion';
 
 import { AttachmentCard, TaskShareCard } from './ChatCommon';
 import ChatLinkPreview, { extractFirstUrl } from './ChatLinkPreview';
+import { renderChatPlainTextBody } from './chatPlainText';
+import { resolveChatBubbleLinkColors } from './chatUiTokens';
 import MarkdownRenderer from '../hub/MarkdownRenderer';
 import {
   detectChatBodyFormat,
@@ -94,38 +96,6 @@ export const shouldAnimateChatBubble = ({
   if (compactMobile && !isOptimistic) return false;
   return true;
 };
-
-const MENTION_TEXT_PATTERN = /(@[0-9A-Za-zА-Яа-яЁё_.-]+)/g;
-
-function renderPlainTextWithMentions(value, mentionColor) {
-  const text = String(value || '');
-  if (!text || !text.includes('@')) return text;
-  const parts = [];
-  let lastIndex = 0;
-  text.replace(MENTION_TEXT_PATTERN, (match, _mention, offset) => {
-    if (offset > lastIndex) {
-      parts.push(text.slice(lastIndex, offset));
-    }
-    parts.push(
-      <Box
-        key={`mention-${offset}-${match}`}
-        component="span"
-        sx={{
-          color: mentionColor,
-          fontWeight: 800,
-        }}
-      >
-        {match}
-      </Box>,
-    );
-    lastIndex = offset + match.length;
-    return match;
-  });
-  if (lastIndex < text.length) {
-    parts.push(text.slice(lastIndex));
-  }
-  return parts.length > 0 ? parts : text;
-}
 
 const messageAppear = keyframes`
   from {
@@ -526,6 +496,7 @@ function AiActionCard({ actionCard, message, theme, ui, compactMobile, onConfirm
 const ChatMarkdownBody = memo(function ChatMarkdownBody({
   value,
   bubbleText,
+  linkColor,
   hasMarkdownTable = false,
   compactMobile = false,
 }) {
@@ -548,7 +519,7 @@ const ChatMarkdownBody = memo(function ChatMarkdownBody({
         },
       }}
     >
-      <MarkdownRenderer value={value} variant="chat" />
+      <MarkdownRenderer value={value} variant="chat" linkColor={linkColor} />
     </Box>
   );
 });
@@ -836,6 +807,8 @@ export function ChatBubble({
     : alpha(ui.textSecondary, 0.9);
   const bubbleBg = message?.is_own ? ui.bubbleOwnBg : ui.bubbleOtherBg;
   const bubbleText = message?.is_own ? ui.bubbleOwnText : ui.bubbleOtherText;
+  const linkColors = resolveChatBubbleLinkColors(ui, Boolean(message?.is_own));
+  const linkColor = linkColors.text || ui.accentText || theme.palette.primary.main;
   const longPressTimerRef = useRef(null);
   const longPressStartRef = useRef({ x: 0, y: 0 });
   const longPressGestureRef = useRef({ source: '', pointerId: null, handled: false });
@@ -1565,6 +1538,7 @@ export function ChatBubble({
           <ChatMarkdownBody
             value={message?.body}
             bubbleText={bubbleText}
+            linkColor={linkColor}
             hasMarkdownTable={hasMarkdownTable}
             compactMobile={compactMobile}
           />
@@ -1592,7 +1566,10 @@ export function ChatBubble({
               } : undefined,
             }}
           >
-            {renderPlainTextWithMentions(message?.body, ui.accentText || theme.palette.primary.main)}
+            {renderChatPlainTextBody(message?.body, {
+              mentionColor: ui.accentText || theme.palette.primary.main,
+              linkColor,
+            })}
           </Typography>
         )}
 

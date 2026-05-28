@@ -1,0 +1,129 @@
+﻿source: PostgreSQL (app)
+total: 21
+----------------------------------------------------------------------------------------------------
+  1. id=a2c13cc1-80dd-49b4-abba-cda0c36aebc6
+     title: Expired Note
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-05-16T14:00:24.638750+00:00 | updated: 2026-05-16T14:00:24.638750+00:00
+
+  2. id=136b0fbd-533c-410f-8f29-c87d40749053
+     title: Archive Me
+     preview: Preview
+     author: Announcement Author | priority: normal | archived
+     published: 2026-05-16T14:00:24.613753+00:00 | updated: 2026-05-16T14:00:24.657767+00:00
+
+  3. id=6ea36274-245f-4c3e-8be5-dbbf3ec0ae94
+     title: Versioned Note Updated
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-05-16T14:00:24.193578+00:00 | updated: 2026-05-16T14:00:24.410740+00:00
+
+  4. id=3264e56f-6dc2-4b14-b3b1-a5808208ba13
+     title: Operator Direct Note
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-05-16T14:00:24.022356+00:00 | updated: 2026-05-16T14:00:24.022356+00:00
+
+  5. id=2907af34-f150-48cb-984d-18133e1142ed
+     title: Viewer Role Note
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-05-16T14:00:23.965355+00:00 | updated: 2026-05-16T14:00:23.965355+00:00
+
+  6. id=4e939f34-3f7f-4aaf-871c-7977b3330a52
+     title: Expired Note
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-05-06T16:26:08.813235+00:00 | updated: 2026-05-06T16:26:08.813235+00:00
+
+  7. id=acee81db-6ab1-4368-ae6e-1cf7317cd6c0
+     title: Archive Me
+     preview: Preview
+     author: Announcement Author | priority: normal | archived
+     published: 2026-05-06T16:26:08.181898+00:00 | updated: 2026-05-06T16:26:08.835229+00:00
+
+  8. id=6d808182-efcc-4a19-9138-81b51ec6f986
+     title: Versioned Note Updated
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-05-06T16:26:07.860288+00:00 | updated: 2026-05-06T16:26:07.974302+00:00
+
+  9. id=9321f8a2-c749-4966-a29e-42f67c7221fc
+     title: Operator Direct Note
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-05-06T16:26:07.666981+00:00 | updated: 2026-05-06T16:26:07.666981+00:00
+
+ 10. id=2d0a8d0c-85fb-4b4f-a07d-f2994e0bc8fa
+     title: Viewer Role Note
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-05-06T16:26:07.601674+00:00 | updated: 2026-05-06T16:26:07.601674+00:00
+
+ 11. id=f4cf0cce-17cb-4aed-8981-3c4f99585468
+     title: ╨Я╤А╨╛╨▓╨╡╤А╨║╨░ ╨╖╨░╨╝╨╡╤В╨╛╨║ ╨╛╨│╤А╨░╨╜╨╕╤З╨╡╨╜╨╜╨╛╨│╨╛ ╨┤╨╛╤Б╤В╤Г╨┐╨░
+     preview: ╨в╨╡╤Б╤В ╨┤╨╗╤П ╨┐╤А╨╛╨▓╨╡╤А╨║╨╕ ╨┤╨╛╤Б╤В╤Г╨┐╨░
+     author: ╨Э╨╕╨║╨╛╨╗╨░╨╡╨▓ ╨Ь╨╕╤Е╨░╨╕╨╗ | priority: normal | archived
+     published: 2026-04-28T06:16:07.464688+00:00 | updated: 2026-04-28T06:18:17.826524+00:00
+
+ 12. id=488611de-79e7-4242-84a6-81a6f57c7c58
+     title: ╨Ч╨░╨╝╨╡╤В╨║╨░ ╨┤╨╗╤П ╨б╨Я╨▒
+     preview: 123
+     author: ╨Э╨╕╨║╨╛╨╗╨░╨╡╨▓ ╨Ь╨╕╤Е╨░╨╕╨╗ | priority: normal | archived
+     published: 2026-04-28T06:11:36.044547+00:00 | updated: 2026-04-28T06:11:54.527448+00:00
+
+ 13. id=00bf9ab2-8137-4ed5-88c1-7dc4e9b49b4c
+     title: ╨Ч╨░╨╝╨╡╤В╨║╨░ ╨┤╨╗╤П ╨╖╨░╨╝╨╡╤В╨║╨╕
+     preview: ╨в╨╡╤Б╤В ╨╖╨░╨╝╨╡╤В╨║╨╕
+     author: ╨Э╨╕╨║╨╛╨╗╨░╨╡╨▓ ╨Ь╨╕╤Е╨░╨╕╨╗ | priority: normal | archived
+     published: 2026-04-28T05:38:05.073192+00:00 | updated: 2026-04-28T05:38:05.073192+00:00
+
+ 14. id=3e0fb1c5-66c4-4c9c-be50-4fd3f279bd14
+     title: Versioned Note Updated
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-04-24T19:07:42.728350+00:00 | updated: 2026-04-24T19:07:42.921637+00:00
+
+ 15. id=321ab4da-1bd2-4094-b087-45df801bdc3b
+     title: Operator Direct Note
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-04-24T19:07:42.380201+00:00 | updated: 2026-04-24T19:07:42.380201+00:00
+
+ 16. id=b135e1fa-f287-470a-945b-1756be5c9346
+     title: Viewer Role Note
+     preview: Preview
+     author: Announcement Author | priority: normal | active
+     published: 2026-04-24T19:07:42.287561+00:00 | updated: 2026-04-24T19:07:42.287561+00:00
+
+ 17. id=e4baf44c-3887-486a-9ad3-f3f2c00d17b3
+     title: ╨Т╤Е╨╛╨┤ ╨▓ ╨╜╨╛╨▓╤Г╤О ╨┐╨╛╤З╤В╤Г
+     preview: ╨Я╨╛╨┤╨║╨╗╤О╤З╨╡╨╜╨╕╨╡ ╨╜╨╛╨▓╨╛╨╣ ╨┐╨╛╤З╤В╨╛╨▓╨╛╨╣ ╤Б╨╕╤Б╤В╨╡╨╝╤Л
+     author: ╨Ъ╨╛╨╖╨╗╨╛╨▓╤Б╨║╨╕╨╣ ╨Ь.╨Х. | priority: normal | active
+     published: 2026-03-27T04:46:45.024349+00:00 | updated: 2026-05-06T06:40:42.063977+00:00
+
+ 18. id=8394f15f-db0a-4f05-be88-28aac00c2bfb
+     title: ╨Ы╨╛╨│╨╕╨╜╤Л ╨╕ ╨┐╨░╤А╨╛╨╗╨╕ ╨╛╤В ╨╛╨▒╤Й╨╕╤Е ╨┐╨╛╤З╤В Exchange
+     preview: ╨г╤З╨╡╤В╨╜╤Л╨╡ ╨┤╨░╨╜╨╜╤Л╨╡ ╨┐╨╛ ╨╛╨▒╤Й╨╕╨╝ ╨┐╨╛╤З╤В╨░╨╝ ╨╜╨░ ╨╛╨▒╤К╨╡╨║╤В╨░╤Е
+     author: ╨Ъ╨╛╨╖╨╗╨╛╨▓╤Б╨║╨╕╨╣ ╨Ь.╨Х. | priority: high | active
+     published: 2026-03-25T07:45:29.825326+00:00 | updated: 2026-04-01T12:15:13.901240+00:00
+
+ 19. id=35954ce1-35e4-49a3-aa29-4ef567bb2e00
+     title: Exchange ╨┐╨╛╤З╤В╨░
+     preview: ╨Ш╨╜╤Д╨╛╤А╨╝╨░╤Ж╨╕╤П ╨╛ ╨┤╨╛╤Б╤В╤Г╨┐╨░╤Е ╨║ ╨┐╨╛╤З╤В╨╡.
+     author: ╨Ъ╨╛╨╖╨╗╨╛╨▓╤Б╨║╨╕╨╣ ╨Ь.╨Х. | priority: high | archived
+     published: 2026-03-25T07:28:31.570598+00:00 | updated: 2026-03-25T07:32:08.312104+00:00
+
+ 20. id=024a08f4-b34c-445c-a485-6f169d934f21
+     title: ╨Ш╨╜╤Б╤В╤А╤Г╨║╤Ж╨╕╤П ╨┐╨╛ ╤Б╨╝╨╡╨╜╨╡ ╨┐╨░╤А╨╛╨╗╤П Active Directory (AD)
+     preview: ╨б╤Б╤Л╨╗╨║╨░ ╨┤╨╛╤Б╤В╤Г╨┐╨╜╨░ ╤В╨╛╨╗╤М╨║╨╛ ╨╕╨╖ ╨▓╨╜╤Г╤В╤А╨╡╨╜╨╜╨╡╨╣ ╤Б╨╡╤В╨╕ ╨║╨╛╨╝╨┐╨░╨╜╨╕╨╕
+     author: K╨╛╨╖╨╗╨╛╨▓╤Б╨║╨╕╨╣ M╨░╨║╤Б╨╕╨╝ | priority: normal | active
+     published: 2026-02-27T07:27:39.728636+00:00 | updated: 2026-05-12T09:31:24.493918+00:00
+
+ 21. id=77827de4-0cde-4964-8d31-ba95ee702e77
+     title: Microsoft SharePoint
+     preview: ╨Ф╨╛╤Б╤В╤Г╨┐ ╨║ ╨┐╨░╨┐╨║╨░╨╝ SharePoint
+     author: K╨╛╨╖╨╗╨╛╨▓╤Б╨║╨╕╨╣ M╨░╨║╤Б╨╕╨╝ | priority: normal | active
+     published: 2026-02-27T04:54:29.107880+00:00 | updated: 2026-05-12T09:30:03.972820+00:00
+

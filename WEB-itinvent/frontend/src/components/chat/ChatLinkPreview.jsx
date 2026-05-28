@@ -1,8 +1,9 @@
 import { memo, useEffect, useState } from 'react';
 import { Box, Typography } from '@mui/material';
-import { alpha } from '@mui/material/styles';
 import LinkRoundedIcon from '@mui/icons-material/LinkRounded';
 import { chatMessageSendingAPI } from '../../api/chatMessageSending';
+import { extractFirstChatUrl } from './chatPlainText';
+import { resolveChatBubbleLinkColors } from './chatUiTokens';
 
 const TELEGRAM_CHAT_FONT_FAMILY = [
   '"SF Pro Text"',
@@ -15,13 +16,7 @@ const TELEGRAM_CHAT_FONT_FAMILY = [
   'sans-serif',
 ].join(', ');
 
-const URL_REGEX = /https?:\/\/(www\.)?[-a-zA-Z0-9@:%._+~#=]{1,256}\.[a-zA-Z0-9()]{1,6}\b([-a-zA-Z0-9()@:%_+.~#?&/=]*)/gi;
-
-export function extractFirstUrl(text) {
-  if (!text) return null;
-  const match = String(text).match(URL_REGEX);
-  return match ? match[0] : null;
-}
+export { extractFirstChatUrl as extractFirstUrl } from './chatPlainText';
 
 // Global in-memory cache: url -> { data } | null (null = failed/empty)
 const _previewCache = new Map();
@@ -81,15 +76,11 @@ const ChatLinkPreview = memo(function ChatLinkPreview({ url, theme, ui, isOwn })
   if (!url || preview === null) return null;
   if (preview === undefined) return null; // no skeleton — no layout shift
 
-  const accentColor = ui?.accentText || theme.palette.primary.main;
-  const borderColor = isOwn ? alpha('#ffffff', 0.5) : accentColor;
-  const cardBg = isOwn ? alpha('#ffffff', 0.08) : alpha(accentColor, 0.06);
-  const textColor = isOwn
-    ? alpha('#ffffff', 0.95)
-    : (ui?.textPrimary || theme.palette.text.primary);
-  const mutedColor = isOwn
-    ? alpha('#ffffff', 0.65)
-    : (ui?.textSecondary || theme.palette.text.secondary);
+  const linkColors = resolveChatBubbleLinkColors(ui, isOwn);
+  const borderColor = linkColors.border || ui?.accentText || theme.palette.primary.main;
+  const cardBg = linkColors.bg || ui?.surfaceMuted;
+  const textColor = linkColors.text || ui?.textPrimary || theme.palette.text.primary;
+  const mutedColor = linkColors.muted || ui?.textSecondary || theme.palette.text.secondary;
 
   const hostname = (() => {
     try { return new URL(url).hostname.replace(/^www\./, ''); }

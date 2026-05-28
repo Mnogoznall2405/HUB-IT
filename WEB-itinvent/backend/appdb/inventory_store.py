@@ -278,6 +278,69 @@ class AppInventoryStore:
                 "ip_address": row.ip_address,
             }
 
+    def list_sql_contexts(
+        self,
+        *,
+        hosts: list[dict[str, Any]],
+        db_ids: list[str],
+    ) -> dict[tuple[str, str, str], dict[str, Any]]:
+        normalized_db_ids = [_normalize_text(item) for item in db_ids or [] if _normalize_text(item)]
+        if not hosts or not normalized_db_ids:
+            return {}
+
+        macs: list[str] = []
+        hostnames: list[str] = []
+        for host in hosts:
+            if not isinstance(host, dict):
+                continue
+            mac = _normalize_mac(host.get("mac_address"))
+            hostname = _normalize_text(host.get("hostname")).lower()
+            if mac and mac not in macs:
+                macs.append(mac)
+            if hostname and hostname not in hostnames:
+                hostnames.append(hostname)
+        if not macs and not hostnames:
+            return {}
+
+        filters = []
+        if macs:
+            filters.append(AppInventoryHostSqlContext.mac_address.in_(macs))
+        if hostnames:
+            filters.append(AppInventoryHostSqlContext.hostname.in_(hostnames))
+
+        with app_session(self._database_url) as session:
+            rows = session.scalars(
+                select(AppInventoryHostSqlContext)
+                .where(AppInventoryHostSqlContext.db_id.in_(normalized_db_ids))
+                .where(or_(*filters))
+                .order_by(AppInventoryHostSqlContext.updated_at.desc())
+            ).all()
+
+        contexts: dict[tuple[str, str, str], dict[str, Any]] = {}
+        for row in rows:
+            mac = _normalize_mac(row.mac_address)
+            hostname = _normalize_text(row.hostname).lower()
+            db_id = _normalize_text(row.db_id)
+            if not db_id:
+                continue
+            payload = {
+                "branch_no": row.branch_no,
+                "branch_name": row.branch_name,
+                "location_name": row.location_name,
+                "employee_name": row.employee_name,
+                "inv_no": row.inventory_inv_no,
+                "model_name": row.inventory_model_name,
+                "ip_address": row.ip_address,
+            }
+            for key in (
+                (mac, hostname, db_id),
+                (mac, "", db_id),
+                ("", hostname, db_id),
+            ):
+                if (key[0] or key[1]) and key not in contexts:
+                    contexts[key] = payload
+        return contexts
+
     def upsert_sql_context(self, *, mac_address: str, hostname: str, db_id: str, context: dict[str, Any]) -> None:
         normalized_mac = _normalize_mac(mac_address)
         normalized_hostname = _normalize_text(hostname).lower()

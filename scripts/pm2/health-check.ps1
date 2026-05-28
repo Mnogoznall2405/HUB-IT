@@ -2,7 +2,8 @@ param(
     [string]$BackendUrl = 'http://127.0.0.1:8001/health',
     [string]$BackendSecondaryUrl = '',
     [string]$InventoryUrl = 'http://127.0.0.1:8012/health',
-    [string]$ScanUrl = 'http://127.0.0.1:8011/health'
+    [string]$ScanUrl = 'http://127.0.0.1:8011/health',
+    [switch]$RepairBackend
 )
 
 $ErrorActionPreference = 'Stop'
@@ -86,6 +87,7 @@ function Get-Pm2Snapshot {
             PID = $_.pid
             MemoryMB = '{0:N1}' -f ($memoryBytes / 1MB)
             Restarts = if ($pm2Env) { $pm2Env.restart_time } else { $null }
+            UptimeSec = if ($pm2Env -and $null -ne $pm2Env.pm_uptime) { [int]($pm2Env.pm_uptime / 1000) } else { 0 }
         }
     })
 }
@@ -209,6 +211,53 @@ function Get-Pm2ProcessStatus {
     }
 }
 
+function Get-PortListenerPids {
+    param([int]$ListenPort = 8001)
+    $pids = @()
+    $lines = netstat -ano | Select-String ":$ListenPort\s+.*LISTENING"
+    foreach ($line in $lines) {
+        $parts = ($line -split '\s+') | Where-Object { $_ }
+        if ($parts.Count -ge 1 -and $parts[-1] -match '^\d+$') {
+            $pids += [int]$parts[-1]
+        }
+    }
+    return @($pids | Sort-Object -Unique)
+}
+
+function Test-BackendPortMismatch {
+    param($Snapshot)
+
+    $backend = $Snapshot | Where-Object { $_.Name -eq 'itinvent-backend' } | Select-Object -First 1
+    if (-not $backend -or $backend.Status -ne 'online') {
+        return $null
+    }
+
+    $listeners = Get-PortListenerPids -ListenPort 8001
+    if ($listeners.Count -eq 0) {
+        return [pscustomobject]@{
+            Mismatch = $true
+            Reason   = 'port 8001 has no listener while PM2 backend is online'
+        }
+    }
+
+    $pm2Pid = [int]$backend.PID
+    if ($listeners -notcontains $pm2Pid) {
+        return [pscustomobject]@{
+            Mismatch = $true
+            Reason   = "port 8001 held by PID $($listeners -join ', '), PM2 backend PID is $pm2Pid"
+        }
+    }
+
+    if ([int]$backend.Restarts -gt 20 -and [int]$backend.UptimeSec -lt 60) {
+        return [pscustomobject]@{
+            Mismatch = $true
+            Reason   = "restart storm (restarts=$($backend.Restarts), short uptime)"
+        }
+    }
+
+    return [pscustomobject]@{ Mismatch = $false }
+}
+
 Write-Host 'PM2 process status:' -ForegroundColor Cyan
 $snapshot = Get-Pm2Snapshot
 if (-not $snapshot -or $snapshot.Count -eq 0) {
@@ -248,3 +297,16 @@ Write-Host 'Chat runtime checks:' -ForegroundColor Cyan
 @($chatRuntimeRows | Where-Object { $_ }) | Format-Table Name, Status, Details -AutoSize
 Write-Host 'Critical PM2 processes:' -ForegroundColor Cyan
 $pm2RuntimeRows | Format-Table Name, Status, Details -AutoSize
+
+$portMismatch = Test-BackendPortMismatch -Snapshot $snapshot
+if ($portMismatch -and $portMismatch.Mismatch) {
+    Write-Host "Backend port mismatch: $($portMismatch.Reason)" -ForegroundColor Red
+    if ($RepairBackend) {
+        Write-Host 'RepairBackend: running restart-backend.ps1...' -ForegroundColor Cyan
+        $repairScript = Join-Path $projectRoot 'scripts\pm2\restart-backend.ps1'
+        & powershell -NoProfile -ExecutionPolicy Bypass -File $repairScript
+    } else {
+        Write-Host 'Run: powershell -File scripts\pm2\restart-backend.ps1' -ForegroundColor Yellow
+        Write-Host 'Or:  powershell -File scripts\pm2\health-check.ps1 -RepairBackend' -ForegroundColor Yellow
+    }
+}

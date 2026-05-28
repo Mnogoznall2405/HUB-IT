@@ -369,6 +369,17 @@ def _extract_first_ipv4(value: Any) -> str:
     return match.group(0) if match else ""
 
 
+def _extract_ipv4_candidates(value: Any) -> List[str]:
+    text = _normalize_text(value)
+    if not text:
+        return []
+    out: List[str] = []
+    for raw in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", text):
+        if raw not in out:
+            out.append(raw)
+    return out
+
+
 def _dedupe_strings(values: List[Any]) -> List[str]:
     out: List[str] = []
     seen = set()
@@ -1103,6 +1114,75 @@ def _resolve_network_link(
     return None
 
 
+def _load_network_lookup_index(conn: Optional[Any]) -> Optional[Dict[str, Dict[str, Dict[str, Any]]]]:
+    if conn is None:
+        return None
+    try:
+        rows = conn.execute(
+            """
+            SELECT
+                b.id as branch_id,
+                b.name as branch_name,
+                s.name as site_name,
+                d.device_code,
+                d.model as device_model,
+                p.port_name,
+                COALESCE(ns.socket_code, p.patch_panel_port) as socket_code,
+                p.endpoint_ip_raw,
+                COALESCE(ns.mac_address, p.endpoint_mac_raw) as endpoint_mac_raw,
+                ns.mac_address as socket_mac_raw,
+                p.endpoint_mac_raw as port_mac_raw
+            FROM network_ports p
+            JOIN network_devices d ON d.id = p.device_id
+            LEFT JOIN network_branches b ON b.id = d.branch_id
+            LEFT JOIN network_sites s ON s.id = d.site_id
+            LEFT JOIN network_sockets ns ON ns.port_id = p.id
+            WHERE COALESCE(ns.mac_address, '') <> ''
+               OR COALESCE(p.endpoint_mac_raw, '') <> ''
+               OR COALESCE(p.endpoint_ip_raw, '') <> ''
+            ORDER BY p.is_occupied DESC, p.updated_at DESC
+            LIMIT 4000
+            """
+        ).fetchall()
+    except Exception:
+        return None
+
+    by_mac: Dict[str, Dict[str, Any]] = {}
+    by_ip: Dict[str, Dict[str, Any]] = {}
+    for row in rows:
+        payload = _network_link_payload(row)
+        mac_values = (
+            _extract_mac_candidates(row["socket_mac_raw"])
+            + _extract_mac_candidates(row["port_mac_raw"])
+            + _extract_mac_candidates(row["endpoint_mac_raw"])
+        )
+        for mac in mac_values:
+            by_mac.setdefault(mac, payload)
+        for ip in _extract_ipv4_candidates(row["endpoint_ip_raw"]):
+            by_ip.setdefault(ip, payload)
+    return {"mac": by_mac, "ip": by_ip}
+
+
+def _resolve_network_link_from_index(
+    network_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]],
+    *,
+    mac_address: str,
+    ip_list: List[str],
+) -> Optional[Dict[str, Any]]:
+    if not isinstance(network_index, dict):
+        return None
+    normalized_mac = _normalize_mac(mac_address)
+    if normalized_mac:
+        match = (network_index.get("mac") or {}).get(normalized_mac)
+        if isinstance(match, dict):
+            return match
+    for ip in _dedupe_strings(ip_list):
+        match = (network_index.get("ip") or {}).get(ip)
+        if isinstance(match, dict):
+            return match
+    return None
+
+
 def _parse_computer_search_fields(raw: Any) -> set[str]:
     if raw is None:
         return set(COMPUTER_SEARCH_DEFAULT_FIELDS)
@@ -1377,12 +1457,40 @@ def _build_computers_search_payload(
             db_candidates = [fallback_db]
 
     sql_cache: Dict[str, Optional[Dict[str, Any]]] = {}
+    prefetched_sql_contexts: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+    if app_store is not None and current_data and db_candidates:
+        try:
+            prefetched_sql_contexts = app_store.list_sql_contexts(
+                hosts=[item for item in current_data.values() if isinstance(item, dict)],
+                db_ids=db_candidates,
+            )
+        except Exception as exc:
+            logger.debug("Inventory SQL context prefetch skipped: %s", exc)
+            prefetched_sql_contexts = {}
+
+    def _get_prefetched_sql_context(mac_address: str, hostname: str, db_id: str) -> Optional[Dict[str, Any]]:
+        normalized_mac = _normalize_mac(mac_address)
+        normalized_hostname = _normalize_text(hostname).lower()
+        normalized_db_id = _normalize_text(db_id)
+        for key in (
+            (normalized_mac, normalized_hostname, normalized_db_id),
+            (normalized_mac, "", normalized_db_id),
+            ("", normalized_hostname, normalized_db_id),
+        ):
+            cached_context = prefetched_sql_contexts.get(key)
+            if isinstance(cached_context, dict) and (
+                _normalize_text(cached_context.get("inv_no")) or _normalize_text(cached_context.get("model_name"))
+            ):
+                return dict(cached_context)
+        return None
+
     network_cache: Dict[str, Optional[Dict[str, Any]]] = {}
     network_conn: Optional[Any] = None
+    network_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None
     needs_network_for_search = bool(q and "network" in fields)
 
     def _attach_network_fields(items: List[Dict[str, Any]]) -> None:
-        nonlocal network_conn
+        nonlocal network_conn, network_index
         if not items:
             return
         if network_conn is None:
@@ -1390,16 +1498,28 @@ def _build_computers_search_payload(
                 network_conn = _open_network_lookup_connection()
             except Exception:
                 network_conn = None
+        if network_index is None and network_conn is not None:
+            network_index = _load_network_lookup_index(network_conn)
         for record in items:
             mac_address = _normalize_text(record.get("mac_address"))
             record_ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
             network_key = f"{_normalize_mac(mac_address)}|{','.join(_dedupe_strings(record_ip_list))}"
             if network_key not in network_cache:
-                network_cache[network_key] = _resolve_network_link(
-                    network_conn,
+                indexed_link = _resolve_network_link_from_index(
+                    network_index,
                     mac_address=mac_address,
                     ip_list=record_ip_list,
                 )
+                if indexed_link is not None:
+                    network_cache[network_key] = indexed_link
+                elif network_index is not None:
+                    network_cache[network_key] = None
+                else:
+                    network_cache[network_key] = _resolve_network_link(
+                        network_conn,
+                        mac_address=mac_address,
+                        ip_list=record_ip_list,
+                    )
             record["network_link"] = network_cache.get(network_key)
             ip_primary = _normalize_text(record.get("ip_primary"))
             ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
@@ -1429,7 +1549,9 @@ def _build_computers_search_payload(
             if cache_key not in sql_cache:
                 resolved_context: Optional[Dict[str, Any]] = None
                 for candidate_db in db_candidates:
-                    context = _resolve_sql_context_cached(app_store, mac_address, hostname, candidate_db)
+                    context = _get_prefetched_sql_context(mac_address, hostname, candidate_db)
+                    if not isinstance(context, dict):
+                        context = _resolve_sql_context_cached(app_store, mac_address, hostname, candidate_db)
                     if not isinstance(context, dict):
                         continue
                     resolved_context = dict(context)

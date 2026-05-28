@@ -6,11 +6,12 @@ import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 
-function MarkdownRenderer({ value, compact = false, variant = 'default' }) {
+function MarkdownRenderer({ value, compact = false, variant = 'default', linkColor }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const text = String(value || '').trim();
   const isChat = String(variant || '').trim() === 'chat';
+  const resolvedLinkColor = linkColor || ui.accentText;
   const showCompactFade = compact && text.length > 180;
   if (!text) return null;
 
@@ -134,6 +135,15 @@ function MarkdownRenderer({ value, compact = false, variant = 'default' }) {
           borderColor: ui.borderSoft,
           color: ui.mutedText,
         },
+        ...(isChat ? {
+          '& a': {
+            color: resolvedLinkColor,
+            textDecoration: 'underline',
+            textUnderlineOffset: '0.14em',
+            wordBreak: 'break-word',
+            '&:hover': { opacity: 0.88 },
+          },
+        } : {}),
         ...(showCompactFade ? {
           '&::after': {
             content: '""',

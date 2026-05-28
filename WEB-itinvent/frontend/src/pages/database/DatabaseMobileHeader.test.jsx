@@ -35,7 +35,7 @@ describe('DatabaseMobileHeader', () => {
   it('renders brand and opens the main drawer', () => {
     const handlers = renderHeader();
 
-    expect(screen.getByText('ITINVENT')).toBeInTheDocument();
+    expect(screen.getByText('HUB-IT')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Открыть меню' }));
 
     expect(handlers.onOpenMainDrawer).toHaveBeenCalledTimes(1);

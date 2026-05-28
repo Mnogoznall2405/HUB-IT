@@ -97,6 +97,7 @@ import { applyPwaUpdate, getPwaInstallState, subscribePwaInstallState } from '..
 import { prefetchRouteByPath } from '../../lib/routeLoaders';
 import { getMessagePreview } from '../chat/chatHelpers';
 import { MainLayoutShellContext } from './MainLayoutShellContext';
+import { APP_BRAND_NAME, buildDocumentTitle, INVENTORY_SECTION_LABEL } from '../../lib/appBranding';
 
 const DRAWER_WIDTH = 240;
 const HUB_POLL_INTERVAL_MS = 20_000;
@@ -104,10 +105,10 @@ const navigationItems = [
   { path: '/dashboard', label: 'Главная', icon: <DashboardIcon />, permission: 'dashboard.read' },
   { path: '/tasks', label: 'Задачи', icon: <TaskAltIcon />, permission: 'tasks.read' },
   { path: '/tickets', label: 'Билеты', icon: <ConfirmationNumberIcon />, permission: 'tickets.read' },
-  ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', label: 'Chat', icon: <ForumOutlinedIcon />, permission: 'chat.read' }] : []),
+  ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', label: 'Корпоративный чат', icon: <ForumOutlinedIcon />, permission: 'chat.read' }] : []),
   { path: '/mail', label: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access' },
   { path: '/address-book', label: 'Адресная книга', icon: <ContactPhoneIcon />, permission: 'address_book.read' },
-  { path: '/database', label: 'IT-invent WEB', icon: <StorageIcon />, permission: 'database.read' },
+  { path: '/database', label: INVENTORY_SECTION_LABEL, icon: <StorageIcon />, permission: 'database.read' },
   { path: '/networks', label: 'Сети', icon: <LanIcon />, permission: 'networks.read' },
   { path: '/ad-users', label: 'Пользователи AD', icon: <GroupIcon />, adminOnly: true },
   { path: '/vcs', label: 'ВКС терминалы', icon: <VideocamIcon />, permission: 'vcs.read' },
@@ -762,25 +763,6 @@ useEffect(() => {
   };
 }, [navigate]);
 
-useEffect(() => {
-  const originalTitle = 'IT-invent WEB';
-  const updateTitle = () => {
-    if (document.visibilityState === 'visible') {
-      document.title = originalTitle;
-    } else if (notificationsBadgeValue > 0) {
-      document.title = `(${notificationsBadgeValue}) Новое уведомление - ${originalTitle}`;
-    } else {
-      document.title = originalTitle;
-    }
-  };
-
-  updateTitle();
-  document.addEventListener('visibilitychange', updateTitle);
-  return () => {
-    document.removeEventListener('visibilitychange', updateTitle);
-    document.title = originalTitle;
-  };
-}, [notificationsBadgeValue]);
   const toggleSidebar = () => {
     const newState = !sidebarCollapsed;
     setSidebarCollapsed(newState);
@@ -1429,9 +1411,32 @@ useEffect(() => {
   ), [activeNavigationPath]);
   const getCurrentTitle = () => {
     const item = visibleNavigationItems.find((item) => isItemActive(item.path, activeNavigationPath));
-    return item ? item.label : 'IT-invent Web';
+    return item ? item.label : APP_BRAND_NAME;
   };
   const currentTitle = getCurrentTitle();
+  const documentTitle = useMemo(() => buildDocumentTitle(currentTitle), [currentTitle]);
+
+  useEffect(() => {
+    const updateTitle = () => {
+      if (document.visibilityState === 'visible') {
+        document.title = documentTitle;
+        return;
+      }
+      if (notificationsBadgeValue > 0) {
+        document.title = `(${notificationsBadgeValue}) Новое уведомление - ${documentTitle}`;
+        return;
+      }
+      document.title = documentTitle;
+    };
+
+    updateTitle();
+    document.addEventListener('visibilitychange', updateTitle);
+    return () => {
+      document.removeEventListener('visibilitychange', updateTitle);
+      document.title = APP_BRAND_NAME;
+    };
+  }, [documentTitle, notificationsBadgeValue]);
+
   const currentDbName = useMemo(() => {
     const name = String(currentDb?.name || '').trim();
     return name || 'База данных';
@@ -1823,7 +1828,7 @@ useEffect(() => {
                               }}
                             >
                               <Typography sx={{ fontWeight: 600, letterSpacing: '0.04em', fontSize: '0.9rem', lineHeight: 1, color: theme.palette.primary.main }}>
-                                ITINVENT
+                                {APP_BRAND_NAME}
                               </Typography>
                             </Box>
                             <Box sx={{ minWidth: 0 }}>
@@ -1946,6 +1951,7 @@ useEffect(() => {
         sx={{
           width: { sm: sidebarCollapsed ? 0 : DRAWER_WIDTH },
           flexShrink: { sm: 0 },
+          overflow: 'hidden',
           transition: (theme) => theme.transitions.create('width', {
             duration: theme.transitions.duration.standard,
           }),
@@ -1966,11 +1972,17 @@ useEffect(() => {
         <Drawer
           variant="permanent"
           sx={{
-            display: { xs: 'none', sm: sidebarCollapsed ? 'none' : 'block' },
-            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH, bgcolor: ui.navBg, borderRightColor: ui.borderSoft },
-            transition: (theme) => theme.transitions.create('display', {
-              duration: theme.transitions.duration.standard,
-            }),
+            display: { xs: 'none', sm: 'block' },
+            '& .MuiDrawer-paper': {
+              boxSizing: 'border-box',
+              width: sidebarCollapsed ? 0 : DRAWER_WIDTH,
+              overflowX: 'hidden',
+              bgcolor: ui.navBg,
+              borderRightColor: ui.borderSoft,
+              transition: (theme) => theme.transitions.create('width', {
+                duration: theme.transitions.duration.standard,
+              }),
+            },
           }}
           open
         >

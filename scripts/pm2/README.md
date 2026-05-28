@@ -10,6 +10,7 @@ PM2 используется только для Python-процессов:
 - `scripts/pm2/ecosystem.scan.config.js`
 - `scripts/pm2/ecosystem.bot.config.js`
 - `scripts/pm2/ecosystem.all.config.js`
+- `scripts/pm2/restart-backend.ps1` — **если backend в цикле рестартов из‑за занятого порта 8001**
 - `scripts/pm2/start-all.ps1`
 - `scripts/pm2/restart-all.ps1`
 - `scripts/pm2/stop-all.ps1`
@@ -102,6 +103,12 @@ Notes:
 
 Если backend, inventory, scan и bot разнесены по разным хостам, одной командой с одного PM2-инстанса их не поднять.
 В этом случае на каждом хосте запускается только свой локальный ecosystem-файл.
+
+Если `itinvent-backend` крутится с `↺` тысячи и в логе `WinError 10048` на порту 8001:
+
+```powershell
+powershell -File scripts\pm2\restart-backend.ps1
+```
 
 Основные команды:
 

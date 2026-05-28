@@ -29,5 +29,5 @@ export default function useChatSocketLifecycle({
     if (typeof chatSocket.watchPresence !== 'function') return undefined;
     Promise.resolve(chatSocket.watchPresence(watchedPresenceUserIds)).catch(() => {});
     return undefined;
-  }, [watchedPresenceUserIds, watchedPresenceUserIdsKey]);
+  }, [watchedPresenceUserIdsKey]);
 }

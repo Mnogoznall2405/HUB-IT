@@ -18,10 +18,12 @@ This procedure validates the mail module in the target mode from the stabilizati
    - `MAIL_CACHE_TTL_SEC=90`
    - `MAIL_BOOTSTRAP_DEFAULT_LIMIT=20`
    - `MAIL_SEARCH_WINDOW_LIMIT=1000`
+   - `MAIL_EXCHANGE_MAX_CONCURRENCY=16`
    - `MAIL_VERIFY_TLS=1`
    - `APP_DB_POOL_SIZE=10`
    - `APP_DB_MAX_OVERFLOW=20`
-4. Keep a single backend process for the mail scenario baseline.
+4. Treat `MAIL_EXCHANGE_MAX_CONCURRENCY=16` as the first safe baseline. Tune it in the `12..20` range after checking Exchange latency and HTTP 5xx/timeout rate.
+5. Keep a single backend process for the mail scenario baseline.
 
 ## If mail metadata is still on SQLite
 

@@ -1368,7 +1368,7 @@ export default function Chat() {
   }, [activeConversation, conversations, groupSelectedUsers, groupUsers, messageReadsItems, searchChats, searchPeople]);
 
   const watchedPresenceUserIdsKey = useMemo(
-    () => watchedPresenceUserIds.join(','),
+    () => [...watchedPresenceUserIds].sort((left, right) => left - right).join(','),
     [watchedPresenceUserIds],
   );
 

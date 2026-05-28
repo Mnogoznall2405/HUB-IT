@@ -366,6 +366,8 @@ describe('Database equipment row helpers', () => {
     renderDatabase();
 
     expect(await screen.findByTestId('database-recent-cards')).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText('Показать последние карточки'));
+    expect(await screen.findByText('OptiPlex Recent')).toBeInTheDocument();
     fireEvent.click(screen.getByText('OptiPlex Recent'));
 
     await waitFor(() => {
@@ -377,6 +379,45 @@ describe('Database equipment row helpers', () => {
     await waitFor(() => {
       expect(mockApi.equipmentAPI.getByInvNos).toHaveBeenCalledWith(['1001']);
     });
+  });
+
+  it('collapses and expands recent equipment cards', async () => {
+    mockApi.equipmentAPI.getRecentCards.mockResolvedValue({
+      items: [
+        {
+          inv_no: '1001',
+          db_id: 'main',
+          last_action: 'view',
+          last_action_label: 'Открыта',
+          last_activity_at: '2026-05-27T08:00:00+00:00',
+          activity_count: 1,
+          snapshot: {
+            INV_NO: '1001',
+            MODEL_NAME: 'OptiPlex Recent',
+            OWNER_DISPLAY_NAME: 'Recent Holder',
+            BRANCH_NAME: 'HQ',
+            LOCATION_NAME: 'Office',
+            STATUS_NAME: 'Active',
+          },
+        },
+      ],
+    });
+
+    renderDatabase();
+
+    expect(await screen.findByTestId('database-recent-cards')).toBeInTheDocument();
+    expect(screen.queryByText('OptiPlex Recent')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Показать последние карточки'));
+    expect(await screen.findByText('OptiPlex Recent')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText('Скрыть последние карточки'));
+    await waitFor(() => {
+      expect(screen.queryByText('OptiPlex Recent')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByLabelText('Показать последние карточки'));
+    expect(await screen.findByText('OptiPlex Recent')).toBeInTheDocument();
   });
 
   it('records a recent view when a row action opens a card', async () => {

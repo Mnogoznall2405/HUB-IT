@@ -37,6 +37,14 @@ const dispatchWindowEvent = (eventName, detail) => {
 
 const normalizeConversationId = (value) => String(value || '').trim();
 
+const normalizePresenceUserIds = (userIds = []) => Array.from(new Set(
+  (Array.isArray(userIds) ? userIds : [])
+    .map((value) => Number(value || 0))
+    .filter((value) => Number.isFinite(value) && value > 0),
+)).slice(0, 50);
+
+const buildPresenceUserIdsKey = (userIds = []) => [...userIds].sort((a, b) => a - b).join(',');
+
 const buildSocketUrl = () => {
   if (typeof window === 'undefined') return '';
   const target = new URL(`${API_V1_BASE}/chat/ws`, window.location.origin);
@@ -66,6 +74,7 @@ class ChatSocketClient {
     this.wantInbox = false;
     this.activeConversationIds = new Set();
     this.watchedPresenceUserIds = new Set();
+    this.watchedPresenceUserIdsKey = '';
     this.pendingRequests = new Map();
     this.reconnectAttempt = 0;
     this.manualClose = false;
@@ -91,6 +100,7 @@ class ChatSocketClient {
       this.wantInbox = false;
       this.activeConversationIds.clear();
       this.watchedPresenceUserIds.clear();
+      this.watchedPresenceUserIdsKey = '';
       this.close(true);
     }
   }
@@ -132,14 +142,15 @@ class ChatSocketClient {
   }
 
   watchPresence(userIds = []) {
-    const normalizedUserIds = Array.from(new Set(
-      (Array.isArray(userIds) ? userIds : [])
-        .map((value) => Number(value || 0))
-        .filter((value) => Number.isFinite(value) && value > 0),
-    )).slice(0, 50);
-    this.watchedPresenceUserIds = new Set(normalizedUserIds);
+    const normalizedUserIds = normalizePresenceUserIds(userIds);
+    const normalizedKey = buildPresenceUserIdsKey(normalizedUserIds);
     if (!CHAT_WS_ENABLED) return Promise.resolve({ user_ids: normalizedUserIds });
     this.connect();
+    if (normalizedKey === this.watchedPresenceUserIdsKey) {
+      return Promise.resolve({ user_ids: normalizedUserIds });
+    }
+    this.watchedPresenceUserIds = new Set(normalizedUserIds);
+    this.watchedPresenceUserIdsKey = normalizedKey;
     const socket = this.socket;
     if (!socket || socket.readyState !== WebSocket.OPEN) {
       return Promise.resolve({ user_ids: normalizedUserIds });

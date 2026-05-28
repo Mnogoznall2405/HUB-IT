@@ -1,5 +1,6 @@
 node_modules/
 .expo/
+.gradle-user-home/
 dist/
 *.apk
 *.aab

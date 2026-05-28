@@ -34,8 +34,16 @@ export function buildChatUiTokens(theme) {
     bubbleOwnPreviewBorder: dark ? alpha(accentDark, 0.62) : '#75a95f',
     bubbleOwnPreviewText: dark ? 'rgba(255,255,255,0.92)' : '#3d7d2b',
     bubbleOwnPreviewSubtleText: dark ? 'rgba(255,255,255,0.68)' : '#5f7f56',
+    bubbleOwnLinkText: dark ? 'rgba(255,255,255,0.95)' : '#3d7d2b',
+    bubbleOwnLinkMuted: dark ? 'rgba(255,255,255,0.68)' : '#5f7f56',
+    bubbleOwnLinkBorder: dark ? alpha('#ffffff', 0.5) : '#75a95f',
+    bubbleOwnLinkBg: dark ? alpha('#ffffff', 0.08) : alpha('#ffffff', 0.42),
     bubbleOtherBg: otherBubble,
     bubbleOtherText: dark ? '#f5f7fb' : '#111b21',
+    bubbleOtherLinkText: dark ? accentDark : accent,
+    bubbleOtherLinkMuted: dark ? 'rgba(255,255,255,0.56)' : '#707579',
+    bubbleOtherLinkBorder: dark ? accentDark : accent,
+    bubbleOtherLinkBg: dark ? alpha(accentDark, 0.12) : alpha(accent, 0.06),
     bubbleOtherMetaText: dark ? 'rgba(255,255,255,0.52)' : '#6b7c8a',
     bubbleTailShadow: dark ? '0 1px 1px rgba(0,0,0,0.18)' : '0 1px 1px rgba(65,88,110,0.08)',
 
@@ -103,5 +111,25 @@ export function buildChatUiTokens(theme) {
     fileOverlayBg: dark ? alpha('#020617', 0.54) : 'rgba(19,32,45,0.52)',
     skeletonBase: dark ? alpha('#ffffff', 0.07) : alpha('#78909c', 0.14),
     skeletonWave: dark ? alpha('#ffffff', 0.12) : alpha('#ffffff', 0.52),
+  };
+}
+
+export function resolveChatBubbleLinkColors(ui, isOwn = false) {
+  if (!ui) {
+    return { text: '', muted: '', border: '', bg: '' };
+  }
+  if (isOwn) {
+    return {
+      text: ui.bubbleOwnLinkText,
+      muted: ui.bubbleOwnLinkMuted,
+      border: ui.bubbleOwnLinkBorder,
+      bg: ui.bubbleOwnLinkBg,
+    };
+  }
+  return {
+    text: ui.bubbleOtherLinkText,
+    muted: ui.bubbleOtherLinkMuted,
+    border: ui.bubbleOtherLinkBorder,
+    bg: ui.bubbleOtherLinkBg,
   };
 }

@@ -123,6 +123,12 @@ def test_inventory_endpoints_support_app_db_backend(temp_dir, monkeypatch):
     )
     assert cached_context["inv_no"] == "101795"
     assert cached_context["model_name"] == "Dell OptiPlex 7090"
+    batch_contexts = inventory.AppInventoryStore(database_url=database_url).list_sql_contexts(
+        hosts=[{"mac_address": "AA-BB-CC-DD-EE-01", "hostname": "PC-01"}],
+        db_ids=["DB1"],
+    )
+    assert batch_contexts[("AABBCCDDEE01", "pc-01", "DB1")]["inv_no"] == "101795"
+    assert batch_contexts[("AABBCCDDEE01", "", "DB1")]["model_name"] == "Dell OptiPlex 7090"
 
 
 def test_inventory_heartbeat_deferred_updates_presence_without_full_rewrite(temp_dir, monkeypatch):

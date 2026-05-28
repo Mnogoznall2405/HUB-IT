@@ -13,7 +13,7 @@ const TOAST_SOURCE_LABELS = {
   hub: 'Центр управления',
   mail: 'Почта',
   settings: 'Настройки',
-  database: 'IT-invent WEB',
+  database: 'Инвентарь',
   networks: 'Сети',
   tasks: 'Задачи',
   statistics: 'Статистика',

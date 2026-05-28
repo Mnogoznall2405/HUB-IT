@@ -1,6 +1,6 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-05-27 06:07 UTC_  
+_Сгенерировано: 2026-05-27 12:49 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
@@ -743,6 +743,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `reply_to_message_id` | text | yes | `` |
 | `forward_message_id` | text | yes | `` |
 | `updated_at` | text | no | `` |
+| `compose_mailbox_id` | text | yes | `` |
 
 - **Primary key:** `draft_exchange_id`
 - **Indexes:**

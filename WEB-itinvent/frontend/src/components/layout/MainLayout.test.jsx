@@ -497,7 +497,7 @@ describe('MainLayout hub Windows notifications', () => {
 
     const appBar = container.querySelector('.MuiAppBar-root');
     expect(appBar).toBeTruthy();
-    expect(within(appBar).queryByText('ITINVENT')).not.toBeNull();
+    expect(within(appBar).queryByText('HUB-IT')).not.toBeNull();
     expect(within(appBar).queryByRole('combobox')).not.toBeNull();
   });
 
@@ -1255,7 +1255,7 @@ describe('MainLayout hub Windows notifications', () => {
     expect(screen.getByTestId('main-layout-app-bar')).toBeInTheDocument();
     expect(spacer).toHaveStyle({ height: 'var(--app-shell-top-offset)' });
     expect(shell.style.getPropertyValue('--app-shell-top-offset')).toBe(
-      'calc(var(--app-shell-banner-offset) + var(--app-shell-measured-header-offset))',
+      'calc(var(--app-shell-safe-top-offset) + var(--app-shell-banner-offset) + var(--app-shell-measured-header-offset))',
     );
     expect(shell.style.getPropertyValue('--app-shell-measured-header-offset')).toBe('var(--app-shell-header-offset)');
   });

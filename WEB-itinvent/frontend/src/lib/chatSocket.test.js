@@ -334,6 +334,38 @@ describe('chatSocket client lifecycle', () => {
     chatSocket.close(true);
   });
 
+  it('does not resend watched presence commands for the same user set', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+
+    const firstPending = chatSocket.watchPresence([7, 5, 7]);
+    const firstPayload = JSON.parse(socket.sent[socket.sent.length - 1]);
+
+    expect(firstPayload.type).toBe('chat.watch_presence');
+    expect(firstPayload.payload.user_ids).toEqual([7, 5]);
+
+    socket.onmessage?.({
+      data: JSON.stringify({
+        type: 'chat.command.ok',
+        request_id: firstPayload.request_id,
+        payload: { user_ids: [7, 5] },
+      }),
+    });
+
+    await expect(firstPending).resolves.toEqual({ user_ids: [7, 5] });
+
+    const sentCount = socket.sent.length;
+    await expect(chatSocket.watchPresence([5, 7])).resolves.toEqual({ user_ids: [5, 7] });
+
+    expect(socket.sent).toHaveLength(sentCount);
+
+    release();
+    chatSocket.close(true);
+  });
+
   it('does not queue volatile typing commands while offline', async () => {
     const { chatSocket } = await loadChatSocket();
     const release = chatSocket.retain();

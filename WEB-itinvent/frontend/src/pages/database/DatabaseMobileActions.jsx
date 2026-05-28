@@ -344,7 +344,7 @@ function DatabaseMobileActions({
                 ml: 1,
               }}
             >
-              РЈРїСЂР°РІР»РµРЅРёРµ
+              Управление
             </Typography>
             <Box
               sx={{
@@ -360,13 +360,13 @@ function DatabaseMobileActions({
             >
               {branches.length > 0 && (
                 <FormControl size="small" fullWidth>
-                  <InputLabel id="database-mobile-branch-label" shrink>Р¤РёР»РёР°Р»</InputLabel>
+                  <InputLabel id="database-mobile-branch-label" shrink>Филиал</InputLabel>
                   <Select
                     labelId="database-mobile-branch-label"
                     id="database-mobile-branch"
                     value={selectedBranch}
                     onChange={(event) => onBranchChange(event.target.value)}
-                    label="Р¤РёР»РёР°Р»"
+                    label="Филиал"
                     sx={{
                       borderRadius: 2,
                       '& .MuiSelect-select': {
@@ -374,7 +374,7 @@ function DatabaseMobileActions({
                       },
                     }}
                   >
-                    <MenuItem value="">Р’СЃРµ С„РёР»РёР°Р»С‹</MenuItem>
+                    <MenuItem value="">Все филиалы</MenuItem>
                     {branches.map((branch) => (
                       <MenuItem key={branch.BRANCH_NO} value={branch.BRANCH_NAME}>
                         {branch.BRANCH_NAME}
@@ -387,8 +387,8 @@ function DatabaseMobileActions({
               {canLoadMore && (
                 <EnhancedFabAction
                   icon={loadingMoreEquipment ? <CircularProgress size={20} /> : null}
-                  label="Р—Р°РіСЂСѓР·РёС‚СЊ РµС‰С‘"
-                  description={loadingMoreEquipment ? 'Р—Р°РіСЂСѓР·РєР°...' : `РЎС‚СЂ. ${nextEquipmentPage}/${equipmentPagesTotal}`}
+                  label="Загрузить ещё"
+                  description={loadingMoreEquipment ? 'Загрузка...' : `Стр. ${nextEquipmentPage}/${equipmentPagesTotal}`}
                   onClick={() => runAndClose(onLoadMore)}
                   disabled={loadingMoreEquipment}
                 />
@@ -397,16 +397,16 @@ function DatabaseMobileActions({
               {hasExpandedVisible && (
                 <EnhancedFabAction
                   icon={<ExpandMoreIcon sx={{ transform: 'rotate(180deg)' }} />}
-                  label="РЎРІРµСЂРЅСѓС‚СЊ СЂР°Р·РґРµР»С‹"
-                  description="РЎРєСЂС‹С‚СЊ РІСЃРµ РѕС‚РєСЂС‹С‚С‹Рµ РіСЂСѓРїРїС‹"
+                  label="Свернуть разделы"
+                  description="Скрыть все открытые группы"
                   onClick={() => runAndClose(onCollapseAll)}
                 />
               )}
 
               <EnhancedFabAction
                 icon={<Checkbox />}
-                label="Р РµР¶РёРј РІС‹Р±РѕСЂР°"
-                description="Р’С‹Р±СЂР°С‚СЊ РЅРµСЃРєРѕР»СЊРєРѕ СЌР»РµРјРµРЅС‚РѕРІ"
+                label="Режим выбора"
+                description="Выбрать несколько элементов"
                 onClick={() => runAndClose(onEnterSelectionMode)}
                 variant="outlined"
               />

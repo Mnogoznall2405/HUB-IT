@@ -53,6 +53,24 @@ def build_connection_string(db_config: dict) -> str:
     )
 
 
+def configure_pyodbc_encoding(conn: pyodbc.Connection) -> None:
+    """
+    Configure pyodbc string codecs for SQL Server (ITINVENT legacy).
+
+    - VARCHAR/CHAR: Windows-1251 (Cyrillic in legacy ITINVENT schemas).
+    - NVARCHAR/NCHAR: UTF-16-LE (SQL Server wide-character wire format).
+      Using UTF-8 for SQL_WCHAR causes UnicodeDecodeError on fetch (e.g. 0xE3/0xC4).
+    Override via env when a database uses another charset.
+    """
+    sql_char_encoding = os.getenv("SQL_CHAR_ENCODING", "cp1251")
+    sql_wchar_encoding = os.getenv("SQL_WCHAR_ENCODING", "utf-16-le")
+
+    conn.setdecoding(pyodbc.SQL_CHAR, encoding=sql_char_encoding)
+    conn.setdecoding(pyodbc.SQL_WCHAR, encoding=sql_wchar_encoding)
+    conn.setencoding(encoding=sql_wchar_encoding)
+    conn.setencoding(encoding=sql_char_encoding, ctype=pyodbc.SQL_CHAR)
+
+
 class DatabaseConnectionManager:
     """Manager for SQL Server database connections with dynamic switching."""
 
@@ -86,7 +104,8 @@ class DatabaseConnectionManager:
         try:
             conn = pyodbc.connect(self._connection_string, timeout=30)
             conn.autocommit = False
-            conn.setdecoding(pyodbc.SQL_CHAR, encoding='utf-8')
+            configure_pyodbc_encoding(conn)
+
             yield conn
             conn.commit()
         except Exception as e:

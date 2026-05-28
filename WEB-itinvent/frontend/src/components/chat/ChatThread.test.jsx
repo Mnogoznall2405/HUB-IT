@@ -13,6 +13,7 @@ import ChatThread, {
   shouldSuppressNativeMessageGesture,
   shouldCancelLongPressMove,
 } from './ChatThread';
+import { buildChatUiTokens } from './chatUiTokens';
 
 const theme = createTheme();
 const ui = {
@@ -165,6 +166,34 @@ describe('ChatBubble', () => {
     );
 
     expect(screen.getByText('@assignee')).toBeInTheDocument();
+  });
+
+  it('renders own plain-text urls with readable colors on light theme', () => {
+    const lightTheme = createTheme({ palette: { mode: 'light' } });
+    const lightUi = buildChatUiTokens(lightTheme);
+
+    render(
+      <ThemeProvider theme={lightTheme}>
+        <ChatBubble
+          conversationKind="direct"
+          message={{
+            id: 'msg-url-own',
+            kind: 'text',
+            body: 'Смотри https://example.com',
+            is_own: true,
+          }}
+          navigate={vi.fn()}
+          theme={lightTheme}
+          ui={lightUi}
+          onOpenReads={vi.fn()}
+          onOpenAttachmentPreview={vi.fn()}
+          onReplyMessage={vi.fn()}
+        />
+      </ThemeProvider>,
+    );
+
+    const link = screen.getByRole('link', { name: 'https://example.com' });
+    expect(link).toHaveStyle({ color: 'rgb(61, 125, 43)' });
   });
 
   it('uses a smaller body font for compact mobile messages', () => {

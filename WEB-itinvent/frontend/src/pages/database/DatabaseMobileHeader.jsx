@@ -11,6 +11,7 @@ import {
 } from '@mui/material';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 
+import { APP_BRAND_NAME } from '../../lib/appBranding';
 import { normalizeDbId } from './databaseRecordModel';
 
 const noop = () => {};
@@ -37,7 +38,7 @@ function DatabaseMobileHeader({
             <MenuRoundedIcon />
           </IconButton>
           <Typography variant="subtitle2" sx={{ fontWeight: 800, fontSize: '0.95rem', lineHeight: 1, flexShrink: 0 }}>
-            ITINVENT
+            {APP_BRAND_NAME}
           </Typography>
         </Box>
       </Box>
@@ -56,7 +57,7 @@ function DatabaseMobileHeader({
           <MenuRoundedIcon />
         </IconButton>
         <Typography variant="subtitle2" sx={{ fontWeight: 800, fontSize: '0.95rem', lineHeight: 1, flexShrink: 0 }}>
-          ITINVENT
+          {APP_BRAND_NAME}
         </Typography>
 
         <FormControl size="small" sx={{ flex: 1, minWidth: 0, maxWidth: 220, ml: 'auto' }}>

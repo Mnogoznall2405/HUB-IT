@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from urllib.parse import quote
@@ -24,6 +25,10 @@ from backend.services.user_service import user_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
+
+_MAIL_CALL_LIMITER: asyncio.Semaphore | None = None
+_MAIL_CALL_LIMITER_LIMIT = 0
+_MAIL_CALL_LIMITER_LOOP = None
 
 
 async def get_current_mail_user(
@@ -85,8 +90,29 @@ def _request_id_from_headers(request: Request) -> str:
     return _normalize_text(request.headers.get("X-Client-Request-ID"), "-")
 
 
+def _mail_exchange_max_concurrency() -> int:
+    raw = _normalize_text(os.getenv("MAIL_EXCHANGE_MAX_CONCURRENCY"), "16")
+    try:
+        return max(1, min(64, int(raw)))
+    except (TypeError, ValueError):
+        return 16
+
+
+def _get_mail_call_limiter() -> asyncio.Semaphore:
+    global _MAIL_CALL_LIMITER, _MAIL_CALL_LIMITER_LIMIT, _MAIL_CALL_LIMITER_LOOP
+
+    loop = asyncio.get_running_loop()
+    limit = _mail_exchange_max_concurrency()
+    if _MAIL_CALL_LIMITER is None or _MAIL_CALL_LIMITER_LIMIT != limit or _MAIL_CALL_LIMITER_LOOP is not loop:
+        _MAIL_CALL_LIMITER = asyncio.Semaphore(limit)
+        _MAIL_CALL_LIMITER_LIMIT = limit
+        _MAIL_CALL_LIMITER_LOOP = loop
+    return _MAIL_CALL_LIMITER
+
+
 async def _run_mail_call(func, /, *args, **kwargs):
-    return await asyncio.to_thread(func, *args, **kwargs)
+    async with _get_mail_call_limiter():
+        return await asyncio.to_thread(func, *args, **kwargs)
 
 
 def _run_mail_call_with_metrics_sync(func, args, kwargs):
@@ -104,7 +130,8 @@ def _run_mail_call_with_metrics_sync(func, args, kwargs):
 
 
 async def _run_mail_call_with_metrics(func, /, *args, **kwargs):
-    result, metrics, error = await asyncio.to_thread(_run_mail_call_with_metrics_sync, func, args, kwargs)
+    async with _get_mail_call_limiter():
+        result, metrics, error = await asyncio.to_thread(_run_mail_call_with_metrics_sync, func, args, kwargs)
     if error is not None:
         raise error
     return result, metrics
@@ -1602,4 +1629,5 @@ async def get_mail_health(
         "ews_url": mail_service.exchange_ews_url,
         "verify_tls": mail_service.verify_tls,
         "tls_ca_bundle_configured": bool(mail_service.tls_ca_bundle),
+        "exchange_max_concurrency": _mail_exchange_max_concurrency(),
     }

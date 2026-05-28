@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+import asyncio
 import importlib
 import sys
+import threading
+import time
 from pathlib import Path
 
 from fastapi import FastAPI
@@ -196,3 +199,37 @@ def test_send_message_route_uses_async_boundary(monkeypatch):
     assert helper_calls[0]["kwargs"]["mailbox_id"] == "mbox-3"
     assert helper_calls[0]["kwargs"]["to"] == ["user@example.com"]
     assert helper_calls[0]["kwargs"]["subject"] == "Hello"
+
+
+def test_mail_async_boundary_limits_parallel_thread_calls(monkeypatch):
+    monkeypatch.setenv("MAIL_EXCHANGE_MAX_CONCURRENCY", "2")
+    mail_api_module._MAIL_CALL_LIMITER = None
+    mail_api_module._MAIL_CALL_LIMITER_LIMIT = 0
+    mail_api_module._MAIL_CALL_LIMITER_LOOP = None
+
+    active = 0
+    max_active = 0
+    lock = threading.Lock()
+
+    def _slow_call(index):
+        nonlocal active, max_active
+        with lock:
+            active += 1
+            max_active = max(max_active, active)
+        try:
+            time.sleep(0.05)
+            return index
+        finally:
+            with lock:
+                active -= 1
+
+    async def _run_calls():
+        return await asyncio.gather(*(mail_api_module._run_mail_call(_slow_call, index) for index in range(5)))
+
+    try:
+        assert asyncio.run(_run_calls()) == [0, 1, 2, 3, 4]
+        assert max_active <= 2
+    finally:
+        mail_api_module._MAIL_CALL_LIMITER = None
+        mail_api_module._MAIL_CALL_LIMITER_LIMIT = 0
+        mail_api_module._MAIL_CALL_LIMITER_LOOP = None

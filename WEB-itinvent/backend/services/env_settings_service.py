@@ -54,6 +54,7 @@ _AUDIT_REQUIRED_INDEXES = {
 }
 _DIRECT_DESCRIPTIONS = {
     "MAIL_NOTIFICATION_MAX_CONCURRENCY": ("Почта Exchange", "Лимит параллельных опросов mail notification poller."),
+    "MAIL_EXCHANGE_MAX_CONCURRENCY": ("Почта Exchange", "Лимит параллельных почтовых операций backend к Exchange/EWS."),
     "TELEGRAM_BOT_TOKEN": ("Telegram bot", "Токен Telegram-бота для подключения к Bot API."),
     "ALLOWED_GROUP_ID": ("Telegram bot", "ID группы Telegram, из которой бот принимает команды."),
     "ALLOWED_USERS": ("Telegram bot", "Список user_id, которым разрешён доступ к Telegram-боту."),
@@ -89,6 +90,10 @@ _DIRECT_DESCRIPTIONS = {
     "APP_DB_POOL_SIZE": ("Internal PostgreSQL", "Размер основного пула соединений unified internal PostgreSQL."),
     "APP_DB_MAX_OVERFLOW": ("Internal PostgreSQL", "Максимальный overflow пула unified internal PostgreSQL."),
     "APP_DB_ECHO": ("Internal PostgreSQL", "Включает SQL echo/debug-логирование для unified internal PostgreSQL."),
+    "REQUEST_METRICS_ENABLED": ("Backend API", "Включает in-memory метрики HTTP-запросов по backend routes."),
+    "REQUEST_METRICS_SLOW_MS": ("Backend API", "Порог slow request warning в миллисекундах."),
+    "REQUEST_METRICS_MAX_ROUTES": ("Backend API", "Максимум routes, хранимых в in-memory request metrics."),
+    "REQUEST_METRICS_SAMPLE_SIZE": ("Backend API", "Размер окна latency samples на один route для p50/p95/p99."),
     "CHAT_DATABASE_URL": ("Chat", "SQLAlchemy URL PostgreSQL для chat-домена."),
     "CHAT_DB_POOL_SIZE": ("Chat", "Размер основного пула соединений PostgreSQL для chat-домена."),
     "CHAT_DB_MAX_OVERFLOW": ("Chat", "Максимальный overflow пула соединений PostgreSQL для chat-домена."),
@@ -189,7 +194,11 @@ _TARGET_META = {
         "label": "Основной backend",
         "description": "Основной FastAPI backend на 127.0.0.1:8001.",
         "apply_hint": "После изменения нужен перезапуск backend-процесса и chat push worker.",
-        "commands": ["pm2 restart itinvent-backend", "pm2 restart itinvent-chat-push-worker", "pm2 restart itinvent-ai-chat-worker"],
+        "commands": [
+            "powershell -File scripts\\pm2\\restart-backend.ps1",
+            "pm2 restart itinvent-chat-push-worker",
+            "pm2 restart itinvent-ai-chat-worker",
+        ],
     },
     TARGET_SCAN_BACKEND: {
         "id": TARGET_SCAN_BACKEND,
