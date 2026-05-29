@@ -264,6 +264,23 @@ export function getOfficeMetricBlockSx(ui, color, overrides = {}) {
   };
 }
 
+export function getOfficeCodeBlockSx(ui, overrides = {}) {
+  return {
+    px: 1.25,
+    py: 1,
+    borderRadius: 1.5,
+    bgcolor: ui.panelInset,
+    border: '1px solid',
+    borderColor: ui.borderSoft,
+    color: ui.textPrimary,
+    fontFamily: 'Consolas, "Cascadia Mono", monospace',
+    fontSize: 14,
+    lineHeight: 1.45,
+    wordBreak: 'break-all',
+    ...overrides,
+  };
+}
+
 export function getOfficePageShellSx(ui, { fullHeight = false } = {}) {
   return {
     width: '100%',

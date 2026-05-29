@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { buildOfficeUiTokens, getOfficeCodeBlockSx } from '../theme/officeUiTokens';
 import {
   Alert,
+  Autocomplete,
   Box,
   Button,
   Chip,
-  CircularProgress,
   Dialog,
   DialogActions,
   DialogContent,
@@ -15,6 +16,7 @@ import {
   Grid,
   IconButton,
   InputAdornment,
+  Menu,
   List,
   MenuItem,
   InputLabel,
@@ -22,6 +24,7 @@ import {
   ListItemButton,
   ListItemText,
   Paper,
+  Skeleton,
   Slider,
   Stack,
   Switch,
@@ -41,10 +44,12 @@ import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined';
 import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
+import MoreVertOutlinedIcon from '@mui/icons-material/MoreVertOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
+import { useNavigate } from 'react-router-dom';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { passwordsAPI } from '../api/passwords';
@@ -62,7 +67,7 @@ const SIMILAR_CHARS = new Set('Il1O0o'.split(''));
 const emptyForm = {
   id: '',
   group: '',
-  tagsText: '',
+  tags: [],
   login: '',
   password: '',
   description: '',
@@ -93,14 +98,16 @@ const normalizeEntry = (entry) => ({
   password_configured: entry?.password_configured !== false,
 });
 
-const parseTags = (value) => (
-  String(value || '')
-    .split(',')
+export const normalizeTagList = (value) => {
+  const items = Array.isArray(value)
+    ? value
+    : String(value || '').split(',');
+  return items
     .map((item) => normalizeText(item).replace(/^#+/, '').trim())
     .filter(Boolean)
     .filter((item, index, list) => list.findIndex((candidate) => candidate.toLowerCase() === item.toLowerCase()) === index)
-    .slice(0, 20)
-);
+    .slice(0, 20);
+};
 
 const buildCharacterSets = (options = {}) => {
   const excludeSimilar = options.excludeSimilar !== false;
@@ -167,6 +174,8 @@ const formatDateTime = (value) => {
 
 function Passwords() {
   const theme = useTheme();
+  const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
+  const navigate = useNavigate();
   const { user, hasPermission } = useAuth();
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
   const [entries, setEntries] = useState([]);
@@ -192,11 +201,28 @@ function Passwords() {
   const [pendingReveal, setPendingReveal] = useState(null);
   const [generatorOptions, setGeneratorOptions] = useState(emptyGeneratorOptions);
   const [generatedPassword, setGeneratedPassword] = useState('');
+  const [nowTs, setNowTs] = useState(Date.now());
+  const [rowMenuAnchor, setRowMenuAnchor] = useState(null);
+  const [rowMenuEntry, setRowMenuEntry] = useState(null);
   const hideTimersRef = useRef({});
 
   const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
   const canWrite = isAdmin || hasPermission('passwords.write');
   const isUnlocked = isUnlockedUntilActive(unlockedUntil);
+  const unlockedRemainingMs = useMemo(() => {
+    const parsed = new Date(unlockedUntil || '');
+    if (Number.isNaN(parsed.getTime())) return 0;
+    return Math.max(0, parsed.getTime() - nowTs);
+  }, [nowTs, unlockedUntil]);
+
+  const unlockedRemainingLabel = useMemo(() => {
+    const totalSeconds = Math.floor(unlockedRemainingMs / 1000);
+    if (totalSeconds <= 0) return '';
+    const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
+    const seconds = String(totalSeconds % 60).padStart(2, '0');
+    return `${minutes}:${seconds}`;
+  }, [unlockedRemainingMs]);
+  const isUnlockExpiringSoon = isUnlocked && unlockedRemainingMs > 0 && unlockedRemainingMs <= 30_000;
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query), 250);
@@ -206,6 +232,12 @@ function Passwords() {
   useEffect(() => () => {
     Object.values(hideTimersRef.current).forEach((timerId) => window.clearTimeout(timerId));
   }, []);
+
+  useEffect(() => {
+    if (!isUnlocked) return undefined;
+    const timer = window.setInterval(() => setNowTs(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [isUnlocked]);
 
   const loadAudit = useCallback(async () => {
     if (!isAdmin) return;
@@ -270,7 +302,7 @@ function Passwords() {
     setForm({
       id: entry.id,
       group: entry.group,
-      tagsText: entry.tags.join(', '),
+      tags: [...entry.tags],
       login: entry.login,
       password: '',
       description: entry.description,
@@ -282,7 +314,7 @@ function Passwords() {
   const handleSaveEntry = async () => {
     const payload = {
       group: form.group,
-      tags: parseTags(form.tagsText),
+      tags: normalizeTagList(form.tags),
       login: form.login,
       description: form.description,
     };
@@ -453,9 +485,11 @@ function Passwords() {
             </Box>
             <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
               <Chip
-                color={isUnlocked ? 'success' : 'default'}
+                color={isUnlocked ? (isUnlockExpiringSoon ? 'warning' : 'success') : 'default'}
                 icon={<LockOpenOutlinedIcon />}
-                label={isUnlocked ? `Разблокировано до ${formatDateTime(unlockedUntil)}` : 'Раскрытие заблокировано'}
+                label={isUnlocked
+                  ? `${isUnlockExpiringSoon ? 'Истекает' : 'Разблокировано'} (${unlockedRemainingLabel || formatDateTime(unlockedUntil)})`
+                  : 'Раскрытие заблокировано'}
                 variant={isUnlocked ? 'filled' : 'outlined'}
               />
               <Button
@@ -463,7 +497,7 @@ function Passwords() {
                 startIcon={<LockOpenOutlinedIcon />}
                 onClick={() => setUnlockDialogOpen(true)}
               >
-                2FA unlock
+                Разблокировка 2FA
               </Button>
               {canWrite ? (
                 <Button variant="contained" startIcon={<AddOutlinedIcon />} onClick={openCreateDialog}>
@@ -556,9 +590,32 @@ function Passwords() {
               </Stack>
 
               {loading ? (
-                <Box sx={{ minHeight: 220, display: 'grid', placeItems: 'center' }}>
-                  <CircularProgress />
-                </Box>
+                <Grid container spacing={1.5}>
+                  {Array.from({ length: 4 }).map((_, index) => (
+                    <Grid item xs={12} lg={6} key={`password-skeleton-${index}`}>
+                      <Paper elevation={0} sx={{ p: 2, minHeight: 210, borderRadius: 2, border: `1px solid ${theme.palette.divider}` }}>
+                        <Stack spacing={1.25}>
+                          <Skeleton variant="text" width="35%" />
+                          <Skeleton variant="text" width="65%" height={34} />
+                          <Stack direction="row" spacing={0.75}>
+                            <Skeleton variant="rounded" width={70} height={24} />
+                            <Skeleton variant="rounded" width={90} height={24} />
+                          </Stack>
+                          <Skeleton variant="rounded" height={36} />
+                          <Skeleton variant="rounded" height={40} />
+                          <Stack direction="row" justifyContent="space-between">
+                            <Skeleton variant="text" width={120} />
+                            <Stack direction="row" spacing={0.75}>
+                              <Skeleton variant="circular" width={28} height={28} />
+                              <Skeleton variant="circular" width={28} height={28} />
+                              <Skeleton variant="circular" width={28} height={28} />
+                            </Stack>
+                          </Stack>
+                        </Stack>
+                      </Paper>
+                    </Grid>
+                  ))}
+                </Grid>
               ) : visibleEntries.length === 0 ? (
                 <Alert severity="info">Записей по текущим фильтрам нет.</Alert>
               ) : (
@@ -574,35 +631,50 @@ function Passwords() {
                             minHeight: 210,
                             borderRadius: 2,
                             border: `1px solid ${entry.is_archived ? alpha(theme.palette.warning.main, 0.4) : theme.palette.divider}`,
-                            bgcolor: entry.is_archived ? alpha(theme.palette.warning.main, 0.06) : alpha(theme.palette.background.paper, 0.92),
+                            bgcolor: entry.is_archived
+                              ? alpha(theme.palette.warning.main, theme.palette.mode === 'dark' ? 0.12 : 0.08)
+                              : ui.panelSolid,
                           }}
                         >
                           <Stack spacing={1.25}>
                             <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
                               <Box sx={{ minWidth: 0 }}>
-                                <Typography variant="overline" color="text.secondary">{entry.group || 'Без группы'}</Typography>
+                                <Typography
+                                  variant="overline"
+                                  sx={{ color: 'text.secondary', letterSpacing: '0.08em' }}
+                                >
+                                  {entry.group || 'Без группы'}
+                                </Typography>
                                 <Typography variant="h6" fontWeight={800} noWrap title={entry.login}>{entry.login}</Typography>
                               </Box>
                               {entry.is_archived ? <Chip size="small" color="warning" label="Архив" /> : null}
                             </Stack>
                             <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
                               {entry.tags.length ? entry.tags.map((tag) => (
-                                <Chip key={tag} size="small" label={tag} variant="outlined" />
-                              )) : <Chip size="small" label="без тегов" variant="outlined" />}
+                                <Chip
+                                  key={tag}
+                                  size="small"
+                                  label={tag}
+                                  variant="outlined"
+                                  sx={{ color: 'text.primary', bgcolor: ui.panelSolid }}
+                                />
+                              )) : (
+                                <Chip
+                                  size="small"
+                                  label="без тегов"
+                                  variant="outlined"
+                                  sx={{ color: 'text.secondary', bgcolor: ui.panelSolid }}
+                                />
+                              )}
                             </Stack>
                             <Typography variant="body2" color="text.secondary" sx={{ minHeight: 40 }}>
                               {entry.description || 'Описание не заполнено.'}
                             </Typography>
                             <Box
-                              sx={{
-                                px: 1.25,
-                                py: 1,
-                                borderRadius: 1.5,
-                                bgcolor: alpha(theme.palette.text.primary, 0.05),
-                                fontFamily: 'Consolas, monospace',
-                                fontSize: 14,
-                                wordBreak: 'break-all',
-                              }}
+                              sx={getOfficeCodeBlockSx(ui, {
+                                fontWeight: revealed ? 600 : 500,
+                                color: revealed ? 'text.primary' : 'text.secondary',
+                              })}
                               data-testid={`password-value-${entry.id}`}
                             >
                               {revealed || '••••••••••••••••'}
@@ -645,16 +717,16 @@ function Passwords() {
                                   </span>
                                 </Tooltip>
                                 {canWrite && !entry.is_archived ? (
-                                  <Tooltip title="Редактировать">
-                                    <IconButton size="small" onClick={() => openEditDialog(entry)} aria-label={`Редактировать пароль ${entry.login}`}>
-                                      <EditOutlinedIcon fontSize="small" />
-                                    </IconButton>
-                                  </Tooltip>
-                                ) : null}
-                                {canWrite && !entry.is_archived ? (
-                                  <Tooltip title="Архивировать">
-                                    <IconButton size="small" onClick={() => handleArchive(entry)} aria-label={`Архивировать пароль ${entry.login}`}>
-                                      <ArchiveOutlinedIcon fontSize="small" />
+                                  <Tooltip title="Ещё действия">
+                                    <IconButton
+                                      size="small"
+                                      aria-label={`Дополнительно ${entry.login}`}
+                                      onClick={(event) => {
+                                        setRowMenuAnchor(event.currentTarget);
+                                        setRowMenuEntry(entry);
+                                      }}
+                                    >
+                                      <MoreVertOutlinedIcon fontSize="small" />
                                     </IconButton>
                                   </Tooltip>
                                 ) : null}
@@ -726,10 +798,48 @@ function Passwords() {
                 {!groups.length ? (
                   <Alert severity="warning">
                     Нет доступных групп. Попросите администратора добавить группы в Настройках.
+                    <Box sx={{ mt: 1 }}>
+                      <Button size="small" variant="outlined" onClick={() => navigate('/settings?tab=env#password-groups-settings')}>
+                        Открыть Настройки
+                      </Button>
+                    </Box>
                   </Alert>
                 ) : null}
-                <TextField label="Логин" value={form.login} onChange={(event) => setForm((prev) => ({ ...prev, login: event.target.value }))} required fullWidth />
-                <TextField label="Теги через запятую" value={form.tagsText} onChange={(event) => setForm((prev) => ({ ...prev, tagsText: event.target.value }))} fullWidth />
+                <TextField
+                  label="Логин"
+                  value={form.login}
+                  onChange={(event) => setForm((prev) => ({ ...prev, login: event.target.value }))}
+                  required
+                  fullWidth
+                  inputProps={{ 'data-testid': 'password-form-login' }}
+                />
+                <Autocomplete
+                  multiple
+                  freeSolo
+                  options={tags}
+                  value={form.tags}
+                  filterSelectedOptions
+                  onChange={(_, nextValue) => {
+                    setForm((prev) => ({ ...prev, tags: normalizeTagList(nextValue) }));
+                  }}
+                  isOptionEqualToValue={(option, value) => (
+                    String(option).toLowerCase() === String(value).toLowerCase()
+                  )}
+                  getOptionLabel={(option) => String(option)}
+                  noOptionsText={tags.length ? 'Нет подходящих тегов' : 'Сначала создайте записи с тегами'}
+                  renderInput={(params) => (
+                    <TextField
+                      {...params}
+                      label="Теги"
+                      placeholder={tags.length ? 'Выберите из списка или введите новый' : 'Введите тег'}
+                      helperText="До 20 тегов. Можно выбрать существующий или добавить новый."
+                      inputProps={{
+                        ...params.inputProps,
+                        'data-testid': 'password-form-tags',
+                      }}
+                    />
+                  )}
+                />
                 <TextField
                   label={formMode === 'edit' ? 'Новый пароль' : 'Пароль'}
                   type="password"
@@ -787,15 +897,12 @@ function Passwords() {
                   </IconButton>
                 </Stack>
                 <Box
-                  sx={{
+                  sx={getOfficeCodeBlockSx(ui, {
                     mt: 1.5,
-                    p: 1,
                     minHeight: 42,
-                    borderRadius: 1.5,
-                    bgcolor: alpha(theme.palette.text.primary, 0.05),
-                    fontFamily: 'Consolas, monospace',
-                    wordBreak: 'break-all',
-                  }}
+                    color: generatedPassword ? 'text.primary' : 'text.secondary',
+                    fontWeight: generatedPassword ? 600 : 400,
+                  })}
                   data-testid="generated-password"
                 >
                   {generatedPassword || '—'}
@@ -813,11 +920,11 @@ function Passwords() {
       </Dialog>
 
       <Dialog open={unlockDialogOpen} onClose={() => setUnlockDialogOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>2FA unlock</DialogTitle>
+        <DialogTitle>Разблокировка 2FA</DialogTitle>
         <DialogContent dividers>
           <Stack spacing={2} sx={{ pt: 0.5 }}>
             <Alert severity="info">
-              Введите TOTP-код или backup code. После подтверждения раскрытие и копирование будут доступны 5 минут.
+              Введите TOTP-код или резервный код. После подтверждения раскрытие и копирование будут доступны 5 минут.
             </Alert>
             <TextField
               label="Код 2FA"
@@ -842,6 +949,35 @@ function Passwords() {
           </Button>
         </DialogActions>
       </Dialog>
+      <Menu
+        anchorEl={rowMenuAnchor}
+        open={Boolean(rowMenuAnchor)}
+        onClose={() => {
+          setRowMenuAnchor(null);
+          setRowMenuEntry(null);
+        }}
+      >
+        <MenuItem
+          onClick={() => {
+            if (rowMenuEntry) openEditDialog(rowMenuEntry);
+            setRowMenuAnchor(null);
+            setRowMenuEntry(null);
+          }}
+        >
+          <EditOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
+          Редактировать
+        </MenuItem>
+        <MenuItem
+          onClick={() => {
+            if (rowMenuEntry) handleArchive(rowMenuEntry);
+            setRowMenuAnchor(null);
+            setRowMenuEntry(null);
+          }}
+        >
+          <ArchiveOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
+          Архивировать
+        </MenuItem>
+      </Menu>
     </MainLayout>
   );
 }

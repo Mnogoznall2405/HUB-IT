@@ -1,5 +1,5 @@
 import React from 'react';
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -67,7 +67,15 @@ vi.mock('../components/layout/PageShell', () => ({
   default: ({ children }) => <div data-testid="page-shell">{children}</div>,
 }));
 
-import Passwords, { generateVaultPassword } from './Passwords';
+vi.mock('react-router-dom', async () => {
+  const actual = await vi.importActual('react-router-dom');
+  return {
+    ...actual,
+    useNavigate: () => vi.fn(),
+  };
+});
+
+import Passwords, { generateVaultPassword, normalizeTagList } from './Passwords';
 
 const theme = createTheme();
 
@@ -88,7 +96,7 @@ const vaultPayload = {
     },
   ],
   groups: ['VPN'],
-  tags: ['prod'],
+  tags: ['prod', 'staging'],
   unlocked_until: null,
 };
 
@@ -99,6 +107,13 @@ function renderPage() {
     </ThemeProvider>,
   );
 }
+
+describe('normalizeTagList', () => {
+  it('deduplicates tags case-insensitively and strips hash prefix', () => {
+    expect(normalizeTagList(['#Prod', 'prod', 'Staging'])).toEqual(['Prod', 'Staging']);
+    expect(normalizeTagList('staging, infra')).toEqual(['staging', 'infra']);
+  });
+});
 
 describe('generateVaultPassword', () => {
   it('uses Web Crypto getRandomValues and respects requested length', () => {
@@ -170,7 +185,7 @@ describe('Passwords page', () => {
     vi.useFakeTimers();
 
     fireEvent.click(screen.getByLabelText('Показать пароль svc-vpn'));
-    expect(screen.getAllByText('2FA unlock').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Разблокировка 2FA').length).toBeGreaterThan(0);
 
     fireEvent.change(screen.getByTestId('password-unlock-code'), { target: { value: '123456' } });
     fireEvent.click(screen.getByText('Разблокировать'));
@@ -208,6 +223,19 @@ describe('Passwords page', () => {
     fireEvent.click(screen.getByText('Вставить'));
 
     expect(screen.getByTestId('password-form-password')).toHaveValue(generated);
+  });
+
+  it('offers existing tags in the create form autocomplete', async () => {
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('Новая запись'));
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.mouseDown(within(dialog).getByRole('combobox', { name: 'Теги' }));
+
+    expect(await screen.findByRole('option', { name: 'staging' })).toBeInTheDocument();
+    expect(screen.getByRole('option', { name: 'prod' })).toBeInTheDocument();
   });
 
   it('copies revealed password with copy purpose after unlock', async () => {

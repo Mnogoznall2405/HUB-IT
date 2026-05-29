@@ -23,6 +23,8 @@ const FONT_MAP = {
   'Segoe UI': '"Aptos", "Segoe UI", Arial, sans-serif',
 };
 
+const DESKTOP_TOUCH_MEDIA = '@media (min-width:600px)';
+
 export function normalizeDashboardMobileSections(value) {
   const source = Array.isArray(value) ? value : [];
   const result = [];
@@ -263,9 +265,21 @@ export function PreferencesProvider({ children }) {
           active: customAdmin.accentSoft,
           disabledBackground: isDark ? 'rgba(255, 255, 255, 0.10)' : 'rgba(32, 31, 30, 0.08)',
         },
-        error: { main: isDark ? '#ff99a4' : '#c50f1f' },
-        warning: { main: isDark ? '#ffb900' : '#8e562e' },
-        success: { main: isDark ? '#6ccb5f' : '#107c10' },
+        error: {
+          main: isDark ? '#ff99a4' : '#c50f1f',
+          dark: isDark ? '#ff99a4' : '#8e0a18',
+          contrastText: '#ffffff',
+        },
+        warning: {
+          main: isDark ? '#ffb900' : '#8e562e',
+          dark: isDark ? '#ffb900' : '#5c3a1f',
+          contrastText: '#ffffff',
+        },
+        success: {
+          main: isDark ? '#6ccb5f' : '#107c10',
+          dark: isDark ? '#6ccb5f' : '#0b5a0b',
+          contrastText: '#ffffff',
+        },
       },
       customAdmin,
       typography: {
@@ -343,6 +357,17 @@ export function PreferencesProvider({ children }) {
               fontWeight: 500,
               borderRadius: 10,
               boxShadow: 'none',
+              minHeight: 44,
+              [DESKTOP_TOUCH_MEDIA]: {
+                minHeight: 'var(--app-density-control-height)',
+                paddingTop: 'var(--app-density-control-padding-y)',
+                paddingBottom: 'var(--app-density-control-padding-y)',
+                '&.MuiButton-sizeSmall': {
+                  minHeight: 'var(--app-density-control-small-height)',
+                  paddingTop: 'var(--app-density-control-small-padding-y)',
+                  paddingBottom: 'var(--app-density-control-small-padding-y)',
+                },
+              },
               '&.MuiButton-contained': {
                 boxShadow: 'none',
                 backgroundImage: 'none',
@@ -409,6 +434,16 @@ export function PreferencesProvider({ children }) {
             root: ({ theme }) => ({
               color: theme.customAdmin.iconPrimary,
               borderRadius: 10,
+              width: 44,
+              height: 44,
+              [DESKTOP_TOUCH_MEDIA]: {
+                width: 'var(--app-density-icon-button-size)',
+                height: 'var(--app-density-icon-button-size)',
+                '&.MuiIconButton-sizeSmall': {
+                  width: 'var(--app-density-icon-button-small-size)',
+                  height: 'var(--app-density-icon-button-small-size)',
+                },
+              },
               transition: theme.transitions.create(['background-color', 'border-color', 'color'], {
                 duration: theme.transitions.duration.shorter,
               }),
@@ -423,6 +458,20 @@ export function PreferencesProvider({ children }) {
             root: ({ theme }) => ({
               borderRadius: 10,
               backgroundColor: theme.customAdmin.panelMuted,
+              [DESKTOP_TOUCH_MEDIA]: {
+                minHeight: 'var(--app-density-input-height)',
+                '&.MuiInputBase-sizeSmall': {
+                  minHeight: 'var(--app-density-input-small-height)',
+                },
+                '& .MuiOutlinedInput-input': {
+                  paddingTop: 'var(--app-density-input-padding-y)',
+                  paddingBottom: 'var(--app-density-input-padding-y)',
+                },
+                '&.MuiInputBase-sizeSmall .MuiOutlinedInput-input': {
+                  paddingTop: 'var(--app-density-input-small-padding-y)',
+                  paddingBottom: 'var(--app-density-input-small-padding-y)',
+                },
+              },
               '& .MuiOutlinedInput-notchedOutline': {
                 borderColor: theme.customAdmin.actionBorder,
               },
@@ -447,10 +496,14 @@ export function PreferencesProvider({ children }) {
                 : theme.palette.text.primary;
               const toneBg = palette
                 ? alpha(palette.main, theme.palette.mode === 'dark' ? (variant === 'outlined' ? 0.14 : 0.18) : (variant === 'outlined' ? 0.08 : 0.12))
-                : theme.customAdmin.actionBg;
+                : (theme.palette.mode === 'dark'
+                  ? theme.customAdmin.actionBg
+                  : (variant === 'outlined' ? theme.customAdmin.surfaceRaised : theme.customAdmin.panelInset));
               const toneBorder = palette
                 ? alpha(palette.main, theme.palette.mode === 'dark' ? 0.34 : 0.22)
-                : theme.customAdmin.actionBorder;
+                : (theme.palette.mode === 'dark'
+                  ? theme.customAdmin.actionBorder
+                  : theme.customAdmin.borderStrong);
 
               return {
                 borderRadius: 999,
@@ -458,6 +511,12 @@ export function PreferencesProvider({ children }) {
                 color: toneColor,
                 backgroundColor: toneBg,
                 border: `1px solid ${toneBorder}`,
+                [DESKTOP_TOUCH_MEDIA]: {
+                  height: 'var(--app-density-chip-height)',
+                  '&.MuiChip-sizeSmall': {
+                    height: 'var(--app-density-chip-small-height)',
+                  },
+                },
                 '& .MuiChip-label': {
                   color: 'inherit',
                 },
@@ -520,7 +579,7 @@ export function PreferencesProvider({ children }) {
         MuiDialogTitle: {
           styleOverrides: {
             root: ({ theme }) => ({
-              padding: '16px 20px',
+              padding: 'var(--app-density-dialog-title-padding)',
               borderBottom: `1px solid ${theme.customAdmin.borderSoft}`,
               backgroundColor: theme.customAdmin.headerBandBg,
               fontWeight: 600,
@@ -530,7 +589,7 @@ export function PreferencesProvider({ children }) {
         MuiDialogContent: {
           styleOverrides: {
             root: ({ theme }) => ({
-              padding: '20px',
+              padding: 'var(--app-density-dialog-content-padding)',
               backgroundColor: theme.customAdmin.surfaceRaised,
             }),
             dividers: ({ theme }) => ({
@@ -542,7 +601,7 @@ export function PreferencesProvider({ children }) {
         MuiDialogActions: {
           styleOverrides: {
             root: ({ theme }) => ({
-              padding: '14px 20px',
+              padding: 'var(--app-density-dialog-actions-padding)',
               borderTop: `1px solid ${theme.customAdmin.borderSoft}`,
               backgroundColor: theme.customAdmin.headerBandBg,
             }),
@@ -563,6 +622,10 @@ export function PreferencesProvider({ children }) {
             root: ({ theme }) => ({
               borderRadius: 8,
               margin: '2px 6px',
+              minHeight: 44,
+              [DESKTOP_TOUCH_MEDIA]: {
+                minHeight: 'var(--app-density-menu-item-height)',
+              },
               '&:hover': {
                 backgroundColor: theme.customAdmin.hover,
               },
@@ -587,6 +650,13 @@ export function PreferencesProvider({ children }) {
               },
               '&.Mui-selected:hover': {
                 backgroundColor: theme.customAdmin.selected,
+              },
+              '&.Mui-selected .MuiListItemText-primary': {
+                color: theme.palette.text.primary,
+                fontWeight: 600,
+              },
+              '&.Mui-selected .MuiListItemText-secondary': {
+                color: theme.palette.text.secondary,
               },
             }),
           },
@@ -675,8 +745,10 @@ export function PreferencesProvider({ children }) {
           styleOverrides: {
             root: ({ theme }) => ({
               borderColor: theme.customAdmin.borderSoft,
-              paddingTop: 10,
-              paddingBottom: 10,
+              paddingTop: 'var(--app-density-table-cell-padding-y)',
+              paddingBottom: 'var(--app-density-table-cell-padding-y)',
+              paddingLeft: 'var(--app-density-table-cell-padding-x)',
+              paddingRight: 'var(--app-density-table-cell-padding-x)',
             }),
             head: ({ theme }) => ({
               fontWeight: 600,
