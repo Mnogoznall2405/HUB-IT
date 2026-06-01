@@ -19,6 +19,7 @@ import StopRoundedIcon from '@mui/icons-material/StopRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 
 import ChatEmojiPanel from './ChatEmojiPanel';
+import { getChatBubbleBodyFontSize } from './chatUiTokens';
 import {
   formatFileSize,
   getPersonStatusLine,
@@ -42,7 +43,7 @@ const TELEGRAM_CHAT_FONT_FAMILY = [
   'sans-serif',
 ].join(', ');
 const CHAT_FONT_SIZES = {
-  composer: '17px',
+  composer: '19px',
   composerAux: '13px',
 };
 
@@ -160,7 +161,9 @@ const ChatComposer = memo(function ChatComposer({
 }) {
   const density = ui.density || {};
   const contentMaxWidth = Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
-  const composerFontSize = compactMobile ? '16px' : (density.composerFontSize || CHAT_FONT_SIZES.composer);
+  const composerFontSize = compactMobile
+    ? (density.composerFontSize || '16px')
+    : getChatBubbleBodyFontSize(ui, false);
   const composerAuxFontSize = density.composerAuxFontSize || CHAT_FONT_SIZES.composerAux;
   const safeKeyboardInset = compactMobile ? Math.max(0, Math.round(Number(keyboardInset || 0))) : 0;
   const composerBg = ui.composerBg || (theme.palette.mode === 'dark' ? '#1c1c1e' : '#ffffff');

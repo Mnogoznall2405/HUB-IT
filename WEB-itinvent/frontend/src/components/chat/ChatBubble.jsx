@@ -22,7 +22,7 @@ import { useReducedMotion } from 'framer-motion';
 import { AttachmentCard, TaskShareCard } from './ChatCommon';
 import ChatLinkPreview, { extractFirstUrl } from './ChatLinkPreview';
 import { renderChatPlainTextBody } from './chatPlainText';
-import { resolveChatBubbleLinkColors } from './chatUiTokens';
+import { getChatBubbleBodyFontSize, resolveChatBubbleLinkColors } from './chatUiTokens';
 import MarkdownRenderer from '../hub/MarkdownRenderer';
 import {
   detectChatBodyFormat,
@@ -53,14 +53,9 @@ const CHAT_FONT_SIZES = {
   previewTitle: '15px',
   previewBody: '14px',
   sender: '16px',
-  body: '21px',
+  body: '19px',
   bodyMobile: '15px',
 };
-const getChatMessageBodyFontSize = (ui, compactMobile = false) => (
-  compactMobile
-    ? (ui?.density?.bubbleBodyMobileFontSize || CHAT_FONT_SIZES.bodyMobile)
-    : (ui?.density?.bubbleBodyFontSize || CHAT_FONT_SIZES.body)
-);
 const LIGHT_GROUP_SENDER_COLORS = ['#d45246', '#c97a00', '#2f8b44', '#387adf', '#8b4ccf', '#0f9d8a', '#c95d9c', '#468fba'];
 const DARK_GROUP_SENDER_COLORS = ['#ff7b73', '#f6c15c', '#7de26f', '#6bb6ff', '#c59bff', '#64e1cf', '#ff99dc', '#7bd7ff'];
 export const isMobileMessageLongPress = ({
@@ -505,16 +500,19 @@ const ChatMarkdownBody = memo(function ChatMarkdownBody({
   compactMobile = false,
   ui,
 }) {
+  const messageBodyFontSize = getChatBubbleBodyFontSize(ui, compactMobile);
   return (
     <Box
       className="chat-selectable"
       data-testid="chat-markdown-body"
+      data-chat-message-body="true"
+      style={{ fontSize: messageBodyFontSize }}
       sx={{
         display: 'block',
         pr: 0.25,
         pb: hasMarkdownTable ? 2.1 : 1.8,
         color: bubbleText,
-        fontSize: getChatMessageBodyFontSize(ui, compactMobile),
+        fontSize: messageBodyFontSize,
         lineHeight: 1.34,
         userSelect: 'text',
         fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
@@ -799,7 +797,7 @@ export function ChatBubble({
   const ownMetaColor = ui.bubbleOwnMetaText || '#ffffff';
   const density = ui.density || {};
   const senderAccentColor = showSender ? resolveGroupSenderColor(message?.sender, theme, ui) : ui.accentText;
-  const messageBodyFontSize = getChatMessageBodyFontSize(ui, compactMobile);
+  const messageBodyFontSize = getChatBubbleBodyFontSize(ui, compactMobile);
   const inlineMeta = !task
     && attachments.length === 0
     && emojiOnlyCount === 0
@@ -1523,10 +1521,13 @@ export function ChatBubble({
               ) : null}
             </Box>
             {attachmentCaption ? (
-              <Typography
-                variant="body2"
+              <Box
+                component="p"
                 className="chat-selectable"
+                data-chat-message-body="true"
+                style={{ fontSize: messageBodyFontSize }}
                 sx={{
+                  m: 0,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
                   lineHeight: 1.34,
@@ -1538,7 +1539,7 @@ export function ChatBubble({
                 }}
               >
                 {attachmentCaption}
-              </Typography>
+              </Box>
             ) : null}
           </Stack>
         ) : isMarkdownBody ? (
@@ -1551,10 +1552,13 @@ export function ChatBubble({
             ui={ui}
           />
         ) : (
-          <Typography
-            variant="body1"
+          <Box
+            component="p"
             className="chat-selectable"
+            data-chat-message-body="true"
+            style={{ fontSize: emojiOnlyCount ? undefined : messageBodyFontSize }}
             sx={{
+              m: 0,
               display: 'block',
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
@@ -1578,7 +1582,7 @@ export function ChatBubble({
               mentionColor: ui.accentText || theme.palette.primary.main,
               linkColor,
             })}
-          </Typography>
+          </Box>
         )}
 
         {!task && attachments.length === 0 && emojiOnlyCount === 0 && body && extractFirstUrl(body) ? (

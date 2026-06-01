@@ -31,6 +31,7 @@ import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
 import {
   CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX,
 } from './chatHelpers';
+import { CHAT_BUBBLE_BODY_FONT_VAR, getChatBubbleBodyFontSize } from './chatUiTokens';
 
 export {
   ChatBubble,
@@ -1236,6 +1237,7 @@ function ChatThread({
         '--chat-action-active-bg': ui.accentSoft,
         '--chat-action-active-text': ui.accentText,
         '--chat-font-family': TELEGRAM_CHAT_FONT_FAMILY,
+        [CHAT_BUBBLE_BODY_FONT_VAR]: getChatBubbleBodyFontSize(ui, compactMobile),
         '--chat-focus-ring': ui.focusRing,
         '--chat-skeleton-base': ui.skeletonBase,
         '--chat-skeleton-wave': ui.skeletonWave,
@@ -1258,6 +1260,9 @@ function ChatThread({
         fontFamily: 'var(--chat-font-family)',
         '& .MuiTypography-root, & button, & input, & textarea': {
           fontFamily: 'var(--chat-font-family)',
+        },
+        '& [data-chat-message-body="true"]': {
+          fontSize: `var(${CHAT_BUBBLE_BODY_FONT_VAR}) !important`,
         },
       }}
     >

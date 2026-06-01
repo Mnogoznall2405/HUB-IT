@@ -15,6 +15,7 @@ describe('chat UI density tokens', () => {
     expect(compact.composerActionSize).toBeLessThan(spacious.composerActionSize);
     expect(compact.dialogMenuItemMinHeight).toBeLessThan(spacious.dialogMenuItemMinHeight);
     expect(compact.bubbleBodyFontSize).toBe('19px');
+    expect(compact.composerFontSize).toBe(compact.bubbleBodyFontSize);
   });
 
   it('keeps mobile primary touch targets at least 44px', () => {

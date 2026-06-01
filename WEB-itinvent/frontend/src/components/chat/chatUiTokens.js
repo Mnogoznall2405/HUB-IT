@@ -36,7 +36,7 @@ const SPACIOUS_CHAT_DENSITY = {
   composerIconButton: 32,
   composerActionSize: 46,
   composerActionIcon: 22,
-  composerFontSize: '17px',
+  composerFontSize: '19px',
   composerAuxFontSize: '13px',
   composerTextareaMinHeight: 19,
   composerTextareaMaxHeight: 120,
@@ -75,7 +75,7 @@ const SPACIOUS_CHAT_DENSITY = {
   dialogForwardAvatar: 52,
   dialogForwardRowPx: 1.45,
   dialogForwardRowPy: 1.2,
-  bubbleBodyFontSize: '21px',
+  bubbleBodyFontSize: '19px',
   bubbleBodyMobileFontSize: '15px',
   bubbleMetaFontSize: '13px',
   bubbleSenderFontSize: '16px',
@@ -119,7 +119,7 @@ const COMPACT_DESKTOP_CHAT_DENSITY = {
   composerIconButton: 28,
   composerActionSize: 38,
   composerActionIcon: 19,
-  composerFontSize: '15px',
+  composerFontSize: '19px',
   composerAuxFontSize: '12px',
   composerTextareaMinHeight: 17,
   composerTextareaMaxHeight: 104,
@@ -186,6 +186,16 @@ export function buildChatDensityTokens({ compactDesktop = false, compactMobile =
   if (compactMobile) return MOBILE_CHAT_DENSITY;
   if (compactDesktop) return COMPACT_DESKTOP_CHAT_DENSITY;
   return SPACIOUS_CHAT_DENSITY;
+}
+
+export const CHAT_BUBBLE_BODY_FONT_VAR = '--chat-bubble-body-font-size';
+
+export function getChatBubbleBodyFontSize(ui, compactMobile = false) {
+  const density = ui?.density || {};
+  if (compactMobile) {
+    return density.bubbleBodyMobileFontSize || '15px';
+  }
+  return density.bubbleBodyFontSize || '19px';
 }
 
 export function buildChatUiTokens(theme, options = {}) {

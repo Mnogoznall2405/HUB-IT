@@ -220,6 +220,44 @@ describe('ChatBubble', () => {
     expect(screen.getByText('Compact mobile text')).toHaveStyle({ fontSize: '15px' });
   });
 
+  it('keeps desktop message body font size when compact desktop density is active', () => {
+    const compactDesktopUi = buildChatUiTokens(theme, { compactDesktop: true });
+    const compactTheme = createTheme({
+      typography: {
+        body1: {
+          fontSize: '0.875rem',
+          '@media (min-width:600px) and (max-width:1920px), (min-width:600px) and (max-height:960px)': {
+            fontSize: '0.8125rem',
+          },
+        },
+      },
+    });
+
+    render(
+      <ThemeProvider theme={compactTheme}>
+        <ChatBubble
+          conversationKind="direct"
+          message={{
+            id: 'msg-desktop-font',
+            kind: 'text',
+            body: 'Desktop compact density text',
+            is_own: false,
+            sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+          }}
+          navigate={vi.fn()}
+          theme={compactTheme}
+          ui={compactDesktopUi}
+          onOpenReads={vi.fn()}
+          onOpenAttachmentPreview={vi.fn()}
+          onReplyMessage={vi.fn()}
+          compactMobile={false}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText('Desktop compact density text')).toHaveStyle({ fontSize: '19px' });
+  });
+
   it('renders reactions in a Telegram-style footer beside the message time', () => {
     renderWithTheme(
       <ChatBubble
