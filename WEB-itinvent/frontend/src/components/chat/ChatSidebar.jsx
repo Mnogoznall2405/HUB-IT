@@ -28,20 +28,57 @@ const FILTERS = [
 export const CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION = false;
 
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
+const FALLBACK_DENSITY = {
+  touchTarget: 44,
+  sidebarAvatar: 52,
+  sidebarAvatarMobile: 54,
+  sidebarActionButton: 36,
+  sidebarActionButtonMobile: 44,
+  sidebarHeaderIcon: 42,
+  sidebarSearchHeight: 48,
+  sidebarSearchFontSize: '16px',
+  sidebarRowMinHeight: 66,
+  sidebarRowPx: 12,
+  sidebarRowPy: 10,
+  sidebarRowMx: 6,
+  sidebarRowMy: 2,
+  sidebarRowRadius: 12,
+  sidebarResultRowPx: 14,
+  sidebarResultRowPy: 12,
+  sidebarTitleFontSize: '15px',
+  sidebarResultTitleFontSize: '16px',
+  sidebarPreviewFontSize: '12.5px',
+  sidebarSectionFontSize: '11px',
+};
+const getDensity = (ui) => ui?.density || FALLBACK_DENSITY;
+const getSidebarAvatarSize = (density, compactMobile = false) => (
+  compactMobile ? (density.sidebarAvatarMobile || 54) : (density.sidebarAvatar || 52)
+);
+const getSidebarRowStyle = (density, compactMobile = false) => {
+  if (compactMobile) return {};
+  return {
+    minHeight: density.sidebarRowMinHeight,
+    padding: `${density.sidebarRowPy}px ${density.sidebarRowPx}px`,
+    margin: `${density.sidebarRowMy}px ${density.sidebarRowMx}px`,
+    borderRadius: density.sidebarRowRadius,
+  };
+};
 
-function SidebarSkeletonRow({ compactMobile = false, align = 'left' }) {
+function SidebarSkeletonRow({ ui, compactMobile = false, align = 'left' }) {
+  const density = getDensity(ui);
+  const avatarSize = getSidebarAvatarSize(density, compactMobile);
   return (
     <div
       className={joinClasses(
         'flex items-center gap-2.5',
         compactMobile ? 'border-b px-3 py-2.5' : 'mx-1.5 my-0.5 rounded-[12px] px-3 py-2.5',
       )}
-      style={{ borderColor: 'var(--chat-sidebar-divider)' }}
+      style={{ borderColor: 'var(--chat-sidebar-divider)', ...getSidebarRowStyle(density, compactMobile) }}
     >
       <Skeleton
         variant="circular"
-        width={compactMobile ? 54 : 52}
-        height={compactMobile ? 54 : 52}
+        width={avatarSize}
+        height={avatarSize}
         animation="wave"
         sx={{
           bgcolor: 'var(--chat-skeleton-base)',
@@ -77,22 +114,24 @@ function SidebarSkeletonRow({ compactMobile = false, align = 'left' }) {
   );
 }
 
-function SidebarLoadingSkeleton({ compactMobile = false }) {
+function SidebarLoadingSkeleton({ ui, compactMobile = false }) {
   return (
     <div className={compactMobile ? 'pt-1' : 'pt-2'}>
       {[0, 1, 2, 3, 4, 5].map((index) => (
-        <SidebarSkeletonRow key={index} compactMobile={compactMobile} align={index % 2 ? 'right' : 'left'} />
+        <SidebarSkeletonRow key={index} ui={ui} compactMobile={compactMobile} align={index % 2 ? 'right' : 'left'} />
       ))}
     </div>
   );
 }
 
-function SearchSectionHeader({ children, compactMobile = false }) {
+function SearchSectionHeader({ children, ui, compactMobile = false }) {
+  const density = getDensity(ui);
   return (
     <div className={joinClasses(
       'px-3 font-semibold uppercase tracking-[0.12em] text-[color:var(--chat-sidebar-section-label)]',
       compactMobile ? 'pb-1 pt-3 text-[10px]' : 'pb-1.5 pt-4 text-[11px]',
     )}
+    style={compactMobile ? undefined : { fontSize: density.sidebarSectionFontSize }}
     >
       {children}
     </div>
@@ -106,7 +145,12 @@ function SidebarActionButton({
   disabled = false,
   compactMobile = false,
   className = '',
+  ui,
 }) {
+  const density = getDensity(ui);
+  const size = compactMobile
+    ? (density.sidebarActionButtonMobile || density.touchTarget || 44)
+    : (density.sidebarActionButton || 36);
   return (
     <Tooltip title={title}>
       <span>
@@ -120,7 +164,7 @@ function SidebarActionButton({
             compactMobile ? 'h-10 w-10' : 'h-9 w-9',
             className,
           )}
-          style={{ backgroundColor: 'var(--chat-header-action-bg)' }}
+          style={{ width: size, height: size, minWidth: size, backgroundColor: 'var(--chat-header-action-bg)' }}
         >
           {children}
         </button>
@@ -132,6 +176,7 @@ function SidebarActionButton({
 function ConversationRow({
   item,
   theme,
+  ui,
   activeConversationId,
   onOpenConversation,
   onPrefetchConversation,
@@ -140,6 +185,7 @@ function ConversationRow({
   index = 0,
   reducedMotion = false,
 }) {
+  const density = getDensity(ui);
   const unreadCount = Number(item?.unread_count || 0);
   const active = item.id === activeConversationId;
   const previewText = draftPreview || (item?.kind === 'ai'
@@ -169,6 +215,7 @@ function ConversationRow({
             : 'text-[color:var(--chat-text-primary)] hover:bg-[var(--chat-sidebar-row-hover)]',
         )}
         style={{
+          ...getSidebarRowStyle(density, compactMobile),
           backgroundColor: active ? 'var(--chat-sidebar-row-active)' : 'transparent',
           color: active ? 'var(--chat-text-on-accent)' : 'var(--chat-text-primary)',
           borderColor: compactMobile ? 'var(--chat-sidebar-divider)' : (active ? alpha(theme.palette.primary.main, 0.18) : 'transparent'),
@@ -186,7 +233,7 @@ function ConversationRow({
           <PresenceAvatar
             item={item.kind === 'direct' ? (item.direct_peer || item) : item}
             online={Boolean(item?.kind === 'direct' && item?.direct_peer?.presence?.is_online)}
-            size={compactMobile ? 54 : 52}
+            size={getSidebarAvatarSize(density, compactMobile)}
           />
 
           <div className="min-w-0 flex-1">
@@ -195,6 +242,7 @@ function ConversationRow({
                 'truncate leading-[1.15] tracking-[-0.01em]',
                 compactMobile ? 'text-[16px] font-semibold' : 'text-[15px] font-semibold',
               )}
+              style={compactMobile ? undefined : { fontSize: density.sidebarTitleFontSize }}
               >
                 {item.title}
               </p>
@@ -216,6 +264,7 @@ function ConversationRow({
                   ? (active ? 'font-semibold text-[color:var(--chat-row-active-subtle)]' : 'font-semibold text-[color:var(--chat-draft-text)]')
                   : (active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]'),
               )}
+              style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
               >
                 {draftPreview ? `Черновик: ${draftPreview}` : previewText}
               </p>
@@ -245,8 +294,9 @@ function ConversationRow({
   );
 }
 
-function PersonSearchRow({ person, openingPeerId, onOpenPeer, compactMobile = false }) {
+function PersonSearchRow({ person, openingPeerId, onOpenPeer, compactMobile = false, ui }) {
   const opening = openingPeerId === String(person.id);
+  const density = getDensity(ui);
 
   return (
     <button
@@ -259,13 +309,23 @@ function PersonSearchRow({ person, openingPeerId, onOpenPeer, compactMobile = fa
           ? 'border-b border-[color:var(--chat-sidebar-divider)] px-3 py-3'
           : 'mx-2 my-1 rounded-[14px] border border-transparent px-3.5 py-3 hover:bg-[var(--chat-sidebar-row-hover)]',
       )}
+      style={compactMobile ? undefined : {
+        minHeight: density.sidebarRowMinHeight,
+        padding: `${density.sidebarResultRowPy}px ${density.sidebarResultRowPx}px`,
+      }}
     >
-      <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={compactMobile ? 54 : 50} />
+      <PresenceAvatar item={person} online={Boolean(person?.presence?.is_online)} size={compactMobile ? 54 : density.sidebarAvatar} />
       <div className="min-w-0 flex-1">
-        <p className={joinClasses('truncate font-semibold tracking-[-0.01em] text-[color:var(--chat-text-primary)]', compactMobile ? 'text-[17px]' : 'text-[16px]')}>
+        <p
+          className={joinClasses('truncate font-semibold tracking-[-0.01em] text-[color:var(--chat-text-primary)]', compactMobile ? 'text-[17px]' : 'text-[16px]')}
+          style={compactMobile ? undefined : { fontSize: density.sidebarResultTitleFontSize }}
+        >
           {person.full_name || person.username}
         </p>
-        <p className={joinClasses('truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[14px]' : 'text-[13px]')}>
+        <p
+          className={joinClasses('truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[14px]' : 'text-[13px]')}
+          style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
+        >
           {getPersonStatusLine(person)}
         </p>
       </div>
@@ -274,8 +334,9 @@ function PersonSearchRow({ person, openingPeerId, onOpenPeer, compactMobile = fa
   );
 }
 
-function AiBotRow({ bot, openingAiBotId, onOpenAiBot, compactMobile = false }) {
+function AiBotRow({ bot, openingAiBotId, onOpenAiBot, compactMobile = false, ui }) {
   const opening = String(openingAiBotId || '').trim() === String(bot?.id || '').trim();
+  const density = getDensity(ui);
   return (
     <button
       type="button"
@@ -287,13 +348,23 @@ function AiBotRow({ bot, openingAiBotId, onOpenAiBot, compactMobile = false }) {
           ? 'border-b border-[color:var(--chat-sidebar-divider)] px-3 py-3'
           : 'mx-2 my-1 rounded-[14px] border border-transparent px-3.5 py-3 hover:bg-[var(--chat-sidebar-row-hover)]',
       )}
+      style={compactMobile ? undefined : {
+        minHeight: density.sidebarRowMinHeight,
+        padding: `${density.sidebarResultRowPy}px ${density.sidebarResultRowPx}px`,
+      }}
     >
-      <PresenceAvatar item={{ title: bot?.title || 'AI', username: bot?.slug || 'ai' }} online={false} size={compactMobile ? 54 : 50} />
+      <PresenceAvatar item={{ title: bot?.title || 'AI', username: bot?.slug || 'ai' }} online={false} size={compactMobile ? 54 : density.sidebarAvatar} />
       <div className="min-w-0 flex-1">
-        <p className={joinClasses('truncate font-semibold tracking-[-0.01em] text-[color:var(--chat-text-primary)]', compactMobile ? 'text-[17px]' : 'text-[16px]')}>
+        <p
+          className={joinClasses('truncate font-semibold tracking-[-0.01em] text-[color:var(--chat-text-primary)]', compactMobile ? 'text-[17px]' : 'text-[16px]')}
+          style={compactMobile ? undefined : { fontSize: density.sidebarResultTitleFontSize }}
+        >
           {bot?.title || 'AI'}
         </p>
-        <p className={joinClasses('truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[14px]' : 'text-[13px]')}>
+        <p
+          className={joinClasses('truncate text-[color:var(--chat-text-secondary)]', compactMobile ? 'text-[14px]' : 'text-[13px]')}
+          style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
+        >
           {String(bot?.description || '').trim() || 'Корпоративный AI-ассистент'}
         </p>
       </div>
@@ -305,6 +376,7 @@ function AiBotRow({ bot, openingAiBotId, onOpenAiBot, compactMobile = false }) {
 function AiConversationRow({
   bot,
   theme,
+  ui,
   activeConversationId,
   onOpenConversation,
   onPrefetchConversation,
@@ -314,6 +386,7 @@ function AiConversationRow({
   index = 0,
   reducedMotion = false,
 }) {
+  const density = getDensity(ui);
   const opening = String(openingAiBotId || '').trim() === String(bot?.id || '').trim();
   const conversationId = String(bot?.conversation_id || '').trim();
   const active = Boolean(conversationId && conversationId === String(activeConversationId || '').trim());
@@ -357,6 +430,7 @@ function AiConversationRow({
             : 'text-[color:var(--chat-text-primary)] hover:bg-[var(--chat-sidebar-row-hover)]',
         )}
         style={{
+          ...getSidebarRowStyle(density, compactMobile),
           backgroundColor: active ? 'var(--chat-sidebar-row-active)' : 'transparent',
           color: active ? 'var(--chat-text-on-accent)' : 'var(--chat-text-primary)',
           borderColor: compactMobile ? 'var(--chat-sidebar-divider)' : (active ? alpha(theme.palette.primary.main, 0.18) : 'transparent'),
@@ -370,13 +444,14 @@ function AiConversationRow({
         }}
       >
         <div className="flex items-center gap-2.5">
-          <PresenceAvatar item={{ title: bot?.title || 'AI', username: bot?.slug || 'ai' }} online={false} size={compactMobile ? 54 : 52} />
+          <PresenceAvatar item={{ title: bot?.title || 'AI', username: bot?.slug || 'ai' }} online={false} size={getSidebarAvatarSize(density, compactMobile)} />
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-3">
               <p className={joinClasses(
                 'truncate leading-[1.15] tracking-[-0.01em]',
                 compactMobile ? 'text-[16px] font-semibold' : 'text-[15px] font-semibold',
               )}
+              style={compactMobile ? undefined : { fontSize: density.sidebarTitleFontSize }}
               >
                 {bot?.title || 'AI'}
               </p>
@@ -398,6 +473,7 @@ function AiConversationRow({
                   ? (active ? 'font-semibold text-[color:var(--chat-row-active-subtle)]' : 'font-semibold text-[color:var(--chat-draft-text)]')
                   : (active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]'),
               )}
+              style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
               >
                 {previewText}
               </p>
@@ -480,6 +556,7 @@ function ChatSidebar({
   onOpenAiBot,
   openingAiBotId = '',
 }) {
+  const density = getDensity(ui);
   const { openDrawer, headerMode } = useMainLayoutShell();
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = disableMotion || prefersReducedMotion;
@@ -493,7 +570,7 @@ function ChatSidebar({
   const chatUnavailable = health?.available === false;
   const aiSection = showAiSection ? (
     <>
-      <SearchSectionHeader compactMobile={compactMobile}>AI</SearchSectionHeader>
+      <SearchSectionHeader ui={ui} compactMobile={compactMobile}>AI</SearchSectionHeader>
       {aiBotsLoading ? (
         <div className={joinClasses('flex items-center gap-2 px-3 text-[color:var(--chat-text-secondary)]', compactMobile ? 'pb-3 pt-1 text-[14px]' : 'px-4 pb-2 pt-1 text-[13px]')}>
           <CircularProgress size={16} />
@@ -510,6 +587,7 @@ function ChatSidebar({
               key={`ai-bot-${bot.id}`}
               bot={bot}
               theme={theme}
+              ui={ui}
               activeConversationId={activeConversationId}
               onOpenConversation={onOpenConversation}
               onPrefetchConversation={onPrefetchConversation}
@@ -582,15 +660,15 @@ function ChatSidebar({
         <div className={joinClasses('flex items-center justify-between', compactMobile ? 'mb-3' : 'mb-3.5')}>
           <div className="min-w-0 flex items-center gap-3">
             {showEmbeddedMenuButton ? (
-              <SidebarActionButton title="Открыть главное меню" onClick={openDrawer} compactMobile>
+              <SidebarActionButton title="Открыть главное меню" onClick={openDrawer} compactMobile ui={ui}>
                 <MenuRoundedIcon fontSize="small" />
               </SidebarActionButton>
             ) : (
               <div
                 className="flex items-center justify-center rounded-[14px] text-[var(--chat-accent-text)]"
                 style={{
-                  width: compactMobile ? 40 : 42,
-                  height: compactMobile ? 40 : 42,
+                  width: compactMobile ? 44 : density.sidebarHeaderIcon,
+                  height: compactMobile ? 44 : density.sidebarHeaderIcon,
                   backgroundColor: ui.accentSoft,
                   boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.08)',
                 }}
@@ -613,7 +691,7 @@ function ChatSidebar({
             </div>
           </div>
 
-          <SidebarActionButton title="Новый чат" onClick={onOpenGroup} disabled={chatUnavailable} compactMobile={compactMobile}>
+          <SidebarActionButton title="Новый чат" onClick={onOpenGroup} disabled={chatUnavailable} compactMobile={compactMobile} ui={ui}>
             {compactMobile ? <CreateRoundedIcon fontSize="small" /> : <GroupAddOutlinedIcon fontSize="small" />}
           </SidebarActionButton>
         </div>
@@ -632,7 +710,10 @@ function ChatSidebar({
                 ? 'bg-[var(--chat-sidebar-search-focus-bg)] shadow-[0_0_0_3px_var(--chat-focus-ring)]'
                 : 'bg-[var(--chat-sidebar-search-bg)]',
             )}
-            style={{ borderColor: searchFocused ? 'transparent' : 'var(--chat-border-soft)' }}
+            style={{
+              borderColor: searchFocused ? 'transparent' : 'var(--chat-border-soft)',
+              height: compactMobile ? undefined : density.sidebarSearchHeight,
+            }}
           >
             <SearchRoundedIcon
               fontSize="small"
@@ -645,11 +726,13 @@ function ChatSidebar({
               onFocus={() => setSearchFocused(true)}
               onBlur={() => setSearchFocused(false)}
               className="ml-2 h-full w-full bg-transparent text-[16px] text-[color:var(--chat-search-text)] placeholder:text-[color:var(--chat-search-placeholder)] outline-none"
+              style={compactMobile ? undefined : { fontSize: density.sidebarSearchFontSize }}
             />
             <SidebarActionButton
               title="Фильтр списка"
               onClick={(event) => setFilterAnchorEl(event.currentTarget)}
               compactMobile={compactMobile}
+              ui={ui}
               className="h-9 w-9 bg-transparent"
             >
               <MoreHorizRoundedIcon fontSize="small" />
@@ -663,6 +746,7 @@ function ChatSidebar({
             style={{
               borderColor: 'var(--chat-filter-strip-border)',
               backgroundColor: 'var(--chat-filter-strip-bg)',
+              padding: '6px 10px',
             }}
           >
             <span className="text-[12px] font-semibold text-[color:var(--chat-text-secondary)]">
@@ -722,12 +806,12 @@ function ChatSidebar({
         {sidebarSearchActive ? (
           <>
             {searchingSidebar ? (
-              <SidebarLoadingSkeleton compactMobile={compactMobile} />
+              <SidebarLoadingSkeleton ui={ui} compactMobile={compactMobile} />
             ) : null}
 
             {!searchingSidebar && searchPeople.length > 0 ? (
               <>
-                <SearchSectionHeader compactMobile={compactMobile}>Люди</SearchSectionHeader>
+                <SearchSectionHeader ui={ui} compactMobile={compactMobile}>Люди</SearchSectionHeader>
                 <div>
                   {searchPeople.map((person) => (
                     <PersonSearchRow
@@ -736,6 +820,7 @@ function ChatSidebar({
                       openingPeerId={openingPeerId}
                       onOpenPeer={onOpenPeer}
                       compactMobile={compactMobile}
+                      ui={ui}
                     />
                   ))}
                 </div>
@@ -744,13 +829,14 @@ function ChatSidebar({
 
             {!searchingSidebar && searchChats.length > 0 ? (
               <>
-                <SearchSectionHeader compactMobile={compactMobile}>Чаты</SearchSectionHeader>
+                <SearchSectionHeader ui={ui} compactMobile={compactMobile}>Чаты</SearchSectionHeader>
                 <div>
                   {searchChats.map((item, index) => (
                     <ConversationRow
                       key={`chat-${item.id}`}
                       item={item}
                       theme={theme}
+                      ui={ui}
                       activeConversationId={activeConversationId}
                       onOpenConversation={onOpenConversation}
                       onPrefetchConversation={onPrefetchConversation}
@@ -771,7 +857,7 @@ function ChatSidebar({
             ) : null}
           </>
         ) : conversationsLoading ? (
-          <SidebarLoadingSkeleton compactMobile={compactMobile} />
+          <SidebarLoadingSkeleton ui={ui} compactMobile={compactMobile} />
         ) : conversations.length === 0 ? (
           <>
             {aiSection}
@@ -787,6 +873,7 @@ function ChatSidebar({
                 key={item.id}
                 item={item}
                 theme={theme}
+                ui={ui}
                 activeConversationId={activeConversationId}
                 onOpenConversation={onOpenConversation}
                 onPrefetchConversation={onPrefetchConversation}

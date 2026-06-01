@@ -860,9 +860,16 @@ const readSelectedDatabaseId = () => {
 
 export default function Chat() {
   const theme = useTheme();
-  const ui = useMemo(() => buildChatUiTokens(theme), [theme]);
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
+  const compactDesktopMedia = useMediaQuery('(min-width:600px) and (max-width:1920px), (min-width:600px) and (max-height:960px)');
+  const ui = useMemo(
+    () => buildChatUiTokens(theme, {
+      compactDesktop: compactDesktopMedia && !isMobile,
+      compactMobile: isPhone,
+    }),
+    [compactDesktopMedia, isMobile, isPhone, theme],
+  );
   const prefersReducedMotion = useReducedMotion();
   const nativeShellRuntime = isNativeShellRuntime();
   const mobileMotionDisabled = prefersReducedMotion || (nativeShellRuntime && isMobile);
@@ -5382,7 +5389,9 @@ export default function Chat() {
             <Box
               sx={{
                 display: isMobile ? 'block' : 'grid',
-                gridTemplateColumns: isMobile ? undefined : 'minmax(320px, 400px) minmax(0, 1fr)',
+                gridTemplateColumns: isMobile
+                  ? undefined
+                  : `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr)`,
                 flex: 1,
                 minHeight: 0,
               }}

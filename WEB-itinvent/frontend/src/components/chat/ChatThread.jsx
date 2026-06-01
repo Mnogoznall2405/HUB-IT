@@ -112,8 +112,11 @@ export const getChatThreadBottomPadding = ({
   return Math.max(baseGap, Math.round(baseGap + effectiveKeyboardInset + keyboardSpacer));
 };
 
-function HeaderAction({ title, children, onClick, active = false, compactMobile = false, hidden = false, disabled = false }) {
+function HeaderAction({ title, children, onClick, active = false, compactMobile = false, hidden = false, disabled = false, density }) {
   if (hidden) return null;
+  const actionSize = compactMobile
+    ? Math.max(density?.touchTarget || 44, density?.threadHeaderAction || 44)
+    : (density?.threadHeaderAction || 34);
   return (
     <Tooltip title={title}>
       <span>
@@ -123,8 +126,8 @@ function HeaderAction({ title, children, onClick, active = false, compactMobile 
           onClick={onClick}
           disabled={disabled}
           sx={{
-            width: compactMobile ? 32 : 34,
-            height: compactMobile ? 32 : 34,
+            width: actionSize,
+            height: actionSize,
             borderRadius: 0,
             color: active ? 'var(--chat-action-active-text)' : 'inherit',
             bgcolor: 'transparent',
@@ -268,9 +271,10 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
   onCopySelectedMessages,
   onForwardSelectedMessages,
 }) {
+  const density = ui.density || {};
   const headerShellSx = {
-    px: { xs: compactMobile ? 0.65 : 1.15, md: 1.6 },
-    pb: compactMobile ? 0.45 : 0.78,
+    px: { xs: compactMobile ? 0.65 : 1.15, md: density.threadHeaderPx || 1.6 },
+    pb: compactMobile ? 0.45 : (density.threadHeaderPb || 0.78),
     bgcolor: ui.threadTopbarBg,
     backdropFilter: 'blur(16px)',
     position: 'sticky',
@@ -280,7 +284,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
     borderBottom: theme.palette.mode === 'dark' ? `0.5px solid ${ui.borderSoft}` : 'none',
   };
   const headerContentSx = {
-    maxWidth: compactMobile ? '100%' : `${Number(ui.contentMaxWidth || 980) + 56}px`,
+    maxWidth: compactMobile ? '100%' : `${Number(density.contentMaxWidth || ui.contentMaxWidth || 980) + 56}px`,
     mx: 'auto',
     width: '100%',
   };
@@ -440,13 +444,13 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
               <PresenceAvatar
                 item={activeConversation.kind === 'direct' ? (activeConversation.direct_peer || activeConversation) : activeConversation}
                 online={Boolean(activeConversation?.kind === 'direct' && activeConversation?.direct_peer?.presence?.is_online)}
-                size={compactMobile ? 40 : 42}
+                size={compactMobile ? 40 : (density.threadHeaderAvatar || 42)}
               />
               <Box sx={{ minWidth: 0 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_FONT_SIZES.headerTitleMobile : '1.02rem', letterSpacing: '-0.01em', fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || '1.02rem'), letterSpacing: '-0.01em', fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
                   {activeConversation.title}
                 </Typography>
-                <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_FONT_SIZES.previewBody : '0.82rem', lineHeight: 1.12, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
+                <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_FONT_SIZES.previewBody : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
                   {typingLine || headerSubtitle}
                 </Typography>
               </Box>
@@ -458,6 +462,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
             onClick={onOpenMenu}
             active={contextPanelOpen}
             compactMobile={compactMobile}
+            density={density}
           >
             <MoreVertRoundedIcon fontSize="small" />
           </HeaderAction>
@@ -526,13 +531,13 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
             <PresenceAvatar
               item={activeConversation.kind === 'direct' ? (activeConversation.direct_peer || activeConversation) : activeConversation}
               online={Boolean(activeConversation?.kind === 'direct' && activeConversation?.direct_peer?.presence?.is_online)}
-              size={compactMobile ? 40 : 42}
+              size={compactMobile ? 40 : (density.threadHeaderAvatar || 42)}
             />
             <Box sx={{ minWidth: 0 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_FONT_SIZES.headerTitleMobile : '1.02rem', letterSpacing: '-0.01em', fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || '1.02rem'), letterSpacing: '-0.01em', fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
                 {activeConversation.title}
               </Typography>
-              <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_FONT_SIZES.previewBody : '0.82rem', lineHeight: 1.12, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
+              <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_FONT_SIZES.previewBody : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
                 {typingLine || headerSubtitle}
               </Typography>
             </Box>
@@ -540,7 +545,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
         </Stack>
 
         <Stack direction="row" spacing={0.1} alignItems="center">
-          <HeaderAction title="Поиск по сообщениям" onClick={onOpenSearch} compactMobile={compactMobile} hidden={compactMobile}>
+          <HeaderAction title="Поиск по сообщениям" onClick={onOpenSearch} compactMobile={compactMobile} hidden={compactMobile} density={density}>
             <SearchRoundedIcon fontSize="small" />
           </HeaderAction>
           <HeaderAction
@@ -548,6 +553,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
             onClick={onOpenMenu}
             active={contextPanelOpen}
             compactMobile={compactMobile}
+            density={density}
           >
             <MoreVertRoundedIcon fontSize="small" />
           </HeaderAction>
@@ -566,6 +572,7 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
   onUnpinPinnedMessage,
 }) {
   if (!pinnedMessage?.id) return null;
+  const density = ui.density || {};
 
   const previewText = String(pinnedMessage?.preview || '').trim() || 'Сообщение';
   const senderName = String(pinnedMessage?.senderName || '').trim();
@@ -573,8 +580,8 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
   return (
     <Box
       sx={{
-        px: { xs: compactMobile ? 0.75 : 1.35, md: 1.8 },
-        py: compactMobile ? 0.48 : 0.62,
+        px: { xs: compactMobile ? 0.75 : 1.1, md: density.threadHeaderPx || 1.8 },
+        py: compactMobile ? 0.48 : 0.5,
         bgcolor: ui.threadTopbarBg,
         backdropFilter: 'blur(18px)',
         borderBottom: `1px solid ${alpha(ui.borderSoft, 0.8)}`,
@@ -585,7 +592,7 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
         spacing={1}
         alignItems="center"
         sx={{
-          maxWidth: compactMobile ? '100%' : `${Number(ui.contentMaxWidth || 980) + 56}px`,
+          maxWidth: compactMobile ? '100%' : `${Number(density.contentMaxWidth || ui.contentMaxWidth || 980) + 56}px`,
           mx: 'auto',
           width: '100%',
         }}
@@ -621,8 +628,8 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
         >
           <Box
             sx={{
-              width: 30,
-              height: 30,
+              width: density.threadPinnedIcon || 30,
+              height: density.threadPinnedIcon || 30,
               borderRadius: compactMobile ? 2 : 1.25,
               display: 'inline-flex',
               alignItems: 'center',
@@ -651,8 +658,8 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
           aria-label="Снять закрепленное сообщение"
           onClick={() => onUnpinPinnedMessage?.()}
           sx={{
-            width: compactMobile ? 34 : 32,
-            height: compactMobile ? 34 : 32,
+            width: compactMobile ? 34 : (density.threadPinnedClose || 32),
+            height: compactMobile ? 34 : (density.threadPinnedClose || 32),
             borderRadius: compactMobile ? 999 : 1.5,
             color: ui.textSecondary,
             bgcolor: ui.surfaceMuted || alpha(theme.palette.common.white, 0.03),
@@ -788,7 +795,9 @@ function ChatThread({
   const servicePillText = ui.servicePillText || ui.textSecondary;
   const jumpPillBg = ui.jumpPillBg || theme.palette.primary.main;
   const jumpPillText = ui.jumpPillText || theme.palette.primary.contrastText;
-  const contentMaxWidth = Number(ui.contentMaxWidth || 980);
+  const density = ui.density || {};
+  const contentMaxWidth = Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
+  const aiRunStatus = String(aiStatus?.status || '').trim();
   const scrollBottomPadding = getChatThreadBottomPadding({
     compactMobile,
     keyboardInset,
@@ -1284,7 +1293,7 @@ function ChatThread({
       />
 
       <AnimatePresence initial={false}>
-        {aiStatus?.status === 'failed' ? (
+        {aiRunStatus && aiRunStatus !== 'completed' ? (
           <AiRunStatusBanner
             aiStatus={aiStatus}
             theme={theme}
@@ -1311,11 +1320,11 @@ function ChatThread({
           overflowY: 'auto',
           overflowAnchor: 'none',
           overscrollBehaviorY: compactMobile ? 'none' : 'contain',
-          px: { xs: compactMobile ? 0.7 : 1.8, md: 3.5 },
-          pt: { xs: 0.5, md: 1.8 },
+          px: { xs: compactMobile ? 0.7 : 1.8, md: density.threadScrollPxMd || 3.5 },
+          pt: { xs: 0.5, md: density.threadScrollPtMd || 1.8 },
           pb: {
             xs: `${scrollBottomPadding}px`,
-            md: '18px',
+            md: `${density.threadScrollPbMd || 18}px`,
           },
           scrollPaddingBottom: {
             xs: `${Math.max(24, scrollBottomPadding + 16)}px`,

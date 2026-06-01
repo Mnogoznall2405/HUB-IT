@@ -158,7 +158,10 @@ const ChatComposer = memo(function ChatComposer({
   onStopVoiceRecording,
   onCancelVoiceRecording,
 }) {
-  const contentMaxWidth = Number(ui.contentMaxWidth || 980);
+  const density = ui.density || {};
+  const contentMaxWidth = Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
+  const composerFontSize = compactMobile ? '16px' : (density.composerFontSize || CHAT_FONT_SIZES.composer);
+  const composerAuxFontSize = density.composerAuxFontSize || CHAT_FONT_SIZES.composerAux;
   const safeKeyboardInset = compactMobile ? Math.max(0, Math.round(Number(keyboardInset || 0))) : 0;
   const composerBg = ui.composerBg || (theme.palette.mode === 'dark' ? '#1c1c1e' : '#ffffff');
   const composerActionBg = ui.composerActionBg || theme.palette.primary.main;
@@ -169,6 +172,15 @@ const ChatComposer = memo(function ChatComposer({
   const composerDismissColor = theme.palette.mode === 'dark' ? alpha('#ffffff', 0.6) : composerAuxColor;
   const canSendComposerMessage = Boolean(String(messageText || '').trim());
   const filesBusy = preparingFiles || sendingFiles;
+  const selectedFileList = useMemo(
+    () => (Array.isArray(selectedFiles) ? selectedFiles : []),
+    [selectedFiles],
+  );
+  const selectedFilePreviewItems = useMemo(
+    () => selectedFileList.slice(0, 3),
+    [selectedFileList],
+  );
+  const hiddenSelectedFileCount = Math.max(0, selectedFileList.length - selectedFilePreviewItems.length);
   const [mentionTrigger, setMentionTrigger] = useState(null);
   const mentionTriggerRef = useRef(null);
   const [remoteMentionPeople, setRemoteMentionPeople] = useState([]);
@@ -322,9 +334,9 @@ const ChatComposer = memo(function ChatComposer({
       data-testid="chat-composer-dock"
       className="chat-safe-bottom chat-native-shell chat-no-select"
       sx={{
-        px: { xs: compactMobile ? 0.8 : 1.1, md: 1.6 },
-        pt: compactMobile ? 0.55 : 0.95,
-        pb: compactMobile ? 'max(calc(env(safe-area-inset-bottom, 0px) + 6px), 10px)' : 0.95,
+        px: { xs: compactMobile ? 0.8 : (density.composerDockPx || 1.1), md: density.composerDockPxMd || 1.6 },
+        pt: compactMobile ? 0.55 : (density.composerDockPt || 0.95),
+        pb: compactMobile ? 'max(calc(env(safe-area-inset-bottom, 0px) + 6px), 10px)' : (density.composerDockPb || 0.95),
         bgcolor: composerBg,
         backdropFilter: 'blur(22px) saturate(1.08)',
         position: 'relative',
@@ -341,7 +353,161 @@ const ChatComposer = memo(function ChatComposer({
       }}
     >
       <Box sx={{ maxWidth: { xs: '100%', md: `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
-        {/* File attachment status bar removed — upload dialog handles everything */}
+        {selectedFileList.length > 0 ? (
+          <Box
+            data-testid="chat-selected-files-bar"
+            sx={{
+              mb: compactMobile ? 0.8 : `${density.composerAttachmentMarginBottom || 10}px`,
+              p: compactMobile ? '8px 10px' : (density.composerAttachmentPadding || '10px 12px'),
+              borderRadius: compactMobile ? '18px' : '14px',
+              border: `1px solid ${ui.borderSoft}`,
+              backgroundColor: alpha(ui.composerDockBg, 0.94),
+              boxShadow: ui.shadowSoft,
+            }}
+          >
+            <Stack
+              direction={{ xs: 'column', sm: 'row' }}
+              spacing={compactMobile ? 0.8 : 1}
+              alignItems={{ xs: 'stretch', sm: 'center' }}
+            >
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Stack direction="row" spacing={0.7} alignItems="center" sx={{ minWidth: 0, mb: 0.65 }}>
+                  {filesBusy ? (
+                    <CircularProgress size={compactMobile ? 15 : 14} thickness={5} sx={{ color: ui.accentText, flexShrink: 0 }} />
+                  ) : (
+                    <AttachFileRoundedIcon sx={{ fontSize: compactMobile ? 18 : 16, color: ui.accentText, flexShrink: 0 }} />
+                  )}
+                  <Typography
+                    noWrap
+                    sx={{
+                      minWidth: 0,
+                      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                      fontSize: composerAuxFontSize,
+                      fontWeight: 800,
+                      color: composerPrimaryText,
+                    }}
+                  >
+                    {selectedFileList.length} файл(ов){selectedFilesTotalLabel ? ` · ${selectedFilesTotalLabel}` : ''}
+                  </Typography>
+                  {sendingFiles && fileUploadProgress > 0 ? (
+                    <Typography
+                      sx={{
+                        flexShrink: 0,
+                        fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                        fontSize: composerAuxFontSize,
+                        fontWeight: 800,
+                        color: ui.accentText,
+                      }}
+                    >
+                      {Math.round(Number(fileUploadProgress || 0))}%
+                    </Typography>
+                  ) : null}
+                </Stack>
+
+                <Stack direction="row" spacing={0.65} useFlexGap flexWrap="wrap" sx={{ minWidth: 0 }}>
+                  {selectedFilePreviewItems.map((file, index) => (
+                    <Box
+                      key={`${String(file?.name || 'file')}-${index}`}
+                      sx={{
+                        maxWidth: compactMobile ? '100%' : 190,
+                        minHeight: compactMobile ? 30 : (density.composerAttachmentChipHeight || 28),
+                        px: 1,
+                        py: 0.35,
+                        borderRadius: '999px',
+                        bgcolor: alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.1),
+                        color: composerPrimaryText,
+                        fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                        fontSize: composerAuxFontSize,
+                        fontWeight: 700,
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {String(file?.name || 'Файл')}
+                    </Box>
+                  ))}
+                  {hiddenSelectedFileCount > 0 ? (
+                    <Box
+                      sx={{
+                        minHeight: compactMobile ? 30 : (density.composerAttachmentChipHeight || 28),
+                        px: 1,
+                        py: 0.35,
+                        borderRadius: '999px',
+                        bgcolor: alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.2 : 0.14),
+                        color: ui.accentText,
+                        fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                        fontSize: composerAuxFontSize,
+                        fontWeight: 850,
+                      }}
+                    >
+                      +{hiddenSelectedFileCount}
+                    </Box>
+                  ) : null}
+                </Stack>
+
+                {fileCaption ? (
+                  <Typography
+                    noWrap
+                    sx={{
+                      mt: 0.6,
+                      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                      fontSize: composerAuxFontSize,
+                      color: composerAuxColor,
+                    }}
+                  >
+                    {fileCaption}
+                  </Typography>
+                ) : null}
+              </Box>
+
+              <Stack direction="row" spacing={0.65} justifyContent={{ xs: 'flex-end', sm: 'center' }}>
+                <Box
+                  component="button"
+                  type="button"
+                  onClick={onOpenFileDialog}
+                  disabled={filesBusy}
+                  sx={{
+                    minHeight: compactMobile ? 36 : (density.composerAttachmentActionHeight || 32),
+                    px: compactMobile ? 1.3 : 1.1,
+                    border: 'none',
+                    borderRadius: '999px',
+                    bgcolor: alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
+                    color: ui.accentText,
+                    fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                    fontSize: composerAuxFontSize,
+                    fontWeight: 850,
+                    cursor: filesBusy ? 'default' : 'pointer',
+                    opacity: filesBusy ? 0.55 : 1,
+                  }}
+                >
+                  Изменить
+                </Box>
+                <Box
+                  component="button"
+                  type="button"
+                  onClick={onClearSelectedFiles}
+                  disabled={filesBusy}
+                  sx={{
+                    minHeight: compactMobile ? 36 : (density.composerAttachmentActionHeight || 32),
+                    px: compactMobile ? 1.3 : 1.1,
+                    border: 'none',
+                    borderRadius: '999px',
+                    bgcolor: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
+                    color: theme.palette.error.main,
+                    fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                    fontSize: composerAuxFontSize,
+                    fontWeight: 850,
+                    cursor: filesBusy ? 'default' : 'pointer',
+                    opacity: filesBusy ? 0.55 : 1,
+                  }}
+                >
+                  Очистить
+                </Box>
+              </Stack>
+            </Stack>
+          </Box>
+        ) : null}
 
         {replyMessage ? (
           <div
@@ -350,6 +516,8 @@ const ChatComposer = memo(function ChatComposer({
               compactMobile ? 'rounded-[20px]' : 'rounded-[14px]',
             )}
             style={{
+              marginBottom: compactMobile ? undefined : density.composerReplyMarginBottom,
+              padding: compactMobile ? undefined : density.composerReplyPadding,
               backgroundColor: alpha(ui.composerDockBg, 0.94),
               borderColor: ui.borderSoft,
               borderLeft: `3px solid ${ui.accentText}`,
@@ -357,10 +525,10 @@ const ChatComposer = memo(function ChatComposer({
             }}
           >
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[12px] font-semibold" style={{ color: ui.accentText, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: CHAT_FONT_SIZES.composerAux }}>
+              <p className="truncate text-[12px] font-semibold" style={{ color: ui.accentText, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: composerAuxFontSize }}>
                 {replyMessage?.sender?.full_name || replyMessage?.sender?.username || 'Сообщение'}
               </p>
-              <p className="truncate text-[12px]" style={{ color: ui.textSecondary, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: CHAT_FONT_SIZES.composerAux }}>
+              <p className="truncate text-[12px]" style={{ color: ui.textSecondary, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: composerAuxFontSize }}>
                 {getSearchResultPreview(replyMessage)}
               </p>
             </div>
@@ -369,7 +537,11 @@ const ChatComposer = memo(function ChatComposer({
               aria-label="Отменить ответ"
               onClick={onClearReply}
               className="inline-flex h-8 w-8 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
-              style={{ color: composerDismissColor }}
+              style={{
+                width: compactMobile ? undefined : density.composerIconButton,
+                height: compactMobile ? undefined : density.composerIconButton,
+                color: composerDismissColor,
+              }}
             >
               <CloseRoundedIcon sx={{ fontSize: 16 }} />
             </button>
@@ -410,7 +582,7 @@ const ChatComposer = memo(function ChatComposer({
                   onClick={() => insertMention(person)}
                   sx={{
                     width: '100%',
-                    minHeight: compactMobile ? 50 : 48,
+                    minHeight: compactMobile ? 50 : (density.composerMentionMinHeight || 48),
                     px: 1.1,
                     py: 0.65,
                     border: 'none',
@@ -428,9 +600,9 @@ const ChatComposer = memo(function ChatComposer({
                 >
                   <Avatar
                     sx={{
-                      width: 34,
-                      height: 34,
-                      fontSize: 13,
+                      width: compactMobile ? 34 : (density.composerMentionAvatar || 34),
+                      height: compactMobile ? 34 : (density.composerMentionAvatar || 34),
+                      fontSize: compactMobile ? 13 : 12,
                       fontWeight: 850,
                       bgcolor: alpha(ui.accentText || theme.palette.primary.main, 0.18),
                       color: ui.accentText || theme.palette.primary.main,
@@ -439,10 +611,10 @@ const ChatComposer = memo(function ChatComposer({
                     {getPersonInitials(person)}
                   </Avatar>
                   <Box sx={{ minWidth: 0, flex: 1 }}>
-                    <Typography noWrap sx={{ color: composerPrimaryText, fontSize: 14.5, fontWeight: 800, lineHeight: 1.15 }}>
+                    <Typography noWrap sx={{ color: composerPrimaryText, fontSize: density.composerMentionTitleFontSize || 14.5, fontWeight: 800, lineHeight: 1.15 }}>
                       {displayName}
                     </Typography>
-                    <Typography noWrap sx={{ color: composerAuxColor, fontSize: 12.5, lineHeight: 1.25 }}>
+                    <Typography noWrap sx={{ color: composerAuxColor, fontSize: density.composerMentionMetaFontSize || 12.5, lineHeight: 1.25 }}>
                       @{handle}{person?.presence ? ` · ${getPersonStatusLine(person)}` : ''}
                     </Typography>
                   </Box>
@@ -452,7 +624,7 @@ const ChatComposer = memo(function ChatComposer({
             {mentionLoading && mentionOptions.length === 0 ? (
               <Stack direction="row" spacing={1} alignItems="center" sx={{ px: 1.25, py: 1, color: composerAuxColor }}>
                 <CircularProgress size={16} />
-                <Typography sx={{ fontSize: 13, color: composerAuxColor }}>Ищем людей...</Typography>
+                <Typography sx={{ fontSize: composerAuxFontSize, color: composerAuxColor }}>Ищем людей...</Typography>
               </Stack>
             ) : null}
           </Box>
@@ -469,7 +641,9 @@ const ChatComposer = memo(function ChatComposer({
               compactMobile ? 'rounded-[23px]' : 'rounded-[20px]',
             )}
             sx={{
-              minHeight: compactMobile ? 46 : 48,
+              minHeight: compactMobile ? 46 : (density.composerCapsuleMinHeight || 48),
+              px: compactMobile ? undefined : `${density.composerCapsulePx || 10}px`,
+              py: compactMobile ? undefined : `${density.composerCapsulePy || 2}px`,
               bgcolor: alpha(ui.composerInputBg, 0.94),
               borderColor: theme.palette.mode === 'dark' ? alpha('#ffffff', 0.08) : ui.borderSoft,
               boxShadow: 'none',
@@ -488,6 +662,8 @@ const ChatComposer = memo(function ChatComposer({
                   onClick={onCancelVoiceRecording}
                   className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
                   style={{
+                    width: compactMobile ? undefined : density.composerIconButton,
+                    height: compactMobile ? undefined : density.composerIconButton,
                     backgroundColor: 'transparent',
                     color: theme.palette.error.main,
                     transform: compactMobile ? undefined : 'translateY(-4px)',
@@ -497,7 +673,11 @@ const ChatComposer = memo(function ChatComposer({
                 </button>
                 <Box
                   className="flex min-w-0 flex-1 items-center py-[11px]"
-                  sx={{ minHeight: 38, gap: 1 }}
+                  sx={{
+                    minHeight: 38,
+                    gap: 1,
+                    py: compactMobile ? undefined : `${density.composerInnerPaddingY || 11}px`,
+                  }}
                 >
                   <Box
                     sx={{
@@ -515,7 +695,7 @@ const ChatComposer = memo(function ChatComposer({
                   <Typography
                     sx={{
                       fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-                      fontSize: compactMobile ? '16px' : CHAT_FONT_SIZES.composer,
+                      fontSize: composerFontSize,
                       fontVariantNumeric: 'tabular-nums',
                       color: theme.palette.text.primary,
                       lineHeight: 1.34,
@@ -538,6 +718,8 @@ const ChatComposer = memo(function ChatComposer({
                       disabled={!activeConversationId}
                       className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
                       style={{
+                        width: compactMobile ? undefined : density.composerIconButton,
+                        height: compactMobile ? undefined : density.composerIconButton,
                         backgroundColor: 'transparent',
                         color: composerIconColor,
                         transform: compactMobile ? undefined : 'translateY(-4px)',
@@ -558,7 +740,10 @@ const ChatComposer = memo(function ChatComposer({
 
                 <Box
                   className="flex min-w-0 flex-1 items-end py-[11px]"
-                  sx={{ minHeight: 38 }}
+                  sx={{
+                    minHeight: 38,
+                    py: compactMobile ? undefined : `${density.composerInnerPaddingY || 11}px`,
+                  }}
                 >
                   <TextareaAutosize
                     ref={composerRef}
@@ -584,15 +769,15 @@ const ChatComposer = memo(function ChatComposer({
                       background: 'transparent',
                       color: theme.palette.text.primary,
                       fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-                      fontSize: compactMobile ? '16px' : CHAT_FONT_SIZES.composer,
+                      fontSize: composerFontSize,
                       lineHeight: '1.34',
                       padding: 0,
                       margin: 0,
                       overflowY: 'auto',
                       overflowWrap: 'anywhere',
                       wordBreak: 'break-word',
-                      maxHeight: '120px',
-                      minHeight: compactMobile ? '18px' : '19px',
+                      maxHeight: `${density.composerTextareaMaxHeight || 120}px`,
+                      minHeight: `${compactMobile ? 18 : (density.composerTextareaMinHeight || 19)}px`,
                     }}
                   />
                 </Box>
@@ -610,6 +795,8 @@ const ChatComposer = memo(function ChatComposer({
                         disabled={!activeConversationId}
                         className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
                         style={{
+                          width: compactMobile ? undefined : density.composerIconButton,
+                          height: compactMobile ? undefined : density.composerIconButton,
                           backgroundColor: 'transparent',
                           color: composerIconColor,
                           transform: compactMobile ? undefined : 'translateY(-4px)',
@@ -642,13 +829,15 @@ const ChatComposer = memo(function ChatComposer({
                   data-testid="chat-composer-send-button"
                   className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
                   style={{
+                    width: density.composerActionSize || 46,
+                    height: density.composerActionSize || 46,
                     backgroundColor: composerActionBg,
                     color: composerActionText,
                     boxShadow: `0 6px 16px ${alpha(composerActionBg, 0.24)}`,
                     transform: compactMobile ? undefined : 'translateY(-2px)',
                   }}
                 >
-                  <SendRoundedIcon sx={{ fontSize: 20 }} />
+                  <SendRoundedIcon sx={{ fontSize: density.composerActionIcon || 20 }} />
                 </button>
               </span>
             </Tooltip>
@@ -663,12 +852,14 @@ const ChatComposer = memo(function ChatComposer({
                   data-testid="chat-composer-voice-button"
                   className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60 disabled:opacity-40"
                   style={{
+                    width: density.composerActionSize || 46,
+                    height: density.composerActionSize || 46,
                     backgroundColor: alpha(composerActionBg, 0.12),
                     color: composerActionBg,
                     transform: compactMobile ? undefined : 'translateY(-2px)',
                   }}
                 >
-                  <MicRoundedIcon sx={{ fontSize: 22 }} />
+                  <MicRoundedIcon sx={{ fontSize: density.composerActionIcon || 22 }} />
                 </button>
               </span>
             </Tooltip>

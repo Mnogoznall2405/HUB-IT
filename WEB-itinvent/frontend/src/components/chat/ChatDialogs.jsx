@@ -423,6 +423,7 @@ export default function ChatDialogs({
   onOpenSearchResult,
 }) {
   const previewFullScreen = useMediaQuery(theme.breakpoints.down('sm'));
+  const density = ui.density || {};
   const isMobileEmojiLayout = useMediaQuery(theme.breakpoints.down('md'));
   const prefersReducedMotion = typeof window !== 'undefined'
     && typeof window.matchMedia === 'function'
@@ -513,25 +514,20 @@ export default function ChatDialogs({
     backdropFilter: 'blur(22px) saturate(1.08)',
   }), [dialogTextColor, theme.palette.mode, ui.drawerBg, ui.panelBg, ui.shadowStrong]);
   const dialogTitleSx = useMemo(() => ({
-    px: 3,
-    pt: 2.5,
-    pb: 1.5,
+    p: density.dialogTitlePadding || '20px 24px 12px',
     fontWeight: 800,
-    fontSize: '1.05rem',
+    fontSize: density.dialogMenuFontSize || '1.05rem',
     letterSpacing: '-0.01em',
     borderBottom: `1px solid ${ui.borderSoft}`,
-  }), [ui.borderSoft]);
+  }), [density.dialogMenuFontSize, density.dialogTitlePadding, ui.borderSoft]);
   const dialogContentSx = useMemo(() => ({
-    px: 3,
-    py: 2,
+    p: density.dialogContentPadding || '16px 24px',
     bgcolor: 'transparent',
-  }), []);
+  }), [density.dialogContentPadding]);
   const dialogActionsSx = useMemo(() => ({
-    px: 3,
-    pb: 2.25,
-    pt: 1.25,
+    p: density.dialogActionsPadding || '10px 24px 18px',
     borderTop: `1px solid ${alpha(ui.borderSoft || '#334155', 0.72)}`,
-  }), [ui.borderSoft]);
+  }), [density.dialogActionsPadding, ui.borderSoft]);
   const surfaceCardSx = useMemo(() => ({
     borderRadius: 3,
     border: `1px solid ${ui.borderSoft}`,
@@ -555,14 +551,14 @@ export default function ChatDialogs({
       py: 0.65,
     },
     '& .MuiMenuItem-root': {
-      minHeight: 44,
-      gap: 1.55,
-      px: 1.8,
-      py: 1,
+      minHeight: density.dialogMenuItemMinHeight || 44,
+      gap: density.dialogMenuItemGap || 1.55,
+      px: density.dialogMenuItemPx || 1.8,
+      py: density.dialogMenuItemPy || 1,
       mx: 0.5,
       my: 0.1,
       borderRadius: 1.7,
-      fontSize: '1.05rem',
+      fontSize: density.dialogMenuFontSize || '1.05rem',
       fontWeight: 600,
       letterSpacing: '-0.01em',
       fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
@@ -578,7 +574,7 @@ export default function ChatDialogs({
         opacity: 0.42,
       },
       '& .MuiSvgIcon-root': {
-        fontSize: 22,
+        fontSize: density.dialogMenuIconSize || 22,
         color: popupIconColor,
         flexShrink: 0,
       },
@@ -593,7 +589,7 @@ export default function ChatDialogs({
       my: 0.4,
       borderColor: popupBorderColor,
     },
-  }), [messageMenuUsesPointerAnchor, popupActiveBg, popupBorderColor, popupDangerColor, popupHoverBg, popupIconColor, popupShadow, popupSurface, popupTextColor]);
+  }), [density.dialogMenuFontSize, density.dialogMenuIconSize, density.dialogMenuItemGap, density.dialogMenuItemMinHeight, density.dialogMenuItemPx, density.dialogMenuItemPy, messageMenuUsesPointerAnchor, popupActiveBg, popupBorderColor, popupDangerColor, popupHoverBg, popupIconColor, popupShadow, popupSurface, popupTextColor]);
   const forwardDialogPaperSx = useMemo(() => ({
     borderRadius: { xs: 3, sm: 4 },
     border: `1px solid ${popupBorderColor}`,
@@ -602,13 +598,13 @@ export default function ChatDialogs({
     fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
     backgroundImage: 'none',
     boxShadow: popupShadow,
-    width: 'min(100vw - 24px, 560px)',
+    width: density.dialogForwardWidth || 'min(100vw - 24px, 560px)',
     maxWidth: '100%',
-    height: 'min(calc(100dvh - 28px), 760px)',
+    height: density.dialogForwardHeight || 'min(calc(100dvh - 28px), 760px)',
     overflow: 'hidden',
     display: 'flex',
     flexDirection: 'column',
-  }), [popupBorderColor, popupShadow, popupSurface, popupTextColor]);
+  }), [density.dialogForwardHeight, density.dialogForwardWidth, popupBorderColor, popupShadow, popupSurface, popupTextColor]);
   const forwardHeaderSx = useMemo(() => ({
     px: { xs: 1.35, sm: 1.6 },
     pt: { xs: 1.3, sm: 1.45 },
@@ -621,9 +617,9 @@ export default function ChatDialogs({
     alignItems: 'center',
     gap: 1.05,
     width: '100%',
-    minHeight: 46,
+    minHeight: density.dialogMenuItemMinHeight || 46,
     px: 0.25,
-  }), []);
+  }), [density.dialogMenuItemMinHeight]);
   const forwardRowSx = useMemo(() => ({
     width: '100%',
     border: 'none',
@@ -631,8 +627,8 @@ export default function ChatDialogs({
     display: 'flex',
     alignItems: 'center',
     gap: 1.4,
-    px: { xs: 1.25, sm: 1.45 },
-    py: 1.2,
+    px: { xs: 1.25, sm: density.dialogForwardRowPx || 1.45 },
+    py: density.dialogForwardRowPy || 1.2,
     textAlign: 'left',
     color: popupTextColor,
     bgcolor: 'transparent',
@@ -650,7 +646,7 @@ export default function ChatDialogs({
       opacity: 0.48,
       cursor: 'default',
     },
-  }), [popupActiveBg, popupHoverBg, popupTextColor]);
+  }), [density.dialogForwardRowPx, density.dialogForwardRowPy, popupActiveBg, popupHoverBg, popupTextColor]);
   const handleCloseForwardDialog = useCallback((_, reason) => {
     if (forwardingConversationId && (reason === 'backdropClick' || reason === 'escapeKeyDown')) return;
     onCloseForward?.();
@@ -835,12 +831,12 @@ export default function ChatDialogs({
             boxShadow: popupShadow,
             overflow: 'hidden',
             '& .MuiMenuItem-root': {
-              minHeight: 48,
-              py: 1.2,
-              px: 2,
-              fontSize: '1.02rem',
+              minHeight: density.dialogMenuItemMinHeight || 48,
+              py: density.dialogMenuItemPy || 1.2,
+              px: density.dialogMenuItemPx || 2,
+              fontSize: density.dialogMenuFontSize || '1.02rem',
               fontWeight: 400,
-              gap: 1.5,
+              gap: density.dialogMenuItemGap || 1.5,
               fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
               color: popupTextColor,
               '&:hover': {
@@ -854,33 +850,33 @@ export default function ChatDialogs({
         }}
       >
         <MenuItem onClick={runThreadMenuAction(onOpenInfo)} disabled={!activeConversationId}>
-          <InfoOutlinedIcon sx={{ fontSize: 22, color: popupIconColor, flexShrink: 0 }} />
+          <InfoOutlinedIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupIconColor, flexShrink: 0 }} />
           {activeConversationKind === 'group' ? 'Информация о группе' : 'Информация о чате'}
         </MenuItem>
 
         <Divider sx={{ bgcolor: popupBorderColor }} />
 
         <MenuItem onClick={runThreadMenuAction(onOpenSearch)} disabled={!activeConversationId}>
-          <SearchRoundedIcon sx={{ fontSize: 22, color: popupIconColor, flexShrink: 0 }} />
+          <SearchRoundedIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupIconColor, flexShrink: 0 }} />
           Поиск
         </MenuItem>
 
         <MenuItem onClick={toggleConversationSetting({ is_pinned: !activeConversation?.is_pinned })} disabled={!activeConversationId || settingsUpdating}>
-          <PushPinOutlinedIcon sx={{ fontSize: 22, color: popupIconColor, flexShrink: 0 }} />
+          <PushPinOutlinedIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupIconColor, flexShrink: 0 }} />
           {activeConversation?.is_pinned ? 'Открепить чат' : 'Закрепить чат'}
         </MenuItem>
 
         <MenuItem onClick={toggleConversationSetting({ is_muted: !activeConversation?.is_muted })} disabled={!activeConversationId || settingsUpdating}>
           {activeConversation?.is_muted ? (
-            <VolumeUpIcon sx={{ fontSize: 22, color: popupIconColor, flexShrink: 0 }} />
+            <VolumeUpIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupIconColor, flexShrink: 0 }} />
           ) : (
-            <VolumeOffIcon sx={{ fontSize: 22, color: popupIconColor, flexShrink: 0 }} />
+            <VolumeOffIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupIconColor, flexShrink: 0 }} />
           )}
           {activeConversation?.is_muted ? 'Включить уведомления' : 'Отключить уведомления'}
         </MenuItem>
 
         <MenuItem onClick={runThreadMenuAction(onOpenShare)} disabled={!activeConversationId}>
-          <ShareIcon sx={{ fontSize: 22, color: popupIconColor, flexShrink: 0 }} />
+          <ShareIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupIconColor, flexShrink: 0 }} />
           Поделиться задачей
         </MenuItem>
 
@@ -893,7 +889,7 @@ export default function ChatDialogs({
             '&:active': { bgcolor: alpha(popupDangerColor, 0.12) },
           }}
         >
-          <DeleteOutlineIcon sx={{ fontSize: 22, color: popupDangerColor, flexShrink: 0 }} />
+          <DeleteOutlineIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupDangerColor, flexShrink: 0 }} />
           Удалить чат
         </MenuItem>
       </Menu>
@@ -1433,6 +1429,20 @@ export default function ChatDialogs({
                     '&::-webkit-scrollbar': { display: 'none' },
                   }}
                 >
+                  <Typography
+                    sx={{
+                      flexShrink: 0,
+                      alignSelf: 'center',
+                      px: 0.5,
+                      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                      fontSize: density.composerAuxFontSize || '0.78rem',
+                      fontWeight: 800,
+                      color: ui.textSecondary,
+                      whiteSpace: 'nowrap',
+                    }}
+                  >
+                    Выбранные участники
+                  </Typography>
                   {selectedGroupUsers.map((item) => (
                     <SelectedUserPill
                       key={item.id}
@@ -1488,32 +1498,36 @@ export default function ChatDialogs({
 
               {/* User list */}
               <Box
-                sx={{ flex: 1, overflowY: 'auto', minHeight: 0 }}
-                data-testid="group-user-search-results"
-                data-testid2={!previewFullScreen ? 'group-dialog-desktop-layout' : undefined}
+                sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}
+                data-testid={!previewFullScreen ? 'group-dialog-desktop-layout' : undefined}
               >
-                {groupUsersLoading ? (
-                  <DialogListSkeleton ui={ui} rows={7} compact />
-                ) : availableGroupUsers.length === 0 ? (
-                  <Stack alignItems="center" justifyContent="center" sx={{ py: 5 }}>
-                    <Typography variant="body2" sx={{ color: ui.textSecondary }}>
-                      Никого не найдено
-                    </Typography>
-                  </Stack>
-                ) : (
-                  availableGroupUsers.map((item, index) => (
-                    <Box key={item.id}>
-                      {index > 0 ? <Box sx={{ borderTop: `1px solid ${alpha(ui.borderSoft || '#334155', 0.5)}` }} /> : null}
-                      <GroupUserCheckboxRow
-                        item={item}
-                        ui={ui}
-                        checked={selectedGroupMemberIds.has(String(item.id))}
-                        onToggle={handleToggleGroupMember}
-                        compact={previewFullScreen}
-                      />
-                    </Box>
-                  ))
-                )}
+                <Box
+                  data-testid="group-user-search-results"
+                  sx={{ height: '100%', overflowY: 'auto', minHeight: 0 }}
+                >
+                  {groupUsersLoading ? (
+                    <DialogListSkeleton ui={ui} rows={7} compact />
+                  ) : availableGroupUsers.length === 0 ? (
+                    <Stack alignItems="center" justifyContent="center" sx={{ py: 5 }}>
+                      <Typography variant="body2" sx={{ color: ui.textSecondary }}>
+                        Никого не найдено
+                      </Typography>
+                    </Stack>
+                  ) : (
+                    availableGroupUsers.map((item, index) => (
+                      <Box key={item.id}>
+                        {index > 0 ? <Box sx={{ borderTop: `1px solid ${alpha(ui.borderSoft || '#334155', 0.5)}` }} /> : null}
+                        <GroupUserCheckboxRow
+                          item={item}
+                          ui={ui}
+                          checked={selectedGroupMemberIds.has(String(item.id))}
+                          onToggle={handleToggleGroupMember}
+                          compact={previewFullScreen}
+                        />
+                      </Box>
+                    ))
+                  )}
+                </Box>
               </Box>
             </Box>
           ) : (
@@ -1619,6 +1633,7 @@ export default function ChatDialogs({
               <Button
                 variant="text"
                 data-testid="group-dialog-primary-action"
+                aria-label="Next group step"
                 onClick={() => setGroupStep('details')}
                 disabled={!canProceedToGroupDetails}
                 sx={{ textTransform: 'none', fontWeight: 700, color: accentColor }}
@@ -1761,7 +1776,7 @@ export default function ChatDialogs({
               inputProps={{ 'aria-label': 'Поиск чата для пересылки' }}
               sx={{
                 flex: 1,
-                fontSize: '1.08rem',
+                fontSize: density.dialogMenuFontSize || '1.08rem',
                 fontWeight: 500,
                 fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
                 color: popupTextColor,
@@ -1788,10 +1803,10 @@ export default function ChatDialogs({
               <DialogListSkeleton ui={ui} rows={5} />
             ) : forwardConversationItems.length === 0 ? (
               <Stack alignItems="center" justifyContent="center" sx={{ minHeight: 240, px: 3.5, textAlign: 'center' }}>
-                <Typography sx={{ color: popupTextColor, fontWeight: 700, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: '1.08rem' }}>
+                <Typography sx={{ color: popupTextColor, fontWeight: 700, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: density.dialogMenuFontSize || '1.08rem' }}>
                   Чаты не найдены
                 </Typography>
-                <Typography variant="body2" sx={{ mt: 0.65, color: popupMutedTextColor, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: '0.98rem' }}>
+                <Typography variant="body2" sx={{ mt: 0.65, color: popupMutedTextColor, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: density.composerAuxFontSize || '0.98rem' }}>
                   Попробуйте другое название чата или имя участника.
                 </Typography>
               </Stack>
@@ -1819,13 +1834,13 @@ export default function ChatDialogs({
                         <PresenceAvatar
                           item={avatarItem}
                           online={Boolean(item?.kind === 'direct' && item?.direct_peer?.presence?.is_online)}
-                          size={52}
+                          size={density.dialogForwardAvatar || 52}
                         />
                         <Box sx={{ minWidth: 0, flex: 1 }}>
-                          <Typography sx={{ color: popupTextColor, fontWeight: 700, fontSize: '1.08rem', fontFamily: TELEGRAM_CHAT_FONT_FAMILY, letterSpacing: '-0.01em' }} noWrap>
+                          <Typography sx={{ color: popupTextColor, fontWeight: 700, fontSize: density.dialogMenuFontSize || '1.08rem', fontFamily: TELEGRAM_CHAT_FONT_FAMILY, letterSpacing: '-0.01em' }} noWrap>
                             {item?.title || 'Чат'}
                           </Typography>
-                          <Typography variant="body2" sx={{ color: popupMutedTextColor, mt: 0.1, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: '0.98rem' }} noWrap>
+                          <Typography variant="body2" sx={{ color: popupMutedTextColor, mt: 0.1, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: density.composerAuxFontSize || '0.98rem' }} noWrap>
                             {subtitle}
                           </Typography>
                         </Box>

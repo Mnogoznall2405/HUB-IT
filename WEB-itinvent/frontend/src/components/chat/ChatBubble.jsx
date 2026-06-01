@@ -53,11 +53,13 @@ const CHAT_FONT_SIZES = {
   previewTitle: '15px',
   previewBody: '14px',
   sender: '16px',
-  body: '19px',
+  body: '21px',
   bodyMobile: '15px',
 };
-const getChatMessageBodyFontSize = (compactMobile = false) => (
-  compactMobile ? CHAT_FONT_SIZES.bodyMobile : CHAT_FONT_SIZES.body
+const getChatMessageBodyFontSize = (ui, compactMobile = false) => (
+  compactMobile
+    ? (ui?.density?.bubbleBodyMobileFontSize || CHAT_FONT_SIZES.bodyMobile)
+    : (ui?.density?.bubbleBodyFontSize || CHAT_FONT_SIZES.body)
 );
 const LIGHT_GROUP_SENDER_COLORS = ['#d45246', '#c97a00', '#2f8b44', '#387adf', '#8b4ccf', '#0f9d8a', '#c95d9c', '#468fba'];
 const DARK_GROUP_SENDER_COLORS = ['#ff7b73', '#f6c15c', '#7de26f', '#6bb6ff', '#c59bff', '#64e1cf', '#ff99dc', '#7bd7ff'];
@@ -185,6 +187,7 @@ function getGalleryAspectRatio(totalCount, index) {
 
 function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = false, onScrollToMessage }) {
   if (!replyPreview) return null;
+  const density = ui.density || {};
   const previewSenderColor = isOwn
     ? (ui.bubbleOwnPreviewText || alpha('#fff', 0.92))
     : resolveGroupSenderColor(replyPreview?.sender_id || replyPreview?.sender_name, theme, ui);
@@ -214,7 +217,7 @@ function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = fal
         style={{
           color: previewSenderColor,
           fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-          fontSize: CHAT_FONT_SIZES.previewTitle,
+          fontSize: density.bubblePreviewTitleFontSize || CHAT_FONT_SIZES.previewTitle,
           letterSpacing: '-0.01em',
         }}
       >
@@ -225,7 +228,7 @@ function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = fal
         style={{
           color: isOwn ? (ui.bubbleOwnPreviewSubtleText || alpha('#fff', 0.72)) : ui.textSecondary,
           fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-          fontSize: CHAT_FONT_SIZES.previewBody,
+          fontSize: density.bubblePreviewBodyFontSize || CHAT_FONT_SIZES.previewBody,
         }}
       >
         {getReplyPreviewText(replyPreview)}
@@ -236,6 +239,7 @@ function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = fal
 
 function ForwardPreviewBlock({ forwardPreview, theme, ui, isOwn, compactMobile = false }) {
   if (!forwardPreview) return null;
+  const density = ui.density || {};
   const senderName = String(forwardPreview?.sender_name || '').trim();
   const previewSenderColor = isOwn
     ? (ui.bubbleOwnPreviewText || alpha('#fff', 0.92))
@@ -257,7 +261,7 @@ function ForwardPreviewBlock({ forwardPreview, theme, ui, isOwn, compactMobile =
         style={{
           color: previewSenderColor,
           fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-          fontSize: CHAT_FONT_SIZES.previewTitle,
+          fontSize: density.bubblePreviewTitleFontSize || CHAT_FONT_SIZES.previewTitle,
           letterSpacing: '-0.01em',
         }}
       >
@@ -499,6 +503,7 @@ const ChatMarkdownBody = memo(function ChatMarkdownBody({
   linkColor,
   hasMarkdownTable = false,
   compactMobile = false,
+  ui,
 }) {
   return (
     <Box
@@ -509,7 +514,7 @@ const ChatMarkdownBody = memo(function ChatMarkdownBody({
         pr: 0.25,
         pb: hasMarkdownTable ? 2.1 : 1.8,
         color: bubbleText,
-        fontSize: getChatMessageBodyFontSize(compactMobile),
+        fontSize: getChatMessageBodyFontSize(ui, compactMobile),
         lineHeight: 1.34,
         userSelect: 'text',
         fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
@@ -544,6 +549,7 @@ function ChatBubbleMeta({
 }) {
   const isInlineLayout = layout === 'inline';
   const isMediaLayout = layout === 'media';
+  const density = ui.density || {};
   const uploadProgress = Number(message?.uploadProgress || 0);
   const shouldShowUploadProgress = showUploadProgress
     && isSending
@@ -587,7 +593,7 @@ function ChatBubbleMeta({
             p: 0,
             mr: 0.3,
             cursor: 'pointer',
-            fontSize: CHAT_FONT_SIZES.meta,
+            fontSize: density.bubbleMetaFontSize || CHAT_FONT_SIZES.meta,
             fontWeight: 700,
             color: message?.is_own ? alpha('#fff', 0.92) : ui.accentText,
             lineHeight: 1,
@@ -608,12 +614,12 @@ function ChatBubbleMeta({
         </Tooltip>
       ) : null}
 
-      <Typography variant="caption" title={formatFullDate(message?.created_at)} sx={{ color: receiptColor, fontSize: CHAT_FONT_SIZES.meta, lineHeight: 1, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+      <Typography variant="caption" title={formatFullDate(message?.created_at)} sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_FONT_SIZES.meta, lineHeight: 1, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
         {formatShortTime(message?.created_at)}
       </Typography>
 
       {shouldShowUploadProgress ? (
-        <Typography variant="caption" sx={{ color: receiptColor, fontSize: CHAT_FONT_SIZES.meta, lineHeight: 1, fontWeight: 700, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+        <Typography variant="caption" sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_FONT_SIZES.meta, lineHeight: 1, fontWeight: 700, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
           {`${uploadProgress}%`}
         </Typography>
       ) : null}
@@ -791,8 +797,9 @@ export function ChatBubble({
   const hasReplyPreview = Boolean(message?.reply_preview);
   const hasForwardPreview = Boolean(message?.forward_preview);
   const ownMetaColor = ui.bubbleOwnMetaText || '#ffffff';
+  const density = ui.density || {};
   const senderAccentColor = showSender ? resolveGroupSenderColor(message?.sender, theme, ui) : ui.accentText;
-  const messageBodyFontSize = getChatMessageBodyFontSize(compactMobile);
+  const messageBodyFontSize = getChatMessageBodyFontSize(ui, compactMobile);
   const inlineMeta = !task
     && attachments.length === 0
     && emojiOnlyCount === 0
@@ -1217,7 +1224,7 @@ export function ChatBubble({
           sx={{
             color: senderAccentColor,
             fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-            fontSize: CHAT_FONT_SIZES.sender,
+            fontSize: density.bubbleSenderFontSize || CHAT_FONT_SIZES.sender,
             ml: selectionMode && !message?.is_own ? { xs: 5, md: 4.2 } : 0,
           }}
         >
@@ -1247,8 +1254,8 @@ export function ChatBubble({
           maxWidth: bubbleMaxWidth,
           ml: selectionMode && !message?.is_own ? { xs: 5, md: 4.2 } : 0,
           transform: swipeDx > 0 ? `translateX(-${swipeDx}px)` : undefined,
-          px: task ? 0.62 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : 1.18,
-          py: task ? 0.62 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : 0.82,
+          px: task ? 0.62 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.18 : (density.bubblePx || 1.18),
+          py: task ? 0.62 : pureMediaBubble ? 0.14 : attachments.length > 0 ? 0.62 : emojiOnlyCount ? 0.08 : (density.bubblePy || 0.82),
           borderRadius: emojiOnlyCount ? 0 : getBubbleRadius(Boolean(message?.is_own), groupedWithPrevious, groupedWithNext, compactMobile),
           bgcolor: emojiOnlyCount || pureMediaBubble ? 'transparent' : bubbleBg,
           color: bubbleText,
@@ -1541,6 +1548,7 @@ export function ChatBubble({
             linkColor={linkColor}
             hasMarkdownTable={hasMarkdownTable}
             compactMobile={compactMobile}
+            ui={ui}
           />
         ) : (
           <Typography
