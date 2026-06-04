@@ -70,7 +70,6 @@ class ChatSocketClient {
     this.retainCount = 0;
     this.reconnectTimer = null;
     this.heartbeatTimer = null;
-    this.heartbeatTimeout = null;
     this.wantInbox = false;
     this.activeConversationIds = new Set();
     this.watchedPresenceUserIds = new Set();
@@ -467,10 +466,6 @@ class ChatSocketClient {
     if (this.heartbeatTimer) {
       window.clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = null;
-    }
-    if (this.heartbeatTimeout) {
-      window.clearTimeout(this.heartbeatTimeout);
-      this.heartbeatTimeout = null;
     }
     if (this.stableConnectionTimer) {
       window.clearTimeout(this.stableConnectionTimer);

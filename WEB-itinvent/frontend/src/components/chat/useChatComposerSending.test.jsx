@@ -22,11 +22,11 @@ vi.mock('../../lib/chatSocket', () => ({
   },
 }));
 
-function Harness({ applyOutgoingThreadMessage, setSocketStatus }) {
-  const [messageText, setMessageText] = useState('hello');
+function Harness({ applyOutgoingThreadMessage, setSocketStatus, initialText = 'hello' }) {
+  const [messageText, setMessageText] = useState(initialText);
   const activeConversationIdRef = useRef('conversation-1');
   const draftWriteTimeoutRef = useRef(null);
-  const latestMessageTextRef = useRef('hello');
+  const latestMessageTextRef = useRef(initialText);
   const socketStatusRef = useRef('connected');
 
   const { handleComposerSend } = useChatComposerSending({
@@ -97,12 +97,13 @@ describe('useChatComposerSending', () => {
     expect(chatSocket.sendMessage).toHaveBeenCalledWith('conversation-1', 'hello', expect.objectContaining({
       client_message_id: 'client-1',
       database_id: 'main',
+      body_format: 'plain',
     }));
     expect(setSocketStatus).toHaveBeenCalledWith('disconnected');
     expect(applyOutgoingThreadMessage).toHaveBeenNthCalledWith(
       1,
       'conversation-1',
-      expect.objectContaining({ id: 'optimistic-1', isOptimistic: true }),
+      expect.objectContaining({ id: 'optimistic-1', isOptimistic: true, body_format: 'plain' }),
       expect.objectContaining({ scroll: true }),
     );
     expect(applyOutgoingThreadMessage).toHaveBeenNthCalledWith(
@@ -111,5 +112,41 @@ describe('useChatComposerSending', () => {
       expect.objectContaining({ id: 'server-1' }),
       expect.objectContaining({ replaceId: 'optimistic-1', scroll: false }),
     );
+  });
+
+  it('sends Telegram-like markdown-looking composer text as plain text', async () => {
+    const applyOutgoingThreadMessage = vi.fn();
+    const setSocketStatus = vi.fn();
+    const text = '1. купить картридж\n2. закрыть заявку\n# не заголовок';
+    chatSocket.sendMessage.mockResolvedValueOnce({
+      message: {
+        id: 'server-plain',
+        body: text,
+        body_format: 'plain',
+      },
+    });
+
+    render(
+      <Harness
+        applyOutgoingThreadMessage={applyOutgoingThreadMessage}
+        setSocketStatus={setSocketStatus}
+        initialText={text}
+      />,
+    );
+
+    fireEvent.click(document.querySelector('button'));
+
+    await waitFor(() => expect(chatSocket.sendMessage).toHaveBeenCalledTimes(1));
+
+    expect(chatSocket.sendMessage).toHaveBeenCalledWith('conversation-1', text, expect.objectContaining({
+      body_format: 'plain',
+    }));
+    expect(applyOutgoingThreadMessage).toHaveBeenNthCalledWith(
+      1,
+      'conversation-1',
+      expect.objectContaining({ body: text, body_format: 'plain' }),
+      expect.objectContaining({ scroll: true }),
+    );
+    expect(chatAPI.sendMessage).not.toHaveBeenCalled();
   });
 });

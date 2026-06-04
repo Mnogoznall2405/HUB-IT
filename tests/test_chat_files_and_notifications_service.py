@@ -161,6 +161,59 @@ def test_send_files_persists_attachment_and_creates_chat_notification(chat_env):
     )
 
 
+def test_send_voice_file_preserves_audio_metadata(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"webm voice payload"
+
+    created = service.send_files(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        uploads=[_upload("voice_1.webm", payload, "audio/webm;codecs=opus")],
+        files_meta=[{
+            "media_kind": "audio",
+            "duration_seconds": 9,
+            "original_size": len(payload),
+            "transfer_encoding": "identity",
+        }],
+    )
+
+    attachment = created["attachments"][0]
+    assert attachment["kind"] == "audio"
+    assert attachment["media_kind"] == "audio"
+    assert attachment["duration_seconds"] == 9
+    assert attachment["mime_type"] == "audio/webm"
+    assert attachment["original_url"] == (
+        f"/api/v1/chat/messages/{created['id']}/attachments/{attachment['id']}/file?inline=1"
+    )
+    assert attachment["download_url"] == (
+        f"/api/v1/chat/messages/{created['id']}/attachments/{attachment['id']}/file"
+    )
+
+    messages = service.get_messages(current_user_id=2, conversation_id=conversation["id"], limit=20)
+    persisted_attachment = messages["items"][0]["attachments"][0]
+    assert persisted_attachment["kind"] == "audio"
+    assert persisted_attachment["media_kind"] == "audio"
+    assert persisted_attachment["duration_seconds"] == 9
+    assert persisted_attachment["mime_type"] == "audio/webm"
+
+    download = service.get_attachment_for_download(
+        current_user_id=2,
+        message_id=created["id"],
+        attachment_id=attachment["id"],
+    )
+    assert Path(download["path"]).read_bytes() == payload
+    assert download["mime_type"] == "audio/webm"
+
+    summary = service.get_conversation_assets_summary(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+    )
+    assert summary["audio_count"] == 1
+    assert summary["files_count"] == 0
+    assert summary["recent_audio"][0]["kind"] == "audio"
+
+
 def test_send_files_without_caption_keeps_file_name_preview(chat_env):
     service = chat_env["service"]
     conversation = chat_env["direct"]
@@ -246,12 +299,13 @@ def test_create_upload_session_validates_limits(chat_env):
         )
 
     with pytest.raises(ValueError):
+        max_total_size = chat_service_module.CHAT_MAX_TOTAL_FILE_BYTES
         service.create_upload_session(
             current_user_id=1,
             conversation_id=conversation["id"],
             files=[
-                {"file_name": "a.pdf", "mime_type": "application/pdf", "size": 20 * 1024 * 1024},
-                {"file_name": "b.pdf", "mime_type": "application/pdf", "size": 6 * 1024 * 1024},
+                {"file_name": "a.pdf", "mime_type": "application/pdf", "size": max_total_size},
+                {"file_name": "b.pdf", "mime_type": "application/pdf", "size": 1},
             ],
         )
 
@@ -411,6 +465,57 @@ def test_upload_session_duplicate_chunk_is_idempotent_and_complete_returns_same_
         attachment_id=completed["attachments"][0]["id"],
     )
     assert Path(download["path"]).read_bytes() == payload
+
+
+def test_upload_session_voice_file_preserves_audio_metadata(chat_env):
+    service = chat_env["service"]
+    conversation = chat_env["direct"]
+    payload = b"webm voice payload"
+
+    created = service.create_upload_session(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        files=[{
+            "file_name": "voice_1.webm",
+            "mime_type": "application/octet-stream",
+            "media_kind": "audio",
+            "duration_seconds": 11,
+            "size": len(payload),
+        }],
+    )
+    session_file = created["files"][0]
+    assert session_file["mime_type"] == "audio/webm"
+    assert session_file["media_kind"] == "audio"
+    assert session_file["duration_seconds"] == 11
+
+    service.upload_session_chunk(
+        current_user_id=1,
+        session_id=created["session_id"],
+        file_id=session_file["file_id"],
+        chunk_index=0,
+        offset=0,
+        payload=payload,
+    )
+
+    completed = service.complete_upload_session(
+        current_user_id=1,
+        session_id=created["session_id"],
+    )
+
+    attachment = completed["attachments"][0]
+    assert attachment["kind"] == "audio"
+    assert attachment["media_kind"] == "audio"
+    assert attachment["duration_seconds"] == 11
+    assert attachment["mime_type"] == "audio/webm"
+    assert attachment["original_url"].endswith("?inline=1")
+
+    download = service.get_attachment_for_download(
+        current_user_id=2,
+        message_id=completed["id"],
+        attachment_id=attachment["id"],
+    )
+    assert Path(download["path"]).read_bytes() == payload
+    assert download["mime_type"] == "audio/webm"
 
 
 def test_upload_session_supports_mixed_photo_and_document(chat_env):

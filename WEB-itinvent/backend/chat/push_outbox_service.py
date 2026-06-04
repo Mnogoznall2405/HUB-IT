@@ -11,9 +11,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import or_, select
 
 from backend.chat.db import chat_session
-from backend.chat.models import ChatPushOutbox
+from backend.chat.models import ChatConversationUserState, ChatMessage, ChatPushOutbox
 from backend.chat.push_service import chat_push_service
 from backend.chat.utils import normalize_text as _normalize_text
+from backend.services.notification_preferences_service import notification_preferences_service
 
 
 logger = logging.getLogger("backend.chat.push_outbox")
@@ -23,6 +24,7 @@ OUTBOX_STATUS_PROCESSING = "processing"
 OUTBOX_STATUS_SENT = "sent"
 OUTBOX_STATUS_NO_SUBSCRIPTIONS = "no_subscriptions"
 OUTBOX_STATUS_FAILED = "failed"
+OUTBOX_STATUS_SUPPRESSED = "suppressed"
 
 
 def _utc_now() -> datetime:
@@ -254,11 +256,64 @@ class ChatPushOutboxService:
             last_error=last_error,
         )
 
+    def mark_suppressed(self, *, job_id: int, last_error: str | None = None) -> None:
+        self._update_job(
+            job_id=int(job_id),
+            status=OUTBOX_STATUS_SUPPRESSED,
+            next_attempt_at=_utc_now(),
+            last_error=last_error,
+        )
+
+    def _push_suppression_reason(self, job: ChatPushOutboxJob) -> str | None:
+        """Return a reason string if push should be suppressed (already read / muted / archived)."""
+        message_id = _normalize_text(job.message_id)
+        conversation_id = _normalize_text(job.conversation_id)
+        recipient_user_id = int(job.recipient_user_id or 0)
+        if not message_id or not conversation_id or recipient_user_id <= 0:
+            return None
+        try:
+            if not notification_preferences_service.is_enabled(
+                user_id=recipient_user_id, channel="chat"
+            ):
+                return "chat_notifications_disabled"
+        except Exception:
+            pass
+        try:
+            with chat_session() as session:
+                message = session.get(ChatMessage, message_id)
+                if message is None or _normalize_text(message.conversation_id) != conversation_id:
+                    return None
+                message_seq = int(getattr(message, "conversation_seq", 0) or 0)
+                state = session.execute(
+                    select(ChatConversationUserState).where(
+                        ChatConversationUserState.conversation_id == conversation_id,
+                        ChatConversationUserState.user_id == recipient_user_id,
+                    )
+                ).scalar_one_or_none()
+                if state is None:
+                    return None
+                if bool(getattr(state, "is_muted", False)):
+                    return "muted"
+                if bool(getattr(state, "is_archived", False)):
+                    return "archived"
+                last_read_seq = int(getattr(state, "last_read_seq", 0) or 0)
+                if message_seq > 0 and last_read_seq >= message_seq:
+                    return "already_read"
+        except Exception:
+            return None
+        return None
+
     def process_job(self, job: ChatPushOutboxJob) -> str:
         started_at = time.perf_counter()
         outcome = OUTBOX_STATUS_FAILED
         note: str | None = None
         try:
+            suppression_reason = self._push_suppression_reason(job)
+            if suppression_reason is not None:
+                note = f"suppressed: {suppression_reason}"
+                self.mark_suppressed(job_id=job.id, last_error=note)
+                outcome = OUTBOX_STATUS_SUPPRESSED
+                return outcome
             result = chat_push_service.send_chat_message_notification(
                 recipient_user_id=int(job.recipient_user_id),
                 conversation_id=job.conversation_id,

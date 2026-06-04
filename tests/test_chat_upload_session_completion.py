@@ -105,6 +105,34 @@ def test_completion_materializer_decodes_parts_and_keeps_files_on_success():
         assert not part_path.exists()
 
 
+def test_completion_materializer_preserves_voice_metadata():
+    with _workspace_tempdir() as root:
+        payload = b"webm voice"
+        part_path = root / "sessions" / "session-1" / "file-1.part"
+        part_path.parent.mkdir(parents=True)
+        part_path.write_bytes(payload)
+
+        manifest = _manifest(payload_size=len(payload), original_size=len(payload))
+        manifest["files"][0].update({
+            "file_name": "voice_1.webm",
+            "mime_type": "audio/webm",
+            "media_kind": "audio",
+            "duration_seconds": 5,
+            "storage_name": "attachment-1_voice_1.webm",
+        })
+
+        materializer = _materializer(root)
+        with materializer.materialize(manifest) as prepared:
+            prepared_file = prepared[0]
+            assert prepared_file["file_name"] == "voice_1.webm"
+            assert prepared_file["mime_type"] == "audio/webm"
+            assert prepared_file["media_kind"] == "audio"
+            assert prepared_file["duration_seconds"] == 5
+            assert prepared_file["width"] is None
+            assert prepared_file["height"] is None
+            assert prepared_file["path"].read_bytes() == payload
+
+
 def test_completion_materializer_removes_materialized_files_when_caller_fails():
     with _workspace_tempdir() as root:
         payload = b"plain payload"

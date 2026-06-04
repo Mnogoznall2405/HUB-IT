@@ -13,6 +13,38 @@
   box-sizing: border-box;
 }
 
+:root {
+  --app-density-header-height: 64px;
+  --app-density-header-standalone-height: 60px;
+  --app-density-header-overlay-height: 56px;
+  --app-density-drawer-width: 240px;
+  --app-density-page-padding: 24px;
+  --app-density-sidebar-list-px: 8px;
+  --app-density-sidebar-list-pt: 6px;
+  --app-density-sidebar-item-min-height: 44px;
+  --app-density-sidebar-item-px: 11px;
+  --app-density-sidebar-item-py: 2px;
+  --app-density-sidebar-icon-min-width: 38px;
+  --app-density-control-height: 38px;
+  --app-density-control-small-height: 32px;
+  --app-density-control-padding-y: 5px;
+  --app-density-control-small-padding-y: 3px;
+  --app-density-icon-button-size: 38px;
+  --app-density-icon-button-small-size: 34px;
+  --app-density-input-height: 38px;
+  --app-density-input-small-height: 34px;
+  --app-density-input-padding-y: 8px;
+  --app-density-input-small-padding-y: 6px;
+  --app-density-menu-item-height: 40px;
+  --app-density-table-cell-padding-y: 10px;
+  --app-density-table-cell-padding-x: 16px;
+  --app-density-chip-height: 28px;
+  --app-density-chip-small-height: 24px;
+  --app-density-dialog-title-padding: 16px 20px;
+  --app-density-dialog-content-padding: 20px;
+  --app-density-dialog-actions-padding: 14px 20px;
+}
+
 html {
   font-size: 16px;
   min-height: 100%;
@@ -20,6 +52,44 @@ html {
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
+}
+
+@media (min-width: 600px) and (max-width: 1920px), (min-width: 600px) and (max-height: 960px) {
+  :root {
+    --app-density-header-height: 52px;
+    --app-density-header-standalone-height: 52px;
+    --app-density-header-overlay-height: 52px;
+    --app-density-drawer-width: 216px;
+    --app-density-page-padding: 12px;
+    --app-density-sidebar-list-px: 4px;
+    --app-density-sidebar-list-pt: 3px;
+    --app-density-sidebar-item-min-height: 32px;
+    --app-density-sidebar-item-px: 8px;
+    --app-density-sidebar-item-py: 0px;
+    --app-density-sidebar-icon-min-width: 30px;
+    --app-density-control-height: 32px;
+    --app-density-control-small-height: 28px;
+    --app-density-control-padding-y: 2px;
+    --app-density-control-small-padding-y: 1px;
+    --app-density-icon-button-size: 32px;
+    --app-density-icon-button-small-size: 28px;
+    --app-density-input-height: 32px;
+    --app-density-input-small-height: 30px;
+    --app-density-input-padding-y: 5px;
+    --app-density-input-small-padding-y: 4px;
+    --app-density-menu-item-height: 32px;
+    --app-density-table-cell-padding-y: 5px;
+    --app-density-table-cell-padding-x: 8px;
+    --app-density-chip-height: 24px;
+    --app-density-chip-small-height: 20px;
+    --app-density-dialog-title-padding: 10px 14px;
+    --app-density-dialog-content-padding: 12px;
+    --app-density-dialog-actions-padding: 10px 14px;
+  }
+
+  html {
+    font-size: 14px;
+  }
 }
 
 body {

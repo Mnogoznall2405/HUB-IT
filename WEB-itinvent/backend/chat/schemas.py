@@ -291,11 +291,16 @@ class ChatShareableTasksResponse(BaseModel):
 
 class ChatAttachmentResponse(BaseModel):
     id: str
+    kind: Literal["image", "video", "file", "audio"] = "file"
     file_name: str
     mime_type: Optional[str] = None
+    media_kind: Optional[Literal["image", "video", "file", "audio"]] = None
     file_size: int = 0
     width: Optional[int] = None
     height: Optional[int] = None
+    duration_seconds: Optional[int] = None
+    original_url: Optional[str] = None
+    download_url: Optional[str] = None
     variant_urls: dict[str, str] = Field(default_factory=dict)
     created_at: str
 
@@ -306,9 +311,13 @@ class ChatConversationAttachmentItemResponse(BaseModel):
     kind: Literal["image", "video", "file", "audio"] = "file"
     file_name: str
     mime_type: Optional[str] = None
+    media_kind: Optional[Literal["image", "video", "file", "audio"]] = None
     file_size: int = 0
     width: Optional[int] = None
     height: Optional[int] = None
+    duration_seconds: Optional[int] = None
+    original_url: Optional[str] = None
+    download_url: Optional[str] = None
     variant_urls: dict[str, str] = Field(default_factory=dict)
     created_at: str
 
@@ -334,11 +343,13 @@ class ChatConversationAttachmentsResponse(BaseModel):
 class ChatUploadSessionFileRequest(BaseModel):
     file_name: str = Field(..., min_length=1, max_length=255)
     mime_type: Optional[str] = Field(default=None, max_length=255)
+    media_kind: Optional[Literal["image", "video", "file", "audio"]] = None
+    duration_seconds: Optional[int] = Field(default=None, ge=0, le=86400)
     size: int = Field(..., gt=0, le=1024 * 1024 * 1024)
     original_size: int = Field(..., gt=0, le=1024 * 1024 * 1024)
     transfer_encoding: Literal["identity", "gzip"] = "identity"
 
-    @field_validator("file_name", "mime_type", mode="before")
+    @field_validator("file_name", "mime_type", "media_kind", mode="before")
     @classmethod
     def _normalize_text(cls, value):
         text = str(value or "").strip()
@@ -367,6 +378,8 @@ class ChatUploadSessionFileResponse(BaseModel):
     file_id: str
     file_name: str
     mime_type: Optional[str] = None
+    media_kind: Optional[Literal["image", "video", "file", "audio"]] = None
+    duration_seconds: Optional[int] = None
     size: int = 0
     original_size: int = 0
     transfer_encoding: Literal["identity", "gzip"] = "identity"

@@ -67,6 +67,11 @@ const normalizeChatUploadEntry = (value) => {
   const normalizedFile = file || transferFile;
   const fileName = String(normalizedFile?.name || transferFile?.name || value?.file_name || '').trim() || 'file.bin';
   const mimeType = String(normalizedFile?.type || transferFile?.type || value?.mime_type || '').trim() || undefined;
+  const mediaKind = String(value?.media_kind || value?.mediaKind || '').trim().toLowerCase() || undefined;
+  const rawDurationSeconds = value?.duration_seconds ?? value?.durationSeconds;
+  const durationSeconds = rawDurationSeconds === undefined || rawDurationSeconds === null || String(rawDurationSeconds).trim() === ''
+    ? undefined
+    : Math.max(0, Math.min(86400, Math.round(Number(rawDurationSeconds) || 0)));
   const originalSize = Math.max(0, Number(value?.preparedSize ?? normalizedFile?.size ?? transferFile?.size ?? 0));
   const transferSize = Math.max(0, Number(value?.transferSize ?? transferFile?.size ?? originalSize));
 
@@ -75,6 +80,8 @@ const normalizeChatUploadEntry = (value) => {
     transferFile,
     fileName,
     mimeType,
+    mediaKind,
+    durationSeconds,
     size: transferSize,
     originalSize,
     transferEncoding: String(value?.transferEncoding || 'identity').trim() === 'gzip' ? 'gzip' : 'identity',
@@ -105,6 +112,13 @@ const emitChatUploadProgress = (callback, loaded, total) => {
   });
 };
 
+const buildChatUploadFileMeta = (file, base = {}) => {
+  const payload = { ...base };
+  if (file?.mediaKind) payload.media_kind = file.mediaKind;
+  if (file?.durationSeconds !== undefined) payload.duration_seconds = file.durationSeconds;
+  return payload;
+};
+
 const getChatChunkByteLength = (chunkIndex, size, chunkSizeBytes) => {
   const safeChunkIndex = Math.max(0, Number(chunkIndex || 0));
   const safeSize = Math.max(0, Number(size || 0));
@@ -124,7 +138,7 @@ const uploadChatFilesMultipart = async (conversationId, files = [], options = {}
   });
   if (normalizedFiles.length > 0) {
     formData.append('files_meta_json', JSON.stringify(
-      normalizedFiles.map((file) => ({
+      normalizedFiles.map((file) => buildChatUploadFileMeta(file, {
         original_size: Number(file?.originalSize || 0),
         transfer_encoding: String(file?.transferEncoding || 'identity').trim() || 'identity',
       })),
@@ -175,7 +189,7 @@ export const chatFileUploadsAPI = {
         {
           body: String(options?.body || '').trim() || undefined,
           reply_to_message_id: options?.reply_to_message_id || undefined,
-          files: normalizedFiles.map((file) => ({
+          files: normalizedFiles.map((file) => buildChatUploadFileMeta(file, {
             file_name: String(file?.fileName || '').trim() || 'file.bin',
             mime_type: String(file?.mimeType || '').trim() || undefined,
             size: Number(file?.size || 0),

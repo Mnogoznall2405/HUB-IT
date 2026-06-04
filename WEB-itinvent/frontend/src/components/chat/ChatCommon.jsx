@@ -14,8 +14,8 @@ import {
   getPriorityMeta,
   getStatusMeta,
   getTaskAssignee,
+  getAttachmentKind,
   isImageAttachment,
-  isVideoAttachment,
   normalizeChatAttachmentUrl,
 } from './chatHelpers';
 
@@ -52,8 +52,9 @@ const resolveAttachmentKind = ({ fileName, fileType, mimeType }) => {
   const normalizedExtension = getExtensionFromFileName(fileName);
   const normalizedMimeType = String(mimeType || '').trim().toLowerCase();
   const normalizedFileType = String(fileType || '').trim().toLowerCase();
-  if (normalizedMimeType.startsWith('image/') || IMAGE_EXTENSIONS.has(normalizedExtension) || normalizedFileType === 'image') return 'image';
-  if (normalizedMimeType.startsWith('audio/') || normalizedFileType === 'audio') return 'audio';
+  if (['image', 'video', 'audio', 'file'].includes(normalizedFileType)) return normalizedFileType;
+  if (normalizedMimeType.startsWith('image/') || IMAGE_EXTENSIONS.has(normalizedExtension)) return 'image';
+  if (normalizedMimeType.startsWith('audio/') || AUDIO_EXTENSIONS.has(normalizedExtension)) return 'audio';
   if (normalizedMimeType.startsWith('video/') || VIDEO_EXTENSIONS.has(normalizedExtension) || normalizedFileType === 'video') return 'video';
   return 'file';
 };
@@ -259,17 +260,27 @@ function formatAudioDuration(seconds) {
   return `${m}:${sec < 10 ? '0' : ''}${sec}`;
 }
 
-function VoiceMessagePlayer({ fileUrl, fileName, fileSize, durationSeconds, theme, ui, isOwn }) {
+function VoiceMessagePlayer({ fileUrl, openUrl, fileName, fileSize, durationSeconds, theme, ui, isOwn }) {
   const audioRef = useRef(null);
   const durationResolvedRef = useRef(false);
   const maxSeenTimeRef = useRef(0);
   const [playing, setPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
+  const [playbackError, setPlaybackError] = useState(false);
   const [duration, setDuration] = useState(() => {
     const d = Number(durationSeconds || 0);
     return Number.isFinite(d) && d > 0 ? d : 0;
   });
   const [waveform] = useState(() => Array.from({ length: VOICE_WAVEFORM_BARS }, () => 0.18 + Math.random() * 0.82));
+  const fallbackOpenUrl = String(openUrl || fileUrl || '').trim();
+
+  useEffect(() => {
+    setPlaybackError(false);
+    setPlaying(false);
+    setCurrentTime(0);
+    maxSeenTimeRef.current = 0;
+    durationResolvedRef.current = false;
+  }, [fileUrl]);
 
   const tryResolveDuration = useCallback((audio) => {
     if (durationResolvedRef.current) return;
@@ -320,7 +331,11 @@ function VoiceMessagePlayer({ fileUrl, fileName, fileSize, durationSeconds, them
     if (playing) {
       audio.pause();
     } else {
-      audio.play().catch(() => {});
+      setPlaybackError(false);
+      audio.play().catch(() => {
+        setPlaying(false);
+        setPlaybackError(true);
+      });
     }
   }, [playing]);
 
@@ -340,7 +355,12 @@ function VoiceMessagePlayer({ fileUrl, fileName, fileSize, durationSeconds, them
         ref={audioRef}
         src={fileUrl}
         preload="metadata"
+        onError={() => {
+          setPlaying(false);
+          setPlaybackError(true);
+        }}
         onLoadedMetadata={(e) => {
+          setPlaybackError(false);
           tryResolveDuration(e.currentTarget);
           probeDuration(e.currentTarget);
         }}
@@ -436,6 +456,20 @@ function VoiceMessagePlayer({ fileUrl, fileName, fileSize, durationSeconds, them
           userSelect: 'none',
         }}>
           <span>{formatAudioDuration(playing || currentTime > 0 ? currentTime : duration)}</span>
+          {playbackError && fallbackOpenUrl ? (
+            <a
+              href={fallbackOpenUrl}
+              target="_blank"
+              rel="noreferrer"
+              style={{
+                color: textColor,
+                fontWeight: 700,
+                textDecoration: 'none',
+              }}
+            >
+              РћС‚РєСЂС‹С‚СЊ С„Р°Р№Р»
+            </a>
+          ) : null}
         </div>
       </div>
     </div>
@@ -854,6 +888,7 @@ export function FileAttachment({
     return (
       <VoiceMessagePlayer
         fileUrl={fileUrl || resolvedOpenUrl}
+        openUrl={resolvedOpenUrl}
         fileName={fileName}
         fileSize={fileSize}
         durationSeconds={durationSeconds}
@@ -979,10 +1014,11 @@ export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview
   const variantUrls = attachment?.variant_urls || {};
   const thumbUrl = normalizeChatAttachmentUrl(variantUrls.thumb);
   const previewUrl = normalizeChatAttachmentUrl(variantUrls.preview);
+  const attachmentKind = getAttachmentKind(attachment);
   const fileUrl = isImageAttachment(attachment)
     ? (directPreviewUrl || thumbUrl || previewUrl || openUrl || originalUrl)
-    : (isVideoAttachment(attachment) ? (directPreviewUrl || previewUrl || openUrl || originalUrl) : openUrl);
-  const posterUrl = isVideoAttachment(attachment) ? (directPosterUrl || normalizeChatAttachmentUrl(variantUrls.poster)) : '';
+    : (attachmentKind === 'video' ? (directPreviewUrl || previewUrl || openUrl || originalUrl) : openUrl);
+  const posterUrl = attachmentKind === 'video' ? (directPosterUrl || normalizeChatAttachmentUrl(variantUrls.poster)) : '';
   const fallbackFileUrls = useMemo(
     () => compactUrlList(previewUrl, thumbUrl, openUrl, inlineOriginalUrl, originalUrl, downloadOriginalUrl),
     [downloadOriginalUrl, inlineOriginalUrl, openUrl, originalUrl, previewUrl, thumbUrl],
@@ -991,7 +1027,7 @@ export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview
     || resolveAttachmentKind({
       fileName: attachment?.file_name,
       mimeType: attachment?.mime_type,
-      fileType: attachment?.file_type,
+      fileType: attachment?.kind || attachment?.media_kind || attachment?.file_type,
     }) === 'video';
   return (
     <FileAttachment
@@ -1001,7 +1037,7 @@ export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview
       openUrl={openUrl}
       posterUrl={posterUrl}
       mimeType={attachment?.mime_type}
-      fileType={attachment?.file_type}
+      fileType={attachment?.kind || attachment?.media_kind || attachment?.file_type}
       theme={theme}
       ui={ui}
       isOwn={isOwn}

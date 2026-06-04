@@ -7,6 +7,10 @@ const VOICE_MIME_TYPES = [
   'audio/ogg',
   'audio/mp4',
 ];
+const VOICE_LEVEL_NOISE_FLOOR = 0.025;
+const VOICE_LEVEL_ACTIVE_RANGE = 0.18;
+const VOICE_LEVEL_SMOOTHING = 0.68;
+const VOICE_LEVEL_ANALYSER_FFT_SIZE = 256;
 
 function getSupportedMimeType() {
   if (typeof MediaRecorder === 'undefined') return null;
@@ -27,6 +31,28 @@ function getExtensionForMime(mimeType) {
   return 'webm';
 }
 
+function clampVoiceLevel(value) {
+  const numericValue = Number(value || 0);
+  if (!Number.isFinite(numericValue)) return 0;
+  return Math.max(0, Math.min(1, numericValue));
+}
+
+function getAudioContextConstructor() {
+  if (typeof window === 'undefined') return null;
+  return window.AudioContext || window.webkitAudioContext || null;
+}
+
+function calculateVoiceLevel(buffer) {
+  if (!buffer?.length) return 0;
+  let sumSquares = 0;
+  for (let index = 0; index < buffer.length; index += 1) {
+    const centeredSample = (Number(buffer[index]) - 128) / 128;
+    sumSquares += centeredSample * centeredSample;
+  }
+  const rms = Math.sqrt(sumSquares / buffer.length);
+  return clampVoiceLevel((rms - VOICE_LEVEL_NOISE_FLOOR) / VOICE_LEVEL_ACTIVE_RANGE);
+}
+
 export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } = {}) {
   const [recording, setRecording] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -36,12 +62,105 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
   const timerRef = useRef(null);
   const startTimeRef = useRef(null);
   const mimeTypeRef = useRef(null);
+  const voiceRecordingLevelRef = useRef(0);
+  const audioContextRef = useRef(null);
+  const audioSourceRef = useRef(null);
+  const audioAnalyserRef = useRef(null);
+  const voiceLevelFrameRef = useRef(null);
+  const voiceLevelBufferRef = useRef(null);
+
+  const stopVoiceLevelAnalysis = useCallback(() => {
+    if (voiceLevelFrameRef.current !== null && typeof window !== 'undefined') {
+      window.cancelAnimationFrame(voiceLevelFrameRef.current);
+      voiceLevelFrameRef.current = null;
+    }
+    try {
+      audioSourceRef.current?.disconnect?.();
+    } catch {
+      // ignore
+    }
+    try {
+      audioAnalyserRef.current?.disconnect?.();
+    } catch {
+      // ignore
+    }
+    const audioContext = audioContextRef.current;
+    audioSourceRef.current = null;
+    audioAnalyserRef.current = null;
+    audioContextRef.current = null;
+    voiceLevelBufferRef.current = null;
+    voiceRecordingLevelRef.current = 0;
+    if (audioContext && audioContext.state !== 'closed' && typeof audioContext.close === 'function') {
+      try {
+        const closeResult = audioContext.close();
+        if (closeResult && typeof closeResult.catch === 'function') {
+          void closeResult.catch(() => {});
+        }
+      } catch {
+        // ignore
+      }
+    }
+  }, []);
+
+  const startVoiceLevelAnalysis = useCallback((stream) => {
+    stopVoiceLevelAnalysis();
+    const AudioContextConstructor = getAudioContextConstructor();
+    if (!AudioContextConstructor || !stream || typeof window === 'undefined') {
+      voiceRecordingLevelRef.current = 0;
+      return;
+    }
+    try {
+      const audioContext = new AudioContextConstructor();
+      const source = audioContext.createMediaStreamSource(stream);
+      const analyser = audioContext.createAnalyser();
+      analyser.fftSize = VOICE_LEVEL_ANALYSER_FFT_SIZE;
+      analyser.smoothingTimeConstant = 0.72;
+      source.connect(analyser);
+
+      audioContextRef.current = audioContext;
+      audioSourceRef.current = source;
+      audioAnalyserRef.current = analyser;
+      voiceLevelBufferRef.current = new Uint8Array(analyser.fftSize);
+
+      if (audioContext.state === 'suspended' && typeof audioContext.resume === 'function') {
+        try {
+          const resumeResult = audioContext.resume();
+          if (resumeResult && typeof resumeResult.catch === 'function') {
+            void resumeResult.catch(() => {});
+          }
+        } catch {
+          // ignore
+        }
+      }
+
+      const updateVoiceLevel = () => {
+        const activeAnalyser = audioAnalyserRef.current;
+        const buffer = voiceLevelBufferRef.current;
+        if (!activeAnalyser || !buffer || typeof window === 'undefined') return;
+        try {
+          activeAnalyser.getByteTimeDomainData(buffer);
+          const rawLevel = calculateVoiceLevel(buffer);
+          const previousLevel = voiceRecordingLevelRef.current;
+          const nextLevel = previousLevel * VOICE_LEVEL_SMOOTHING + rawLevel * (1 - VOICE_LEVEL_SMOOTHING);
+          voiceRecordingLevelRef.current = clampVoiceLevel(nextLevel < 0.015 ? 0 : nextLevel);
+        } catch {
+          voiceRecordingLevelRef.current = 0;
+        }
+        voiceLevelFrameRef.current = window.requestAnimationFrame(updateVoiceLevel);
+      };
+
+      voiceLevelFrameRef.current = window.requestAnimationFrame(updateVoiceLevel);
+    } catch {
+      stopVoiceLevelAnalysis();
+    }
+  }, [stopVoiceLevelAnalysis]);
 
   const cleanup = useCallback(() => {
     if (timerRef.current) {
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
+    stopVoiceLevelAnalysis();
     if (recorderRef.current) {
       try {
         if (recorderRef.current.state !== 'inactive') {
@@ -62,7 +181,7 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
     }
     chunksRef.current = [];
     startTimeRef.current = null;
-  }, []);
+  }, [stopVoiceLevelAnalysis]);
 
   const startRecording = useCallback(async () => {
     if (recording) return;
@@ -113,6 +232,7 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
 
     const recorder = new MediaRecorder(stream, { mimeType: supportedMimeType });
     recorderRef.current = recorder;
+    startVoiceLevelAnalysis(stream);
 
     recorder.ondataavailable = (event) => {
       if (event.data && event.data.size > 0) {
@@ -141,7 +261,7 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
         setDuration(Math.floor((Date.now() - startTimeRef.current) / 1000));
       }
     }, 200);
-  }, [cleanup, notifyWarning, recording]);
+  }, [cleanup, notifyWarning, recording, startVoiceLevelAnalysis]);
 
   const stopRecording = useCallback(() => {
     if (!recorderRef.current || recorderRef.current.state === 'inactive') {
@@ -175,6 +295,7 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
 
     try {
       recorder.stop();
+      stopVoiceLevelAnalysis();
     } catch {
       cleanup();
       setRecording(false);
@@ -194,7 +315,7 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
       clearInterval(timerRef.current);
       timerRef.current = null;
     }
-  }, [cleanup, onRecordingComplete]);
+  }, [cleanup, onRecordingComplete, stopVoiceLevelAnalysis]);
 
   const cancelRecording = useCallback(() => {
     cleanup();
@@ -205,6 +326,7 @@ export default function useVoiceRecorder({ onRecordingComplete, notifyWarning } 
   return {
     voiceRecording: recording,
     voiceRecordingDuration: duration,
+    voiceRecordingLevelRef,
     startVoiceRecording: startRecording,
     stopVoiceRecording: stopRecording,
     cancelVoiceRecording: cancelRecording,

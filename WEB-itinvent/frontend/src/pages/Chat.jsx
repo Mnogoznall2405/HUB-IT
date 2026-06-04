@@ -63,6 +63,10 @@ import { useMainLayoutShell } from '../components/layout/MainLayoutShellContext'
 import { sanitizeMailHtmlFragment } from '../components/mail/mailHtmlContent';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
+import {
+  clearChatComposePrefill,
+  readChatComposePrefill,
+} from '../lib/chatComposePrefill';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../lib/chatFeature';
 import { isNativeShellRuntime } from '../lib/platform';
 import { getOrFetchSWR, invalidateSWRCacheByPrefix, peekSWRCache, setSWRCache } from '../lib/swrCache';
@@ -80,6 +84,11 @@ const ACTIVE_THREAD_INCREMENTAL_POLL_MS = 1_000;
 const AI_ACTIVE_POLL_MS = 1_000;
 const AI_ACTIVE_POLL_WS_CONNECTED_MS = 10_000;
 const ACTIVE_THREAD_SOCKET_STALE_MS = 60_000;
+// Coalesce window for the public socket-activity timestamp. The transport
+// freshness state only needs to flip within ACTIVE_THREAD_SOCKET_STALE_MS, so
+// we avoid a re-render of this large component on every inbound frame/pong and
+// instead publish at most one update per window (the ref stays exact).
+const SOCKET_ACTIVITY_COALESCE_MS = 10_000;
 const SEARCH_MS = 250;
 const CHAT_DEBUG_STORAGE_KEY = 'chat:debug';
 const CHAT_SCROLL_DEBUG_STORAGE_KEY = 'chat:scroll-debug';
@@ -932,7 +941,9 @@ export default function Chat() {
   const typingParticipantsTimeoutsRef = useRef(new Map());
   const typingStartedRef = useRef(false);
   const loadMessagesRef = useRef(null);
+  const markConversationReadLiveRef = useRef(null);
   const focusComposerRef = useRef(null);
+  const shareComposePrefillHandledRef = useRef(false);
   const queueInitialThreadPositionRef = useRef(null);
   const cancelPendingInitialAnchorRef = useRef(null);
   const lastForegroundRefreshAtRef = useRef(0);
@@ -1533,7 +1544,13 @@ export default function Chat() {
   const markSocketActivity = useCallback((source = 'socket:event') => {
     const nextTimestamp = Date.now();
     lastSocketActivityAtRef.current = nextTimestamp;
-    setLastSocketActivityAt((current) => (nextTimestamp > Number(current || 0) ? nextTimestamp : current));
+    setLastSocketActivityAt((current) => {
+      const previous = Number(current || 0);
+      if (previous > 0 && (nextTimestamp - previous) < SOCKET_ACTIVITY_COALESCE_MS) {
+        return current;
+      }
+      return nextTimestamp;
+    });
     logChatDebugRef.current?.('socket:activity', {
       source: String(source || '').trim() || 'socket:event',
       lastSocketActivityAt: nextTimestamp,
@@ -2474,6 +2491,18 @@ export default function Chat() {
   }, [activeConversationId]);
 
   useEffect(() => {
+    const normalizedActiveId = String(activeConversationId || '').trim();
+    window.dispatchEvent(new CustomEvent('chat-active-conversation-changed', {
+      detail: { conversationId: normalizedActiveId },
+    }));
+    return () => {
+      window.dispatchEvent(new CustomEvent('chat-active-conversation-changed', {
+        detail: { conversationId: '' },
+      }));
+    };
+  }, [activeConversationId]);
+
+  useEffect(() => {
     setAttachmentPreview(null);
     setThreadMenuAnchor(null);
     setMessageMenuAnchor(null);
@@ -3199,6 +3228,7 @@ export default function Chat() {
     emitChatUnreadRefresh();
     return payload;
   }, [emitChatUnreadRefresh, syncConversationUnreadState]);
+  markConversationReadLiveRef.current = markConversationReadLive;
 
   const loadHealth = useCallback(async () => {
     if (!CHAT_FEATURE_ENABLED) return;
@@ -4361,6 +4391,7 @@ export default function Chat() {
     loadMessagesRef,
     logChatDebug,
     logChatDebugRef,
+    markConversationReadLiveRef,
     markSocketActivity,
     mergeAiStatusPayload,
     mergeMessageIntoThread,
@@ -4610,6 +4641,62 @@ export default function Chat() {
     }
   }, [focusComposer, isMobile, loadConversations, notifyApiError, openMobileThreadView, resetSidebarSearch]);
 
+  useEffect(() => {
+    if (!CHAT_FEATURE_ENABLED) return;
+    const searchParams = new URLSearchParams(location.search || '');
+    if (searchParams.get('compose') !== 'prefill') {
+      shareComposePrefillHandledRef.current = false;
+      return;
+    }
+    if (shareComposePrefillHandledRef.current) return;
+    shareComposePrefillHandledRef.current = true;
+
+    const stripComposeFromUrl = () => {
+      searchParams.delete('compose');
+      const nextSearch = searchParams.toString();
+      navigate({ pathname: '/chat', search: nextSearch ? `?${nextSearch}` : '' }, { replace: true });
+    };
+
+    const prefill = readChatComposePrefill();
+    if (!prefill?.peerUserId || !prefill.bodyText) {
+      clearChatComposePrefill();
+      stripComposeFromUrl();
+      return;
+    }
+
+    const peerId = Number(prefill.peerUserId);
+    const bodyText = String(prefill.bodyText || '');
+
+    (async () => {
+      try {
+        const created = await chatAPI.createDirectConversation(peerId);
+        resetSidebarSearch();
+        const items = await loadConversations({ silent: true, force: true });
+        const createdId = String(created?.id || '');
+        const nextConversationId = items.find((item) => item.id === createdId)?.id || createdId || '';
+        if (nextConversationId) {
+          openConversation(nextConversationId);
+          setMessageText(bodyText);
+          latestMessageTextRef.current = bodyText;
+          focusComposer();
+        }
+      } catch (error) {
+        notifyApiError(error, 'Не удалось открыть чат для отправки файла.');
+      } finally {
+        clearChatComposePrefill();
+        stripComposeFromUrl();
+      }
+    })();
+  }, [
+    focusComposer,
+    loadConversations,
+    location.search,
+    navigate,
+    notifyApiError,
+    openConversation,
+    resetSidebarSearch,
+  ]);
+
   const handleOpenAiBot = useCallback(async (bot) => {
     const botId = String(bot?.id || '').trim();
     if (!botId) return;
@@ -4799,11 +4886,16 @@ export default function Chat() {
     setThreadMenuAnchor,
   });
 
-  const handleVoiceRecordingComplete = useCallback(async ({ file }) => {
+  const handleVoiceRecordingComplete = useCallback(async ({ file, duration, mimeType }) => {
     const conversationId = String(activeConversationId || '').trim();
     if (!conversationId || !file) return;
     try {
-      await chatAPI.sendFiles(conversationId, [file], {});
+      await chatAPI.sendFiles(conversationId, [{
+        file,
+        media_kind: 'audio',
+        duration_seconds: duration,
+        mime_type: mimeType || file.type || 'audio/webm',
+      }], {});
     } catch (error) {
       notifyApiError(error, 'Не удалось отправить голосовое сообщение.');
     }
@@ -4812,6 +4904,7 @@ export default function Chat() {
   const {
     voiceRecording,
     voiceRecordingDuration,
+    voiceRecordingLevelRef,
     startVoiceRecording,
     stopVoiceRecording,
     cancelVoiceRecording,
@@ -5311,6 +5404,7 @@ export default function Chat() {
       onSendGif={handleSendGif}
       voiceRecording={voiceRecording}
       voiceRecordingDuration={voiceRecordingDuration}
+      voiceRecordingLevelRef={voiceRecordingLevelRef}
       onStartVoiceRecording={startVoiceRecording}
       onStopVoiceRecording={stopVoiceRecording}
       onCancelVoiceRecording={cancelVoiceRecording}

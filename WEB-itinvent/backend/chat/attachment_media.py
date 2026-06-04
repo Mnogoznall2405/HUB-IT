@@ -43,6 +43,11 @@ class ChatAttachmentMedia:
             f"?inline=1&variant={variant}"
         )
 
+    @staticmethod
+    def build_file_url(*, message_id: str, attachment_id: str, inline: bool = False) -> str:
+        url = f"/api/v1/chat/messages/{message_id}/attachments/{attachment_id}/file"
+        return f"{url}?inline=1" if inline else url
+
     def build_variant_urls(self, attachment: ChatMessageAttachment) -> dict[str, str]:
         mime_type = _normalize_text(getattr(attachment, "mime_type", None)).lower()
         message_id = _normalize_text(getattr(attachment, "message_id", None))
@@ -238,19 +243,30 @@ class ChatAttachmentMedia:
         }
 
     def to_payload(self, attachment: ChatMessageAttachment) -> dict:
+        kind = self.get_kind(attachment.mime_type, getattr(attachment, "media_kind", None))
+        message_id = _normalize_text(getattr(attachment, "message_id", None))
+        attachment_id = _normalize_text(getattr(attachment, "id", None))
         return {
             "id": attachment.id,
+            "kind": kind,
             "file_name": attachment.file_name,
             "mime_type": _normalize_text(attachment.mime_type) or None,
+            "media_kind": _normalize_text(getattr(attachment, "media_kind", None)) or None,
             "file_size": int(attachment.file_size or 0),
             "width": int(attachment.width) if attachment.width is not None else None,
             "height": int(attachment.height) if attachment.height is not None else None,
+            "duration_seconds": int(attachment.duration_seconds) if getattr(attachment, "duration_seconds", None) is not None else None,
+            "original_url": self.build_file_url(message_id=message_id, attachment_id=attachment_id, inline=True) if message_id and attachment_id else None,
+            "download_url": self.build_file_url(message_id=message_id, attachment_id=attachment_id) if message_id and attachment_id else None,
             "variant_urls": self.build_variant_urls(attachment),
             "created_at": _iso(attachment.created_at) or "",
         }
 
     @staticmethod
-    def get_kind(mime_type: object) -> str:
+    def get_kind(mime_type: object, media_kind: object = None) -> str:
+        normalized_media_kind = _normalize_text(media_kind).lower()
+        if normalized_media_kind in {"image", "video", "audio", "file"}:
+            return normalized_media_kind
         normalized_mime_type = _normalize_text(mime_type).lower()
         if normalized_mime_type.startswith("image/"):
             return "image"
@@ -270,33 +286,45 @@ class ChatAttachmentMedia:
     @staticmethod
     def apply_kind_filter(*, query, kind: str):
         if kind == "image":
-            return query.where(ChatMessageAttachment.mime_type.like("image/%"))
+            return query.where(or_(ChatMessageAttachment.media_kind == "image", ChatMessageAttachment.mime_type.like("image/%")))
         if kind == "video":
-            return query.where(ChatMessageAttachment.mime_type.like("video/%"))
+            return query.where(or_(ChatMessageAttachment.media_kind == "video", ChatMessageAttachment.mime_type.like("video/%")))
         if kind == "audio":
-            return query.where(ChatMessageAttachment.mime_type.like("audio/%"))
+            return query.where(or_(ChatMessageAttachment.media_kind == "audio", ChatMessageAttachment.mime_type.like("audio/%")))
         return query.where(
             or_(
-                ChatMessageAttachment.mime_type.is_(None),
+                ChatMessageAttachment.media_kind == "file",
                 and_(
-                    ChatMessageAttachment.mime_type.not_like("image/%"),
-                    ChatMessageAttachment.mime_type.not_like("video/%"),
-                    ChatMessageAttachment.mime_type.not_like("audio/%"),
+                    or_(ChatMessageAttachment.media_kind.is_(None), ChatMessageAttachment.media_kind.notin_(["image", "video", "audio"])),
+                    or_(
+                        ChatMessageAttachment.mime_type.is_(None),
+                        and_(
+                            ChatMessageAttachment.mime_type.not_like("image/%"),
+                            ChatMessageAttachment.mime_type.not_like("video/%"),
+                            ChatMessageAttachment.mime_type.not_like("audio/%"),
+                        ),
+                    ),
                 ),
             )
         )
 
     def conversation_to_payload(self, attachment: ChatMessageAttachment, *, kind: Optional[str] = None) -> dict:
-        resolved_kind = kind or self.get_kind(attachment.mime_type)
+        resolved_kind = kind or self.get_kind(attachment.mime_type, getattr(attachment, "media_kind", None))
+        message_id = _normalize_text(getattr(attachment, "message_id", None))
+        attachment_id = _normalize_text(getattr(attachment, "id", None))
         return {
             "id": attachment.id,
             "message_id": attachment.message_id,
             "kind": resolved_kind,
             "file_name": attachment.file_name,
             "mime_type": _normalize_text(attachment.mime_type) or None,
+            "media_kind": _normalize_text(getattr(attachment, "media_kind", None)) or None,
             "file_size": int(attachment.file_size or 0),
             "width": int(attachment.width) if attachment.width is not None else None,
             "height": int(attachment.height) if attachment.height is not None else None,
+            "duration_seconds": int(attachment.duration_seconds) if getattr(attachment, "duration_seconds", None) is not None else None,
+            "original_url": self.build_file_url(message_id=message_id, attachment_id=attachment_id, inline=True) if message_id and attachment_id else None,
+            "download_url": self.build_file_url(message_id=message_id, attachment_id=attachment_id) if message_id and attachment_id else None,
             "variant_urls": self.build_variant_urls(attachment),
             "created_at": _iso(attachment.created_at) or "",
         }

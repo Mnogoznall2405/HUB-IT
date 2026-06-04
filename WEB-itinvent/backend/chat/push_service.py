@@ -15,6 +15,7 @@ from backend.chat.db import chat_session
 from backend.chat.models import ChatPushSubscription
 from backend.chat.utils import normalize_text as _normalize_text
 from backend.config import config
+from backend.services.notification_preferences_service import notification_preferences_service
 from cryptography.hazmat.primitives import serialization
 
 try:
@@ -565,6 +566,13 @@ class ChatPushService:
         normalized_message_id = _normalize_text(message_id)
         if not normalized_conversation_id or not normalized_message_id:
             return ChatPushSendResult()
+        try:
+            if not notification_preferences_service.is_enabled(
+                user_id=int(recipient_user_id), channel="chat"
+            ):
+                return ChatPushSendResult()
+        except Exception:
+            logger.warning("chat push: failed to read notification preferences", exc_info=True)
         return self.send_notification(
             recipient_user_id=int(recipient_user_id),
             title=title,
@@ -578,83 +586,6 @@ class ChatPushService:
             },
             ttl=CHAT_PUSH_TTL_SEC,
         )
-        result = ChatPushSendResult()
-        if not self.enabled:
-            return result
-
-        normalized_conversation_id = _normalize_text(conversation_id)
-        normalized_message_id = _normalize_text(message_id)
-        if not normalized_conversation_id or not normalized_message_id:
-            return result
-
-        with chat_session() as session:
-            subscriptions = list(
-                session.execute(
-                    select(ChatPushSubscription).where(
-                        ChatPushSubscription.user_id == int(recipient_user_id),
-                        ChatPushSubscription.is_active.is_(True),
-                    )
-                ).scalars()
-            )
-            if not subscriptions:
-                return result
-
-            payload = json.dumps({
-                "title": _normalize_text(title) or "Новое сообщение",
-                "body": _normalize_text(body) or "Откройте чат, чтобы посмотреть сообщение.",
-                "tag": f"chat:{normalized_message_id}",
-                "icon": "/pwa-192.png",
-                "badge": "/pwa-192.png",
-                "data": {
-                    "route": f"/chat?conversation={normalized_conversation_id}&message={normalized_message_id}",
-                    "conversation_id": normalized_conversation_id,
-                    "message_id": normalized_message_id,
-                },
-            })
-            now = _utc_now()
-            vapid_private_key = _resolve_vapid_private_key(config.web_push.private_key)
-
-            for subscription in subscriptions:
-                try:
-                    webpush(
-                        subscription_info={
-                            "endpoint": subscription.endpoint,
-                            "keys": {
-                                "p256dh": subscription.p256dh_key,
-                                "auth": subscription.auth_key,
-                            },
-                        },
-                        data=payload,
-                        vapid_private_key=vapid_private_key,
-                        vapid_claims={"sub": _normalize_text(config.web_push.subject)},
-                        ttl=60,
-                    )
-                    subscription.failure_count = 0
-                    subscription.last_push_at = now
-                    subscription.last_seen_at = now
-                    subscription.updated_at = now
-                    subscription.last_error_at = None
-                    subscription.last_error_text = None
-                    result.sent += 1
-                except WebPushException as exc:  # pragma: no branch - status driven
-                    status_code = int(getattr(getattr(exc, "response", None), "status_code", 0) or 0)
-                    subscription.failure_count = int(subscription.failure_count or 0) + 1
-                    subscription.updated_at = now
-                    subscription.last_error_at = now
-                    subscription.last_error_text = _normalize_text(exc)
-                    if status_code in {404, 410}:
-                        subscription.is_active = False
-                        result.disabled += 1
-                    else:
-                        result.failed += 1
-                except Exception as exc:  # pragma: no cover - best-effort fallback
-                    subscription.failure_count = int(subscription.failure_count or 0) + 1
-                    subscription.updated_at = now
-                    subscription.last_error_at = now
-                    subscription.last_error_text = _normalize_text(exc)
-                    result.failed += 1
-
-        return result
 
 
 chat_push_service = ChatPushService()

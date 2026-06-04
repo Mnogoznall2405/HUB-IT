@@ -32,6 +32,7 @@ export default function useChatSocketEvents({
   loadMessagesRef,
   logChatDebug,
   logChatDebugRef,
+  markConversationReadLiveRef,
   markSocketActivity,
   mergeAiStatusPayload,
   mergeMessageIntoThread,
@@ -189,14 +190,27 @@ export default function useChatSocketEvents({
         setViewerLastReadMessageId(String(message.id || '').trim());
         setViewerLastReadAt(String(message.created_at || '').trim());
       } else if (isActive) {
-        setViewerLastReadMessageId(String(message.id || '').trim());
-        setViewerLastReadAt(String(message.created_at || '').trim());
+        const tabIsVisibleAndFocused = (
+          typeof document !== 'undefined'
+          && document.visibilityState === 'visible'
+          && typeof document.hasFocus === 'function'
+          && document.hasFocus()
+        );
+        if (tabIsVisibleAndFocused) {
+          setViewerLastReadMessageId(String(message.id || '').trim());
+          setViewerLastReadAt(String(message.created_at || '').trim());
+          void markConversationReadLiveRef?.current?.(conversationId, String(message.id || '').trim());
+        }
       }
       if (!hasPendingInitialAnchorForConversation(conversationId)) {
-        const nextScrollMode = !alreadyRendered && (Boolean(message?.is_own) || isActive)
-          ? 'bottom_instant'
-          : false;
-        queueAutoScroll(nextScrollMode, 'socket:message_created');
+        // Own messages always stick to the bottom. Incoming messages only
+        // pull the viewport down when the reader is already near the bottom,
+        // so reading older history is never interrupted by a forced jump.
+        const shouldStickToBottom = !alreadyRendered && (
+          Boolean(message?.is_own)
+          || (isActive && threadNearBottomRef.current)
+        );
+        queueAutoScroll(shouldStickToBottom ? 'bottom_instant' : false, 'socket:message_created');
       }
     };
 

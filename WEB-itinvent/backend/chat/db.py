@@ -412,6 +412,10 @@ def _ensure_chat_attachment_columns(engine) -> None:
         statements.append(f"ALTER TABLE {table_name} ADD COLUMN width INTEGER")
     if "height" not in columns:
         statements.append(f"ALTER TABLE {table_name} ADD COLUMN height INTEGER")
+    if "media_kind" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN media_kind VARCHAR(20)")
+    if "duration_seconds" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN duration_seconds INTEGER")
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))

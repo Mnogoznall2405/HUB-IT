@@ -15,6 +15,25 @@ from backend.chat.models import ChatConversationUserState, ChatMessage, ChatMess
 from backend.chat.utils import normalize_text as _normalize_text
 
 
+def _attachment_kind_from_payload(item: dict[str, Any]) -> str:
+    media_kind = _normalize_text(item.get("media_kind")).lower()
+    if media_kind in {"image", "video", "audio", "file"}:
+        return media_kind
+    mime_type = _normalize_text(item.get("mime_type")).lower()
+    if mime_type.startswith("image/"):
+        return "image"
+    if mime_type.startswith("video/"):
+        return "video"
+    if mime_type.startswith("audio/"):
+        return "audio"
+    return "file"
+
+
+def _attachment_file_url(*, message_id: str, attachment_id: str, inline: bool = False) -> str:
+    url = f"/api/v1/chat/messages/{message_id}/attachments/{attachment_id}/file"
+    return f"{url}?inline=1" if inline else url
+
+
 def _get_or_create_conversation_state(
     *,
     session,
@@ -419,9 +438,11 @@ class ChatFileMessagePersistence:
                         storage_name=item["storage_name"],
                         file_name=item["file_name"],
                         mime_type=item["mime_type"],
+                        media_kind=item.get("media_kind"),
                         file_size=int(item["file_size"]),
                         width=int(item["width"]) if item.get("width") is not None else None,
                         height=int(item["height"]) if item.get("height") is not None else None,
+                        duration_seconds=int(item["duration_seconds"]) if item.get("duration_seconds") is not None else None,
                         uploaded_by_user_id=int(current_user_id),
                         created_at=now,
                     )
@@ -429,11 +450,16 @@ class ChatFileMessagePersistence:
                 attachment_payload.append(
                     {
                         "id": item["attachment_id"],
+                        "kind": _attachment_kind_from_payload(item),
                         "file_name": item["file_name"],
                         "mime_type": item["mime_type"],
+                        "media_kind": item.get("media_kind"),
                         "file_size": int(item["file_size"]),
                         "width": int(item["width"]) if item.get("width") is not None else None,
                         "height": int(item["height"]) if item.get("height") is not None else None,
+                        "duration_seconds": int(item["duration_seconds"]) if item.get("duration_seconds") is not None else None,
+                        "original_url": _attachment_file_url(message_id=message.id, attachment_id=item["attachment_id"], inline=True),
+                        "download_url": _attachment_file_url(message_id=message.id, attachment_id=item["attachment_id"]),
                         "created_at": _normalize_text(now.isoformat()),
                     }
                 )
@@ -543,9 +569,11 @@ class ChatForwardMessagePersistence:
                         storage_name=item["storage_name"],
                         file_name=item["file_name"],
                         mime_type=item["mime_type"],
+                        media_kind=item.get("media_kind"),
                         file_size=int(item["file_size"]),
                         width=int(item["width"]) if item.get("width") is not None else None,
                         height=int(item["height"]) if item.get("height") is not None else None,
+                        duration_seconds=int(item["duration_seconds"]) if item.get("duration_seconds") is not None else None,
                         uploaded_by_user_id=int(current_user_id),
                         created_at=now,
                     )
@@ -553,11 +581,16 @@ class ChatForwardMessagePersistence:
                 attachment_payload.append(
                     {
                         "id": item["attachment_id"],
+                        "kind": _attachment_kind_from_payload(item),
                         "file_name": item["file_name"],
                         "mime_type": item["mime_type"],
+                        "media_kind": item.get("media_kind"),
                         "file_size": int(item["file_size"]),
                         "width": int(item["width"]) if item.get("width") is not None else None,
                         "height": int(item["height"]) if item.get("height") is not None else None,
+                        "duration_seconds": int(item["duration_seconds"]) if item.get("duration_seconds") is not None else None,
+                        "original_url": _attachment_file_url(message_id=message.id, attachment_id=item["attachment_id"], inline=True),
+                        "download_url": _attachment_file_url(message_id=message.id, attachment_id=item["attachment_id"]),
                         "created_at": _normalize_text(now.isoformat()),
                     }
                 )

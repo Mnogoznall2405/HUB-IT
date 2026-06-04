@@ -22,7 +22,14 @@ import { useReducedMotion } from 'framer-motion';
 import { AttachmentCard, TaskShareCard } from './ChatCommon';
 import ChatLinkPreview, { extractFirstUrl } from './ChatLinkPreview';
 import { renderChatPlainTextBody } from './chatPlainText';
-import { getChatBubbleBodyFontSize, resolveChatBubbleLinkColors } from './chatUiTokens';
+import {
+  buildChatMessageBodySurfaceSx,
+  CHAT_DEFAULT_FONT_SIZES,
+  CHAT_FONT_FAMILY,
+  getChatBubbleBodyFontSize,
+  getChatBubbleBodyLineHeight,
+  resolveChatBubbleLinkColors,
+} from './chatUiTokens';
 import MarkdownRenderer from '../hub/MarkdownRenderer';
 import {
   detectChatBodyFormat,
@@ -31,31 +38,14 @@ import {
   getEmojiOnlyCount,
   getReplyPreviewText,
   hasChatMarkdownTable,
+  isAudioAttachment,
   isImageAttachment,
+  isVideoAttachment,
 } from './chatHelpers';
 
 const LONG_PRESS_SCROLL_CANCEL_PX = 30;
 const LONG_PRESS_HORIZONTAL_CANCEL_PX = 44;
-const VIDEO_ATTACHMENT_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v']);
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
-const TELEGRAM_CHAT_FONT_FAMILY = [
-  '"SF Pro Text"',
-  '"SF Pro Display"',
-  '"Segoe UI Variable Text"',
-  '"Segoe UI"',
-  'Roboto',
-  'Helvetica',
-  'Arial',
-  'sans-serif',
-].join(', ');
-const CHAT_FONT_SIZES = {
-  meta: '13px',
-  previewTitle: '15px',
-  previewBody: '14px',
-  sender: '16px',
-  body: '19px',
-  bodyMobile: '15px',
-};
 const LIGHT_GROUP_SENDER_COLORS = ['#d45246', '#c97a00', '#2f8b44', '#387adf', '#8b4ccf', '#0f9d8a', '#c95d9c', '#468fba'];
 const DARK_GROUP_SENDER_COLORS = ['#ff7b73', '#f6c15c', '#7de26f', '#6bb6ff', '#c59bff', '#64e1cf', '#ff99dc', '#7bd7ff'];
 export const isMobileMessageLongPress = ({
@@ -143,24 +133,12 @@ function getBubbleRadius(isOwn, groupedWithPrevious, groupedWithNext, compactMob
   return `${outerRadius}px ${outerRadius}px ${bottomLeft}px ${topLeft}px`;
 }
 
-function isShortInlineMessage(body = '') {
+function isShortInlineMessage(body = '', { compactMobile = false } = {}) {
   const normalized = String(body || '').trim();
   if (!normalized) return false;
   if (normalized.includes('\n')) return false;
-  return normalized.length <= 34;
-}
-
-function isVideoAttachment(attachment) {
-  const mimeType = String(attachment?.mime_type || '').trim().toLowerCase();
-  if (mimeType.startsWith('video/')) return true;
-  const fileName = String(attachment?.file_name || '').trim().toLowerCase();
-  const extension = fileName.includes('.') ? fileName.split('.').pop() : '';
-  return VIDEO_ATTACHMENT_EXTENSIONS.has(extension);
-}
-
-function isAudioAttachment(attachment) {
-  const mimeType = String(attachment?.mime_type || '').trim().toLowerCase();
-  return mimeType.startsWith('audio/');
+  const inlineLimit = compactMobile ? 34 : 24;
+  return normalized.length <= inlineLimit;
 }
 
 function getGalleryAttachmentsForDisplay(attachments) {
@@ -211,8 +189,8 @@ function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = fal
         className="truncate text-[13px] font-semibold"
         style={{
           color: previewSenderColor,
-          fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-          fontSize: density.bubblePreviewTitleFontSize || CHAT_FONT_SIZES.previewTitle,
+          fontFamily: CHAT_FONT_FAMILY,
+          fontSize: density.bubblePreviewTitleFontSize || CHAT_DEFAULT_FONT_SIZES.previewTitle,
           letterSpacing: '-0.01em',
         }}
       >
@@ -222,8 +200,8 @@ function ReplyPreviewBlock({ replyPreview, theme, ui, isOwn, compactMobile = fal
         className="truncate text-[12px]"
         style={{
           color: isOwn ? (ui.bubbleOwnPreviewSubtleText || alpha('#fff', 0.72)) : ui.textSecondary,
-          fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-          fontSize: density.bubblePreviewBodyFontSize || CHAT_FONT_SIZES.previewBody,
+          fontFamily: CHAT_FONT_FAMILY,
+          fontSize: density.bubblePreviewBodyFontSize || CHAT_DEFAULT_FONT_SIZES.previewBody,
         }}
       >
         {getReplyPreviewText(replyPreview)}
@@ -255,8 +233,8 @@ function ForwardPreviewBlock({ forwardPreview, theme, ui, isOwn, compactMobile =
         className="truncate text-[13px] font-semibold"
         style={{
           color: previewSenderColor,
-          fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-          fontSize: density.bubblePreviewTitleFontSize || CHAT_FONT_SIZES.previewTitle,
+          fontFamily: CHAT_FONT_FAMILY,
+          fontSize: density.bubblePreviewTitleFontSize || CHAT_DEFAULT_FONT_SIZES.previewTitle,
           letterSpacing: '-0.01em',
         }}
       >
@@ -501,6 +479,7 @@ const ChatMarkdownBody = memo(function ChatMarkdownBody({
   ui,
 }) {
   const messageBodyFontSize = getChatBubbleBodyFontSize(ui, compactMobile);
+  const messageBodyLineHeight = getChatBubbleBodyLineHeight(ui, compactMobile);
   return (
     <Box
       className="chat-selectable"
@@ -512,13 +491,12 @@ const ChatMarkdownBody = memo(function ChatMarkdownBody({
         pr: 0.25,
         pb: hasMarkdownTable ? 2.1 : 1.8,
         color: bubbleText,
-        fontSize: messageBodyFontSize,
-        lineHeight: 1.34,
+        ...buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight),
         userSelect: 'text',
-        fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+        fontFamily: CHAT_FONT_FAMILY,
         '& .MuiBox-root': {
           color: bubbleText,
-          fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+          fontFamily: CHAT_FONT_FAMILY,
         },
       }}
     >
@@ -591,11 +569,11 @@ function ChatBubbleMeta({
             p: 0,
             mr: 0.3,
             cursor: 'pointer',
-            fontSize: density.bubbleMetaFontSize || CHAT_FONT_SIZES.meta,
+            fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta,
             fontWeight: 700,
             color: message?.is_own ? alpha('#fff', 0.92) : ui.accentText,
             lineHeight: 1,
-            fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+            fontFamily: CHAT_FONT_FAMILY,
           }}
         >
           {`Просмотрели: ${readByCount}`}
@@ -612,12 +590,12 @@ function ChatBubbleMeta({
         </Tooltip>
       ) : null}
 
-      <Typography variant="caption" title={formatFullDate(message?.created_at)} sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_FONT_SIZES.meta, lineHeight: 1, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+      <Typography variant="caption" title={formatFullDate(message?.created_at)} sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta, lineHeight: 1, fontFamily: CHAT_FONT_FAMILY }}>
         {formatShortTime(message?.created_at)}
       </Typography>
 
       {shouldShowUploadProgress ? (
-        <Typography variant="caption" sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_FONT_SIZES.meta, lineHeight: 1, fontWeight: 700, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+        <Typography variant="caption" sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta, lineHeight: 1, fontWeight: 700, fontFamily: CHAT_FONT_FAMILY }}>
           {`${uploadProgress}%`}
         </Typography>
       ) : null}
@@ -782,8 +760,10 @@ export function ChatBubble({
   const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
   const attachmentCaption = attachments.length > 0 ? String(message?.body || '').trim() : '';
   const body = String(message?.body || '').trim();
-  const isMarkdownBody = String(message?.body_format || '').trim() === 'markdown'
-    || (message?.kind === 'text' && attachments.length === 0 && detectChatBodyFormat(body) === 'markdown');
+  const bodyFormat = String(message?.body_format || '').trim();
+  const hasExplicitBodyFormat = bodyFormat === 'plain' || bodyFormat === 'markdown';
+  const isMarkdownBody = bodyFormat === 'markdown'
+    || (!hasExplicitBodyFormat && message?.kind === 'text' && attachments.length === 0 && detectChatBodyFormat(body) === 'markdown');
   const hasMarkdownTable = isMarkdownBody && hasChatMarkdownTable(body);
   const emojiOnlyCount = !task && attachments.length === 0 ? getEmojiOnlyCount(message?.body) : 0;
   const showSender = !message?.is_own && conversationKind !== 'direct' && !groupedWithPrevious;
@@ -798,13 +778,16 @@ export function ChatBubble({
   const density = ui.density || {};
   const senderAccentColor = showSender ? resolveGroupSenderColor(message?.sender, theme, ui) : ui.accentText;
   const messageBodyFontSize = getChatBubbleBodyFontSize(ui, compactMobile);
+  const messageBodyLineHeight = getChatBubbleBodyLineHeight(ui, compactMobile);
+  const bubbleBodyBottomPadding = density.bubbleBodyBottomPadding ?? 1.8;
+  const bubbleReactionBodyBottomPadding = density.bubbleReactionBodyBottomPadding ?? 0.35;
   const inlineMeta = !task
     && attachments.length === 0
     && emojiOnlyCount === 0
     && !isMarkdownBody
     && !hasReplyPreview
     && !hasForwardPreview
-    && isShortInlineMessage(body);
+    && isShortInlineMessage(body, { compactMobile });
   const receiptColor = message?.is_own
     ? (deliveryStatus === 'read' && !isSending
       ? (ui.statusReadText || alpha(ownMetaColor, 0.96))
@@ -1075,6 +1058,13 @@ export function ChatBubble({
   const pureMediaBubble = mediaOnlyAttachments && !attachmentCaption;
   const hasReactions = Array.isArray(message?.reactions) && message.reactions.length > 0;
   const reactionFooter = hasReactions && !showMediaMetaOverlay;
+  const textMetaInFlow = !compactMobile
+    && !inlineMeta
+    && !task
+    && attachments.length === 0
+    && emojiOnlyCount === 0
+    && Boolean(body)
+    && !showMediaMetaOverlay;
   const mediaPreviewMaxWidth = compactMobile ? 216 : 276;
   const mediaPreviewMaxHeight = compactMobile ? 176 : 216;
   const mediaPreviewMinWidth = compactMobile ? 148 : 164;
@@ -1128,7 +1118,7 @@ export function ChatBubble({
       className={joinClasses('relative flex flex-col', message?.is_own ? 'items-end' : 'items-start')}
       sx={{
         width: '100%',
-        pt: showSender ? 0.35 : groupedWithPrevious ? '2px' : 1.1,
+        pt: showSender ? (density.bubbleSenderRowPt ?? 0.35) : groupedWithPrevious ? '2px' : (density.bubbleRowPt ?? 1.1),
         pb: groupedWithNext ? '2px' : 0.42,
         pl: 0,
         pr: 0,
@@ -1221,8 +1211,8 @@ export function ChatBubble({
           className="px-3 pb-1 text-[14px] font-medium leading-[1.15]"
           sx={{
             color: senderAccentColor,
-            fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-            fontSize: density.bubbleSenderFontSize || CHAT_FONT_SIZES.sender,
+            fontFamily: CHAT_FONT_FAMILY,
+            fontSize: density.bubbleSenderFontSize || CHAT_DEFAULT_FONT_SIZES.sender,
             ml: selectionMode && !message?.is_own ? { xs: 5, md: 4.2 } : 0,
           }}
         >
@@ -1530,11 +1520,10 @@ export function ChatBubble({
                   m: 0,
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
-                  lineHeight: 1.34,
-                  fontSize: messageBodyFontSize,
+                  ...buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight),
                   color: bubbleText,
                   userSelect: 'text',
-                  fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                  fontFamily: CHAT_FONT_FAMILY,
                   letterSpacing: '-0.01em',
                 }}
               >
@@ -1556,6 +1545,7 @@ export function ChatBubble({
             component="p"
             className="chat-selectable"
             data-chat-message-body="true"
+            data-chat-emoji-only={emojiOnlyCount ? 'true' : undefined}
             style={{ fontSize: emojiOnlyCount ? undefined : messageBodyFontSize }}
             sx={{
               m: 0,
@@ -1563,12 +1553,13 @@ export function ChatBubble({
               whiteSpace: 'pre-wrap',
               wordBreak: 'break-word',
               pr: inlineMeta ? 0 : 0.25,
-              pb: inlineMeta ? 0 : (reactionFooter ? 0.35 : 1.8),
-              lineHeight: emojiOnlyCount ? 1.08 : 1.34,
-              fontSize: emojiOnlyCount ? (emojiOnlyCount === 1 ? '3.2rem' : '2.6rem') : messageBodyFontSize,
+              pb: inlineMeta ? 0 : textMetaInFlow ? 0.25 : (reactionFooter ? bubbleReactionBodyBottomPadding : bubbleBodyBottomPadding),
+              ...(emojiOnlyCount
+                ? { lineHeight: 1.08, fontSize: emojiOnlyCount === 1 ? '3.2rem' : '2.6rem' }
+                : buildChatMessageBodySurfaceSx(messageBodyFontSize, messageBodyLineHeight)),
               color: bubbleText,
               userSelect: 'text',
-              fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+              fontFamily: CHAT_FONT_FAMILY,
               letterSpacing: emojiOnlyCount ? undefined : '-0.01em',
               '&::after': inlineMeta ? {
                 content: '""',
@@ -1633,8 +1624,8 @@ export function ChatBubble({
               onOpenReads={onOpenReads}
               onReplyMessage={onReplyMessage}
               bottomOffset={7}
-              inFlow={reactionFooter || (attachments.length > 0 && !showMediaMetaOverlay)}
-              dense={reactionFooter}
+              inFlow={reactionFooter || textMetaInFlow || (attachments.length > 0 && !showMediaMetaOverlay)}
+              dense={reactionFooter || textMetaInFlow}
             />
           ) : null;
 

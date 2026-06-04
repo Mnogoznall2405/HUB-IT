@@ -1,7 +1,40 @@
 import { alpha } from '@mui/material/styles';
 
+export const CHAT_FONT_FAMILY = [
+  '"SF Pro Text"',
+  '"SF Pro Display"',
+  '"Segoe UI Variable Text"',
+  '"Segoe UI"',
+  'Roboto',
+  'Helvetica',
+  'Arial',
+  'sans-serif',
+].join(', ');
+
+export const CHAT_DEFAULT_FONT_SIZES = Object.freeze({
+  desktopPrimary: '16px',
+  desktopCompactPrimary: '15px',
+  mobileBody: '15px',
+  mobileComposer: '16px',
+  meta: '13px',
+  composerAux: '13px',
+  sender: '16px',
+  previewTitle: '15px',
+  previewBody: '14px',
+  headerTitleMobile: '17.5px',
+  headerSubtitleMobile: '13px',
+});
+
+export const CHAT_DEFAULT_LINE_HEIGHTS = Object.freeze({
+  desktopBody: 1.3,
+  desktopCompactBody: 1.26,
+  mobileBody: 1.34,
+});
+
 const SPACIOUS_CHAT_DENSITY = {
   mode: 'spacious',
+  chatPrimaryFontSize: CHAT_DEFAULT_FONT_SIZES.desktopPrimary,
+  chatPrimaryLineHeight: CHAT_DEFAULT_LINE_HEIGHTS.desktopBody,
   touchTarget: 44,
   contentMaxWidth: 940,
   sidebarColumnMin: 320,
@@ -27,18 +60,20 @@ const SPACIOUS_CHAT_DENSITY = {
   sidebarSectionFontSize: '11px',
   composerDockPx: 1.1,
   composerDockPxMd: 1.6,
-  composerDockPt: 0.95,
-  composerDockPb: 0.95,
-  composerCapsuleMinHeight: 48,
+  composerDockPt: 0.7,
+  composerDockPb: 0.7,
+  composerCapsuleMinHeight: 42,
   composerCapsulePx: 10,
-  composerCapsulePy: 2,
-  composerInnerPaddingY: 11,
-  composerIconButton: 32,
-  composerActionSize: 46,
-  composerActionIcon: 22,
-  composerFontSize: '19px',
-  composerAuxFontSize: '13px',
-  composerTextareaMinHeight: 19,
+  composerCapsulePy: 1,
+  composerInnerPaddingY: 0,
+  composerInputSlotMinHeight: 30,
+  composerIconButton: 30,
+  composerActionSize: 42,
+  composerActionIcon: 20,
+  composerFontSize: CHAT_DEFAULT_FONT_SIZES.desktopPrimary,
+  composerLineHeight: CHAT_DEFAULT_LINE_HEIGHTS.desktopBody,
+  composerAuxFontSize: CHAT_DEFAULT_FONT_SIZES.composerAux,
+  composerTextareaMinHeight: 21,
   composerTextareaMaxHeight: 120,
   composerReplyMarginBottom: 12,
   composerReplyPadding: '12px 16px',
@@ -52,7 +87,7 @@ const SPACIOUS_CHAT_DENSITY = {
   composerMentionMetaFontSize: 12.5,
   threadHeaderAction: 34,
   threadHeaderAvatar: 42,
-  threadHeaderTitleFontSize: '1.02rem',
+  threadHeaderTitleFontSize: CHAT_DEFAULT_FONT_SIZES.desktopPrimary,
   threadHeaderSubtitleFontSize: '0.82rem',
   threadHeaderPx: 1.6,
   threadHeaderPb: 0.78,
@@ -75,12 +110,18 @@ const SPACIOUS_CHAT_DENSITY = {
   dialogForwardAvatar: 52,
   dialogForwardRowPx: 1.45,
   dialogForwardRowPy: 1.2,
-  bubbleBodyFontSize: '19px',
-  bubbleBodyMobileFontSize: '15px',
-  bubbleMetaFontSize: '13px',
-  bubbleSenderFontSize: '16px',
-  bubblePreviewTitleFontSize: '15px',
-  bubblePreviewBodyFontSize: '14px',
+  bubbleBodyFontSize: CHAT_DEFAULT_FONT_SIZES.desktopPrimary,
+  bubbleBodyLineHeight: CHAT_DEFAULT_LINE_HEIGHTS.desktopBody,
+  bubbleBodyMobileFontSize: CHAT_DEFAULT_FONT_SIZES.mobileBody,
+  bubbleBodyMobileLineHeight: CHAT_DEFAULT_LINE_HEIGHTS.mobileBody,
+  bubbleMetaFontSize: CHAT_DEFAULT_FONT_SIZES.meta,
+  bubbleSenderFontSize: CHAT_DEFAULT_FONT_SIZES.sender,
+  bubblePreviewTitleFontSize: CHAT_DEFAULT_FONT_SIZES.previewTitle,
+  bubblePreviewBodyFontSize: CHAT_DEFAULT_FONT_SIZES.previewBody,
+  bubbleBodyBottomPadding: 1.55,
+  bubbleReactionBodyBottomPadding: 0.35,
+  bubbleRowPt: 1.0,
+  bubbleSenderRowPt: 0.35,
   bubblePx: 1.18,
   bubblePy: 0.82,
 };
@@ -88,40 +129,44 @@ const SPACIOUS_CHAT_DENSITY = {
 const COMPACT_DESKTOP_CHAT_DENSITY = {
   ...SPACIOUS_CHAT_DENSITY,
   mode: 'compact-desktop',
+  chatPrimaryFontSize: CHAT_DEFAULT_FONT_SIZES.desktopCompactPrimary,
+  chatPrimaryLineHeight: CHAT_DEFAULT_LINE_HEIGHTS.desktopCompactBody,
   contentMaxWidth: 860,
   sidebarColumnMin: 280,
   sidebarColumnMax: 340,
-  sidebarAvatar: 44,
+  sidebarAvatar: 40,
   sidebarActionButton: 32,
   sidebarHeaderIcon: 36,
   sidebarSearchHeight: 38,
   sidebarSearchFontSize: '14px',
-  sidebarRowMinHeight: 54,
-  sidebarRowPx: 10,
-  sidebarRowPy: 6,
+  sidebarRowMinHeight: 48,
+  sidebarRowPx: 8,
+  sidebarRowPy: 4,
   sidebarRowMx: 4,
-  sidebarRowMy: 1,
-  sidebarRowRadius: 10,
-  sidebarResultRowPx: 12,
-  sidebarResultRowPy: 8,
+  sidebarRowMy: 0,
+  sidebarRowRadius: 9,
+  sidebarResultRowPx: 10,
+  sidebarResultRowPy: 6,
   sidebarTitleFontSize: '14px',
-  sidebarResultTitleFontSize: '14.5px',
-  sidebarPreviewFontSize: '11.8px',
-  sidebarSectionFontSize: '10px',
+  sidebarResultTitleFontSize: '14px',
+  sidebarPreviewFontSize: '11.5px',
+  sidebarSectionFontSize: '9.5px',
   composerDockPx: 0.8,
   composerDockPxMd: 1.0,
-  composerDockPt: 0.55,
-  composerDockPb: 0.55,
-  composerCapsuleMinHeight: 40,
+  composerDockPt: 0.35,
+  composerDockPb: 0.35,
+  composerCapsuleMinHeight: 34,
   composerCapsulePx: 8,
-  composerCapsulePy: 1,
-  composerInnerPaddingY: 7,
-  composerIconButton: 28,
-  composerActionSize: 38,
-  composerActionIcon: 19,
-  composerFontSize: '19px',
+  composerCapsulePy: 0,
+  composerInnerPaddingY: 0,
+  composerInputSlotMinHeight: 26,
+  composerIconButton: 26,
+  composerActionSize: 34,
+  composerActionIcon: 18,
+  composerFontSize: CHAT_DEFAULT_FONT_SIZES.desktopCompactPrimary,
+  composerLineHeight: CHAT_DEFAULT_LINE_HEIGHTS.desktopCompactBody,
   composerAuxFontSize: '12px',
-  composerTextareaMinHeight: 17,
+  composerTextareaMinHeight: 19,
   composerTextareaMaxHeight: 104,
   composerReplyMarginBottom: 8,
   composerReplyPadding: '8px 12px',
@@ -135,7 +180,7 @@ const COMPACT_DESKTOP_CHAT_DENSITY = {
   composerMentionMetaFontSize: 11.5,
   threadHeaderAction: 30,
   threadHeaderAvatar: 36,
-  threadHeaderTitleFontSize: '0.92rem',
+  threadHeaderTitleFontSize: CHAT_DEFAULT_FONT_SIZES.desktopCompactPrimary,
   threadHeaderSubtitleFontSize: '0.74rem',
   threadHeaderPx: 1.0,
   threadHeaderPb: 0.5,
@@ -158,13 +203,18 @@ const COMPACT_DESKTOP_CHAT_DENSITY = {
   dialogForwardAvatar: 44,
   dialogForwardRowPx: 1.05,
   dialogForwardRowPy: 0.75,
-  bubbleBodyFontSize: '19px',
+  bubbleBodyFontSize: CHAT_DEFAULT_FONT_SIZES.desktopCompactPrimary,
+  bubbleBodyLineHeight: CHAT_DEFAULT_LINE_HEIGHTS.desktopCompactBody,
   bubbleMetaFontSize: '12px',
   bubbleSenderFontSize: '14px',
   bubblePreviewTitleFontSize: '13.5px',
   bubblePreviewBodyFontSize: '12.5px',
-  bubblePx: 0.9,
-  bubblePy: 0.62,
+  bubbleBodyBottomPadding: 1.3,
+  bubbleReactionBodyBottomPadding: 0.25,
+  bubbleRowPt: 0.75,
+  bubbleSenderRowPt: 0.28,
+  bubblePx: 0.78,
+  bubblePy: 0.5,
 };
 
 const MOBILE_CHAT_DENSITY = {
@@ -176,8 +226,12 @@ const MOBILE_CHAT_DENSITY = {
   composerCapsuleMinHeight: 46,
   composerActionSize: 46,
   composerAttachmentActionHeight: 44,
-  composerFontSize: '16px',
+  composerFontSize: CHAT_DEFAULT_FONT_SIZES.mobileComposer,
+  composerLineHeight: CHAT_DEFAULT_LINE_HEIGHTS.mobileBody,
   composerTextareaMinHeight: 18,
+  bubbleBodyLineHeight: CHAT_DEFAULT_LINE_HEIGHTS.mobileBody,
+  bubbleBodyBottomPadding: 1.8,
+  bubbleReactionBodyBottomPadding: 0.35,
   threadHeaderAction: 44,
   dialogMenuItemMinHeight: 44,
 };
@@ -193,9 +247,65 @@ export const CHAT_BUBBLE_BODY_FONT_VAR = '--chat-bubble-body-font-size';
 export function getChatBubbleBodyFontSize(ui, compactMobile = false) {
   const density = ui?.density || {};
   if (compactMobile) {
-    return density.bubbleBodyMobileFontSize || '15px';
+    return density.bubbleBodyMobileFontSize || CHAT_DEFAULT_FONT_SIZES.mobileBody;
   }
-  return density.bubbleBodyFontSize || '19px';
+  return density.bubbleBodyFontSize || density.chatPrimaryFontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary;
+}
+
+export function getChatBubbleBodyLineHeight(ui, compactMobile = false) {
+  const density = ui?.density || {};
+  if (compactMobile) {
+    return density.bubbleBodyMobileLineHeight || density.bubbleBodyLineHeight || CHAT_DEFAULT_LINE_HEIGHTS.mobileBody;
+  }
+  return density.bubbleBodyLineHeight || density.chatPrimaryLineHeight || CHAT_DEFAULT_LINE_HEIGHTS.desktopBody;
+}
+
+export function getChatComposerBodyFontSize(ui, compactMobile = false) {
+  const density = ui?.density || {};
+  if (compactMobile) {
+    return density.composerFontSize || CHAT_DEFAULT_FONT_SIZES.mobileComposer;
+  }
+  return density.composerFontSize || density.chatPrimaryFontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary;
+}
+
+export function getChatComposerLineHeight(ui, compactMobile = false) {
+  const density = ui?.density || {};
+  if (compactMobile) {
+    return density.composerLineHeight || CHAT_DEFAULT_LINE_HEIGHTS.mobileBody;
+  }
+  return density.composerLineHeight || density.chatPrimaryLineHeight || CHAT_DEFAULT_LINE_HEIGHTS.desktopBody;
+}
+
+const CHAT_MESSAGE_BODY_SELECTOR = '& [data-chat-message-body="true"]:not([data-chat-emoji-only="true"])';
+
+/** Thread-level overrides: beats MUI body1/compact theme and rem-based markdown on compact desktop. */
+export function buildChatThreadMessageBodyTypographySx(ui, compactMobile = false) {
+  const fontSize = getChatBubbleBodyFontSize(ui, compactMobile);
+  const lineHeight = getChatBubbleBodyLineHeight(ui, compactMobile);
+  return {
+    [CHAT_BUBBLE_BODY_FONT_VAR]: fontSize,
+    [CHAT_MESSAGE_BODY_SELECTOR]: {
+      fontSize: `${fontSize} !important`,
+      lineHeight: `${lineHeight} !important`,
+    },
+    [`${CHAT_MESSAGE_BODY_SELECTOR} [data-markdown-variant="chat"]`]: {
+      fontSize: 'inherit !important',
+    },
+    [`${CHAT_MESSAGE_BODY_SELECTOR} .MuiTypography-root`]: {
+      fontSize: 'inherit !important',
+    },
+    [`${CHAT_MESSAGE_BODY_SELECTOR} p, ${CHAT_MESSAGE_BODY_SELECTOR} li, ${CHAT_MESSAGE_BODY_SELECTOR} ul, ${CHAT_MESSAGE_BODY_SELECTOR} ol, ${CHAT_MESSAGE_BODY_SELECTOR} blockquote`]: {
+      fontSize: 'inherit !important',
+    },
+  };
+}
+
+export function buildChatMessageBodySurfaceSx(fontSize, lineHeight = CHAT_DEFAULT_LINE_HEIGHTS.desktopBody) {
+  const size = String(fontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary);
+  return {
+    fontSize: size,
+    lineHeight,
+  };
 }
 
 export function buildChatUiTokens(theme, options = {}) {

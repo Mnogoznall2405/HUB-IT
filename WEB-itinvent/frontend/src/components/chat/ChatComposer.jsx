@@ -19,7 +19,12 @@ import StopRoundedIcon from '@mui/icons-material/StopRounded';
 import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 
 import ChatEmojiPanel from './ChatEmojiPanel';
-import { getChatBubbleBodyFontSize } from './chatUiTokens';
+import {
+  CHAT_DEFAULT_FONT_SIZES,
+  CHAT_FONT_FAMILY,
+  getChatComposerBodyFontSize,
+  getChatComposerLineHeight,
+} from './chatUiTokens';
 import {
   formatFileSize,
   getPersonStatusLine,
@@ -32,23 +37,171 @@ const formatVoiceDuration = (seconds) => {
   const s = Math.floor(seconds % 60);
   return `${m}:${s < 10 ? '0' : ''}${s}`;
 };
-const TELEGRAM_CHAT_FONT_FAMILY = [
-  '"SF Pro Text"',
-  '"SF Pro Display"',
-  '"Segoe UI Variable Text"',
-  '"Segoe UI"',
-  'Roboto',
-  'Helvetica',
-  'Arial',
-  'sans-serif',
-].join(', ');
-const CHAT_FONT_SIZES = {
-  composer: '19px',
-  composerAux: '13px',
-};
 
 const MENTION_QUERY_LIMIT = 32;
 const MENTION_RESULT_LIMIT = 8;
+const VOICE_RECORDING_WAVEFORM_BARS = 18;
+const VOICE_RECORDING_BAR_PROFILE = [
+  0.22, 0.52, 0.34, 0.78, 0.48, 0.92,
+  0.58, 0.36, 0.72, 0.44, 0.84, 0.62,
+  0.28, 0.68, 0.4, 0.76, 0.5, 0.3,
+];
+
+function clampRecordingLevel(value) {
+  const numericValue = Number(value || 0);
+  if (!Number.isFinite(numericValue)) return 0;
+  return Math.max(0, Math.min(1, numericValue));
+}
+
+const VoiceRecordingActivity = memo(function VoiceRecordingActivity({
+  theme,
+  ui,
+  compactMobile,
+  voiceRecordingLevelRef,
+}) {
+  const rootRef = useRef(null);
+  const initialLevel = clampRecordingLevel(voiceRecordingLevelRef?.current);
+  const activeColor = ui.accentText || theme.palette.primary.main;
+  const inactiveColor = theme.palette.mode === 'dark'
+    ? alpha('#ffffff', 0.42)
+    : alpha(theme.palette.text.primary, 0.32);
+  const ringOpacity = 0.18 + initialLevel * 0.42;
+  const ringScale = 1 + initialLevel * 0.52;
+
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!root || typeof window === 'undefined') return undefined;
+    const bars = Array.from(root.querySelectorAll('[data-voice-wave-bar="true"]'));
+    let frameId = null;
+
+    const applyLevel = (value) => {
+      const level = clampRecordingLevel(value);
+      root.dataset.voiceActive = level > 0.12 ? 'true' : 'false';
+      root.style.setProperty('--voice-level', level.toFixed(3));
+      root.style.setProperty('--voice-ring-opacity', String((0.18 + level * 0.42).toFixed(3)));
+      root.style.setProperty('--voice-ring-scale', String((1 + level * 0.52).toFixed(3)));
+      bars.forEach((bar, index) => {
+        const profile = VOICE_RECORDING_BAR_PROFILE[index % VOICE_RECORDING_BAR_PROFILE.length];
+        const quietHeight = 3 + profile * 3.8;
+        const activeHeight = compactMobile ? 22 : 24;
+        const nextHeight = quietHeight + level * activeHeight * (0.42 + profile);
+        bar.style.height = `${Math.min(compactMobile ? 24 : 26, nextHeight).toFixed(1)}px`;
+        bar.style.opacity = String((0.42 + level * 0.5).toFixed(3));
+      });
+    };
+
+    const tick = () => {
+      applyLevel(voiceRecordingLevelRef?.current);
+      frameId = window.requestAnimationFrame(tick);
+    };
+
+    applyLevel(voiceRecordingLevelRef?.current);
+    frameId = window.requestAnimationFrame(tick);
+
+    return () => {
+      if (frameId !== null) window.cancelAnimationFrame(frameId);
+    };
+  }, [compactMobile, voiceRecordingLevelRef]);
+
+  return (
+    <Box
+      ref={rootRef}
+      data-testid="chat-voice-recording-activity"
+      data-voice-active={initialLevel > 0.12 ? 'true' : 'false'}
+      aria-hidden="true"
+      sx={{
+        '--voice-level': initialLevel.toFixed(3),
+        '--voice-ring-opacity': ringOpacity.toFixed(3),
+        '--voice-ring-scale': ringScale.toFixed(3),
+        display: 'inline-flex',
+        alignItems: 'center',
+        gap: compactMobile ? 0.75 : 0.9,
+        minWidth: compactMobile ? 110 : 122,
+        height: compactMobile ? 28 : 30,
+        flexShrink: 0,
+      }}
+    >
+      <Box
+        sx={{
+          width: 18,
+          height: 18,
+          position: 'relative',
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+        }}
+      >
+        <Box
+          sx={{
+            position: 'absolute',
+            inset: 0,
+            borderRadius: '50%',
+            bgcolor: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.24 : 0.18),
+            opacity: 'var(--voice-ring-opacity)',
+            transform: 'scale(var(--voice-ring-scale))',
+            animation: 'voiceRecordingRing 1.2s ease-in-out infinite',
+            '@keyframes voiceRecordingRing': {
+              '0%, 100%': { opacity: 'var(--voice-ring-opacity)', transform: 'scale(var(--voice-ring-scale))' },
+              '50%': { opacity: 0.1, transform: 'scale(1.45)' },
+            },
+            '@media (prefers-reduced-motion: reduce)': {
+              animation: 'none',
+            },
+          }}
+        />
+        <Box
+          sx={{
+            width: 8,
+            height: 8,
+            borderRadius: '50%',
+            bgcolor: theme.palette.error.main,
+            boxShadow: `0 0 0 1px ${alpha(theme.palette.error.main, 0.18)}`,
+            position: 'relative',
+          }}
+        />
+      </Box>
+      <Box
+        data-testid="chat-voice-recording-waveform"
+        sx={{
+          width: compactMobile ? 84 : 94,
+          height: compactMobile ? 26 : 28,
+          display: 'inline-flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          gap: '2px',
+          overflow: 'hidden',
+        }}
+      >
+        {Array.from({ length: VOICE_RECORDING_WAVEFORM_BARS }).map((_, index) => {
+          const profile = VOICE_RECORDING_BAR_PROFILE[index % VOICE_RECORDING_BAR_PROFILE.length];
+          const initialHeight = 3 + profile * 3.8 + initialLevel * (compactMobile ? 22 : 24) * (0.42 + profile);
+          return (
+            <Box
+              key={`voice-wave-${index}`}
+              data-testid="chat-voice-recording-bar"
+              data-voice-wave-bar="true"
+              sx={{
+                width: compactMobile ? 2.5 : 3,
+                height: `${Math.min(compactMobile ? 24 : 26, initialHeight).toFixed(1)}px`,
+                borderRadius: 999,
+                bgcolor: activeColor,
+                opacity: 0.42 + initialLevel * 0.5,
+                transition: 'height 90ms linear, opacity 120ms ease, background-color 120ms ease',
+                '@media (prefers-reduced-motion: reduce)': {
+                  transition: 'none',
+                },
+                '[data-voice-active="false"] &': {
+                  bgcolor: inactiveColor,
+                },
+              }}
+            />
+          );
+        })}
+      </Box>
+    </Box>
+  );
+});
 
 function getPersonDisplayName(person) {
   return String(person?.full_name || person?.name || person?.username || '').trim();
@@ -155,16 +308,16 @@ const ChatComposer = memo(function ChatComposer({
   onSendGif,
   voiceRecording = false,
   voiceRecordingDuration = 0,
+  voiceRecordingLevelRef = null,
   onStartVoiceRecording,
   onStopVoiceRecording,
   onCancelVoiceRecording,
 }) {
   const density = ui.density || {};
   const contentMaxWidth = Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
-  const composerFontSize = compactMobile
-    ? (density.composerFontSize || '16px')
-    : getChatBubbleBodyFontSize(ui, false);
-  const composerAuxFontSize = density.composerAuxFontSize || CHAT_FONT_SIZES.composerAux;
+  const composerFontSize = getChatComposerBodyFontSize(ui, compactMobile);
+  const composerLineHeight = getChatComposerLineHeight(ui, compactMobile);
+  const composerAuxFontSize = density.composerAuxFontSize || CHAT_DEFAULT_FONT_SIZES.composerAux;
   const safeKeyboardInset = compactMobile ? Math.max(0, Math.round(Number(keyboardInset || 0))) : 0;
   const composerBg = ui.composerBg || (theme.palette.mode === 'dark' ? '#1c1c1e' : '#ffffff');
   const composerActionBg = ui.composerActionBg || theme.palette.primary.main;
@@ -323,8 +476,11 @@ const ChatComposer = memo(function ChatComposer({
         return;
       }
     }
+    if (compactMobile && event.key === 'Enter') {
+      return;
+    }
     onComposerKeyDown?.(event);
-  }, [activeMentionIndex, closeMentions, insertMention, mentionOpen, mentionOptions, onComposerKeyDown]);
+  }, [activeMentionIndex, closeMentions, compactMobile, insertMention, mentionOpen, mentionOptions, onComposerKeyDown]);
 
   const preserveComposerKeyboard = useCallback((event) => {
     if (!compactMobile) return;
@@ -352,7 +508,7 @@ const ChatComposer = memo(function ChatComposer({
         boxShadow: theme.palette.mode === 'dark'
           ? '0 -1px 0 rgba(255,255,255,0.04)'
           : `0 -1px 0 ${ui.borderSoft}, 0 -14px 26px rgba(80,104,128,0.08)`,
-        fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+        fontFamily: CHAT_FONT_FAMILY,
       }}
     >
       <Box sx={{ maxWidth: { xs: '100%', md: `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
@@ -384,7 +540,7 @@ const ChatComposer = memo(function ChatComposer({
                     noWrap
                     sx={{
                       minWidth: 0,
-                      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                      fontFamily: CHAT_FONT_FAMILY,
                       fontSize: composerAuxFontSize,
                       fontWeight: 800,
                       color: composerPrimaryText,
@@ -396,7 +552,7 @@ const ChatComposer = memo(function ChatComposer({
                     <Typography
                       sx={{
                         flexShrink: 0,
-                        fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                        fontFamily: CHAT_FONT_FAMILY,
                         fontSize: composerAuxFontSize,
                         fontWeight: 800,
                         color: ui.accentText,
@@ -419,7 +575,7 @@ const ChatComposer = memo(function ChatComposer({
                         borderRadius: '999px',
                         bgcolor: alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.1),
                         color: composerPrimaryText,
-                        fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                        fontFamily: CHAT_FONT_FAMILY,
                         fontSize: composerAuxFontSize,
                         fontWeight: 700,
                         overflow: 'hidden',
@@ -439,7 +595,7 @@ const ChatComposer = memo(function ChatComposer({
                         borderRadius: '999px',
                         bgcolor: alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.2 : 0.14),
                         color: ui.accentText,
-                        fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                        fontFamily: CHAT_FONT_FAMILY,
                         fontSize: composerAuxFontSize,
                         fontWeight: 850,
                       }}
@@ -454,7 +610,7 @@ const ChatComposer = memo(function ChatComposer({
                     noWrap
                     sx={{
                       mt: 0.6,
-                      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                      fontFamily: CHAT_FONT_FAMILY,
                       fontSize: composerAuxFontSize,
                       color: composerAuxColor,
                     }}
@@ -477,7 +633,7 @@ const ChatComposer = memo(function ChatComposer({
                     borderRadius: '999px',
                     bgcolor: alpha(ui.accentText || theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
                     color: ui.accentText,
-                    fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                    fontFamily: CHAT_FONT_FAMILY,
                     fontSize: composerAuxFontSize,
                     fontWeight: 850,
                     cursor: filesBusy ? 'default' : 'pointer',
@@ -498,7 +654,7 @@ const ChatComposer = memo(function ChatComposer({
                     borderRadius: '999px',
                     bgcolor: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
                     color: theme.palette.error.main,
-                    fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                    fontFamily: CHAT_FONT_FAMILY,
                     fontSize: composerAuxFontSize,
                     fontWeight: 850,
                     cursor: filesBusy ? 'default' : 'pointer',
@@ -528,10 +684,10 @@ const ChatComposer = memo(function ChatComposer({
             }}
           >
             <div className="min-w-0 flex-1">
-              <p className="truncate text-[12px] font-semibold" style={{ color: ui.accentText, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: composerAuxFontSize }}>
+              <p className="truncate text-[12px] font-semibold" style={{ color: ui.accentText, fontFamily: CHAT_FONT_FAMILY, fontSize: composerAuxFontSize }}>
                 {replyMessage?.sender?.full_name || replyMessage?.sender?.username || 'Сообщение'}
               </p>
-              <p className="truncate text-[12px]" style={{ color: ui.textSecondary, fontFamily: TELEGRAM_CHAT_FONT_FAMILY, fontSize: composerAuxFontSize }}>
+              <p className="truncate text-[12px]" style={{ color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY, fontSize: composerAuxFontSize }}>
                 {getSearchResultPreview(replyMessage)}
               </p>
             </div>
@@ -633,20 +789,21 @@ const ChatComposer = memo(function ChatComposer({
           </Box>
         ) : null}
 
-        <div className="flex items-end gap-2">
+        <div className="flex items-center gap-2">
           <Box
             data-testid="chat-composer-capsule"
             onDrop={onComposerDrop}
             onDragOver={onComposerDragOver}
             onDragLeave={onComposerDragLeave}
             className={joinClasses(
-              'flex flex-1 items-end gap-1 border px-2.5 py-0.5',
+              'flex flex-1 items-center gap-1 border px-2.5 py-0.5',
               compactMobile ? 'rounded-[23px]' : 'rounded-[20px]',
             )}
             sx={{
               minHeight: compactMobile ? 46 : (density.composerCapsuleMinHeight || 48),
               px: compactMobile ? undefined : `${density.composerCapsulePx || 10}px`,
-              py: compactMobile ? undefined : `${density.composerCapsulePy || 2}px`,
+              py: compactMobile ? undefined : `${density.composerCapsulePy ?? 2}px`,
+              alignItems: 'center',
               bgcolor: alpha(ui.composerInputBg, 0.94),
               borderColor: theme.palette.mode === 'dark' ? alpha('#ffffff', 0.08) : ui.borderSoft,
               boxShadow: 'none',
@@ -663,13 +820,13 @@ const ChatComposer = memo(function ChatComposer({
                   type="button"
                   aria-label="Отменить запись"
                   onClick={onCancelVoiceRecording}
+                  data-testid="chat-composer-cancel-voice-button"
                   className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
                   style={{
                     width: compactMobile ? undefined : density.composerIconButton,
                     height: compactMobile ? undefined : density.composerIconButton,
                     backgroundColor: 'transparent',
                     color: theme.palette.error.main,
-                    transform: compactMobile ? undefined : 'translateY(-4px)',
                   }}
                 >
                   <DeleteOutlineRoundedIcon sx={{ fontSize: 21 }} />
@@ -677,31 +834,24 @@ const ChatComposer = memo(function ChatComposer({
                 <Box
                   className="flex min-w-0 flex-1 items-center py-[11px]"
                   sx={{
-                    minHeight: 38,
+                    minHeight: compactMobile ? 38 : (density.composerInputSlotMinHeight ?? density.composerIconButton ?? 32),
                     gap: 1,
-                    py: compactMobile ? undefined : `${density.composerInnerPaddingY || 11}px`,
+                    py: compactMobile ? undefined : `${density.composerInnerPaddingY ?? 11}px`,
                   }}
                 >
-                  <Box
-                    sx={{
-                      width: 8,
-                      height: 8,
-                      borderRadius: '50%',
-                      bgcolor: theme.palette.error.main,
-                      animation: 'pulse 1.2s ease-in-out infinite',
-                      '@keyframes pulse': {
-                        '0%, 100%': { opacity: 1 },
-                        '50%': { opacity: 0.3 },
-                      },
-                    }}
+                  <VoiceRecordingActivity
+                    theme={theme}
+                    ui={ui}
+                    compactMobile={compactMobile}
+                    voiceRecordingLevelRef={voiceRecordingLevelRef}
                   />
                   <Typography
                     sx={{
-                      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                      fontFamily: CHAT_FONT_FAMILY,
                       fontSize: composerFontSize,
                       fontVariantNumeric: 'tabular-nums',
                       color: theme.palette.text.primary,
-                      lineHeight: 1.34,
+                      lineHeight: composerLineHeight,
                       userSelect: 'none',
                     }}
                   >
@@ -725,7 +875,6 @@ const ChatComposer = memo(function ChatComposer({
                         height: compactMobile ? undefined : density.composerIconButton,
                         backgroundColor: 'transparent',
                         color: composerIconColor,
-                        transform: compactMobile ? undefined : 'translateY(-4px)',
                       }}
                       onMouseEnter={(event) => {
                         if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);
@@ -742,10 +891,12 @@ const ChatComposer = memo(function ChatComposer({
                 </Tooltip>
 
                 <Box
-                  className="flex min-w-0 flex-1 items-end py-[11px]"
+                  data-testid="chat-composer-textarea-slot"
+                  className="flex min-w-0 flex-1 items-center py-[11px]"
                   sx={{
-                    minHeight: 38,
-                    py: compactMobile ? undefined : `${density.composerInnerPaddingY || 11}px`,
+                    alignItems: 'center',
+                    minHeight: compactMobile ? 38 : (density.composerInputSlotMinHeight ?? density.composerIconButton ?? 32),
+                    py: compactMobile ? undefined : `${density.composerInnerPaddingY ?? 11}px`,
                   }}
                 >
                   <TextareaAutosize
@@ -754,6 +905,7 @@ const ChatComposer = memo(function ChatComposer({
                     minRows={1}
                     maxRows={6}
                     aria-label="Message"
+                    enterKeyHint={compactMobile ? 'enter' : 'send'}
                     placeholder="Сообщение..."
                     value={messageText}
                     onChange={handleComposerChange}
@@ -771,16 +923,16 @@ const ChatComposer = memo(function ChatComposer({
                       outline: 'none',
                       background: 'transparent',
                       color: theme.palette.text.primary,
-                      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                      fontFamily: CHAT_FONT_FAMILY,
                       fontSize: composerFontSize,
-                      lineHeight: '1.34',
+                      lineHeight: composerLineHeight,
                       padding: 0,
                       margin: 0,
                       overflowY: 'auto',
                       overflowWrap: 'anywhere',
                       wordBreak: 'break-word',
                       maxHeight: `${density.composerTextareaMaxHeight || 120}px`,
-                      minHeight: `${compactMobile ? 18 : (density.composerTextareaMinHeight || 19)}px`,
+                      minHeight: `${compactMobile ? 18 : (density.composerTextareaMinHeight ?? 19)}px`,
                     }}
                   />
                 </Box>
@@ -802,7 +954,6 @@ const ChatComposer = memo(function ChatComposer({
                           height: compactMobile ? undefined : density.composerIconButton,
                           backgroundColor: 'transparent',
                           color: composerIconColor,
-                          transform: compactMobile ? undefined : 'translateY(-4px)',
                         }}
                         onMouseEnter={(event) => {
                           if (!compactMobile) event.currentTarget.style.backgroundColor = alpha(ui.accentText, 0.08);

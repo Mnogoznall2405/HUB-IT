@@ -220,7 +220,7 @@ describe('ChatBubble', () => {
     expect(screen.getByText('Compact mobile text')).toHaveStyle({ fontSize: '15px' });
   });
 
-  it('keeps desktop message body font size when compact desktop density is active', () => {
+  it('uses compact desktop message body font size when compact desktop density is active', () => {
     const compactDesktopUi = buildChatUiTokens(theme, { compactDesktop: true });
     const compactTheme = createTheme({
       typography: {
@@ -255,7 +255,81 @@ describe('ChatBubble', () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByText('Desktop compact density text')).toHaveStyle({ fontSize: '19px' });
+    expect(screen.getByText('Desktop compact density text')).toHaveStyle({ fontSize: '15px' });
+  });
+
+  it('uses one compact desktop primary font size for header, message body, and composer', () => {
+    const compactDesktopUi = buildChatUiTokens(theme, { compactDesktop: true });
+    const hostileTheme = createTheme({
+      typography: {
+        body1: {
+          fontSize: '0.875rem',
+          '@media (min-width:600px) and (max-width:1920px), (min-width:600px) and (max-height:960px)': {
+            fontSize: '0.8125rem',
+          },
+        },
+      },
+    });
+
+    render(
+      <ThemeProvider theme={hostileTheme}>
+        <ChatThread
+          {...buildThreadProps({
+            theme: hostileTheme,
+            isMobile: false,
+            compactMobile: false,
+            ui: compactDesktopUi,
+            messageText: '',
+            activeConversation: {
+              id: 'conv-1',
+              title: 'Header Person',
+              kind: 'direct',
+              unread_count: 0,
+              direct_peer: {
+                id: 2,
+                username: 'assignee',
+                full_name: 'Header Person',
+                presence: { is_online: true },
+              },
+            },
+            messages: [
+              {
+                id: 'msg-thread-font',
+                conversation_id: 'conv-1',
+                kind: 'text',
+                body: 'Thread scoped desktop text',
+                created_at: '2026-03-21T10:02:00Z',
+                is_own: false,
+                sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+              },
+            ],
+          })}
+        />
+      </ThemeProvider>,
+    );
+
+    const messageBody = screen.getByText('Thread scoped desktop text');
+    const bubbleSurface = getBubbleSurfaceByText('Thread scoped desktop text');
+    const composerTextarea = screen.getByTestId('chat-composer-textarea');
+    const composerTextareaSlot = screen.getByTestId('chat-composer-textarea-slot');
+    const composerCapsule = screen.getByTestId('chat-composer-capsule');
+
+    expect(screen.getByText('Header Person')).toHaveStyle({ fontSize: '15px' });
+    expect(messageBody).toHaveStyle({ fontSize: '15px', lineHeight: '1.26' });
+    expect(bubbleSurface).toHaveStyle({
+      paddingTop: '4px',
+      paddingRight: '6.24px',
+      paddingBottom: '4px',
+      paddingLeft: '6.24px',
+    });
+    expect(composerTextarea).toHaveStyle({ fontSize: '15px', lineHeight: '1.26' });
+    expect(composerTextareaSlot).toHaveStyle({
+      alignItems: 'center',
+      minHeight: '26px',
+      paddingTop: '0px',
+      paddingBottom: '0px',
+    });
+    expect(composerCapsule).toHaveStyle({ minHeight: '34px' });
   });
 
   it('renders reactions in a Telegram-style footer beside the message time', () => {
@@ -479,6 +553,36 @@ describe('ChatBubble', () => {
     expect(screen.getByTestId('chat-bubble-meta-bottom')).toBeInTheDocument();
   });
 
+  it('uses bottom meta for longer single-line desktop messages to avoid text overlap', () => {
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-desktop-long-single-line',
+          kind: 'text',
+          body: 'Privet, esli budut voprosy pishi mne',
+          created_at: '2026-03-21T10:48:00Z',
+          is_own: true,
+          delivery_status: 'sent',
+          sender: { id: 1, username: 'author', full_name: 'Task Author' },
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+        compactMobile={false}
+      />,
+    );
+
+    const meta = screen.getByTestId('chat-bubble-meta-bottom');
+    expect(meta).toBeInTheDocument();
+    expect(meta).toHaveStyle({ position: 'relative' });
+    expect(screen.queryByTestId('chat-bubble-meta-inline')).not.toBeInTheDocument();
+    expect(screen.getByText('Privet, esli budut voprosy pishi mne')).toBeInTheDocument();
+  });
+
   it('renders a forwarded attribution block above the copied message body', () => {
     renderWithTheme(
       <ChatBubble
@@ -562,6 +666,67 @@ describe('ChatBubble', () => {
     );
     expect(screen.getAllByTestId('chat-markdown-body')).toHaveLength(1);
     expect(screen.getAllByRole('table')).toHaveLength(1);
+  });
+
+  it('keeps explicitly plain Telegram-like numbered text literal', () => {
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-plain-list',
+          kind: 'text',
+          body_format: 'plain',
+          body: '1. купить картридж\n2. закрыть заявку',
+          created_at: '2026-03-21T10:03:00Z',
+          is_own: true,
+          sender: { id: 1, username: 'me', full_name: 'Me' },
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+      />,
+    );
+
+    const bodyNode = document.querySelector('[data-chat-message-body="true"]');
+    expect(bodyNode).toHaveTextContent('1. купить картридж');
+    expect(bodyNode).toHaveTextContent('2. закрыть заявку');
+    expect(screen.queryByTestId('chat-markdown-body')).not.toBeInTheDocument();
+    expect(document.querySelector('[data-chat-message-body="true"] ol')).toBeNull();
+  });
+
+  it('renders explicit markdown ordered and unordered lists with visible markers', () => {
+    renderWithTheme(
+      <ChatBubble
+        conversationKind="direct"
+        message={{
+          id: 'msg-markdown-list',
+          kind: 'text',
+          body_format: 'markdown',
+          body: '1. First item\n2. Second item\n\n- Bullet item',
+          created_at: '2026-03-21T10:03:00Z',
+          is_own: false,
+          sender: { id: 2, username: 'assistant', full_name: 'Assistant' },
+        }}
+        navigate={vi.fn()}
+        theme={theme}
+        ui={ui}
+        onOpenReads={vi.fn()}
+        onOpenAttachmentPreview={vi.fn()}
+        onReplyMessage={vi.fn()}
+      />,
+    );
+
+    const orderedList = document.querySelector('[data-testid="chat-markdown-body"] ol');
+    const unorderedList = document.querySelector('[data-testid="chat-markdown-body"] ul');
+    expect(orderedList).not.toBeNull();
+    expect(unorderedList).not.toBeNull();
+    expect(window.getComputedStyle(orderedList).listStyleType).toBe('decimal');
+    expect(window.getComputedStyle(unorderedList).listStyleType).toBe('disc');
+    expect(screen.getByText('First item')).toBeInTheDocument();
+    expect(screen.getByText('Bullet item')).toBeInTheDocument();
   });
 
   it('renders forwarded markdown as markdown and keeps the preview attribution-only', () => {
@@ -1745,6 +1910,49 @@ describe('ChatThread composer', () => {
     expect(composer).toHaveValue('@assignee ');
   });
 
+  it('keeps mobile Enter reserved for mention insertion when mention suggestions are open', () => {
+    const onComposerKeyDown = vi.fn();
+
+    function MentionComposerHarness() {
+      const [text, setText] = React.useState('');
+      return (
+        <ChatThread
+          {...buildThreadProps({
+            messageText: text,
+            onMessageTextChange: setText,
+            onComposerKeyDown,
+            mentionCandidates: [
+              {
+                id: 2,
+                username: 'assignee',
+                full_name: 'Task Assignee',
+                presence: { is_online: true },
+              },
+            ],
+          })}
+        />
+      );
+    }
+
+    renderWithTheme(<MentionComposerHarness />);
+    const composer = screen.getByTestId('chat-composer-textarea');
+    fireEvent.change(composer, {
+      target: {
+        value: '@a',
+        selectionStart: 2,
+        selectionEnd: 2,
+      },
+    });
+
+    expect(screen.getByTestId('chat-mention-suggestions')).toBeInTheDocument();
+
+    const notPrevented = fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter' });
+
+    expect(notPrevented).toBe(false);
+    expect(composer).toHaveValue('@assignee ');
+    expect(onComposerKeyDown).not.toHaveBeenCalled();
+  });
+
   it('renders selected files and forwards composer submit interactions', () => {
     const onOpenFileDialog = vi.fn();
     const onClearSelectedFiles = vi.fn();
@@ -1754,6 +1962,8 @@ describe('ChatThread composer', () => {
     renderWithTheme(
       <ChatThread
         {...buildThreadProps({
+          isMobile: false,
+          compactMobile: false,
           messageText: 'ready',
           selectedFiles: [
             new File(['one'], 'report.pdf', { type: 'application/pdf' }),
@@ -1786,11 +1996,34 @@ describe('ChatThread composer', () => {
 
     fireEvent.keyDown(screen.getByTestId('chat-composer-textarea'), { key: 'Enter', code: 'Enter' });
     expect(onComposerKeyDown).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('chat-composer-textarea')).toHaveAttribute('enterkeyhint', 'send');
 
     const sendButton = screen.getByTestId('chat-composer-send-button');
     expect(sendButton).not.toBeDisabled();
     fireEvent.click(sendButton);
     expect(onSendMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it('keeps mobile Enter as a textarea newline instead of forwarding submit', () => {
+    const onComposerKeyDown = vi.fn();
+
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          compactMobile: true,
+          messageText: 'line one',
+          onComposerKeyDown,
+        })}
+      />,
+    );
+
+    const composer = screen.getByTestId('chat-composer-textarea');
+    expect(composer).toHaveAttribute('enterkeyhint', 'enter');
+
+    const notPrevented = fireEvent.keyDown(composer, { key: 'Enter', code: 'Enter' });
+
+    expect(notPrevented).toBe(true);
+    expect(onComposerKeyDown).not.toHaveBeenCalled();
   });
 
   it('renders Telegram-style file drop panel during drag over', () => {
@@ -2169,6 +2402,54 @@ describe('ChatThread composer', () => {
     expect(within(capsule).getByTestId('chat-composer-menu-button')).toBeInTheDocument();
     expect(screen.queryByTestId('chat-composer-send-button')).not.toBeInTheDocument();
     expect(screen.getByTestId('chat-composer-voice-button')).toBeEnabled();
+  });
+
+  it('renders the voice recording waveform, timer, cancel action, and send action', () => {
+    const onCancelVoiceRecording = vi.fn();
+    const onStopVoiceRecording = vi.fn();
+
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          voiceRecording: true,
+          voiceRecordingDuration: 7,
+          voiceRecordingLevelRef: { current: 0 },
+          onCancelVoiceRecording,
+          onStopVoiceRecording,
+        })}
+      />,
+    );
+
+    const activity = screen.getByTestId('chat-voice-recording-activity');
+    expect(activity).toHaveAttribute('data-voice-active', 'false');
+    expect(screen.getByTestId('chat-voice-recording-waveform')).toBeInTheDocument();
+    expect(screen.getAllByTestId('chat-voice-recording-bar')).toHaveLength(18);
+    expect(screen.getByText('0:07')).toBeInTheDocument();
+    expect(screen.getByTestId('chat-composer-cancel-voice-button')).toBeEnabled();
+    expect(screen.getByTestId('chat-composer-send-button')).toBeEnabled();
+
+    fireEvent.click(screen.getByTestId('chat-composer-cancel-voice-button'));
+    fireEvent.click(screen.getByTestId('chat-composer-send-button'));
+    expect(onCancelVoiceRecording).toHaveBeenCalledTimes(1);
+    expect(onStopVoiceRecording).toHaveBeenCalledTimes(1);
+  });
+
+  it('marks the voice recording waveform as active when the mic level is high', () => {
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          voiceRecording: true,
+          voiceRecordingDuration: 12,
+          voiceRecordingLevelRef: { current: 0.8 },
+        })}
+      />,
+    );
+
+    const activity = screen.getByTestId('chat-voice-recording-activity');
+    expect(activity).toHaveAttribute('data-voice-active', 'true');
+    expect(screen.getByText('0:12')).toBeInTheDocument();
+    const firstBarHeight = Number.parseFloat(screen.getAllByTestId('chat-voice-recording-bar')[0].style.height);
+    expect(firstBarHeight).toBeGreaterThan(6);
   });
 
   it('keeps bottom scroll padding above an overlaid mobile keyboard', () => {

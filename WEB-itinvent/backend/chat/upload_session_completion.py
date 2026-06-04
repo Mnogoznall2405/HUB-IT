@@ -9,6 +9,16 @@ from backend.chat.upload_session_transfer import validate_upload_session_file_co
 from backend.chat.utils import normalize_text as _normalize_text
 
 
+def _duration_seconds_or_none(value: object) -> int | None:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
 class UploadSessionCompletionMaterializer:
     """Owns filesystem materialization for completed upload-session files."""
 
@@ -128,9 +138,11 @@ class UploadSessionCompletionMaterializer:
                         "attachment_id": _normalize_text(file_payload.get("attachment_id") or file_payload.get("file_id")),
                         "file_name": _normalize_text(file_payload.get("file_name")),
                         "mime_type": mime_type,
+                        "media_kind": _normalize_text(file_payload.get("media_kind")) or None,
                         "file_size": file_size,
                         "width": width,
                         "height": height,
+                        "duration_seconds": _duration_seconds_or_none(file_payload.get("duration_seconds")),
                         "storage_name": storage_name,
                         "path": final_path,
                     }

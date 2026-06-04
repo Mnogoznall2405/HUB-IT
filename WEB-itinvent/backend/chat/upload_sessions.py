@@ -24,6 +24,16 @@ def _parse_dt(value: object) -> Optional[datetime]:
     return parsed.astimezone(timezone.utc)
 
 
+def _duration_seconds_or_none(value: object) -> int | None:
+    text = _normalize_text(value)
+    if not text:
+        return None
+    try:
+        return int(float(text))
+    except (TypeError, ValueError):
+        return None
+
+
 class ChatUploadSessionStore:
     def __init__(
         self,
@@ -190,6 +200,8 @@ class ChatUploadSessionStore:
             "file_id": _normalize_text(file_payload.get("file_id")),
             "file_name": _normalize_text(file_payload.get("file_name")),
             "mime_type": _normalize_text(file_payload.get("mime_type")) or None,
+            "media_kind": _normalize_text(file_payload.get("media_kind")) or None,
+            "duration_seconds": _duration_seconds_or_none(file_payload.get("duration_seconds")),
             "size": int(file_payload.get("size", 0) or 0),
             "original_size": int(file_payload.get("original_size", 0) or 0),
             "transfer_encoding": self._normalize_transfer_encoding(file_payload.get("transfer_encoding")),

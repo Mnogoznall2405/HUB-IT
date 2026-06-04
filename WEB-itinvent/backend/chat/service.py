@@ -777,6 +777,45 @@ class ChatService:
             raise ValueError(f"Unsupported transfer encoding: {normalized or 'unknown'}")
         return normalized
 
+    def _normalize_media_kind(self, value: object) -> str | None:
+        normalized = _normalize_text(value).lower()
+        if not normalized:
+            return None
+        if normalized not in {"image", "video", "audio", "file"}:
+            raise ValueError(f"Unsupported media kind: {normalized}")
+        return normalized
+
+    def _normalize_duration_seconds(self, value: object) -> int | None:
+        if value is None or str(value).strip() == "":
+            return None
+        try:
+            duration = int(round(float(value)))
+        except (TypeError, ValueError) as exc:
+            raise ValueError("duration_seconds must be a non-negative number") from exc
+        if duration < 0:
+            raise ValueError("duration_seconds must be a non-negative number")
+        return min(duration, 86400)
+
+    def _normalize_audio_mime_type(self, *, mime_type: str, file_name: str) -> str:
+        if mime_type.startswith("audio/"):
+            return mime_type
+        suffix = Path(file_name).suffix.lower()
+        if suffix == ".webm":
+            return "audio/webm"
+        if suffix in {".ogg", ".opus"}:
+            return "audio/ogg"
+        if suffix == ".m4a":
+            return "audio/mp4"
+        if suffix == ".mp3":
+            return "audio/mpeg"
+        if suffix == ".wav":
+            return "audio/wav"
+        if suffix == ".aac":
+            return "audio/aac"
+        if suffix == ".flac":
+            return "audio/flac"
+        return "audio/webm"
+
     def _is_archive_file_type(self, *, file_name: str, mime_type: str) -> bool:
         suffix = Path(file_name).suffix.lower()
         if suffix in CHAT_ARCHIVE_EXTENSIONS:
@@ -792,11 +831,15 @@ class ChatService:
     def _normalize_upload_transfer_meta(self, meta: Any) -> dict[str, Any]:
         payload = meta if isinstance(meta, dict) else {}
         transfer_encoding = self._normalize_transfer_encoding(payload.get("transfer_encoding"))
+        media_kind = self._normalize_media_kind(payload.get("media_kind"))
+        duration_seconds = self._normalize_duration_seconds(payload.get("duration_seconds"))
         raw_original_size = payload.get("original_size")
         if raw_original_size is None or str(raw_original_size).strip() == "":
             return {
                 "transfer_encoding": transfer_encoding,
                 "original_size": None,
+                "media_kind": media_kind,
+                "duration_seconds": duration_seconds,
             }
         try:
             original_size = int(raw_original_size)
@@ -807,6 +850,8 @@ class ChatService:
         return {
             "transfer_encoding": transfer_encoding,
             "original_size": original_size,
+            "media_kind": media_kind,
+            "duration_seconds": duration_seconds,
         }
 
     def _write_decoded_transfer_payload(
@@ -873,9 +918,17 @@ class ChatService:
         size: int,
         original_size: int,
         transfer_encoding: str,
+        media_kind: object = None,
+        duration_seconds: object = None,
     ) -> dict[str, Any]:
         normalized_file_name = _safe_file_name(file_name)
-        normalized_mime_type = self._normalize_mime_type(mime_type, file_name=normalized_file_name)
+        normalized_media_kind = self._normalize_media_kind(media_kind)
+        normalized_duration_seconds = self._normalize_duration_seconds(duration_seconds)
+        normalized_mime_type = self._normalize_mime_type(
+            mime_type,
+            file_name=normalized_file_name,
+            media_kind=normalized_media_kind,
+        )
         self._ensure_supported_upload_type(file_name=normalized_file_name, mime_type=normalized_mime_type)
         normalized_size = int(size or 0)
         normalized_original_size = int(original_size or normalized_size or 0)
@@ -895,6 +948,8 @@ class ChatService:
             "attachment_id": file_id,
             "file_name": normalized_file_name,
             "mime_type": normalized_mime_type,
+            "media_kind": normalized_media_kind,
+            "duration_seconds": normalized_duration_seconds,
             "size": normalized_size,
             "original_size": normalized_original_size,
             "transfer_encoding": normalized_transfer_encoding,
@@ -1461,7 +1516,7 @@ class ChatService:
             }
 
             for attachment in attachments:
-                kind = self._get_attachment_kind(attachment.mime_type)
+                kind = self._get_attachment_kind(attachment.mime_type, getattr(attachment, "media_kind", None))
                 payload = self._conversation_attachment_to_payload(attachment, kind=kind)
                 if kind == "image":
                     summary["photos_count"] += 1
@@ -2619,6 +2674,8 @@ class ChatService:
                     size=int(item.get("size", 0) or 0),
                     original_size=int(item.get("original_size", 0) or 0),
                     transfer_encoding=_normalize_text(item.get("transfer_encoding"), "identity"),
+                    media_kind=item.get("media_kind"),
+                    duration_seconds=item.get("duration_seconds"),
                 )
                 total_size += int(prepared_item["original_size"])
                 if total_size > CHAT_MAX_TOTAL_FILE_BYTES:
@@ -3529,9 +3586,11 @@ class ChatService:
                             "storage_name": storage_name,
                             "file_name": file_name,
                             "mime_type": _normalize_text(getattr(source_attachment, "mime_type", None)) or None,
+                            "media_kind": _normalize_text(getattr(source_attachment, "media_kind", None)) or None,
                             "file_size": int(source_attachment.file_size or 0),
                             "width": int(source_attachment.width) if source_attachment.width is not None else None,
                             "height": int(source_attachment.height) if source_attachment.height is not None else None,
+                            "duration_seconds": int(source_attachment.duration_seconds) if getattr(source_attachment, "duration_seconds", None) is not None else None,
                         }
                     )
 
@@ -3764,7 +3823,12 @@ class ChatService:
                 user_id=int(current_user_id),
             )
         except Exception:
-            pass
+            logger.warning(
+                "chat.mark_read: failed to clear hub notifications conversation_id=%s user_id=%s",
+                _normalize_text(payload.get("conversation_id")),
+                int(current_user_id),
+                exc_info=True,
+            )
         return payload
 
     def _build_conversation_payload(
@@ -4768,6 +4832,8 @@ class ChatService:
                 )
                 transfer_encoding = transfer_meta["transfer_encoding"]
                 expected_original_size = transfer_meta["original_size"]
+                media_kind = transfer_meta["media_kind"]
+                duration_seconds = transfer_meta["duration_seconds"]
                 if transfer_encoding == "gzip" and expected_original_size is None:
                     raise ValueError("original_size is required for gzip uploads")
 
@@ -4775,6 +4841,7 @@ class ChatService:
                 mime_type = self._normalize_mime_type(
                     getattr(upload, "content_type", None),
                     file_name=file_name,
+                    media_kind=media_kind,
                 )
                 self._ensure_supported_upload_type(file_name=file_name, mime_type=mime_type)
 
@@ -4840,9 +4907,11 @@ class ChatService:
                             "attachment_id": attachment_id,
                             "file_name": file_name,
                             "mime_type": mime_type,
+                            "media_kind": media_kind,
                             "file_size": file_size,
                             "width": width,
                             "height": height,
+                            "duration_seconds": duration_seconds,
                             "storage_name": storage_name,
                             "path": final_path,
                         }
@@ -4862,12 +4931,20 @@ class ChatService:
                     pass
             raise
 
-    def _normalize_mime_type(self, raw_value: object, *, file_name: str) -> str:
+    def _normalize_mime_type(self, raw_value: object, *, file_name: str, media_kind: object = None) -> str:
         value = _normalize_text(raw_value).lower()
+        if ";" in value:
+            value = value.split(";", 1)[0].strip()
+        normalized_media_kind = self._normalize_media_kind(media_kind)
+        if normalized_media_kind == "audio":
+            return self._normalize_audio_mime_type(mime_type=value, file_name=file_name)
         if value and value != "application/octet-stream":
             return value
         guessed, _ = mimetypes.guess_type(file_name)
-        return _normalize_text(guessed).lower() or "application/octet-stream"
+        guessed_value = _normalize_text(guessed).lower()
+        if ";" in guessed_value:
+            guessed_value = guessed_value.split(";", 1)[0].strip()
+        return guessed_value or "application/octet-stream"
 
     def _is_allowed_file_type(self, *, file_name: str, mime_type: str) -> bool:
         suffix = Path(file_name).suffix.lower()
@@ -4942,8 +5019,8 @@ class ChatService:
         return self._attachment_media.to_payload(attachment)
 
     @staticmethod
-    def _get_attachment_kind(mime_type: object) -> str:
-        return ChatAttachmentMedia.get_kind(mime_type)
+    def _get_attachment_kind(mime_type: object, media_kind: object = None) -> str:
+        return ChatAttachmentMedia.get_kind(mime_type, media_kind)
 
     def _normalize_attachment_kind_filter(self, value: object) -> str:
         return ChatAttachmentMedia.normalize_kind_filter(value)

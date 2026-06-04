@@ -1,11 +1,12 @@
 import { API_V1_BASE } from '../../api/client';
 
-export const CHAT_FILE_ACCEPT = '.jpg,.jpeg,.png,.gif,.webp,.bmp,.pdf,.doc,.docx,.docm,.rtf,.odt,.xls,.xlsx,.xlsm,.ods,.ppt,.pptx,.pptm,.odp,.txt,.csv,.tsv,.log,.md,.json,.xml';
+export const CHAT_FILE_ACCEPT = '.jpg,.jpeg,.png,.gif,.webp,.bmp,.mp4,.mov,.webm,.m4v,.ogg,.mp3,.wav,.aac,.m4a,.opus,.flac,.pdf,.doc,.docx,.docm,.rtf,.odt,.xls,.xlsx,.xlsm,.ods,.ppt,.pptx,.pptm,.odp,.txt,.csv,.tsv,.log,.md,.json,.xml';
 export const CHAT_MAX_FILE_COUNT = 5;
 export const CHAT_MAX_FILE_BYTES = 1024 * 1024 * 1024;
 export const CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX = 180;
 export const CHAT_IMAGE_ATTACHMENT_EXTENSIONS = new Set(['jpg', 'jpeg', 'png', 'gif', 'webp', 'bmp']);
 export const CHAT_VIDEO_ATTACHMENT_EXTENSIONS = new Set(['mp4', 'mov', 'webm', 'm4v']);
+export const CHAT_AUDIO_ATTACHMENT_EXTENSIONS = new Set(['ogg', 'mp3', 'wav', 'aac', 'm4a', 'opus', 'flac']);
 export const CHAT_ARCHIVE_EXTENSIONS = new Set(['zip', 'rar', '7z', 'tar', 'gz']);
 export const CHAT_ARCHIVE_MIME_TYPES = new Set([
   'application/zip',
@@ -284,18 +285,38 @@ const getAttachmentFileName = (attachment) => String(
   || '',
 ).trim().toLowerCase();
 
-export const isImageAttachment = (attachment) => {
+export const getAttachmentKind = (attachment) => {
+  const explicitKind = String(
+    attachment?.kind
+    || attachment?.media_kind
+    || attachment?.mediaKind
+    || attachment?.file_type
+    || attachment?.fileType
+    || '',
+  ).trim().toLowerCase();
+  if (['image', 'video', 'audio', 'file'].includes(explicitKind)) return explicitKind;
+
   const mimeType = getAttachmentMimeType(attachment);
-  if (mimeType.startsWith('image/')) return true;
-  const extension = getChatFileExtension(getAttachmentFileName(attachment));
-  return CHAT_IMAGE_ATTACHMENT_EXTENSIONS.has(extension);
+  if (mimeType.startsWith('image/')) return 'image';
+  if (mimeType.startsWith('audio/')) return 'audio';
+  if (mimeType.startsWith('video/')) return 'video';
+
+  const fileName = getAttachmentFileName(attachment);
+  const extension = getChatFileExtension(fileName);
+  if (CHAT_IMAGE_ATTACHMENT_EXTENSIONS.has(extension)) return 'image';
+  if (CHAT_AUDIO_ATTACHMENT_EXTENSIONS.has(extension)) return 'audio';
+  if (extension === 'webm' && fileName.startsWith('voice_')) return 'audio';
+  if (CHAT_VIDEO_ATTACHMENT_EXTENSIONS.has(extension)) return 'video';
+  return 'file';
+};
+
+export const isImageAttachment = (attachment) => {
+  return getAttachmentKind(attachment) === 'image';
 };
 export const isVideoAttachment = (attachment) => {
-  const mimeType = getAttachmentMimeType(attachment);
-  if (mimeType.startsWith('video/')) return true;
-  const extension = getChatFileExtension(getAttachmentFileName(attachment));
-  return CHAT_VIDEO_ATTACHMENT_EXTENSIONS.has(extension);
+  return getAttachmentKind(attachment) === 'video';
 };
+export const isAudioAttachment = (attachment) => getAttachmentKind(attachment) === 'audio';
 export const isMediaAttachment = (attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment);
 export const isPdfAttachment = (attachment) => getAttachmentMimeType(attachment) === 'application/pdf';
 

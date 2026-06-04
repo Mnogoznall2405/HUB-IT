@@ -148,9 +148,11 @@ class ChatMessageAttachment(Base):
     storage_name: Mapped[str] = mapped_column(String(255), nullable=False)
     file_name: Mapped[str] = mapped_column(String(255), nullable=False)
     mime_type: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    media_kind: Mapped[str | None] = mapped_column(String(20), nullable=True)
     file_size: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     width: Mapped[int | None] = mapped_column(Integer, nullable=True)
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    duration_seconds: Mapped[int | None] = mapped_column(Integer, nullable=True)
     uploaded_by_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow, index=True)
 

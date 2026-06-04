@@ -4,6 +4,7 @@ import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
 import ChatSidebar, { CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION } from './ChatSidebar';
+import { buildChatUiTokens } from './chatUiTokens';
 
 const theme = createTheme();
 const ui = {
@@ -95,6 +96,19 @@ describe('ChatSidebar', () => {
     renderWithTheme(buildProps());
 
     expect(screen.getByRole('button', { current: 'page' })).toHaveAttribute('data-chat-active', 'true');
+  });
+
+  it('renders compact desktop chat rows from density tokens', () => {
+    const compactUi = buildChatUiTokens(theme, { compactDesktop: true });
+
+    renderWithTheme(buildProps({ ui: compactUi }));
+
+    expect(screen.getByRole('button', { current: 'page' })).toHaveStyle({
+      minHeight: '48px',
+      padding: '4px 8px',
+      margin: '0px 4px',
+      borderRadius: '9px',
+    });
   });
 
   it('switches filter from the sidebar menu', () => {

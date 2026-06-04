@@ -160,6 +160,38 @@ describe('FileAttachment', () => {
     expect(videoLink).toHaveAttribute('href', '/files/clip.mp4');
     expect(screen.getByText('1:35')).toBeInTheDocument();
   });
+
+  it('renders voice attachments as audio and exposes a fallback link on playback errors', async () => {
+    const playSpy = vi.spyOn(window.HTMLMediaElement.prototype, 'play')
+      .mockRejectedValue(new Error('playback blocked'));
+
+    try {
+      const { container } = renderWithTheme(
+        <FileAttachment
+          fileName="voice_123.webm"
+          fileSize={4096}
+          fileUrl="/files/voice_123.webm"
+          openUrl="/files/voice_123.webm"
+          mimeType="audio/webm"
+          fileType="audio"
+          theme={theme}
+          ui={ui}
+          durationSeconds={7}
+        />,
+      );
+
+      const audio = container.querySelector('audio');
+      expect(audio).toBeTruthy();
+      expect(audio).toHaveAttribute('src', '/files/voice_123.webm');
+      expect(screen.getByText('0:07')).toBeInTheDocument();
+
+      fireEvent.click(screen.getByRole('button'));
+
+      await waitFor(() => expect(container.querySelector('a[href="/files/voice_123.webm"]')).toBeTruthy());
+    } finally {
+      playSpy.mockRestore();
+    }
+  });
 });
 
 describe('AttachmentCard', () => {
@@ -288,6 +320,32 @@ describe('AttachmentCard', () => {
     fireEvent.click(screen.getByRole('button'));
     expect(onOpenPreview).toHaveBeenCalledWith('msg-3', attachment);
     expect(screen.getByRole('img', { name: 'clip.mp4' })).toHaveAttribute('src', attachment.variant_urls.poster);
+  });
+
+  it('renders explicit audio attachments through the inline original URL', () => {
+    const attachment = {
+      id: 'att-voice',
+      kind: 'audio',
+      media_kind: 'audio',
+      file_name: 'voice_456.webm',
+      mime_type: 'application/octet-stream',
+      file_size: 4096,
+      duration_seconds: 12,
+    };
+
+    const { container } = renderWithTheme(
+      <AttachmentCard
+        messageId="msg-voice"
+        attachment={attachment}
+        theme={theme}
+        ui={ui}
+      />,
+    );
+
+    const audio = container.querySelector('audio');
+    expect(audio).toBeTruthy();
+    expect(audio).toHaveAttribute('src', buildAttachmentUrl('msg-voice', 'att-voice', { inline: true }));
+    expect(screen.getByText('0:12')).toBeInTheDocument();
   });
 
   it('keeps non-image attachments as a single openable link', () => {

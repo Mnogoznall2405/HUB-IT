@@ -4,10 +4,13 @@ import {
   buildTimelineItems,
   detectChatBodyFormat,
   getConversationStatusLine,
+  getAttachmentKind,
   getMessagePreview,
   getReplyPreviewText,
   getSearchResultPreview,
   hasChatMarkdownTable,
+  isAudioAttachment,
+  isVideoAttachment,
   normalizeChatText,
 } from './chatHelpers';
 
@@ -37,6 +40,21 @@ describe('chatHelpers file caption previews', () => {
 
     expect(getMessagePreview(message)).toBe('Файлы: 2');
     expect(getSearchResultPreview(message)).toBe('Файлы: 2');
+  });
+});
+
+describe('chatHelpers attachment media kind', () => {
+  it('keeps explicit audio webm attachments out of the video path', () => {
+    const attachment = {
+      kind: 'audio',
+      media_kind: 'audio',
+      file_name: 'voice_123.webm',
+      mime_type: 'application/octet-stream',
+    };
+
+    expect(getAttachmentKind(attachment)).toBe('audio');
+    expect(isAudioAttachment(attachment)).toBe(true);
+    expect(isVideoAttachment(attachment)).toBe(false);
   });
 });
 

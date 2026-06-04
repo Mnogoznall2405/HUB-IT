@@ -31,7 +31,11 @@ import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
 import {
   CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX,
 } from './chatHelpers';
-import { CHAT_BUBBLE_BODY_FONT_VAR, getChatBubbleBodyFontSize } from './chatUiTokens';
+import {
+  buildChatThreadMessageBodyTypographySx,
+  CHAT_DEFAULT_FONT_SIZES,
+  CHAT_FONT_FAMILY,
+} from './chatUiTokens';
 
 export {
   ChatBubble,
@@ -48,28 +52,16 @@ const BACK_SWIPE_EDGE_PX = 28;
 const BACK_SWIPE_START_PX = 14;
 const BACK_SWIPE_TRIGGER_PX = 84;
 const HISTORY_AUTO_LOAD_ARM_DISTANCE_PX = 160;
-const TELEGRAM_CHAT_FONT_FAMILY = [
-  '"SF Pro Text"',
-  '"SF Pro Display"',
-  '"Segoe UI Variable Text"',
-  '"Segoe UI"',
-  'Roboto',
-  'Helvetica',
-  'Arial',
-  'sans-serif',
-].join(', ');
-const CHAT_FONT_SIZES = {
-  meta: '12px',
-  previewLabel: '12px',
-  previewTitle: '14px',
-  previewBody: '13px',
-  sender: '15px',
-  body: '17px',
-  headerTitleMobile: '17.5px',
-  headerSubtitleMobile: '13px',
-  composer: '17px',
-  composerAux: '13px',
+// Single arbiter for programmatic scrollTop writes. Several effects (reaction
+// height compensation, pin-to-bottom, selection-mode restore, keyboard) can fire
+// inside the same frame; without arbitration they clobber each other and the
+// viewport visibly jumps. Higher priority wins within SCROLL_WRITE_WINDOW_MS.
+const SCROLL_WRITE_PRIORITY = {
+  compensation: 1,
+  pinnedBottom: 2,
+  preserve: 3,
 };
+const SCROLL_WRITE_WINDOW_MS = 32;
 
 const getMessageReactionSignature = (message) => {
   const reactions = Array.isArray(message?.reactions) ? message.reactions : [];
@@ -184,11 +176,11 @@ function AiRunStatusBanner({ aiStatus, theme, ui, compactMobile = false }) {
         backgroundColor: tone.bg,
       }}
     >
-      <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+      <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: CHAT_FONT_FAMILY }}>
         {label}
       </Typography>
       {status === 'failed' && aiStatus?.error_text ? (
-        <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+        <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
           {aiStatus.error_text}
         </Typography>
       ) : null}
@@ -236,11 +228,11 @@ function AiInteractiveStatusBanner({ aiStatusDisplay, theme, ui, compactMobile =
             <SmartToyOutlinedIcon sx={{ mt: 0.05, fontSize: 17, color: tone.text, flexShrink: 0 }} />
           )}
           <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+            <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: CHAT_FONT_FAMILY }}>
               {aiStatusDisplay.primaryText}
             </Typography>
             {aiStatusDisplay.secondaryText ? (
-              <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }}>
+              <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
                 {aiStatusDisplay.secondaryText}
               </Typography>
             ) : null}
@@ -346,7 +338,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
                 fontSize: 21,
                 fontWeight: 700,
                 lineHeight: 1,
-                fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                fontFamily: CHAT_FONT_FAMILY,
               }}
             >
               {selectedMessageCount}
@@ -419,7 +411,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
                 color: theme.palette.primary.contrastText,
                 fontWeight: 850,
                 fontSize: compactMobile ? 16 : 17,
-                fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
+                fontFamily: CHAT_FONT_FAMILY,
               }}
             >
               {selectedMessageCount}
@@ -448,10 +440,10 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
                 size={compactMobile ? 40 : (density.threadHeaderAvatar || 42)}
               />
               <Box sx={{ minWidth: 0 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || '1.02rem'), letterSpacing: '-0.01em', fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
+                <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary), letterSpacing: '-0.01em', fontFamily: CHAT_FONT_FAMILY }} noWrap>
                   {activeConversation.title}
                 </Typography>
-                <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_FONT_SIZES.previewBody : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
+                <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerSubtitleMobile : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: CHAT_FONT_FAMILY }} noWrap>
                   {typingLine || headerSubtitle}
                 </Typography>
               </Box>
@@ -535,10 +527,10 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
               size={compactMobile ? 40 : (density.threadHeaderAvatar || 42)}
             />
             <Box sx={{ minWidth: 0 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || '1.02rem'), letterSpacing: '-0.01em', fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary), letterSpacing: '-0.01em', fontFamily: CHAT_FONT_FAMILY }} noWrap>
                 {activeConversation.title}
               </Typography>
-              <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_FONT_SIZES.previewBody : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: TELEGRAM_CHAT_FONT_FAMILY }} noWrap>
+              <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerSubtitleMobile : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: CHAT_FONT_FAMILY }} noWrap>
                 {typingLine || headerSubtitle}
               </Typography>
             </Box>
@@ -770,6 +762,7 @@ function ChatThread({
   onSendGif,
   voiceRecording = false,
   voiceRecordingDuration = 0,
+  voiceRecordingLevelRef = null,
   onStartVoiceRecording,
   onStopVoiceRecording,
   onCancelVoiceRecording,
@@ -778,6 +771,7 @@ function ChatThread({
   const resolvedMobileInteractionsEnabled = Boolean(mobileInteractionsEnabled || isMobile);
   const composerDockRef = useRef(null);
   const lastScrollTopRef = useRef(0);
+  const lastProgrammaticScrollRef = useRef({ at: 0, priority: 0 });
   const composerFocusedRef = useRef(false);
   const threadPinnedToBottomRef = useRef(true);
   const previousComposerLayoutRef = useRef({ composerHeight: null, keyboardInset: null });
@@ -831,6 +825,26 @@ function ChatThread({
     }
   }, [armHistoryAutoLoadIfNearTop]);
 
+  // Centralised, clamped scrollTop writer. Returns the applied value, or null
+  // when a higher-priority write already claimed the current frame (so the
+  // caller keeps its previous position instead of fighting the winner).
+  const applyThreadScroll = useCallback((container, rawTarget, priority = 0) => {
+    if (!container) return null;
+    const now = typeof performance !== 'undefined' && typeof performance.now === 'function'
+      ? performance.now()
+      : Date.now();
+    const last = lastProgrammaticScrollRef.current;
+    if (last && (now - Number(last.at || 0)) <= SCROLL_WRITE_WINDOW_MS && priority < Number(last.priority || 0)) {
+      return null;
+    }
+    const maxScrollTop = Math.max(0, Number(container.scrollHeight || 0) - Number(container.clientHeight || 0));
+    const nextTop = Math.max(0, Math.min(maxScrollTop, Number(rawTarget || 0)));
+    container.scrollTop = nextTop;
+    lastScrollTopRef.current = nextTop;
+    lastProgrammaticScrollRef.current = { at: now, priority };
+    return nextTop;
+  }, []);
+
   useLayoutEffect(() => {
     const previousSelectionMode = previousSelectionModeRef.current;
     previousSelectionModeRef.current = selectionMode;
@@ -841,19 +855,17 @@ function ChatThread({
     window.requestAnimationFrame(() => {
       if (threadScrollRef.current !== container) return;
       if (Math.abs(Number(container.scrollTop || 0) - preservedScrollTop) < 1) return;
-      container.scrollTop = preservedScrollTop;
-      lastScrollTopRef.current = preservedScrollTop;
+      applyThreadScroll(container, preservedScrollTop, SCROLL_WRITE_PRIORITY.preserve);
     });
-  }, [selectionMode, threadScrollRef]);
+  }, [selectionMode, threadScrollRef, applyThreadScroll]);
 
   const scrollPinnedThreadToBottom = useCallback(({ settleFrames = 1 } = {}) => {
     const container = threadScrollRef.current;
     if (!container || !threadPinnedToBottomRef.current) return;
 
     const scrollToBottom = () => {
-      const nextScrollTop = Math.max(0, Number(container.scrollHeight || 0) - Number(container.clientHeight || 0));
-      container.scrollTop = nextScrollTop;
-      lastScrollTopRef.current = nextScrollTop;
+      const bottomTarget = Number(container.scrollHeight || 0) - Number(container.clientHeight || 0);
+      applyThreadScroll(container, bottomTarget, SCROLL_WRITE_PRIORITY.pinnedBottom);
     };
 
     scrollToBottom();
@@ -871,7 +883,7 @@ function ChatThread({
     };
 
     window.requestAnimationFrame(settle);
-  }, [threadScrollRef]);
+  }, [threadScrollRef, applyThreadScroll]);
 
   useEffect(() => {
     const node = composerDockRef.current;
@@ -958,13 +970,12 @@ function ChatThread({
       return;
     }
 
-    const maxScrollTop = Math.max(0, Number(container.scrollHeight || 0) - Number(container.clientHeight || 0));
-    const nextScrollTop = Math.max(0, Math.min(maxScrollTop, scrollTop + compensation));
-    container.scrollTop = nextScrollTop;
-    lastScrollTopRef.current = nextScrollTop;
-    const distanceFromBottom = Number(container.scrollHeight || 0) - nextScrollTop - Number(container.clientHeight || 0);
+    const applied = applyThreadScroll(container, scrollTop + compensation, SCROLL_WRITE_PRIORITY.compensation);
+    const effectiveScrollTop = applied == null ? scrollTop : applied;
+    lastScrollTopRef.current = effectiveScrollTop;
+    const distanceFromBottom = Number(container.scrollHeight || 0) - effectiveScrollTop - Number(container.clientHeight || 0);
     threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
-  }, [messages, threadContentRef, threadScrollRef]);
+  }, [messages, threadContentRef, threadScrollRef, applyThreadScroll]);
 
   // Простое отслеживание клавиатуры через resize окна
   useEffect(() => {
@@ -1236,8 +1247,8 @@ function ChatThread({
         '--chat-action-press-bg': ui.headerActionBg || alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.06 : 0.08),
         '--chat-action-active-bg': ui.accentSoft,
         '--chat-action-active-text': ui.accentText,
-        '--chat-font-family': TELEGRAM_CHAT_FONT_FAMILY,
-        [CHAT_BUBBLE_BODY_FONT_VAR]: getChatBubbleBodyFontSize(ui, compactMobile),
+        '--chat-font-family': CHAT_FONT_FAMILY,
+        ...buildChatThreadMessageBodyTypographySx(ui, compactMobile),
         '--chat-focus-ring': ui.focusRing,
         '--chat-skeleton-base': ui.skeletonBase,
         '--chat-skeleton-wave': ui.skeletonWave,
@@ -1260,9 +1271,6 @@ function ChatThread({
         fontFamily: 'var(--chat-font-family)',
         '& .MuiTypography-root, & button, & input, & textarea': {
           fontFamily: 'var(--chat-font-family)',
-        },
-        '& [data-chat-message-body="true"]': {
-          fontSize: `var(${CHAT_BUBBLE_BODY_FONT_VAR}) !important`,
         },
       }}
     >
@@ -1500,6 +1508,7 @@ function ChatThread({
           onSendGif={onSendGif}
           voiceRecording={voiceRecording}
           voiceRecordingDuration={voiceRecordingDuration}
+          voiceRecordingLevelRef={voiceRecordingLevelRef}
           onStartVoiceRecording={onStartVoiceRecording}
           onStopVoiceRecording={onStopVoiceRecording}
           onCancelVoiceRecording={onCancelVoiceRecording}

@@ -3,10 +3,7 @@ import { useCallback } from 'react';
 import { chatAPI } from '../../api/client';
 import { CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { chatSocket } from '../../lib/chatSocket';
-import {
-  buildChatDraftKey,
-  detectChatBodyFormat,
-} from './chatHelpers';
+import { buildChatDraftKey } from './chatHelpers';
 
 export default function useChatComposerSending({
   activeConversation,
@@ -37,7 +34,7 @@ export default function useChatComposerSending({
     const conversationId = String(activeConversationId || '').trim();
     const body = String(messageText || '').trim();
     if (!conversationId || !body) return false;
-    const bodyFormat = detectChatBodyFormat(body);
+    const bodyFormat = 'plain';
     const draftReplyMessage = replyMessage ? { ...replyMessage } : null;
     const optimisticMessage = createOptimisticTextMessage({
       conversationId,
