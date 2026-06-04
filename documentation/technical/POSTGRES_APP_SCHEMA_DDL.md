@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-05-27 12:49 UTC_  
+_Сгенерировано: 2026-06-04 08:21 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (75 tables)
+## Schema `app` (82 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -855,6 +855,114 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.my_file_audit`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.my_file_audit_id_seq'::regclass)` |
+| `file_id` | varchar(64) | yes | `` |
+| `action` | varchar(40) | no | `` |
+| `actor_user_id` | integer | no | `0` |
+| `actor_username` | varchar(50) | no | `''::character varying` |
+| `ip_address` | varchar(128) | no | `''::character varying` |
+| `user_agent` | text | no | `''::text` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_my_file_audit_action_created`: (action, created_at)
+  - `ix_app_my_file_audit_actor_created`: (actor_user_id, created_at)
+  - `ix_app_my_file_audit_file_created`: (file_id, created_at)
+
+---
+
+### `app.my_file_blobs`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `storage_path` | text | no | `''::text` |
+| `storage_mode` | varchar(32) | no | `'stored'::character varying` |
+| `stored_sha256` | varchar(64) | no | `''::character varying` |
+| `original_size_bytes` | bigint | no | `'0'::bigint` |
+| `stored_size_bytes` | bigint | no | `'0'::bigint` |
+| `output_mime_type` | varchar(255) | no | `'application/octet-stream'::character varying` |
+| `output_extension` | varchar(32) | no | `''::character varying` |
+| `ref_count` | integer | no | `0` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+| `last_used_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_my_file_blobs_ref_count`: (ref_count)
+
+---
+
+### `app.my_file_download_grants`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `token_hash` **PK** | varchar(64) | no | `` |
+| `file_id` | varchar(64) | no | `` |
+| `owner_user_id` | integer | no | `` |
+| `expires_at` | timestamptz | no | `` |
+| `used_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `token_hash`
+- **Indexes:**
+  - `ix_app_my_file_download_grants_expires_at`: (expires_at)
+  - `ix_app_my_file_download_grants_file_id`: (file_id)
+  - `ix_app_my_file_download_grants_owner_created`: (owner_user_id, created_at)
+
+---
+
+### `app.my_files`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `owner_user_id` | integer | no | `` |
+| `owner_username` | varchar(50) | no | `''::character varying` |
+| `original_file_name` | varchar(512) | no | `'file.bin'::character varying` |
+| `download_file_name` | varchar(512) | no | `'file.bin'::character varying` |
+| `mime_type` | varchar(255) | no | `'application/octet-stream'::character varying` |
+| `download_mime_type` | varchar(255) | no | `'application/octet-stream'::character varying` |
+| `original_size_bytes` | bigint | no | `'0'::bigint` |
+| `stored_size_bytes` | bigint | no | `'0'::bigint` |
+| `retention_days` | integer | no | `1` |
+| `status` | varchar(32) | no | `'queued'::character varying` |
+| `storage_mode` | varchar(32) | no | `''::character varying` |
+| `original_sha256` | varchar(64) | yes | `` |
+| `blob_id` | varchar(64) | yes | `` |
+| `spool_path` | text | no | `''::text` |
+| `error_text` | text | no | `''::text` |
+| `share_token_hash` | varchar(64) | yes | `` |
+| `share_created_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+| `expires_at` | timestamptz | no | `` |
+| `deleted_at` | timestamptz | yes | `` |
+| `share_token` | varchar(128) | yes | `` |
+| `security_scan_status` | varchar(32) | no | `'pending'::character varying` |
+| `security_scan_engine` | varchar(64) | no | `''::character varying` |
+| `security_scanned_at` | timestamptz | yes | `` |
+| `share_token_enc` | text | yes | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_my_files_expires_at`: (expires_at)
+  - `ix_app_my_files_expires_status`: (expires_at, status)
+  - `ix_app_my_files_original_sha256`: (original_sha256)
+  - `ix_app_my_files_owner_status_created`: (owner_user_id, status, created_at)
+  - `ix_app_my_files_owner_user_id`: (owner_user_id)
+  - `ix_app_my_files_share_token_hash`: (share_token_hash)
+  - `ix_app_my_files_status`: (status)
+  - `ix_app_my_files_status_created`: (status, created_at)
+
+---
+
 ### `app.native_push_tokens`
 
 | Column | Type | Nullable | Default |
@@ -1178,6 +1286,76 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `idx_network_sockets_branch_code`: (branch_id, socket_code)
   - `idx_network_sockets_port`: (port_id)
   - `network_sockets_branch_id_socket_code_key` UNIQUE: (branch_id, socket_code)
+
+---
+
+### `app.password_vault_audit`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.password_vault_audit_id_seq'::regclass)` |
+| `entry_id` | varchar(64) | yes | `` |
+| `action` | varchar(40) | no | `` |
+| `actor_user_id` | integer | no | `0` |
+| `actor_username` | varchar(50) | no | `''::character varying` |
+| `entry_group` | varchar(120) | no | `''::character varying` |
+| `entry_login` | varchar(255) | no | `''::character varying` |
+| `ip_address` | varchar(128) | no | `''::character varying` |
+| `user_agent` | text | no | `''::text` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_password_vault_audit_action_created`: (action, created_at)
+  - `ix_app_password_vault_audit_actor_created`: (actor_user_id, created_at)
+  - `ix_app_password_vault_audit_entry_created`: (entry_id, created_at)
+
+---
+
+### `app.password_vault_entries`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `group_name` | varchar(120) | no | `''::character varying` |
+| `tags_json` | text | no | `'[]'::text` |
+| `login` | varchar(255) | no | `''::character varying` |
+| `description` | text | no | `''::text` |
+| `password_enc` | text | no | `''::text` |
+| `is_archived` | boolean | no | `false` |
+| `created_by_user_id` | integer | no | `0` |
+| `created_by_username` | varchar(50) | no | `''::character varying` |
+| `updated_by_user_id` | integer | no | `0` |
+| `updated_by_username` | varchar(50) | no | `''::character varying` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_password_vault_entries_group_archived`: (group_name, is_archived)
+  - `ix_app_password_vault_entries_login_archived`: (login, is_archived)
+
+---
+
+### `app.password_vault_groups`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `name` | varchar(120) | no | `''::character varying` |
+| `is_active` | boolean | no | `true` |
+| `sort_order` | integer | no | `0` |
+| `created_by_user_id` | integer | no | `0` |
+| `created_by_username` | varchar(50) | no | `''::character varying` |
+| `updated_by_user_id` | integer | no | `0` |
+| `updated_by_username` | varchar(50) | no | `''::character varying` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_password_vault_groups_active_sort`: (is_active, sort_order, name)
+  - `uq_app_password_vault_groups_name` UNIQUE: (name)
 
 ---
 

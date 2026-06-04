@@ -95,3 +95,4 @@ webauthn==2.7.1
 websockets==16.0
 wrapt==2.1.2
 yarl==1.22.0
+zstandard==0.25.0

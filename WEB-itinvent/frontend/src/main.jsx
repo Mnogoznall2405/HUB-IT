@@ -11,6 +11,20 @@ import {
 } from './lib/pwaInstall'
 import './index.css'
 
+const MY_FILES_GRANT_DEPLOY_KEY = 'hubit:my-files:grant-download-v2';
+
+const needsMyFilesGrantHardReload = () => {
+  if (typeof window === 'undefined') return false;
+  if (!String(window.location.pathname || '').startsWith('/my-files')) return false;
+  try {
+    if (window.sessionStorage.getItem(MY_FILES_GRANT_DEPLOY_KEY) === '1') return false;
+    window.sessionStorage.setItem(MY_FILES_GRANT_DEPLOY_KEY, '1');
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const CHUNK_RELOAD_FINGERPRINT_KEY = 'itinvent_chunk_reload_fingerprint';
 
 const buildChunkReloadFingerprint = (reason = '') => {
@@ -79,12 +93,16 @@ if ('serviceWorker' in navigator && import.meta.env.PROD) {
   });
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(
-  <React.StrictMode>
-    <PreferencesProvider>
-      <NotificationProvider>
-        <App />
-      </NotificationProvider>
-    </PreferencesProvider>
-  </React.StrictMode>,
-)
+if (needsMyFilesGrantHardReload()) {
+  window.location.reload();
+} else {
+  ReactDOM.createRoot(document.getElementById('root')).render(
+    <React.StrictMode>
+      <PreferencesProvider>
+        <NotificationProvider>
+          <App />
+        </NotificationProvider>
+      </PreferencesProvider>
+    </React.StrictMode>,
+  );
+}

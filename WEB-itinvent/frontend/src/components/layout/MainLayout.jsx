@@ -49,6 +49,8 @@ import GroupIcon from '@mui/icons-material/Group';
 import ContactPhoneIcon from '@mui/icons-material/ContactPhone';
 import VideocamIcon from '@mui/icons-material/Videocam';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
+import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
+import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
 import apiClient, { chatAPI, mailAPI } from '../../api/client';
@@ -99,7 +101,7 @@ import { getMessagePreview } from '../chat/chatHelpers';
 import { MainLayoutShellContext } from './MainLayoutShellContext';
 import { APP_BRAND_NAME, buildDocumentTitle, INVENTORY_SECTION_LABEL } from '../../lib/appBranding';
 
-const DRAWER_WIDTH = 240;
+const DRAWER_WIDTH_CSS_VAR = 'var(--app-density-drawer-width)';
 const HUB_POLL_INTERVAL_MS = 20_000;
 const navigationItems = [
   { path: '/dashboard', label: 'Главная', icon: <DashboardIcon />, permission: 'dashboard.read' },
@@ -108,6 +110,8 @@ const navigationItems = [
   ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', label: 'Корпоративный чат', icon: <ForumOutlinedIcon />, permission: 'chat.read' }] : []),
   { path: '/mail', label: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access' },
   { path: '/address-book', label: 'Адресная книга', icon: <ContactPhoneIcon />, permission: 'address_book.read' },
+  { path: '/passwords', label: 'Пароли', icon: <VpnKeyOutlinedIcon />, permission: 'passwords.read' },
+  { path: '/my-files', label: 'Мои файлы', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read' },
   { path: '/database', label: INVENTORY_SECTION_LABEL, icon: <StorageIcon />, permission: 'database.read' },
   { path: '/networks', label: 'Сети', icon: <LanIcon />, permission: 'networks.read' },
   { path: '/ad-users', label: 'Пользователи AD', icon: <GroupIcon />, adminOnly: true },
@@ -153,7 +157,12 @@ const groupItemsByRelativeDate = (items, dateKey) => {
   ].filter((section) => section.items.length > 0);
 };
 
-function MainLayout({ children, headerMode = 'default', contentMode = 'default' }) {
+function MainLayout({
+  children,
+  headerMode = 'default',
+  contentMode = 'default',
+  showDatabaseSelector = true,
+}) {
   const theme = useTheme();
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -237,10 +246,21 @@ function MainLayout({ children, headerMode = 'default', contentMode = 'default' 
   const hasMailPermission = hasPermission('mail.access');
   const hasHubNotificationPermission = hasDashboardPermission || hasTasksPermission || hasChatPermission;
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
-  const activeChatConversationId = useMemo(
+  const activeChatConversationIdFromUrl = useMemo(
     () => String(new URLSearchParams(location.search).get('conversation') || '').trim(),
     [location.search],
   );
+  const [activeChatConversationIdFromChat, setActiveChatConversationIdFromChat] = useState('');
+  useEffect(() => {
+    const handleActiveConversationChanged = (event) => {
+      setActiveChatConversationIdFromChat(String(event?.detail?.conversationId || '').trim());
+    };
+    window.addEventListener('chat-active-conversation-changed', handleActiveConversationChanged);
+    return () => {
+      window.removeEventListener('chat-active-conversation-changed', handleActiveConversationChanged);
+    };
+  }, []);
+  const activeChatConversationId = activeChatConversationIdFromChat || activeChatConversationIdFromUrl;
   const isChatRoute = location.pathname.startsWith('/chat');
   const isMailRoute = location.pathname.startsWith('/mail');
   const isFixedHeightRoute = isChatRoute || isMailRoute;
@@ -1266,7 +1286,7 @@ useEffect(() => {
     if (unreadBellInboxCount <= 0) return;
     try {
       const requests = [];
-      if (unreadHubNotificationCount > 0 && (hasDashboardPermission || hasTasksPermission)) {
+      if (unreadHubNotificationCount > 0 && (hasDashboardPermission || hasTasksPermission || hasChatPermission)) {
         requests.push(apiClient.post('/hub/notifications/read-all'));
       }
       if (unreadMailNotificationCount > 0 && hasMailPermission) {
@@ -1478,9 +1498,9 @@ useEffect(() => {
       ) : (
         <Toolbar sx={{ minHeight: 'var(--app-shell-header-offset) !important' }} />
       )}
-      <List sx={{ px: 1, pt: 0.75 }}>
+      <List sx={{ px: 'var(--app-density-sidebar-list-px)', pt: 'var(--app-density-sidebar-list-pt)' }}>
         {visibleNavigationItems.map((item) => (
-          <ListItem key={item.path} disablePadding sx={{ px: 0.5, py: 0.2 }}>
+          <ListItem key={item.path} disablePadding sx={{ px: 0.5, py: 'var(--app-density-sidebar-item-py)' }}>
             <ListItemButton
               selected={!item.externalUrl && isItemActive(item.path, activeNavigationPath)}
               onClick={() => handleNavigation(item)}
@@ -1497,8 +1517,8 @@ useEffect(() => {
                 const selected = !item.externalUrl && isItemActive(item.path, activeNavigationPath);
                 const pending = !item.externalUrl && String(pendingNavigation?.path || '').trim() === String(item.path || '').trim();
                 return {
-                  minHeight: 44,
-                  px: 1.35,
+                  minHeight: { xs: 44, sm: 'var(--app-density-sidebar-item-min-height)' },
+                  px: { xs: 1.35, sm: 'var(--app-density-sidebar-item-px)' },
                   borderRadius: 2.25,
                   color: selected ? theme.palette.text.primary : ui.iconPrimary,
                   transition: theme.transitions.create(['background-color', 'color', 'border-color'], {
@@ -1509,7 +1529,7 @@ useEffect(() => {
                   backgroundColor: selected ? alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.12 : 0.07) : 'transparent',
                   opacity: pending ? 0.96 : 1,
                   '& .MuiListItemIcon-root': {
-                    minWidth: 38,
+                    minWidth: { xs: 38, sm: 'var(--app-density-sidebar-icon-min-width)' },
                     color: selected ? theme.palette.primary.main : ui.iconMuted,
                   },
                   '& .MuiListItemText-primary': {
@@ -1586,7 +1606,11 @@ useEffect(() => {
           bgcolor: ui.pageBg,
           '--app-shell-header-offset': {
             xs: isStandaloneShell ? '52px' : '56px',
-            sm: isWindowControlsOverlay ? '56px' : isStandaloneShell ? '60px' : '64px',
+            sm: isWindowControlsOverlay
+              ? 'var(--app-density-header-overlay-height)'
+              : isStandaloneShell
+                ? 'var(--app-density-header-standalone-height)'
+                : 'var(--app-density-header-height)',
           },
         }}
       >
@@ -1672,8 +1696,8 @@ useEffect(() => {
               borderColor: ui.borderSoft,
               backdropFilter: 'blur(18px)',
               pt: isWindowControlsOverlay ? 'env(titlebar-area-height, 0px)' : 0,
-              width: { sm: sidebarCollapsed ? '100%' : `calc(100% - ${DRAWER_WIDTH}px)` },
-              ml: { sm: sidebarCollapsed ? 0 : `${DRAWER_WIDTH}px` },
+              width: { sm: sidebarCollapsed ? '100%' : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})` },
+              ml: { sm: sidebarCollapsed ? 0 : DRAWER_WIDTH_CSS_VAR },
               transition: (theme) => theme.transitions.create(['width', 'margin'], {
                 duration: theme.transitions.duration.standard,
               }),
@@ -1751,7 +1775,7 @@ useEffect(() => {
                     ) : (
                       <>
                         <Box sx={{ flexGrow: 1 }} />
-                        {dbLoading ? (
+                        {!showDatabaseSelector ? null : dbLoading ? (
                           <CircularProgress size={20} sx={{ mr: 1.5 }} />
                         ) : (
                           <FormControl size="small" sx={{ mr: 1.5, minWidth: { xs: 132, sm: 160 } }}>
@@ -1852,7 +1876,7 @@ useEffect(() => {
                       <Typography variant="body2" sx={{ mr: 1.5, color: ui.mutedText, fontWeight: 600, display: { xs: 'none', md: minimalHeader ? 'none' : 'block' } }}>
                         {user?.username}
                       </Typography>
-                      {!minimalHeader && !shouldHideHeaderContext && (
+                      {!minimalHeader && !shouldHideHeaderContext && showDatabaseSelector && (
                         dbLoading ? (
                           <Box sx={{ mr: 1.5, display: 'flex', alignItems: 'center', minWidth: { xs: 132, sm: 180 }, justifyContent: 'center' }}>
                             <CircularProgress size={20} />
@@ -1918,7 +1942,7 @@ useEffect(() => {
                           </FormControl>
                         )
                       )}
-                      {dbLocked && !minimalHeader && !shouldHideHeaderContext && (
+                      {dbLocked && !minimalHeader && !shouldHideHeaderContext && showDatabaseSelector && (
                         <Chip
                           label="БД закреплена"
                           size="small"
@@ -1949,7 +1973,7 @@ useEffect(() => {
       <Box
         component="nav"
         sx={{
-          width: { sm: sidebarCollapsed ? 0 : DRAWER_WIDTH },
+          width: { sm: sidebarCollapsed ? 0 : DRAWER_WIDTH_CSS_VAR },
           flexShrink: { sm: 0 },
           overflow: 'hidden',
           transition: (theme) => theme.transitions.create('width', {
@@ -1964,7 +1988,7 @@ useEffect(() => {
           ModalProps={{ keepMounted: true }}
           sx={{
             display: { xs: 'block', sm: 'none' },
-            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH, bgcolor: ui.navBg, borderRightColor: ui.borderSoft },
+            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH_CSS_VAR, bgcolor: ui.navBg, borderRightColor: ui.borderSoft },
           }}
         >
           {drawerContent}
@@ -1975,7 +1999,7 @@ useEffect(() => {
             display: { xs: 'none', sm: 'block' },
             '& .MuiDrawer-paper': {
               boxSizing: 'border-box',
-              width: sidebarCollapsed ? 0 : DRAWER_WIDTH,
+              width: sidebarCollapsed ? 0 : DRAWER_WIDTH_CSS_VAR,
               overflowX: 'hidden',
               bgcolor: ui.navBg,
               borderRightColor: ui.borderSoft,
@@ -2004,13 +2028,22 @@ useEffect(() => {
           display: isFixedHeightRoute ? 'flex' : 'block',
           flexDirection: isFixedHeightRoute ? 'column' : undefined,
           overflow: isFixedHeightRoute ? 'hidden' : 'visible',
-          px: { xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2, md: 3 },
-          pb: { xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2, md: 3 },
-          pt: { xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2, md: 3 },
+          px: {
+            xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2,
+            sm: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 'var(--app-density-page-padding)',
+          },
+          pb: {
+            xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2,
+            sm: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 'var(--app-density-page-padding)',
+          },
+          pt: {
+            xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2,
+            sm: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 'var(--app-density-page-padding)',
+          },
           bgcolor: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 'transparent' : ui.pageBg,
           width: {
             xs: '100%',
-            sm: sidebarCollapsed ? '100%' : `calc(100% - ${DRAWER_WIDTH}px)`
+            sm: sidebarCollapsed ? '100%' : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})`
           },
           transition: (theme) => theme.transitions.create(['width', 'margin'], {
             duration: theme.transitions.duration.standard,

@@ -311,6 +311,103 @@ class AppPasswordVaultAudit(AppBase):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppMyFileBlob(AppBase):
+    __tablename__ = "my_file_blobs"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_blobs_ref_count", "ref_count"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    storage_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    storage_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="stored")
+    stored_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    original_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    stored_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    output_mime_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    output_extension: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    ref_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFile(AppBase):
+    __tablename__ = "my_files"
+    __table_args__ = _table_args(
+        Index("ix_app_my_files_owner_status_created", "owner_user_id", "status", "created_at"),
+        Index("ix_app_my_files_status_created", "status", "created_at"),
+        Index("ix_app_my_files_expires_status", "expires_at", "status"),
+        Index("ix_app_my_files_share_token_hash", "share_token_hash"),
+        Index("ix_app_my_files_original_sha256", "original_sha256"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    owner_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    original_file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="file.bin")
+    download_file_name: Mapped[str] = mapped_column(String(512), nullable=False, default="file.bin")
+    mime_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    download_mime_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    original_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    stored_size_bytes: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
+    retention_days: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)
+    storage_mode: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    original_sha256: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    blob_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    spool_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    error_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    security_scan_status: Mapped[str] = mapped_column(String(32), nullable=False, default="pending")
+    security_scan_engine: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    security_scanned_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    share_token: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    share_token_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    share_token_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    share_created_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
+class AppMyFileAudit(AppBase):
+    __tablename__ = "my_file_audit"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_audit_file_created", "file_id", "created_at"),
+        Index("ix_app_my_file_audit_actor_created", "actor_user_id", "created_at"),
+        Index("ix_app_my_file_audit_action_created", "action", "created_at"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    file_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    action: Mapped[str] = mapped_column(String(40), nullable=False)
+    actor_user_id: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    actor_username: Mapped[str] = mapped_column(String(50), nullable=False, default="")
+    ip_address: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    user_agent: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMyFileDownloadGrant(AppBase):
+    __tablename__ = "my_file_download_grants"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_download_grants_file_id", "file_id"),
+        Index("ix_app_my_file_download_grants_owner_created", "owner_user_id", "created_at"),
+        Index("ix_app_my_file_download_grants_expires_at", "expires_at"),
+        schema=APP_SCHEMA,
+    )
+
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    file_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    used_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
 class AppGlobalSetting(AppBase):
     __tablename__ = "app_settings"
     __table_args__ = _table_args(schema=APP_SCHEMA)

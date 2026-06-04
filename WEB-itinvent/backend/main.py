@@ -27,12 +27,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, ad_users, vcs, ai_bots, departments, tickets, address_book, system
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, ad_users, vcs, ai_bots, departments, tickets, address_book, system, passwords, my_files
 from backend.services.ad_sync_service import background_ad_sync_loop
 from backend.services.address_book_service import background_address_book_sync_loop
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
+from backend.services.my_files_service import my_files_worker
 from backend.services.request_metrics_service import request_metrics_middleware
 from backend.json_db.manager import validate_json_runtime_storage
 from backend.rate_limit import limiter, rate_limit_exception, rate_limit_exception_handler, internal_ip_bypass_middleware
@@ -192,6 +193,11 @@ async def lifespan(app: FastAPI):
             expired_runtime_items = auth_runtime_store_service.cleanup_expired()
             if expired_runtime_items:
                 print(f"Auth runtime cleanup: removed {expired_runtime_items} expired items")
+            if config.my_files_security.inline_worker_enabled:
+                await my_files_worker.start()
+                print("My files worker: started inline")
+            else:
+                print("My files worker: external process")
         except Exception as exc:
             print(f"Internal app database init warning: {exc}")
     else:
@@ -238,6 +244,7 @@ async def lifespan(app: FastAPI):
         address_book_sync_task.cancel()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.stop()
+    await my_files_worker.stop()
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.stop()
     if config.chat.enabled:
@@ -343,6 +350,8 @@ app.include_router(ai_bots.router, prefix="/api/v1/ai-bots", tags=["AI Bots"])
 app.include_router(tickets.router, prefix="/api/v1/tickets", tags=["Tickets"])
 app.include_router(address_book.router, prefix="/api/v1/address-book", tags=["Address Book"])
 app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
+app.include_router(passwords.router, prefix="/api/v1/passwords", tags=["Passwords"])
+app.include_router(my_files.router, prefix="/api/v1/my-files", tags=["My Files"])
 if config.chat.enabled:
     try:
         from backend.api.v1 import chat

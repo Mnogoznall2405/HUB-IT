@@ -211,6 +211,74 @@ class RedisConfig:
         return bool(str(self.url or "").strip())
 
 
+def _positive_int_env(name: str, default: int, *, minimum: int = 1) -> int:
+    try:
+        return max(minimum, int(os.getenv(name, str(default))))
+    except (TypeError, ValueError):
+        return max(minimum, int(default))
+
+
+def _bool_env(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+
+@dataclass
+class MyFilesPublicRateLimitConfig:
+    """Rate limits for unauthenticated public my-files share endpoints."""
+
+    meta_limit_per_token: int = 60
+    meta_window_token_sec: int = 600
+    meta_limit_per_ip: int = 120
+    meta_window_ip_sec: int = 60
+    download_limit_per_token: int = 15
+    download_window_token_sec: int = 600
+    download_limit_per_ip: int = 80
+    download_window_ip_sec: int = 3600
+    miss_limit_per_ip: int = 60
+    miss_window_ip_sec: int = 60
+
+
+@dataclass
+class MyFilesDownloadGrantConfig:
+    """One-time owner download grants (native browser download, no JWT in URL)."""
+
+    ttl_seconds: int = 120
+    mint_limit_per_user: int = 40
+    mint_window_user_sec: int = 60
+    mint_limit_per_ip: int = 80
+    mint_window_ip_sec: int = 60
+    consume_limit_per_ip: int = 120
+    consume_window_ip_sec: int = 60
+    miss_limit_per_ip: int = 60
+    miss_window_ip_sec: int = 60
+
+
+@dataclass
+class MyFilesSecurityConfig:
+    """Resource and malware controls for personal file uploads."""
+
+    upload_limit_per_user: int = 30
+    upload_window_user_sec: int = 600
+    upload_limit_per_ip: int = 100
+    upload_window_ip_sec: int = 600
+    max_uploading_per_user: int = 2
+    max_uploading_global: int = 8
+    max_active_jobs_per_user: int = 5
+    max_active_jobs_global: int = 100
+    max_processing_global: int = 1
+    upload_reservation_ttl_sec: int = 7200
+    processing_timeout_sec: int = 21600
+    zstd_threads: int = 2
+    antivirus_enabled: bool = False
+    antivirus_fail_closed: bool = True
+    antivirus_timeout_sec: int = 300
+    defender_path: str = ""
+    inline_worker_enabled: bool = False
+
+
 @dataclass
 class AuthSecurityConfig:
     """Security and authentication flow configuration."""
@@ -250,6 +318,9 @@ class Config:
     fcm_push: FcmPushConfig
     redis: RedisConfig
     security: AuthSecurityConfig
+    my_files_public_rate_limit: MyFilesPublicRateLimitConfig
+    my_files_download_grant: MyFilesDownloadGrantConfig
+    my_files_security: MyFilesSecurityConfig
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -361,6 +432,48 @@ class Config:
                 trusted_device_ttl_days=int(os.getenv("AUTH_TRUSTED_DEVICE_TTL_DAYS", "90")),
                 new_login_email_enabled=str(os.getenv("AUTH_NEW_LOGIN_EMAIL_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
                 rate_limit_storage_url=(str(os.getenv("RATE_LIMIT_STORAGE_URL", "") or "").strip() or None),
+            ),
+            my_files_public_rate_limit=MyFilesPublicRateLimitConfig(
+                meta_limit_per_token=_positive_int_env("MY_FILES_PUBLIC_META_LIMIT_PER_TOKEN", 60),
+                meta_window_token_sec=_positive_int_env("MY_FILES_PUBLIC_META_WINDOW_TOKEN_SEC", 600),
+                meta_limit_per_ip=_positive_int_env("MY_FILES_PUBLIC_META_LIMIT_PER_IP", 120),
+                meta_window_ip_sec=_positive_int_env("MY_FILES_PUBLIC_META_WINDOW_IP_SEC", 60),
+                download_limit_per_token=_positive_int_env("MY_FILES_PUBLIC_DOWNLOAD_LIMIT_PER_TOKEN", 15),
+                download_window_token_sec=_positive_int_env("MY_FILES_PUBLIC_DOWNLOAD_WINDOW_TOKEN_SEC", 600),
+                download_limit_per_ip=_positive_int_env("MY_FILES_PUBLIC_DOWNLOAD_LIMIT_PER_IP", 80),
+                download_window_ip_sec=_positive_int_env("MY_FILES_PUBLIC_DOWNLOAD_WINDOW_IP_SEC", 3600),
+                miss_limit_per_ip=_positive_int_env("MY_FILES_PUBLIC_MISS_LIMIT_PER_IP", 60),
+                miss_window_ip_sec=_positive_int_env("MY_FILES_PUBLIC_MISS_WINDOW_IP_SEC", 60),
+            ),
+            my_files_download_grant=MyFilesDownloadGrantConfig(
+                ttl_seconds=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_TTL_SEC", 120),
+                mint_limit_per_user=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_MINT_LIMIT_PER_USER", 40),
+                mint_window_user_sec=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_MINT_WINDOW_USER_SEC", 60),
+                mint_limit_per_ip=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_MINT_LIMIT_PER_IP", 80),
+                mint_window_ip_sec=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_MINT_WINDOW_IP_SEC", 60),
+                consume_limit_per_ip=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_CONSUME_LIMIT_PER_IP", 120),
+                consume_window_ip_sec=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_CONSUME_WINDOW_IP_SEC", 60),
+                miss_limit_per_ip=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_MISS_LIMIT_PER_IP", 60),
+                miss_window_ip_sec=_positive_int_env("MY_FILES_DOWNLOAD_GRANT_MISS_WINDOW_IP_SEC", 60),
+            ),
+            my_files_security=MyFilesSecurityConfig(
+                upload_limit_per_user=_positive_int_env("MY_FILES_UPLOAD_LIMIT_PER_USER", 30),
+                upload_window_user_sec=_positive_int_env("MY_FILES_UPLOAD_WINDOW_USER_SEC", 600),
+                upload_limit_per_ip=_positive_int_env("MY_FILES_UPLOAD_LIMIT_PER_IP", 100),
+                upload_window_ip_sec=_positive_int_env("MY_FILES_UPLOAD_WINDOW_IP_SEC", 600),
+                max_uploading_per_user=_positive_int_env("MY_FILES_MAX_UPLOADING_PER_USER", 2),
+                max_uploading_global=_positive_int_env("MY_FILES_MAX_UPLOADING_GLOBAL", 8),
+                max_active_jobs_per_user=_positive_int_env("MY_FILES_MAX_ACTIVE_JOBS_PER_USER", 5),
+                max_active_jobs_global=_positive_int_env("MY_FILES_MAX_ACTIVE_JOBS_GLOBAL", 100),
+                max_processing_global=_positive_int_env("MY_FILES_MAX_PROCESSING_GLOBAL", 1),
+                upload_reservation_ttl_sec=_positive_int_env("MY_FILES_UPLOAD_RESERVATION_TTL_SEC", 7200),
+                processing_timeout_sec=_positive_int_env("MY_FILES_PROCESSING_TIMEOUT_SEC", 21600),
+                zstd_threads=_positive_int_env("MY_FILES_ZSTD_THREADS", 2),
+                antivirus_enabled=_bool_env("MY_FILES_ANTIVIRUS_ENABLED", environment == "production"),
+                antivirus_fail_closed=_bool_env("MY_FILES_ANTIVIRUS_FAIL_CLOSED", environment == "production"),
+                antivirus_timeout_sec=_positive_int_env("MY_FILES_ANTIVIRUS_TIMEOUT_SEC", 300),
+                defender_path=str(os.getenv("MY_FILES_DEFENDER_PATH", "") or "").strip(),
+                inline_worker_enabled=_bool_env("MY_FILES_INLINE_WORKER_ENABLED", environment != "production"),
             ),
         )
         loaded.validate()

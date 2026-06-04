@@ -27,10 +27,13 @@ import {
   loadLoginRoute,
   loadMailRoute,
   loadMfuRoute,
+  loadMyFilesRoute,
   loadNetworksRoute,
   loadKnowledgeBaseRoute,
   loadScanCenterRoute,
   loadSettingsRoute,
+  loadPasswordsRoute,
+  loadSharedFileRoute,
   loadStatisticsRoute,
   loadTasksRoute,
   loadTicketsRoute,
@@ -55,6 +58,9 @@ const AdUsers = lazy(loadAdUsersRoute);
 const Vcs = lazy(loadVcsRoute);
 const KnowledgeBase = lazy(loadKnowledgeBaseRoute);
 const AddressBook = lazy(loadAddressBookRoute);
+const Passwords = lazy(loadPasswordsRoute);
+const MyFiles = lazy(loadMyFilesRoute);
+const SharedFile = lazy(loadSharedFileRoute);
 
 const routePermissions = [
   { path: '/dashboard', permissions: ['dashboard.read'] },
@@ -73,6 +79,8 @@ const routePermissions = [
   { path: '/vcs', permissions: ['vcs.read'] },
   { path: '/mail', permissions: ['mail.access'] },
   { path: '/address-book', permissions: ['address_book.read'] },
+  { path: '/passwords', permissions: ['passwords.read'] },
+  { path: '/my-files', permissions: ['my_files.read'] },
 ];
 
 const canAccessAny = (hasPermission, permissions = []) => (
@@ -85,7 +93,8 @@ const canAccessRoute = (hasPermission, user, route) => {
   if (route?.adminOnly) {
     return isAdminUser(user);
   }
-  return canAccessAny(hasPermission, route?.permissions || []);
+  const permissions = route?.permissions || [];
+  return permissions.length === 0 || canAccessAny(hasPermission, permissions);
 };
 
 const resolveFirstAccessiblePath = (hasPermission, user) => {
@@ -382,6 +391,7 @@ function App() {
           <Suspense fallback={<PageFallback />}>
             <Routes>
               <Route path="/login" element={<Login />} />
+              <Route path="/shared-files/:token" element={<SharedFile />} />
 
               <Route element={<ProtectedRoute />}>
                 <Route path="/" element={<HomeRedirect />} />
@@ -446,6 +456,14 @@ function App() {
                 <Route
                   path="/address-book"
                   element={<PermissionRoute permission="address_book.read"><AddressBook /></PermissionRoute>}
+                />
+                <Route
+                  path="/passwords"
+                  element={<PermissionRoute permission="passwords.read"><Passwords /></PermissionRoute>}
+                />
+                <Route
+                  path="/my-files"
+                  element={<PermissionRoute permission="my_files.read"><MyFiles /></PermissionRoute>}
                 />
                 <Route
                   path="/kb"

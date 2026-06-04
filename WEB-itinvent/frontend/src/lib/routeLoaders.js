@@ -1,5 +1,20 @@
 const routePrefetchPromises = new Map();
 const ROUTE_CHUNK_RELOAD_KEY = 'itinvent:route-chunk-reload-attempted';
+const MY_FILES_GRANT_DEPLOY_KEY = 'hubit:my-files:grant-download-v2';
+
+const ensureMyFilesGrantDeployReload = () => {
+  if (typeof window === 'undefined') return false;
+  try {
+    if (window.sessionStorage.getItem(MY_FILES_GRANT_DEPLOY_KEY) === '1') {
+      return false;
+    }
+    window.sessionStorage.setItem(MY_FILES_GRANT_DEPLOY_KEY, '1');
+    window.location.reload();
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 const isRouteChunkLoadError = (error) => {
   const message = String(error?.message || error || '').toLowerCase();
@@ -58,6 +73,14 @@ export const loadAdUsersRoute = defineRouteLoader(() => import('../pages/AdUsers
 export const loadVcsRoute = defineRouteLoader(() => import('../pages/Vcs'));
 export const loadKnowledgeBaseRoute = defineRouteLoader(() => import('../pages/KnowledgeBase'));
 export const loadAddressBookRoute = defineRouteLoader(() => import('../pages/AddressBook'));
+export const loadPasswordsRoute = defineRouteLoader(() => import('../pages/Passwords'));
+export const loadMyFilesRoute = defineRouteLoader(() => {
+  if (ensureMyFilesGrantDeployReload()) {
+    return new Promise(() => {});
+  }
+  return import('../pages/MyFiles');
+});
+export const loadSharedFileRoute = defineRouteLoader(() => import('../pages/SharedFile'));
 
 const ROUTE_LOADERS = new Map([
   ['/login', loadLoginRoute],
@@ -77,6 +100,9 @@ const ROUTE_LOADERS = new Map([
   ['/vcs', loadVcsRoute],
   ['/kb', loadKnowledgeBaseRoute],
   ['/address-book', loadAddressBookRoute],
+  ['/passwords', loadPasswordsRoute],
+  ['/my-files', loadMyFilesRoute],
+  ['/shared-files', loadSharedFileRoute],
 ]);
 
 export const normalizeRouteLoaderPath = (path) => {
@@ -84,6 +110,9 @@ export const normalizeRouteLoaderPath = (path) => {
   if (!normalized) return '';
   if (normalized === '/networks' || normalized.startsWith('/networks/')) {
     return '/networks';
+  }
+  if (normalized === '/shared-files' || normalized.startsWith('/shared-files/')) {
+    return '/shared-files';
   }
   return normalized;
 };

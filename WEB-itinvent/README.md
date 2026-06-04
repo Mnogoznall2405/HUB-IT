@@ -75,11 +75,11 @@ To migrate current identity/settings data from the internal SQLite store:
 python scripts/migrate_identity_sqlite_to_postgres.py --database-url postgresql+psycopg://user:pass@host:5432/itinvent
 ```
 
-To apply schema migrations for the internal PostgreSQL database:
+To apply schema migrations for the internal PostgreSQL database (run from `WEB-itinvent/`, not `backend/` — `script_location` in `alembic.ini` is relative to that directory):
 
 ```bash
-cd backend
-alembic -c alembic.ini upgrade head
+cd WEB-itinvent
+python -m alembic -c backend/alembic.ini upgrade head
 ```
 
 To migrate built-in chat data from a legacy SQLite database into PostgreSQL:
@@ -115,8 +115,8 @@ python scripts/migrate_env_audit_sqlite_to_postgres.py --source-db-path data/env
 To migrate mail runtime metadata from the internal SQLite database into `APP_DATABASE_URL`, back up the current SQLite file and PostgreSQL database first, then run Alembic, dry-run the migration, execute it, and restart the backend:
 
 ```bash
-cd backend
-alembic -c alembic.ini upgrade head
+cd WEB-itinvent
+python -m alembic -c backend/alembic.ini upgrade head
 python scripts/migrate_mail_sqlite_to_app_db.py --database-url postgresql+psycopg://user:pass@host:5432/itinvent --dry-run
 python scripts/migrate_mail_sqlite_to_app_db.py --database-url postgresql+psycopg://user:pass@host:5432/itinvent --execute
 pm2 restart itinvent-backend --update-env

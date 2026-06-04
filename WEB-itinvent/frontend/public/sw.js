@@ -1,6 +1,6 @@
-const SW_VERSION = '2026-05-29T17:40:00+05:00';
-const APP_SHELL_CACHE = 'hubit-app-shell-v2026-05-29-17-40';
-const APP_ASSET_CACHE = 'hubit-app-assets-v2026-05-29-17-40';
+const SW_VERSION = '2026-06-03T21:30:00+05:00';
+const APP_SHELL_CACHE = 'hubit-app-shell-v2026-06-03-21-30';
+const APP_ASSET_CACHE = 'hubit-app-assets-v2026-06-03-21-30';
 const CHAT_MEDIA_CACHE = 'hubit-chat-media-v2026-04-17-1';
 const PUSH_RUNTIME_CACHE = 'itinvent-push-runtime-v1';
 const PUSH_PENDING_SYNC_URL = `${self.location.origin}/__push/pending-sync`;
@@ -141,6 +141,7 @@ function isStaticAssetRequest(request, url) {
 function isChatMediaVariantRequest(request, url) {
   if (request.method !== 'GET') return false;
   if (!isSameOrigin(url)) return false;
+  if (request.headers?.has?.('Range')) return false;
   if (!/^\/api\/v1\/chat\/messages\/[^/]+\/attachments\/[^/]+\/file$/.test(url.pathname)) return false;
   if (String(url.searchParams.get('inline') || '').trim() !== '1') return false;
   return CHAT_MEDIA_VARIANTS.has(String(url.searchParams.get('variant') || '').trim());
@@ -344,6 +345,25 @@ async function collectClientVisibilitySnapshot() {
     has_focused_visible_client: focusedVisibleCount > 0,
     clients: windowClients,
   };
+}
+
+function getConversationIdFromClientUrl(url) {
+  try {
+    const parsed = new URL(String(url || ''), self.location.origin);
+    if (!String(parsed.pathname || '').includes('/chat')) return '';
+    return String(parsed.searchParams.get('conversation') || '').trim();
+  } catch {
+    return '';
+  }
+}
+
+function hasVisibleClientViewingConversation(clientSnapshot, conversationId) {
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (!normalizedConversationId) return false;
+  return (clientSnapshot?.clients || []).some((client) => (
+    client?.visibility_state === 'visible'
+    && getConversationIdFromClientUrl(client?.url) === normalizedConversationId
+  ));
 }
 
 async function fetchPushConfig() {
@@ -619,7 +639,16 @@ self.addEventListener('push', (event) => {
       || `${String(payload?.channel || 'system').trim() || 'system'}:${String(data?.conversation_id || data?.message_id || data?.notification_id || '').trim()}`
     ).trim() || 'system';
     const clientSnapshot = await collectClientVisibilitySnapshot();
-    const shouldForwardToVisibleClientOnly = Boolean(clientSnapshot.has_focused_visible_client);
+    const pushChannel = String(payload?.channel || 'system').trim() || 'system';
+    const pushConversationId = String(data?.conversation_id || '').trim();
+    const isVisibleConversationOpen = (
+      pushChannel === 'chat'
+      && hasVisibleClientViewingConversation(clientSnapshot, pushConversationId)
+    );
+    const shouldForwardToVisibleClientOnly = (
+      Boolean(clientSnapshot.has_focused_visible_client)
+      || isVisibleConversationOpen
+    );
 
     await reportPushDiagnostic('sw_push_received', {
       channel: String(payload?.channel || 'system').trim() || 'system',
@@ -628,7 +657,9 @@ self.addEventListener('push', (event) => {
       conversation_id: String(data?.conversation_id || '').trim(),
       message_id: String(data?.message_id || '').trim(),
       notification_id: String(data?.notification_id || '').trim(),
-      delivery_mode: shouldForwardToVisibleClientOnly ? 'foreground_focused' : 'background',
+      delivery_mode: shouldForwardToVisibleClientOnly
+        ? (clientSnapshot.has_focused_visible_client ? 'foreground_focused' : 'foreground_visible_conversation')
+        : 'background',
       client_count: clientSnapshot.client_count,
       visible_client_count: clientSnapshot.visible_client_count,
       focused_visible_client_count: clientSnapshot.focused_visible_client_count,

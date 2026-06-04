@@ -39,3 +39,4 @@ if ($Mirror) {
 }
 
 Write-Host "Frontend published to IIS path: $IisSitePath"
+Write-Host "Note: web.config in dist sets maxAllowedContentLength=1GB for My Files uploads. Recycle IIS app pool if uploads still return 413."
