@@ -11,6 +11,8 @@ import {
   buildPrintMailDocumentHtml,
   createEmptyAttachmentPreview,
   downloadBlobFile,
+  isOfficePreviewableAttachment,
+  normalizeAttachmentPreviewMetadata,
 } from './mailMessageFileActions';
 import { formatMailPersonWithEmail } from './mailPeople';
 import { getMessageBodyHtmlSource } from './useMailMessageRenderState';
@@ -193,6 +195,86 @@ export default function useMailMessageFileActions({
   }, [mailAPI, resolveAttachmentRequestContext]);
 
   const openAttachmentPreview = useCallback(async (messageOrId, attachment, fallbackMessage = null) => {
+    const { messageId, attachmentRef, mailboxId } = resolveAttachmentRequestContext(
+      messageOrId,
+      attachment,
+      fallbackMessage,
+    );
+    const filename = String(attachment?.name || 'attachment.bin');
+    const contentType = String(attachment?.content_type || '');
+    const downloadContext = { messageOrId, attachment, fallbackMessage };
+
+    if (isOfficePreviewableAttachment(attachment)) {
+      if (!messageId || !attachmentRef) {
+        const contextError = buildAttachmentContextError({ attachment, messageId, mailboxId });
+        reportError(contextError.message);
+        return;
+      }
+      setAttachmentPreview({
+        ...createEmptyAttachmentPreview(),
+        open: true,
+        loading: true,
+        filename,
+        contentType,
+        kind: 'office_pdf',
+        previewKind: 'office_pdf',
+        downloadContext,
+      });
+      try {
+        const [metadata, pdfResponse] = await Promise.all([
+          mailAPI.getAttachmentPreview(messageId, attachmentRef, { mailboxId }),
+          mailAPI.downloadAttachmentPreviewPdf(messageId, attachmentRef, { mailboxId }),
+        ]);
+        const normalized = normalizeAttachmentPreviewMetadata(metadata);
+        const { blob, filename: pdfFilename, contentType: pdfContentType } = buildAttachmentBlobPayload({
+          response: pdfResponse,
+          attachment: {
+            name: normalized.pdfFilename || `${filename.replace(/\.[^.]+$/, '') || 'preview'}.pdf`,
+            content_type: 'application/pdf',
+          },
+        });
+        const objectUrl = typeof window.URL?.createObjectURL === 'function'
+          ? window.URL.createObjectURL(blob)
+          : '';
+        setAttachmentPreview({
+          ...createEmptyAttachmentPreview(),
+          open: true,
+          loading: false,
+          filename: normalized.sourceFilename || filename,
+          contentType,
+          kind: 'office_pdf',
+          objectUrl,
+          previewBlob: blob,
+          sourceKind: normalized.sourceKind,
+          previewKind: normalized.previewKind || 'office_pdf',
+          pageCount: normalized.pageCount,
+          sheets: normalized.sheets,
+          pdfFilename: pdfFilename || normalized.pdfFilename,
+          pdfContentType,
+          downloadContext,
+        });
+      } catch (requestError) {
+        const errorDetail = await getMailErrorDetailAsync?.(
+          requestError,
+          '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043f\u043e\u0434\u0433\u043e\u0442\u043e\u0432\u0438\u0442\u044c \u043f\u0440\u0435\u0434\u043f\u0440\u043e\u0441\u043c\u043e\u0442\u0440 Office-\u0444\u0430\u0439\u043b\u0430.',
+        );
+        if (!(await maybeHandleCredentials(requestError, errorDetail))) {
+          setAttachmentPreview({
+            ...createEmptyAttachmentPreview(),
+            open: true,
+            loading: false,
+            error: errorDetail,
+            filename,
+            contentType,
+            kind: 'office_pdf',
+            previewKind: 'office_pdf',
+            downloadContext,
+          });
+        }
+      }
+      return;
+    }
+
     try {
       const response = await fetchAttachmentBlob(messageOrId, attachment, fallbackMessage);
       const previewState = await buildAttachmentPreviewState({
@@ -202,14 +284,21 @@ export default function useMailMessageFileActions({
           ? window.URL.createObjectURL.bind(window.URL)
           : undefined,
       });
-      setAttachmentPreview(previewState);
+      setAttachmentPreview({ ...previewState, downloadContext });
     } catch (requestError) {
       const errorDetail = await getMailErrorDetailAsync?.(requestError, '\u041d\u0435 \u0443\u0434\u0430\u043b\u043e\u0441\u044c \u043e\u0442\u043a\u0440\u044b\u0442\u044c \u0432\u043b\u043e\u0436\u0435\u043d\u0438\u0435.');
       if (!(await maybeHandleCredentials(requestError, errorDetail))) {
         reportError(errorDetail);
       }
     }
-  }, [fetchAttachmentBlob, getMailErrorDetailAsync, maybeHandleCredentials, reportError]);
+  }, [
+    fetchAttachmentBlob,
+    getMailErrorDetailAsync,
+    mailAPI,
+    maybeHandleCredentials,
+    reportError,
+    resolveAttachmentRequestContext,
+  ]);
 
   const downloadAttachmentFile = useCallback(async (messageOrId, attachment, fallbackMessage = null) => {
     const { messageId, attachmentRef, mailboxId } = resolveAttachmentRequestContext(messageOrId, attachment, fallbackMessage);
@@ -243,10 +332,20 @@ export default function useMailMessageFileActions({
   }, []);
 
   const downloadAttachmentPreview = useCallback(() => {
-    if (!attachmentPreview?.blob) return;
+    const blob = attachmentPreview?.blob || attachmentPreview?.previewBlob;
+    if (!blob) return;
     downloadBlobFileImpl(
-      attachmentPreview.blob,
+      blob,
       attachmentPreview.filename || 'attachment.bin',
+      { preferOpenFallback: true },
+    );
+  }, [attachmentPreview, downloadBlobFileImpl]);
+
+  const downloadAttachmentPreviewPdf = useCallback(() => {
+    if (!attachmentPreview?.previewBlob) return;
+    downloadBlobFileImpl(
+      attachmentPreview.previewBlob,
+      attachmentPreview.pdfFilename || `${attachmentPreview.filename || 'preview'}.pdf`,
       { preferOpenFallback: true },
     );
   }, [attachmentPreview, downloadBlobFileImpl]);
@@ -263,6 +362,7 @@ export default function useMailMessageFileActions({
     attachmentPreview,
     closeAttachmentPreview,
     downloadAttachmentPreview,
+    downloadAttachmentPreviewPdf,
     handleOpenHeaders,
     handleDownloadMessageSource,
     handlePrintSelectedMessage,

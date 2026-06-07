@@ -65,6 +65,7 @@ import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import {
   clearChatComposePrefill,
+  isChatComposePrefillRoute,
   readChatComposePrefill,
 } from '../lib/chatComposePrefill';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../lib/chatFeature';
@@ -890,9 +891,12 @@ export default function Chat() {
   const userCacheId = String(user?.id || 'guest').trim() || 'guest';
   const requestedConversationId = String(new URLSearchParams(location.search).get('conversation') || '').trim();
   const requestedMessageId = String(new URLSearchParams(location.search).get('message') || '').trim();
+  const composePrefillRequested = isChatComposePrefillRoute(location.search);
   const lastConversationSessionKey = buildChatLastConversationSessionKey(userCacheId);
   const lastMobileViewSessionKey = buildChatLastMobileViewSessionKey(userCacheId);
-  const restoredConversationId = !requestedConversationId ? readSessionStorageValue(lastConversationSessionKey) : '';
+  const restoredConversationId = !requestedConversationId && !composePrefillRequested
+    ? readSessionStorageValue(lastConversationSessionKey)
+    : '';
   const restoredMobileView = readSessionStorageValue(lastMobileViewSessionKey) === 'thread' ? 'thread' : 'inbox';
   const initialConversationId = requestedConversationId || restoredConversationId || '';
   const conversationsCacheKeyParts = useMemo(
@@ -944,6 +948,7 @@ export default function Chat() {
   const markConversationReadLiveRef = useRef(null);
   const focusComposerRef = useRef(null);
   const shareComposePrefillHandledRef = useRef(false);
+  const shareComposeDraftRef = useRef(null);
   const queueInitialThreadPositionRef = useRef(null);
   const cancelPendingInitialAnchorRef = useRef(null);
   const lastForegroundRefreshAtRef = useRef(0);
@@ -4109,6 +4114,26 @@ export default function Chat() {
       }, 0);
       return () => window.clearTimeout(timeoutId);
     }
+    const pendingShareDraft = shareComposeDraftRef.current;
+    const normalizedConversationId = String(activeConversationId || '').trim();
+    if (
+      pendingShareDraft
+      && String(pendingShareDraft.conversationId || '').trim() === normalizedConversationId
+    ) {
+      shareComposeDraftRef.current = null;
+      const bodyText = String(pendingShareDraft.bodyText || '');
+      setMessageText(bodyText);
+      latestMessageTextRef.current = bodyText;
+      try {
+        window.localStorage.setItem(draftStorageKey, bodyText);
+      } catch {
+        // Ignore browser storage failures for drafts.
+      }
+      const timeoutId = window.setTimeout(() => {
+        suppressDraftSyncRef.current = false;
+      }, 0);
+      return () => window.clearTimeout(timeoutId);
+    }
     try {
       setMessageText(window.localStorage.getItem(draftStorageKey) || '');
     } catch {
@@ -4118,7 +4143,7 @@ export default function Chat() {
       suppressDraftSyncRef.current = false;
     }, 0);
     return () => window.clearTimeout(timeoutId);
-  }, [draftStorageKey]);
+  }, [activeConversationId, draftStorageKey]);
 
   useEffect(() => {
     latestMessageTextRef.current = messageText;
@@ -4212,6 +4237,13 @@ export default function Chat() {
     const restoredExists = restoredConversationId && conversations.some((item) => item.id === restoredConversationId);
 
     if (!conversationBootstrapComplete) {
+      if (composePrefillRequested) {
+        cancelPendingInitialAnchor();
+        setActiveConversationId('');
+        if (isMobile) setMobileView('inbox');
+        setConversationBootstrapComplete(true);
+        return;
+      }
       if (requestedConversationId) {
         requestedConversationHandledRef.current = requestedConversationId;
         if (requestedExists) {
@@ -4296,7 +4328,7 @@ export default function Chat() {
     cancelPendingInitialAnchor();
     setActiveConversationId('');
     if (isMobile) setMobileView('inbox');
-  }, [activeConversationId, cancelPendingInitialAnchor, clearStoredConversationState, conversationBootstrapComplete, conversations, conversationsLoading, isMobile, navigate, notifyInfo, requestedConversationId, restoredConversationId, restoredMobileView, writeMobileHistoryState]);
+  }, [activeConversationId, cancelPendingInitialAnchor, clearStoredConversationState, composePrefillRequested, conversationBootstrapComplete, conversations, conversationsLoading, isMobile, navigate, notifyInfo, requestedConversationId, restoredConversationId, restoredMobileView, writeMobileHistoryState]);
 
   useEffect(() => {
     if (!conversationBootstrapComplete) return;
@@ -4675,10 +4707,14 @@ export default function Chat() {
         const createdId = String(created?.id || '');
         const nextConversationId = items.find((item) => item.id === createdId)?.id || createdId || '';
         if (nextConversationId) {
+          shareComposeDraftRef.current = {
+            conversationId: nextConversationId,
+            bodyText,
+          };
           openConversation(nextConversationId);
-          setMessageText(bodyText);
-          latestMessageTextRef.current = bodyText;
-          focusComposer();
+          window.setTimeout(() => {
+            focusComposer();
+          }, 0);
         }
       } catch (error) {
         notifyApiError(error, 'Не удалось открыть чат для отправки файла.');

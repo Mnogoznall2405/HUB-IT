@@ -1300,6 +1300,10 @@ export const scanAPI = {
     return scanIncidentsAPI.getIncidents;
   },
 
+  get getIncidentInboxGroups() {
+    return scanIncidentsAPI.getIncidentInboxGroups;
+  },
+
   get getHostScanRuns() {
     return scanIncidentsAPI.getHostScanRuns;
   },

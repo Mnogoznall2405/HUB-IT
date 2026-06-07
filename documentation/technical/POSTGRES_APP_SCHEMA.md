@@ -14,11 +14,11 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-06-04 08:21 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-06-07 22:09 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
-| **`app`** | **82** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
+| **`app`** | **83** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
 | **`chat`** | **1** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
 
@@ -28,7 +28,7 @@ _Обновлено: 2026-06-04 08:21 UTC_ · инстанс `127.0.0.1:5432/hub
 
 > **Chat:** на инстансе 1 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
 
-## Схема `app` (82 таблиц)
+## Схема `app` (83 таблиц)
 
 ### Auth и пользователи
 
@@ -157,6 +157,7 @@ _Обновлено: 2026-06-04 08:21 UTC_ · инстанс `127.0.0.1:5432/hub
 | `my_file_audit` | — |
 | `my_file_blobs` | — |
 | `my_file_download_grants` | — |
+| `my_file_previews` | — |
 | `my_files` | — |
 | `password_vault_audit` | — |
 | `password_vault_entries` | — |
@@ -268,7 +269,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-06-04:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 82, `chat` 1, `system` 8).
+- **2026-06-07:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 83, `chat` 1, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

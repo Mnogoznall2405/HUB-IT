@@ -192,7 +192,7 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
             connection.execute(text('CREATE SCHEMA IF NOT EXISTS "system"'))
             AppBase.metadata.create_all(bind=connection)
             _run_postgres_app_schema_maintenance(connection)
-        _refresh_pg_schema_docs_after_dev_init(resolved_url)
+        _refresh_pg_schema_docs_after_dev_init(ensure_app_database_configured(database_url))
         return
 
     AppBase.metadata.create_all(bind=engine)

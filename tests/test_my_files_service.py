@@ -378,3 +378,88 @@ def test_my_files_audit_records_share_download_and_delete_without_token(tmp_path
             for row in session.query(AppMyFileAudit).all()
         )
         assert share["token"] not in serialized
+
+
+def test_public_file_metadata_includes_preview_fields(tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = _stage_upload(service, "report.pdf", b"%PDF-1.4 preview")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="report.pdf",
+        mime_type="application/pdf",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=3,
+    )
+    service.process_file(created["id"])
+    share = service.create_share(file_id=created["id"], user_id=7)
+
+    public_info = service.get_public_file(token=share["token"])
+    assert public_info["preview_kind"] == "pdf"
+    assert public_info["preview_available"] is True
+    assert public_info["preview_max_bytes"] > 0
+
+
+def test_public_preview_content_returns_pdf_bytes(tmp_path):
+    service = _new_service(tmp_path)
+    payload = b"%PDF-1.4\n%%EOF"
+    spool_path = _stage_upload(service, "report.pdf", payload)
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="report.pdf",
+        mime_type="application/pdf",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=3,
+    )
+    service.process_file(created["id"])
+    share = service.create_share(file_id=created["id"], user_id=7)
+
+    content, media_type, filename = service.get_public_preview_content(token=share["token"])
+    assert media_type == "application/pdf"
+    assert filename == "report.pdf"
+    assert content == payload
+
+
+def test_public_preview_office_docx_uses_soffice(monkeypatch, tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = _stage_upload(service, "memo.docx", b"docx-bytes")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="memo.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=3,
+    )
+    service.process_file(created["id"])
+    share = service.create_share(file_id=created["id"], user_id=7)
+
+    from backend.services import mail_attachment_preview_service as preview_service
+
+    def fake_build_office_preview_artifact(*, filename, content_type, content):
+        assert filename == "memo.docx"
+        assert content == b"docx-bytes"
+        return preview_service.PreviewArtifact(
+            pdf_bytes=b"%PDF-1.4 office",
+            pdf_filename="memo.pdf",
+            source_kind="word",
+            page_count=2,
+            sheets=[],
+        )
+
+    monkeypatch.setattr(
+        preview_service,
+        "build_office_preview_artifact",
+        fake_build_office_preview_artifact,
+    )
+
+    meta = service.get_public_preview_meta(token=share["token"])
+    assert meta["preview_kind"] == "office_pdf"
+    assert meta["source_kind"] == "word"
+    assert meta["page_count"] == 2
+
+    content, media_type, filename = service.get_public_preview_content(token=share["token"])
+    assert media_type == "application/pdf"
+    assert filename == "memo.pdf"
+    assert content == b"%PDF-1.4 office"

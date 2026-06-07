@@ -116,7 +116,7 @@ describe('mailMessageFileActions', () => {
     });
   });
 
-  it('marks office documents (Word, Excel) as unsupported for preview', async () => {
+  it('marks office documents (Word, Excel) for server-side PDF preview', async () => {
     const wordPreview = await buildAttachmentPreviewState({
       attachment: { name: 'report.docx', content_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' },
       response: {
@@ -134,15 +134,19 @@ describe('mailMessageFileActions', () => {
 
     expect(wordPreview).toMatchObject({
       open: true,
-      kind: 'unsupported',
+      kind: 'office_pdf',
       filename: 'report.docx',
+      sourceKind: 'word',
+      previewKind: 'office_pdf',
       objectUrl: '',
       textContent: '',
     });
     expect(excelPreview).toMatchObject({
       open: true,
-      kind: 'unsupported',
+      kind: 'office_pdf',
       filename: 'table.xlsx',
+      sourceKind: 'excel',
+      previewKind: 'office_pdf',
       objectUrl: '',
       textContent: '',
     });

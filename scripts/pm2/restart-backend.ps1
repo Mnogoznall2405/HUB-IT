@@ -97,6 +97,10 @@ if ($listener.Count -eq 0) {
 
 Write-Host "Port $Port listener PID: $($listener[0])" -ForegroundColor Green
 
+Write-Host 'PM2: restarting scan services to reload shared JWT auth config...' -ForegroundColor Cyan
+& $pm2Cmd restart itinvent-scan itinvent-scan-worker --update-env | Out-Null
+Start-Sleep -Seconds 5
+
 $logs = & $pm2Cmd logs $ProcessName --lines 10 --nostream 2>$null
 $uvicornLine = $logs | Select-String 'Uvicorn running on http://127.0.0.1:' | Select-Object -Last 1
 if ($uvicornLine) {

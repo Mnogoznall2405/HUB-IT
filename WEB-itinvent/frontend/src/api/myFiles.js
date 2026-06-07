@@ -103,6 +103,15 @@ export const myFilesAPI = {
     });
     return response.data;
   },
+  getPublicPreviewMeta: async (token) => {
+    const response = await apiClient.get(`/my-files/public/${encodeURIComponent(token)}/preview`, {
+      suppressAuthRequired: true,
+    });
+    return response.data;
+  },
+  buildPublicPreviewContentUrl: (token) => (
+    `${API_V1_BASE}/my-files/public/${encodeURIComponent(token)}/preview/content`
+  ),
   buildPublicUrl: (token) => {
     const publicPath = buildPublicPath(token);
     if (typeof window === 'undefined') return publicPath;

@@ -637,6 +637,42 @@ def incidents(
     )
 
 
+@app.get("/api/v1/scan/incidents/inbox-groups")
+def incident_inbox_groups(
+    status_value: Optional[str] = Query(None, alias="status"),
+    severity: Optional[str] = Query(None),
+    branch: Optional[str] = Query(None),
+    hostname: Optional[str] = Query(None),
+    source_kind: Optional[str] = Query(None),
+    file_ext: Optional[str] = Query(None),
+    date_from: Optional[str] = Query(None),
+    date_to: Optional[str] = Query(None),
+    has_fragment: Optional[bool] = Query(None),
+    ack_by: Optional[str] = Query(None),
+    q: Optional[str] = Query(None),
+    host_limit: int = Query(25, ge=1, le=100),
+    host_offset: int = Query(0, ge=0),
+    files_per_host: int = Query(25, ge=1, le=100),
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    return store.list_incident_inbox_groups(
+        status=status_value,
+        severity=severity,
+        branch=branch,
+        hostname=hostname,
+        source_kind=source_kind,
+        file_ext=file_ext,
+        date_from=date_from,
+        date_to=date_to,
+        has_fragment=has_fragment,
+        ack_by=ack_by,
+        q=q,
+        host_limit=host_limit,
+        host_offset=host_offset,
+        files_per_host=files_per_host,
+    )
+
+
 @app.post("/api/v1/scan/incidents/{incident_id}/ack")
 def ack_incident(
     incident_id: str,

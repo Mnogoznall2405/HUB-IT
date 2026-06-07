@@ -3848,6 +3848,81 @@ class MailService:
         except Exception as exc:
             raise MailServiceError(f"Failed to download attachment: {exc}") from exc
 
+    def get_attachment_preview(
+        self,
+        *,
+        user_id: int,
+        mailbox_id: str | None = None,
+        message_id: str,
+        attachment_ref: str,
+    ) -> dict[str, Any]:
+        from backend.services.mail_attachment_preview_service import (
+            MailAttachmentPreviewError,
+            build_office_preview_artifact,
+            build_preview_metadata,
+            classify_office_source,
+        )
+
+        filename, content_type, content = self.download_attachment(
+            user_id=int(user_id),
+            mailbox_id=mailbox_id,
+            message_id=message_id,
+            attachment_ref=attachment_ref,
+        )
+        if not classify_office_source(filename=filename, content_type=content_type):
+            raise MailServiceError("Attachment type is not supported for Office preview.")
+        try:
+            artifact = build_office_preview_artifact(
+                filename=filename,
+                content_type=content_type,
+                content=content,
+            )
+        except MailAttachmentPreviewError as exc:
+            raise MailServiceError(str(exc)) from exc
+        preview_pdf_path = (
+            f"/api/v1/mail/messages/{message_id}/attachments/{attachment_ref}/preview/pdf"
+        )
+        if mailbox_id:
+            preview_pdf_path = f"{preview_pdf_path}?mailbox_id={mailbox_id}"
+        return build_preview_metadata(
+            filename=filename,
+            content_type=content_type,
+            artifact=artifact,
+            preview_pdf_path=preview_pdf_path,
+        )
+
+    def download_attachment_preview_pdf(
+        self,
+        *,
+        user_id: int,
+        mailbox_id: str | None = None,
+        message_id: str,
+        attachment_ref: str,
+    ) -> tuple[str, bytes]:
+        from backend.services.mail_attachment_preview_service import (
+            MailAttachmentPreviewError,
+            build_office_preview_artifact,
+            classify_office_source,
+        )
+
+        filename, content_type, content = self.download_attachment(
+            user_id=int(user_id),
+            mailbox_id=mailbox_id,
+            message_id=message_id,
+            attachment_ref=attachment_ref,
+        )
+        if not classify_office_source(filename=filename, content_type=content_type):
+            raise MailServiceError("Attachment type is not supported for Office preview.")
+        try:
+            artifact = build_office_preview_artifact(
+                filename=filename,
+                content_type=content_type,
+                content=content,
+            )
+        except MailAttachmentPreviewError as exc:
+            raise MailServiceError(str(exc)) from exc
+        return artifact.pdf_filename, artifact.pdf_bytes
+
     def _log_message(
         self,
         *,

@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-06-04 08:21 UTC_  
+_Сгенерировано: 2026-06-07 22:09 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (82 tables)
+## Schema `app` (83 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -915,6 +915,27 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `ix_app_my_file_download_grants_expires_at`: (expires_at)
   - `ix_app_my_file_download_grants_file_id`: (file_id)
   - `ix_app_my_file_download_grants_owner_created`: (owner_user_id, created_at)
+
+---
+
+### `app.my_file_previews`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `blob_id` **PK** | varchar(64) | no | `` |
+| `status` | varchar(32) | no | `'queued'::character varying` |
+| `preview_kind` | varchar(32) | no | `'unsupported'::character varying` |
+| `thumbnail_path` | text | no | `''::text` |
+| `document_path` | text | no | `''::text` |
+| `document_mime_type` | varchar(255) | no | `''::character varying` |
+| `page_count` | integer | no | `0` |
+| `error_text` | text | no | `''::text` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `blob_id`
+- **Indexes:**
+  - `ix_app_my_file_previews_status_updated`: (status, updated_at)
 
 ---
 

@@ -107,6 +107,55 @@ def _file_ext_from_values(file_name: Any, file_path: Any) -> str:
     return name_part.rsplit(".", 1)[-1].strip().lower()
 
 
+def _severity_rank(value: Any) -> int:
+    normalized = str(value or "").strip().lower()
+    if normalized == "high":
+        return 3
+    if normalized == "medium":
+        return 2
+    if normalized == "low":
+        return 1
+    return 0
+
+
+def _severity_label_from_rank(rank: Any) -> str:
+    rank_value = int(rank or 0)
+    if rank_value >= 3:
+        return "high"
+    if rank_value == 2:
+        return "medium"
+    if rank_value == 1:
+        return "low"
+    return "none"
+
+
+def _incident_file_key(file_path: Any, file_name: Any, incident_id: Any = "") -> str:
+    path = str(file_path or "").strip()
+    if path:
+        return path.lower()
+    name = str(file_name or "").strip()
+    if name:
+        return name.lower()
+    return str(incident_id or "").strip()
+
+
+def _top_fragments_from_patterns(patterns: Any) -> List[Dict[str, Any]]:
+    fragments: List[Dict[str, Any]] = []
+    for match in _json_loads(patterns, []) if not isinstance(patterns, list) else patterns:
+        if not isinstance(match, dict):
+            continue
+        snippet = str(
+            match.get("snippet")
+            or match.get("value")
+            or match.get("pattern_name")
+            or match.get("pattern")
+            or ""
+        ).strip()
+        if snippet:
+            fragments.append({**match, "snippet": snippet})
+    return fragments[:5]
+
+
 def _normalize_sort_dir(value: Any) -> str:
     return "asc" if str(value or "").strip().lower() == "asc" else "desc"
 
@@ -2136,6 +2185,239 @@ class ScanStore:
             "offset": safe_offset,
             "has_more": bool(has_more),
             "next_offset": next_offset if has_more else None,
+        }
+
+    def _row_to_incident_item(self, row: Any) -> Dict[str, Any]:
+        item = dict(row)
+        item["matched_patterns"] = _json_loads(item.pop("matched_patterns_json", "[]"), [])
+        item["file_ext"] = _file_ext_from_values(item.get("file_name"), item.get("file_path"))
+        return item
+
+    def list_incident_inbox_groups(
+        self,
+        *,
+        status: Optional[str] = None,
+        severity: Optional[str] = None,
+        branch: Optional[str] = None,
+        q: Optional[str] = None,
+        hostname: Optional[str] = None,
+        source_kind: Optional[str] = None,
+        file_ext: Optional[str] = None,
+        date_from: Optional[str] = None,
+        date_to: Optional[str] = None,
+        has_fragment: Optional[bool] = None,
+        ack_by: Optional[str] = None,
+        host_limit: int = 25,
+        host_offset: int = 0,
+        files_per_host: int = 25,
+    ) -> Dict[str, Any]:
+        where_clause, params = self._build_incident_where_clause(
+            status=status,
+            severity=severity,
+            branch=branch,
+            q=q,
+            hostname=hostname,
+            source_kind=source_kind,
+            file_ext=file_ext,
+            date_from=date_from,
+            date_to=date_to,
+            has_fragment=has_fragment,
+            ack_by=ack_by,
+        )
+        safe_host_limit = max(1, min(100, int(host_limit)))
+        safe_host_offset = max(0, int(host_offset))
+        safe_files_per_host = max(1, min(100, int(files_per_host)))
+        branch_needle = str(branch or "").strip().casefold()
+        q_needle = str(q or "").strip().casefold()
+
+        with self._lock, self._connect() as conn:
+            total_incidents = conn.execute(
+                f"""
+                SELECT COUNT(*) as cnt
+                FROM scan_incidents i
+                LEFT JOIN scan_findings f ON f.id = i.finding_id
+                LEFT JOIN scan_jobs j ON j.id = i.job_id
+                {where_clause}
+                """,
+                params,
+            ).fetchone()["cnt"]
+
+            host_rows = conn.execute(
+                f"""
+                SELECT
+                    i.hostname as hostname,
+                    COUNT(*) as incidents_total,
+                    SUM(CASE WHEN i.status='new' THEN 1 ELSE 0 END) as incidents_new,
+                    MAX(i.created_at) as last_incident_at,
+                    MAX(
+                        CASE LOWER(i.severity)
+                            WHEN 'high' THEN 3
+                            WHEN 'medium' THEN 2
+                            WHEN 'low' THEN 1
+                            ELSE 0
+                        END
+                    ) as top_severity_rank,
+                    COALESCE((
+                        SELECT ix.branch
+                        FROM scan_incidents ix
+                        WHERE LOWER(ix.hostname) = LOWER(i.hostname)
+                          AND TRIM(COALESCE(ix.branch, '')) <> ''
+                        ORDER BY ix.created_at DESC
+                        LIMIT 1
+                    ), '') as branch,
+                    COALESCE((
+                        SELECT COALESCE(NULLIF(TRIM(ix.user_full_name), ''), NULLIF(TRIM(ix.user_login), ''), '')
+                        FROM scan_incidents ix
+                        WHERE LOWER(ix.hostname) = LOWER(i.hostname)
+                          AND (
+                            TRIM(COALESCE(ix.user_full_name, '')) <> ''
+                            OR TRIM(COALESCE(ix.user_login, '')) <> ''
+                          )
+                        ORDER BY ix.created_at DESC
+                        LIMIT 1
+                    ), '') as user,
+                    COALESCE((
+                        SELECT a.ip_address
+                        FROM scan_agents a
+                        WHERE LOWER(a.hostname) = LOWER(i.hostname)
+                          AND TRIM(COALESCE(a.ip_address, '')) <> ''
+                        ORDER BY a.last_seen_at DESC
+                        LIMIT 1
+                    ), '') as ip_address
+                FROM scan_incidents i
+                LEFT JOIN scan_findings f ON f.id = i.finding_id
+                LEFT JOIN scan_jobs j ON j.id = i.job_id
+                {where_clause}
+                GROUP BY i.hostname
+                ORDER BY incidents_new DESC, top_severity_rank DESC, last_incident_at DESC, LOWER(i.hostname) ASC
+                """,
+                params,
+            ).fetchall()
+
+            hosts: List[Dict[str, Any]] = []
+            for row in host_rows:
+                host_name = str(row["hostname"] or "").strip()
+                if not host_name:
+                    continue
+                host_entry = {
+                    "id": f"host:{host_name}",
+                    "hostname": host_name,
+                    "branch": str(row["branch"] or "").strip(),
+                    "user": str(row["user"] or "").strip(),
+                    "ip_address": str(row["ip_address"] or "").strip(),
+                    "incidents_total": int(row["incidents_total"] or 0),
+                    "incidents_new": int(row["incidents_new"] or 0),
+                    "last_incident_at": int(row["last_incident_at"] or 0),
+                    "top_severity": _severity_label_from_rank(row["top_severity_rank"]),
+                    "files": [],
+                }
+                if branch_needle and branch_needle not in host_entry["branch"].casefold():
+                    continue
+                if q_needle:
+                    text = " ".join(
+                        [
+                            host_entry["hostname"],
+                            host_entry["branch"],
+                            host_entry["user"],
+                            host_entry["ip_address"],
+                        ]
+                    ).casefold()
+                    if q_needle not in text:
+                        continue
+                hosts.append(host_entry)
+
+            total_hosts = len(hosts)
+            paged_hosts = hosts[safe_host_offset:safe_host_offset + safe_host_limit]
+            has_more = (safe_host_offset + len(paged_hosts)) < total_hosts
+
+            for host_entry in paged_hosts:
+                host_name = host_entry["hostname"]
+                host_where = f"{where_clause} AND LOWER(i.hostname) = LOWER(?)" if where_clause else "WHERE LOWER(i.hostname) = LOWER(?)"
+                host_params = [*params, host_name]
+                file_rows = conn.execute(
+                    f"""
+                    SELECT
+                        COALESCE(NULLIF(TRIM(i.file_path), ''), NULLIF(TRIM(j.file_name), ''), i.id) as file_key,
+                        MAX(i.file_path) as file_path,
+                        MAX(j.file_name) as file_name,
+                        MAX(j.source_kind) as source_kind,
+                        COUNT(*) as incidents_total,
+                        SUM(CASE WHEN i.status='new' THEN 1 ELSE 0 END) as incidents_new,
+                        MAX(i.created_at) as last_incident_at,
+                        MAX(
+                            CASE LOWER(i.severity)
+                                WHEN 'high' THEN 3
+                                WHEN 'medium' THEN 2
+                                WHEN 'low' THEN 1
+                                ELSE 0
+                            END
+                        ) as top_severity_rank
+                    FROM scan_incidents i
+                    LEFT JOIN scan_findings f ON f.id = i.finding_id
+                    LEFT JOIN scan_jobs j ON j.id = i.job_id
+                    {host_where}
+                    GROUP BY file_key
+                    ORDER BY incidents_new DESC, top_severity_rank DESC, last_incident_at DESC, LOWER(file_key) ASC
+                    LIMIT ?
+                    """,
+                    [*host_params, safe_files_per_host],
+                ).fetchall()
+
+                files: List[Dict[str, Any]] = []
+                for file_row in file_rows:
+                    file_key = str(file_row["file_key"] or "").strip()
+                    file_path = str(file_row["file_path"] or "").strip()
+                    file_name = str(file_row["file_name"] or "").strip()
+                    preview_row = conn.execute(
+                        f"""
+                        SELECT
+                            i.*,
+                            f.category,
+                            f.short_reason,
+                            f.matched_patterns_json,
+                            j.source_kind,
+                            j.file_name,
+                            j.created_at as job_created_at
+                        FROM scan_incidents i
+                        LEFT JOIN scan_findings f ON f.id = i.finding_id
+                        LEFT JOIN scan_jobs j ON j.id = i.job_id
+                        {host_where}
+                          AND COALESCE(NULLIF(TRIM(i.file_path), ''), NULLIF(TRIM(j.file_name), ''), i.id) = ?
+                        ORDER BY i.created_at DESC
+                        LIMIT 1
+                        """,
+                        [*host_params, file_key],
+                    ).fetchone()
+                    preview_incident = self._row_to_incident_item(preview_row) if preview_row is not None else None
+                    patterns = preview_incident.get("matched_patterns") if preview_incident else []
+                    files.append(
+                        {
+                            "id": f"file:{host_name}:{file_key}",
+                            "host": host_name,
+                            "file_key": file_key,
+                            "file_path": file_path or file_name or file_key,
+                            "file_name": file_name,
+                            "file_ext": _file_ext_from_values(file_name, file_path),
+                            "source_kind": str(file_row["source_kind"] or "").strip().lower(),
+                            "incidents_total": int(file_row["incidents_total"] or 0),
+                            "incidents_new": int(file_row["incidents_new"] or 0),
+                            "last_incident_at": int(file_row["last_incident_at"] or 0),
+                            "top_severity": _severity_label_from_rank(file_row["top_severity_rank"]),
+                            "preview_incident": preview_incident,
+                            "preview_incident_id": str((preview_incident or {}).get("id") or "").strip(),
+                            "fragments": _top_fragments_from_patterns(patterns),
+                        }
+                    )
+                host_entry["files"] = files
+
+        return {
+            "total_incidents": int(total_incidents),
+            "total_hosts": int(total_hosts),
+            "items": paged_hosts,
+            "has_more": bool(has_more),
+            "host_limit": safe_host_limit,
+            "host_offset": safe_host_offset,
+            "files_per_host": safe_files_per_host,
         }
 
     def bulk_ack_incidents(

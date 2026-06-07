@@ -10,10 +10,18 @@ export const createEmptyAttachmentPreview = () => ({
   contentType: '',
   kind: 'unsupported',
   objectUrl: '',
+  previewBlob: null,
   textContent: '',
   textTruncated: false,
   tooLargeForPreview: false,
   blob: null,
+  sourceKind: '',
+  previewKind: '',
+  pageCount: 0,
+  sheets: [],
+  pdfFilename: '',
+  pdfContentType: 'application/pdf',
+  downloadContext: null,
 });
 
 export const parseDownloadFilename = (contentDisposition, fallbackName = 'attachment.bin') => {
@@ -122,6 +130,56 @@ const getAttachmentPreviewExtension = (filename = '') => {
   return match ? String(match[1] || '').toLowerCase() : '';
 };
 
+export const getOfficeAttachmentSourceKind = ({ filename = '', contentType = '' } = {}) => {
+  const normalizedContentType = String(contentType || '').toLowerCase();
+  const extension = getAttachmentPreviewExtension(filename);
+  if (
+    normalizedContentType.includes('spreadsheetml')
+    || normalizedContentType.includes('ms-excel')
+    || normalizedContentType.includes('opendocument.spreadsheet')
+    || ['xls', 'xlsx', 'xlsm', 'xlt', 'xltx', 'xltm', 'ods'].includes(extension)
+  ) {
+    return 'excel';
+  }
+  if (
+    normalizedContentType.includes('wordprocessingml')
+    || normalizedContentType.includes('msword')
+    || normalizedContentType.includes('opendocument.text')
+    || normalizedContentType.includes('rtf')
+    || ['doc', 'docx', 'docm', 'dot', 'dotx', 'rtf', 'odt'].includes(extension)
+  ) {
+    return 'word';
+  }
+  return '';
+};
+
+export const isOfficePreviewableAttachment = (attachment = {}) => (
+  Boolean(getOfficeAttachmentSourceKind({
+    filename: attachment?.name || attachment?.filename,
+    contentType: attachment?.content_type || attachment?.contentType,
+  }))
+);
+
+export const normalizeAttachmentPreviewMetadata = (payload = {}) => {
+  const sheets = Array.isArray(payload?.sheets)
+    ? payload.sheets.map((item, index) => ({
+      index: Number.isFinite(Number(item?.index)) ? Number(item.index) : index,
+      name: String(item?.name || `Лист ${index + 1}`),
+      page: Number.isFinite(Number(item?.page)) && Number(item.page) > 0 ? Number(item.page) : null,
+      hidden: Boolean(item?.hidden),
+    })).filter((item) => !item.hidden && item.page)
+    : [];
+  return {
+    previewKind: String(payload?.preview_kind || ''),
+    sourceKind: String(payload?.source_kind || ''),
+    sourceFilename: String(payload?.source_filename || ''),
+    pdfFilename: String(payload?.pdf_filename || ''),
+    pageCount: Number.isFinite(Number(payload?.page_count)) ? Number(payload.page_count) : 0,
+    sheets,
+    previewUrl: String(payload?.preview_url || ''),
+  };
+};
+
 export const buildAttachmentPreviewState = async ({
   response,
   attachment,
@@ -130,11 +188,13 @@ export const buildAttachmentPreviewState = async ({
   maxPreviewFileBytes = MAX_PREVIEW_FILE_BYTES,
 } = {}) => {
   const { blob, filename, contentType } = buildAttachmentBlobPayload({ response, attachment });
+  const officeSourceKind = getOfficeAttachmentSourceKind({ filename, contentType });
   const kind = (() => {
     const normalizedContentType = String(contentType || '').toLowerCase();
     const extension = getAttachmentPreviewExtension(filename);
     if (normalizedContentType.includes('pdf') || extension === 'pdf') return 'pdf';
     if (normalizedContentType.startsWith('image/')) return 'image';
+    if (officeSourceKind) return 'office_pdf';
     if (
       normalizedContentType.includes('officedocument')
       || normalizedContentType.includes('msword')
@@ -179,10 +239,18 @@ export const buildAttachmentPreviewState = async ({
     contentType,
     kind,
     objectUrl,
+    previewBlob: null,
     textContent,
     textTruncated,
     tooLargeForPreview: blob.size > maxPreviewFileBytes,
     blob,
+    sourceKind: kind === 'office_pdf' ? officeSourceKind : '',
+    previewKind: kind === 'office_pdf' ? 'office_pdf' : '',
+    pageCount: 0,
+    sheets: [],
+    pdfFilename: '',
+    pdfContentType: 'application/pdf',
+    downloadContext: null,
   };
 };
 

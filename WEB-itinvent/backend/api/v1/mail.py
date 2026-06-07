@@ -1197,6 +1197,89 @@ async def download_message_attachment(
         )
 
 
+@router.get("/messages/{message_id}/attachments/{attachment_ref}/preview")
+async def get_message_attachment_preview(
+    request: Request,
+    message_id: str,
+    attachment_ref: str,
+    mailbox_id: str = Query("", min_length=0),
+    current_user: User = Depends(get_current_mail_user),
+):
+    started_at = time.perf_counter()
+    request_id = _request_id_from_headers(request)
+    try:
+        return await _run_mail_call(
+            mail_service.get_attachment_preview,
+            user_id=int(current_user.id),
+            mailbox_id=_normalize_text(mailbox_id) or None,
+            message_id=message_id,
+            attachment_ref=attachment_ref,
+        )
+    except MailServiceError as exc:
+        logger.warning(
+            "Mail attachment preview failed: request_id=%s user_id=%s message_id=%s ref_len=%s error=%s",
+            request_id,
+            int(current_user.id),
+            message_id,
+            len(str(attachment_ref or "")),
+            str(exc),
+        )
+        raise _mail_http_exception(exc, current_user=current_user) from exc
+    finally:
+        _log_request_timing(
+            "attachment_preview_meta",
+            request_id,
+            started_at,
+            user_id=int(current_user.id),
+            message_id_len=len(str(message_id or "")),
+            ref_len=len(str(attachment_ref or "")),
+        )
+
+
+@router.get("/messages/{message_id}/attachments/{attachment_ref}/preview/pdf")
+async def download_message_attachment_preview_pdf(
+    request: Request,
+    message_id: str,
+    attachment_ref: str,
+    mailbox_id: str = Query("", min_length=0),
+    current_user: User = Depends(get_current_mail_user),
+):
+    started_at = time.perf_counter()
+    request_id = _request_id_from_headers(request)
+    try:
+        filename, content = await _run_mail_call(
+            mail_service.download_attachment_preview_pdf,
+            user_id=int(current_user.id),
+            mailbox_id=_normalize_text(mailbox_id) or None,
+            message_id=message_id,
+            attachment_ref=attachment_ref,
+        )
+        headers = {
+            "Content-Disposition": _build_content_disposition(filename, disposition="inline"),
+            "Cache-Control": "private, max-age=300",
+        }
+        return Response(content=content, media_type="application/pdf", headers=headers)
+    except MailServiceError as exc:
+        logger.warning(
+            "Mail attachment preview PDF failed: request_id=%s user_id=%s message_id=%s ref_len=%s error=%s",
+            request_id,
+            int(current_user.id),
+            message_id,
+            len(str(attachment_ref or "")),
+            str(exc),
+        )
+        raise _mail_http_exception(exc, current_user=current_user) from exc
+    finally:
+        _log_request_timing(
+            "attachment_preview_pdf",
+            request_id,
+            started_at,
+            user_id=int(current_user.id),
+            message_id_len=len(str(message_id or "")),
+            ref_len=len(str(attachment_ref or "")),
+        )
+
+
 @router.get("/messages/{message_id}/headers")
 async def get_mail_message_headers(
     message_id: str,

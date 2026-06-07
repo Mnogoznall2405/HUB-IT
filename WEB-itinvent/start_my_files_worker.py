@@ -43,6 +43,7 @@ def main() -> None:
         raise RuntimeError("My-files worker requires APP_DATABASE_URL")
     initialize_app_schema()
     ping_app_database()
+    my_files_service._ensure_dirs()
     worker_lock = _acquire_worker_lock()
     recovered = my_files_service.recover_stale_processing(force=True)
     if recovered:

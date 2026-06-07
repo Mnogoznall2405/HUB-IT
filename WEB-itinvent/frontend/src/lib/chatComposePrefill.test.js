@@ -2,6 +2,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import {
   CHAT_COMPOSE_PREFILL_STORAGE_KEY,
   clearChatComposePrefill,
+  isChatComposePrefillRoute,
   readChatComposePrefill,
   stashChatComposePrefill,
 } from './chatComposePrefill';
@@ -23,5 +24,11 @@ describe('chatComposePrefill', () => {
     clearChatComposePrefill();
     expect(window.sessionStorage.getItem(CHAT_COMPOSE_PREFILL_STORAGE_KEY)).toBeNull();
     expect(readChatComposePrefill()).toBeNull();
+  });
+
+  it('detects compose prefill route', () => {
+    expect(isChatComposePrefillRoute('?compose=prefill')).toBe(true);
+    expect(isChatComposePrefillRoute('?compose=other')).toBe(false);
+    expect(isChatComposePrefillRoute('')).toBe(false);
   });
 });

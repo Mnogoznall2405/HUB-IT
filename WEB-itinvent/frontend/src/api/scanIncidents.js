@@ -6,6 +6,11 @@ export const scanIncidentsAPI = {
     return response.data;
   },
 
+  getIncidentInboxGroups: async (params = {}, options = {}) => {
+    const response = await apiClient.get('/scan/incidents/inbox-groups', { params, signal: options?.signal });
+    return response.data;
+  },
+
   getHostScanRuns: async (hostname, params = {}) => {
     const response = await apiClient.get(`/scan/hosts/${encodeURIComponent(hostname)}/scan-runs`, { params });
     return response.data;

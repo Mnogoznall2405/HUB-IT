@@ -29,6 +29,26 @@ export const mailMessageFilesAPI = {
     return response;
   },
 
+  getAttachmentPreview: async (messageId, attachmentRef, options = {}) => {
+    const response = await apiClient.get(
+      `/mail/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentRef)}/preview`,
+      {
+        params: withMailboxQuery({}, options?.mailboxId),
+      },
+    );
+    return response.data;
+  },
+
+  downloadAttachmentPreviewPdf: async (messageId, attachmentRef, options = {}) => (
+    apiClient.get(
+      `/mail/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentRef)}/preview/pdf`,
+      {
+        params: withMailboxQuery({}, options?.mailboxId),
+        responseType: 'blob',
+      },
+    )
+  ),
+
   getMessageHeaders: async (messageId, options = {}) => {
     const response = await apiClient.get(`/mail/messages/${encodeURIComponent(messageId)}/headers`, {
       params: withMailboxQuery({}, options?.mailboxId),

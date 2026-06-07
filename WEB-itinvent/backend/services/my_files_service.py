@@ -1262,6 +1262,37 @@ class MyFilesService:
             raise MyFilesNotFoundError("File not found")
         return row
 
+    @staticmethod
+    def _preview_max_bytes() -> int:
+        from backend.services.mail_attachment_preview_service import office_preview_max_bytes
+
+        return int(office_preview_max_bytes())
+
+    @staticmethod
+    def _classify_preview_kind(*, filename: str, mime_type: str) -> str:
+        from backend.services.mail_attachment_preview_service import classify_office_source
+
+        normalized_mime = _normalize_text(mime_type).lower()
+        extension = _extension(filename).lstrip(".")
+        if "pdf" in normalized_mime or extension == "pdf":
+            return "pdf"
+        if normalized_mime.startswith("image/"):
+            return "image"
+        if classify_office_source(filename=filename, content_type=mime_type):
+            return "office_pdf"
+        return "unsupported"
+
+    @staticmethod
+    def _read_payload_bytes(payload: DownloadPayload) -> bytes:
+        if payload.mode == STORAGE_ZSTD:
+            return b"".join(MyFilesService.iter_zstd_download(payload.path))
+        return payload.path.read_bytes()
+
+    def _public_preview_context_locked(self, session, token: str) -> tuple[AppMyFile, DownloadPayload]:
+        row = self._public_row_locked(session, token)
+        payload = self._download_payload_for_row_locked(session, row)
+        return row, payload
+
     def get_public_file(self, *, token: str) -> dict[str, Any]:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
@@ -1269,12 +1300,100 @@ class MyFilesService:
             download_size = int(row.original_size_bytes or 0)
             if row.storage_mode == STORAGE_OPTIMIZED_MEDIA:
                 download_size = int(row.stored_size_bytes or 0)
+            file_name = _normalize_text(row.download_file_name)
+            mime_type = _normalize_text(row.download_mime_type) or "application/octet-stream"
+            preview_kind = self._classify_preview_kind(filename=file_name, mime_type=mime_type)
+            preview_max_bytes = self._preview_max_bytes()
+            preview_available = (
+                preview_kind != "unsupported"
+                and download_size > 0
+                and download_size <= preview_max_bytes
+            )
             return {
-                "file_name": _normalize_text(row.download_file_name),
+                "file_name": file_name,
                 "size_bytes": download_size,
-                "mime_type": _normalize_text(row.download_mime_type) or "application/octet-stream",
+                "mime_type": mime_type,
                 "expires_at": row.expires_at,
+                "preview_kind": preview_kind,
+                "preview_available": preview_available,
+                "preview_max_bytes": preview_max_bytes,
             }
+
+    def get_public_preview_meta(self, *, token: str) -> dict[str, Any]:
+        from backend.services.mail_attachment_preview_service import (
+            MailAttachmentPreviewError,
+            build_office_preview_artifact,
+            build_preview_metadata,
+        )
+
+        database_url = self._database_url_or_raise()
+        preview_url = f"/api/v1/my-files/public/{_normalize_text(token)}/preview/content"
+        with app_session(database_url) as session:
+            _row, payload = self._public_preview_context_locked(session, token)
+            preview_kind = self._classify_preview_kind(
+                filename=payload.file_name,
+                mime_type=payload.media_type,
+            )
+            if preview_kind == "unsupported":
+                raise MyFilesValidationError("Preview is not available for this file type.")
+            if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+                raise MyFilesValidationError("File is too large for preview.")
+            if preview_kind == "office_pdf":
+                try:
+                    content = self._read_payload_bytes(payload)
+                    artifact = build_office_preview_artifact(
+                        filename=payload.file_name,
+                        content_type=payload.media_type,
+                        content=content,
+                    )
+                except MailAttachmentPreviewError as exc:
+                    raise MyFilesValidationError(str(exc)) from exc
+                return build_preview_metadata(
+                    filename=payload.file_name,
+                    content_type=payload.media_type,
+                    artifact=artifact,
+                    preview_pdf_path=preview_url,
+                )
+            return {
+                "preview_kind": preview_kind,
+                "source_kind": "",
+                "source_filename": payload.file_name,
+                "pdf_filename": payload.file_name if preview_kind == "pdf" else "",
+                "page_count": 0,
+                "sheets": [],
+                "preview_url": preview_url,
+            }
+
+    def get_public_preview_content(self, *, token: str) -> tuple[bytes, str, str]:
+        from backend.services.mail_attachment_preview_service import (
+            MailAttachmentPreviewError,
+            build_office_preview_artifact,
+        )
+
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            _row, payload = self._public_preview_context_locked(session, token)
+            preview_kind = self._classify_preview_kind(
+                filename=payload.file_name,
+                mime_type=payload.media_type,
+            )
+            if preview_kind == "unsupported":
+                raise MyFilesValidationError("Preview is not available for this file type.")
+            if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+                raise MyFilesValidationError("File is too large for preview.")
+            if preview_kind == "office_pdf":
+                try:
+                    content = self._read_payload_bytes(payload)
+                    artifact = build_office_preview_artifact(
+                        filename=payload.file_name,
+                        content_type=payload.media_type,
+                        content=content,
+                    )
+                except MailAttachmentPreviewError as exc:
+                    raise MyFilesValidationError(str(exc)) from exc
+                return artifact.pdf_bytes, "application/pdf", artifact.pdf_filename
+            content = self._read_payload_bytes(payload)
+            return content, payload.media_type, payload.file_name
 
     def _download_payload_for_row_locked(self, session, row: AppMyFile) -> DownloadPayload:
         if (

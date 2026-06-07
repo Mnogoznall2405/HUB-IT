@@ -45,6 +45,14 @@ def enforce_public_meta_limits(request: Request, token: str) -> None:
     )
 
 
+def enforce_public_preview_limits(request: Request, token: str) -> None:
+    enforce_public_meta_limits(request, token)
+
+
+def enforce_public_preview_content_limits(request: Request, token: str) -> None:
+    enforce_public_download_limits(request, token)
+
+
 def enforce_public_download_limits(request: Request, token: str) -> None:
     limits = config.my_files_public_rate_limit
     token_key = _hash_share_token(token)

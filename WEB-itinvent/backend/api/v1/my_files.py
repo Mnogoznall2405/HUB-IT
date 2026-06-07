@@ -18,6 +18,8 @@ from backend.api.v1.my_files_public_rate_limit import (
     enforce_public_download_limits,
     enforce_public_meta_limits,
     enforce_public_miss_limit,
+    enforce_public_preview_content_limits,
+    enforce_public_preview_limits,
 )
 from backend.api.v1.my_files_upload_rate_limit import enforce_upload_limits
 from backend.config import config
@@ -29,6 +31,7 @@ from backend.models.my_files import (
     MyFileQuotaResponse,
     MyFileResponse,
     MyFileShareResponse,
+    PublicMyFilePreviewResponse,
     PublicMyFileResponse,
 )
 from backend.services.authorization_service import (
@@ -132,10 +135,11 @@ async def _stream_request_to_spool(request: Request, spool_path: Path, *, expect
     return size
 
 
-def _content_disposition(file_name: str) -> str:
+def _content_disposition(file_name: str, *, inline: bool = False) -> str:
     raw_name = str(file_name or "file.bin")
     safe_name = "".join(ch if 32 <= ord(ch) < 127 and ch not in '"\\' else "_" for ch in raw_name) or "file.bin"
-    return f'attachment; filename="{safe_name}"; filename*=UTF-8\'\'{quote(raw_name)}'
+    disposition = "inline" if inline else "attachment"
+    return f'{disposition}; filename="{safe_name}"; filename*=UTF-8\'\'{quote(raw_name)}'
 
 
 def _download_response(payload) -> Response:
@@ -262,6 +266,38 @@ async def download_my_file_by_grant(token: str, request: Request):
         return _download_response(payload)
     except MyFilesNotFoundError as exc:
         enforce_download_grant_miss_limit(request)
+        raise _service_error_to_secure_http(exc) from exc
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
+@router.get("/public/{token}/preview", response_model=PublicMyFilePreviewResponse)
+async def get_public_my_file_preview(token: str, request: Request, response: Response) -> dict:
+    enforce_public_preview_limits(request, token)
+    _set_public_response_headers(response)
+    try:
+        return await run_in_threadpool(my_files_service.get_public_preview_meta, token=token)
+    except MyFilesNotFoundError as exc:
+        enforce_public_miss_limit(request)
+        raise _service_error_to_secure_http(exc) from exc
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
+@router.get("/public/{token}/preview/content")
+async def download_public_my_file_preview_content(token: str, request: Request):
+    enforce_public_preview_content_limits(request, token)
+    try:
+        content, media_type, filename = await run_in_threadpool(
+            my_files_service.get_public_preview_content,
+            token=token,
+        )
+        headers = dict(_DOWNLOAD_SECURITY_HEADERS)
+        headers["Content-Disposition"] = _content_disposition(filename, inline=True)
+        headers["Cache-Control"] = "private, max-age=300"
+        return Response(content=content, media_type=media_type, headers=headers)
+    except MyFilesNotFoundError as exc:
+        enforce_public_miss_limit(request)
         raise _service_error_to_secure_http(exc) from exc
     except Exception as exc:
         raise _service_error_to_secure_http(exc) from exc

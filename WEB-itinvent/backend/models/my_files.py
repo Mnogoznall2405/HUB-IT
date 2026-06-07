@@ -43,11 +43,24 @@ class MyFileShareResponse(BaseModel):
     expires_at: datetime | None = None
 
 
+class PublicMyFilePreviewResponse(BaseModel):
+    preview_kind: str
+    source_kind: str = ""
+    source_filename: str = ""
+    pdf_filename: str = ""
+    page_count: int = 0
+    sheets: list[dict] = Field(default_factory=list)
+    preview_url: str = ""
+
+
 class PublicMyFileResponse(BaseModel):
     file_name: str
     size_bytes: int
     mime_type: str
     expires_at: datetime | None = None
+    preview_kind: str = "unsupported"
+    preview_available: bool = False
+    preview_max_bytes: int = 0
 
 
 class MyFileDownloadGrantResponse(BaseModel):

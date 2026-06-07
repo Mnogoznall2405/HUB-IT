@@ -2087,6 +2087,7 @@ function Mail() {
     attachmentPreview,
     closeAttachmentPreview,
     downloadAttachmentPreview,
+    downloadAttachmentPreviewPdf,
     handleOpenHeaders,
     handleDownloadMessageSource,
     handlePrintSelectedMessage,
@@ -3284,6 +3285,7 @@ function Mail() {
               attachmentPreview={attachmentPreview}
               onClose={closeAttachmentPreview}
               onDownload={downloadAttachmentPreview}
+              onDownloadPreviewPdf={downloadAttachmentPreviewPdf}
               formatFileSize={formatFileSize}
               maxPreviewFileBytes={maxPreviewFileBytes}
             />

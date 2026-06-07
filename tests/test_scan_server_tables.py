@@ -326,6 +326,68 @@ def test_list_hosts_table_filters_and_aggregates_host_context(temp_dir):
     assert ack_hosts["items"][0]["hostname"] == "HOST-01"
 
 
+def test_list_incident_inbox_groups_returns_host_file_groups(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+
+    first = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\secret-a.pdf",
+        file_name="secret-a.pdf",
+        source_kind="pdf",
+        severity="high",
+        status="new",
+        created_at=now_ts,
+    )
+    second = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="corp\\petrov",
+        user_full_name="Петров П.П.",
+        file_path=r"C:\Docs\secret-b.pdf",
+        file_name="secret-b.pdf",
+        source_kind="pdf",
+        severity="medium",
+        status="new",
+        created_at=now_ts - 10,
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-2",
+        hostname="HOST-02",
+        branch="Москва",
+        user_login="corp\\ivanov",
+        user_full_name="Иванов И.И.",
+        file_path=r"C:\Work\report.txt",
+        file_name="report.txt",
+        source_kind="text",
+        severity="low",
+        status="ack",
+        created_at=now_ts - 20,
+    )
+
+    payload = store.list_incident_inbox_groups(status="new", host_limit=10, host_offset=0, files_per_host=10)
+
+    assert payload["total_incidents"] == 2
+    assert payload["total_hosts"] == 1
+    assert payload["has_more"] is False
+    assert len(payload["items"]) == 1
+    host = payload["items"][0]
+    assert host["hostname"] == "HOST-01"
+    assert host["incidents_new"] == 2
+    assert len(host["files"]) == 2
+    assert host["files"][0]["preview_incident"]["id"] == first["incident_id"]
+    assert host["files"][0]["fragments"]
+    assert first["incident_id"] != second["incident_id"]
+
+
 def test_list_incidents_pages_beyond_500_and_returns_page_metadata(temp_dir):
     store = _make_store(temp_dir)
     now_ts = int(time.time())

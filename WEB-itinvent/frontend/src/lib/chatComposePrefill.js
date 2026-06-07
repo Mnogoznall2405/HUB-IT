@@ -1,6 +1,10 @@
 export const CHAT_COMPOSE_PREFILL_STORAGE_KEY = 'chat_compose_prefill_v1';
 const PREFILL_TTL_MS = 5 * 60 * 1000;
 
+export const isChatComposePrefillRoute = (search = '') => (
+  new URLSearchParams(String(search || '')).get('compose') === 'prefill'
+);
+
 export const stashChatComposePrefill = ({
   peerUserId = 0,
   bodyText = '',
