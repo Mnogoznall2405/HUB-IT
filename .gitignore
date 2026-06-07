@@ -158,6 +158,11 @@ bot.log*
 WEB-itinvent/uploads/
 /*.xlsx
 
+# Recovery / session temp artifacts
+_restored_from_git_*/
+_recovery_probe/
+pm2-jlist-temp.json
+
 # Test files
 test_*.py
 test_*.bat
