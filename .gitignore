@@ -80,6 +80,7 @@ yarn-error.log*
 *.corrupt
 temp/
 tmp/
+output/
 .tmp/
 .tmp*/
 .tmp_pytest/
