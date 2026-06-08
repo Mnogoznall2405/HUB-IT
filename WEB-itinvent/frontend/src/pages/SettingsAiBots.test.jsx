@@ -63,6 +63,17 @@ describe('SETTINGS_PERMISSION_GROUPS', () => {
       expect.objectContaining({ value: 'settings.ai.manage', label: 'Settings: AI bots manage' }),
     ]));
   });
+
+  it('exposes my-files permissions in the user permission matrix', () => {
+    const flattened = SETTINGS_PERMISSION_GROUPS.flatMap((group) => group.permissions || []);
+
+    expect(flattened).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'my_files.read', label: 'Мои файлы: просмотр' }),
+      expect.objectContaining({ value: 'my_files.write', label: 'Мои файлы: загрузка и удаление' }),
+      expect.objectContaining({ value: 'my_files.share', label: 'Мои файлы: публичные ссылки' }),
+      expect.objectContaining({ value: 'my_files.audit.read', label: 'Мои файлы: журнал аудита' }),
+    ]));
+  });
 });
 
 describe('AiBotsAdminSection', () => {

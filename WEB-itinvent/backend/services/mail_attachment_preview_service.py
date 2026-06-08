@@ -219,11 +219,14 @@ def _excel_sheet_metadata(*, source_path: Path, work_dir: Path, soffice: Path, t
             timeout_sec=timeout_sec,
         )
         page_count = max(1, _pdf_page_count(sheet_pdf))
+        page_end = current_page + page_count - 1
         sheets_meta.append(
             {
                 "index": index,
                 "name": str(worksheet.title or f"Лист {index + 1}"),
                 "page": current_page,
+                "page_end": page_end,
+                "page_count": page_count,
                 "hidden": False,
             }
         )
@@ -284,18 +287,29 @@ def build_office_preview_artifact(*, filename: str, content_type: str, content: 
     stem = Path(str(filename or "attachment.bin")).stem or "attachment"
     pdf_filename = f"{stem}.pdf"
 
-    with tempfile.TemporaryDirectory(prefix="itinvent-mail-preview-") as temp_dir:
+    with tempfile.TemporaryDirectory(prefix="itinvent-mail-preview-", ignore_cleanup_errors=True) as temp_dir:
         work_dir = Path(temp_dir)
         source_path = work_dir / f"source.{extension}"
         source_path.write_bytes(content)
 
-        if source_kind == "excel" and extension in {"xls", "xlsx", "xlsm", "xlt", "xltx", "xltm"}:
-            sheets, pdf_bytes = _excel_sheet_metadata(
-                source_path=source_path,
-                work_dir=work_dir,
-                soffice=soffice,
-                timeout_sec=timeout_sec,
-            )
+        if source_kind == "excel" and extension in {"xlsx", "xlsm", "xltx", "xltm"}:
+            try:
+                sheets, pdf_bytes = _excel_sheet_metadata(
+                    source_path=source_path,
+                    work_dir=work_dir,
+                    soffice=soffice,
+                    timeout_sec=timeout_sec,
+                )
+            except Exception:
+                logger.exception("Excel sheet preview failed; falling back to workbook PDF conversion")
+                pdf_path = _run_soffice_convert(
+                    soffice=soffice,
+                    source_path=source_path,
+                    output_dir=work_dir / "pdf",
+                    timeout_sec=timeout_sec,
+                )
+                pdf_bytes = pdf_path.read_bytes()
+                sheets = []
         else:
             pdf_path = _run_soffice_convert(
                 soffice=soffice,

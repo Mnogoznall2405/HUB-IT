@@ -71,6 +71,8 @@ def main() -> None:
                 processed = my_files_service.process_next_job()
                 if not processed:
                     processed = my_files_service.process_next_security_backfill()
+                if not processed:
+                    processed = my_files_service.process_next_preview_job()
             except Exception:
                 logger.exception("My-files worker cycle failed")
                 stop_event.wait(10)

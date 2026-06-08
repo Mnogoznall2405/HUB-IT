@@ -10,6 +10,7 @@ import {
   buildMessageSourceDownloadPayload,
   buildPrintMailDocumentHtml,
   createEmptyAttachmentPreview,
+  normalizeAttachmentPreviewMetadata,
   parseDownloadFilename,
 } from './mailMessageFileActions';
 
@@ -149,6 +150,28 @@ describe('mailMessageFileActions', () => {
       previewKind: 'office_pdf',
       objectUrl: '',
       textContent: '',
+    });
+  });
+
+  it('normalizes office preview sheet metadata with page ranges', () => {
+    expect(normalizeAttachmentPreviewMetadata({
+      preview_kind: 'office_pdf',
+      source_kind: 'excel',
+      source_filename: 'table.xlsx',
+      pdf_filename: 'table.pdf',
+      page_count: 4,
+      sheets: [
+        { index: 0, name: 'Лист1', page: 1, page_end: 2, page_count: 2 },
+        { index: 1, name: 'Лист2', page: 3, page_count: 1 },
+      ],
+    })).toMatchObject({
+      previewKind: 'office_pdf',
+      sourceKind: 'excel',
+      pageCount: 4,
+      sheets: [
+        { index: 0, name: 'Лист1', page: 1, pageEnd: 2, pageCount: 2 },
+        { index: 1, name: 'Лист2', page: 3, pageEnd: 3, pageCount: 1 },
+      ],
     });
   });
 

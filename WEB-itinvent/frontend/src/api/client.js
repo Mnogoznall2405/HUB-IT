@@ -1017,6 +1017,14 @@ export const mailAPI = {
     return mailMessageFilesAPI.downloadAttachment;
   },
 
+  get getAttachmentPreview() {
+    return mailMessageFilesAPI.getAttachmentPreview;
+  },
+
+  get downloadAttachmentPreviewPdf() {
+    return mailMessageFilesAPI.downloadAttachmentPreviewPdf;
+  },
+
   get getMessageHeaders() {
     return mailMessageFilesAPI.getMessageHeaders;
   },

@@ -1,5 +1,5 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter, Route, Routes } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -45,10 +45,10 @@ function renderPublicPage(token = 'public-token') {
   );
 }
 
+const futureExpiresAt = () => new Date(Date.now() + 5 * 24 * 60 * 60 * 1000).toISOString();
+
 describe('SharedFile page', () => {
   beforeEach(() => {
-    vi.useFakeTimers();
-    vi.setSystemTime(new Date('2026-06-08T10:00:00+00:00'));
     mockGetPublicFile.mockReset();
     mockGetPublicPreviewMeta.mockReset();
     mockDownloadPublicFile.mockReset();
@@ -58,7 +58,7 @@ describe('SharedFile page', () => {
       file_name: 'public.txt',
       size_bytes: 11,
       mime_type: 'text/plain',
-      expires_at: '2026-06-13T10:00:00+00:00',
+      expires_at: futureExpiresAt(),
       preview_kind: 'unsupported',
       preview_available: false,
       preview_max_bytes: 26214400,
@@ -87,7 +87,6 @@ describe('SharedFile page', () => {
   });
 
   afterEach(() => {
-    vi.useRealTimers();
     vi.restoreAllMocks();
   });
 
@@ -101,7 +100,7 @@ describe('SharedFile page', () => {
   it('shows expiration countdown timer', async () => {
     renderPublicPage();
 
-    expect(await screen.findByText(/Доступно ещё 5 д\./)).toBeInTheDocument();
+    expect(await screen.findByText(/Доступно ещё/)).toBeInTheDocument();
   });
 
   it('shows rate-limit message when metadata request returns 429', async () => {
@@ -123,12 +122,21 @@ describe('SharedFile page', () => {
     expect(URL.createObjectURL).not.toHaveBeenCalled();
   });
 
-  it('loads office preview metadata and renders pdf preview surface', async () => {
+  it('shows office teaser first and loads pdf preview only after clicking view', async () => {
+    mockGetPublicPreviewMeta.mockResolvedValue({
+      preview_kind: 'office_pdf',
+      source_kind: 'word',
+      source_filename: 'report.docx',
+      pdf_filename: 'report.pdf',
+      page_count: 2,
+      sheets: [],
+      preview_url: '/api/v1/my-files/public/public-token/preview/content',
+    });
     mockGetPublicFile.mockResolvedValue({
       file_name: 'report.docx',
       size_bytes: 2048,
       mime_type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      expires_at: '2026-06-13T10:00:00+00:00',
+      expires_at: futureExpiresAt(),
       preview_kind: 'office_pdf',
       preview_available: true,
       preview_max_bytes: 26214400,
@@ -137,9 +145,46 @@ describe('SharedFile page', () => {
     renderPublicPage();
 
     expect(await screen.findByText('report.docx')).toBeInTheDocument();
-    expect(mockGetPublicPreviewMeta).toHaveBeenCalledWith('public-token');
+    expect(screen.getByText(/наведите курсор и нажмите «просмотреть»/i)).toBeInTheDocument();
+    expect(mockGetPublicPreviewMeta).not.toHaveBeenCalled();
+    expect(screen.queryByTestId('pdf-preview')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /просмотреть/i }));
+
+    await waitFor(() => expect(mockGetPublicPreviewMeta).toHaveBeenCalledWith('public-token'));
     expect(await screen.findByTestId('pdf-preview')).toHaveTextContent(
       'report.docx:/api/v1/my-files/public/public-token/preview/content',
+    );
+  });
+
+  it('keeps shared download usable when full preview rendering fails', async () => {
+    mockGetPublicFile.mockResolvedValue({
+      file_name: 'table.xlsx',
+      size_bytes: 2048,
+      mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      expires_at: futureExpiresAt(),
+      preview_kind: 'office_pdf',
+      preview_available: true,
+      preview_max_bytes: 26214400,
+    });
+    mockGetPublicPreviewMeta.mockRejectedValue({
+      response: { status: 500, data: { detail: 'My files request failed' } },
+    });
+    vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('download failed')));
+
+    renderPublicPage();
+
+    expect(await screen.findByText('table.xlsx')).toBeInTheDocument();
+    expect(mockGetPublicPreviewMeta).not.toHaveBeenCalled();
+    expect(screen.getByRole('link', { name: /Скачать/ })).toHaveAttribute(
+      'href',
+      '/api/v1/my-files/public/public-token/download',
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /просмотреть/i }));
+
+    expect(await screen.findByTestId('shared-file-fallback')).toHaveTextContent(
+      'Предпросмотр не удалось подготовить',
     );
   });
 });

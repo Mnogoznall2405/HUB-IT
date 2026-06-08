@@ -13,11 +13,29 @@ import {
 } from '@mui/material';
 import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import AccessTimeOutlinedIcon from '@mui/icons-material/AccessTimeOutlined';
+import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import { myFilesAPI } from '../api/myFiles';
 import { getMailAttachmentVisual } from '../components/mail/mailAttachmentVisuals';
-import { normalizeAttachmentPreviewMetadata } from '../components/mail/mailMessageFileActions';
+import MailOfficePreviewTeaser from '../components/mail/MailOfficePreviewTeaser';
+import {
+  getOfficeAttachmentSourceKind,
+  normalizeAttachmentPreviewMetadata,
+} from '../components/mail/mailMessageFileActions';
+import { parseExcelWorkbookFromBlob } from '../lib/excelPreview';
 
 const MailPdfPreviewSurface = lazy(() => import('../components/mail/MailPdfPreviewSurface'));
+const MailExcelPreviewGrid = lazy(() => import('../components/mail/MailExcelPreviewGrid'));
+
+const TEXT = '#111827';
+const MUTED = '#64748b';
+const PAGE_BG = '#eef2f6';
+const PANEL_BG = '#ffffff';
+const WARNING_TEXT = '#92400e';
+const WARNING_BORDER = '#fed7aa';
+const WARNING_BG = '#fff7ed';
+
+const RATE_LIMIT_MESSAGE = 'Слишком много запросов. Попробуйте скачать через несколько минут.';
+const PREVIEW_UNAVAILABLE_MESSAGE = 'Предпросмотр не удалось подготовить. Файл можно скачать по этой ссылке.';
 
 const formatFileSize = (bytes) => {
   const value = Number(bytes || 0);
@@ -32,13 +50,20 @@ const formatFileSize = (bytes) => {
   return `${current >= 10 || index === 0 ? current.toFixed(0) : current.toFixed(1)} ${units[index]}`;
 };
 
-const RATE_LIMIT_MESSAGE = 'Слишком много запросов. Попробуйте скачать через несколько минут.';
-
 const isRateLimitedError = (error) => Number(error?.response?.status) === 429;
 
 const resolvePublicFileError = (error) => {
   if (isRateLimitedError(error)) return RATE_LIMIT_MESSAGE;
   return 'Файл недоступен или срок хранения истёк.';
+};
+
+const resolvePreviewError = (error) => {
+  if (isRateLimitedError(error)) return RATE_LIMIT_MESSAGE;
+  const detail = String(error?.response?.data?.detail || '').trim();
+  if (!detail || /my files request failed/i.test(detail) || /preview is temporarily unavailable/i.test(detail)) {
+    return PREVIEW_UNAVAILABLE_MESSAGE;
+  }
+  return detail;
 };
 
 const pad2 = (value) => String(Math.max(0, value)).padStart(2, '0');
@@ -61,112 +86,284 @@ const formatCountdown = (expiresAt, nowMs) => {
   return `Доступно ещё ${pad2(hours)}:${pad2(minutes)}:${pad2(seconds)}`;
 };
 
-function SharedFilePreviewPanel({
+function FileFallbackPanel({ payload, message = '', tone = 'neutral' }) {
+  const attachmentVisual = useMemo(
+    () => getMailAttachmentVisual({ name: payload?.file_name, content_type: payload?.mime_type }),
+    [payload?.file_name, payload?.mime_type],
+  );
+  const AttachmentIcon = attachmentVisual.Icon;
+  const isWarning = tone === 'warning';
+
+  return (
+    <Stack
+      data-testid="shared-file-fallback"
+      spacing={2.2}
+      alignItems="center"
+      sx={{
+        width: '100%',
+        maxWidth: 520,
+        mx: 'auto',
+        textAlign: 'center',
+        color: TEXT,
+      }}
+    >
+      {message ? (
+        <Alert
+          severity={isWarning ? 'warning' : 'info'}
+          sx={{
+            width: '100%',
+            borderRadius: '8px',
+            border: `1px solid ${isWarning ? WARNING_BORDER : '#bfdbfe'}`,
+            bgcolor: isWarning ? WARNING_BG : '#eff6ff',
+            color: isWarning ? WARNING_TEXT : '#1e3a8a',
+            '& .MuiAlert-icon': { color: isWarning ? '#f59e0b' : '#2563eb' },
+            '& .MuiAlert-message': { color: 'inherit', fontWeight: 600 },
+          }}
+        >
+          {message}
+        </Alert>
+      ) : null}
+
+      <Paper
+        elevation={0}
+        sx={{
+          width: 122,
+          height: 122,
+          borderRadius: '22px',
+          bgcolor: PANEL_BG,
+          boxShadow: '0 24px 70px rgba(15, 23, 42, 0.16)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+        }}
+      >
+        <AttachmentIcon sx={{ fontSize: 58, color: attachmentVisual.color }} />
+      </Paper>
+
+      <Stack spacing={0.6} alignItems="center" sx={{ px: 2 }}>
+        <Typography variant="subtitle1" sx={{ color: TEXT, fontWeight: 800, lineHeight: 1.25 }}>
+          {attachmentVisual.label || 'Файл'}
+        </Typography>
+        <Typography variant="body2" sx={{ color: MUTED, lineHeight: 1.45 }}>
+          {formatFileSize(payload?.size_bytes)}
+          {payload?.preview_available === false ? ' · предпросмотр недоступен' : ''}
+        </Typography>
+      </Stack>
+    </Stack>
+  );
+}
+
+function SharedFilePreviewTeaserBody({
   payload,
-  token,
-  previewMeta,
-  previewLoading,
-  previewError,
+  excelLoading,
+  excelWorkbook,
 }) {
   const attachmentVisual = useMemo(
     () => getMailAttachmentVisual({ name: payload?.file_name, content_type: payload?.mime_type }),
     [payload?.file_name, payload?.mime_type],
   );
   const AttachmentIcon = attachmentVisual.Icon;
+
+  if (excelLoading) {
+    return <Skeleton variant="rectangular" height={280} sx={{ borderRadius: '8px' }} />;
+  }
+
+  if (excelWorkbook) {
+    return (
+      <Suspense fallback={<Skeleton variant="rectangular" height={280} sx={{ borderRadius: '8px' }} />}>
+        <MailExcelPreviewGrid workbook={excelWorkbook} compact />
+      </Suspense>
+    );
+  }
+
+  return (
+    <Stack
+      spacing={1.2}
+      alignItems="center"
+      justifyContent="center"
+      sx={{
+        minHeight: 280,
+        px: 2,
+        py: 3,
+        bgcolor: '#fff',
+        borderRadius: '8px',
+        border: '1px solid #e5e7eb',
+      }}
+    >
+      <AttachmentIcon sx={{ fontSize: 54, color: attachmentVisual.color }} />
+      <Typography variant="subtitle1" sx={{ color: TEXT, fontWeight: 800, textAlign: 'center' }}>
+        {attachmentVisual.label || 'Документ'}
+      </Typography>
+      <Typography variant="body2" sx={{ color: MUTED, textAlign: 'center', maxWidth: 360 }}>
+        Наведите курсор и нажмите «Просмотреть» для полного просмотра
+      </Typography>
+    </Stack>
+  );
+}
+
+function PreviewPanel({ payload, token }) {
   const previewKind = String(payload?.preview_kind || 'unsupported');
   const previewUrl = myFilesAPI.buildPublicPreviewContentUrl(token);
+  const sourceKind = useMemo(
+    () => getOfficeAttachmentSourceKind({
+      filename: payload?.file_name,
+      contentType: payload?.mime_type,
+    }),
+    [payload?.file_name, payload?.mime_type],
+  );
+  const isDeferredDocumentPreview = previewKind === 'pdf' || previewKind === 'office_pdf';
+  const [fullPreviewOpen, setFullPreviewOpen] = useState(false);
+  const [previewMeta, setPreviewMeta] = useState(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [previewError, setPreviewError] = useState('');
+  const [excelWorkbook, setExcelWorkbook] = useState(null);
+  const [excelLoading, setExcelLoading] = useState(false);
+
+  useEffect(() => {
+    if (!payload?.preview_available || fullPreviewOpen || !isDeferredDocumentPreview || sourceKind !== 'excel') {
+      return undefined;
+    }
+
+    let cancelled = false;
+    setExcelLoading(true);
+    setExcelWorkbook(null);
+
+    fetch(myFilesAPI.buildPublicDownloadUrl(token))
+      .then((response) => {
+        if (!response.ok) throw new Error('download failed');
+        return response.blob();
+      })
+      .then((blob) => parseExcelWorkbookFromBlob(blob))
+      .then((workbook) => {
+        if (!cancelled) setExcelWorkbook(workbook);
+      })
+      .catch(() => {
+        if (!cancelled) setExcelWorkbook(null);
+      })
+      .finally(() => {
+        if (!cancelled) setExcelLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [fullPreviewOpen, isDeferredDocumentPreview, payload?.preview_available, sourceKind, token]);
+
+  useEffect(() => {
+    if (!payload?.preview_available || !fullPreviewOpen || !isDeferredDocumentPreview) {
+      return undefined;
+    }
+    if (sourceKind === 'excel' && excelWorkbook) {
+      setPreviewLoading(false);
+      setPreviewError('');
+      return undefined;
+    }
+
+    let cancelled = false;
+    setPreviewLoading(true);
+    setPreviewError('');
+
+    myFilesAPI.getPublicPreviewMeta(token)
+      .then((data) => {
+        if (!cancelled) {
+          setPreviewMeta(normalizeAttachmentPreviewMetadata(data));
+        }
+      })
+      .catch((requestError) => {
+        if (!cancelled) {
+          setPreviewError(resolvePreviewError(requestError));
+        }
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    excelWorkbook,
+    fullPreviewOpen,
+    isDeferredDocumentPreview,
+    payload?.preview_available,
+    sourceKind,
+    token,
+  ]);
 
   if (!payload?.preview_available) {
     return (
-      <Stack spacing={2} alignItems="center" sx={{ py: { xs: 4, sm: 8 } }}>
-        <Box
-          sx={{
-            width: 120,
-            height: 120,
-            borderRadius: 3,
-            bgcolor: '#fff',
-            boxShadow: '0 8px 24px rgba(15, 23, 42, 0.08)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <AttachmentIcon sx={{ fontSize: 56, color: attachmentVisual.color }} />
-        </Box>
-        <Stack spacing={0.5} alignItems="center" sx={{ maxWidth: 420, px: 2 }}>
-          <Typography variant="body1" sx={{ fontWeight: 600, textAlign: 'center' }}>
-            {attachmentVisual.label}
-          </Typography>
-          <Typography variant="body2" color="text.secondary" sx={{ textAlign: 'center' }}>
-            {formatFileSize(payload?.size_bytes)} · предпросмотр недоступен
-          </Typography>
-        </Box>
-      </Stack>
+      <FileFallbackPanel
+        payload={payload}
+        message="Для этого файла доступно скачивание. Предпросмотр не поддерживается или ещё не подготовлен."
+      />
     );
   }
 
-  if (previewLoading) {
+  if (isDeferredDocumentPreview && !fullPreviewOpen) {
+    return (
+      <Box sx={{ width: '100%', maxWidth: 920, mx: 'auto' }}>
+        <Paper
+          elevation={0}
+          sx={{
+            p: { xs: 1, sm: 1.5 },
+            bgcolor: PANEL_BG,
+            borderRadius: '8px',
+            boxShadow: '0 20px 64px rgba(15, 23, 42, 0.16)',
+            color: TEXT,
+          }}
+        >
+          <MailOfficePreviewTeaser
+            onOpenFull={() => setFullPreviewOpen(true)}
+            compact={false}
+            alwaysShowAction
+          >
+            <SharedFilePreviewTeaserBody
+              payload={payload}
+              excelLoading={excelLoading}
+              excelWorkbook={excelWorkbook}
+            />
+          </MailOfficePreviewTeaser>
+        </Paper>
+      </Box>
+    );
+  }
+
+  if (isDeferredDocumentPreview && fullPreviewOpen && previewLoading) {
     return (
       <Stack spacing={1.5} sx={{ width: '100%', maxWidth: 920, mx: 'auto' }}>
         <Skeleton variant="text" width="30%" />
-        <Skeleton variant="rectangular" height={420} sx={{ borderRadius: 2 }} />
+        <Skeleton variant="rectangular" height={420} sx={{ borderRadius: '8px' }} />
       </Stack>
     );
   }
 
-  if (previewError) {
-    return (
-      <Stack spacing={2} alignItems="center" sx={{ width: '100%', maxWidth: 640, mx: 'auto', py: 4 }}>
-        <Alert severity="warning" sx={{ width: '100%' }}>{previewError}</Alert>
-        <Box
-          sx={{
-            width: 96,
-            height: 96,
-            borderRadius: 2,
-            bgcolor: '#fff',
-            boxShadow: '0 8px 24px rgba(15, 23, 42, 0.08)',
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'center',
-          }}
-        >
-          <AttachmentIcon sx={{ fontSize: 44, color: attachmentVisual.color }} />
-        </Box>
-      </Stack>
-    );
+  if (isDeferredDocumentPreview && fullPreviewOpen && previewError) {
+    return <FileFallbackPanel payload={payload} message={previewError} tone="warning" />;
   }
 
   if (previewKind === 'image') {
     return (
-      <Box
-        sx={{
-          width: '100%',
-          maxWidth: 920,
-          mx: 'auto',
-          display: 'flex',
-          justifyContent: 'center',
-        }}
-      >
+      <Box sx={{ width: '100%', maxWidth: 980, mx: 'auto', display: 'flex', justifyContent: 'center' }}>
         <Paper
           elevation={0}
           sx={{
             p: 1,
-            bgcolor: '#fff',
-            borderRadius: 2,
-            boxShadow: '0 12px 40px rgba(15, 23, 42, 0.12)',
+            bgcolor: PANEL_BG,
+            borderRadius: '8px',
+            boxShadow: '0 20px 64px rgba(15, 23, 42, 0.16)',
             maxWidth: '100%',
           }}
         >
           <Box
             component="img"
             src={previewUrl}
-            alt={payload?.file_name || 'предпросмотр'}
+            alt={payload?.file_name || 'Предпросмотр файла'}
             sx={{
               display: 'block',
               maxWidth: '100%',
               maxHeight: 'calc(100dvh - 180px)',
               objectFit: 'contain',
-              borderRadius: 1,
+              borderRadius: '6px',
             }}
           />
         </Paper>
@@ -174,44 +371,51 @@ function SharedFilePreviewPanel({
     );
   }
 
-  if (previewKind === 'pdf' || previewKind === 'office_pdf') {
+  if (isDeferredDocumentPreview && fullPreviewOpen) {
+    const resolvedSourceKind = previewMeta?.sourceKind || sourceKind;
+
     return (
-      <Box sx={{ width: '100%', maxWidth: 920, mx: 'auto' }}>
+      <Box sx={{ width: '100%', maxWidth: 980, mx: 'auto' }}>
         <Paper
           elevation={0}
           sx={{
             p: { xs: 1, sm: 1.5 },
-            bgcolor: '#fff',
-            borderRadius: 2,
-            boxShadow: '0 12px 40px rgba(15, 23, 42, 0.12)',
+            bgcolor: PANEL_BG,
+            borderRadius: '8px',
+            boxShadow: '0 20px 64px rgba(15, 23, 42, 0.16)',
+            color: TEXT,
           }}
         >
-          <Suspense fallback={<Skeleton variant="rectangular" height={420} sx={{ borderRadius: 1 }} />}>
-            <MailPdfPreviewSurface
-              objectUrl={previewUrl}
-              filename={payload?.file_name || 'предпросмотр PDF'}
-              sourceKind={previewMeta?.sourceKind || ''}
-              sheets={previewMeta?.sheets || []}
-              pageCount={previewMeta?.pageCount || 0}
-              initialPage={1}
-            />
-          </Suspense>
+          {resolvedSourceKind === 'excel' && excelWorkbook ? (
+            <Suspense fallback={<Skeleton variant="rectangular" height={420} sx={{ borderRadius: '6px' }} />}>
+              <MailExcelPreviewGrid workbook={excelWorkbook} compact={false} />
+            </Suspense>
+          ) : (
+            <Suspense fallback={<Skeleton variant="rectangular" height={420} sx={{ borderRadius: '6px' }} />}>
+              <MailPdfPreviewSurface
+                objectUrl={previewUrl}
+                filename={payload?.file_name || 'Предпросмотр PDF'}
+                sourceKind={resolvedSourceKind}
+                sheets={previewMeta?.sheets || []}
+                pageCount={previewMeta?.pageCount || 0}
+                initialPage={1}
+              />
+            </Suspense>
+          )}
         </Paper>
       </Box>
     );
   }
 
-  return null;
+  return <FileFallbackPanel payload={payload} />;
 }
 
 export default function SharedFile() {
   const { token = '' } = useParams();
   const [payload, setPayload] = useState(null);
-  const [previewMeta, setPreviewMeta] = useState(null);
-  const [previewLoading, setPreviewLoading] = useState(false);
-  const [previewError, setPreviewError] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [copyState, setCopyState] = useState('');
   const [nowMs, setNowMs] = useState(() => Date.now());
 
   useEffect(() => {
@@ -223,8 +427,8 @@ export default function SharedFile() {
     let cancelled = false;
     setLoading(true);
     setError('');
-    setPreviewMeta(null);
-    setPreviewError('');
+    setPayload(null);
+
     myFilesAPI.getPublicFile(token)
       .then((data) => {
         if (!cancelled) setPayload(data);
@@ -235,74 +439,61 @@ export default function SharedFile() {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+
     return () => {
       cancelled = true;
     };
   }, [token]);
-
-  useEffect(() => {
-    if (!payload?.preview_available) {
-      setPreviewLoading(false);
-      setPreviewMeta(null);
-      setPreviewError('');
-      return undefined;
-    }
-
-    let cancelled = false;
-    setPreviewLoading(true);
-    setPreviewError('');
-    myFilesAPI.getPublicPreviewMeta(token)
-      .then((data) => {
-        if (!cancelled) {
-          setPreviewMeta(normalizeAttachmentPreviewMetadata(data));
-        }
-      })
-      .catch((requestError) => {
-        if (!cancelled) {
-          const detail = requestError?.response?.data?.detail;
-          setPreviewError(typeof detail === 'string' && detail.trim()
-            ? detail
-            : 'Не удалось подготовить предпросмотр.');
-        }
-      })
-      .finally(() => {
-        if (!cancelled) setPreviewLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [payload?.preview_available, token]);
 
   const countdownLabel = useMemo(
     () => formatCountdown(payload?.expires_at, nowMs),
     [payload?.expires_at, nowMs],
   );
   const countdownExpired = countdownLabel === 'Срок хранения истёк';
+  const downloadUrl = useMemo(() => myFilesAPI.buildPublicDownloadUrl(token), [token]);
+
+  const handleCopyLink = async () => {
+    const url = typeof window !== 'undefined' ? window.location.href : '';
+    if (!url || !navigator?.clipboard?.writeText) {
+      setCopyState('Не удалось скопировать');
+      return;
+    }
+    try {
+      await navigator.clipboard.writeText(url);
+      setCopyState('Ссылка скопирована');
+      window.setTimeout(() => setCopyState(''), 2200);
+    } catch {
+      setCopyState('Не удалось скопировать');
+    }
+  };
 
   return (
-    <Box sx={{
-      minHeight: '100dvh',
-      display: 'flex',
-      flexDirection: 'column',
-      bgcolor: '#eef1f4',
-    }}>
+    <Box
+      data-testid="shared-file-page"
+      sx={{
+        minHeight: '100dvh',
+        display: 'flex',
+        flexDirection: 'column',
+        bgcolor: PAGE_BG,
+        color: TEXT,
+      }}
+    >
       <Box
         component="header"
         sx={{
-          px: { xs: 1.5, sm: 2.5 },
+          px: { xs: 1.5, sm: 2.5, md: 3 },
           py: 1.25,
-          bgcolor: '#fff',
-          borderBottom: '1px solid',
-          borderColor: 'divider',
+          bgcolor: PANEL_BG,
+          borderBottom: '1px solid #e5e7eb',
           display: 'flex',
           alignItems: { xs: 'flex-start', sm: 'center' },
           justifyContent: 'space-between',
           gap: 1.5,
           flexWrap: 'wrap',
+          color: TEXT,
         }}
       >
-        <Box sx={{ minWidth: 0, flex: '1 1 240px' }}>
+        <Box sx={{ minWidth: 0, flex: '1 1 260px' }}>
           {loading ? (
             <Skeleton variant="text" width="60%" height={32} />
           ) : payload ? (
@@ -310,14 +501,16 @@ export default function SharedFile() {
               <Typography
                 variant="h6"
                 sx={{
-                  fontWeight: 600,
+                  color: TEXT,
+                  fontWeight: 800,
                   wordBreak: 'break-word',
-                  lineHeight: 1.3,
+                  lineHeight: 1.25,
+                  letterSpacing: 0,
                 }}
               >
                 {payload.file_name}
               </Typography>
-              <Typography variant="body2" color="text.secondary">
+              <Typography variant="body2" sx={{ color: MUTED, mt: 0.25 }}>
                 {formatFileSize(payload.size_bytes)}
               </Typography>
             </>
@@ -337,21 +530,47 @@ export default function SharedFile() {
               size="small"
               color={countdownExpired ? 'error' : 'default'}
               variant={countdownExpired ? 'filled' : 'outlined'}
-              sx={{ fontWeight: 600 }}
+              sx={{
+                color: countdownExpired ? '#fff' : '#334155',
+                borderColor: countdownExpired ? undefined : '#cbd5e1',
+                fontWeight: 700,
+                '& .MuiChip-icon': { color: countdownExpired ? '#fff' : '#64748b' },
+              }}
             />
           ) : null}
           {!loading && payload ? (
             <Button
+              onClick={handleCopyLink}
+              variant="outlined"
+              startIcon={<ContentCopyOutlinedIcon />}
+              sx={{
+                textTransform: 'none',
+                borderRadius: '8px',
+                px: 1.8,
+                color: '#334155',
+                borderColor: '#cbd5e1',
+                bgcolor: '#fff',
+                '&:hover': { borderColor: '#94a3b8', bgcolor: '#f8fafc' },
+              }}
+            >
+              {copyState || 'Скопировать ссылку'}
+            </Button>
+          ) : null}
+          {!loading && payload ? (
+            <Button
               component="a"
-              href={myFilesAPI.buildPublicDownloadUrl(token)}
+              href={downloadUrl}
               download={payload.file_name || true}
               variant="contained"
               startIcon={<DownloadOutlinedIcon />}
               sx={{
                 textTransform: 'none',
-                borderRadius: 2,
-                px: 2,
+                borderRadius: '8px',
+                px: 2.2,
+                bgcolor: '#0b70d7',
                 boxShadow: 'none',
+                fontWeight: 800,
+                '&:hover': { bgcolor: '#075fb8', boxShadow: 'none' },
               }}
             >
               Скачать
@@ -360,36 +579,47 @@ export default function SharedFile() {
         </Stack>
       </Box>
 
-      <Box sx={{
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        px: { xs: 1, sm: 2 },
-        py: { xs: 2, sm: 3 },
-        overflow: 'auto',
-      }}>
+      <Box
+        component="main"
+        sx={{
+          flex: 1,
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          px: { xs: 1.5, sm: 2.5, md: 4 },
+          py: { xs: 3, sm: 4 },
+          overflow: 'auto',
+          color: TEXT,
+        }}
+      >
         {loading ? (
-          <Stack direction="row" spacing={1.25} alignItems="center">
+          <Stack direction="row" spacing={1.25} alignItems="center" sx={{ color: MUTED }}>
             <CircularProgress size={24} />
-            <Typography color="text.secondary">Загрузка...</Typography>
+            <Typography sx={{ color: MUTED }}>Загрузка...</Typography>
           </Stack>
         ) : null}
 
         {!loading && error && !payload ? (
-          <Alert severity="error" sx={{ maxWidth: 560, width: '100%' }}>{error}</Alert>
+          <Alert
+            severity="error"
+            sx={{
+              maxWidth: 560,
+              width: '100%',
+              borderRadius: '8px',
+              border: '1px solid #fecaca',
+              bgcolor: '#fef2f2',
+              color: '#991b1b',
+              '& .MuiAlert-icon': { color: '#dc2626' },
+              '& .MuiAlert-message': { color: 'inherit', fontWeight: 700 },
+            }}
+          >
+            {error}
+          </Alert>
         ) : null}
 
         {!loading && payload ? (
           <Box sx={{ width: '100%' }}>
-            {error ? <Alert severity="warning" sx={{ maxWidth: 920, mx: 'auto', mb: 2 }}>{error}</Alert> : null}
-            <SharedFilePreviewPanel
-              payload={payload}
-              token={token}
-              previewMeta={previewMeta}
-              previewLoading={previewLoading}
-              previewError={previewError}
-            />
+            <PreviewPanel payload={payload} token={token} />
           </Box>
         ) : null}
       </Box>

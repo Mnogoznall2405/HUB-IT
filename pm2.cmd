@@ -4,7 +4,7 @@ setlocal
 set "ROOT=%~dp0"
 set "NODE_DIR="
 
-for /d %%D in ("%ROOT%tools\node-v*-win-x64") do (
+for /d %%D in ("%ROOT%tools\node-v*-win-x64*") do (
     set "NODE_DIR=%%~fD"
 )
 

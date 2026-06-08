@@ -88,5 +88,20 @@ module.exports = {
         PYTHONUNBUFFERED: '1',
       },
     },
+    {
+      name: 'itinvent-my-files-worker',
+      cwd: WEB_ROOT,
+      script: PYTHON,
+      args: 'start_my_files_worker.py',
+      interpreter: 'none',
+      windowsHide: true,
+      autorestart: true,
+      max_restarts: 10,
+      restart_delay: 5000,
+      env: {
+        MY_FILES_INLINE_WORKER_ENABLED: '0',
+        PYTHONUNBUFFERED: '1',
+      },
+    },
   ],
 };

@@ -332,6 +332,31 @@ class AppMyFileBlob(AppBase):
     last_used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
+class AppMyFilePreview(AppBase):
+    __tablename__ = "my_file_previews"
+    __table_args__ = _table_args(
+        Index("ix_app_my_file_previews_status_updated", "status", "updated_at"),
+        Index("ix_app_my_file_previews_kind_status", "preview_kind", "status"),
+        schema=APP_SCHEMA,
+    )
+
+    blob_id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued")
+    preview_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="unsupported")
+    source_kind: Mapped[str] = mapped_column(String(32), nullable=False, default="")
+    source_filename: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    content_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    preview_path: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    preview_mime_type: Mapped[str] = mapped_column(String(255), nullable=False, default="application/octet-stream")
+    preview_filename: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    page_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    sheets_json: Mapped[str] = mapped_column(Text, nullable=False, default="[]")
+    error_text: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    generated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+
 class AppMyFile(AppBase):
     __tablename__ = "my_files"
     __table_args__ = _table_args(

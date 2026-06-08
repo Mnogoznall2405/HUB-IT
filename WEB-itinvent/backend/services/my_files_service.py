@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 import mimetypes
 import os
@@ -20,7 +21,7 @@ from sqlalchemy import delete, func, select, text, update
 
 from backend.appdb.db import AppDatabaseConfigurationError, app_session, ensure_app_schema_initialized, is_app_database_configured
 from backend.config import config
-from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant
+from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFileDownloadGrant, AppMyFilePreview
 from backend.services.my_files_antivirus_service import SecurityScanResult, scan_my_file
 from backend.services.secret_crypto_service import (
     SecretCryptoError,
@@ -45,6 +46,10 @@ STATUS_PROCESSING = "processing"
 STATUS_READY = "ready"
 STATUS_FAILED = "failed"
 STATUS_DELETED = "deleted"
+PREVIEW_STATUS_QUEUED = "queued"
+PREVIEW_STATUS_PROCESSING = "processing"
+PREVIEW_STATUS_READY = "ready"
+PREVIEW_STATUS_ERROR = "error"
 
 STORAGE_STORED = "stored"
 STORAGE_ZSTD = "zstd"
@@ -52,6 +57,7 @@ STORAGE_OPTIMIZED_MEDIA = "optimized_media"
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
 VIDEO_EXTENSIONS = {".mp4", ".mov", ".m4v", ".avi", ".mkv", ".webm"}
+PREVIEW_UNAVAILABLE_MESSAGE = "Preview is temporarily unavailable. Download is still available."
 
 
 class MyFilesError(RuntimeError):
@@ -206,6 +212,7 @@ class MyFilesService:
         self.storage_root = storage_root or _storage_root()
         self.spool_root = self.storage_root / "spool"
         self.blobs_root = self.storage_root / "blobs"
+        self.previews_root = self.storage_root / "previews"
         self._antivirus_scanner = antivirus_scanner or scan_my_file
         self._reservation_lock = threading.RLock()
         self._legacy_share_migration_disabled = False
@@ -223,6 +230,7 @@ class MyFilesService:
     def _ensure_dirs(self) -> None:
         self.spool_root.mkdir(parents=True, exist_ok=True)
         self.blobs_root.mkdir(parents=True, exist_ok=True)
+        self.previews_root.mkdir(parents=True, exist_ok=True)
 
     @staticmethod
     def _write_audit(
@@ -723,6 +731,114 @@ class MyFilesService:
             return _replace_extension(original_file_name, payload.output_extension)
         return _safe_file_name(original_file_name)
 
+    def _preview_path(self, *, blob_id: str, file_name: str, preview_kind: str, media_type: str) -> Path:
+        self._ensure_dirs()
+        normalized_blob_id = _normalize_text(blob_id) or uuid.uuid4().hex
+        if preview_kind in {"pdf", "office_pdf"}:
+            suffix = ".pdf"
+        else:
+            suffix = _extension(file_name)
+            if not suffix:
+                guessed_extension = mimetypes.guess_extension(_normalize_text(media_type).lower())
+                suffix = guessed_extension or ".bin"
+        return self.previews_root / normalized_blob_id[:2] / normalized_blob_id / f"preview{suffix}"
+
+    @staticmethod
+    def _safe_pdf_page_count_from_bytes(pdf_bytes: bytes) -> int:
+        try:
+            from io import BytesIO
+            from pypdf import PdfReader
+
+            with PdfReader(BytesIO(pdf_bytes)) as reader:
+                return max(0, len(reader.pages))
+        except Exception:
+            return 0
+
+    def _delete_preview_artifact_locked(self, session, blob_id: str | None) -> None:
+        normalized = _normalize_text(blob_id)
+        if not normalized:
+            return
+        preview = session.get(AppMyFilePreview, normalized)
+        if preview is None:
+            return
+        path = Path(_normalize_text(preview.preview_path))
+        session.delete(preview)
+        self._delete_physical_file(path)
+        try:
+            parent = path.parent
+            if parent.exists() and parent.is_dir() and not any(parent.iterdir()):
+                parent.rmdir()
+        except OSError:
+            pass
+
+    def _preview_download_size_locked(self, row: AppMyFile) -> int:
+        if row.storage_mode == STORAGE_OPTIMIZED_MEDIA:
+            return int(row.stored_size_bytes or 0)
+        return int(row.original_size_bytes or 0)
+
+    def _queue_preview_for_row_locked(self, session, row: AppMyFile) -> bool:
+        blob_id = _normalize_text(row.blob_id)
+        if not blob_id or row.status != STATUS_READY or row.deleted_at is not None:
+            return False
+        if not self._security_scan_allows_access(row):
+            return False
+        if (_coerce_utc(row.expires_at) or _utc_now()) <= _utc_now():
+            return False
+        file_name = _normalize_text(row.download_file_name) or _normalize_text(row.original_file_name) or "file.bin"
+        mime_type = _normalize_text(row.download_mime_type) or _normalize_text(row.mime_type) or "application/octet-stream"
+        preview_kind = self._classify_preview_kind(filename=file_name, mime_type=mime_type)
+        if preview_kind == "unsupported":
+            return False
+        preview = session.get(AppMyFilePreview, blob_id)
+        now = _utc_now()
+        download_size = self._preview_download_size_locked(row)
+        if download_size <= 0 or download_size > self._preview_max_bytes():
+            if preview is None:
+                session.add(
+                    AppMyFilePreview(
+                        blob_id=blob_id,
+                        status=PREVIEW_STATUS_ERROR,
+                        preview_kind=preview_kind,
+                        source_filename=file_name,
+                        content_type=mime_type,
+                        error_text="File is too large for preview" if download_size > 0 else "File is empty",
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            elif preview.status != PREVIEW_STATUS_READY:
+                preview.status = PREVIEW_STATUS_ERROR
+                preview.preview_kind = preview_kind
+                preview.source_filename = file_name
+                preview.content_type = mime_type
+                preview.error_text = "File is too large for preview" if download_size > 0 else "File is empty"
+                preview.updated_at = now
+            return False
+        if preview is None:
+            session.add(
+                AppMyFilePreview(
+                    blob_id=blob_id,
+                    status=PREVIEW_STATUS_QUEUED,
+                    preview_kind=preview_kind,
+                    source_filename=file_name,
+                    content_type=mime_type,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+            return True
+        if preview.status in {PREVIEW_STATUS_READY, PREVIEW_STATUS_PROCESSING}:
+            return False
+        if preview.status == PREVIEW_STATUS_ERROR:
+            return False
+        preview.status = PREVIEW_STATUS_QUEUED
+        preview.preview_kind = preview_kind
+        preview.source_filename = file_name
+        preview.content_type = mime_type
+        preview.error_text = ""
+        preview.updated_at = now
+        return True
+
     def _record_security_scan(self, file_id: str, result: SecurityScanResult) -> None:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
@@ -911,6 +1027,174 @@ class MyFilesService:
         self.process_security_backfill(file_id)
         return True
 
+    def process_next_preview_job(self) -> bool:
+        if not self.configured:
+            return False
+        database_url = self._database_url_or_raise()
+        now = _utc_now()
+        blob_id = ""
+        with app_session(database_url) as session:
+            preview = session.scalars(
+                select(AppMyFilePreview)
+                .where(AppMyFilePreview.status == PREVIEW_STATUS_QUEUED)
+                .order_by(AppMyFilePreview.updated_at.asc())
+                .with_for_update(skip_locked=True)
+            ).first()
+            if preview is None:
+                rows = session.scalars(
+                    select(AppMyFile)
+                    .where(
+                        AppMyFile.status == STATUS_READY,
+                        AppMyFile.blob_id.is_not(None),
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.expires_at > now,
+                    )
+                    .order_by(AppMyFile.created_at.asc())
+                    .limit(100)
+                ).all()
+                for row in rows:
+                    self._queue_preview_for_row_locked(session, row)
+                    queued = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+                    if queued is not None and queued.status == PREVIEW_STATUS_QUEUED:
+                        preview = queued
+                        break
+            if preview is None:
+                return False
+            preview.status = PREVIEW_STATUS_PROCESSING
+            preview.error_text = ""
+            preview.updated_at = now
+            blob_id = _normalize_text(preview.blob_id)
+        if not blob_id:
+            return False
+        self.process_preview_blob(blob_id)
+        return True
+
+    def process_preview_blob(self, blob_id: str) -> bool:
+        from backend.services.mail_attachment_preview_service import (
+            MailAttachmentPreviewError,
+            build_office_preview_artifact,
+        )
+
+        normalized_blob_id = _normalize_text(blob_id)
+        if not normalized_blob_id:
+            return False
+        database_url = self._database_url_or_raise()
+        preview_path: Path | None = None
+        tmp_path: Path | None = None
+        try:
+            with app_session(database_url) as session:
+                preview = session.get(AppMyFilePreview, normalized_blob_id)
+                if preview is None:
+                    return False
+                row = session.scalars(
+                    select(AppMyFile)
+                    .where(
+                        AppMyFile.blob_id == normalized_blob_id,
+                        AppMyFile.status == STATUS_READY,
+                        AppMyFile.deleted_at.is_(None),
+                        AppMyFile.expires_at > _utc_now(),
+                    )
+                    .order_by(AppMyFile.created_at.asc())
+                ).first()
+                if row is None or not self._security_scan_allows_access(row):
+                    preview.status = PREVIEW_STATUS_ERROR
+                    preview.error_text = "File is not available for preview"
+                    preview.updated_at = _utc_now()
+                    return False
+                payload = self._download_payload_for_row_locked(session, row)
+                preview_kind = self._classify_preview_kind(
+                    filename=payload.file_name,
+                    mime_type=payload.media_type,
+                )
+                if preview_kind == "unsupported":
+                    preview.status = PREVIEW_STATUS_ERROR
+                    preview.preview_kind = preview_kind
+                    preview.error_text = "Preview is not available for this file type"
+                    preview.updated_at = _utc_now()
+                    return False
+                if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+                    preview.status = PREVIEW_STATUS_ERROR
+                    preview.preview_kind = preview_kind
+                    preview.error_text = "File is too large for preview"
+                    preview.updated_at = _utc_now()
+                    return False
+
+            content = self._read_payload_bytes(payload)
+            source_kind = ""
+            page_count = 0
+            sheets: list[dict[str, Any]] = []
+            preview_bytes = content
+            preview_media_type = payload.media_type
+            preview_filename = payload.file_name
+
+            if preview_kind == "office_pdf":
+                artifact = build_office_preview_artifact(
+                    filename=payload.file_name,
+                    content_type=payload.media_type,
+                    content=content,
+                )
+                preview_bytes = artifact.pdf_bytes
+                preview_media_type = "application/pdf"
+                preview_filename = _replace_extension(payload.file_name, ".pdf")
+                source_kind = artifact.source_kind
+                page_count = int(artifact.page_count or 0)
+                sheets = list(artifact.sheets or [])
+            elif preview_kind == "pdf":
+                preview_media_type = "application/pdf"
+                page_count = self._safe_pdf_page_count_from_bytes(content)
+
+            preview_path = self._preview_path(
+                blob_id=normalized_blob_id,
+                file_name=preview_filename,
+                preview_kind=preview_kind,
+                media_type=preview_media_type,
+            )
+            preview_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = preview_path.with_name(f"{preview_path.name}.{uuid.uuid4().hex}.tmp")
+            tmp_path.write_bytes(preview_bytes)
+            tmp_path.replace(preview_path)
+            tmp_path = None
+
+            with app_session(database_url) as session:
+                preview = session.get(AppMyFilePreview, normalized_blob_id)
+                if preview is None:
+                    self._delete_physical_file(preview_path)
+                    return False
+                now = _utc_now()
+                preview.status = PREVIEW_STATUS_READY
+                preview.preview_kind = preview_kind
+                preview.source_kind = source_kind
+                preview.source_filename = payload.file_name
+                preview.content_type = payload.media_type
+                preview.preview_path = str(preview_path)
+                preview.preview_mime_type = preview_media_type
+                preview.preview_filename = preview_filename
+                preview.page_count = page_count
+                preview.sheets_json = json.dumps(sheets, ensure_ascii=False)
+                preview.error_text = ""
+                preview.updated_at = now
+                preview.generated_at = now
+            return True
+        except MailAttachmentPreviewError as exc:
+            error_text = PREVIEW_UNAVAILABLE_MESSAGE
+            logger.warning("My-files preview unavailable for blob %s: %s", normalized_blob_id, exc)
+        except Exception as exc:
+            error_text = PREVIEW_UNAVAILABLE_MESSAGE
+            logger.exception("Failed to render my-files preview for blob %s: %s", normalized_blob_id, exc)
+        finally:
+            if tmp_path is not None:
+                tmp_path.unlink(missing_ok=True)
+        with app_session(database_url) as session:
+            preview = session.get(AppMyFilePreview, normalized_blob_id)
+            if preview is not None:
+                preview.status = PREVIEW_STATUS_ERROR
+                preview.error_text = error_text[:2000]
+                preview.preview_path = ""
+                preview.updated_at = _utc_now()
+        if preview_path is not None:
+            self._delete_physical_file(preview_path)
+        return False
+
     def process_security_backfill(self, file_id: str) -> None:
         database_url = self._database_url_or_raise()
         temporary_path: Path | None = None
@@ -967,6 +1251,7 @@ class MyFilesService:
                     row.status = STATUS_READY
                     row.error_text = ""
                     row.updated_at = _utc_now()
+                    self._queue_preview_for_row_locked(session, row)
         except Exception as exc:
             logger.error("Security backfill failed for my-file %s: %s", file_id, exc)
             self._record_security_scan(file_id, SecurityScanResult(status="error", engine="microsoft-defender"))
@@ -1033,6 +1318,7 @@ class MyFilesService:
                     row.spool_path = ""
                     row.error_text = ""
                     row.updated_at = _utc_now()
+                    self._queue_preview_for_row_locked(session, row)
                     spool_path.unlink(missing_ok=True)
                     return self._response(row)
 
@@ -1085,6 +1371,7 @@ class MyFilesService:
                 row.spool_path = ""
                 row.error_text = ""
                 row.updated_at = now
+                self._queue_preview_for_row_locked(session, row)
                 if payload.path != spool_path:
                     spool_path.unlink(missing_ok=True)
                 return self._response(row)
@@ -1121,6 +1408,7 @@ class MyFilesService:
             blob.updated_at = _utc_now()
             return
         path = Path(_normalize_text(blob.storage_path))
+        self._delete_preview_artifact_locked(session, normalized)
         session.delete(blob)
         self._delete_physical_file(path)
 
@@ -1283,6 +1571,21 @@ class MyFilesService:
         return "unsupported"
 
     @staticmethod
+    def _office_preview_runtime_available() -> bool:
+        from backend.services.mail_attachment_preview_service import (
+            is_office_preview_enabled,
+            resolve_soffice_path,
+        )
+
+        if not is_office_preview_enabled():
+            return False
+        try:
+            resolve_soffice_path()
+            return True
+        except Exception:
+            return False
+
+    @staticmethod
     def _read_payload_bytes(payload: DownloadPayload) -> bytes:
         if payload.mode == STORAGE_ZSTD:
             return b"".join(MyFilesService.iter_zstd_download(payload.path))
@@ -1297,17 +1600,21 @@ class MyFilesService:
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
             row = self._public_row_locked(session, token)
-            download_size = int(row.original_size_bytes or 0)
-            if row.storage_mode == STORAGE_OPTIMIZED_MEDIA:
-                download_size = int(row.stored_size_bytes or 0)
-            file_name = _normalize_text(row.download_file_name)
-            mime_type = _normalize_text(row.download_mime_type) or "application/octet-stream"
+            payload = self._download_payload_for_row_locked(session, row)
+            download_size = int(payload.download_size_bytes or 0)
+            file_name = payload.file_name
+            mime_type = payload.media_type
             preview_kind = self._classify_preview_kind(filename=file_name, mime_type=mime_type)
             preview_max_bytes = self._preview_max_bytes()
-            preview_available = (
-                preview_kind != "unsupported"
+            preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+            preview_path = Path(_normalize_text(getattr(preview, "preview_path", "")))
+            preview_available = bool(
+                preview is not None
+                and preview.status == PREVIEW_STATUS_READY
+                and preview_kind != "unsupported"
                 and download_size > 0
                 and download_size <= preview_max_bytes
+                and preview_path.is_file()
             )
             return {
                 "file_name": file_name,
@@ -1320,16 +1627,10 @@ class MyFilesService:
             }
 
     def get_public_preview_meta(self, *, token: str) -> dict[str, Any]:
-        from backend.services.mail_attachment_preview_service import (
-            MailAttachmentPreviewError,
-            build_office_preview_artifact,
-            build_preview_metadata,
-        )
-
         database_url = self._database_url_or_raise()
         preview_url = f"/api/v1/my-files/public/{_normalize_text(token)}/preview/content"
         with app_session(database_url) as session:
-            _row, payload = self._public_preview_context_locked(session, token)
+            row, payload = self._public_preview_context_locked(session, token)
             preview_kind = self._classify_preview_kind(
                 filename=payload.file_name,
                 mime_type=payload.media_type,
@@ -1338,41 +1639,31 @@ class MyFilesService:
                 raise MyFilesValidationError("Preview is not available for this file type.")
             if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
                 raise MyFilesValidationError("File is too large for preview.")
-            if preview_kind == "office_pdf":
-                try:
-                    content = self._read_payload_bytes(payload)
-                    artifact = build_office_preview_artifact(
-                        filename=payload.file_name,
-                        content_type=payload.media_type,
-                        content=content,
-                    )
-                except MailAttachmentPreviewError as exc:
-                    raise MyFilesValidationError(str(exc)) from exc
-                return build_preview_metadata(
-                    filename=payload.file_name,
-                    content_type=payload.media_type,
-                    artifact=artifact,
-                    preview_pdf_path=preview_url,
-                )
+            preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+            preview_path = Path(_normalize_text(getattr(preview, "preview_path", "")))
+            if preview is None or preview.status != PREVIEW_STATUS_READY or not preview_path.is_file():
+                raise MyFilesValidationError(PREVIEW_UNAVAILABLE_MESSAGE)
+            sheets: list[dict[str, Any]] = []
+            try:
+                parsed_sheets = json.loads(_normalize_text(preview.sheets_json) or "[]")
+                if isinstance(parsed_sheets, list):
+                    sheets = [dict(item) for item in parsed_sheets if isinstance(item, dict)]
+            except Exception:
+                sheets = []
             return {
-                "preview_kind": preview_kind,
-                "source_kind": "",
+                "preview_kind": _normalize_text(preview.preview_kind) or preview_kind,
+                "source_kind": _normalize_text(preview.source_kind),
                 "source_filename": payload.file_name,
-                "pdf_filename": payload.file_name if preview_kind == "pdf" else "",
-                "page_count": 0,
-                "sheets": [],
+                "pdf_filename": _replace_extension(payload.file_name, ".pdf") if preview_kind == "office_pdf" else payload.file_name,
+                "page_count": int(preview.page_count or 0),
+                "sheets": sheets,
                 "preview_url": preview_url,
             }
 
     def get_public_preview_content(self, *, token: str) -> tuple[bytes, str, str]:
-        from backend.services.mail_attachment_preview_service import (
-            MailAttachmentPreviewError,
-            build_office_preview_artifact,
-        )
-
         database_url = self._database_url_or_raise()
         with app_session(database_url) as session:
-            _row, payload = self._public_preview_context_locked(session, token)
+            row, payload = self._public_preview_context_locked(session, token)
             preview_kind = self._classify_preview_kind(
                 filename=payload.file_name,
                 mime_type=payload.media_type,
@@ -1381,19 +1672,13 @@ class MyFilesService:
                 raise MyFilesValidationError("Preview is not available for this file type.")
             if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
                 raise MyFilesValidationError("File is too large for preview.")
-            if preview_kind == "office_pdf":
-                try:
-                    content = self._read_payload_bytes(payload)
-                    artifact = build_office_preview_artifact(
-                        filename=payload.file_name,
-                        content_type=payload.media_type,
-                        content=content,
-                    )
-                except MailAttachmentPreviewError as exc:
-                    raise MyFilesValidationError(str(exc)) from exc
-                return artifact.pdf_bytes, "application/pdf", artifact.pdf_filename
-            content = self._read_payload_bytes(payload)
-            return content, payload.media_type, payload.file_name
+            preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+            preview_path = Path(_normalize_text(getattr(preview, "preview_path", "")))
+            if preview is None or preview.status != PREVIEW_STATUS_READY or not preview_path.is_file():
+                raise MyFilesValidationError(PREVIEW_UNAVAILABLE_MESSAGE)
+            media_type = _normalize_text(preview.preview_mime_type) or payload.media_type
+            filename = _replace_extension(payload.file_name, ".pdf") if preview_kind == "office_pdf" else payload.file_name
+            return preview_path.read_bytes(), media_type, filename
 
     def _download_payload_for_row_locked(self, session, row: AppMyFile) -> DownloadPayload:
         if (
@@ -1618,6 +1903,8 @@ class MyFilesWorker:
                 processed = await asyncio.to_thread(self.service.process_next_job)
                 if not processed:
                     processed = await asyncio.to_thread(self.service.process_next_security_backfill)
+                if not processed:
+                    processed = await asyncio.to_thread(self.service.process_next_preview_job)
                 await asyncio.sleep(1 if processed else 5)
             except asyncio.CancelledError:
                 raise

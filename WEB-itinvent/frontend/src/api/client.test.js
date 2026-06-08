@@ -2319,6 +2319,8 @@ describe('mailMessageDetailAPI contract', () => {
 describe('mailMessageFilesAPI contract', () => {
   const messageFileMethods = [
     'downloadAttachment',
+    'getAttachmentPreview',
+    'downloadAttachmentPreviewPdf',
     'getMessageHeaders',
     'downloadMessageSource',
   ];

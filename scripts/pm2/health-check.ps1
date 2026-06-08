@@ -291,6 +291,7 @@ $pm2RuntimeRows = @(
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-backend'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-chat-push-worker'
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-ai-chat-worker'
+    Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-my-files-worker'
 )
 $healthRows | Format-Table Name, Status, Details -AutoSize
 Write-Host 'Chat runtime checks:' -ForegroundColor Cyan

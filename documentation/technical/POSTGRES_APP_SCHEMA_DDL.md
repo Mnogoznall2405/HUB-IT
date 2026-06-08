@@ -1,6 +1,6 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-06-07 22:09 UTC_  
+_Сгенерировано: 2026-06-08 09:33 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
@@ -925,16 +925,22 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `blob_id` **PK** | varchar(64) | no | `` |
 | `status` | varchar(32) | no | `'queued'::character varying` |
 | `preview_kind` | varchar(32) | no | `'unsupported'::character varying` |
-| `thumbnail_path` | text | no | `''::text` |
-| `document_path` | text | no | `''::text` |
-| `document_mime_type` | varchar(255) | no | `''::character varying` |
 | `page_count` | integer | no | `0` |
 | `error_text` | text | no | `''::text` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `source_kind` | varchar(32) | no | `''::character varying` |
+| `source_filename` | varchar(512) | no | `''::character varying` |
+| `content_type` | varchar(255) | no | `'application/octet-stream'::character varying` |
+| `preview_path` | text | no | `''::text` |
+| `preview_mime_type` | varchar(255) | no | `'application/octet-stream'::character varying` |
+| `preview_filename` | varchar(512) | no | `''::character varying` |
+| `sheets_json` | text | no | `'[]'::text` |
+| `generated_at` | timestamptz | yes | `` |
 
 - **Primary key:** `blob_id`
 - **Indexes:**
+  - `ix_app_my_file_previews_kind_status`: (preview_kind, status)
   - `ix_app_my_file_previews_status_updated`: (status, updated_at)
 
 ---

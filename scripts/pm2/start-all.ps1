@@ -6,7 +6,29 @@ $ErrorActionPreference = 'Stop'
 
 $projectRoot = 'C:\Project\Image_scan'
 $ecosystemAll = Join-Path $projectRoot 'scripts\pm2\ecosystem.all.config.js'
-$processNames = @('itinvent-backend', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
+$processNames = @('itinvent-backend', 'itinvent-chat-push-worker', 'itinvent-ai-chat-worker', 'itinvent-my-files-worker', 'itinvent-inventory', 'itinvent-scan', 'itinvent-scan-worker', 'itinvent-bot')
+
+function Add-LocalNodeToPath {
+    if (Get-Command 'node' -ErrorAction SilentlyContinue) {
+        return
+    }
+
+    $toolsDir = Join-Path $projectRoot 'tools'
+    if (-not (Test-Path $toolsDir)) {
+        return
+    }
+
+    $nodeDir = Get-ChildItem -Path $toolsDir -Directory -Filter 'node-*-win-x64-*' -ErrorAction SilentlyContinue |
+        Where-Object { Test-Path (Join-Path $_.FullName 'node.exe') } |
+        Sort-Object Name |
+        Select-Object -First 1
+
+    if ($nodeDir) {
+        $env:Path = "$($nodeDir.FullName);$env:Path"
+    }
+}
+
+Add-LocalNodeToPath
 
 function Resolve-Pm2Command {
     $preferredGlobalPm2Cmd = Join-Path $env:APPDATA 'npm\pm2.cmd'

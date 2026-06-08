@@ -264,6 +264,16 @@ const permissionGroups = [
   },
 ];
 
+const MY_FILES_PERMISSION_GROUP = {
+  group: 'Мои файлы',
+  permissions: [
+    { value: 'my_files.read', label: 'Мои файлы: просмотр' },
+    { value: 'my_files.write', label: 'Мои файлы: загрузка и удаление' },
+    { value: 'my_files.share', label: 'Мои файлы: публичные ссылки' },
+    { value: 'my_files.audit.read', label: 'Мои файлы: журнал аудита' },
+  ],
+};
+
 const PASSWORDS_PERMISSION_GROUP = {
   group: 'Пароли',
   permissions: [
@@ -282,6 +292,7 @@ const AI_PERMISSION_GROUP = {
 
 export const SETTINGS_PERMISSION_GROUPS = [
   ...permissionGroups,
+  MY_FILES_PERMISSION_GROUP,
   PASSWORDS_PERMISSION_GROUP,
   AI_PERMISSION_GROUP,
 ];

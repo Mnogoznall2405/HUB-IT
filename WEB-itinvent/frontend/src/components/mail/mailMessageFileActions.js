@@ -19,6 +19,7 @@ export const createEmptyAttachmentPreview = () => ({
   previewKind: '',
   pageCount: 0,
   sheets: [],
+  excelWorkbook: null,
   pdfFilename: '',
   pdfContentType: 'application/pdf',
   downloadContext: null,
@@ -162,12 +163,27 @@ export const isOfficePreviewableAttachment = (attachment = {}) => (
 
 export const normalizeAttachmentPreviewMetadata = (payload = {}) => {
   const sheets = Array.isArray(payload?.sheets)
-    ? payload.sheets.map((item, index) => ({
-      index: Number.isFinite(Number(item?.index)) ? Number(item.index) : index,
-      name: String(item?.name || `Лист ${index + 1}`),
-      page: Number.isFinite(Number(item?.page)) && Number(item.page) > 0 ? Number(item.page) : null,
-      hidden: Boolean(item?.hidden),
-    })).filter((item) => !item.hidden && item.page)
+    ? payload.sheets.map((item, index) => {
+      const page = Number.isFinite(Number(item?.page)) && Number(item.page) > 0
+        ? Number(item.page)
+        : null;
+      const pageEndRaw = Number(item?.page_end ?? item?.pageEnd);
+      const pageCountRaw = Number(item?.page_count ?? item?.pageCount);
+      const pageEnd = Number.isFinite(pageEndRaw) && pageEndRaw > 0
+        ? pageEndRaw
+        : (page && Number.isFinite(pageCountRaw) && pageCountRaw > 0
+          ? page + pageCountRaw - 1
+          : page);
+      const pageCount = page && pageEnd && pageEnd >= page ? pageEnd - page + 1 : null;
+      return {
+        index: Number.isFinite(Number(item?.index)) ? Number(item.index) : index,
+        name: String(item?.name || `Лист ${index + 1}`),
+        page,
+        pageEnd,
+        pageCount,
+        hidden: Boolean(item?.hidden),
+      };
+    }).filter((item) => !item.hidden && item.page)
     : [];
   return {
     previewKind: String(payload?.preview_kind || ''),

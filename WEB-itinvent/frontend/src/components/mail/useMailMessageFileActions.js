@@ -11,9 +11,10 @@ import {
   buildPrintMailDocumentHtml,
   createEmptyAttachmentPreview,
   downloadBlobFile,
+  getOfficeAttachmentSourceKind,
   isOfficePreviewableAttachment,
-  normalizeAttachmentPreviewMetadata,
 } from './mailMessageFileActions';
+import { buildOfficeAttachmentPreviewState } from './officeAttachmentPreview';
 import { formatMailPersonWithEmail } from './mailPeople';
 import { getMessageBodyHtmlSource } from './useMailMessageRenderState';
 
@@ -210,47 +211,31 @@ export default function useMailMessageFileActions({
         reportError(contextError.message);
         return;
       }
+      const officeSourceKind = getOfficeAttachmentSourceKind({ filename, contentType });
       setAttachmentPreview({
         ...createEmptyAttachmentPreview(),
         open: true,
         loading: true,
         filename,
         contentType,
-        kind: 'office_pdf',
-        previewKind: 'office_pdf',
+        kind: officeSourceKind === 'excel' ? 'office_excel' : 'office_pdf',
+        previewKind: officeSourceKind === 'excel' ? 'office_excel' : 'office_pdf',
+        sourceKind: officeSourceKind,
         downloadContext,
       });
       try {
-        const [metadata, pdfResponse] = await Promise.all([
-          mailAPI.getAttachmentPreview(messageId, attachmentRef, { mailboxId }),
-          mailAPI.downloadAttachmentPreviewPdf(messageId, attachmentRef, { mailboxId }),
-        ]);
-        const normalized = normalizeAttachmentPreviewMetadata(metadata);
-        const { blob, filename: pdfFilename, contentType: pdfContentType } = buildAttachmentBlobPayload({
-          response: pdfResponse,
-          attachment: {
-            name: normalized.pdfFilename || `${filename.replace(/\.[^.]+$/, '') || 'preview'}.pdf`,
-            content_type: 'application/pdf',
-          },
+        const previewState = await buildOfficeAttachmentPreviewState({
+          mailAPI,
+          messageId,
+          attachmentRef,
+          mailboxId,
+          attachment,
+          filename,
+          contentType,
         });
-        const objectUrl = typeof window.URL?.createObjectURL === 'function'
-          ? window.URL.createObjectURL(blob)
-          : '';
         setAttachmentPreview({
           ...createEmptyAttachmentPreview(),
-          open: true,
-          loading: false,
-          filename: normalized.sourceFilename || filename,
-          contentType,
-          kind: 'office_pdf',
-          objectUrl,
-          previewBlob: blob,
-          sourceKind: normalized.sourceKind,
-          previewKind: normalized.previewKind || 'office_pdf',
-          pageCount: normalized.pageCount,
-          sheets: normalized.sheets,
-          pdfFilename: pdfFilename || normalized.pdfFilename,
-          pdfContentType,
+          ...previewState,
           downloadContext,
         });
       } catch (requestError) {

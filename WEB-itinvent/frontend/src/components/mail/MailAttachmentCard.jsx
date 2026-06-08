@@ -151,27 +151,9 @@ export default function MailAttachmentCard({
             aria-haspopup="menu"
             aria-expanded={menuOpen ? 'true' : undefined}
             onClick={handleMenuOpen}
-            sx={{
-              color: mine ? alpha(theme.palette.common.white, 0.76) : tokens.textSecondary,
-              bgcolor: menuOpen
-                ? (mine ? alpha(theme.palette.common.white, 0.14) : alpha(theme.palette.common.black, tokens.isDark ? 0.16 : 0.04))
-                : 'transparent',
-              transition: theme.transitions.create(['background-color', 'transform', 'color'], {
-                duration: theme.transitions.duration.shorter,
-              }),
-              '&:hover': {
-                bgcolor: mine ? alpha(theme.palette.common.white, 0.14) : alpha(theme.palette.common.black, tokens.isDark ? 0.18 : 0.05),
-              },
-            }}
+            sx={{ color: mine ? alpha(theme.palette.common.white, 0.76) : tokens.textSecondary }}
           >
-            <KeyboardArrowDownRoundedIcon
-              sx={{
-                transform: menuOpen ? 'rotate(180deg)' : 'rotate(0deg)',
-                transition: theme.transitions.create('transform', {
-                  duration: theme.transitions.duration.shortest,
-                }),
-              }}
-            />
+            <KeyboardArrowDownRoundedIcon />
           </IconButton>
         </Stack>
       </Box>

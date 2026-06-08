@@ -6,7 +6,7 @@ from pathlib import Path
 import pytest
 
 from backend.appdb.db import app_session
-from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob
+from backend.appdb.models import AppMyFile, AppMyFileAudit, AppMyFileBlob, AppMyFilePreview
 from backend.models.auth import User
 from backend.services.my_files_service import (
     STORAGE_ZSTD,
@@ -392,6 +392,7 @@ def test_public_file_metadata_includes_preview_fields(tmp_path):
         retention_days=3,
     )
     service.process_file(created["id"])
+    assert service.process_next_preview_job() is True
     share = service.create_share(file_id=created["id"], user_id=7)
 
     public_info = service.get_public_file(token=share["token"])
@@ -413,6 +414,7 @@ def test_public_preview_content_returns_pdf_bytes(tmp_path):
         retention_days=3,
     )
     service.process_file(created["id"])
+    assert service.process_next_preview_job() is True
     share = service.create_share(file_id=created["id"], user_id=7)
 
     content, media_type, filename = service.get_public_preview_content(token=share["token"])
@@ -432,9 +434,6 @@ def test_public_preview_office_docx_uses_soffice(monkeypatch, tmp_path):
         original_size_bytes=spool_path.stat().st_size,
         retention_days=3,
     )
-    service.process_file(created["id"])
-    share = service.create_share(file_id=created["id"], user_id=7)
-
     from backend.services import mail_attachment_preview_service as preview_service
 
     def fake_build_office_preview_artifact(*, filename, content_type, content):
@@ -454,6 +453,10 @@ def test_public_preview_office_docx_uses_soffice(monkeypatch, tmp_path):
         fake_build_office_preview_artifact,
     )
 
+    service.process_file(created["id"])
+    assert service.process_next_preview_job() is True
+    share = service.create_share(file_id=created["id"], user_id=7)
+
     meta = service.get_public_preview_meta(token=share["token"])
     assert meta["preview_kind"] == "office_pdf"
     assert meta["source_kind"] == "word"
@@ -463,3 +466,56 @@ def test_public_preview_office_docx_uses_soffice(monkeypatch, tmp_path):
     assert media_type == "application/pdf"
     assert filename == "memo.pdf"
     assert content == b"%PDF-1.4 office"
+
+
+def test_public_file_metadata_disables_office_preview_when_runtime_missing(monkeypatch, tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = _stage_upload(service, "memo.docx", b"docx-bytes")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="memo.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=3,
+    )
+    service.process_file(created["id"])
+    share = service.create_share(file_id=created["id"], user_id=7)
+
+    monkeypatch.setenv("MAIL_OFFICE_PREVIEW_ENABLED", "1")
+    monkeypatch.setenv("LIBREOFFICE_SOFFICE_PATH", str(tmp_path / "missing-soffice.exe"))
+
+    public_info = service.get_public_file(token=share["token"])
+
+    assert public_info["preview_kind"] == "office_pdf"
+    assert public_info["preview_available"] is False
+
+
+def test_public_preview_wraps_unexpected_office_render_errors(monkeypatch, tmp_path):
+    service = _new_service(tmp_path)
+    spool_path = _stage_upload(service, "memo.docx", b"docx-bytes")
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="memo.docx",
+        mime_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=3,
+    )
+    from backend.services import mail_attachment_preview_service as preview_service
+
+    monkeypatch.setattr(
+        preview_service,
+        "build_office_preview_artifact",
+        lambda **_kwargs: (_ for _ in ()).throw(RuntimeError("renderer crashed")),
+    )
+
+    service.process_file(created["id"])
+    assert service.process_next_preview_job() is True
+    share = service.create_share(file_id=created["id"], user_id=7)
+    with app_session(_sqlite_url(tmp_path / "app.db")) as session:
+        preview = session.query(AppMyFilePreview).one()
+        assert preview.status == "error"
+
+    with pytest.raises(MyFilesValidationError, match="Preview is temporarily unavailable"):
+        service.get_public_preview_meta(token=share["token"])
