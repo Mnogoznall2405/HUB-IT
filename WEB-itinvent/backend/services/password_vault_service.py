@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from backend.appdb.db import AppDatabaseConfigurationError, app_session, ensure_app_schema_initialized
 from backend.appdb.models import AppPasswordVaultAudit, AppPasswordVaultEntry, AppPasswordVaultGroup
@@ -214,7 +214,14 @@ class PasswordVaultService:
             if not include_archived:
                 stmt = stmt.where(AppPasswordVaultEntry.is_archived.is_(False))
             if query_text:
-                stmt = stmt.where(func.lower(AppPasswordVaultEntry.login).like(f"%{query_text.lower()}%"))
+                q_lower = f"%{query_text.lower()}%"
+                stmt = stmt.where(
+                    or_(
+                        func.lower(AppPasswordVaultEntry.login).like(q_lower),
+                        func.lower(AppPasswordVaultEntry.description).like(q_lower),
+                        func.lower(AppPasswordVaultEntry.tags_json).like(q_lower),
+                    )
+                )
             if group_name:
                 stmt = stmt.where(AppPasswordVaultEntry.group_name == group_name)
             rows = session.scalars(

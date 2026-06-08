@@ -16,6 +16,7 @@ const {
   mockNotifySuccess,
   mockNotifyWarning,
   mockNotifyApiError,
+  mockUseMediaQuery,
 } = vi.hoisted(() => ({
   mockGetEntries: vi.fn(),
   mockGetGroups: vi.fn(),
@@ -29,6 +30,11 @@ const {
   mockNotifySuccess: vi.fn(),
   mockNotifyWarning: vi.fn(),
   mockNotifyApiError: vi.fn(),
+  mockUseMediaQuery: vi.fn(() => false),
+}));
+
+vi.mock('@mui/material/useMediaQuery', () => ({
+  default: mockUseMediaQuery,
 }));
 
 vi.mock('../api/passwords', () => ({
@@ -135,6 +141,7 @@ describe('generateVaultPassword', () => {
 
 describe('Passwords page', () => {
   beforeEach(() => {
+    mockUseMediaQuery.mockReturnValue(false);
     mockGetEntries.mockReset();
     mockCreateEntry.mockReset();
     mockGetGroups.mockReset();
@@ -162,6 +169,20 @@ describe('Passwords page', () => {
     vi.useRealTimers();
   });
 
+  it('shows unlock banner and searches by login, description and tags', async () => {
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    expect(screen.getByTestId('password-unlock-banner')).toBeInTheDocument();
+    expect(screen.getByText(/заблокирован/i)).toBeInTheDocument();
+
+    fireEvent.change(screen.getByTestId('password-search-input'), { target: { value: 'production' } });
+    await waitFor(() => expect(mockGetEntries).toHaveBeenCalledWith(expect.objectContaining({ q: 'production' })));
+
+    fireEvent.change(screen.getByTestId('password-search-input'), { target: { value: 'prod' } });
+    await waitFor(() => expect(mockGetEntries).toHaveBeenCalledWith(expect.objectContaining({ q: 'prod' })));
+  });
+
   it('searches by login and applies group/tag filters', async () => {
     renderPage();
 
@@ -178,6 +199,29 @@ describe('Passwords page', () => {
     await waitFor(() => expect(mockGetEntries).toHaveBeenCalledWith(expect.objectContaining({ tag: 'prod' })));
   });
 
+  it('opens mobile filters drawer on small screens', async () => {
+    mockUseMediaQuery.mockReturnValue(true);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    expect(screen.getByTestId('password-mobile-toolbar')).toBeInTheDocument();
+    expect(screen.queryByText('Новая запись')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('password-filters-panel')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('password-filters-open'));
+    expect(screen.getByTestId('password-filters-drawer')).toBeInTheDocument();
+    expect(screen.getByTestId('password-filters-panel')).toBeInTheDocument();
+  });
+
+  it('opens create dialog from mobile toolbar icon', async () => {
+    mockUseMediaQuery.mockReturnValue(true);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('password-mobile-create'));
+    expect(screen.getByTestId('password-form-group-select')).toBeInTheDocument();
+  });
+
   it('gates reveal through unlock and hides shown password after timeout', async () => {
     renderPage();
 
@@ -185,10 +229,10 @@ describe('Passwords page', () => {
     vi.useFakeTimers();
 
     fireEvent.click(screen.getByLabelText('Показать пароль svc-vpn'));
-    expect(screen.getAllByText('Разблокировка 2FA').length).toBeGreaterThan(0);
+    expect(screen.getByTestId('password-unlock-dialog')).toBeInTheDocument();
 
     fireEvent.change(screen.getByTestId('password-unlock-code'), { target: { value: '123456' } });
-    fireEvent.click(screen.getByText('Разблокировать'));
+    fireEvent.click(screen.getByTestId('password-unlock-submit'));
 
     await act(async () => {
       await Promise.resolve();
@@ -205,6 +249,23 @@ describe('Passwords page', () => {
     });
 
     expect(screen.queryByText('plain-secret')).not.toBeInTheDocument();
+  });
+
+  it('copies login without unlock dialog', async () => {
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('password-copy-login-entry-1'));
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('svc-vpn');
+      expect(mockNotifySuccess).toHaveBeenCalledWith(
+        'Логин скопирован.',
+        expect.objectContaining({ source: 'passwords' }),
+      );
+    });
+    expect(mockUnlock).not.toHaveBeenCalled();
   });
 
   it('generates a password and fills the create form', async () => {
@@ -246,7 +307,7 @@ describe('Passwords page', () => {
 
     fireEvent.click(screen.getByLabelText('Скопировать пароль svc-vpn'));
     fireEvent.change(screen.getByTestId('password-unlock-code'), { target: { value: '123456' } });
-    fireEvent.click(screen.getByText('Разблокировать'));
+    fireEvent.click(screen.getByTestId('password-unlock-submit'));
 
     await act(async () => {
       await Promise.resolve();
@@ -256,5 +317,17 @@ describe('Passwords page', () => {
 
     expect(mockRevealEntry).toHaveBeenCalledWith('entry-1', { purpose: 'copy' });
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain-secret');
+  });
+
+  it('opens mobile bottom sheet with copy actions', async () => {
+    mockUseMediaQuery.mockReturnValue(true);
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    fireEvent.click(screen.getByTestId('password-entry-row-entry-1'));
+
+    expect(screen.getByTestId('password-entry-mobile-sheet')).toBeInTheDocument();
+    expect(screen.getByTestId('password-copy-password-entry-1')).toBeInTheDocument();
+    expect(screen.getByTestId('password-copy-login-entry-1')).toBeInTheDocument();
   });
 });

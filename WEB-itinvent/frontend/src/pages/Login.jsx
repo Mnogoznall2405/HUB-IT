@@ -47,6 +47,18 @@ function cn(...parts) {
   return parts.filter(Boolean).join(' ');
 }
 
+function normalizeTotpInput(value) {
+  return String(value || '').replace(/\D/g, '').slice(0, 6);
+}
+
+function isCompleteBackupInput(value) {
+  const trimmed = String(value || '').trim();
+  if (/^[A-Fa-f0-9]{4}-?[A-Fa-f0-9]{4}$/.test(trimmed)) {
+    return true;
+  }
+  return trimmed.length >= 6;
+}
+
 function FaceIdGlyph({ className = '' }) {
   return (
     <svg viewBox="0 0 80 80" fill="none" aria-hidden="true" className={className}>
@@ -320,6 +332,8 @@ function Login() {
   const usernameInputRef = useRef(null);
   const passkeyAttemptedRef = useRef(false);
   const authenticatedUserRef = useRef(null);
+  const lastAutoSetupCodeRef = useRef('');
+  const lastAutoVerifyCodeRef = useRef('');
   const prefersReducedMotion = useReducedMotion();
   const {
     webAuthnReady,
@@ -340,6 +354,8 @@ function Login() {
   const shellPaddingBottom = keyboardOpen
     ? 'max(18px, calc(env(safe-area-inset-bottom, 0px) + 8px))'
     : 'max(24px, calc(env(safe-area-inset-bottom, 0px) + 18px))';
+  const isMobileTwoFactorStep = isCompactViewport && ['totp_setup', 'totp_verify', 'setup_complete'].includes(step);
+  const isMobileMinimalStep = isCompactViewport && ['password', 'totp_setup', 'totp_verify', 'setup_complete'].includes(step);
 
   const stepMeta = {
     password: {
@@ -349,13 +365,13 @@ function Login() {
     },
     totp_setup: {
       eyebrow: 'Добавить 2FA',
-      title: 'Добавьте код входа',
-      description: 'Откройте приложение кодов, добавьте аккаунт HUB-IT и введите первый код.',
+      title: 'Добавьте 2FA',
+      description: 'Откройте приложение кодов и введите 6 цифр.',
     },
     totp_verify: {
-      eyebrow: 'Код входа',
-      title: 'Подтвердите вход',
-      description: 'Введите 6 цифр из приложения кодов или backup-код.',
+      eyebrow: '2FA',
+      title: 'Код 2FA',
+      description: '6 цифр из приложения или backup-код.',
     },
     setup_complete: {
       eyebrow: '2FA включена',
@@ -802,8 +818,7 @@ function Login() {
     setStep('totp_verify');
   };
 
-  const handleVerifySetup = async (event) => {
-    event.preventDefault();
+  const submitTwoFactorSetup = async ({ autoContinue = false } = {}) => {
     setError(null);
     setLoading(true);
     const result = await verifyTwoFactorSetup(loginChallengeId, totpCode.trim());
@@ -814,11 +829,19 @@ function Login() {
     }
     authenticatedUserRef.current = result.user || null;
     setBackupCodes(Array.isArray(result.backup_codes) ? result.backup_codes : []);
+    if (autoContinue) {
+      await completeAuthenticatedRedirect(result.user || null);
+      return;
+    }
     setStep('setup_complete');
   };
 
-  const handleVerifyLogin = async (event) => {
-    event.preventDefault();
+  const handleVerifySetup = async (event) => {
+    event?.preventDefault();
+    await submitTwoFactorSetup();
+  };
+
+  const submitTwoFactorLogin = async () => {
     setError(null);
     setLoading(true);
     const result = await verifyTwoFactorLogin(
@@ -834,6 +857,66 @@ function Login() {
     }
     await completeAuthenticatedRedirect(result.user || null);
   };
+
+  const handleVerifyLogin = async (event) => {
+    event?.preventDefault();
+    await submitTwoFactorLogin();
+  };
+
+  useEffect(() => {
+    lastAutoSetupCodeRef.current = '';
+    lastAutoVerifyCodeRef.current = '';
+  }, [step, useBackupCode]);
+
+  useEffect(() => {
+    const code = normalizeTotpInput(totpCode);
+    if (isCompactViewport && step === 'totp_setup' && code.length < 6) {
+      lastAutoSetupCodeRef.current = '';
+    }
+    if (
+      !isCompactViewport
+      || step !== 'totp_setup'
+      || loading
+      || !loginChallengeId
+      || code.length !== 6
+      || code !== totpCode
+      || lastAutoSetupCodeRef.current === code
+    ) {
+      return undefined;
+    }
+
+    lastAutoSetupCodeRef.current = code;
+    const timeout = window.setTimeout(() => {
+      void submitTwoFactorSetup({ autoContinue: true });
+    }, 180);
+    return () => window.clearTimeout(timeout);
+  }, [isCompactViewport, loginChallengeId, loading, step, totpCode]);
+
+  useEffect(() => {
+    if (!isCompactViewport || step !== 'totp_verify' || loading || !loginChallengeId) {
+      return undefined;
+    }
+
+    const rawCode = useBackupCode ? backupCode.trim() : normalizeTotpInput(totpCode);
+    const complete = useBackupCode
+      ? isCompleteBackupInput(rawCode)
+      : rawCode.length === 6 && rawCode === totpCode;
+
+    if (!complete) {
+      lastAutoVerifyCodeRef.current = '';
+    }
+
+    if (!complete || lastAutoVerifyCodeRef.current === `${useBackupCode ? 'backup' : 'totp'}:${rawCode}`) {
+      return undefined;
+    }
+
+    const key = `${useBackupCode ? 'backup' : 'totp'}:${rawCode}`;
+    lastAutoVerifyCodeRef.current = key;
+    const timeout = window.setTimeout(() => {
+      void submitTwoFactorLogin();
+    }, useBackupCode ? 650 : 180);
+    return () => window.clearTimeout(timeout);
+  }, [backupCode, isCompactViewport, loading, loginChallengeId, step, totpCode, useBackupCode]);
 
   const copyTotpSetupValue = async (kind, value) => {
     const text = String(value || '').trim();
@@ -962,7 +1045,7 @@ function Login() {
 
   const renderMobileHeader = () => (
     <motion.div
-      className="space-y-4 px-1 md:hidden"
+      className={cn('px-1 md:hidden', isMobileMinimalStep ? 'space-y-2' : 'space-y-4')}
       animate={prefersReducedMotion ? undefined : { scale: heroCompact ? 0.97 : 1, y: heroCompact ? -6 : 0 }}
       transition={{ duration: 0.28, ease: 'easeOut' }}
     >
@@ -972,13 +1055,18 @@ function Login() {
           {networkLabel}
         </div>
       </div>
-      <div className="space-y-2">
-        <div className="text-[1.75rem] font-semibold leading-[1.05] tracking-[-0.045em] text-white">
-          {displayStepMeta.title}
+      <div className={cn(isMobileMinimalStep ? 'space-y-1' : 'space-y-2')}>
+        <div className={cn(
+          'font-semibold leading-[1.05] tracking-[-0.045em] text-white',
+          isMobileMinimalStep ? 'text-[1.45rem]' : 'text-[1.75rem]',
+        )}>
+          {isCompactViewport && step === 'password' ? 'Вход в HUB-IT' : displayStepMeta.title}
         </div>
-        <p className="text-sm leading-6 text-white/56">
-          {displayStepMeta.description}
-        </p>
+        {!isMobileMinimalStep ? (
+          <p className="text-sm leading-6 text-white/56">
+            {displayStepMeta.description}
+          </p>
+        ) : null}
       </div>
     </motion.div>
   );
@@ -988,21 +1076,26 @@ function Login() {
       return (
         <div
           data-testid="login-mode-loading"
-          className="flex min-h-[220px] flex-col items-center justify-center gap-4 rounded-[24px] border border-white/10 bg-white/[0.04] p-6 text-center backdrop-blur-xl"
+          className={cn(
+            'flex flex-col items-center justify-center gap-4 rounded-[24px] border border-white/10 bg-white/[0.04] text-center backdrop-blur-xl',
+            isCompactViewport ? 'min-h-[150px] p-5' : 'min-h-[220px] p-6',
+          )}
         >
           <Spinner className="h-8 w-8 text-sky-100" />
           <div className="space-y-2">
             <div className="text-base font-semibold text-white">Определяем режим входа</div>
-            <p className="text-sm leading-6 text-white/58">
-              Проверяем сеть и доступность passkey.
-            </p>
+            {!isCompactViewport ? (
+              <p className="text-sm leading-6 text-white/58">
+                Проверяем сеть и доступность passkey.
+              </p>
+            ) : null}
           </div>
         </div>
       );
     }
 
     return (
-      <div className="space-y-4">
+      <div className={cn(isCompactViewport ? 'space-y-3' : 'space-y-4')}>
         {canUseTrustedDeviceHero ? (
           <HeroAction
             title={
@@ -1013,7 +1106,9 @@ function Login() {
                   : (passkeyPrepFailed ? 'Passkey не готов' : 'Подготовка passkey'))
             }
             subtitle={
-              webAuthnReady
+              isCompactViewport && webAuthnReady
+                ? 'Быстрый вход без кода.'
+                : webAuthnReady
                 ? 'Быстрый вход с доверенного телефона или ПК.'
                 : (passkeyPrepFailed
                   ? (webAuthnNativeReady
@@ -1021,14 +1116,14 @@ function Login() {
                     : 'Обновите Android System WebView или войдите по паролю ниже.')
                   : 'Инициализация входа по отпечатку в приложении…')
             }
-            detail="Пароль остается ниже как запасной путь."
+            detail={isCompactViewport ? '' : 'Пароль остается ниже как запасной путь.'}
             onClick={() => attemptPasskeyLogin({ auto: false })}
             disabled={trustedDeviceBusy || loading || passkeyPrepPending}
             busy={trustedDeviceBusy || passkeyPrepPending}
-            compact={heroCompact}
+            compact={isCompactViewport || heroCompact}
             mode={isCompactViewport ? 'fingerprint' : 'face'}
           />
-        ) : (
+        ) : !isCompactViewport ? (
           <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4 backdrop-blur-xl">
             <div className="flex items-center gap-4">
               <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[18px] border border-white/10 bg-white/[0.06] text-cyan-50">
@@ -1044,7 +1139,7 @@ function Login() {
               </div>
             </div>
           </div>
-        )}
+        ) : null}
 
         {passwordAssistMessage ? <InfoBanner tone="info">{passwordAssistMessage}</InfoBanner> : null}
 
@@ -1067,7 +1162,7 @@ function Login() {
               key="password-form"
               onSubmit={handlePasswordSubmit}
               data-testid="password-auth-form"
-              className="space-y-4"
+              className={cn(isCompactViewport ? 'space-y-3' : 'space-y-4')}
               initial={prefersReducedMotion ? undefined : { opacity: 0, y: 16 }}
               animate={{ opacity: 1, y: 0 }}
               exit={prefersReducedMotion ? undefined : { opacity: 0, y: 10 }}
@@ -1119,27 +1214,39 @@ function Login() {
   const renderSetupStep = () => {
     const totpSetupUri = String(setupData?.otpauth_uri || '').trim();
     const totpManualKey = String(setupData?.manual_entry_key || '').trim();
-    const setupSteps = ['Откройте приложение кодов', 'Добавьте аккаунт', 'Введите 6 цифр'];
+    const setupSteps = ['Откройте приложение', 'Добавьте HUB-IT', 'Введите код'];
 
     const openAuthenticatorAction = totpSetupUri ? (
       <a
         href={totpSetupUri}
         data-testid="totp-open-authenticator"
-        className="flex min-h-14 w-full items-center justify-center rounded-[18px] !bg-cyan-200 px-5 text-center text-[15px] font-semibold !text-zinc-950 !no-underline transition hover:!bg-cyan-100 hover:!no-underline"
+        className={cn(
+          'flex w-full items-center justify-center !bg-cyan-200 px-5 text-center font-semibold !text-zinc-950 !no-underline transition hover:!bg-cyan-100 hover:!no-underline',
+          isCompactViewport ? 'min-h-12 rounded-[16px] text-sm' : 'min-h-14 rounded-[18px] text-[15px]',
+        )}
       >
         Открыть в приложении кодов
       </a>
     ) : null;
 
     const qrSetupCard = (
-      <div className="overflow-hidden rounded-[24px] border border-white/10 bg-white/5 p-4 backdrop-blur-xl">
+      <div className={cn(
+        'overflow-hidden border border-white/10 bg-white/5 backdrop-blur-xl',
+        isCompactViewport ? 'rounded-[18px] p-2.5' : 'rounded-[24px] p-4',
+      )}>
         {totpQrDataUrl ? (
-          <div className="flex justify-center rounded-[18px] border border-white/8 bg-white/[0.04] p-4">
+          <div className={cn(
+            'flex justify-center border border-white/8 bg-white/[0.04]',
+            isCompactViewport ? 'rounded-[14px] p-2.5' : 'rounded-[18px] p-4',
+          )}>
             <img
               src={totpQrDataUrl}
               alt="TOTP QR"
               data-testid="totp-qr-image"
-              className="h-auto w-full max-w-[220px] rounded-[18px] bg-white p-3"
+              className={cn(
+                'h-auto w-full bg-white',
+                isCompactViewport ? 'max-w-[148px] rounded-[14px] p-2' : 'max-w-[220px] rounded-[18px] p-3',
+              )}
             />
           </div>
         ) : (
@@ -1157,6 +1264,113 @@ function Login() {
       </div>
     );
 
+    const manualSetupCard = (
+      <div className={cn(
+        'border border-white/10 bg-white/[0.04] backdrop-blur-xl',
+        isCompactViewport ? 'rounded-[18px] p-3' : 'rounded-[20px] p-4',
+      )}>
+        <button
+          type="button"
+          data-testid="totp-manual-toggle"
+          aria-expanded={manualTotpOpen}
+          aria-controls="totp-manual-panel"
+          onClick={() => setManualTotpOpen((prev) => !prev)}
+          className="flex w-full items-center justify-between gap-3 text-left text-sm font-semibold text-white/82"
+        >
+          <span>Ручной ключ</span>
+          <span className="text-xs font-semibold uppercase tracking-[0.16em] text-white/42">
+            {manualTotpOpen ? 'Скрыть' : 'Открыть'}
+          </span>
+        </button>
+
+        {manualTotpOpen ? (
+          <div id="totp-manual-panel" data-testid="totp-manual-panel" className="mt-4 space-y-4">
+            <div>
+              <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-white/44">Ключ</div>
+              <div className="flex flex-col gap-2 sm:flex-row">
+                <div className="min-w-0 flex-1 break-all rounded-[18px] bg-black/20 px-4 py-3 font-mono text-[15px] text-white/88">
+                  {totpManualKey || '—'}
+                </div>
+                <button
+                  type="button"
+                  data-testid="totp-copy-manual-key"
+                  disabled={!totpManualKey}
+                  onClick={() => {
+                    void copyTotpSetupValue('manual', totpManualKey);
+                  }}
+                  className="min-h-12 rounded-[16px] border border-white/10 px-4 text-sm font-semibold text-white/76 transition hover:bg-white/8 disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  Скопировать
+                </button>
+              </div>
+              {copiedTotpValue === 'manual' ? (
+                <div className="mt-2 text-xs font-medium text-emerald-200/88">Ключ скопирован</div>
+              ) : null}
+            </div>
+
+            <div className="space-y-2">
+              <Field
+                id="login-otpauth-uri"
+                label="otpauth URI"
+                value={totpSetupUri}
+                readOnly
+                multiline
+                rows={3}
+              />
+              <button
+                type="button"
+                data-testid="totp-copy-uri"
+                disabled={!totpSetupUri}
+                onClick={() => {
+                  void copyTotpSetupValue('uri', totpSetupUri);
+                }}
+                className="min-h-12 w-full rounded-[16px] border border-white/10 px-4 text-sm font-semibold text-white/76 transition hover:bg-white/8 disabled:cursor-not-allowed disabled:opacity-45"
+              >
+                Скопировать URI
+              </button>
+              {copiedTotpValue === 'uri' ? (
+                <div className="text-xs font-medium text-emerald-200/88">URI скопирован</div>
+              ) : null}
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+
+    if (isCompactViewport) {
+      return (
+        <form onSubmit={handleVerifySetup} className="space-y-3">
+          {openAuthenticatorAction}
+
+          <Field
+            id="login-totp-setup-code"
+            label="6-значный код"
+            value={totpCode}
+            onChange={(event) => setTotpCode(normalizeTotpInput(event.target.value))}
+            inputMode="numeric"
+            autoComplete="one-time-code"
+            disabled={loading}
+            endAdornment={loading ? <Spinner className="h-5 w-5 text-cyan-100" /> : null}
+          />
+
+          {manualSetupCard}
+
+          <details
+            open={!totpSetupUri}
+            className="rounded-[18px] border border-white/10 bg-white/[0.035] p-3 backdrop-blur-xl"
+          >
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-white/70 [&::-webkit-details-marker]:hidden">
+              <span>QR-код</span>
+              <span className="text-xs uppercase tracking-[0.16em] text-white/38">Показать</span>
+            </summary>
+            <div className="mt-3">
+              {qrSetupCard}
+            </div>
+          </details>
+        </form>
+      );
+    }
+
     return (
       <form onSubmit={handleVerifySetup} className="space-y-4">
         <InfoBanner tone="info">
@@ -1172,83 +1386,19 @@ function Login() {
           ))}
         </div>
 
-        {isCompactViewport ? openAuthenticatorAction : qrSetupCard}
-        {isCompactViewport ? qrSetupCard : openAuthenticatorAction}
+        {qrSetupCard}
+        {openAuthenticatorAction}
 
-        <div className="rounded-[20px] border border-white/10 bg-white/[0.04] p-4 backdrop-blur-xl">
-          <button
-            type="button"
-            data-testid="totp-manual-toggle"
-            aria-expanded={manualTotpOpen}
-            aria-controls="totp-manual-panel"
-            onClick={() => setManualTotpOpen((prev) => !prev)}
-            className="flex w-full items-center justify-between gap-3 text-left text-[15px] font-semibold text-white/86"
-          >
-            <span>Добавить вручную</span>
-            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-white/42">
-              {manualTotpOpen ? 'Скрыть' : 'Открыть'}
-            </span>
-          </button>
-
-          {manualTotpOpen ? (
-            <div id="totp-manual-panel" data-testid="totp-manual-panel" className="mt-4 space-y-4">
-              <div>
-                <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-white/44">Ручной ключ</div>
-                <div className="flex flex-col gap-2 sm:flex-row">
-                  <div className="min-w-0 flex-1 break-all rounded-[18px] bg-black/20 px-4 py-3 font-mono text-[15px] text-white/88">
-                    {totpManualKey || '—'}
-                  </div>
-                  <button
-                    type="button"
-                    data-testid="totp-copy-manual-key"
-                    disabled={!totpManualKey}
-                    onClick={() => {
-                      void copyTotpSetupValue('manual', totpManualKey);
-                    }}
-                    className="min-h-12 rounded-[16px] border border-white/10 px-4 text-sm font-semibold text-white/76 transition hover:bg-white/8 disabled:cursor-not-allowed disabled:opacity-45"
-                  >
-                    Скопировать ключ
-                  </button>
-                </div>
-                {copiedTotpValue === 'manual' ? (
-                  <div className="mt-2 text-xs font-medium text-emerald-200/88">Ключ скопирован</div>
-                ) : null}
-              </div>
-
-              <div className="space-y-2">
-                <Field
-                  id="login-otpauth-uri"
-                  label="otpauth URI"
-                  value={totpSetupUri}
-                  readOnly
-                  multiline
-                  rows={3}
-                />
-                <button
-                  type="button"
-                  data-testid="totp-copy-uri"
-                  disabled={!totpSetupUri}
-                  onClick={() => {
-                    void copyTotpSetupValue('uri', totpSetupUri);
-                  }}
-                  className="min-h-12 w-full rounded-[16px] border border-white/10 px-4 text-sm font-semibold text-white/76 transition hover:bg-white/8 disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  Скопировать URI
-                </button>
-                {copiedTotpValue === 'uri' ? (
-                  <div className="text-xs font-medium text-emerald-200/88">URI скопирован</div>
-                ) : null}
-              </div>
-            </div>
-          ) : null}
-        </div>
+        {manualSetupCard}
 
         <Field
           id="login-totp-setup-code"
           label="Код из приложения"
           value={totpCode}
-          onChange={(event) => setTotpCode(event.target.value)}
+          onChange={(event) => setTotpCode(normalizeTotpInput(event.target.value))}
           inputMode="numeric"
+          autoComplete="one-time-code"
+          disabled={loading}
         />
 
         <button
@@ -1257,14 +1407,14 @@ function Login() {
           className={primaryButtonClassName}
         >
           {loading ? <Spinner className="h-5 w-5" /> : null}
-          <span>Включить 2FA</span>
+          <span>Подтвердить код</span>
         </button>
       </form>
     );
   };
 
   const renderVerifyStep = () => (
-    <div className="space-y-4">
+    <div className={cn(isCompactViewport ? 'space-y-3' : 'space-y-4')}>
       {canUseTrustedDeviceHero ? (
         <HeroAction
           title={trustedDeviceBusy ? 'Подтверждаем passkey' : 'Доверенное устройство'}
@@ -1276,7 +1426,7 @@ function Login() {
           compact={heroCompact}
           mode={isCompactViewport ? 'fingerprint' : 'face'}
         />
-      ) : (
+      ) : !isCompactViewport ? (
         <div className="rounded-[24px] border border-white/10 bg-white/[0.04] p-4 backdrop-blur-xl">
           <div className="flex items-center gap-4">
             <div className="flex h-14 w-14 shrink-0 items-center justify-center rounded-[18px] border border-white/10 bg-white/[0.06] text-cyan-50">
@@ -1290,9 +1440,12 @@ function Login() {
             </div>
           </div>
         </div>
-      )}
+      ) : null}
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className={cn(
+        'flex flex-wrap items-center gap-3',
+        isCompactViewport ? 'justify-end' : 'justify-between',
+      )}>
         <button
           type="button"
           onClick={() => {
@@ -1322,7 +1475,7 @@ function Login() {
             key="verify-form"
             onSubmit={handleVerifyLogin}
             data-testid="verify-fallback-form"
-            className="space-y-4"
+            className={cn(isCompactViewport ? 'space-y-3' : 'space-y-4')}
             initial={prefersReducedMotion ? undefined : { opacity: 0, y: 14 }}
             animate={{ opacity: 1, y: 0 }}
             exit={prefersReducedMotion ? undefined : { opacity: 0, y: 10 }}
@@ -1330,25 +1483,30 @@ function Login() {
           >
             <Field
               id="login-totp-verify"
-              label={useBackupCode ? 'Backup-код' : 'Код из приложения'}
+              label={useBackupCode ? 'Backup-код' : (isCompactViewport ? '6-значный код' : 'Код из приложения')}
               value={useBackupCode ? backupCode : totpCode}
               onChange={(event) => {
                 if (useBackupCode) {
                   setBackupCode(event.target.value);
                 } else {
-                  setTotpCode(event.target.value);
+                  setTotpCode(normalizeTotpInput(event.target.value));
                 }
               }}
               inputMode={useBackupCode ? 'text' : 'numeric'}
+              autoComplete={useBackupCode ? undefined : 'one-time-code'}
+              disabled={loading}
+              endAdornment={isCompactViewport && loading ? <Spinner className="h-5 w-5 text-cyan-100" /> : null}
             />
-            <button
-              type="submit"
-              disabled={isTwofaSubmitDisabled}
-              className={primaryButtonClassName}
-            >
-              {loading ? <Spinner className="h-5 w-5" /> : null}
-              <span>Подтвердить вход</span>
-            </button>
+            {!isCompactViewport ? (
+              <button
+                type="submit"
+                disabled={isTwofaSubmitDisabled}
+                className={primaryButtonClassName}
+              >
+                {loading ? <Spinner className="h-5 w-5" /> : null}
+                <span>Подтвердить вход</span>
+              </button>
+            ) : null}
           </motion.form>
         ) : null}
       </AnimatePresence>
@@ -1434,7 +1592,10 @@ function Login() {
           {renderMobileHeader()}
           <motion.div
             layout
-            className="relative overflow-hidden rounded-[28px] border border-white/10 bg-white/[0.07] p-5 shadow-[0_24px_80px_rgba(2,6,23,0.48)] backdrop-blur-[26px] sm:p-6"
+            className={cn(
+              'relative overflow-hidden border border-white/10 bg-white/[0.07] shadow-[0_24px_80px_rgba(2,6,23,0.48)] backdrop-blur-[26px]',
+              isMobileMinimalStep ? 'rounded-[24px] p-4' : 'rounded-[28px] p-5 sm:p-6',
+            )}
             style={{
               boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.12), 0 24px 72px rgba(2,6,23,0.52)',
             }}
@@ -1467,9 +1628,11 @@ function Login() {
             </div>
           </motion.div>
 
-          <div className="px-1 text-center text-xs leading-5 text-white/34 md:text-left">
-            Безопасный доступ к HUB-IT через IIS/HTTPS, passkey, пароль и 2FA.
-          </div>
+          {!isMobileMinimalStep ? (
+            <div className="px-1 text-center text-xs leading-5 text-white/34 md:text-left">
+              Безопасный доступ к HUB-IT через IIS/HTTPS, passkey, пароль и 2FA.
+            </div>
+          ) : null}
         </div>
       </motion.div>
 
@@ -1490,15 +1653,14 @@ function Login() {
               role="dialog"
               aria-modal="true"
               aria-labelledby="remember-device-title"
-              className="fixed inset-x-0 bottom-0 z-30 mx-auto w-full max-w-[31rem] overflow-hidden rounded-t-[28px] border border-white/10 bg-[#080b10]/94 px-5 pb-5 pt-4 text-white shadow-[0_-20px_60px_rgba(2,6,23,0.58)] backdrop-blur-[28px]"
+              className="fixed bottom-0 z-30 w-[calc(100vw-24px)] max-w-[31rem] overflow-hidden rounded-t-[28px] border border-white/10 bg-[#080b10]/94 px-5 pb-5 pt-4 text-white shadow-[0_-20px_60px_rgba(2,6,23,0.58)] backdrop-blur-[28px] md:bottom-6 md:rounded-[28px]"
               style={{
                 paddingBottom: 'max(20px, calc(env(safe-area-inset-bottom, 0px) + 14px))',
-                left: 'max(12px, env(safe-area-inset-left, 0px))',
                 right: 'max(12px, env(safe-area-inset-right, 0px))',
               }}
-              initial={prefersReducedMotion ? undefined : { opacity: 0, y: 40 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={prefersReducedMotion ? undefined : { opacity: 0, y: 24 }}
+              initial={prefersReducedMotion ? undefined : { opacity: 0, y: 40, x: 14 }}
+              animate={{ opacity: 1, y: 0, x: 0 }}
+              exit={prefersReducedMotion ? undefined : { opacity: 0, y: 24, x: 10 }}
               transition={{ duration: 0.26, ease: 'easeOut' }}
             >
               <div className="mx-auto mb-4 h-1.5 w-12 rounded-full bg-white/16" />

@@ -5,58 +5,56 @@ import {
   Autocomplete,
   Box,
   Button,
-  Chip,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  Divider,
+  Drawer,
   FormControl,
   FormControlLabel,
   Grid,
   IconButton,
   InputAdornment,
-  Menu,
-  List,
-  MenuItem,
   InputLabel,
-  Select,
-  ListItemButton,
-  ListItemText,
+  MenuItem,
   Paper,
-  Skeleton,
+  Select,
   Slider,
   Stack,
   Switch,
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableRow,
   TextField,
   Tooltip,
   Typography,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
+import useMediaQuery from '@mui/material/useMediaQuery';
 import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
-import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
-import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined';
-import LockOpenOutlinedIcon from '@mui/icons-material/LockOpenOutlined';
-import MoreVertOutlinedIcon from '@mui/icons-material/MoreVertOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
-import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
-import VisibilityOffOutlinedIcon from '@mui/icons-material/VisibilityOffOutlined';
 import { useNavigate } from 'react-router-dom';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import PasswordAuditAccordion from '../components/passwords/PasswordAuditAccordion';
+import PasswordEntryDetail from '../components/passwords/PasswordEntryDetail';
+import PasswordEntryList from '../components/passwords/PasswordEntryList';
+import PasswordEntryMobileSheet from '../components/passwords/PasswordEntryMobileSheet';
+import PasswordFiltersPanel from '../components/passwords/PasswordFiltersPanel';
+import PasswordMobileToolbar from '../components/passwords/PasswordMobileToolbar';
+import PasswordUnlockBanner from '../components/passwords/PasswordUnlockBanner';
+import PasswordUnlockDialog from '../components/passwords/PasswordUnlockDialog';
+import PasswordUnlockStrip from '../components/passwords/PasswordUnlockStrip';
+import {
+  PASSWORD_HIDE_MS,
+  buildGroupCounts,
+  isUnlockedUntilActive,
+  normalizeEntry,
+  normalizeText,
+} from '../components/passwords/passwordVaultUtils';
 import { passwordsAPI } from '../api/passwords';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
-
-const PASSWORD_HIDE_MS = 30_000;
 const DEFAULT_PASSWORD_LENGTH = 20;
 const LOWER = 'abcdefghijkmnopqrstuvwxyz';
 const UPPER = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
@@ -81,22 +79,6 @@ const emptyGeneratorOptions = {
   symbols: true,
   excludeSimilar: true,
 };
-
-const normalizeText = (value) => String(value ?? '').trim();
-
-const normalizeEntry = (entry) => ({
-  id: normalizeText(entry?.id),
-  group: normalizeText(entry?.group),
-  tags: Array.isArray(entry?.tags) ? entry.tags.map(normalizeText).filter(Boolean) : [],
-  login: normalizeText(entry?.login),
-  description: normalizeText(entry?.description),
-  is_archived: Boolean(entry?.is_archived),
-  created_at: entry?.created_at || null,
-  updated_at: entry?.updated_at || null,
-  created_by: entry?.created_by || '',
-  updated_by: entry?.updated_by || '',
-  password_configured: entry?.password_configured !== false,
-});
 
 export const normalizeTagList = (value) => {
   const items = Array.isArray(value)
@@ -153,25 +135,6 @@ export function generateVaultPassword(options = {}, cryptoSource = globalThis.cr
   return result.join('');
 }
 
-const isUnlockedUntilActive = (value) => {
-  const raw = normalizeText(value);
-  if (!raw) return false;
-  const parsed = new Date(raw);
-  return !Number.isNaN(parsed.getTime()) && parsed.getTime() > Date.now();
-};
-
-const formatDateTime = (value) => {
-  if (!value) return '—';
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return '—';
-  return date.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-};
-
 function Passwords() {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -202,10 +165,15 @@ function Passwords() {
   const [generatorOptions, setGeneratorOptions] = useState(emptyGeneratorOptions);
   const [generatedPassword, setGeneratedPassword] = useState('');
   const [nowTs, setNowTs] = useState(Date.now());
-  const [rowMenuAnchor, setRowMenuAnchor] = useState(null);
-  const [rowMenuEntry, setRowMenuEntry] = useState(null);
+  const [selectedEntryId, setSelectedEntryId] = useState('');
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
+  const [filtersDrawerOpen, setFiltersDrawerOpen] = useState(false);
+  const [auditExpanded, setAuditExpanded] = useState(false);
+  const [auditLoading, setAuditLoading] = useState(false);
   const hideTimersRef = useRef({});
+  const searchInputRef = useRef(null);
 
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
   const canWrite = isAdmin || hasPermission('passwords.write');
   const isUnlocked = isUnlockedUntilActive(unlockedUntil);
@@ -215,13 +183,6 @@ function Passwords() {
     return Math.max(0, parsed.getTime() - nowTs);
   }, [nowTs, unlockedUntil]);
 
-  const unlockedRemainingLabel = useMemo(() => {
-    const totalSeconds = Math.floor(unlockedRemainingMs / 1000);
-    if (totalSeconds <= 0) return '';
-    const minutes = String(Math.floor(totalSeconds / 60)).padStart(2, '0');
-    const seconds = String(totalSeconds % 60).padStart(2, '0');
-    return `${minutes}:${seconds}`;
-  }, [unlockedRemainingMs]);
   const isUnlockExpiringSoon = isUnlocked && unlockedRemainingMs > 0 && unlockedRemainingMs <= 30_000;
 
   useEffect(() => {
@@ -241,11 +202,14 @@ function Passwords() {
 
   const loadAudit = useCallback(async () => {
     if (!isAdmin) return;
+    setAuditLoading(true);
     try {
       const payload = await passwordsAPI.getAudit({ limit: 100 });
       setAuditItems(Array.isArray(payload?.items) ? payload.items : []);
     } catch (error) {
       notifyApiError(error, 'Не удалось загрузить аудит паролей.', { dedupeMode: 'recent' });
+    } finally {
+      setAuditLoading(false);
     }
   }, [isAdmin, notifyApiError]);
 
@@ -285,10 +249,42 @@ function Passwords() {
   }, [loadEntries]);
 
   useEffect(() => {
-    loadAudit();
-  }, [loadAudit]);
+    if (auditExpanded) {
+      loadAudit();
+    }
+  }, [auditExpanded, loadAudit]);
+
+  useEffect(() => {
+    if (!entries.length) {
+      setSelectedEntryId('');
+      return;
+    }
+    if (!entries.some((entry) => entry.id === selectedEntryId)) {
+      setSelectedEntryId(entries[0].id);
+    }
+  }, [entries, selectedEntryId]);
+
+  useEffect(() => {
+    const handleKeyDown = (event) => {
+      if (event.key !== '/' || event.ctrlKey || event.metaKey || event.altKey) return;
+      const tagName = String(event.target?.tagName || '').toLowerCase();
+      if (tagName === 'input' || tagName === 'textarea' || event.target?.isContentEditable) return;
+      event.preventDefault();
+      searchInputRef.current?.focus();
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, []);
 
   const visibleEntries = useMemo(() => entries, [entries]);
+  const groupCounts = useMemo(() => buildGroupCounts(entries), [entries]);
+  const selectedEntry = useMemo(
+    () => visibleEntries.find((entry) => entry.id === selectedEntryId) || null,
+    [selectedEntryId, visibleEntries],
+  );
+  const selectedRevealBusy = Boolean(
+    selectedEntry && revealBusyId.startsWith(`${selectedEntry.id}:`),
+  );
 
   const openCreateDialog = () => {
     setFormMode('create');
@@ -411,6 +407,42 @@ function Passwords() {
     revealEntry(entry, purpose);
   };
 
+  const handleCopyLogin = async (entry) => {
+    try {
+      const copied = await copyPassword(entry.login);
+      if (copied) {
+        notifySuccess('Логин скопирован.', { source: 'passwords', dedupeMode: 'none', durationMs: 1800 });
+      }
+    } catch {
+      notifyWarning('Не удалось скопировать логин.', { source: 'passwords', dedupeMode: 'none' });
+    }
+  };
+
+  const handleSelectEntry = (entry) => {
+    setSelectedEntryId(entry.id);
+    if (isMobile) {
+      setMobileSheetOpen(true);
+    }
+  };
+
+  const handleOpenUnlock = () => {
+    setUnlockCode('');
+    setUnlockDialogOpen(true);
+  };
+
+  const handleEditEntry = (entry) => {
+    setMobileSheetOpen(false);
+    openEditDialog(entry);
+  };
+
+  const handleArchiveEntry = async (entry) => {
+    setMobileSheetOpen(false);
+    await handleArchive(entry);
+    if (selectedEntryId === entry.id) {
+      setSelectedEntryId('');
+    }
+  };
+
   const handleUnlock = async () => {
     const code = unlockCode.trim();
     if (!code) return;
@@ -463,120 +495,81 @@ function Passwords() {
 
   return (
     <MainLayout>
-      <PageShell fullHeight sx={{ gap: 2.5 }} data-testid="passwords-page">
-        <Paper
-          elevation={0}
-          sx={{
-            flexShrink: 0,
-            p: { xs: 2, md: 2.5 },
-            borderRadius: 2,
-            border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
-            bgcolor: 'background.paper',
-          }}
-        >
-          <Stack direction={{ xs: 'column', md: 'row' }} spacing={2} alignItems={{ md: 'center' }} justifyContent="space-between">
-            <Box>
-              <Stack direction="row" spacing={1} alignItems="center">
-                <KeyOutlinedIcon color="primary" />
-                <Typography variant="h5" fontWeight={800}>Пароли</Typography>
+      <PageShell fullHeight sx={{ gap: { xs: 0.75, md: 2.5 } }} data-testid="passwords-page">
+        {isMobile ? (
+          <>
+            <PasswordMobileToolbar
+              canWrite={canWrite}
+              loading={loading}
+              query={query}
+              searchInputRef={searchInputRef}
+              onQueryChange={(event) => setQuery(event.target.value)}
+              onUnlockClick={handleOpenUnlock}
+              onOpenFilters={() => setFiltersDrawerOpen(true)}
+              onRefresh={loadEntries}
+              onCreate={openCreateDialog}
+            />
+            <PasswordUnlockStrip
+              isUnlocked={isUnlocked}
+              isUnlockExpiringSoon={isUnlockExpiringSoon}
+              unlockedRemainingMs={unlockedRemainingMs}
+              onUnlockClick={handleOpenUnlock}
+            />
+          </>
+        ) : (
+          <>
+            <Paper
+              elevation={0}
+              sx={{
+                flexShrink: 0,
+                p: 2.5,
+                border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
+                bgcolor: 'background.paper',
+              }}
+            >
+              <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between">
+                <Box>
+                  <Stack direction="row" spacing={1} alignItems="center">
+                    <KeyOutlinedIcon color="primary" />
+                    <Typography variant="h5" fontWeight={800}>Пароли</Typography>
+                  </Stack>
+                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
+                    Хранилище доступов с 2FA-разблокировкой перед раскрытием.
+                  </Typography>
+                </Box>
+                {canWrite ? (
+                  <Button variant="contained" startIcon={<AddOutlinedIcon />} onClick={openCreateDialog}>
+                    Новая запись
+                  </Button>
+                ) : null}
               </Stack>
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                Хранилище доступов с 2FA-разблокировкой перед раскрытием.
-              </Typography>
-            </Box>
-            <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
-              <Chip
-                color={isUnlocked ? (isUnlockExpiringSoon ? 'warning' : 'success') : 'default'}
-                icon={<LockOpenOutlinedIcon />}
-                label={isUnlocked
-                  ? `${isUnlockExpiringSoon ? 'Истекает' : 'Разблокировано'} (${unlockedRemainingLabel || formatDateTime(unlockedUntil)})`
-                  : 'Раскрытие заблокировано'}
-                variant={isUnlocked ? 'filled' : 'outlined'}
-              />
-              <Button
-                variant="outlined"
-                startIcon={<LockOpenOutlinedIcon />}
-                onClick={() => setUnlockDialogOpen(true)}
-              >
-                Разблокировка 2FA
-              </Button>
-              {canWrite ? (
-                <Button variant="contained" startIcon={<AddOutlinedIcon />} onClick={openCreateDialog}>
-                  Новая запись
-                </Button>
-              ) : null}
-            </Stack>
-          </Stack>
-        </Paper>
-
-        <Box
-          sx={{
-            flex: 1,
-            minHeight: 0,
-            overflowY: 'auto',
-            overflowX: 'hidden',
-            pr: { md: 0.5 },
-            WebkitOverflowScrolling: 'touch',
-          }}
-        >
-        <Grid container spacing={2}>
-          <Grid item xs={12} md={3}>
-            <Paper elevation={0} sx={{ borderRadius: 2, border: `1px solid ${theme.palette.divider}`, overflow: 'hidden' }}>
-              <Box sx={{ p: 2 }}>
-                <Typography variant="subtitle2" fontWeight={800}>Группы</Typography>
-              </Box>
-              <Divider />
-              <List dense disablePadding>
-                <ListItemButton selected={!selectedGroup} onClick={() => setSelectedGroup('')}>
-                  <ListItemText primary="Все группы" />
-                </ListItemButton>
-                {groups.map((group) => (
-                  <ListItemButton
-                    key={group}
-                    selected={selectedGroup === group}
-                    onClick={() => setSelectedGroup(group)}
-                    data-testid={`password-group-${group}`}
-                  >
-                    <ListItemText primary={group} />
-                  </ListItemButton>
-                ))}
-              </List>
-              <Divider />
-              <Box sx={{ p: 2 }}>
-                <Typography variant="subtitle2" fontWeight={800} sx={{ mb: 1 }}>Теги</Typography>
-                <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                  <Chip
-                    size="small"
-                    label="Все"
-                    color={!selectedTag ? 'primary' : 'default'}
-                    variant={!selectedTag ? 'filled' : 'outlined'}
-                    onClick={() => setSelectedTag('')}
-                  />
-                  {tags.map((tag) => (
-                    <Chip
-                      key={tag}
-                      size="small"
-                      label={tag}
-                      color={selectedTag === tag ? 'primary' : 'default'}
-                      variant={selectedTag === tag ? 'filled' : 'outlined'}
-                      onClick={() => setSelectedTag(tag)}
-                      data-testid={`password-tag-${tag}`}
-                    />
-                  ))}
-                </Stack>
-              </Box>
             </Paper>
-          </Grid>
 
-          <Grid item xs={12} md={9}>
-            <Paper elevation={0} sx={{ borderRadius: 2, border: `1px solid ${theme.palette.divider}`, p: 2 }}>
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1.5} alignItems={{ sm: 'center' }} sx={{ mb: 2 }}>
+            <PasswordUnlockBanner
+              isUnlocked={isUnlocked}
+              isUnlockExpiringSoon={isUnlockExpiringSoon}
+              unlockedRemainingMs={unlockedRemainingMs}
+              unlockedUntil={unlockedUntil}
+              onUnlockClick={handleOpenUnlock}
+            />
+
+            <Paper
+              elevation={0}
+              sx={{
+                flexShrink: 0,
+                border: `1px solid ${theme.palette.divider}`,
+                p: 2,
+              }}
+            >
+              <Stack direction="row" spacing={1.5} alignItems="center">
                 <TextField
                   fullWidth
                   size="small"
-                  label="Поиск по логину"
+                  label="Поиск по логину, описанию или тегам"
+                  placeholder="Нажмите / для фокуса"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
+                  inputRef={searchInputRef}
                   InputProps={{
                     startAdornment: (
                       <InputAdornment position="start">
@@ -599,191 +592,145 @@ function Passwords() {
                   </span>
                 </Tooltip>
               </Stack>
-
-              {loading ? (
-                <Grid container spacing={1.5}>
-                  {Array.from({ length: 4 }).map((_, index) => (
-                    <Grid item xs={12} lg={6} key={`password-skeleton-${index}`}>
-                      <Paper elevation={0} sx={{ p: 2, minHeight: 210, borderRadius: 2, border: `1px solid ${theme.palette.divider}` }}>
-                        <Stack spacing={1.25}>
-                          <Skeleton variant="text" width="35%" />
-                          <Skeleton variant="text" width="65%" height={34} />
-                          <Stack direction="row" spacing={0.75}>
-                            <Skeleton variant="rounded" width={70} height={24} />
-                            <Skeleton variant="rounded" width={90} height={24} />
-                          </Stack>
-                          <Skeleton variant="rounded" height={36} />
-                          <Skeleton variant="rounded" height={40} />
-                          <Stack direction="row" justifyContent="space-between">
-                            <Skeleton variant="text" width={120} />
-                            <Stack direction="row" spacing={0.75}>
-                              <Skeleton variant="circular" width={28} height={28} />
-                              <Skeleton variant="circular" width={28} height={28} />
-                              <Skeleton variant="circular" width={28} height={28} />
-                            </Stack>
-                          </Stack>
-                        </Stack>
-                      </Paper>
-                    </Grid>
-                  ))}
-                </Grid>
-              ) : visibleEntries.length === 0 ? (
-                <Alert severity="info">Записей по текущим фильтрам нет.</Alert>
-              ) : (
-                <Grid container spacing={1.5}>
-                  {visibleEntries.map((entry) => {
-                    const revealed = revealedPasswords[entry.id];
-                    return (
-                      <Grid item xs={12} lg={6} key={entry.id}>
-                        <Paper
-                          elevation={0}
-                          sx={{
-                            p: 2,
-                            minHeight: 210,
-                            borderRadius: 2,
-                            border: `1px solid ${entry.is_archived ? alpha(theme.palette.warning.main, 0.4) : theme.palette.divider}`,
-                            bgcolor: entry.is_archived
-                              ? alpha(theme.palette.warning.main, theme.palette.mode === 'dark' ? 0.12 : 0.08)
-                              : ui.panelSolid,
-                          }}
-                        >
-                          <Stack spacing={1.25}>
-                            <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
-                              <Box sx={{ minWidth: 0 }}>
-                                <Typography
-                                  variant="overline"
-                                  sx={{ color: 'text.secondary', letterSpacing: '0.08em' }}
-                                >
-                                  {entry.group || 'Без группы'}
-                                </Typography>
-                                <Typography variant="h6" fontWeight={800} noWrap title={entry.login}>{entry.login}</Typography>
-                              </Box>
-                              {entry.is_archived ? <Chip size="small" color="warning" label="Архив" /> : null}
-                            </Stack>
-                            <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-                              {entry.tags.length ? entry.tags.map((tag) => (
-                                <Chip
-                                  key={tag}
-                                  size="small"
-                                  label={tag}
-                                  variant="outlined"
-                                  sx={{ color: 'text.primary', bgcolor: ui.panelSolid }}
-                                />
-                              )) : (
-                                <Chip
-                                  size="small"
-                                  label="без тегов"
-                                  variant="outlined"
-                                  sx={{ color: 'text.secondary', bgcolor: ui.panelSolid }}
-                                />
-                              )}
-                            </Stack>
-                            <Typography variant="body2" color="text.secondary" sx={{ minHeight: 40 }}>
-                              {entry.description || 'Описание не заполнено.'}
-                            </Typography>
-                            <Box
-                              sx={getOfficeCodeBlockSx(ui, {
-                                fontWeight: revealed ? 600 : 500,
-                                color: revealed ? 'text.primary' : 'text.secondary',
-                              })}
-                              data-testid={`password-value-${entry.id}`}
-                            >
-                              {revealed || '••••••••••••••••'}
-                            </Box>
-                            <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
-                              <Typography variant="caption" color="text.secondary">
-                                Обновлено: {formatDateTime(entry.updated_at)}
-                              </Typography>
-                              <Stack direction="row" spacing={0.5}>
-                                {revealed ? (
-                                  <Tooltip title="Скрыть">
-                                    <IconButton size="small" onClick={() => hidePassword(entry.id)} aria-label={`Скрыть пароль ${entry.login}`}>
-                                      <VisibilityOffOutlinedIcon fontSize="small" />
-                                    </IconButton>
-                                  </Tooltip>
-                                ) : (
-                                  <Tooltip title="Показать">
-                                    <span>
-                                      <IconButton
-                                        size="small"
-                                        onClick={() => requestReveal(entry, 'show')}
-                                        disabled={revealBusyId === `${entry.id}:show`}
-                                        aria-label={`Показать пароль ${entry.login}`}
-                                      >
-                                        <VisibilityOutlinedIcon fontSize="small" />
-                                      </IconButton>
-                                    </span>
-                                  </Tooltip>
-                                )}
-                                <Tooltip title="Скопировать">
-                                  <span>
-                                    <IconButton
-                                      size="small"
-                                      onClick={() => requestReveal(entry, 'copy')}
-                                      disabled={revealBusyId === `${entry.id}:copy`}
-                                      aria-label={`Скопировать пароль ${entry.login}`}
-                                    >
-                                      <ContentCopyOutlinedIcon fontSize="small" />
-                                    </IconButton>
-                                  </span>
-                                </Tooltip>
-                                {canWrite && !entry.is_archived ? (
-                                  <Tooltip title="Ещё действия">
-                                    <IconButton
-                                      size="small"
-                                      aria-label={`Дополнительно ${entry.login}`}
-                                      onClick={(event) => {
-                                        setRowMenuAnchor(event.currentTarget);
-                                        setRowMenuEntry(entry);
-                                      }}
-                                    >
-                                      <MoreVertOutlinedIcon fontSize="small" />
-                                    </IconButton>
-                                  </Tooltip>
-                                ) : null}
-                              </Stack>
-                            </Stack>
-                          </Stack>
-                        </Paper>
-                      </Grid>
-                    );
-                  })}
-                </Grid>
-              )}
             </Paper>
+          </>
+        )}
 
-            {isAdmin ? (
-              <Paper elevation={0} sx={{ borderRadius: 2, border: `1px solid ${theme.palette.divider}`, p: 2, mt: 2 }}>
-                <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.5 }}>
-                  <Typography variant="h6" fontWeight={800}>Аудит</Typography>
-                  <Button size="small" startIcon={<RefreshOutlinedIcon />} onClick={loadAudit}>Обновить</Button>
-                </Stack>
-                <Table size="small">
-                  <TableHead>
-                    <TableRow>
-                      <TableCell>Время</TableCell>
-                      <TableCell>Действие</TableCell>
-                      <TableCell>Пользователь</TableCell>
-                      <TableCell>Запись</TableCell>
-                      <TableCell>IP</TableCell>
-                    </TableRow>
-                  </TableHead>
-                  <TableBody>
-                    {auditItems.slice(0, 12).map((item) => (
-                      <TableRow key={item.id}>
-                        <TableCell>{formatDateTime(item.created_at)}</TableCell>
-                        <TableCell>{item.action}</TableCell>
-                        <TableCell>{item.actor_username || item.actor_user_id}</TableCell>
-                        <TableCell>{[item.entry_group, item.entry_login].filter(Boolean).join(' / ') || '—'}</TableCell>
-                        <TableCell>{item.ip_address || '—'}</TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-              </Paper>
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+            gap: { xs: 0.5, md: 2 },
+          }}
+        >
+          <Grid
+            container
+            spacing={{ xs: 0, md: 2 }}
+            sx={{
+              flex: 1,
+              minHeight: 0,
+              height: '100%',
+            }}
+          >
+            {!isMobile ? (
+              <Grid
+                item
+                md={3}
+                sx={{
+                  display: { xs: 'none', md: 'flex' },
+                  flexDirection: 'column',
+                  minHeight: 0,
+                  height: '100%',
+                }}
+              >
+                <Paper
+                  elevation={0}
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    border: `1px solid ${theme.palette.divider}`,
+                    overflowY: 'auto',
+                    overflowX: 'hidden',
+                    WebkitOverflowScrolling: 'touch',
+                  }}
+                  data-testid="password-filters-scroll"
+                >
+                  <PasswordFiltersPanel
+                    groups={groups}
+                    tags={tags}
+                    groupCounts={groupCounts}
+                    selectedGroup={selectedGroup}
+                    selectedTag={selectedTag}
+                    totalCount={visibleEntries.length}
+                    onSelectGroup={setSelectedGroup}
+                    onSelectTag={setSelectedTag}
+                  />
+                </Paper>
+              </Grid>
+            ) : null}
+
+            <Grid
+              item
+              xs={12}
+              md={4}
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                minHeight: 0,
+                height: '100%',
+              }}
+            >
+              <Box
+                sx={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  WebkitOverflowScrolling: 'touch',
+                  pr: 0.5,
+                }}
+                data-testid="password-entry-list-scroll"
+              >
+                <PasswordEntryList
+                  entries={visibleEntries}
+                  selectedEntryId={selectedEntryId}
+                  loading={loading}
+                  compact={isMobile}
+                  onSelect={handleSelectEntry}
+                />
+              </Box>
+            </Grid>
+
+            {!isMobile ? (
+              <Grid
+                item
+                md={5}
+                sx={{
+                  display: { xs: 'none', md: 'flex' },
+                  flexDirection: 'column',
+                  minHeight: 0,
+                  height: '100%',
+                }}
+              >
+                <Box
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflowY: 'auto',
+                    overflowX: 'hidden',
+                    WebkitOverflowScrolling: 'touch',
+                  }}
+                  data-testid="password-entry-detail-scroll"
+                >
+                  <PasswordEntryDetail
+                    entry={selectedEntry}
+                    revealed={selectedEntry ? revealedPasswords[selectedEntry.id] : ''}
+                    revealBusy={selectedRevealBusy}
+                    canWrite={canWrite && selectedEntry && !selectedEntry.is_archived}
+                    onCopyPassword={(entry) => requestReveal(entry, 'copy')}
+                    onCopyLogin={handleCopyLogin}
+                    onShow={(entry) => requestReveal(entry, 'show')}
+                    onHide={(entry) => hidePassword(entry.id)}
+                    onEdit={handleEditEntry}
+                    onArchive={handleArchiveEntry}
+                  />
+                </Box>
+              </Grid>
             ) : null}
           </Grid>
-        </Grid>
+
+          {isAdmin && !isMobile ? (
+            <Box sx={{ flexShrink: 0 }}>
+              <PasswordAuditAccordion
+                expanded={auditExpanded}
+                onExpandedChange={setAuditExpanded}
+                loading={auditLoading}
+                items={auditItems.slice(0, 12)}
+              />
+            </Box>
+          ) : null}
         </Box>
       </PageShell>
 
@@ -873,7 +820,7 @@ function Passwords() {
               </Stack>
             </Grid>
             <Grid item xs={12} md={5}>
-              <Paper elevation={0} sx={{ p: 2, borderRadius: 2, border: `1px solid ${theme.palette.divider}` }}>
+              <Paper elevation={0} sx={{ p: 2, border: `1px solid ${theme.palette.divider}` }}>
                 <Typography variant="subtitle1" fontWeight={800}>Генератор</Typography>
                 <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
                   Генерация выполняется в браузере через Web Crypto.
@@ -931,65 +878,85 @@ function Passwords() {
         </DialogActions>
       </Dialog>
 
-      <Dialog open={unlockDialogOpen} onClose={() => setUnlockDialogOpen(false)} fullWidth maxWidth="xs">
-        <DialogTitle>Разблокировка 2FA</DialogTitle>
-        <DialogContent dividers>
-          <Stack spacing={2} sx={{ pt: 0.5 }}>
-            <Alert severity="info">
-              Введите TOTP-код или резервный код. После подтверждения раскрытие и копирование будут доступны 5 минут.
-            </Alert>
-            <TextField
-              label="Код 2FA"
-              value={unlockCode}
-              onChange={(event) => setUnlockCode(event.target.value)}
-              autoFocus
-              fullWidth
-              inputProps={{ 'data-testid': 'password-unlock-code' }}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  event.preventDefault();
-                  handleUnlock();
-                }
+      <PasswordUnlockDialog
+        open={unlockDialogOpen}
+        isMobile={isMobile}
+        unlockCode={unlockCode}
+        unlocking={unlocking}
+        onClose={() => setUnlockDialogOpen(false)}
+        onCodeChange={(event) => setUnlockCode(event.target.value)}
+        onSubmit={handleUnlock}
+      />
+      <Drawer
+        anchor="left"
+        open={filtersDrawerOpen}
+        onClose={() => setFiltersDrawerOpen(false)}
+        PaperProps={{ sx: { width: 300, maxWidth: '90vw' } }}
+        data-testid="password-filters-drawer"
+      >
+        <Box sx={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+          <Box sx={{ px: 2, py: 1.5, borderBottom: `1px solid ${theme.palette.divider}` }}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between">
+              <Typography variant="subtitle1" fontWeight={800}>Фильтры</Typography>
+              <IconButton size="small" onClick={loadEntries} disabled={loading} aria-label="Обновить пароли">
+                <RefreshOutlinedIcon fontSize="small" />
+              </IconButton>
+            </Stack>
+            <FormControlLabel
+              control={(
+                <Switch
+                  size="small"
+                  checked={includeArchived}
+                  onChange={(event) => setIncludeArchived(event.target.checked)}
+                />
+              )}
+              label="Показывать архив"
+              sx={{ mt: 0.5, ml: 0 }}
+            />
+          </Box>
+          <Box sx={{ flex: 1, overflowY: 'auto' }}>
+            <PasswordFiltersPanel
+              groups={groups}
+              tags={tags}
+              groupCounts={groupCounts}
+              selectedGroup={selectedGroup}
+              selectedTag={selectedTag}
+              totalCount={visibleEntries.length}
+              onSelectGroup={(group) => {
+                setSelectedGroup(group);
+              }}
+              onSelectTag={(tag) => {
+                setSelectedTag(tag);
               }}
             />
-          </Stack>
-        </DialogContent>
-        <DialogActions>
-          <Button onClick={() => setUnlockDialogOpen(false)}>Отмена</Button>
-          <Button variant="contained" onClick={handleUnlock} disabled={!unlockCode.trim() || unlocking}>
-            {unlocking ? 'Проверка...' : 'Разблокировать'}
-          </Button>
-        </DialogActions>
-      </Dialog>
-      <Menu
-        anchorEl={rowMenuAnchor}
-        open={Boolean(rowMenuAnchor)}
-        onClose={() => {
-          setRowMenuAnchor(null);
-          setRowMenuEntry(null);
-        }}
-      >
-        <MenuItem
-          onClick={() => {
-            if (rowMenuEntry) openEditDialog(rowMenuEntry);
-            setRowMenuAnchor(null);
-            setRowMenuEntry(null);
-          }}
-        >
-          <EditOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
-          Редактировать
-        </MenuItem>
-        <MenuItem
-          onClick={() => {
-            if (rowMenuEntry) handleArchive(rowMenuEntry);
-            setRowMenuAnchor(null);
-            setRowMenuEntry(null);
-          }}
-        >
-          <ArchiveOutlinedIcon fontSize="small" sx={{ mr: 1 }} />
-          Архивировать
-        </MenuItem>
-      </Menu>
+          </Box>
+          {isAdmin && isMobile ? (
+            <Box sx={{ flexShrink: 0, p: 1.5, borderTop: `1px solid ${theme.palette.divider}` }}>
+              <PasswordAuditAccordion
+                expanded={auditExpanded}
+                onExpandedChange={setAuditExpanded}
+                loading={auditLoading}
+                items={auditItems.slice(0, 12)}
+              />
+            </Box>
+          ) : null}
+        </Box>
+      </Drawer>
+
+      <PasswordEntryMobileSheet
+        open={mobileSheetOpen && Boolean(selectedEntry)}
+        entry={selectedEntry}
+        revealed={selectedEntry ? revealedPasswords[selectedEntry.id] : ''}
+        revealBusy={selectedRevealBusy}
+        canWrite={canWrite && selectedEntry && !selectedEntry.is_archived}
+        onClose={() => setMobileSheetOpen(false)}
+        onCopyPassword={(entry) => requestReveal(entry, 'copy')}
+        onCopyLogin={handleCopyLogin}
+        onShow={(entry) => requestReveal(entry, 'show')}
+        onHide={(entry) => hidePassword(entry.id)}
+        onEdit={handleEditEntry}
+        onArchive={handleArchiveEntry}
+      />
     </MainLayout>
   );
 }

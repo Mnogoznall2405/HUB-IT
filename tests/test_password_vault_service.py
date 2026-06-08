@@ -99,6 +99,14 @@ def test_password_vault_crud_never_exposes_stored_secret(temp_dir, monkeypatch):
     listed = service.list_entries(q="svc", user_id=actor.id, session_id="session-1")
     assert len(listed["items"]) == 1
     assert listed["items"][0]["login"] == "svc-vpn"
+
+    listed_by_description = service.list_entries(q="production", user_id=actor.id, session_id="session-1")
+    assert len(listed_by_description["items"]) == 1
+    assert listed_by_description["items"][0]["description"] == "Production VPN"
+
+    listed_by_tag = service.list_entries(q="prod", user_id=actor.id, session_id="session-1")
+    assert len(listed_by_tag["items"]) == 1
+    assert "prod" in listed_by_tag["items"][0]["tags"]
     assert "password" not in listed["items"][0]
     assert "password_enc" not in listed["items"][0]
 

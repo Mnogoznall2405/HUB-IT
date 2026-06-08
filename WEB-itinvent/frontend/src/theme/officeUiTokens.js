@@ -64,7 +64,7 @@ export function getOfficeActionTraySx(ui, overrides = {}) {
     bgcolor: ui.panelBg,
     border: '1px solid',
     borderColor: ui.borderSoft,
-    borderRadius: '14px',
+    borderRadius: '4px',
     boxShadow: 'none',
     ...overrides,
   };
@@ -104,7 +104,7 @@ export function getOfficeDrawerPaperSx(ui, overrides = {}) {
 
 export function getOfficeEmptyStateSx(ui, overrides = {}) {
   return {
-    borderRadius: '14px',
+    borderRadius: '4px',
     bgcolor: ui.emptyStateBg,
     border: '1px solid',
     borderColor: ui.borderSoft,
@@ -245,7 +245,7 @@ export function getOfficeMetricBlockSx(ui, color, overrides = {}) {
   return {
     position: 'relative',
     overflow: 'hidden',
-    borderRadius: '14px',
+    borderRadius: '4px',
     bgcolor: alpha(color, ui.isDark ? 0.12 : 0.07),
     border: '1px solid',
     borderColor: ui.borderSoft,
@@ -268,7 +268,7 @@ export function getOfficeCodeBlockSx(ui, overrides = {}) {
   return {
     px: 1.25,
     py: 1,
-    borderRadius: 1.5,
+    borderRadius: 0.5,
     bgcolor: ui.panelInset,
     border: '1px solid',
     borderColor: ui.borderSoft,

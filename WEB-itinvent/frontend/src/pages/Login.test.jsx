@@ -197,6 +197,64 @@ describe('Login hybrid internal/external flow', () => {
     expect(screen.getByRole('button', { name: 'Войти' })).toBeInTheDocument();
   });
 
+  it('auto-confirms mobile 2FA setup after six digits and opens the trusted-device prompt', async () => {
+    installMatchMedia({ mobile: true });
+    Object.defineProperty(window.navigator, 'userAgent', {
+      configurable: true,
+      value: 'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 Chrome/123.0 Mobile Safari/537.36',
+    });
+    Object.defineProperty(window.navigator, 'platform', {
+      configurable: true,
+      value: 'Linux armv8l',
+    });
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+    });
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: '2fa_setup_required',
+      login_challenge_id: 'challenge-setup',
+      trusted_devices_available: false,
+    });
+    mockStartTwoFactorSetup.mockResolvedValue({
+      success: true,
+      login_challenge_id: 'challenge-setup',
+      otpauth_uri: 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=HUB-IT',
+      manual_entry_key: 'ABC123',
+      qr_svg: null,
+    });
+    mockVerifyTwoFactorSetup.mockResolvedValue({
+      success: true,
+      status: 'authenticated',
+      user: {
+        id: 7,
+        username: 'ivanov',
+        role: 'viewer',
+        permissions: [],
+        network_zone: 'external',
+        discoverable_trusted_devices_count: 0,
+      },
+      backup_codes: ['AAAA-BBBB'],
+    });
+
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    submitPasswordStep();
+
+    await screen.findByTestId('totp-open-authenticator');
+    expect(screen.queryByRole('button', { name: 'Включить 2FA' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Подтвердить код' })).not.toBeInTheDocument();
+
+    setInputValue('login-totp-setup-code', '123456');
+
+    await waitFor(() => {
+      expect(mockVerifyTwoFactorSetup).toHaveBeenCalledWith('challenge-setup', '123456');
+    });
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(locationAssignMock).not.toHaveBeenCalled();
+  });
+
   it('does not auto-attempt passkey until WebAuthn API is available', async () => {
     delete window.PublicKeyCredential;
 

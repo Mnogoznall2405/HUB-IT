@@ -147,7 +147,7 @@ const theme = createTheme({
   },
   spacing: 8, // Base unit
   shape: {
-    borderRadius: 8, // Consistent border radius
+    borderRadius: 4,
   },
   shadows: [
     'none',
@@ -163,6 +163,7 @@ const theme = createTheme({
       styleOverrides: {
         root: {
           backgroundImage: 'none', // Better performance
+          borderRadius: 4,
         },
       },
       defaultProps: {
@@ -175,13 +176,27 @@ const theme = createTheme({
         root: {
           minWidth: 44, // Touch target size
           minHeight: 44,
-          borderRadius: 8,
+          borderRadius: 4,
           textTransform: 'none',
           fontWeight: 500,
           '@media (min-width:600px)': {
             minWidth: 64,
             minHeight: 36,
           },
+        },
+      },
+    },
+    MuiOutlinedInput: {
+      styleOverrides: {
+        root: {
+          borderRadius: 4,
+        },
+      },
+    },
+    MuiCard: {
+      styleOverrides: {
+        root: {
+          borderRadius: 4,
         },
       },
     },
