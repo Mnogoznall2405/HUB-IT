@@ -467,6 +467,7 @@ function Passwords() {
         <Paper
           elevation={0}
           sx={{
+            flexShrink: 0,
             p: { xs: 2, md: 2.5 },
             borderRadius: 2,
             border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
@@ -508,6 +509,16 @@ function Passwords() {
           </Stack>
         </Paper>
 
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            pr: { md: 0.5 },
+            WebkitOverflowScrolling: 'touch',
+          }}
+        >
         <Grid container spacing={2}>
           <Grid item xs={12} md={3}>
             <Paper elevation={0} sx={{ borderRadius: 2, border: `1px solid ${theme.palette.divider}`, overflow: 'hidden' }}>
@@ -773,6 +784,7 @@ function Passwords() {
             ) : null}
           </Grid>
         </Grid>
+        </Box>
       </PageShell>
 
       <Dialog open={entryDialogOpen} onClose={() => setEntryDialogOpen(false)} fullWidth maxWidth="md">
