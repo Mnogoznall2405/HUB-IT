@@ -15,6 +15,12 @@ vi.mock('../api/client', () => ({
 let authUser = { role: 'viewer' };
 const notifySuccessMock = vi.fn();
 const notifyWarningMock = vi.fn();
+const navigateMock = vi.fn();
+const windowOpenMock = vi.fn();
+
+vi.mock('react-router-dom', () => ({
+  useNavigate: () => navigateMock,
+}));
 
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
@@ -30,14 +36,18 @@ vi.mock('../contexts/NotificationContext', () => ({
 }));
 
 vi.mock('../components/layout/MainLayout', () => ({
-  default: ({ children }) => <div data-testid="main-layout">{children}</div>,
+  default: ({ children, showDatabaseSelector }) => (
+    <div data-testid="main-layout" data-show-database-selector={String(showDatabaseSelector)}>
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock('../components/layout/PageShell', () => ({
   default: ({ children }) => <div data-testid="page-shell">{children}</div>,
 }));
 
-const searchPlaceholder = 'ФИО, должность, подразделение, город или телефон';
+const searchPlaceholder = 'ФИО, должность, подразделение, город, телефон или e-mail';
 
 const samplePayload = {
   items: [
@@ -48,6 +58,8 @@ const samplePayload = {
       position: 'Lead specialist',
       work_phones: [{ kind: 'Рабочий телефон', value: '83452384202', normalized: '73452384202' }],
       personal_phones: [{ kind: 'Мобильный телефон', value: '89312250556', normalized: '79312250556' }],
+      work_emails: [{ kind: 'Корпоративный E-mail', value: 'ivanov@zsgp.ru', normalized: 'ivanov@zsgp.ru' }],
+      personal_emails: [],
     },
   ],
   total: 1,
@@ -99,6 +111,11 @@ describe('AddressBook page', () => {
     });
     notifySuccessMock.mockClear();
     notifyWarningMock.mockClear();
+    navigateMock.mockClear();
+    windowOpenMock.mockClear();
+    window.open = windowOpenMock;
+    delete window.location;
+    window.location = { href: '' };
   });
 
   afterEach(() => {
@@ -115,6 +132,14 @@ describe('AddressBook page', () => {
     expect(screen.getByText('83452384202')).toBeInTheDocument();
     expect(screen.getByText('Мобильный телефон')).toBeInTheDocument();
     expect(screen.getByText('89312250556')).toBeInTheDocument();
+    expect(screen.getByText('ivanov@zsgp.ru')).toBeInTheDocument();
+  });
+
+  it('hides database selector in main layout', async () => {
+    render(<AddressBook />);
+
+    await screen.findByText('Ivanov Ivan Ivanovich');
+    expect(screen.getByTestId('main-layout')).toHaveAttribute('data-show-database-selector', 'false');
   });
 
   it('does not render desktop phone rows as tel links or call actions', async () => {
@@ -151,6 +176,68 @@ describe('AddressBook page', () => {
       }));
     });
     expect(screen.queryByText('Номер скопирован')).not.toBeInTheDocument();
+  });
+
+  it('opens telegram deeplink for personal phone', async () => {
+    render(<AddressBook />);
+
+    await screen.findByText('89312250556');
+    fireEvent.click(screen.getAllByLabelText('Открыть Telegram 89312250556')[0]);
+
+    expect(window.location.href).toBe('tg://resolve?phone=79312250556');
+  });
+
+  it('copies phone and shows MAX popover instructions', async () => {
+    render(<AddressBook />);
+
+    await screen.findByText('89312250556');
+    fireEvent.click(screen.getAllByLabelText('Открыть MAX 89312250556')[0]);
+
+    await waitFor(() => {
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('+79312250556');
+      expect(screen.getByText('Как найти контакт в MAX')).toBeInTheDocument();
+      expect(screen.getByText(/Вставьте скопированный номер: \+79312250556/)).toBeInTheDocument();
+    });
+  });
+
+  it('does not open window for MAX action', async () => {
+    render(<AddressBook />);
+
+    await screen.findByText('89312250556');
+    fireEvent.click(screen.getAllByLabelText('Открыть MAX 89312250556')[0]);
+
+    expect(windowOpenMock).not.toHaveBeenCalled();
+  });
+
+  it('shows warning when MAX copy fails', async () => {
+    navigator.clipboard.writeText.mockRejectedValueOnce(new Error('clipboard denied'));
+
+    render(<AddressBook />);
+
+    await screen.findByText('89312250556');
+    fireEvent.click(screen.getAllByLabelText('Открыть MAX 89312250556')[0]);
+
+    await waitFor(() => {
+      expect(notifyWarningMock).toHaveBeenCalledWith('Не удалось скопировать номер', expect.objectContaining({
+        source: 'address-book-max',
+      }));
+    });
+  });
+
+  it('opens HUB mail compose for employee email', async () => {
+    render(<AddressBook />);
+
+    await screen.findByText('ivanov@zsgp.ru');
+    fireEvent.click(screen.getByLabelText('Написать в HUB ivanov@zsgp.ru'));
+
+    expect(navigateMock).toHaveBeenCalledWith('/mail?folder=inbox&compose_to=ivanov%40zsgp.ru');
+  });
+
+  it('keeps external mailto action for employee email', async () => {
+    render(<AddressBook />);
+
+    await screen.findByText('ivanov@zsgp.ru');
+    expect(screen.getByLabelText('Открыть внешнюю почту ivanov@zsgp.ru')).toHaveAttribute('href', 'mailto:ivanov@zsgp.ru');
   });
 
   it('highlights matches in names and phones', async () => {
@@ -208,5 +295,19 @@ describe('AddressBook page', () => {
     await waitFor(() => {
       expect(addressBookAPI.sync).toHaveBeenCalledTimes(1);
     });
+  });
+
+  it('shows updated date for non-admin users', async () => {
+    authUser = { role: 'viewer' };
+    render(<AddressBook />);
+
+    await screen.findByText(/Обновлено:/);
+    expect(screen.queryByRole('button', { name: /Обновить/i })).not.toBeInTheDocument();
+  });
+
+  it('uses search placeholder with e-mail', async () => {
+    render(<AddressBook />);
+
+    expect(await screen.findByPlaceholderText(searchPlaceholder)).toBeInTheDocument();
   });
 });

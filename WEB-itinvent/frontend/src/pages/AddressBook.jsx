@@ -8,6 +8,7 @@ import {
   IconButton,
   InputAdornment,
   Paper,
+  Popover,
   Stack,
   Table,
   TableBody,
@@ -23,14 +24,19 @@ import {
 import { useTheme } from '@mui/material/styles';
 import CloseIcon from '@mui/icons-material/Close';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
+import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import PhoneIcon from '@mui/icons-material/Phone';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
+import { useNavigate } from 'react-router-dom';
+import { MaxBrandIcon, TelegramBrandIcon } from '../components/icons/MessengerBrandIcon';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
+import { isValidEmailRecipient } from '../components/mail/mailComposeState';
 import { addressBookAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
+import { isPhoneDeepLinkReady, openTelegramChat } from '../lib/messengerLinks';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
 const SEARCH_DEBOUNCE_MS = 300;
@@ -105,7 +111,15 @@ const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
   return debounced;
 };
 
-const PhoneActions = ({ phones = [], label, onCopy, enableTelLinks = false, query = '' }) => {
+const PhoneActions = ({
+  phones = [],
+  label,
+  onCopy,
+  enableTelLinks = false,
+  onOpenTelegram,
+  onOpenMax,
+  query = '',
+}) => {
   const items = Array.isArray(phones) ? phones : [];
   if (items.length === 0) return null;
 
@@ -122,6 +136,7 @@ const PhoneActions = ({ phones = [], label, onCopy, enableTelLinks = false, quer
           const phoneDigits = normalized || normalizePhoneDigits(value);
           const telValue = phoneDigits ? `+${phoneDigits}` : value;
           const canCall = enableTelLinks && Boolean(telValue);
+          const canOpenMessenger = isPhoneDeepLinkReady(phoneDigits);
           return (
             <Box
               key={`${kind}-${value}-${index}`}
@@ -154,6 +169,30 @@ const PhoneActions = ({ phones = [], label, onCopy, enableTelLinks = false, quer
                   </IconButton>
                 </Tooltip>
               ) : null}
+              <Tooltip title={canOpenMessenger ? 'Открыть в Telegram' : 'Номер не подходит для Telegram'}>
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label={`Открыть Telegram ${value}`}
+                    onClick={() => onOpenTelegram(phoneDigits)}
+                    disabled={!canOpenMessenger}
+                  >
+                    <TelegramBrandIcon size={20} />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title={canOpenMessenger ? 'Скопировать для MAX' : 'Номер не подходит для MAX'}>
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label={`Открыть MAX ${value}`}
+                    onClick={(event) => onOpenMax(phoneDigits, event.currentTarget)}
+                    disabled={!canOpenMessenger}
+                  >
+                    <MaxBrandIcon size={20} />
+                  </IconButton>
+                </span>
+              </Tooltip>
               <Tooltip title="Скопировать">
                 <IconButton
                   size="small"
@@ -171,7 +210,91 @@ const PhoneActions = ({ phones = [], label, onCopy, enableTelLinks = false, quer
   );
 };
 
-const EmployeeCard = ({ item, onCopy, enableTelLinks = false, query = '' }) => (
+const EmailActions = ({ emails = [], label, onCopy, onComposeEmail, query = '' }) => {
+  const items = Array.isArray(emails) ? emails : [];
+  if (items.length === 0) return null;
+
+  return (
+    <Stack spacing={0.75}>
+      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
+        {label}
+      </Typography>
+      <Stack spacing={0.6}>
+        {items.map((email, index) => {
+          const value = normalizeText(email?.value);
+          const kind = normalizeText(email?.kind);
+          const canMail = isValidEmailRecipient(value);
+          return (
+            <Box
+              key={`${kind}-${value}-${index}`}
+              sx={{
+                display: 'flex',
+                alignItems: 'center',
+                gap: 0.75,
+                minWidth: 0,
+              }}
+            >
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                {kind ? (
+                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.15 }}>
+                    <HighlightText value={kind} query={query} />
+                  </Typography>
+                ) : null}
+                <Typography variant="body2" sx={{ lineHeight: 1.2, overflowWrap: 'anywhere' }}>
+                  <HighlightText value={value} query={query} />
+                </Typography>
+              </Box>
+              <Tooltip title={canMail ? 'Написать в HUB' : 'Некорректный e-mail'}>
+                <span>
+                  <IconButton
+                    size="small"
+                    aria-label={`Написать в HUB ${value}`}
+                    onClick={() => onComposeEmail(value)}
+                    disabled={!canMail}
+                  >
+                    <MailOutlineIcon fontSize="small" />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title={canMail ? 'Открыть внешнюю почту' : 'Некорректный e-mail'}>
+                <span>
+                  <IconButton
+                    component={canMail ? 'a' : 'button'}
+                    href={canMail ? `mailto:${value}` : undefined}
+                    size="small"
+                    aria-label={`Открыть внешнюю почту ${value}`}
+                    disabled={!canMail}
+                  >
+                    <MailOutlineIcon fontSize="small" color={canMail ? 'action' : 'disabled'} />
+                  </IconButton>
+                </span>
+              </Tooltip>
+              <Tooltip title="Скопировать">
+                <IconButton
+                  size="small"
+                  aria-label={`Скопировать ${value}`}
+                  onClick={() => onCopy(value)}
+                >
+                  <ContentCopyIcon fontSize="small" />
+                </IconButton>
+              </Tooltip>
+            </Box>
+          );
+        })}
+      </Stack>
+    </Stack>
+  );
+};
+
+const EmployeeCard = ({
+  item,
+  onCopy,
+  enableTelLinks = false,
+  onOpenTelegram,
+  onOpenMax,
+  onComposeEmail,
+  query = '',
+}) => (
   <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
     <Stack spacing={1.25}>
       <Box>
@@ -186,8 +309,26 @@ const EmployeeCard = ({ item, onCopy, enableTelLinks = false, query = '' }) => (
         {item.department ? <Chip label={<HighlightText value={item.department} query={query} />} size="small" /> : null}
         {item.department_location ? <Chip label={<HighlightText value={item.department_location} query={query} />} size="small" variant="outlined" /> : null}
       </Stack>
-      <PhoneActions phones={item.work_phones} label="Рабочие" onCopy={onCopy} enableTelLinks={enableTelLinks} query={query} />
-      <PhoneActions phones={item.personal_phones} label="Личные" onCopy={onCopy} enableTelLinks={enableTelLinks} query={query} />
+      <PhoneActions
+        phones={item.work_phones}
+        label="Рабочие"
+        onCopy={onCopy}
+        enableTelLinks={enableTelLinks}
+        onOpenTelegram={onOpenTelegram}
+        onOpenMax={onOpenMax}
+        query={query}
+      />
+      <PhoneActions
+        phones={item.personal_phones}
+        label="Личные"
+        onCopy={onCopy}
+        enableTelLinks={enableTelLinks}
+        onOpenTelegram={onOpenTelegram}
+        onOpenMax={onOpenMax}
+        query={query}
+      />
+      <EmailActions emails={item.work_emails} label="Рабочая почта" onCopy={onCopy} onComposeEmail={onComposeEmail} query={query} />
+      <EmailActions emails={item.personal_emails} label="Личная почта" onCopy={onCopy} onComposeEmail={onComposeEmail} query={query} />
     </Stack>
   </Paper>
 );
@@ -196,6 +337,7 @@ const AddressBook = () => {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
+  const navigate = useNavigate();
   const { user } = useAuth();
   const { notifySuccess, notifyWarning } = useNotification();
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
@@ -208,6 +350,8 @@ const AddressBook = () => {
   const [statusLoading, setStatusLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
+  const [maxHelpAnchorEl, setMaxHelpAnchorEl] = useState(null);
+  const [maxHelpPhone, setMaxHelpPhone] = useState('');
   const debouncedQuery = useDebouncedValue(query);
 
   const loadStatus = useCallback(async () => {
@@ -268,18 +412,59 @@ const AddressBook = () => {
   const handleCopy = useCallback(async (value) => {
     const text = normalizeText(value);
     if (!text) return;
+    const isEmail = isValidEmailRecipient(text);
     try {
       await navigator.clipboard.writeText(text);
-      notifySuccess('Номер скопирован', { source: 'address-book-copy', dedupeMode: 'none', durationMs: 1800 });
+      notifySuccess(isEmail ? 'E-mail скопирован' : 'Номер скопирован', {
+        source: 'address-book-copy',
+        dedupeMode: 'none',
+        durationMs: 1800,
+      });
     } catch {
-      notifyWarning('Не удалось скопировать номер', { source: 'address-book-copy', dedupeMode: 'none' });
+      notifyWarning(isEmail ? 'Не удалось скопировать e-mail' : 'Не удалось скопировать номер', {
+        source: 'address-book-copy',
+        dedupeMode: 'none',
+      });
     }
   }, [notifySuccess, notifyWarning]);
+
+  const handleOpenTelegram = useCallback((phoneDigits) => {
+    const opened = openTelegramChat(phoneDigits);
+    if (!opened) {
+      notifyWarning('Номер не подходит для Telegram', { source: 'address-book-telegram', dedupeMode: 'none' });
+    }
+  }, [notifyWarning]);
+
+  const handleOpenMax = useCallback(async (phoneDigits, anchorEl) => {
+    const digits = normalizeText(phoneDigits);
+    if (!isPhoneDeepLinkReady(digits)) {
+      notifyWarning('Номер не подходит для MAX', { source: 'address-book-max', dedupeMode: 'none' });
+      return;
+    }
+    const formatted = `+${digits}`;
+    try {
+      await navigator.clipboard.writeText(formatted);
+      setMaxHelpPhone(formatted);
+      setMaxHelpAnchorEl(anchorEl || null);
+      notifySuccess('Номер скопирован для MAX', { source: 'address-book-max', dedupeMode: 'none', durationMs: 1800 });
+    } catch {
+      notifyWarning('Не удалось скопировать номер', { source: 'address-book-max', dedupeMode: 'none' });
+    }
+  }, [notifySuccess, notifyWarning]);
+
+  const handleComposeEmail = useCallback((email) => {
+    const recipient = normalizeText(email);
+    if (!isValidEmailRecipient(recipient)) {
+      notifyWarning('Некорректный e-mail', { source: 'address-book-email', dedupeMode: 'none' });
+      return;
+    }
+    navigate(`/mail?folder=inbox&compose_to=${encodeURIComponent(recipient)}`);
+  }, [navigate, notifyWarning]);
 
   const panelSx = useMemo(() => getOfficePanelSx(ui), [ui]);
 
   return (
-    <MainLayout>
+    <MainLayout showDatabaseSelector={false}>
       <PageShell>
         <Stack spacing={2}>
           <Stack
@@ -296,13 +481,13 @@ const AddressBook = () => {
                 {total > SEARCH_LIMIT ? `Найдено ${total}, показано ${SEARCH_LIMIT}` : `Найдено ${total}`}
               </Typography>
             </Box>
-            {isAdmin ? (
-              <Stack direction="row" spacing={1} alignItems="center">
-                <Chip
-                  label={`Обновлено: ${formatDateTime(status?.updated_at)}`}
-                  size="small"
-                  variant="outlined"
-                />
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Chip
+                label={`Обновлено: ${formatDateTime(status?.updated_at)}`}
+                size="small"
+                variant="outlined"
+              />
+              {isAdmin ? (
                 <Button
                   variant="contained"
                   size="small"
@@ -312,8 +497,8 @@ const AddressBook = () => {
                 >
                   Обновить
                 </Button>
-              </Stack>
-            ) : null}
+              ) : null}
+            </Stack>
           </Stack>
 
           <Paper
@@ -329,7 +514,7 @@ const AddressBook = () => {
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               fullWidth
-              placeholder="ФИО, должность, подразделение, город или телефон"
+              placeholder="ФИО, должность, подразделение, город, телефон или e-mail"
               size="small"
               InputProps={{
                 startAdornment: (
@@ -367,13 +552,22 @@ const AddressBook = () => {
             <Paper sx={{ ...panelSx, p: 3, textAlign: 'center' }}>
               <Typography sx={{ fontWeight: 600 }}>Сотрудники не найдены</Typography>
               <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                Измените ФИО, подразделение, должность, город или номер телефона.
+                Измените ФИО, подразделение, должность, город, номер телефона или e-mail.
               </Typography>
             </Paper>
           ) : isMobile ? (
             <Stack spacing={1}>
               {items.map((item, index) => (
-                <EmployeeCard key={`${item.full_name}-${index}`} item={item} onCopy={handleCopy} enableTelLinks={isMobile} query={query} />
+                <EmployeeCard
+                  key={`${item.full_name}-${index}`}
+                  item={item}
+                  onCopy={handleCopy}
+                  enableTelLinks={isMobile}
+                  onOpenTelegram={handleOpenTelegram}
+                  onOpenMax={handleOpenMax}
+                  onComposeEmail={handleComposeEmail}
+                  query={query}
+                />
               ))}
             </Stack>
           ) : (
@@ -385,6 +579,7 @@ const AddressBook = () => {
                     <TableCell>Подразделение</TableCell>
                     <TableCell>Должность</TableCell>
                     <TableCell>Телефоны</TableCell>
+                    <TableCell>E-mail</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
@@ -404,8 +599,40 @@ const AddressBook = () => {
                       <TableCell>{item.position ? <HighlightText value={item.position} query={query} /> : '-'}</TableCell>
                       <TableCell sx={{ minWidth: 320 }}>
                         <Stack spacing={1}>
-                          <PhoneActions phones={item.work_phones} label="Рабочие" onCopy={handleCopy} query={query} />
-                          <PhoneActions phones={item.personal_phones} label="Личные" onCopy={handleCopy} query={query} />
+                          <PhoneActions
+                            phones={item.work_phones}
+                            label="Рабочие"
+                            onCopy={handleCopy}
+                            onOpenTelegram={handleOpenTelegram}
+                            onOpenMax={handleOpenMax}
+                            query={query}
+                          />
+                          <PhoneActions
+                            phones={item.personal_phones}
+                            label="Личные"
+                            onCopy={handleCopy}
+                            onOpenTelegram={handleOpenTelegram}
+                            onOpenMax={handleOpenMax}
+                            query={query}
+                          />
+                        </Stack>
+                      </TableCell>
+                      <TableCell sx={{ minWidth: 280 }}>
+                        <Stack spacing={1}>
+                          <EmailActions
+                            emails={item.work_emails}
+                            label="Рабочая почта"
+                            onCopy={handleCopy}
+                            onComposeEmail={handleComposeEmail}
+                            query={query}
+                          />
+                          <EmailActions
+                            emails={item.personal_emails}
+                            label="Личная почта"
+                            onCopy={handleCopy}
+                            onComposeEmail={handleComposeEmail}
+                            query={query}
+                          />
                         </Stack>
                       </TableCell>
                     </TableRow>
@@ -415,6 +642,27 @@ const AddressBook = () => {
             </TableContainer>
           )}
         </Stack>
+
+        <Popover
+          open={Boolean(maxHelpAnchorEl)}
+          anchorEl={maxHelpAnchorEl}
+          onClose={() => setMaxHelpAnchorEl(null)}
+          anchorOrigin={{ vertical: 'bottom', horizontal: 'center' }}
+          transformOrigin={{ vertical: 'top', horizontal: 'center' }}
+        >
+          <Box sx={{ p: 2, maxWidth: 280 }}>
+            <Typography variant="subtitle2" sx={{ fontWeight: 600, mb: 1 }}>
+              Как найти контакт в MAX
+            </Typography>
+            <Stack component="ol" spacing={0.75} sx={{ m: 0, pl: 2.25 }}>
+              <Typography component="li" variant="body2">Откройте приложение MAX</Typography>
+              <Typography component="li" variant="body2">Нажмите поиск</Typography>
+              <Typography component="li" variant="body2">
+                Вставьте скопированный номер{maxHelpPhone ? `: ${maxHelpPhone}` : ''}
+              </Typography>
+            </Stack>
+          </Box>
+        </Popover>
       </PageShell>
     </MainLayout>
   );

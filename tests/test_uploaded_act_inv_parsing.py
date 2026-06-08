@@ -8,6 +8,17 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 from backend.services import act_upload_service  # noqa: E402
+from backend.database import queries  # noqa: E402
+
+
+def test_legacy_sqlserver_text_normalizes_upload_act_arrows_for_cp1251(monkeypatch):
+    monkeypatch.setenv("SQL_CHAR_ENCODING", "cp1251")
+
+    text = queries._legacy_sqlserver_text("Передача: Иван → Петр; акт №1→№2 ✅")
+
+    assert "→" not in text
+    assert "->" in text
+    text.encode("cp1251")
 
 
 def test_parse_inv_nos_from_text_ignores_word_garbage_and_dates():

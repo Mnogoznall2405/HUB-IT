@@ -127,6 +127,7 @@ import {
 import { normalizeComposeSubject } from '../components/mail/mailComposeSubject';
 import {
   createComposeInitialState,
+  isValidEmailRecipient,
   normalizeMailRecipient,
   readStoredComposeState,
 } from '../components/mail/mailComposeState';
@@ -1790,6 +1791,20 @@ function Mail() {
       })
     );
   }, [composeDraftKey, openComposeSession, resolveComposeMailboxId]);
+
+  useEffect(() => {
+    const searchParams = new URLSearchParams(location.search || '');
+    const composeTo = normalizeMailRecipient(searchParams.get('compose_to'));
+    if (!composeTo || !isValidEmailRecipient(composeTo)) return;
+    openComposeSession({
+      composeMode: 'new',
+      composeFromMailboxId: resolveComposeMailboxId(),
+      to: [composeTo],
+    });
+    searchParams.delete('compose_to');
+    const nextQuery = searchParams.toString();
+    navigate(nextQuery ? `/mail?${nextQuery}` : '/mail', { replace: true });
+  }, [location.search, navigate, openComposeSession, resolveComposeMailboxId]);
 
   const openComposeFromMessage = useCallback((mode) => {
     if (!selectedMessage) return;

@@ -7,7 +7,9 @@ import pytest
 
 from backend.services.address_book_service import (
     AddressBookService,
+    deduplicate_email_records,
     deduplicate_phone_records,
+    normalize_email,
     normalize_phone,
 )
 
@@ -77,6 +79,47 @@ def test_deduplicate_phone_records_prefers_work_then_mobile():
     ]
 
 
+def test_deduplicate_email_records_prefers_corporate_over_personal():
+    emails = deduplicate_email_records(
+        [
+            {
+                "employee_code": "E1",
+                "contact_kind": "Email",
+                "email": "personal@example.com",
+            },
+            {
+                "employee_code": "E1",
+                "contact_kind": "Корпоративный E-mail",
+                "email": "work@example.com",
+            },
+            {
+                "employee_code": "E1",
+                "contact_kind": "Email",
+                "email": "work@example.com, personal@example.com",
+            },
+        ]
+    )
+
+    assert emails["E1"]["work"] == [
+        {
+            "kind": "Корпоративный E-mail",
+            "value": "work@example.com",
+            "normalized": "work@example.com",
+        }
+    ]
+    assert emails["E1"]["personal"] == [
+        {
+            "kind": "Email",
+            "value": "personal@example.com",
+            "normalized": "personal@example.com",
+        }
+    ]
+
+
+def test_normalize_email_lowercases_value():
+    assert normalize_email("User@Example.COM") == "user@example.com"
+
+
 def test_search_matches_name_department_position_city_and_phone():
     manager = MemoryDataManager(
         {
@@ -89,6 +132,8 @@ def test_search_matches_name_department_position_city_and_phone():
                     "position": "Ведущий специалист",
                     "work_phones": [{"kind": "Рабочий телефон", "value": "83452384202", "normalized": "73452384202"}],
                     "personal_phones": [],
+                    "work_emails": [{"kind": "Корпоративный E-mail", "value": "ivanov@zsgp.ru", "normalized": "ivanov@zsgp.ru"}],
+                    "personal_emails": [],
                 },
                 {
                     "full_name": "Петров Петр Петрович",
@@ -97,6 +142,8 @@ def test_search_matches_name_department_position_city_and_phone():
                     "position": "Инженер",
                     "work_phones": [],
                     "personal_phones": [{"kind": "Мобильный телефон", "value": "89199568055", "normalized": "79199568055"}],
+                    "work_emails": [],
+                    "personal_emails": [],
                 },
             ],
         }
@@ -107,6 +154,7 @@ def test_search_matches_name_department_position_city_and_phone():
     assert service.search("мониторинг")["items"][0]["full_name"] == "Иванов Иван Иванович"
     assert service.search("санкт специалист")["total"] == 1
     assert service.search("9199568055")["items"][0]["full_name"] == "Петров Петр Петрович"
+    assert service.search("ivanov@zsgp.ru")["items"][0]["full_name"] == "Иванов Иван Иванович"
 
 
 def test_search_ranks_name_matches_before_other_fields_and_sorts_empty_query():
@@ -188,9 +236,19 @@ def test_load_items_initializes_com_in_current_thread(monkeypatch):
                 }
             }
 
+        def _load_emails(self, connection):
+            calls.append("emails")
+            return {
+                "E1": {
+                    "work": [{"kind": "Корпоративный E-mail", "value": "ivanov@zsgp.ru", "normalized": "ivanov@zsgp.ru"}],
+                    "personal": [],
+                }
+            }
+
     items = TestService(data_manager=MemoryDataManager())._load_items_from_1c()
 
-    assert calls == ["init", "connect", "employees", "phones", "uninit"]
+    assert calls == ["init", "connect", "employees", "phones", "emails", "uninit"]
+    assert items[0]["work_emails"][0]["value"] == "ivanov@zsgp.ru"
     assert items[0]["work_phones"][0]["value"] == "83452384202"
 
 

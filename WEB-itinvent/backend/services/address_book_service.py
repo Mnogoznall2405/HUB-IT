@@ -41,8 +41,20 @@ def normalize_phone(value: str) -> str:
     return number
 
 
+def normalize_email(value: str) -> str:
+    return normalize_text(value).lower()
+
+
 def split_phone_values(phone: str, phone_no_codes: str = "") -> list[str]:
     value = normalize_text(phone) or normalize_text(phone_no_codes)
+    if not value:
+        return []
+    values = [part.strip() for part in re.split(r"[,;\n/]+", value) if part.strip()]
+    return values or [value]
+
+
+def split_email_values(email: str) -> list[str]:
+    value = normalize_text(email)
     if not value:
         return []
     values = [part.strip() for part in re.split(r"[,;\n/]+", value) if part.strip()]
@@ -81,6 +93,84 @@ def should_replace_phone(existing: dict[str, Any], candidate: dict[str, Any]) ->
     if existing.get("type") == candidate.get("type"):
         return int(candidate.get("priority") or 0) > int(existing.get("priority") or 0)
     return False
+
+
+def classify_email(contact_kind: str) -> str:
+    kind = normalize_search_text(contact_kind)
+    if "корпоратив" in kind or "рабоч" in kind or "служеб" in kind:
+        return "work"
+    return "personal"
+
+
+def email_kind_priority(contact_kind: str, email_type: str) -> int:
+    kind = normalize_search_text(contact_kind)
+    if email_type == "work":
+        if "корпоратив" in kind:
+            return 100
+        if "рабоч" in kind:
+            return 90
+        if "служеб" in kind:
+            return 80
+        return 70
+    if "email" in kind:
+        return 60
+    return 10
+
+
+def should_replace_email(existing: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    if existing.get("type") != "work" and candidate.get("type") == "work":
+        return True
+    if existing.get("type") == candidate.get("type"):
+        return int(candidate.get("priority") or 0) > int(existing.get("priority") or 0)
+    return False
+
+
+def is_valid_email(value: str) -> bool:
+    normalized = normalize_email(value)
+    if not normalized or "@" not in normalized:
+        return False
+    local, _, domain = normalized.partition("@")
+    return bool(local and domain and "." in domain)
+
+
+def deduplicate_email_records(records: list[dict[str, str]]) -> dict[str, dict[str, list[dict[str, str]]]]:
+    emails_by_employee: dict[str, dict[str, dict[str, Any]]] = {}
+    for record in records:
+        employee_code = normalize_text(record.get("employee_code"))
+        contact_kind = normalize_text(record.get("contact_kind"))
+        email_type = classify_email(contact_kind)
+        if not employee_code:
+            continue
+        emails_by_employee.setdefault(employee_code, {})
+        for value in split_email_values(record.get("email", "")):
+            if not is_valid_email(value):
+                continue
+            normalized = normalize_email(value)
+            candidate = {
+                "type": email_type,
+                "priority": email_kind_priority(contact_kind, email_type),
+                "kind": contact_kind,
+                "value": value,
+                "normalized": normalized,
+            }
+            existing = emails_by_employee[employee_code].get(normalized)
+            if existing is None or should_replace_email(existing, candidate):
+                emails_by_employee[employee_code][normalized] = candidate
+
+    result: dict[str, dict[str, list[dict[str, str]]]] = {}
+    for employee_code, employee_emails in emails_by_employee.items():
+        result[employee_code] = {"work": [], "personal": []}
+        for normalized in sorted(employee_emails):
+            email = employee_emails[normalized]
+            email_type = str(email["type"])
+            result[employee_code][email_type].append(
+                {
+                    "kind": normalize_text(email.get("kind")),
+                    "value": normalize_text(email.get("value")),
+                    "normalized": normalize_text(email.get("normalized")),
+                }
+            )
+    return result
 
 
 def deduplicate_phone_records(records: list[dict[str, str]]) -> dict[str, dict[str, list[dict[str, str]]]]:
@@ -252,6 +342,28 @@ def phones_query() -> str:
 """
 
 
+def emails_query() -> str:
+    return """
+ВЫБРАТЬ РАЗЛИЧНЫЕ
+    Текущие.Сотрудник.Код КАК EmployeeCode,
+    Контакты.Вид КАК ContactKind,
+    Контакты.Представление КАК Email
+ИЗ
+    РегистрСведений.ТекущиеКадровыеДанныеСотрудников КАК Текущие
+
+        ВНУТРЕННЕЕ СОЕДИНЕНИЕ Справочник.ФизическиеЛица.КонтактнаяИнформация КАК Контакты
+        ПО Контакты.Ссылка = Текущие.ФизическоеЛицо
+ГДЕ
+    Текущие.ДатаУвольнения = ДАТАВРЕМЯ(1, 1, 1)
+    И Текущие.ДатаПриема <> ДАТАВРЕМЯ(1, 1, 1)
+    И Текущие.Сотрудник <> ЗНАЧЕНИЕ(Справочник.Сотрудники.ПустаяСсылка)
+    И (
+        Контакты.Вид.Наименование = "Email"
+        ИЛИ Контакты.Вид.Наименование = "Корпоративный E-mail"
+    )
+"""
+
+
 def empty_cache() -> dict[str, Any]:
     return {
         "items": [],
@@ -318,6 +430,7 @@ class AddressBookService:
 
     def _matches_query(self, item: dict[str, Any], tokens: list[str]) -> bool:
         phones = list(item.get("work_phones") or []) + list(item.get("personal_phones") or [])
+        emails = list(item.get("work_emails") or []) + list(item.get("personal_emails") or [])
         text = normalize_search_text(
             " ".join(
                 [
@@ -327,6 +440,8 @@ class AddressBookService:
                     normalize_text(item.get("position")),
                     " ".join(normalize_text(phone.get("value")) for phone in phones if isinstance(phone, dict)),
                     " ".join(normalize_text(phone.get("kind")) for phone in phones if isinstance(phone, dict)),
+                    " ".join(normalize_text(email.get("value")) for email in emails if isinstance(email, dict)),
+                    " ".join(normalize_text(email.get("kind")) for email in emails if isinstance(email, dict)),
                 ]
             )
         )
@@ -335,11 +450,19 @@ class AddressBookService:
             for phone in phones
             if isinstance(phone, dict)
         )
+        email_addresses = " ".join(
+            normalize_email(email.get("value", ""))
+            for email in emails
+            if isinstance(email, dict)
+        )
         for token in tokens:
             token_phone = normalize_phone(token)
+            token_email = normalize_email(token)
             if token in text:
                 continue
             if token_phone and token_phone in phone_digits:
+                continue
+            if token_email and token_email in email_addresses:
                 continue
             return False
         return True
@@ -383,14 +506,41 @@ class AddressBookService:
                 score += 20
         return score
 
+    def _email_match_score(self, emails: list[dict[str, Any]], tokens: list[str]) -> int:
+        score = 0
+        email_addresses = " ".join(
+            normalize_email(email.get("value", ""))
+            for email in emails
+            if isinstance(email, dict)
+        )
+        email_text = normalize_search_text(
+            " ".join(
+                [
+                    normalize_text(email.get("value"))
+                    for email in emails
+                    if isinstance(email, dict)
+                ]
+            )
+        )
+        for token in tokens:
+            token_email = normalize_email(token)
+            if token_email and token_email in email_addresses:
+                score += 40
+                continue
+            if token in email_text:
+                score += 25
+        return score
+
     def _query_score(self, item: dict[str, Any], tokens: list[str]) -> int:
         phones = list(item.get("work_phones") or []) + list(item.get("personal_phones") or [])
+        emails = list(item.get("work_emails") or []) + list(item.get("personal_emails") or [])
         return (
             self._field_match_score(item.get("full_name"), tokens, contains_score=120, prefix_score=160)
             + self._field_match_score(item.get("position"), tokens, contains_score=45)
             + self._field_match_score(item.get("department"), tokens, contains_score=35)
             + self._field_match_score(item.get("department_location"), tokens, contains_score=30)
             + self._phone_match_score(phones, tokens)
+            + self._email_match_score(emails, tokens)
         )
 
     def sync_from_1c(self) -> dict[str, Any]:
@@ -439,11 +589,15 @@ class AddressBookService:
             connection = self._connect_1c()
             employees = self._load_employees(connection)
             phones = self._load_phones(connection)
+            emails = self._load_emails(connection)
             for employee in employees:
                 employee_code = employee.pop("_employee_code", "")
                 employee_phones = phones.get(employee_code, {"work": [], "personal": []})
+                employee_emails = emails.get(employee_code, {"work": [], "personal": []})
                 employee["work_phones"] = employee_phones.get("work", [])
                 employee["personal_phones"] = employee_phones.get("personal", [])
+                employee["work_emails"] = employee_emails.get("work", [])
+                employee["personal_emails"] = employee_emails.get("personal", [])
             employees.sort(key=lambda item: normalize_search_text(item.get("full_name")))
             return employees
         finally:
@@ -492,6 +646,19 @@ class AddressBookService:
                 }
             )
         return deduplicate_phone_records(records)
+
+    def _load_emails(self, connection: Any) -> dict[str, dict[str, list[dict[str, str]]]]:
+        records: list[dict[str, str]] = []
+        selection = execute_query(connection, emails_query())
+        while selection.Next():
+            records.append(
+                {
+                    "employee_code": one_c_text(connection, selection.EmployeeCode),
+                    "contact_kind": one_c_text(connection, selection.ContactKind),
+                    "email": one_c_text(connection, selection.Email),
+                }
+            )
+        return deduplicate_email_records(records)
 
 
 address_book_service = AddressBookService()

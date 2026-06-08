@@ -44,6 +44,34 @@ def _quote_sqlserver_identifier(identifier: Any) -> str:
     return f"[{normalized.replace(']', ']]')}]"
 
 
+_LEGACY_SQLSERVER_TEXT_REPLACEMENTS = {
+    "→": "->",
+    "←": "<-",
+    "↔": "<->",
+    "⇒": "=>",
+}
+
+
+def _legacy_sqlserver_text(value: Any, *, max_len: Optional[int] = None) -> str:
+    """Normalize text before sending it through the legacy SQL Server ANSI path."""
+    text = str(value or "")
+    for source, replacement in _LEGACY_SQLSERVER_TEXT_REPLACEMENTS.items():
+        text = text.replace(source, replacement)
+
+    encoding = os.getenv("SQL_CHAR_ENCODING", "cp1251") or "cp1251"
+    try:
+        text.encode(encoding)
+    except LookupError:
+        encoding = "cp1251"
+        text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+    except UnicodeEncodeError:
+        text = text.encode(encoding, errors="replace").decode(encoding, errors="replace")
+
+    if max_len is not None:
+        text = text[:max_len]
+    return text
+
+
 # SQL Queries
 QUERY_COUNT_UNIVERSAL = """
     SELECT COUNT(DISTINCT i.INV_NO, i.SERIAL_NO, i.HW_SERIAL_NO) as total
@@ -751,21 +779,27 @@ def create_uploaded_transfer_act(
     if not normalized_ids:
         raise ValueError("equipment_item_ids is empty")
 
+    created_by_value = (
+        _legacy_sqlserver_text(created_by or "IT-WEB", max_len=128).strip()
+        or "IT-WEB"
+    )
+
     title = str(document_title or "").strip()
     if not title:
         title = "Перемещение оборудования"
-    title = title[:250]
+    title = _legacy_sqlserver_text(title, max_len=250)
 
     safe_file_name = str(file_name or "").strip() or f"Акт {datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    file_descr = title[:250]
+    safe_file_name = _legacy_sqlserver_text(safe_file_name, max_len=255)
+    file_descr = _legacy_sqlserver_text(title, max_len=250)
 
     date_value = doc_date or datetime.now()
-    from_employee_value = str(from_employee or "").strip()
-    to_employee_value = str(to_employee or "").strip()
-    add_info = f"Передача: {from_employee_value or '-'} → {to_employee_value or '-'}"
+    from_employee_value = _legacy_sqlserver_text(str(from_employee or "").strip(), max_len=250)
+    to_employee_value = _legacy_sqlserver_text(str(to_employee or "").strip(), max_len=250)
+    add_info = f"Передача: {from_employee_value or '-'} -> {to_employee_value or '-'}"
     if title and title.lower() not in add_info.lower():
         add_info = f"{add_info}. {title}"
-    add_info = add_info[:500]
+    add_info = _legacy_sqlserver_text(add_info, max_len=500)
 
     owner_no = None
     if to_employee_value:
@@ -950,9 +984,9 @@ def create_uploaded_transfer_act(
                 0,
                 add_info,
                 date_value,
-                created_by,
+                created_by_value,
                 date_value,
-                created_by,
+                created_by_value,
             ),
         )
 
@@ -1000,7 +1034,7 @@ def create_uploaded_transfer_act(
                 item_id_int = int(item_id)
                 prev_doc_no_for_item = previous_doc_by_item.get(item_id_int)
                 if prev_doc_no_for_item is not None and int(prev_doc_no_for_item) != int(doc_no):
-                    note_line = f"{now_text_for_items}: акт №{int(prev_doc_no_for_item)}→№{doc_no}"
+                    note_line = f"{now_text_for_items}: акт №{int(prev_doc_no_for_item)}->№{doc_no}"
                 else:
                     note_line = f"{now_text_for_items}: акт №{doc_no}"
 
@@ -1024,7 +1058,12 @@ def create_uploaded_transfer_act(
                     SET DESCR = ?, CH_DATE = ?, CH_USER = ?
                     WHERE ID = ? AND CI_TYPE = 1
                     """,
-                    (new_descr, now_dt_for_items, created_by, item_id_int),
+                    (
+                        _legacy_sqlserver_text(new_descr, max_len=max_descr_len),
+                        now_dt_for_items,
+                        created_by_value,
+                        item_id_int,
+                    ),
                 )
 
         # 6) Add note to previous acts and auto-annul old act when all items moved.
@@ -1053,7 +1092,7 @@ def create_uploaded_transfer_act(
                 if int(prev_doc_no) == int(doc_no):
                     continue
                 inv_part = "; ".join(inv_list[:20]) if inv_list else "нет данных"
-                note = f"{now_text}: №{prev_doc_no}→№{doc_no}: {inv_part}."
+                note = f"{now_text}: №{prev_doc_no}->№{doc_no}: {inv_part}."
 
                 cursor.execute("SELECT TOP 1 ADDINFO FROM DOCS WHERE DOC_NO = ?", (prev_doc_no,))
                 prev_row = cursor.fetchone()
@@ -1077,7 +1116,12 @@ def create_uploaded_transfer_act(
                     SET ADDINFO = ?, CH_DATE = ?, CH_USER = ?
                     WHERE DOC_NO = ?
                     """,
-                    (new_addinfo, datetime.now(), created_by, prev_doc_no),
+                    (
+                        _legacy_sqlserver_text(new_addinfo, max_len=max_len),
+                        datetime.now(),
+                        created_by_value,
+                        prev_doc_no,
+                    ),
                 )
 
                 # Annul old act when all its equipment already has links to newer acts.
@@ -1144,11 +1188,12 @@ def create_uploaded_transfer_act(
 
                         marker = "АННУЛИРОВАН"
                         if marker.lower() in old_doc_number.lower():
-                            new_doc_number = old_doc_number
+                            new_doc_number = _legacy_sqlserver_text(old_doc_number, max_len=250)
                         else:
                             prefix = "АННУЛИРОВАНО: "
                             base_name = (old_doc_number or f"Акт {prev_doc_no}").strip()
-                            new_doc_number = f"{prefix}{base_name}"[:250]
+                            new_doc_number = _legacy_sqlserver_text(f"{prefix}{base_name}", max_len=250)
+                        old_addinfo_new = _legacy_sqlserver_text(old_addinfo_new, max_len=max_len)
 
                         if annulled_type_no is not None:
                             cursor.execute(
@@ -1157,7 +1202,14 @@ def create_uploaded_transfer_act(
                                 SET DOC_NUMBER = ?, ADDINFO = ?, TYPE_NO = ?, CH_DATE = ?, CH_USER = ?
                                 WHERE DOC_NO = ?
                                 """,
-                                (new_doc_number, old_addinfo_new, annulled_type_no, datetime.now(), created_by, prev_doc_no),
+                                (
+                                    new_doc_number,
+                                    old_addinfo_new,
+                                    annulled_type_no,
+                                    datetime.now(),
+                                    created_by_value,
+                                    prev_doc_no,
+                                ),
                             )
                         else:
                             cursor.execute(
@@ -1166,7 +1218,13 @@ def create_uploaded_transfer_act(
                                 SET DOC_NUMBER = ?, ADDINFO = ?, CH_DATE = ?, CH_USER = ?
                                 WHERE DOC_NO = ?
                                 """,
-                                (new_doc_number, old_addinfo_new, datetime.now(), created_by, prev_doc_no),
+                                (
+                                    new_doc_number,
+                                    old_addinfo_new,
+                                    datetime.now(),
+                                    created_by_value,
+                                    prev_doc_no,
+                                ),
                             )
                         if int(prev_doc_no) not in annulled_doc_nos:
                             annulled_doc_nos.append(int(prev_doc_no))
@@ -1192,7 +1250,7 @@ def create_uploaded_transfer_act(
                 round(float(len(file_bytes)) / (1024.0 * 1024.0), 2),
                 file_descr,
                 bytes(file_bytes),
-                created_by,
+                created_by_value,
             ),
         )
 
