@@ -90,6 +90,38 @@ def test_send_notification_builds_generic_payload_without_type_error(monkeypatch
     assert isinstance(payload["timestamp"], int)
 
 
+def test_send_notification_skips_mail_when_channel_disabled(monkeypatch):
+    service = ChatPushService()
+    send_calls: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        service,
+        "_get_active_subscriptions",
+        lambda **_: [object()],
+    )
+    monkeypatch.setattr(
+        service,
+        "_send_payload_to_subscriptions",
+        lambda **kwargs: send_calls.append(kwargs) or ChatPushSendResult(sent=1),
+    )
+    monkeypatch.setattr(
+        "backend.chat.push_service.notification_preferences_service.is_enabled",
+        lambda **_: False,
+    )
+
+    result = service.send_notification(
+        recipient_user_id=7,
+        title="Mail subject",
+        body="Mail body",
+        channel="mail",
+        route="/mail?folder=inbox&message=abc",
+        data={"message_id": "abc"},
+    )
+
+    assert result.sent == 0
+    assert send_calls == []
+
+
 def test_send_chat_message_notification_uses_android_friendly_ttl_and_high_urgency(monkeypatch):
     service = ChatPushService()
     captured: dict[str, object] = {}

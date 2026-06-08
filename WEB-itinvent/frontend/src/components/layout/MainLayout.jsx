@@ -53,7 +53,7 @@ import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
-import apiClient, { chatAPI, mailAPI } from '../../api/client';
+import apiClient, { chatAPI, mailAPI, settingsAPI } from '../../api/client';
 import { databaseAPI } from '../../api/database';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
 import { buildOfficeUiTokens, getOfficeEmptyStateSx, getOfficePanelSx, getOfficeQuietActionSx } from '../../theme/officeUiTokens';
@@ -161,7 +161,7 @@ function MainLayout({
   children,
   headerMode = 'default',
   contentMode = 'default',
-  showDatabaseSelector = true,
+  showDatabaseSelector = false,
 }) {
   const theme = useTheme();
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
@@ -239,6 +239,7 @@ function MainLayout({
   });
   const mailUnreadFetchedAtRef = useRef(0);
   const mailUnreadBaselineReadyRef = useRef(false);
+  const mailChannelEnabledRef = useRef(true);
   const seenChatSocketMessageIdsRef = useRef(new Set());
   const hasDashboardPermission = hasPermission('dashboard.read');
   const hasTasksPermission = hasPermission('tasks.read');
@@ -554,7 +555,7 @@ function MainLayout({
     if (items.length === 0) return;
     const currentWindowsNotificationState = windowsNotificationStateRef.current || getWindowsNotificationState();
     const isVisible = document.visibilityState === 'visible';
-    const currentChatNotificationState = getChatNotificationState();
+    if (!mailChannelEnabledRef.current) return;
     items.slice().reverse().forEach((item) => {
       const messageId = String(item?.id || '').trim();
       const notificationId = getMailSystemNotificationId(item);
@@ -580,10 +581,6 @@ function MainLayout({
           dedupeKey: `mail:${notificationId}`,
           durationMs: 5200,
         });
-        return;
-      }
-      if (currentChatNotificationState?.pushSubscribed) {
-        markMailSystemNotificationShown(notificationId);
         return;
       }
       if (currentWindowsNotificationState.enabled && currentWindowsNotificationState.permission === 'granted') {
@@ -1060,6 +1057,39 @@ useEffect(() => {
   }, [hasHubNotificationPermission, hasMailPermission]);
 
   useEffect(() => {
+    if (!hasMailPermission) return undefined;
+    let cancelled = false;
+    const loadMailChannelPreference = async () => {
+      try {
+        const data = await settingsAPI.getNotificationPreferences();
+        if (!cancelled) {
+          mailChannelEnabledRef.current = Boolean(data?.channels?.mail ?? true);
+        }
+      } catch {
+        if (!cancelled) {
+          mailChannelEnabledRef.current = true;
+        }
+      }
+    };
+    loadMailChannelPreference();
+    return () => {
+      cancelled = true;
+    };
+  }, [hasMailPermission]);
+
+  useEffect(() => {
+    if (!hasMailPermission) return undefined;
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'hidden') return;
+      fetchUnreadCountsRef.current?.(null, { reason: 'visibility-hidden', forceMailUnread: true });
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [hasMailPermission]);
+
+  useEffect(() => {
     fetchUnreadCountsRef.current = fetchUnreadCounts;
   }, [fetchUnreadCounts]);
 
@@ -1076,7 +1106,12 @@ useEffect(() => {
         currentWindowsNotificationState.enabled
         && currentWindowsNotificationState.permission === 'granted',
       );
-      if (document.visibilityState !== 'visible' && !allowBackgroundPolling) return;
+      if (document.visibilityState !== 'visible' && !allowBackgroundPolling) {
+        if (hasMailPermission) {
+          await fetchUnreadCounts(null, { reason: 'hub-poll-mail-only', forceMailUnread: true });
+        }
+        return;
+      }
       if (!ignoreBackoff && Date.now() < Number(hubPollBackoffUntilRef.current || 0)) return;
       try {
         const sinceValue = forceFull ? '' : String(lastPollRef.current || '').trim();

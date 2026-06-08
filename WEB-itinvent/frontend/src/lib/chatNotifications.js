@@ -7,6 +7,7 @@ export const CHAT_NOTIFICATION_SHOWN_KEY = 'itinvent_chat_notification_shown_ids
 export const CHAT_NOTIFICATIONS_CHANGED_EVENT = 'itinvent:chat-notifications-changed';
 export const CHAT_PUSH_DIAGNOSTICS_KEY = 'itinvent_chat_push_diagnostics';
 export const CHAT_PUSH_LAST_HARD_RESUBSCRIBE_AT_KEY = 'itinvent_chat_push_last_hard_resubscribe_at';
+export const CHAT_PUSH_VAPID_PUBLIC_KEY_KEY = 'itinvent_chat_push_vapid_public_key';
 
 const MAX_SHOWN_IDS = 300;
 const PUSH_SYNC_MIN_INTERVAL_MS = 60_000;
@@ -562,10 +563,18 @@ export async function syncChatPushSubscription({ user, force = false } = {}) {
     }
 
     const lastHardResubscribeAt = readLastHardResubscribeAt();
+    const configuredPublicKey = String(pushConfig?.vapid_public_key || '').trim();
+    const storedPublicKey = String(readStorage(CHAT_PUSH_VAPID_PUBLIC_KEY_KEY, '')).trim();
+    const vapidKeyChanged = Boolean(
+      configuredPublicKey
+      && storedPublicKey
+      && configuredPublicKey !== storedPublicKey
+    );
     const shouldHardResubscribe = Boolean(
       existingSubscription
       && (
         force
+        || vapidKeyChanged
         || (
           lastHardResubscribeAt > 0
           && (Date.now() - lastHardResubscribeAt) >= PUSH_HARD_RESUBSCRIBE_INTERVAL_MS
@@ -611,6 +620,10 @@ export async function syncChatPushSubscription({ user, force = false } = {}) {
       browser_family: detectBrowserFamily(),
       install_mode: snapshot.standalone ? 'standalone' : 'browser',
     });
+
+    if (configuredPublicKey) {
+      writeStorage(CHAT_PUSH_VAPID_PUBLIC_KEY_KEY, configuredPublicKey);
+    }
 
     runtimeState = {
       ...runtimeState,

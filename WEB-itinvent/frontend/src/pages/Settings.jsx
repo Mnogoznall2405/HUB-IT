@@ -1860,12 +1860,15 @@ export function NotificationChannelsSettingsCard() {
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+  const [chatNotificationState, setChatNotificationState] = useState(() => getChatNotificationState());
   const [channels, setChannels] = useState({
     mail: true,
     tasks: true,
     announcements: true,
     chat: true,
   });
+
+  useEffect(() => subscribeChatNotificationState(setChatNotificationState), []);
 
   const loadPreferences = useCallback(async () => {
     setLoading(true);
@@ -1939,7 +1942,21 @@ export function NotificationChannelsSettingsCard() {
           </FormGroup>
           <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.35, lineHeight: 1.45 }}>
             Если разрешение браузера уже выдано, desktop/pwa push будет приходить только по включённым каналам.
+            Почта использует ту же push-подписку браузера, что и chat.
           </Typography>
+          <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap" sx={{ mt: 0.75 }}>
+            <Chip
+              size="small"
+              icon={<NotificationsActiveOutlinedIcon sx={{ fontSize: '14px !important' }} />}
+              label={chatNotificationState.pushSubscribed
+                ? 'Push подключен'
+                : chatNotificationState.permission === 'granted'
+                  ? 'Разрешение выдано, push не активен'
+                  : 'Push не подключен'}
+              color={chatNotificationState.pushSubscribed ? 'success' : 'default'}
+              variant={chatNotificationState.pushSubscribed ? 'filled' : 'outlined'}
+            />
+          </Stack>
         </Paper>
       </Stack>
     </SectionCard>

@@ -21,6 +21,7 @@ const {
   mockGetMessages,
   mockMarkMailAsRead,
   mockMarkAllMailRead,
+  mockGetNotificationPreferences,
   mockCreateChatSystemNotification,
   mockGetChatNotificationState,
   mockSyncChatPushSubscription,
@@ -43,6 +44,7 @@ const {
   mockGetMessages: vi.fn(),
   mockMarkMailAsRead: vi.fn(),
   mockMarkAllMailRead: vi.fn(),
+  mockGetNotificationPreferences: vi.fn(),
   mockCreateChatSystemNotification: vi.fn(),
   mockGetChatNotificationState: vi.fn(),
   mockSyncChatPushSubscription: vi.fn(),
@@ -94,6 +96,9 @@ vi.mock('../../api/client', () => ({
     getMessages: mockGetMessages,
     markAsRead: mockMarkMailAsRead,
     markAllRead: mockMarkAllMailRead,
+  },
+  settingsAPI: {
+    getNotificationPreferences: mockGetNotificationPreferences,
   },
 }));
 
@@ -221,6 +226,7 @@ describe('MainLayout hub Windows notifications', () => {
     mockGetMessages.mockReset();
     mockMarkMailAsRead.mockReset();
     mockMarkAllMailRead.mockReset();
+    mockGetNotificationPreferences.mockReset();
     mockCreateChatSystemNotification.mockReset();
     mockGetChatNotificationState.mockReset();
     mockSyncChatPushSubscription.mockReset();
@@ -243,6 +249,14 @@ describe('MainLayout hub Windows notifications', () => {
     });
     mockMarkMailAsRead.mockResolvedValue({ ok: true });
     mockMarkAllMailRead.mockResolvedValue({ ok: true, count: 1 });
+    mockGetNotificationPreferences.mockResolvedValue({
+      channels: {
+        mail: true,
+        tasks: true,
+        announcements: true,
+        chat: true,
+      },
+    });
     mockGetChatNotificationState.mockReturnValue({
       enabled: true,
       permission: 'granted',
@@ -481,7 +495,7 @@ describe('MainLayout hub Windows notifications', () => {
     expect(within(appBar).queryByRole('combobox')).toBeNull();
   });
 
-  it('keeps page title block and database selector on other pages', async () => {
+  it('keeps page title block without database selector on other pages', async () => {
     mockLocation.pathname = '/database';
 
     const { container } = render(
@@ -498,7 +512,7 @@ describe('MainLayout hub Windows notifications', () => {
     const appBar = container.querySelector('.MuiAppBar-root');
     expect(appBar).toBeTruthy();
     expect(within(appBar).queryByText('HUB-IT')).not.toBeNull();
-    expect(within(appBar).queryByRole('combobox')).not.toBeNull();
+    expect(within(appBar).queryByRole('combobox')).toBeNull();
   });
 
   it('keeps polling task notifications for users with tasks access but without dashboard access', async () => {
@@ -1057,7 +1071,7 @@ describe('MainLayout hub Windows notifications', () => {
     expect(notificationInstances).toHaveLength(0);
   });
 
-  it('does not create a local browser mail notification when push subscription is active in the background', async () => {
+  it('creates a local browser mail notification in the background even when push subscription is active', async () => {
     visibilityState = 'hidden';
     mockHasPermission.mockImplementation((permission) => permission === 'mail.access');
     mockGetChatNotificationState.mockReturnValue({
@@ -1081,6 +1095,42 @@ describe('MainLayout hub Windows notifications', () => {
 
     await act(async () => {
       vi.advanceTimersByTime(20_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockNotifyInfo).not.toHaveBeenCalled();
+    expect(notificationInstances).toHaveLength(1);
+    expect(notificationInstances[0].title).toBe('boss@example.com');
+  });
+
+  it('does not create a local browser mail notification when the mail channel is disabled', async () => {
+    visibilityState = 'hidden';
+    mockHasPermission.mockImplementation((permission) => permission === 'mail.access');
+    mockGetNotificationPreferences.mockResolvedValue({
+      channels: {
+        mail: false,
+        tasks: true,
+        announcements: true,
+        chat: true,
+      },
+    });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    mockGetUnreadCount.mockResolvedValue({ unread_count: 1 });
+
+    await act(async () => {
+      window.dispatchEvent(new Event('mail-list-refreshed'));
       await Promise.resolve();
       await Promise.resolve();
     });

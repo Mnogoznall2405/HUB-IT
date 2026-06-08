@@ -176,7 +176,19 @@ class ChatPushService:
 
     @property
     def enabled(self) -> bool:
-        return bool(config.web_push.enabled and self.dependency_available)
+        public_key = _normalize_text(config.web_push.public_key)
+        private_key = _normalize_text(config.web_push.private_key)
+        placeholder_keys = {
+            "your_vapid_public_key",
+            "your_vapid_private_key",
+        }
+        keys_configured = bool(
+            public_key
+            and private_key
+            and public_key.lower() not in placeholder_keys
+            and private_key.lower() not in placeholder_keys
+        )
+        return bool(keys_configured and self.dependency_available)
 
     def get_runtime_status(self) -> dict:
         return {
@@ -470,8 +482,16 @@ class ChatPushService:
         data: Optional[dict[str, Any]] = None,
         ttl: int = 90,
     ) -> ChatPushSendResult:
-        subscriptions = self._get_active_subscriptions(recipient_user_id=int(recipient_user_id))
         normalized_channel = _normalize_text(channel) or "system"
+        if normalized_channel == "mail":
+            try:
+                if not notification_preferences_service.is_enabled(
+                    user_id=int(recipient_user_id), channel="mail"
+                ):
+                    return ChatPushSendResult()
+            except Exception:
+                logger.warning("mail push: failed to read notification preferences", exc_info=True)
+        subscriptions = self._get_active_subscriptions(recipient_user_id=int(recipient_user_id))
         headers: dict[str, Any] = {}
         if normalized_channel in {"chat", "mail"}:
             headers["Urgency"] = "high"
