@@ -252,8 +252,8 @@ function MessageRow({
   const showDesktopRail = canDesktopActions;
   const desktopRailEmphasis = hovered || selected || rowIsSelectedInBulk || dragHandleActive || menuOpen;
   const desktopRailWidth = viewMode === 'messages'
-    ? (canDragHandle ? 152 : 120)
-    : 90;
+    ? (canDragHandle ? 112 : 84)
+    : 64;
 
   const clearLongPress = useCallback(() => {
     if (longPressTimerRef.current) {
@@ -503,8 +503,8 @@ function MessageRow({
         <Box
           data-testid={`mail-row-${rowId}`}
           sx={{
-            px: { xs: 1.15, md: compact ? 1.3 : 1.6 },
-            py: compact ? 1 : 1.15,
+            px: { xs: 1.05, md: compact ? 1.15 : 1.35 },
+            py: compact ? 0.55 : 0.7,
             minHeight: compact ? tokens.rowCompactMinHeight : tokens.rowMinHeight,
             borderLeft: selected ? '2px solid' : rowIsSelectedInBulk ? '1px solid' : '2px solid',
             borderLeftColor: selected
@@ -528,12 +528,12 @@ function MessageRow({
             },
           }}
         >
-          <Stack direction="row" spacing={1.1} alignItems="flex-start">
-            <Box sx={{ position: 'relative', flexShrink: 0, mt: 0.2 }}>
+          <Stack direction="row" spacing={0.9} alignItems="center">
+            <Box sx={{ position: 'relative', flexShrink: 0 }}>
               <Avatar
                 sx={{
-                  width: compact ? 34 : 38,
-                  height: compact ? 34 : 38,
+                  width: compact ? 30 : 32,
+                  height: compact ? 30 : 32,
                   bgcolor: rowIsSelectedInBulk ? tokens.selectedBorder : getAvatarColor(senderLine),
                   color: rowIsSelectedInBulk ? '#fff' : undefined,
                   fontWeight: 800,
@@ -566,7 +566,7 @@ function MessageRow({
               ) : null}
             </Box>
 
-            <Stack spacing={0.3} sx={{ minWidth: 0, flex: 1, pr: 0.25 }}>
+            <Stack spacing={0.1} sx={{ minWidth: 0, flex: 1, pr: 0.25 }}>
               <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
                 <Typography
                   noWrap
@@ -612,7 +612,8 @@ function MessageRow({
                       alignItems="center"
                       sx={{
                         mt: 0.25,
-                        opacity: desktopRailEmphasis ? 1 : 0.82,
+                        opacity: desktopRailEmphasis ? 1 : 0,
+                        pointerEvents: desktopRailEmphasis ? 'auto' : 'none',
                         transform: 'translateX(0px)',
                         transition: 'opacity 0.16s ease, transform 0.16s ease',
                       }}
@@ -632,12 +633,12 @@ function MessageRow({
                           }}
                           sx={{
                             ...getMailIconButtonSx(tokens, {
-                            width: 30,
-                            height: 30,
+                            width: 28,
+                            height: 28,
                             border: 'none',
                             bgcolor: 'transparent',
                             color: readAction.color,
-                            opacity: desktopRailEmphasis ? 1 : 0.88,
+                            opacity: desktopRailEmphasis ? 1 : 0,
                             }),
                           }}
                         >
@@ -661,12 +662,12 @@ function MessageRow({
                             }}
                             sx={{
                               ...getMailIconButtonSx(tokens, {
-                              width: 30,
-                              height: 30,
+                              width: 28,
+                              height: 28,
                               border: 'none',
                               bgcolor: 'transparent',
                               color: folder === 'trash' ? readAction.color : deleteAction.color,
-                              opacity: desktopRailEmphasis ? 1 : 0.88,
+                              opacity: desktopRailEmphasis ? 1 : 0,
                               }),
                             }}
                           >
@@ -686,12 +687,12 @@ function MessageRow({
                           }}
                           sx={{
                             ...getMailIconButtonSx(tokens, {
-                            width: 30,
-                            height: 30,
+                            width: 28,
+                            height: 28,
                             border: 'none',
                             bgcolor: 'transparent',
                             color: tokens.textSecondary,
-                            opacity: desktopRailEmphasis ? 1 : 0.82,
+                            opacity: desktopRailEmphasis ? 1 : 0,
                             }),
                           }}
                         >
@@ -724,15 +725,15 @@ function MessageRow({
                             }}
                             onDragEnd={() => onDragHandleHoverChange?.('')}
                             sx={{
-                              width: 28,
-                              height: 28,
+                              width: 26,
+                              height: 26,
                               borderRadius: tokens.iconButtonRadius,
                               display: 'inline-flex',
                               alignItems: 'center',
                               justifyContent: 'center',
                               color: tokens.textSecondary,
                               cursor: 'grab',
-                              opacity: desktopRailEmphasis ? 1 : 0.82,
+                              opacity: desktopRailEmphasis ? 1 : 0,
                               transition: tokens.transition,
                               '&:hover': {
                                 bgcolor: tokens.surfaceBg,
@@ -752,32 +753,32 @@ function MessageRow({
               </Stack>
 
               <Typography
-                className="mail-line-clamp-2"
+                className="mail-line-clamp-1"
                 sx={{
                   color: unread
                     ? (tokens.isDark ? alpha('#fff', 0.82) : alpha('#0f172a', 0.76))
                     : tokens.textSecondary,
                   fontWeight: unread ? 600 : 500,
-                  fontSize: compact ? '0.84rem' : '0.88rem',
-                  lineHeight: 1.34,
+                  fontSize: compact ? '0.8rem' : '0.84rem',
+                  lineHeight: 1.2,
                 }}
               >
                 {title}
               </Typography>
 
               {showPreviewSnippets && previewLine ? (
-                <Stack direction="row" spacing={0.6} alignItems="flex-start" sx={{ minWidth: 0 }}>
+                <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
                   {viewMode === 'conversations' ? (
-                    <ForumOutlinedIcon sx={{ mt: '2px', fontSize: 13, color: tokens.textSecondary, flexShrink: 0 }} />
+                    <ForumOutlinedIcon sx={{ fontSize: 12, color: tokens.textSecondary, flexShrink: 0 }} />
                   ) : null}
                   <Typography
-                    className="mail-line-clamp-2"
+                    className="mail-line-clamp-1"
                     sx={{
                       color: tokens.isDark
                         ? alpha('#fff', 0.58)
                         : alpha('#0f172a', 0.58),
-                      fontSize: compact ? '0.78rem' : '0.82rem',
-                      lineHeight: 1.38,
+                      fontSize: compact ? '0.74rem' : '0.78rem',
+                      lineHeight: 1.2,
                     }}
                   >
                     {previewLine}
@@ -785,7 +786,7 @@ function MessageRow({
                 </Stack>
               ) : null}
 
-              <Stack direction="row" spacing={0.65} alignItems="center" sx={{ pt: 0.15 }}>
+              <Stack direction="row" spacing={0.65} alignItems="center" sx={{ pt: viewMode === 'conversations' ? 0.1 : 0 }}>
                 {viewMode === 'conversations' ? (
                   <Chip
                     size="small"

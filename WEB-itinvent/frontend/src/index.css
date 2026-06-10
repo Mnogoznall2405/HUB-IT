@@ -283,6 +283,13 @@ select {
     border-color: var(--mail-divider, rgba(15, 23, 42, 0.08));
   }
 
+  .mail-line-clamp-1 {
+    display: -webkit-box;
+    -webkit-line-clamp: 1;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+
   .mail-line-clamp-2 {
     display: -webkit-box;
     -webkit-line-clamp: 2;

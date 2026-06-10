@@ -279,10 +279,11 @@ describe('MailMessageList', () => {
     );
 
     const desktopRow = screen.getByTestId('mail-row-shell-msg-1');
-    expect(screen.getByTestId('mail-row-read-action-msg-1')).toBeVisible();
+    expect(screen.getByTestId('mail-row-read-action-msg-1')).not.toBeVisible();
     expect(screen.getByText('Boss Name')).toBeTruthy();
     expect(screen.getByLabelText('Прочитано')).toBeTruthy();
     fireEvent.mouseEnter(desktopRow);
+    expect(screen.getByTestId('mail-row-read-action-msg-1')).toBeVisible();
 
     const dragHandle = screen.getByTestId('mail-row-drag-handle-msg-1');
     expect(dragHandle).toHaveAttribute('aria-label', 'Перетащить в папку');

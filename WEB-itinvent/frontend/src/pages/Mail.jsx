@@ -299,10 +299,13 @@ const FOLDER_ICONS = {
 
 const DEFAULT_MAIL_PREFERENCES = {
   reading_pane: 'right',
-  density: 'comfortable',
+  density: 'compact',
   show_preview_snippets: true,
   show_favorites_first: true,
 };
+
+const MAIL_DESKTOP_FOLDER_RAIL_WIDTH = 188;
+const MAIL_DESKTOP_MESSAGE_LIST_COLUMNS = 'minmax(280px, 332px)';
 
 const formatTime = (isoStr) => {
   if (!isoStr) return '';
@@ -2789,7 +2792,10 @@ function Mail() {
       sx={{
         display: 'grid',
         gap: 0,
-        gridTemplateColumns: { xs: '1fr', md: '220px minmax(300px, 360px) 1fr' },
+        gridTemplateColumns: {
+          xs: '1fr',
+          md: `${MAIL_DESKTOP_FOLDER_RAIL_WIDTH}px ${MAIL_DESKTOP_MESSAGE_LIST_COLUMNS} minmax(0, 1fr)`,
+        },
         flex: 1,
         minHeight: 0,
         overflow: 'hidden',
@@ -2805,7 +2811,7 @@ function Mail() {
       sx={{
         display: 'grid',
         gap: 0,
-        gridTemplateColumns: { xs: '1fr', md: '220px minmax(0, 1fr)' },
+        gridTemplateColumns: { xs: '1fr', md: `${MAIL_DESKTOP_FOLDER_RAIL_WIDTH}px minmax(0, 1fr)` },
         flex: 1,
         minHeight: 0,
         overflow: 'hidden',
