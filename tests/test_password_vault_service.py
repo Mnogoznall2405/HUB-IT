@@ -190,6 +190,57 @@ def test_password_vault_unlock_accepts_totp_and_backup_code(temp_dir, monkeypatc
     assert audit_json.count("unlock") == 2
 
 
+def test_password_vault_unlock_survives_session_id_change(temp_dir, monkeypatch):
+    _configure_crypto(monkeypatch)
+    _install_runtime_store(monkeypatch)
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+    actor = _actor()
+    monkeypatch.setattr(
+        service_module.user_service,
+        "get_by_id",
+        lambda _user_id: {"id": actor.id, "is_2fa_enabled": True, "totp_secret_enc": "encrypted-totp"},
+    )
+    monkeypatch.setattr(service_module.twofa_service, "decrypt_secret", lambda value: f"plain:{value}")
+    monkeypatch.setattr(
+        service_module.twofa_service,
+        "verify_totp",
+        lambda *, secret, code, valid_window=1: secret == "plain:encrypted-totp" and code == "123456",
+    )
+
+    service.unlock(actor=actor, session_id="session-a", totp_code="123456", meta=_meta())
+    assert service.get_unlocked_until(user_id=actor.id, session_id="session-b")
+    assert service.get_unlocked_until(user_id=actor.id, session_id=None)
+
+
+def test_password_vault_unlock_with_trusted_device(temp_dir, monkeypatch):
+    _configure_crypto(monkeypatch)
+    runtime_store = _install_runtime_store(monkeypatch)
+    monkeypatch.setattr(
+        service_module.user_service,
+        "get_by_id",
+        lambda user_id: {
+            "id": user_id,
+            "is_2fa_enabled": True,
+            "totp_secret_enc": "enc",
+        },
+    )
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+    actor = _actor()
+    device = {"id": "device-1", "user_id": actor.id}
+
+    result = service.unlock_with_trusted_device(
+        actor=actor,
+        session_id="session-passkey",
+        device=device,
+        meta=_meta(),
+    )
+    assert result["unlocked_until"]
+    assert service.get_unlocked_until(user_id=actor.id, session_id="session-passkey")
+
+    audit_json = json.dumps(service.list_audit(limit=20), ensure_ascii=False)
+    assert "unlock.webauthn" in audit_json
+
+
 def test_password_vault_requires_existing_active_group(temp_dir, monkeypatch):
     _configure_crypto(monkeypatch)
     _install_runtime_store(monkeypatch)

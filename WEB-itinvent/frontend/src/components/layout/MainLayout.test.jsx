@@ -1071,13 +1071,14 @@ describe('MainLayout hub Windows notifications', () => {
     expect(notificationInstances).toHaveLength(0);
   });
 
-  it('creates a local browser mail notification in the background even when push subscription is active', async () => {
+  it('creates a local browser mail notification when the push subscription is not background-capable', async () => {
     visibilityState = 'hidden';
     mockHasPermission.mockImplementation((permission) => permission === 'mail.access');
     mockGetChatNotificationState.mockReturnValue({
       enabled: true,
       permission: 'granted',
       pushSubscribed: true,
+      backgroundCapable: false,
     });
 
     render(
@@ -1102,6 +1103,39 @@ describe('MainLayout hub Windows notifications', () => {
     expect(mockNotifyInfo).not.toHaveBeenCalled();
     expect(notificationInstances).toHaveLength(1);
     expect(notificationInstances[0].title).toBe('boss@example.com');
+  });
+
+  it('does not create a local browser mail notification when background push can deliver it', async () => {
+    visibilityState = 'hidden';
+    mockHasPermission.mockImplementation((permission) => permission === 'mail.access');
+    mockGetChatNotificationState.mockReturnValue({
+      enabled: true,
+      permission: 'granted',
+      pushSubscribed: true,
+      backgroundCapable: true,
+    });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    mockGetUnreadCount.mockResolvedValue({ unread_count: 1 });
+
+    await act(async () => {
+      vi.advanceTimersByTime(20_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(mockNotifyInfo).not.toHaveBeenCalled();
+    expect(notificationInstances).toHaveLength(0);
   });
 
   it('does not create a local browser mail notification when the mail channel is disabled', async () => {

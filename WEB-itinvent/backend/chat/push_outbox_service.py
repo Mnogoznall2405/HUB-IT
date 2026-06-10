@@ -59,6 +59,7 @@ class ChatPushOutboxJob:
     conversation_id: str
     recipient_user_id: int
     channel: str
+    is_mention: bool
     title: str
     body: str
     attempt_count: int
@@ -149,6 +150,7 @@ class ChatPushOutboxService:
             conversation_id=_normalize_text(job.conversation_id),
             recipient_user_id=int(job.recipient_user_id),
             channel=_normalize_text(job.channel, "chat"),
+            is_mention=bool(getattr(job, "is_mention", False)),
             title=_normalize_text(job.title, "Новое сообщение в чате"),
             body=_normalize_text(job.body, "Откройте чат, чтобы посмотреть сообщение."),
             attempt_count=int(job.attempt_count or 0),
@@ -292,9 +294,10 @@ class ChatPushOutboxService:
                 ).scalar_one_or_none()
                 if state is None:
                     return None
-                if bool(getattr(state, "is_muted", False)):
+                is_mention = bool(getattr(job, "is_mention", False))
+                if bool(getattr(state, "is_muted", False)) and not is_mention:
                     return "muted"
-                if bool(getattr(state, "is_archived", False)):
+                if bool(getattr(state, "is_archived", False)) and not is_mention:
                     return "archived"
                 last_read_seq = int(getattr(state, "last_read_seq", 0) or 0)
                 if message_seq > 0 and last_read_seq >= message_seq:

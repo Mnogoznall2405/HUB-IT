@@ -1,7 +1,7 @@
 """Password vault API models."""
 from __future__ import annotations
 
-from typing import Literal, Optional
+from typing import Any, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -166,6 +166,11 @@ class PasswordVaultUnlockRequest(BaseModel):
 
 class PasswordVaultUnlockResponse(BaseModel):
     unlocked_until: str
+
+
+class PasswordVaultUnlockWebAuthnVerifyRequest(BaseModel):
+    challenge_id: str = Field(..., min_length=8)
+    credential: dict[str, Any] = Field(default_factory=dict)
 
 
 class PasswordVaultRevealRequest(BaseModel):

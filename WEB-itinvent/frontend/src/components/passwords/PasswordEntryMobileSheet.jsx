@@ -1,6 +1,7 @@
 import React from 'react';
 import { Box, Drawer, IconButton, Stack, Typography } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
+import { hideScrollbarSx } from '../../lib/hideScrollbarSx';
 import PasswordEntryDetail from './PasswordEntryDetail';
 
 export default function PasswordEntryMobileSheet({
@@ -27,6 +28,8 @@ export default function PasswordEntryMobileSheet({
           borderTopLeftRadius: 4,
           borderTopRightRadius: 4,
           maxHeight: '88vh',
+          overflowY: 'auto',
+          ...hideScrollbarSx,
         },
       }}
       data-testid="password-entry-mobile-sheet"

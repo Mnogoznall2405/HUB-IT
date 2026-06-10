@@ -1,21 +1,16 @@
-import { Fragment, useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
   Chip,
   CircularProgress,
+  Grid,
   IconButton,
   InputAdornment,
   Paper,
   Popover,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
   TextField,
   Tooltip,
   Typography,
@@ -23,82 +18,32 @@ import {
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import CloseIcon from '@mui/icons-material/Close';
-import ContentCopyIcon from '@mui/icons-material/ContentCopy';
-import MailOutlineIcon from '@mui/icons-material/MailOutline';
-import PhoneIcon from '@mui/icons-material/Phone';
 import RefreshIcon from '@mui/icons-material/Refresh';
 import SearchIcon from '@mui/icons-material/Search';
 import { useNavigate } from 'react-router-dom';
-import { MaxBrandIcon, TelegramBrandIcon } from '../components/icons/MessengerBrandIcon';
+import AddressBookEntryDetail from '../components/addressBook/AddressBookEntryDetail';
+import AddressBookEntryList from '../components/addressBook/AddressBookEntryList';
+import AddressBookEntrySheet from '../components/addressBook/AddressBookEntrySheet';
+import AddressBookMobileToolbar from '../components/addressBook/AddressBookMobileToolbar';
+import {
+  formatDateTime,
+  getEntryKey,
+  hideScrollbarSx,
+  normalizeText,
+} from '../components/addressBook/addressBookUtils';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { isValidEmailRecipient } from '../components/mail/mailComposeState';
 import { addressBookAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
+import { openAddressBookChat } from '../lib/addressBookChat';
+import { CHAT_FEATURE_ENABLED } from '../lib/chatFeature';
 import { isPhoneDeepLinkReady, openTelegramChat } from '../lib/messengerLinks';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
 const SEARCH_DEBOUNCE_MS = 300;
 const SEARCH_LIMIT = 50;
-
-const normalizeText = (value) => String(value || '').trim();
-const normalizePhoneDigits = (value) => {
-  const digits = normalizeText(value).replace(/\D+/g, '');
-  if (digits.length === 11 && digits.startsWith('8')) return `7${digits.slice(1)}`;
-  if (digits.length === 10) return `7${digits}`;
-  return digits;
-};
-
-const escapeRegExp = (value) => normalizeText(value).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-
-const HighlightText = ({ value, query }) => {
-  const text = normalizeText(value);
-  const terms = normalizeText(query)
-    .split(/\s+/)
-    .map(escapeRegExp)
-    .filter(Boolean);
-  if (!text || terms.length === 0) return text;
-
-  const expression = new RegExp(`(${terms.join('|')})`, 'ig');
-  const parts = text.split(expression).filter((part) => part !== '');
-  return (
-    <>
-      {parts.map((part, index) => (
-        terms.some((term) => new RegExp(`^${term}$`, 'i').test(part)) ? (
-          <Box
-            key={`${part}-${index}`}
-            component="mark"
-            sx={{
-              px: 0.25,
-              borderRadius: 0.5,
-              bgcolor: 'warning.light',
-              color: 'warning.contrastText',
-            }}
-          >
-            {part}
-          </Box>
-        ) : (
-          <Fragment key={`${part}-${index}`}>{part}</Fragment>
-        )
-      ))}
-    </>
-  );
-};
-
-const formatDateTime = (value) => {
-  const text = normalizeText(value);
-  if (!text) return 'нет данных';
-  const parsed = new Date(text);
-  if (Number.isNaN(parsed.getTime())) return text;
-  return parsed.toLocaleString('ru-RU', {
-    day: '2-digit',
-    month: '2-digit',
-    year: 'numeric',
-    hour: '2-digit',
-    minute: '2-digit',
-  });
-};
 
 const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
   const [debounced, setDebounced] = useState(value);
@@ -111,236 +56,16 @@ const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
   return debounced;
 };
 
-const PhoneActions = ({
-  phones = [],
-  label,
-  onCopy,
-  enableTelLinks = false,
-  onOpenTelegram,
-  onOpenMax,
-  query = '',
-}) => {
-  const items = Array.isArray(phones) ? phones : [];
-  if (items.length === 0) return null;
-
-  return (
-    <Stack spacing={0.75}>
-      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-        {label}
-      </Typography>
-      <Stack spacing={0.6}>
-        {items.map((phone, index) => {
-          const value = normalizeText(phone?.value);
-          const kind = normalizeText(phone?.kind);
-          const normalized = normalizeText(phone?.normalized);
-          const phoneDigits = normalized || normalizePhoneDigits(value);
-          const telValue = phoneDigits ? `+${phoneDigits}` : value;
-          const canCall = enableTelLinks && Boolean(telValue);
-          const canOpenMessenger = isPhoneDeepLinkReady(phoneDigits);
-          return (
-            <Box
-              key={`${kind}-${value}-${index}`}
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 0.75,
-                minWidth: 0,
-              }}
-            >
-              <Box sx={{ minWidth: 0, flex: 1 }}>
-                {kind ? (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.15 }}>
-                    <HighlightText value={kind} query={query} />
-                  </Typography>
-                ) : null}
-                <Typography variant="body2" sx={{ lineHeight: 1.2, overflowWrap: 'anywhere' }}>
-                  <HighlightText value={value} query={query} />
-                </Typography>
-              </Box>
-              {canCall ? (
-                <Tooltip title="Позвонить">
-                  <IconButton
-                    component="a"
-                    href={`tel:${telValue}`}
-                    size="small"
-                    aria-label={`Позвонить ${value}`}
-                  >
-                    <PhoneIcon fontSize="small" />
-                  </IconButton>
-                </Tooltip>
-              ) : null}
-              <Tooltip title={canOpenMessenger ? 'Открыть в Telegram' : 'Номер не подходит для Telegram'}>
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`Открыть Telegram ${value}`}
-                    onClick={() => onOpenTelegram(phoneDigits)}
-                    disabled={!canOpenMessenger}
-                  >
-                    <TelegramBrandIcon size={20} />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title={canOpenMessenger ? 'Скопировать для MAX' : 'Номер не подходит для MAX'}>
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`Открыть MAX ${value}`}
-                    onClick={(event) => onOpenMax(phoneDigits, event.currentTarget)}
-                    disabled={!canOpenMessenger}
-                  >
-                    <MaxBrandIcon size={20} />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title="Скопировать">
-                <IconButton
-                  size="small"
-                  aria-label={`Скопировать ${value}`}
-                  onClick={() => onCopy(value)}
-                >
-                  <ContentCopyIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </Box>
-          );
-        })}
-      </Stack>
-    </Stack>
-  );
-};
-
-const EmailActions = ({ emails = [], label, onCopy, onComposeEmail, query = '' }) => {
-  const items = Array.isArray(emails) ? emails : [];
-  if (items.length === 0) return null;
-
-  return (
-    <Stack spacing={0.75}>
-      <Typography variant="caption" color="text.secondary" sx={{ fontWeight: 600 }}>
-        {label}
-      </Typography>
-      <Stack spacing={0.6}>
-        {items.map((email, index) => {
-          const value = normalizeText(email?.value);
-          const kind = normalizeText(email?.kind);
-          const canMail = isValidEmailRecipient(value);
-          return (
-            <Box
-              key={`${kind}-${value}-${index}`}
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: 0.75,
-                minWidth: 0,
-              }}
-            >
-              <Box sx={{ minWidth: 0, flex: 1 }}>
-                {kind ? (
-                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block', lineHeight: 1.15 }}>
-                    <HighlightText value={kind} query={query} />
-                  </Typography>
-                ) : null}
-                <Typography variant="body2" sx={{ lineHeight: 1.2, overflowWrap: 'anywhere' }}>
-                  <HighlightText value={value} query={query} />
-                </Typography>
-              </Box>
-              <Tooltip title={canMail ? 'Написать в HUB' : 'Некорректный e-mail'}>
-                <span>
-                  <IconButton
-                    size="small"
-                    aria-label={`Написать в HUB ${value}`}
-                    onClick={() => onComposeEmail(value)}
-                    disabled={!canMail}
-                  >
-                    <MailOutlineIcon fontSize="small" />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title={canMail ? 'Открыть внешнюю почту' : 'Некорректный e-mail'}>
-                <span>
-                  <IconButton
-                    component={canMail ? 'a' : 'button'}
-                    href={canMail ? `mailto:${value}` : undefined}
-                    size="small"
-                    aria-label={`Открыть внешнюю почту ${value}`}
-                    disabled={!canMail}
-                  >
-                    <MailOutlineIcon fontSize="small" color={canMail ? 'action' : 'disabled'} />
-                  </IconButton>
-                </span>
-              </Tooltip>
-              <Tooltip title="Скопировать">
-                <IconButton
-                  size="small"
-                  aria-label={`Скопировать ${value}`}
-                  onClick={() => onCopy(value)}
-                >
-                  <ContentCopyIcon fontSize="small" />
-                </IconButton>
-              </Tooltip>
-            </Box>
-          );
-        })}
-      </Stack>
-    </Stack>
-  );
-};
-
-const EmployeeCard = ({
-  item,
-  onCopy,
-  enableTelLinks = false,
-  onOpenTelegram,
-  onOpenMax,
-  onComposeEmail,
-  query = '',
-}) => (
-  <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 2 }}>
-    <Stack spacing={1.25}>
-      <Box>
-        <Typography variant="subtitle1" sx={{ fontWeight: 600, lineHeight: 1.25 }}>
-          <HighlightText value={item.full_name} query={query} />
-        </Typography>
-        <Typography variant="body2" color="text.secondary">
-          {item.position ? <HighlightText value={item.position} query={query} /> : 'Должность не указана'}
-        </Typography>
-      </Box>
-      <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-        {item.department ? <Chip label={<HighlightText value={item.department} query={query} />} size="small" /> : null}
-        {item.department_location ? <Chip label={<HighlightText value={item.department_location} query={query} />} size="small" variant="outlined" /> : null}
-      </Stack>
-      <PhoneActions
-        phones={item.work_phones}
-        label="Рабочие"
-        onCopy={onCopy}
-        enableTelLinks={enableTelLinks}
-        onOpenTelegram={onOpenTelegram}
-        onOpenMax={onOpenMax}
-        query={query}
-      />
-      <PhoneActions
-        phones={item.personal_phones}
-        label="Личные"
-        onCopy={onCopy}
-        enableTelLinks={enableTelLinks}
-        onOpenTelegram={onOpenTelegram}
-        onOpenMax={onOpenMax}
-        query={query}
-      />
-      <EmailActions emails={item.work_emails} label="Рабочая почта" onCopy={onCopy} onComposeEmail={onComposeEmail} query={query} />
-      <EmailActions emails={item.personal_emails} label="Личная почта" onCopy={onCopy} onComposeEmail={onComposeEmail} query={query} />
-    </Stack>
-  </Paper>
-);
-
 const AddressBook = () => {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const navigate = useNavigate();
-  const { user } = useAuth();
-  const { notifySuccess, notifyWarning } = useNotification();
+  const { user, hasPermission } = useAuth();
+  const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
+  const canUseChat = CHAT_FEATURE_ENABLED && hasPermission('chat.read') && hasPermission('chat.write');
+  const searchInputRef = useRef(null);
 
   const [query, setQuery] = useState('');
   const [items, setItems] = useState([]);
@@ -350,8 +75,11 @@ const AddressBook = () => {
   const [statusLoading, setStatusLoading] = useState(false);
   const [syncing, setSyncing] = useState(false);
   const [error, setError] = useState('');
+  const [selectedEntryKey, setSelectedEntryKey] = useState('');
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
   const [maxHelpAnchorEl, setMaxHelpAnchorEl] = useState(null);
   const [maxHelpPhone, setMaxHelpPhone] = useState('');
+  const [chatBusyEntryKey, setChatBusyEntryKey] = useState('');
   const debouncedQuery = useDebouncedValue(query);
 
   const loadStatus = useCallback(async () => {
@@ -392,6 +120,19 @@ const AddressBook = () => {
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
+
+  useEffect(() => {
+    if (isMobile || items.length === 0) return;
+    const keys = items.map((item, index) => getEntryKey(item, index));
+    if (!keys.includes(selectedEntryKey)) {
+      setSelectedEntryKey(keys[0]);
+    }
+  }, [isMobile, items, selectedEntryKey]);
+
+  const selectedItem = useMemo(() => {
+    const index = items.findIndex((item, idx) => getEntryKey(item, idx) === selectedEntryKey);
+    return index >= 0 ? items[index] : null;
+  }, [items, selectedEntryKey]);
 
   const handleSync = useCallback(async () => {
     setSyncing(true);
@@ -452,6 +193,26 @@ const AddressBook = () => {
     }
   }, [notifySuccess, notifyWarning]);
 
+  const handleOpenChat = useCallback(async (item, index = 0) => {
+    const entryKey = getEntryKey(item, index);
+    setChatBusyEntryKey(entryKey);
+    try {
+      await openAddressBookChat({ entry: item, navigate });
+    } catch (error) {
+      const status = Number(error?.response?.status || 0);
+      if (status === 404) {
+        notifyWarning(
+          error?.response?.data?.detail || 'Сотрудник не найден в HUB-чате. Возможно, у него нет учётной записи.',
+          { source: 'address-book-chat', dedupeMode: 'none' },
+        );
+      } else {
+        notifyApiError(error, 'Не удалось открыть корпоративный чат.', { dedupeMode: 'none' });
+      }
+    } finally {
+      setChatBusyEntryKey('');
+    }
+  }, [navigate, notifyApiError, notifyWarning]);
+
   const handleComposeEmail = useCallback((email) => {
     const recipient = normalizeText(email);
     if (!isValidEmailRecipient(recipient)) {
@@ -461,187 +222,224 @@ const AddressBook = () => {
     navigate(`/mail?folder=inbox&compose_to=${encodeURIComponent(recipient)}`);
   }, [navigate, notifyWarning]);
 
+  const handleSelectEntry = useCallback((item, index) => {
+    const key = getEntryKey(item, index);
+    setSelectedEntryKey(key);
+    if (isMobile) {
+      setMobileSheetOpen(true);
+    }
+  }, [isMobile]);
+
+  const handleListSelect = useCallback((item, index) => {
+    handleSelectEntry(item, index);
+  }, [handleSelectEntry]);
+
   const panelSx = useMemo(() => getOfficePanelSx(ui), [ui]);
+  const countLabel = total > SEARCH_LIMIT ? `Найдено ${total}, показано ${SEARCH_LIMIT}` : `Найдено ${total}`;
 
   return (
     <MainLayout showDatabaseSelector={false}>
-      <PageShell>
-        <Stack spacing={2}>
-          <Stack
-            direction={{ xs: 'column', md: 'row' }}
-            alignItems={{ xs: 'stretch', md: 'center' }}
-            justifyContent="space-between"
-            spacing={1.5}
-          >
-            <Box>
-              <Typography variant="h5" sx={{ fontWeight: 600 }}>
-                Адресная книга
-              </Typography>
-              <Typography variant="body2" color="text.secondary">
-                {total > SEARCH_LIMIT ? `Найдено ${total}, показано ${SEARCH_LIMIT}` : `Найдено ${total}`}
-              </Typography>
-            </Box>
-            <Stack direction="row" spacing={1} alignItems="center">
-              <Chip
-                label={`Обновлено: ${formatDateTime(status?.updated_at)}`}
-                size="small"
-                variant="outlined"
-              />
-              {isAdmin ? (
-                <Button
-                  variant="contained"
+      <PageShell fullHeight sx={{ gap: { xs: 0.75, sm: 2 } }}>
+        {isMobile ? (
+          <AddressBookMobileToolbar
+            total={total}
+            searchLimit={SEARCH_LIMIT}
+            query={query}
+            searchInputRef={searchInputRef}
+            onQueryChange={(event) => setQuery(event.target.value)}
+            onClearQuery={() => setQuery('')}
+            isAdmin={isAdmin}
+            syncing={syncing}
+            statusUpdatedAt={status?.updated_at}
+            onSync={handleSync}
+          />
+        ) : (
+          <>
+            <Stack
+              direction={{ xs: 'column', md: 'row' }}
+              alignItems={{ xs: 'stretch', md: 'center' }}
+              justifyContent="space-between"
+              spacing={1.5}
+              sx={{ flexShrink: 0 }}
+            >
+              <Box>
+                <Typography variant="h5" sx={{ fontWeight: 600 }}>
+                  Адресная книга
+                </Typography>
+                <Typography variant="body2" color="text.secondary">
+                  {countLabel}
+                </Typography>
+              </Box>
+              <Stack direction="row" spacing={1} alignItems="center">
+                <Chip
+                  label={`Обновлено: ${formatDateTime(status?.updated_at)}`}
                   size="small"
-                  startIcon={syncing ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon />}
-                  onClick={handleSync}
-                  disabled={syncing}
-                >
-                  Обновить
-                </Button>
-              ) : null}
+                  variant="outlined"
+                />
+                {isAdmin ? (
+                  <Button
+                    variant="contained"
+                    size="small"
+                    startIcon={syncing ? <CircularProgress size={16} color="inherit" /> : <RefreshIcon />}
+                    onClick={handleSync}
+                    disabled={syncing}
+                  >
+                    Обновить
+                  </Button>
+                ) : null}
+              </Stack>
             </Stack>
-          </Stack>
 
-          <Paper
+            <Paper sx={{ ...panelSx, p: 1.5, flexShrink: 0 }}>
+              <TextField
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                fullWidth
+                placeholder="ФИО, должность, подразделение, город, телефон или e-mail"
+                size="small"
+                inputRef={searchInputRef}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchIcon fontSize="small" />
+                    </InputAdornment>
+                  ),
+                  endAdornment: query ? (
+                    <InputAdornment position="end">
+                      <Tooltip title="Очистить поиск">
+                        <IconButton
+                          aria-label="Очистить поиск"
+                          edge="end"
+                          size="small"
+                          onClick={() => setQuery('')}
+                        >
+                          <CloseIcon fontSize="small" />
+                        </IconButton>
+                      </Tooltip>
+                    </InputAdornment>
+                  ) : null,
+                }}
+                inputProps={{ 'data-testid': 'address-book-search-input' }}
+              />
+            </Paper>
+          </>
+        )}
+
+        {error ? <Alert severity="error">{error}</Alert> : null}
+        {status?.last_error ? <Alert severity="warning">Последняя синхронизация завершилась ошибкой: {status.last_error}</Alert> : null}
+        {statusLoading && isAdmin ? <Alert severity="info">Статус синхронизации обновляется...</Alert> : null}
+
+        <Box
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            display: 'flex',
+            flexDirection: 'column',
+          }}
+        >
+          <Grid
+            container
+            spacing={{ xs: 0, sm: 2 }}
             sx={{
-              ...panelSx,
-              p: 1.5,
-              position: { xs: 'sticky', sm: 'static' },
-              top: { xs: 8, sm: 'auto' },
-              zIndex: { xs: (nextTheme) => nextTheme.zIndex.appBar - 1, sm: 'auto' },
+              flex: 1,
+              minHeight: 0,
+              height: '100%',
             }}
           >
-            <TextField
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              fullWidth
-              placeholder="ФИО, должность, подразделение, город, телефон или e-mail"
-              size="small"
-              InputProps={{
-                startAdornment: (
-                  <InputAdornment position="start">
-                    <SearchIcon fontSize="small" />
-                  </InputAdornment>
-                ),
-                endAdornment: query ? (
-                  <InputAdornment position="end">
-                    <Tooltip title="Очистить поиск">
-                      <IconButton
-                        aria-label="Очистить поиск"
-                        edge="end"
-                        size="small"
-                        onClick={() => setQuery('')}
-                      >
-                        <CloseIcon fontSize="small" />
-                      </IconButton>
-                    </Tooltip>
-                  </InputAdornment>
-                ) : null,
+            <Grid
+              item
+              xs={12}
+              sm={5}
+              md={4}
+              sx={{
+                display: 'flex',
+                flexDirection: 'column',
+                minHeight: 0,
+                height: '100%',
               }}
-            />
-          </Paper>
-
-          {error ? <Alert severity="error">{error}</Alert> : null}
-          {status?.last_error ? <Alert severity="warning">Последняя синхронизация завершилась ошибкой: {status.last_error}</Alert> : null}
-          {statusLoading && isAdmin ? <Alert severity="info">Статус синхронизации обновляется...</Alert> : null}
-
-          {loading ? (
-            <Box sx={{ display: 'grid', placeItems: 'center', minHeight: 220 }}>
-              <CircularProgress />
-            </Box>
-          ) : items.length === 0 ? (
-            <Paper sx={{ ...panelSx, p: 3, textAlign: 'center' }}>
-              <Typography sx={{ fontWeight: 600 }}>Сотрудники не найдены</Typography>
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                Измените ФИО, подразделение, должность, город, номер телефона или e-mail.
-              </Typography>
-            </Paper>
-          ) : isMobile ? (
-            <Stack spacing={1}>
-              {items.map((item, index) => (
-                <EmployeeCard
-                  key={`${item.full_name}-${index}`}
-                  item={item}
-                  onCopy={handleCopy}
-                  enableTelLinks={isMobile}
-                  onOpenTelegram={handleOpenTelegram}
-                  onOpenMax={handleOpenMax}
-                  onComposeEmail={handleComposeEmail}
+            >
+              <Box
+                sx={{
+                  flex: 1,
+                  minHeight: 0,
+                  overflowY: 'auto',
+                  overflowX: 'hidden',
+                  WebkitOverflowScrolling: 'touch',
+                  ...hideScrollbarSx,
+                }}
+                data-testid="address-book-entry-list-scroll"
+              >
+                <AddressBookEntryList
+                  items={items}
+                  selectedEntryKey={selectedEntryKey}
+                  loading={loading}
                   query={query}
+                  enableTelLinks={isMobile}
+                  onSelect={handleListSelect}
+                  onOpenTelegram={handleOpenTelegram}
+                  onComposeEmail={handleComposeEmail}
+                  onOpenChat={handleOpenChat}
+                  showChatAction={canUseChat}
+                  chatBusyEntryKey={chatBusyEntryKey}
                 />
-              ))}
-            </Stack>
-          ) : (
-            <TableContainer component={Paper} sx={panelSx}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>ФИО</TableCell>
-                    <TableCell>Подразделение</TableCell>
-                    <TableCell>Должность</TableCell>
-                    <TableCell>Телефоны</TableCell>
-                    <TableCell>E-mail</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {items.map((item, index) => (
-                    <TableRow key={`${item.full_name}-${index}`} hover>
-                      <TableCell sx={{ minWidth: 220 }}>
-                        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                          <HighlightText value={item.full_name} query={query} />
-                        </Typography>
-                        {item.department_location ? (
-                          <Typography variant="caption" color="text.secondary">
-                            <HighlightText value={item.department_location} query={query} />
-                          </Typography>
-                        ) : null}
-                      </TableCell>
-                      <TableCell>{item.department ? <HighlightText value={item.department} query={query} /> : '-'}</TableCell>
-                      <TableCell>{item.position ? <HighlightText value={item.position} query={query} /> : '-'}</TableCell>
-                      <TableCell sx={{ minWidth: 320 }}>
-                        <Stack spacing={1}>
-                          <PhoneActions
-                            phones={item.work_phones}
-                            label="Рабочие"
-                            onCopy={handleCopy}
-                            onOpenTelegram={handleOpenTelegram}
-                            onOpenMax={handleOpenMax}
-                            query={query}
-                          />
-                          <PhoneActions
-                            phones={item.personal_phones}
-                            label="Личные"
-                            onCopy={handleCopy}
-                            onOpenTelegram={handleOpenTelegram}
-                            onOpenMax={handleOpenMax}
-                            query={query}
-                          />
-                        </Stack>
-                      </TableCell>
-                      <TableCell sx={{ minWidth: 280 }}>
-                        <Stack spacing={1}>
-                          <EmailActions
-                            emails={item.work_emails}
-                            label="Рабочая почта"
-                            onCopy={handleCopy}
-                            onComposeEmail={handleComposeEmail}
-                            query={query}
-                          />
-                          <EmailActions
-                            emails={item.personal_emails}
-                            label="Личная почта"
-                            onCopy={handleCopy}
-                            onComposeEmail={handleComposeEmail}
-                            query={query}
-                          />
-                        </Stack>
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </TableContainer>
-          )}
-        </Stack>
+              </Box>
+            </Grid>
+
+            {!isMobile ? (
+              <Grid
+                item
+                sm={7}
+                md={8}
+                sx={{
+                  display: { xs: 'none', sm: 'flex' },
+                  flexDirection: 'column',
+                  minHeight: 0,
+                  height: '100%',
+                }}
+              >
+                <Box
+                  sx={{
+                    flex: 1,
+                    minHeight: 0,
+                    overflowY: 'auto',
+                    overflowX: 'hidden',
+                    WebkitOverflowScrolling: 'touch',
+                    ...hideScrollbarSx,
+                  }}
+                  data-testid="address-book-entry-detail-scroll"
+                >
+                  <AddressBookEntryDetail
+                    item={selectedItem}
+                    query={query}
+                    enableTelLinks={false}
+                    onCopy={handleCopy}
+                    onOpenTelegram={handleOpenTelegram}
+                    onOpenMax={handleOpenMax}
+                    onComposeEmail={handleComposeEmail}
+                    onOpenChat={(item) => handleOpenChat(item, items.findIndex((entry, idx) => getEntryKey(entry, idx) === selectedEntryKey))}
+                    showChatAction={canUseChat}
+                    chatBusy={Boolean(chatBusyEntryKey)}
+                  />
+                </Box>
+              </Grid>
+            ) : null}
+          </Grid>
+        </Box>
+
+        <AddressBookEntrySheet
+          open={mobileSheetOpen && Boolean(selectedItem)}
+          item={selectedItem}
+          query={query}
+          enableTelLinks={isMobile}
+          onClose={() => setMobileSheetOpen(false)}
+          onCopy={handleCopy}
+          onOpenTelegram={handleOpenTelegram}
+          onOpenMax={handleOpenMax}
+          onComposeEmail={handleComposeEmail}
+          onOpenChat={(item) => handleOpenChat(item, items.findIndex((entry, idx) => getEntryKey(entry, idx) === selectedEntryKey))}
+          showChatAction={canUseChat}
+          chatBusy={Boolean(chatBusyEntryKey)}
+        />
 
         <Popover
           open={Boolean(maxHelpAnchorEl)}

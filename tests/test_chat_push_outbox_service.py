@@ -58,6 +58,11 @@ def chat_outbox_env(temp_dir, monkeypatch):
     monkeypatch.setattr(hub_service_module.user_service, "get_by_id", lambda user_id: users_by_id.get(int(user_id)))
     monkeypatch.setattr(chat_service_module.user_service, "list_users", lambda: list(users))
     monkeypatch.setattr(chat_service_module.user_service, "get_by_id", lambda user_id: users_by_id.get(int(user_id)))
+    monkeypatch.setattr(
+        chat_service_module.user_service,
+        "get_users_map_by_ids",
+        lambda user_ids: {int(user_id): users_by_id.get(int(user_id)) for user_id in list(user_ids or [])},
+    )
     monkeypatch.setattr(chat_service_module.user_service, "to_public_user", lambda raw: dict(raw))
 
     hub_service = hub_service_module.HubService()
@@ -124,6 +129,47 @@ def test_chat_push_outbox_worker_marks_job_sent_after_success(chat_outbox_env, m
     assert result["sent"] == 1
     assert job.status == "sent"
     assert int(job.attempt_count or 0) == 1
+
+
+def test_chat_push_outbox_worker_delivers_deferred_mention_when_thread_muted_and_archived(chat_outbox_env, monkeypatch):
+    service = chat_outbox_env["service"]
+    conversation = chat_outbox_env["conversation"]
+    worker = chat_outbox_env["worker"]
+    push_calls = []
+
+    monkeypatch.setattr(type(chat_push_service_module.chat_push_service), "enabled", property(lambda self: True))
+
+    def _send_push(**kwargs):
+        push_calls.append(kwargs)
+        return chat_push_service_module.ChatPushSendResult(sent=1)
+
+    monkeypatch.setattr(chat_push_service_module.chat_push_service, "send_chat_message_notification", _send_push)
+
+    with chat_db_module.chat_session() as session:
+        state = session.execute(
+            select(chat_models_module.ChatConversationUserState).where(
+                chat_models_module.ChatConversationUserState.conversation_id == conversation["id"],
+                chat_models_module.ChatConversationUserState.user_id == 2,
+            )
+        ).scalar_one()
+        state.is_muted = True
+        state.is_archived = True
+
+    created = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="@assignee please check this",
+        defer_push_notifications=True,
+    )
+
+    result = asyncio.run(worker.poll_once())
+    job = _get_outbox_job(created["id"])
+
+    assert bool(job.is_mention) is True
+    assert result["claimed"] == 1
+    assert result["sent"] == 1
+    assert job.status == "sent"
+    assert push_calls and push_calls[0]["message_id"] == created["id"]
 
 
 def test_chat_push_outbox_worker_marks_job_no_subscriptions_without_retry(chat_outbox_env, monkeypatch):

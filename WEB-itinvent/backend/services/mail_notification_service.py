@@ -7,6 +7,10 @@ import time
 from dataclasses import dataclass
 from typing import Optional
 
+from sqlalchemy import select
+
+from backend.chat.db import chat_session
+from backend.chat.models import ChatPushSubscription
 from backend.services.app_push_service import app_push_service
 from backend.services.authorization_service import PERM_MAIL_ACCESS, authorization_service
 from backend.services.mail_service import MailServiceError, mail_service
@@ -57,6 +61,25 @@ class MailNotificationService:
         except Exception:
             return 8
 
+    @property
+    def background_enabled(self) -> bool:
+        return str(os.getenv("MAIL_NOTIFICATION_BACKGROUND_ENABLED", "1") or "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+            "on",
+        }
+
+    def get_runtime_status(self) -> dict:
+        return {
+            "background_enabled": self.background_enabled,
+            "task_running": bool(self._task and not self._task.done()),
+            "poll_interval_sec": self.poll_interval_sec,
+            "batch_size": self.batch_size,
+            "max_concurrency": self.max_concurrency,
+            "snapshot_count": len(self._snapshots),
+        }
+
     async def start(self) -> None:
         if self._task and not self._task.done():
             return
@@ -102,6 +125,7 @@ class MailNotificationService:
             for item in active_sessions
             if int(item.get("user_id", 0) or 0) > 0
         }
+        active_user_ids.update(self._active_push_subscription_user_ids())
         users = []
         for user in user_service.list_users():
             user_id = int(user.get("id", 0) or 0)
@@ -138,6 +162,21 @@ class MailNotificationService:
                 break
         return users
 
+    def _active_push_subscription_user_ids(self) -> set[int]:
+        try:
+            with chat_session() as session:
+                return {
+                    int(user_id)
+                    for user_id in session.execute(
+                        select(ChatPushSubscription.user_id).where(
+                            ChatPushSubscription.is_active.is_(True),
+                        )
+                    ).scalars()
+                    if int(user_id or 0) > 0
+                }
+        except Exception:
+            return set()
+
     def _build_snapshot(self, *, feed: dict) -> MailNotificationSnapshot:
         items = feed.get("items") or []
         first_item = items[0] if items else {}
@@ -150,11 +189,12 @@ class MailNotificationService:
     def _should_emit(self, *, previous: Optional[MailNotificationSnapshot], current: MailNotificationSnapshot) -> bool:
         if previous is None:
             return False
-        if current.unread_count <= previous.unread_count:
+        if current.unread_count <= 0:
             return False
-        if current.last_message_id and current.last_message_id != previous.last_message_id:
-            return True
-        return bool(current.last_received_at and current.last_received_at > previous.last_received_at)
+        last_message_changed = bool(current.last_message_id and current.last_message_id != previous.last_message_id)
+        received_newer = bool(current.last_received_at and current.last_received_at > previous.last_received_at)
+        unread_increased = int(current.unread_count or 0) > int(previous.unread_count or 0)
+        return bool(last_message_changed or (unread_increased and received_newer))
 
     def _list_notification_feed_sync(self, *, user_id: int, session_id: str | None) -> dict:
         token = push_request_session_id(session_id)
@@ -163,8 +203,15 @@ class MailNotificationService:
         finally:
             pop_request_session_id(token)
 
-    def _send_notification_sync(self, **kwargs) -> None:
-        app_push_service.send_notification(**kwargs)
+    def _send_notification_sync(self, **kwargs):
+        return app_push_service.send_notification(**kwargs)
+
+    def _delivery_succeeded(self, result) -> bool:
+        if result is None:
+            return True
+        sent = int(getattr(result, "sent", 0) or 0)
+        failed = int(getattr(result, "failed", 0) or 0)
+        return bool(sent > 0 or failed <= 0)
 
     async def _fetch_candidate_feed(self, payload: dict, semaphore: asyncio.Semaphore) -> dict:
         user = payload["user"]
@@ -216,14 +263,15 @@ class MailNotificationService:
                 fetched_count += 1
                 current = self._build_snapshot(feed=feed)
                 previous = self._snapshots.get(user_id)
-                self._snapshots[user_id] = current
                 if not self._should_emit(previous=previous, current=current):
+                    self._snapshots[user_id] = current
                     continue
 
                 items = feed.get("items") or []
                 top_item = items[0] if items else {}
                 message_id = str(top_item.get("id") or "").strip()
                 if not message_id:
+                    self._snapshots[user_id] = current
                     continue
                 sender = str(top_item.get("sender") or "").strip()
                 subject = str(top_item.get("subject") or "").strip() or "РќРѕРІРѕРµ РїРёСЃСЊРјРѕ"
@@ -240,7 +288,7 @@ class MailNotificationService:
                 if mailbox_id:
                     route += f"&mailbox_id={mailbox_id}"
                 try:
-                    await asyncio.to_thread(
+                    delivery_result = await asyncio.to_thread(
                         self._send_notification_sync,
                         recipient_user_id=user_id,
                         title=subject,
@@ -258,7 +306,18 @@ class MailNotificationService:
                         },
                         ttl=120,
                     )
-                    notified_count += 1
+                    if self._delivery_succeeded(delivery_result):
+                        self._snapshots[user_id] = current
+                        notified_count += 1
+                    else:
+                        error_count += 1
+                        logger.warning(
+                            "Failed to send mail push for user_id=%s sent=%s failed=%s disabled=%s",
+                            user_id,
+                            int(getattr(delivery_result, "sent", 0) or 0),
+                            int(getattr(delivery_result, "failed", 0) or 0),
+                            int(getattr(delivery_result, "disabled", 0) or 0),
+                        )
                 except Exception:
                     error_count += 1
                     logger.warning("Failed to send mail push for user_id=%s", user_id, exc_info=True)

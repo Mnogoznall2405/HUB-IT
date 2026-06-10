@@ -336,6 +336,30 @@ function urlBase64ToUint8Array(base64String) {
   return Uint8Array.from([...rawData].map((char) => char.charCodeAt(0)));
 }
 
+function arrayBufferToBase64Url(value) {
+  if (!value) return '';
+  let bytes = null;
+  if (value instanceof ArrayBuffer) {
+    bytes = new Uint8Array(value);
+  } else if (ArrayBuffer.isView(value)) {
+    bytes = new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (!bytes) return '';
+  let raw = '';
+  bytes.forEach((byte) => {
+    raw += String.fromCharCode(byte);
+  });
+  return window.btoa(raw).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/g, '');
+}
+
+function getSubscriptionApplicationServerKey(subscription) {
+  try {
+    return arrayBufferToBase64Url(subscription?.options?.applicationServerKey);
+  } catch {
+    return '';
+  }
+}
+
 async function getCurrentPushSubscription() {
   if (!isPushSupported()) return { registration: null, subscription: null };
   try {
@@ -483,7 +507,7 @@ export async function syncChatPushSubscription({ user, force = false } = {}) {
 
   pushSyncPromise = (async () => {
     const snapshot = getSnapshot();
-    const shouldDisable = !user || !snapshot.enabled || snapshot.permission !== 'granted';
+    const shouldDisable = !user || snapshot.permission !== 'granted';
     if (
       !force
       && !shouldDisable
@@ -565,10 +589,13 @@ export async function syncChatPushSubscription({ user, force = false } = {}) {
     const lastHardResubscribeAt = readLastHardResubscribeAt();
     const configuredPublicKey = String(pushConfig?.vapid_public_key || '').trim();
     const storedPublicKey = String(readStorage(CHAT_PUSH_VAPID_PUBLIC_KEY_KEY, '')).trim();
+    const subscriptionPublicKey = getSubscriptionApplicationServerKey(existingSubscription);
     const vapidKeyChanged = Boolean(
       configuredPublicKey
-      && storedPublicKey
-      && configuredPublicKey !== storedPublicKey
+      && (
+        (storedPublicKey && configuredPublicKey !== storedPublicKey)
+        || (subscriptionPublicKey && configuredPublicKey !== subscriptionPublicKey)
+      )
     );
     const shouldHardResubscribe = Boolean(
       existingSubscription

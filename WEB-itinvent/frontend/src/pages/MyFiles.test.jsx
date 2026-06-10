@@ -12,6 +12,9 @@ const {
   mockCreateDownloadGrant,
   mockBuildDownloadGrantUrl,
   mockTriggerNativeDownload,
+  mockGetPreviewMeta,
+  mockDownloadPreviewContent,
+  mockDownloadPreviewSource,
   mockCreateShare,
   mockRevokeShare,
   mockDeleteFile,
@@ -27,6 +30,9 @@ const {
   mockCreateDownloadGrant: vi.fn(),
   mockBuildDownloadGrantUrl: vi.fn(),
   mockTriggerNativeDownload: vi.fn(),
+  mockGetPreviewMeta: vi.fn(),
+  mockDownloadPreviewContent: vi.fn(),
+  mockDownloadPreviewSource: vi.fn(),
   mockCreateShare: vi.fn(),
   mockRevokeShare: vi.fn(),
   mockDeleteFile: vi.fn(),
@@ -48,6 +54,9 @@ vi.mock('../api/myFiles', () => ({
     createDownloadGrant: mockCreateDownloadGrant,
     buildDownloadGrantUrl: mockBuildDownloadGrantUrl,
     triggerNativeDownload: mockTriggerNativeDownload,
+    getPreviewMeta: mockGetPreviewMeta,
+    downloadPreviewContent: mockDownloadPreviewContent,
+    downloadPreviewSource: mockDownloadPreviewSource,
     createShare: mockCreateShare,
     revokeShare: mockRevokeShare,
     deleteFile: mockDeleteFile,
@@ -69,6 +78,12 @@ vi.mock('../components/layout/MainLayout', () => ({
 
 vi.mock('../components/layout/PageShell', () => ({
   default: ({ children }) => <div data-testid="page-shell">{children}</div>,
+}));
+
+vi.mock('../components/documentPreview/DocumentPreviewDialog', () => ({
+  default: ({ open, title, kind }) => (
+    open ? <div data-testid="document-preview-dialog">{title}:{kind}</div> : null
+  ),
 }));
 
 vi.mock('../contexts/AuthContext', () => ({
@@ -119,6 +134,9 @@ describe('MyFiles page', () => {
     mockCreateDownloadGrant.mockReset();
     mockBuildDownloadGrantUrl.mockReset();
     mockTriggerNativeDownload.mockReset();
+    mockGetPreviewMeta.mockReset();
+    mockDownloadPreviewContent.mockReset();
+    mockDownloadPreviewSource.mockReset();
     mockCreateShare.mockReset();
     mockRevokeShare.mockReset();
     mockDeleteFile.mockReset();
@@ -135,8 +153,36 @@ describe('MyFiles page', () => {
     });
     mockBuildDownloadGrantUrl.mockReturnValue('http://localhost/api/v1/my-files/download-grant/test-token');
     mockTriggerNativeDownload.mockReturnValue(true);
+    mockGetPreviewMeta.mockResolvedValue({
+      preview_kind: 'pdf',
+      source_kind: '',
+      source_filename: 'report.pdf',
+      pdf_filename: 'report.pdf',
+      page_count: 1,
+      sheets: [],
+      preview_url: '/api/v1/my-files/file-1/preview/content',
+    });
+    mockDownloadPreviewContent.mockResolvedValue({
+      data: new Blob(['pdf'], { type: 'application/pdf' }),
+      headers: {
+        'content-type': 'application/pdf',
+        'content-disposition': 'attachment; filename="report.pdf"',
+      },
+    });
+    mockDownloadPreviewSource.mockResolvedValue({
+      data: new Blob(['source'], { type: 'application/octet-stream' }),
+      headers: {},
+    });
     mockCreateShare.mockResolvedValue({ token: 'public-token', expires_at: readyFile.expires_at });
     mockBuildPublicUrl.mockReturnValue('http://localhost/shared-files/public-token');
+    Object.defineProperty(URL, 'createObjectURL', {
+      configurable: true,
+      value: vi.fn(() => 'blob:my-file-preview'),
+    });
+    Object.defineProperty(URL, 'revokeObjectURL', {
+      configurable: true,
+      value: vi.fn(),
+    });
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
       value: { writeText: vi.fn().mockResolvedValue(undefined) },
@@ -181,5 +227,32 @@ describe('MyFiles page', () => {
     expect(navigator.clipboard.writeText).toHaveBeenCalledWith('http://localhost/shared-files/public-token');
     expect(await screen.findByTestId('my-files-share-url')).toHaveTextContent('http://localhost/shared-files/public-token');
     expect(screen.getByTestId('my-files-share-copied-alert')).toBeInTheDocument();
+  });
+
+  it('opens a private document preview for a ready supported file', async () => {
+    mockListFiles.mockResolvedValue({
+      items: [{
+        ...readyFile,
+        id: 'pdf-1',
+        original_file_name: 'report.pdf',
+        download_file_name: 'report.pdf',
+        mime_type: 'application/pdf',
+        download_mime_type: 'application/pdf',
+        preview_kind: 'pdf',
+        preview_available: true,
+        preview_status: 'ready',
+        preview_max_bytes: 26214400,
+      }],
+    });
+
+    renderPage();
+
+    await screen.findByText('report.pdf');
+    fireEvent.click(screen.getByTestId('my-files-preview-pdf-1'));
+
+    await waitFor(() => expect(mockGetPreviewMeta).toHaveBeenCalledWith('pdf-1'));
+    expect(mockDownloadPreviewContent).toHaveBeenCalledWith('pdf-1');
+    expect(mockCreateShare).not.toHaveBeenCalled();
+    expect(await screen.findByTestId('document-preview-dialog')).toHaveTextContent('report.pdf:pdf');
   });
 });

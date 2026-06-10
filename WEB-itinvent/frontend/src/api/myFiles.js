@@ -49,6 +49,20 @@ export const myFilesAPI = {
     const response = await apiClient.post(`/my-files/${encodeURIComponent(fileId)}/download-grant`);
     return response.data;
   },
+  getPreviewMeta: async (fileId) => {
+    const response = await apiClient.get(`/my-files/${encodeURIComponent(fileId)}/preview`);
+    return response.data;
+  },
+  downloadPreviewContent: async (fileId) => (
+    apiClient.get(`/my-files/${encodeURIComponent(fileId)}/preview/content`, {
+      responseType: 'blob',
+    })
+  ),
+  downloadPreviewSource: async (fileId) => (
+    apiClient.get(`/my-files/${encodeURIComponent(fileId)}/preview/source`, {
+      responseType: 'blob',
+    })
+  ),
   /** Совместимость: всегда grant + нативное скачивание (без blob/XHR). */
   downloadFile: async (fileId) => {
     const grant = await myFilesAPI.createDownloadGrant(fileId);

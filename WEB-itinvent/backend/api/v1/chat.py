@@ -45,6 +45,7 @@ from backend.chat.schemas import (
     ChatMemberRoleUpdateRequest,
     ChatOwnershipTransferRequest,
     ChatShareableTasksResponse,
+    ChatUserSummary,
     ChatUsersResponse,
     ChatReactionToggleRequest,
     ChatReactionToggleResponse,
@@ -779,6 +780,25 @@ async def get_chat_users(
             limit=int(limit),
         )
         return {"items": items}
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.get("/users/resolve", response_model=ChatUserSummary)
+async def resolve_chat_user_for_address_book(
+    email: str = Query("", min_length=0),
+    full_name: str = Query("", min_length=0),
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    if not str(email or "").strip() and not str(full_name or "").strip():
+        raise HTTPException(status_code=400, detail="email or full_name is required")
+    try:
+        return await _run_chat_call(
+            chat_service.resolve_user_for_address_book,
+            current_user_id=int(current_user.id),
+            email=email,
+            full_name=full_name,
+        )
     except Exception as exc:
         _raise_chat_http_error(exc)
 

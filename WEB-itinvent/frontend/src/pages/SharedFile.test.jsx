@@ -33,6 +33,23 @@ vi.mock('../components/mail/MailPdfPreviewSurface', () => ({
   ),
 }));
 
+vi.mock('../components/documentPreview/DocumentPreviewDialog', () => ({
+  default: ({
+    open,
+    title,
+    kind,
+    objectUrl,
+    error,
+  }) => (
+    open ? (
+      <div data-testid="document-preview-dialog">
+        {title}:{kind}:{objectUrl}
+        {error ? <div data-testid="document-preview-error">{error}</div> : null}
+      </div>
+    ) : null
+  ),
+}));
+
 import SharedFile from './SharedFile';
 
 function renderPublicPage(token = 'public-token') {
@@ -147,13 +164,13 @@ describe('SharedFile page', () => {
     expect(await screen.findByText('report.docx')).toBeInTheDocument();
     expect(screen.getByText(/наведите курсор и нажмите «просмотреть»/i)).toBeInTheDocument();
     expect(mockGetPublicPreviewMeta).not.toHaveBeenCalled();
-    expect(screen.queryByTestId('pdf-preview')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('document-preview-dialog')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /просмотреть/i }));
 
     await waitFor(() => expect(mockGetPublicPreviewMeta).toHaveBeenCalledWith('public-token'));
-    expect(await screen.findByTestId('pdf-preview')).toHaveTextContent(
-      'report.docx:/api/v1/my-files/public/public-token/preview/content',
+    expect(await screen.findByTestId('document-preview-dialog')).toHaveTextContent(
+      'report.docx:office_pdf:/api/v1/my-files/public/public-token/preview/content',
     );
   });
 
@@ -183,7 +200,7 @@ describe('SharedFile page', () => {
 
     fireEvent.click(screen.getByRole('button', { name: /просмотреть/i }));
 
-    expect(await screen.findByTestId('shared-file-fallback')).toHaveTextContent(
+    expect(await screen.findByTestId('document-preview-error')).toHaveTextContent(
       'Предпросмотр не удалось подготовить',
     );
   });

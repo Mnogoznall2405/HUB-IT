@@ -10,6 +10,9 @@ const {
   mockUpdateEntry,
   mockArchiveEntry,
   mockUnlock,
+  mockUnlockWebAuthnOptions,
+  mockUnlockWebAuthnVerify,
+  mockGetPasskeyAssertion,
   mockRevealEntry,
   mockGetAudit,
   mockHasPermission,
@@ -24,6 +27,9 @@ const {
   mockUpdateEntry: vi.fn(),
   mockArchiveEntry: vi.fn(),
   mockUnlock: vi.fn(),
+  mockUnlockWebAuthnOptions: vi.fn(),
+  mockUnlockWebAuthnVerify: vi.fn(),
+  mockGetPasskeyAssertion: vi.fn(),
   mockRevealEntry: vi.fn(),
   mockGetAudit: vi.fn(),
   mockHasPermission: vi.fn((permission) => ['passwords.read', 'passwords.write'].includes(permission)),
@@ -45,14 +51,24 @@ vi.mock('../api/passwords', () => ({
     updateEntry: mockUpdateEntry,
     archiveEntry: mockArchiveEntry,
     unlock: mockUnlock,
+    unlockWebAuthnOptions: mockUnlockWebAuthnOptions,
+    unlockWebAuthnVerify: mockUnlockWebAuthnVerify,
     revealEntry: mockRevealEntry,
     getAudit: mockGetAudit,
   },
 }));
 
+vi.mock('../lib/useWebAuthnAvailability', () => ({
+  useWebAuthnAvailability: () => ({ webAuthnReady: true, webAuthnTimedOut: false }),
+}));
+
+vi.mock('../lib/passkeyWebAuthn', () => ({
+  getPasskeyAssertion: mockGetPasskeyAssertion,
+}));
+
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: 1, username: 'admin', role: 'admin' },
+    user: { id: 1, username: 'admin', role: 'admin', trusted_devices_count: 1 },
     hasPermission: mockHasPermission,
   }),
 }));
@@ -84,6 +100,10 @@ vi.mock('react-router-dom', async () => {
 import Passwords, { generateVaultPassword, normalizeTagList } from './Passwords';
 
 const theme = createTheme();
+
+const unlockRequiredError = {
+  response: { status: 403, data: { detail: 'Password vault unlock is required' } },
+};
 
 const vaultPayload = {
   items: [
@@ -141,6 +161,7 @@ describe('generateVaultPassword', () => {
 
 describe('Passwords page', () => {
   beforeEach(() => {
+    window.sessionStorage.clear();
     mockUseMediaQuery.mockReturnValue(false);
     mockGetEntries.mockReset();
     mockCreateEntry.mockReset();
@@ -148,6 +169,9 @@ describe('Passwords page', () => {
     mockUpdateEntry.mockReset();
     mockArchiveEntry.mockReset();
     mockUnlock.mockReset();
+    mockUnlockWebAuthnOptions.mockReset();
+    mockUnlockWebAuthnVerify.mockReset();
+    mockGetPasskeyAssertion.mockReset();
     mockRevealEntry.mockReset();
     mockGetAudit.mockReset();
     mockHasPermission.mockClear();
@@ -158,6 +182,12 @@ describe('Passwords page', () => {
     mockGetGroups.mockResolvedValue({ items: [{ id: 'group-1', name: 'VPN', is_active: true, sort_order: 0 }] });
     mockGetAudit.mockResolvedValue({ items: [] });
     mockUnlock.mockResolvedValue({ unlocked_until: new Date(Date.now() + 300_000).toISOString() });
+    mockUnlockWebAuthnOptions.mockResolvedValue({
+      challenge_id: 'challenge-1',
+      public_key: { challenge: 'Y2g=', timeout: 60000 },
+    });
+    mockUnlockWebAuthnVerify.mockResolvedValue({ unlocked_until: new Date(Date.now() + 300_000).toISOString() });
+    mockGetPasskeyAssertion.mockResolvedValue({ id: 'cred', rawId: 'cred', type: 'public-key', response: {} });
     mockRevealEntry.mockResolvedValue({ password: 'plain-secret', unlocked_until: new Date(Date.now() + 300_000).toISOString() });
     Object.defineProperty(navigator, 'clipboard', {
       configurable: true,
@@ -223,32 +253,51 @@ describe('Passwords page', () => {
   });
 
   it('gates reveal through unlock and hides shown password after timeout', async () => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    mockRevealEntry.mockRejectedValueOnce(unlockRequiredError);
     renderPage();
 
     await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
-    vi.useFakeTimers();
 
     fireEvent.click(screen.getByLabelText('Показать пароль svc-vpn'));
-    expect(screen.getByTestId('password-unlock-dialog')).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByTestId('password-unlock-dialog')).toBeInTheDocument());
 
     fireEvent.change(screen.getByTestId('password-unlock-code'), { target: { value: '123456' } });
     fireEvent.click(screen.getByTestId('password-unlock-submit'));
 
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await waitFor(() => expect(screen.getByText('plain-secret')).toBeInTheDocument());
 
     expect(mockUnlock).toHaveBeenCalledWith({ totp_code: '123456' });
     expect(mockRevealEntry).toHaveBeenCalledWith('entry-1', { purpose: 'show' });
-    expect(screen.getByText('plain-secret')).toBeInTheDocument();
 
     act(() => {
       vi.advanceTimersByTime(30_000);
     });
 
     expect(screen.queryByText('plain-secret')).not.toBeInTheDocument();
+  });
+
+  it('unlocks vault with passkey when trusted device is available', async () => {
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('password-unlock-open'));
+    expect(screen.getByTestId('password-unlock-dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('password-unlock-passkey')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('password-unlock-passkey'));
+
+    await waitFor(() => {
+      expect(mockUnlockWebAuthnOptions).toHaveBeenCalled();
+      expect(mockGetPasskeyAssertion).toHaveBeenCalled();
+      expect(mockUnlockWebAuthnVerify).toHaveBeenCalled();
+      expect(mockNotifySuccess).toHaveBeenCalledWith(
+        'Доступ к раскрытию паролей открыт на 5 минут.',
+        expect.objectContaining({ source: 'passwords' }),
+      );
+    });
+    expect(mockUnlock).not.toHaveBeenCalled();
   });
 
   it('copies login without unlock dialog', async () => {
@@ -299,24 +348,42 @@ describe('Passwords page', () => {
     expect(screen.getByRole('option', { name: 'prod' })).toBeInTheDocument();
   });
 
+  it('reveals password without unlock dialog when server session is already active', async () => {
+    const unlockedUntil = new Date(Date.now() + 300_000).toISOString();
+    mockGetEntries.mockResolvedValue({ ...vaultPayload, unlocked_until: null });
+    mockRevealEntry.mockResolvedValue({
+      password: 'plain-secret',
+      unlocked_until: unlockedUntil,
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByLabelText('Показать пароль svc-vpn'));
+
+    await waitFor(() => {
+      expect(mockRevealEntry).toHaveBeenCalledWith('entry-1', { purpose: 'show' });
+      expect(screen.getByText('plain-secret')).toBeInTheDocument();
+    });
+    expect(screen.queryByTestId('password-unlock-dialog')).not.toBeInTheDocument();
+    expect(mockUnlock).not.toHaveBeenCalled();
+  });
+
   it('copies revealed password with copy purpose after unlock', async () => {
+    mockRevealEntry.mockRejectedValueOnce(unlockRequiredError);
     renderPage();
 
     await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
-    vi.useFakeTimers();
 
     fireEvent.click(screen.getByLabelText('Скопировать пароль svc-vpn'));
+    await waitFor(() => expect(screen.getByTestId('password-unlock-dialog')).toBeInTheDocument());
     fireEvent.change(screen.getByTestId('password-unlock-code'), { target: { value: '123456' } });
     fireEvent.click(screen.getByTestId('password-unlock-submit'));
 
-    await act(async () => {
-      await Promise.resolve();
-      await Promise.resolve();
-      await Promise.resolve();
+    await waitFor(() => {
+      expect(mockRevealEntry).toHaveBeenCalledWith('entry-1', { purpose: 'copy' });
+      expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain-secret');
     });
-
-    expect(mockRevealEntry).toHaveBeenCalledWith('entry-1', { purpose: 'copy' });
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith('plain-secret');
   });
 
   it('opens mobile bottom sheet with copy actions', async () => {

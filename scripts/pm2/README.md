@@ -66,6 +66,7 @@ If `redis_configured=True`, but `mode=local_fallback`, backend is healthy, but c
 Windows / no-Redis baseline for AI chat:
 
 - `itinvent-chat-push-worker` processes only `chat_push_outbox` (Web Push);
+- `itinvent-mail-notification-worker` polls mail notifications once per cluster and sends them through the shared Web Push subscription table;
 - cross-process AI realtime uses DB-backed `chat_event_outbox` dispatched by `itinvent-backend`;
 - `backend-chat-runtime` is healthy in local mode only when `event_dispatcher_active=True`, even if Redis is not configured;
 - if `event_dispatcher_active=False`, websocket delivery for AI and degraded cross-process chat realtime must be treated as broken.
@@ -99,6 +100,7 @@ Notes:
 - `ecosystem.backend.scale.config.js` starts `itinvent-backend-a` on `8001` and `itinvent-backend-b` on `8002`;
 - each backend instance gets its own `CHAT_REALTIME_NODE_ID`;
 - one `itinvent-chat-push-worker` stays shared and must not be duplicated per backend instance;
+- one `itinvent-mail-notification-worker` stays shared; backend instances run with `MAIL_NOTIFICATION_BACKGROUND_ENABLED=0`;
 - for real production scale-out, place a reverse proxy/upstream in front of the backend ports.
 
 Если backend, inventory, scan и bot разнесены по разным хостам, одной командой с одного PM2-инстанса их не поднять.

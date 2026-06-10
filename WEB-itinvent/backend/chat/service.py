@@ -987,6 +987,9 @@ class ChatService:
             haystack = " ".join([
                 _normalize_text(item.get("username")),
                 _normalize_text(item.get("full_name")),
+                _normalize_text(item.get("email")),
+                _normalize_text(item.get("mailbox_email")),
+                _normalize_text(item.get("mailbox_login")),
             ]).lower()
             if search and search not in haystack:
                 continue
@@ -1000,6 +1003,75 @@ class ChatService:
             self._serialize_user(item, presence_map=presence_map)
             for item in users
         ]
+
+    def resolve_user_for_address_book(
+        self,
+        *,
+        current_user_id: int,
+        email: str = "",
+        full_name: str = "",
+    ) -> dict:
+        self._ensure_available()
+        email_norm = _normalize_text(email).lower()
+        name_norm = re.sub(r"\s+", " ", _normalize_text(full_name)).casefold()
+
+        candidates: list[dict[str, Any]] = []
+        for item in user_service.list_users():
+            user_id = int(item.get("id", 0) or 0)
+            if user_id <= 0 or user_id == int(current_user_id):
+                continue
+            if not bool(item.get("is_active", True)):
+                continue
+            candidates.append(dict(item))
+
+        def _email_fields(item: dict[str, Any]) -> list[str]:
+            values: list[str] = []
+            for key in ("email", "mailbox_email", "mailbox_login", "username"):
+                val = _normalize_text(item.get(key)).lower()
+                if val:
+                    values.append(val)
+            return values
+
+        def _serialize_match(item: dict[str, Any]) -> dict:
+            presence_map = self._get_presence_map(user_ids=[int(item.get("id", 0) or 0)])
+            return self._serialize_user(item, presence_map=presence_map)
+
+        if email_norm:
+            for item in candidates:
+                if email_norm in _email_fields(item):
+                    return _serialize_match(item)
+            local_part = email_norm.split("@", 1)[0].strip()
+            if local_part:
+                username_matches = [
+                    item
+                    for item in candidates
+                    if _normalize_text(item.get("username")).lower() == local_part
+                ]
+                if len(username_matches) == 1:
+                    return _serialize_match(username_matches[0])
+
+        if name_norm:
+            exact_name_matches = [
+                item
+                for item in candidates
+                if re.sub(r"\s+", " ", _normalize_text(item.get("full_name"))).casefold() == name_norm
+            ]
+            if len(exact_name_matches) == 1:
+                return _serialize_match(exact_name_matches[0])
+
+            name_tokens = [token for token in name_norm.split() if token]
+            if len(name_tokens) >= 2:
+                fuzzy_matches = []
+                for item in candidates:
+                    hub_name = re.sub(r"\s+", " ", _normalize_text(item.get("full_name"))).casefold()
+                    if hub_name and all(token in hub_name for token in name_tokens[:2]):
+                        fuzzy_matches.append(item)
+                if len(fuzzy_matches) == 1:
+                    return _serialize_match(fuzzy_matches[0])
+
+        raise LookupError(
+            "Сотрудник не найден в HUB-чате. Возможно, у него нет учётной записи или e-mail не совпадает."
+        )
 
     def list_conversations(self, *, current_user_id: int, q: str = "", limit: int = 50) -> list[dict]:
         self._ensure_available()
@@ -5168,6 +5240,7 @@ class ChatService:
         title: str,
         body: str,
         now: datetime,
+        is_mention: bool = False,
     ) -> bool:
         return self._notification_dispatcher.upsert_push_outbox_job(
             session=session,
@@ -5177,6 +5250,7 @@ class ChatService:
             channel=channel,
             title=title,
             body=body,
+            is_mention=bool(is_mention),
             now=now,
         )
 

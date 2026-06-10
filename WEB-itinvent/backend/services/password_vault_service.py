@@ -108,6 +108,31 @@ def _session_key(*, user_id: int, session_id: str | None) -> str:
     return f"{int(user_id)}:{normalized_session_id}"
 
 
+def _user_unlock_key(*, user_id: int) -> str:
+    return f"{int(user_id)}:user"
+
+
+def _unlock_storage_keys(*, user_id: int, session_id: str | None) -> list[str]:
+    session_key = _session_key(user_id=user_id, session_id=session_id)
+    user_key = _user_unlock_key(user_id=user_id)
+    if session_key == user_key:
+        return [session_key]
+    return [session_key, user_key]
+
+
+def _parse_unlocked_until(value: Any) -> datetime | None:
+    unlocked_until = _normalize_text(value)
+    if not unlocked_until:
+        return None
+    try:
+        parsed = datetime.fromisoformat(unlocked_until)
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
 @dataclass(frozen=True)
 class PasswordVaultRequestMeta:
     ip_address: str = ""
@@ -458,6 +483,42 @@ class PasswordVaultService:
             window_seconds=300,
         )
 
+    def _require_unlock_eligible_user(self, *, user_id: int) -> dict[str, Any]:
+        if user_id <= 0:
+            raise PasswordVaultAccessError("Authenticated user is required")
+        raw_user = user_service.get_by_id(user_id)
+        if not raw_user or not bool(raw_user.get("is_2fa_enabled", False)):
+            raise PasswordVaultAccessError("2FA is required for password vault unlock")
+        return raw_user
+
+    def _grant_unlock(
+        self,
+        *,
+        actor: Any,
+        session_id: str | None,
+        meta: PasswordVaultRequestMeta,
+        audit_action: str = "unlock",
+    ) -> dict[str, str]:
+        database_url = self._database_url_or_raise()
+        user_id = _actor_id(actor)
+        unlocked_until_dt = _utc_now() + timedelta(seconds=PASSWORD_VAULT_UNLOCK_TTL_SECONDS)
+        unlocked_until = unlocked_until_dt.replace(microsecond=0).isoformat()
+        payload = {
+            "user_id": user_id,
+            "session_id": _normalize_text(session_id),
+            "unlocked_until": unlocked_until,
+        }
+        for storage_key in _unlock_storage_keys(user_id=user_id, session_id=session_id):
+            auth_runtime_store_service.set_json(
+                PASSWORD_VAULT_UNLOCK_NAMESPACE,
+                storage_key,
+                payload,
+                ttl_seconds=PASSWORD_VAULT_UNLOCK_TTL_SECONDS,
+            )
+        with app_session(database_url) as session:
+            self._write_audit(session, action=audit_action, actor=actor, entry=None, meta=meta)
+        return {"unlocked_until": unlocked_until}
+
     def unlock(
         self,
         *,
@@ -467,16 +528,11 @@ class PasswordVaultService:
         backup_code: str | None = None,
         meta: PasswordVaultRequestMeta,
     ) -> dict[str, str]:
-        database_url = self._database_url_or_raise()
         user_id = _actor_id(actor)
-        if user_id <= 0:
-            raise PasswordVaultAccessError("Authenticated user is required")
         self._check_unlock_rate_limit(user_id=user_id, ip_address=meta.ip_address)
 
         try:
-            raw_user = user_service.get_by_id(user_id)
-            if not raw_user or not bool(raw_user.get("is_2fa_enabled", False)):
-                raise PasswordVaultAccessError("2FA is required for password vault unlock")
+            raw_user = self._require_unlock_eligible_user(user_id=user_id)
 
             if _normalize_text(totp_code):
                 secret_enc = _normalize_text(raw_user.get("totp_secret_enc"))
@@ -497,43 +553,50 @@ class PasswordVaultService:
             self._record_unlock_failure(user_id=user_id, ip_address=meta.ip_address)
             raise
 
-        unlocked_until_dt = _utc_now() + timedelta(seconds=PASSWORD_VAULT_UNLOCK_TTL_SECONDS)
-        unlocked_until = _utc_iso(unlocked_until_dt)
-        auth_runtime_store_service.set_json(
-            PASSWORD_VAULT_UNLOCK_NAMESPACE,
-            _session_key(user_id=user_id, session_id=session_id),
-            {"user_id": user_id, "session_id": _normalize_text(session_id), "unlocked_until": unlocked_until},
-            ttl_seconds=PASSWORD_VAULT_UNLOCK_TTL_SECONDS,
+        return self._grant_unlock(actor=actor, session_id=session_id, meta=meta, audit_action="unlock")
+
+    def unlock_with_trusted_device(
+        self,
+        *,
+        actor: Any,
+        session_id: str | None,
+        device: dict[str, Any],
+        meta: PasswordVaultRequestMeta,
+    ) -> dict[str, str]:
+        user_id = _actor_id(actor)
+        self._check_unlock_rate_limit(user_id=user_id, ip_address=meta.ip_address)
+        try:
+            self._require_unlock_eligible_user(user_id=user_id)
+            if int(device.get("user_id") or 0) != user_id:
+                raise PasswordVaultAccessError("Trusted device does not belong to current user")
+        except PasswordVaultAccessError:
+            self._record_unlock_failure(user_id=user_id, ip_address=meta.ip_address)
+            raise
+
+        return self._grant_unlock(
+            actor=actor,
+            session_id=session_id,
+            meta=meta,
+            audit_action="unlock.webauthn",
         )
-        with app_session(database_url) as session:
-            self._write_audit(session, action="unlock", actor=actor, entry=None, meta=meta)
-        return {"unlocked_until": unlocked_until}
 
     def get_unlocked_until(self, *, user_id: int, session_id: str | None) -> str | None:
         if int(user_id or 0) <= 0:
             return None
-        payload = auth_runtime_store_service.get_json(
-            PASSWORD_VAULT_UNLOCK_NAMESPACE,
-            _session_key(user_id=int(user_id), session_id=session_id),
-        )
-        if not isinstance(payload, dict):
+        best_until: datetime | None = None
+        for storage_key in _unlock_storage_keys(user_id=int(user_id), session_id=session_id):
+            payload = auth_runtime_store_service.get_json(PASSWORD_VAULT_UNLOCK_NAMESPACE, storage_key)
+            if not isinstance(payload, dict):
+                continue
+            parsed = _parse_unlocked_until(payload.get("unlocked_until"))
+            if parsed is None or parsed <= _utc_now():
+                auth_runtime_store_service.delete(PASSWORD_VAULT_UNLOCK_NAMESPACE, storage_key)
+                continue
+            if best_until is None or parsed > best_until:
+                best_until = parsed
+        if best_until is None:
             return None
-        unlocked_until = _normalize_text(payload.get("unlocked_until"))
-        if not unlocked_until:
-            return None
-        try:
-            parsed = datetime.fromisoformat(unlocked_until)
-        except ValueError:
-            return None
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=timezone.utc)
-        if parsed <= _utc_now():
-            auth_runtime_store_service.delete(
-                PASSWORD_VAULT_UNLOCK_NAMESPACE,
-                _session_key(user_id=int(user_id), session_id=session_id),
-            )
-            return None
-        return parsed.isoformat()
+        return best_until.replace(microsecond=0).isoformat()
 
     def require_unlocked(self, *, user_id: int, session_id: str | None) -> str:
         unlocked_until = self.get_unlocked_until(user_id=user_id, session_id=session_id)
@@ -560,7 +623,11 @@ class PasswordVaultService:
             try:
                 password = decrypt_password_vault_secret(row.password_enc)
             except SecretCryptoError as exc:
-                raise PasswordVaultConfigurationError(str(exc)) from exc
+                raise PasswordVaultConfigurationError(
+                    "Не удалось расшифровать пароль записи. "
+                    "Если недавно менялся PASSWORD_VAULT_KEY, укажите старый ключ в "
+                    "PASSWORD_VAULT_KEY_LEGACY или пересохраните пароль вручную."
+                ) from exc
             self._write_audit(session, action=action, actor=actor, entry=row, meta=meta)
             return {"password": password, "unlocked_until": unlocked_until}
 

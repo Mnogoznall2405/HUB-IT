@@ -423,6 +423,79 @@ def test_public_preview_content_returns_pdf_bytes(tmp_path):
     assert content == payload
 
 
+def test_private_preview_content_is_owner_scoped(tmp_path):
+    service = _new_service(tmp_path)
+    payload = b"%PDF-1.4\n%%EOF"
+    spool_path = _stage_upload(service, "private-report.pdf", payload)
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="private-report.pdf",
+        mime_type="application/pdf",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=3,
+    )
+    service.process_file(created["id"])
+    assert service.process_next_preview_job() is True
+
+    listed = service.list_files(user_id=7)["items"][0]
+    assert listed["preview_kind"] == "pdf"
+    assert listed["preview_available"] is True
+    assert listed["preview_status"] == "ready"
+
+    meta = service.get_file_preview_meta(file_id=created["id"], user_id=7)
+    assert meta["preview_kind"] == "pdf"
+    assert meta["page_count"] >= 0
+
+    content, media_type, filename = service.get_file_preview_content(file_id=created["id"], user_id=7)
+    assert media_type == "application/pdf"
+    assert filename == "private-report.pdf"
+    assert content == payload
+
+    with pytest.raises(MyFilesNotFoundError):
+        service.get_file_preview_meta(file_id=created["id"], user_id=8)
+
+
+def test_private_excel_preview_source_returns_original_workbook(monkeypatch, tmp_path):
+    service = _new_service(tmp_path)
+    payload = b"xlsx-bytes"
+    spool_path = _stage_upload(service, "table.xlsx", payload)
+    created = service.create_pending_upload(
+        actor=_user(),
+        original_file_name="table.xlsx",
+        mime_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        spool_path=spool_path,
+        original_size_bytes=spool_path.stat().st_size,
+        retention_days=3,
+    )
+    from backend.services import mail_attachment_preview_service as preview_service
+
+    monkeypatch.setattr(
+        preview_service,
+        "build_office_preview_artifact",
+        lambda **_kwargs: preview_service.PreviewArtifact(
+            pdf_bytes=b"%PDF-1.4 excel",
+            pdf_filename="table.pdf",
+            source_kind="excel",
+            page_count=1,
+            sheets=[{"index": 0, "name": "Sheet1", "page": 1, "page_end": 1, "page_count": 1, "hidden": False}],
+        ),
+    )
+
+    service.process_file(created["id"])
+    assert service.process_next_preview_job() is True
+
+    meta = service.get_file_preview_meta(file_id=created["id"], user_id=7)
+    assert meta["preview_kind"] == "office_pdf"
+    assert meta["source_kind"] == "excel"
+    assert meta["sheets"][0]["name"] == "Sheet1"
+
+    content, media_type, filename = service.get_file_preview_source(file_id=created["id"], user_id=7)
+    assert content == payload
+    assert media_type == "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    assert filename == "table.xlsx"
+
+
 def test_public_preview_office_docx_uses_soffice(monkeypatch, tmp_path):
     service = _new_service(tmp_path)
     spool_path = _stage_upload(service, "memo.docx", b"docx-bytes")

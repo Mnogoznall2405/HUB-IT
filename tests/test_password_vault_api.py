@@ -117,6 +117,17 @@ class FakePasswordVaultService:
         self.calls.append("unlock")
         return {"unlocked_until": "2026-05-28T00:05:00+00:00"}
 
+    def unlock_with_trusted_device(self, **kwargs):
+        self.calls.append("unlock.webauthn")
+        return {"unlocked_until": "2026-05-28T00:05:00+00:00"}
+
+    def _require_unlock_eligible_user(self, *, user_id):
+        self.calls.append("unlock.eligible")
+        return {"id": user_id, "is_2fa_enabled": True}
+
+    def _record_unlock_failure(self, **kwargs):
+        self.calls.append("unlock.fail")
+
     def reveal_entry(self, entry_id, *, purpose, actor, session_id, meta):
         self.calls.append(f"reveal:{purpose}")
         if not self.reveal_allowed:
@@ -276,6 +287,16 @@ def test_reveal_requires_unlock_and_returns_single_plaintext_only_when_allowed(m
     assert revealed.status_code == 200
     assert revealed.json()["password"] == "plain-secret"
     assert fake.calls == ["reveal:copy", "reveal:copy"]
+
+
+def test_unlock_webauthn_options_requires_trusted_devices(monkeypatch):
+    fake = FakePasswordVaultService()
+    client = _client_for(lambda: _make_user(permissions=["passwords.read"]), fake, monkeypatch)
+    monkeypatch.setattr(passwords_api.trusted_device_service, "list_devices", lambda user_id, active_only=True: [])
+
+    response = client.post("/passwords/unlock/webauthn/options")
+    assert response.status_code == 400
+    assert "доверенных устройств" in response.json()["detail"]
 
 
 def test_unlock_and_audit_endpoints(monkeypatch):

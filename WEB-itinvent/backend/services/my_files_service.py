@@ -333,10 +333,47 @@ class MyFilesService:
             raise MyFilesValidationError("Retention days must be one of 1, 3, 7, 10 or 30")
         return days
 
-    @staticmethod
-    def _response(row: AppMyFile) -> dict[str, Any]:
+    def _preview_summary_locked(self, session, row: AppMyFile) -> dict[str, Any]:
+        file_name = _normalize_text(row.download_file_name) or _normalize_text(row.original_file_name) or "file.bin"
+        mime_type = _normalize_text(row.download_mime_type) or _normalize_text(row.mime_type) or "application/octet-stream"
+        preview_kind = self._classify_preview_kind(filename=file_name, mime_type=mime_type)
+        preview_max_bytes = self._preview_max_bytes()
+        preview_status = "unsupported" if preview_kind == "unsupported" else PREVIEW_STATUS_QUEUED
+        preview_available = False
+        if preview_kind != "unsupported":
+            download_size = self._preview_download_size_locked(row)
+            preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+            if preview is not None:
+                preview_status = _normalize_text(preview.status) or preview_status
+                preview_path = Path(_normalize_text(preview.preview_path))
+                preview_available = bool(
+                    preview.status == PREVIEW_STATUS_READY
+                    and download_size > 0
+                    and download_size <= preview_max_bytes
+                    and preview_path.is_file()
+                )
+            elif download_size <= 0 or download_size > preview_max_bytes:
+                preview_status = PREVIEW_STATUS_ERROR
+        return {
+            "preview_kind": preview_kind,
+            "preview_available": preview_available,
+            "preview_status": preview_status,
+            "preview_max_bytes": preview_max_bytes,
+        }
+
+    def _response(self, row: AppMyFile, session=None) -> dict[str, Any]:
         original_size = int(row.original_size_bytes or 0)
         stored_size = int(row.stored_size_bytes or 0)
+        preview_summary = (
+            self._preview_summary_locked(session, row)
+            if session is not None
+            else {
+                "preview_kind": "unsupported",
+                "preview_available": False,
+                "preview_status": "unsupported",
+                "preview_max_bytes": self._preview_max_bytes(),
+            }
+        )
         return {
             "id": _normalize_text(row.id),
             "original_file_name": _normalize_text(row.original_file_name),
@@ -351,6 +388,7 @@ class MyFilesService:
             "storage_mode": _normalize_text(row.storage_mode),
             "error_text": _normalize_text(row.error_text),
             "security_scan_status": _normalize_text(row.security_scan_status) or "pending",
+            **preview_summary,
             "is_shared": bool(_normalize_text(row.share_token_hash)),
             "share_expires_at": _coerce_utc(row.expires_at),
             "created_at": _coerce_utc(row.created_at),
@@ -470,7 +508,7 @@ class MyFilesService:
                 session.add(row)
                 session.flush()
                 self._write_audit(session, action="upload_reserved", row=row, actor=actor, meta=meta)
-                return self._response(row)
+                return self._response(row, session=session)
 
     def complete_upload(
         self,
@@ -497,7 +535,7 @@ class MyFilesService:
             row.status = STATUS_QUEUED
             row.updated_at = _utc_now()
             self._write_audit(session, action="upload_completed", row=row, actor=actor, meta=meta)
-            return self._response(row)
+            return self._response(row, session=session)
 
     def abort_upload(
         self,
@@ -565,7 +603,7 @@ class MyFilesService:
                 )
                 .order_by(AppMyFile.created_at.desc())
             ).all()
-            return {"items": [self._response(row) for row in rows]}
+            return {"items": [self._response(row, session=session) for row in rows]}
 
     def list_audit(self, *, limit: int = 100) -> list[dict[str, Any]]:
         database_url = self._database_url_or_raise()
@@ -1320,7 +1358,7 @@ class MyFilesService:
                     row.updated_at = _utc_now()
                     self._queue_preview_for_row_locked(session, row)
                     spool_path.unlink(missing_ok=True)
-                    return self._response(row)
+                    return self._response(row, session=session)
 
             payload = self._build_stored_payload(spool_path, original_file_name, mime_type, original_sha256, actual_size)
             final_path = self._finalize_blob_path(payload, original_sha256)
@@ -1374,7 +1412,7 @@ class MyFilesService:
                 self._queue_preview_for_row_locked(session, row)
                 if payload.path != spool_path:
                     spool_path.unlink(missing_ok=True)
-                return self._response(row)
+                return self._response(row, session=session)
         except Exception as exc:
             logger.exception("Failed to process my-file upload %s", file_id)
             with app_session(database_url) as session:
@@ -1595,6 +1633,92 @@ class MyFilesService:
         row = self._public_row_locked(session, token)
         payload = self._download_payload_for_row_locked(session, row)
         return row, payload
+
+    def _owned_preview_context_locked(self, session, *, file_id: str, user_id: int) -> tuple[AppMyFile, DownloadPayload]:
+        row = session.get(AppMyFile, _normalize_text(file_id))
+        if row is None or row.owner_user_id != int(user_id):
+            raise MyFilesNotFoundError("File not found")
+        payload = self._download_payload_for_row_locked(session, row)
+        return row, payload
+
+    def _preview_meta_locked(
+        self,
+        session,
+        *,
+        row: AppMyFile,
+        payload: DownloadPayload,
+        preview_url: str,
+    ) -> dict[str, Any]:
+        preview_kind = self._classify_preview_kind(
+            filename=payload.file_name,
+            mime_type=payload.media_type,
+        )
+        if preview_kind == "unsupported":
+            raise MyFilesValidationError("Preview is not available for this file type.")
+        if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+            raise MyFilesValidationError("File is too large for preview.")
+        preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+        preview_path = Path(_normalize_text(getattr(preview, "preview_path", "")))
+        if preview is None or preview.status != PREVIEW_STATUS_READY or not preview_path.is_file():
+            raise MyFilesValidationError(PREVIEW_UNAVAILABLE_MESSAGE)
+        sheets: list[dict[str, Any]] = []
+        try:
+            parsed_sheets = json.loads(_normalize_text(preview.sheets_json) or "[]")
+            if isinstance(parsed_sheets, list):
+                sheets = [dict(item) for item in parsed_sheets if isinstance(item, dict)]
+        except Exception:
+            sheets = []
+        return {
+            "preview_kind": _normalize_text(preview.preview_kind) or preview_kind,
+            "source_kind": _normalize_text(preview.source_kind),
+            "source_filename": payload.file_name,
+            "pdf_filename": _replace_extension(payload.file_name, ".pdf") if preview_kind == "office_pdf" else payload.file_name,
+            "page_count": int(preview.page_count or 0),
+            "sheets": sheets,
+            "preview_url": preview_url,
+        }
+
+    def _preview_content_locked(self, session, *, row: AppMyFile, payload: DownloadPayload) -> tuple[bytes, str, str]:
+        preview_kind = self._classify_preview_kind(
+            filename=payload.file_name,
+            mime_type=payload.media_type,
+        )
+        if preview_kind == "unsupported":
+            raise MyFilesValidationError("Preview is not available for this file type.")
+        if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+            raise MyFilesValidationError("File is too large for preview.")
+        preview = session.get(AppMyFilePreview, _normalize_text(row.blob_id))
+        preview_path = Path(_normalize_text(getattr(preview, "preview_path", "")))
+        if preview is None or preview.status != PREVIEW_STATUS_READY or not preview_path.is_file():
+            raise MyFilesValidationError(PREVIEW_UNAVAILABLE_MESSAGE)
+        media_type = _normalize_text(preview.preview_mime_type) or payload.media_type
+        filename = _replace_extension(payload.file_name, ".pdf") if preview_kind == "office_pdf" else payload.file_name
+        return preview_path.read_bytes(), media_type, filename
+
+    def get_file_preview_meta(self, *, file_id: str, user_id: int) -> dict[str, Any]:
+        database_url = self._database_url_or_raise()
+        preview_url = f"/api/v1/my-files/{_normalize_text(file_id)}/preview/content"
+        with app_session(database_url) as session:
+            row, payload = self._owned_preview_context_locked(session, file_id=file_id, user_id=int(user_id))
+            return self._preview_meta_locked(session, row=row, payload=payload, preview_url=preview_url)
+
+    def get_file_preview_content(self, *, file_id: str, user_id: int) -> tuple[bytes, str, str]:
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            row, payload = self._owned_preview_context_locked(session, file_id=file_id, user_id=int(user_id))
+            return self._preview_content_locked(session, row=row, payload=payload)
+
+    def get_file_preview_source(self, *, file_id: str, user_id: int) -> tuple[bytes, str, str]:
+        from backend.services.mail_attachment_preview_service import classify_office_source
+
+        database_url = self._database_url_or_raise()
+        with app_session(database_url) as session:
+            _row, payload = self._owned_preview_context_locked(session, file_id=file_id, user_id=int(user_id))
+            if classify_office_source(filename=payload.file_name, content_type=payload.media_type) != "excel":
+                raise MyFilesValidationError("Preview source is only available for Excel files.")
+            if int(payload.download_size_bytes or 0) > self._preview_max_bytes():
+                raise MyFilesValidationError("File is too large for preview.")
+            return self._read_payload_bytes(payload), payload.media_type, payload.file_name
 
     def get_public_file(self, *, token: str) -> dict[str, Any]:
         database_url = self._database_url_or_raise()

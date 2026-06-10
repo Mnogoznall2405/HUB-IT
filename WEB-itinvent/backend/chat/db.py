@@ -180,18 +180,21 @@ def initialize_chat_schema(database_url: str | None = None) -> None:
             _ensure_chat_conversation_columns(engine)
             _ensure_chat_user_state_columns(engine)
             _ensure_chat_attachment_columns(engine)
+            _ensure_chat_push_outbox_columns(engine)
             return
         upgrade_internal_database(ensure_chat_configured(database_url), scope="chat")
         if config.app.is_production:
             _verify_production_schema(engine)
             return
         Base.metadata.create_all(bind=engine, tables=[ChatEventOutbox.__table__])
+        _ensure_chat_push_outbox_columns(engine)
         return
     Base.metadata.create_all(bind=engine)
     _ensure_chat_message_columns(engine)
     _ensure_chat_conversation_columns(engine)
     _ensure_chat_user_state_columns(engine)
     _ensure_chat_attachment_columns(engine)
+    _ensure_chat_push_outbox_columns(engine)
     _ensure_chat_reactions_table(engine)
 
 
@@ -416,6 +419,21 @@ def _ensure_chat_attachment_columns(engine) -> None:
         statements.append(f"ALTER TABLE {table_name} ADD COLUMN media_kind VARCHAR(20)")
     if "duration_seconds" not in columns:
         statements.append(f"ALTER TABLE {table_name} ADD COLUMN duration_seconds INTEGER")
+    with engine.begin() as connection:
+        for statement in statements:
+            connection.execute(text(statement))
+
+
+def _ensure_chat_push_outbox_columns(engine) -> None:
+    inspector = inspect(engine)
+    table_schema = _runtime_schema(engine)
+    if not inspector.has_table("chat_push_outbox", schema=table_schema):
+        return
+    columns = {str(item.get("name")) for item in inspector.get_columns("chat_push_outbox", schema=table_schema)}
+    statements: list[str] = []
+    table_name = _qualified_table("chat_push_outbox", engine=engine)
+    if "is_mention" not in columns:
+        statements.append(f"ALTER TABLE {table_name} ADD COLUMN is_mention BOOLEAN NOT NULL DEFAULT FALSE")
     with engine.begin() as connection:
         for statement in statements:
             connection.execute(text(statement))

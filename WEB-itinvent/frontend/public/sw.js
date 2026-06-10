@@ -820,10 +820,29 @@ self.addEventListener('notificationclick', (event) => {
       action: String(event.action || '').trim(),
     });
     const clientList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
-
-    for (const client of clientList) {
+    const targetUrl = new URL(route, self.location.origin).href;
+    const sameOriginClients = clientList.filter((client) => {
       try {
-        if ('navigate' in client) {
+        return new URL(String(client?.url || ''), self.location.origin).origin === self.location.origin;
+      } catch {
+        return false;
+      }
+    });
+    const exactTargetClient = sameOriginClients.find((client) => {
+      try {
+        return new URL(String(client?.url || ''), self.location.origin).href === targetUrl;
+      } catch {
+        return false;
+      }
+    });
+    const navigationCandidates = exactTargetClient
+      ? [exactTargetClient, ...sameOriginClients.filter((client) => client !== exactTargetClient)]
+      : sameOriginClients;
+
+    for (const client of navigationCandidates) {
+      try {
+        const clientUrl = new URL(String(client?.url || ''), self.location.origin).href;
+        if (clientUrl !== targetUrl && 'navigate' in client) {
           await client.navigate(route);
         }
         await client.focus();

@@ -178,6 +178,7 @@ class ChatPushService:
     def enabled(self) -> bool:
         public_key = _normalize_text(config.web_push.public_key)
         private_key = _normalize_text(config.web_push.private_key)
+        subject = _normalize_text(config.web_push.subject)
         placeholder_keys = {
             "your_vapid_public_key",
             "your_vapid_private_key",
@@ -185,6 +186,7 @@ class ChatPushService:
         keys_configured = bool(
             public_key
             and private_key
+            and subject
             and public_key.lower() not in placeholder_keys
             and private_key.lower() not in placeholder_keys
         )

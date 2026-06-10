@@ -237,6 +237,83 @@ describe('chatNotifications', () => {
     expect(snapshot.pushSubscribed).toBe(true);
   });
 
+  it('keeps the shared push subscription when only local chat notifications are disabled', async () => {
+    window.localStorage.setItem('itinvent_chat_notifications_enabled', '0');
+    const existingUnsubscribe = vi.fn().mockResolvedValue(true);
+    const existingSubscription = {
+      endpoint: 'https://push.example/shared-sub',
+      unsubscribe: existingUnsubscribe,
+      toJSON: () => ({
+        endpoint: 'https://push.example/shared-sub',
+        expirationTime: null,
+        keys: {
+          p256dh: 'shared-p256dh',
+          auth: 'shared-auth',
+        },
+      }),
+    };
+    mockGetSubscription.mockResolvedValue(existingSubscription);
+
+    const { syncChatPushSubscription } = await import('./chatNotifications');
+
+    const snapshot = await syncChatPushSubscription({
+      user: { id: 1, username: 'admin' },
+    });
+
+    expect(existingUnsubscribe).not.toHaveBeenCalled();
+    expect(mockDeletePushSubscription).not.toHaveBeenCalled();
+    expect(mockSubscribe).not.toHaveBeenCalled();
+    expect(mockUpsertPushSubscription).toHaveBeenCalledWith({
+      endpoint: 'https://push.example/shared-sub',
+      expiration_time: null,
+      p256dh_key: 'shared-p256dh',
+      auth_key: 'shared-auth',
+      platform: 'Win32',
+      browser_family: 'chrome',
+      install_mode: 'browser',
+    });
+    expect(snapshot.enabled).toBe(false);
+    expect(snapshot.pushSubscribed).toBe(true);
+  });
+
+  it('renews an existing push subscription when the browser subscription key differs from VAPID config', async () => {
+    mockGetPushConfig.mockResolvedValue({
+      enabled: true,
+      vapid_public_key: 'TmV3',
+      requires_installed_pwa: true,
+      icon_url: '/pwa-192.png',
+      badge_url: '/hubit-badge.svg',
+    });
+    const existingUnsubscribe = vi.fn().mockResolvedValue(true);
+    const existingSubscription = {
+      endpoint: 'https://push.example/old-sub',
+      options: {
+        applicationServerKey: new TextEncoder().encode('Old'),
+      },
+      unsubscribe: existingUnsubscribe,
+      toJSON: () => ({
+        endpoint: 'https://push.example/old-sub',
+        expirationTime: null,
+        keys: {
+          p256dh: 'old-p256dh',
+          auth: 'old-auth',
+        },
+      }),
+    };
+    mockGetSubscription.mockResolvedValue(existingSubscription);
+
+    const { syncChatPushSubscription } = await import('./chatNotifications');
+
+    const snapshot = await syncChatPushSubscription({
+      user: { id: 1, username: 'admin' },
+    });
+
+    expect(mockDeletePushSubscription).toHaveBeenCalledWith('https://push.example/old-sub');
+    expect(existingUnsubscribe).toHaveBeenCalledTimes(1);
+    expect(mockSubscribe).toHaveBeenCalledTimes(1);
+    expect(snapshot.pushSubscribed).toBe(true);
+  });
+
   it('keeps Yandex Browser in foreground-only mode without creating a push subscription', async () => {
     Object.defineProperty(navigator, 'userAgent', {
       configurable: true,

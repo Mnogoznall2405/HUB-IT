@@ -1,12 +1,14 @@
 """Password vault API router."""
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request, status
 from fastapi.concurrency import run_in_threadpool
 
 from backend.api.deps import get_current_admin_user, get_current_session_id, require_permission
+from backend.config import config
 from backend.models.auth import User
 from backend.models.password_vault import (
     PasswordVaultAuditResponse,
@@ -22,7 +24,9 @@ from backend.models.password_vault import (
     PasswordVaultRevealResponse,
     PasswordVaultUnlockRequest,
     PasswordVaultUnlockResponse,
+    PasswordVaultUnlockWebAuthnVerifyRequest,
 )
+from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.authorization_service import PERM_PASSWORDS_READ, PERM_PASSWORDS_WRITE
 from backend.services.password_vault_service import (
     PasswordVaultAccessError,
@@ -32,6 +36,7 @@ from backend.services.password_vault_service import (
     PasswordVaultValidationError,
     password_vault_service,
 )
+from backend.services.trusted_device_service import TrustedDeviceServiceError, trusted_device_service
 from backend.utils.request_network import build_request_network_context
 
 
@@ -222,6 +227,123 @@ async def unlock_password_vault(
         )
     except Exception as exc:
         raise _service_error_to_http(exc) from exc
+
+
+@router.post("/unlock/webauthn/options")
+async def unlock_password_vault_webauthn_options(
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    session_id: str | None = Depends(get_current_session_id),
+) -> dict[str, Any]:
+    meta = _request_meta(request)
+    user_id = int(current_user.id)
+    try:
+        await run_in_threadpool(
+            password_vault_service._require_unlock_eligible_user,
+            user_id=user_id,
+        )
+    except PasswordVaultAccessError as exc:
+        raise _service_error_to_http(exc) from exc
+
+    devices = await run_in_threadpool(trusted_device_service.list_devices, user_id, active_only=True)
+    if not devices:
+        raise HTTPException(status_code=400, detail="У пользователя нет доверенных устройств")
+    rp_id = str(config.security.webauthn_rp_id or "").strip()
+    if not rp_id:
+        raise HTTPException(status_code=503, detail="WebAuthn is not configured")
+
+    options = await run_in_threadpool(
+        trusted_device_service.build_authentication_options,
+        rp_id=rp_id,
+        devices=devices,
+    )
+    challenge_id = uuid.uuid4().hex
+    await run_in_threadpool(
+        auth_runtime_store_service.save_webauthn_challenge,
+        challenge_id,
+        {
+            "purpose": "password_vault_unlock",
+            "user_id": user_id,
+            "session_id": str(session_id or "").strip() or None,
+            "expected_origin": str(config.security.webauthn_origin or "").strip(),
+            "expected_rp_id": rp_id,
+            "challenge": options["challenge"],
+        },
+        ttl_seconds=max(60, int(config.security.twofa_challenge_ttl_sec or 600)),
+    )
+    return {"challenge_id": challenge_id, "public_key": options}
+
+
+@router.post("/unlock/webauthn/verify", response_model=PasswordVaultUnlockResponse)
+async def unlock_password_vault_webauthn_verify(
+    payload: PasswordVaultUnlockWebAuthnVerifyRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    session_id: str | None = Depends(get_current_session_id),
+) -> dict[str, str]:
+    meta = _request_meta(request)
+    user_id = int(current_user.id)
+    challenge = await run_in_threadpool(
+        auth_runtime_store_service.get_webauthn_challenge,
+        payload.challenge_id,
+    )
+    if not isinstance(challenge, dict) or challenge.get("purpose") != "password_vault_unlock":
+        raise HTTPException(
+            status_code=400,
+            detail="Срок подтверждения passkey истёк. Нажмите «Подтвердить passkey» ещё раз.",
+        )
+    if int(challenge.get("user_id") or 0) != user_id:
+        raise HTTPException(status_code=403, detail="Challenge не принадлежит текущему пользователю")
+    challenge_session_id = str(challenge.get("session_id") or "").strip()
+    current_session_id = str(session_id or "").strip()
+    if challenge_session_id != current_session_id:
+        raise HTTPException(status_code=403, detail="Challenge не соответствует текущей сессии")
+
+    device = await run_in_threadpool(
+        trusted_device_service.find_device_by_credential,
+        str((payload.credential or {}).get("id") or ""),
+        user_id=user_id,
+    )
+    if not device:
+        await run_in_threadpool(
+            password_vault_service._record_unlock_failure,
+            user_id=user_id,
+            ip_address=meta.ip_address,
+        )
+        raise HTTPException(status_code=400, detail="Trusted device not found")
+
+    try:
+        verification = await run_in_threadpool(
+            trusted_device_service.verify_authentication_response,
+            credential=payload.credential,
+            expected_challenge=str(challenge.get("challenge") or ""),
+            expected_origin=str(challenge.get("expected_origin") or ""),
+            expected_rp_id=str(challenge.get("expected_rp_id") or ""),
+            device=device,
+        )
+        await run_in_threadpool(
+            trusted_device_service.update_sign_count,
+            str(device.get("id") or ""),
+            int(verification.get("new_sign_count") or 0),
+        )
+        await run_in_threadpool(trusted_device_service.mark_device_used, str(device.get("id") or ""))
+        await run_in_threadpool(auth_runtime_store_service.pop_webauthn_challenge, payload.challenge_id)
+        return await run_in_threadpool(
+            password_vault_service.unlock_with_trusted_device,
+            actor=current_user,
+            session_id=session_id,
+            device=device,
+            meta=meta,
+        )
+    except (TrustedDeviceServiceError, PasswordVaultAccessError) as exc:
+        await run_in_threadpool(
+            password_vault_service._record_unlock_failure,
+            user_id=user_id,
+            ip_address=meta.ip_address,
+        )
+        if isinstance(exc, PasswordVaultAccessError):
+            raise _service_error_to_http(exc) from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @router.post("/{entry_id}/reveal", response_model=PasswordVaultRevealResponse)

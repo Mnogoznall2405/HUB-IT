@@ -35,8 +35,10 @@ import PictureAsPdfOutlinedIcon from '@mui/icons-material/PictureAsPdfOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import ShareOutlinedIcon from '@mui/icons-material/ShareOutlined';
 import TableChartOutlinedIcon from '@mui/icons-material/TableChartOutlined';
+import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import MyFilesShareDialog from '../components/myFiles/MyFilesShareDialog';
+import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
 import PageShell from '../components/layout/PageShell';
 import {
   formatMyFilesUploadLimitLabel,
@@ -44,8 +46,15 @@ import {
   MY_FILES_MAX_UPLOAD_BYTES,
   myFilesRetentionOptions,
 } from '../api/myFiles';
+import {
+  buildAttachmentBlobPayload,
+  downloadBlobFile,
+  getOfficeAttachmentSourceKind,
+  normalizeAttachmentPreviewMetadata,
+} from '../components/mail/mailMessageFileActions';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
+import { parseExcelWorkbookFromBlob } from '../lib/excelPreview';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
 const READY_STATUSES = new Set(['ready']);
@@ -97,6 +106,63 @@ const getFileExtension = (fileName = '') => {
   const normalized = String(fileName || '').toLowerCase();
   const dotIndex = normalized.lastIndexOf('.');
   return dotIndex >= 0 ? normalized.slice(dotIndex + 1) : '';
+};
+
+const getMyFileName = (item) => String(item?.download_file_name || item?.original_file_name || 'file.bin');
+
+const getMyFileContentType = (item) => String(item?.download_mime_type || item?.mime_type || 'application/octet-stream');
+
+const getMyFilePreviewKind = (item) => {
+  const explicitKind = String(item?.preview_kind || '').trim();
+  if (explicitKind && explicitKind !== 'unsupported') return explicitKind;
+  const fileName = getMyFileName(item);
+  const contentType = getMyFileContentType(item).toLowerCase();
+  const extension = getFileExtension(fileName);
+  if (contentType.includes('pdf') || extension === 'pdf') return 'pdf';
+  const sourceKind = getOfficeAttachmentSourceKind({ filename: fileName, contentType });
+  if (sourceKind === 'excel') return 'office_excel';
+  if (sourceKind) return 'office_pdf';
+  return 'unsupported';
+};
+
+const isMyFilePreviewSupported = (item) => getMyFilePreviewKind(item) !== 'unsupported';
+
+const createEmptyDocumentPreviewState = () => ({
+  open: false,
+  item: null,
+  loading: false,
+  error: '',
+  kind: 'unsupported',
+  sourceKind: '',
+  objectUrl: '',
+  previewBlob: null,
+  excelWorkbook: null,
+  pageCount: 0,
+  sheets: [],
+  pdfFilename: '',
+});
+
+const resolveMyFilePreviewError = (error, item) => {
+  const detail = String(error?.response?.data?.detail || error?.message || '').trim();
+  const previewStatus = String(item?.preview_status || '').toLowerCase();
+  if (previewStatus === 'queued' || previewStatus === 'processing') {
+    return 'Предпросмотр готовится. Обновите через несколько секунд или скачайте оригинал.';
+  }
+  if (/too large/i.test(detail)) {
+    const limit = Number(item?.preview_max_bytes || 0);
+    return limit > 0
+      ? `Файл слишком большой для предпросмотра. Лимит: ${formatFileSize(limit)}.`
+      : 'Файл слишком большой для предпросмотра.';
+  }
+  if (
+    !detail
+    || /preview is temporarily unavailable/i.test(detail)
+    || /not available/i.test(detail)
+    || /failed/i.test(detail)
+  ) {
+    return 'Предпросмотр готовится или временно недоступен. Оригинал можно скачать.';
+  }
+  return detail;
 };
 
 const getFileVisualMeta = (item) => {
@@ -162,6 +228,8 @@ export default function MyFiles() {
     fileName: '',
     linkCopied: false,
   });
+  const previewObjectUrlRef = useRef('');
+  const [documentPreview, setDocumentPreview] = useState(createEmptyDocumentPreviewState);
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
 
   const hasProcessingFiles = useMemo(
@@ -198,6 +266,18 @@ export default function MyFiles() {
     }, 4000);
     return () => window.clearInterval(timer);
   }, [hasProcessingFiles, loadData]);
+
+  const revokePreviewObjectUrl = useCallback(() => {
+    const currentUrl = previewObjectUrlRef.current;
+    if (currentUrl && typeof window !== 'undefined' && typeof window.URL?.revokeObjectURL === 'function') {
+      window.URL.revokeObjectURL(currentUrl);
+    }
+    previewObjectUrlRef.current = '';
+  }, []);
+
+  useEffect(() => () => {
+    revokePreviewObjectUrl();
+  }, [revokePreviewObjectUrl]);
 
   const queueUploads = useCallback(async (files, selectedRetentionDays = retentionDays) => {
     const selected = normalizeFiles(files);
@@ -302,6 +382,104 @@ export default function MyFiles() {
       setDownloadingFileId('');
     }
   }, [notifyApiError, notifySuccess, notifyWarning]);
+
+  const openDocumentPreview = useCallback(async (item) => {
+    const fileId = String(item?.id || '').trim();
+    if (!fileId) return;
+
+    const fileName = getMyFileName(item);
+    const contentType = getMyFileContentType(item);
+    const fallbackSourceKind = getOfficeAttachmentSourceKind({ filename: fileName, contentType });
+    const fallbackKind = getMyFilePreviewKind(item);
+
+    revokePreviewObjectUrl();
+    setDocumentPreview({
+      ...createEmptyDocumentPreviewState(),
+      open: true,
+      item,
+      loading: true,
+      kind: fallbackKind,
+      sourceKind: fallbackSourceKind,
+    });
+
+    try {
+      const metadata = normalizeAttachmentPreviewMetadata(await myFilesAPI.getPreviewMeta(fileId));
+      const resolvedSourceKind = metadata.sourceKind || fallbackSourceKind;
+      const previewResponse = await myFilesAPI.downloadPreviewContent(fileId);
+      const {
+        blob: previewBlob,
+        filename: previewFilename,
+      } = buildAttachmentBlobPayload({
+        response: previewResponse,
+        attachment: {
+          name: metadata.pdfFilename || fileName,
+          content_type: 'application/pdf',
+        },
+      });
+      const objectUrl = typeof window !== 'undefined' && typeof window.URL?.createObjectURL === 'function'
+        ? window.URL.createObjectURL(previewBlob)
+        : '';
+      previewObjectUrlRef.current = objectUrl;
+
+      let excelWorkbook = null;
+      if (resolvedSourceKind === 'excel') {
+        try {
+          const sourceResponse = await myFilesAPI.downloadPreviewSource(fileId);
+          const { blob: sourceBlob } = buildAttachmentBlobPayload({
+            response: sourceResponse,
+            attachment: { name: fileName, content_type: contentType },
+          });
+          excelWorkbook = await parseExcelWorkbookFromBlob(sourceBlob);
+        } catch {
+          excelWorkbook = null;
+        }
+      }
+
+      setDocumentPreview({
+        open: true,
+        item,
+        loading: false,
+        error: '',
+        kind: resolvedSourceKind === 'excel' && excelWorkbook ? 'office_excel' : (metadata.previewKind || fallbackKind),
+        sourceKind: resolvedSourceKind,
+        objectUrl,
+        previewBlob,
+        excelWorkbook,
+        pageCount: metadata.pageCount,
+        sheets: metadata.sheets,
+        pdfFilename: previewFilename || metadata.pdfFilename,
+      });
+    } catch (error) {
+      setDocumentPreview((current) => ({
+        ...current,
+        loading: false,
+        error: resolveMyFilePreviewError(error, item),
+        objectUrl: '',
+        previewBlob: null,
+        excelWorkbook: null,
+      }));
+    }
+  }, [revokePreviewObjectUrl]);
+
+  const closeDocumentPreview = useCallback(() => {
+    revokePreviewObjectUrl();
+    setDocumentPreview(createEmptyDocumentPreviewState());
+  }, [revokePreviewObjectUrl]);
+
+  const refreshDocumentPreview = useCallback(() => {
+    if (!documentPreview.item) return;
+    void openDocumentPreview(documentPreview.item);
+  }, [documentPreview.item, openDocumentPreview]);
+
+  const downloadDocumentPreviewPdf = useCallback(() => {
+    if (!documentPreview.previewBlob) return;
+    const fileName = getMyFileName(documentPreview.item);
+    downloadBlobFile(
+      documentPreview.previewBlob,
+      documentPreview.pdfFilename || `${fileName.replace(/\.[^.]+$/, '') || 'preview'}.pdf`,
+      { preferOpenFallback: true },
+    );
+  }, [documentPreview.item, documentPreview.pdfFilename, documentPreview.previewBlob]);
 
   const handleShare = useCallback(async (item, { rotate = false } = {}) => {
     try {
@@ -463,6 +641,7 @@ export default function MyFiles() {
             {!loading && items.map((item) => {
               const chip = statusChip(item.status, item.error_text);
               const ready = READY_STATUSES.has(String(item.status || '').toLowerCase());
+              const previewSupported = ready && isMyFilePreviewSupported(item);
               const meta = getFileVisualMeta(item);
               const Icon = meta.icon;
               const colors = getFileVisualColors(theme, meta);
@@ -564,6 +743,18 @@ export default function MyFiles() {
                       <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatDateTime(item.expires_at)}</Typography>
                     </Box>
                     <Stack direction="row" spacing={0.5} justifyContent="flex-end">
+                      <Tooltip title={previewSupported ? 'Просмотреть' : 'Предпросмотр недоступен'}>
+                        <span>
+                          <IconButton
+                            size="small"
+                            data-testid={`my-files-preview-${item.id}`}
+                            disabled={!previewSupported}
+                            onClick={() => openDocumentPreview(item)}
+                          >
+                            <VisibilityOutlinedIcon fontSize="small" />
+                          </IconButton>
+                        </span>
+                      </Tooltip>
                       <Tooltip title="Скачать">
                         <span>
                           <IconButton
@@ -670,6 +861,26 @@ export default function MyFiles() {
             </Button>
           </DialogActions>
         </Dialog>
+
+        <DocumentPreviewDialog
+          open={documentPreview.open}
+          title={getMyFileName(documentPreview.item)}
+          subtitle={documentPreview.sourceKind === 'excel' ? 'Excel' : 'PDF-предпросмотр'}
+          kind={documentPreview.kind}
+          sourceKind={documentPreview.sourceKind}
+          objectUrl={documentPreview.objectUrl}
+          excelWorkbook={documentPreview.excelWorkbook}
+          pageCount={documentPreview.pageCount}
+          sheets={documentPreview.sheets}
+          loading={documentPreview.loading}
+          error={documentPreview.error}
+          onClose={closeDocumentPreview}
+          onRefresh={refreshDocumentPreview}
+          onDownloadOriginal={documentPreview.item ? () => { void handleDownload(documentPreview.item); } : undefined}
+          onDownloadPdf={downloadDocumentPreviewPdf}
+          canDownloadOriginal={Boolean(documentPreview.item)}
+          canDownloadPdf={Boolean(documentPreview.previewBlob && documentPreview.kind !== 'pdf')}
+        />
 
         <MyFilesShareDialog
           open={shareDialog.open}

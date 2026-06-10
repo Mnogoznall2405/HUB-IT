@@ -95,7 +95,6 @@ import {
   WINDOWS_NOTIFICATIONS_CHANGED_EVENT,
 } from '../lib/windowsNotifications';
 import {
-  disableChatPushSubscription,
   getChatNotificationState,
   refreshChatNotificationState,
   requestChatNotificationPermission,
@@ -2016,12 +2015,7 @@ export function ChatNotificationsSettingsCard() {
   const handleToggleEnabled = useCallback(async (event) => {
     const enabled = setChatNotificationsEnabled(Boolean(event?.target?.checked));
     if (!enabled) {
-      setBusy(true);
-      try {
-        await disableChatPushSubscription({ removeServer: Boolean(user) });
-      } finally {
-        setBusy(false);
-      }
+      refreshChatNotificationState();
       return;
     }
     refreshChatNotificationState();

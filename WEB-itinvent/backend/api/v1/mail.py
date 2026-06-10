@@ -19,6 +19,7 @@ from backend.api.deps import ensure_user_permission, get_current_active_user, ge
 from backend.models.auth import User
 from backend.services.authorization_service import PERM_MAIL_ACCESS
 from backend.services.request_auth_context_service import pop_request_session_id, push_request_session_id
+from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mail_service import MailPayloadTooLargeError, MailServiceError, mail_service
 from backend.services.user_service import user_service
 
@@ -1713,4 +1714,5 @@ async def get_mail_health(
         "verify_tls": mail_service.verify_tls,
         "tls_ca_bundle_configured": bool(mail_service.tls_ca_bundle),
         "exchange_max_concurrency": _mail_exchange_max_concurrency(),
+        "notifications": mail_notification_service.get_runtime_status(),
     }

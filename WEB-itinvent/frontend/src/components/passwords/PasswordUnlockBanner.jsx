@@ -61,7 +61,13 @@ export default function PasswordUnlockBanner({
       sx={{ flexShrink: 0, borderRadius: 0.5 }}
       data-testid="password-unlock-banner"
       action={(
-        <Button color="inherit" size="small" variant="outlined" onClick={onUnlockClick}>
+        <Button
+          color="inherit"
+          size="small"
+          variant="outlined"
+          onClick={onUnlockClick}
+          data-testid="password-unlock-open"
+        >
           Разблокировать
         </Button>
       )}

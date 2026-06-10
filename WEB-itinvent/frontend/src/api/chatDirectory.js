@@ -11,6 +11,11 @@ export const chatDirectoryAPI = {
     return response.data;
   },
 
+  resolveUser: async (params = {}) => {
+    const response = await apiClient.get('/chat/users/resolve', { params });
+    return response.data;
+  },
+
   listAiBots: async () => {
     const response = await apiClient.get('/chat/ai/bots');
     return response.data;

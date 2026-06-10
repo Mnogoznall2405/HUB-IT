@@ -88,8 +88,36 @@ def encrypt_password_vault_secret(value: str | None) -> str:
     return _encrypt_with_env_key(value, "PASSWORD_VAULT_KEY")
 
 
+def _password_vault_key_env_vars() -> list[str]:
+    names = ["PASSWORD_VAULT_KEY", "PASSWORD_VAULT_KEY_LEGACY"]
+    result: list[str] = []
+    seen: set[str] = set()
+    for env_var in names:
+        normalized = str(env_var or "").strip()
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        result.append(normalized)
+    return result
+
+
 def decrypt_password_vault_secret(token: str | None) -> str:
-    return _decrypt_with_env_key(token, "PASSWORD_VAULT_KEY")
+    encoded = str(token or "").strip()
+    if not encoded:
+        return ""
+    last_error: Exception | None = None
+    for env_var in _password_vault_key_env_vars():
+        raw = os.getenv(env_var, "")
+        if not str(raw or "").strip():
+            continue
+        try:
+            return _decrypt_with_env_key(encoded, env_var)
+        except SecretCryptoError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise SecretCryptoError("Failed to decrypt secret value") from last_error
+    raise SecretCryptoError("PASSWORD_VAULT_KEY is not configured")
 
 
 def encrypt_my_files_share_token(value: str | None) -> str:

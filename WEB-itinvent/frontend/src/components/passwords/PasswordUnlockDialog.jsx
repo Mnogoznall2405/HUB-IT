@@ -3,6 +3,7 @@ import {
   Dialog,
   DialogContent,
   DialogTitle,
+  Divider,
   Drawer,
   IconButton,
   Stack,
@@ -10,12 +11,15 @@ import {
   Typography,
 } from '@mui/material';
 import CloseIcon from '@mui/icons-material/Close';
+import FingerprintOutlinedIcon from '@mui/icons-material/FingerprintOutlined';
 
 function UnlockForm({
   unlockCode,
   unlocking,
+  passkeyAvailable = false,
   onCodeChange,
   onSubmit,
+  onPasskeyUnlock,
   onClose,
   compact = false,
 }) {
@@ -24,9 +28,28 @@ function UnlockForm({
       <Typography variant="body2" color="text.secondary">
         TOTP или резервный код · доступ на 5 мин
       </Typography>
+      {passkeyAvailable ? (
+        <>
+          <Button
+            variant="outlined"
+            fullWidth
+            startIcon={<FingerprintOutlinedIcon />}
+            onClick={onPasskeyUnlock}
+            disabled={unlocking}
+            data-testid="password-unlock-passkey"
+          >
+            {unlocking ? 'Проверка…' : 'Подтвердить passkey'}
+          </Button>
+          <Divider>
+            <Typography variant="caption" color="text.secondary">
+              или код 2FA
+            </Typography>
+          </Divider>
+        </>
+      ) : null}
       <TextField
         size="small"
-        autoFocus
+        autoFocus={!passkeyAvailable}
         fullWidth
         placeholder="Код 2FA"
         value={unlockCode}
@@ -66,9 +89,11 @@ export default function PasswordUnlockDialog({
   isMobile = false,
   unlockCode = '',
   unlocking = false,
+  passkeyAvailable = false,
   onClose,
   onCodeChange,
   onSubmit,
+  onPasskeyUnlock,
 }) {
   if (isMobile) {
     return (
@@ -98,8 +123,10 @@ export default function PasswordUnlockDialog({
         <UnlockForm
           unlockCode={unlockCode}
           unlocking={unlocking}
+          passkeyAvailable={passkeyAvailable}
           onCodeChange={onCodeChange}
           onSubmit={onSubmit}
+          onPasskeyUnlock={onPasskeyUnlock}
           onClose={onClose}
           compact
         />
@@ -123,8 +150,10 @@ export default function PasswordUnlockDialog({
         <UnlockForm
           unlockCode={unlockCode}
           unlocking={unlocking}
+          passkeyAvailable={passkeyAvailable}
           onCodeChange={onCodeChange}
           onSubmit={onSubmit}
+          onPasskeyUnlock={onPasskeyUnlock}
           onClose={onClose}
         />
       </DialogContent>

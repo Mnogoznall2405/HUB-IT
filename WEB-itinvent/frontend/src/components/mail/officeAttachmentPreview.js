@@ -26,6 +26,31 @@ export const buildOfficeAttachmentPreviewState = async ({
       const attachmentResponse = await mailAPI.downloadAttachment(messageId, attachmentRef, { mailboxId });
       const { blob } = buildAttachmentBlobPayload({ response: attachmentResponse, attachment });
       const excelWorkbook = await parseExcelWorkbookFromBlob(blob);
+      let pdfPreview = null;
+      try {
+        const [metadata, pdfResponse] = await Promise.all([
+          mailAPI.getAttachmentPreview(messageId, attachmentRef, { mailboxId }),
+          mailAPI.downloadAttachmentPreviewPdf(messageId, attachmentRef, { mailboxId }),
+        ]);
+        const normalized = normalizeAttachmentPreviewMetadata(metadata);
+        const { blob: previewBlob, filename: pdfFilename, contentType: pdfContentType } = buildAttachmentBlobPayload({
+          response: pdfResponse,
+          attachment: {
+            name: normalized.pdfFilename || `${filename.replace(/\.[^.]+$/, '') || 'preview'}.pdf`,
+            content_type: 'application/pdf',
+          },
+        });
+        pdfPreview = {
+          objectUrl: createObjectUrl(previewBlob),
+          previewBlob,
+          pageCount: normalized.pageCount,
+          sheets: normalized.sheets,
+          pdfFilename: pdfFilename || normalized.pdfFilename,
+          pdfContentType,
+        };
+      } catch {
+        pdfPreview = null;
+      }
       return {
         open: true,
         loading: false,
@@ -37,8 +62,12 @@ export const buildOfficeAttachmentPreviewState = async ({
         sourceKind: 'excel',
         blob,
         excelWorkbook,
-        objectUrl: '',
-        previewBlob: null,
+        objectUrl: pdfPreview?.objectUrl || '',
+        previewBlob: pdfPreview?.previewBlob || null,
+        pageCount: pdfPreview?.pageCount || 0,
+        sheets: pdfPreview?.sheets || [],
+        pdfFilename: pdfPreview?.pdfFilename || '',
+        pdfContentType: pdfPreview?.pdfContentType || 'application/pdf',
       };
     } catch {
       // Fall back to server-side PDF preview below.

@@ -320,6 +320,59 @@ async def download_public_my_file(token: str, request: Request):
         raise _service_error_to_secure_http(exc) from exc
 
 
+@router.get("/{file_id}/preview", response_model=PublicMyFilePreviewResponse)
+async def get_my_file_preview(
+    file_id: str,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+) -> dict:
+    try:
+        return await run_in_threadpool(
+            my_files_service.get_file_preview_meta,
+            file_id=file_id,
+            user_id=int(current_user.id),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.get("/{file_id}/preview/content")
+async def download_my_file_preview_content(
+    file_id: str,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+):
+    try:
+        content, media_type, filename = await run_in_threadpool(
+            my_files_service.get_file_preview_content,
+            file_id=file_id,
+            user_id=int(current_user.id),
+        )
+        headers = dict(_DOWNLOAD_SECURITY_HEADERS)
+        headers["Content-Disposition"] = _content_disposition(filename, inline=True)
+        headers["Cache-Control"] = "private, max-age=300"
+        return Response(content=content, media_type=media_type, headers=headers)
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
+@router.get("/{file_id}/preview/source")
+async def download_my_file_preview_source(
+    file_id: str,
+    current_user: User = Depends(require_permission(PERM_MY_FILES_READ)),
+):
+    try:
+        content, media_type, filename = await run_in_threadpool(
+            my_files_service.get_file_preview_source,
+            file_id=file_id,
+            user_id=int(current_user.id),
+        )
+        headers = dict(_DOWNLOAD_SECURITY_HEADERS)
+        headers["Content-Disposition"] = _content_disposition(filename, inline=True)
+        headers["Cache-Control"] = "private, max-age=300"
+        return Response(content=content, media_type=media_type, headers=headers)
+    except Exception as exc:
+        raise _service_error_to_secure_http(exc) from exc
+
+
 @router.get("/{file_id}/download")
 async def download_my_file(
     file_id: str,

@@ -263,6 +263,7 @@ class ChatPushOutbox(Base):
     conversation_id: Mapped[str] = mapped_column(String(36), nullable=False, index=True)
     recipient_user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
     channel: Mapped[str] = mapped_column(String(32), nullable=False, default="chat")
+    is_mention: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     title: Mapped[str] = mapped_column(String(255), nullable=False)
     body: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="queued", index=True)

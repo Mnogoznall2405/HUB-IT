@@ -555,6 +555,12 @@ function MainLayout({
     if (items.length === 0) return;
     const currentWindowsNotificationState = windowsNotificationStateRef.current || getWindowsNotificationState();
     const isVisible = document.visibilityState === 'visible';
+    const currentPushNotificationState = getChatNotificationState();
+    const suppressHiddenLocalSystemNotification = Boolean(
+      !isVisible
+      && currentPushNotificationState.pushSubscribed
+      && currentPushNotificationState.backgroundCapable,
+    );
     if (!mailChannelEnabledRef.current) return;
     items.slice().reverse().forEach((item) => {
       const messageId = String(item?.id || '').trim();
@@ -583,6 +589,7 @@ function MainLayout({
         });
         return;
       }
+      if (suppressHiddenLocalSystemNotification) return;
       if (currentWindowsNotificationState.enabled && currentWindowsNotificationState.permission === 'granted') {
         createMailSystemNotification(
           { ...item, folder: String(item?.folder || 'inbox') },

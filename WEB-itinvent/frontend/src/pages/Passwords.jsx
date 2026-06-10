@@ -45,14 +45,23 @@ import PasswordMobileToolbar from '../components/passwords/PasswordMobileToolbar
 import PasswordUnlockBanner from '../components/passwords/PasswordUnlockBanner';
 import PasswordUnlockDialog from '../components/passwords/PasswordUnlockDialog';
 import PasswordUnlockStrip from '../components/passwords/PasswordUnlockStrip';
+import { getPasskeyAssertion } from '../lib/passkeyWebAuthn';
+import { extractWebAuthnErrorMessage } from '../lib/trustedDeviceEnrollment';
+import { useWebAuthnAvailability } from '../lib/useWebAuthnAvailability';
 import {
   PASSWORD_HIDE_MS,
   buildGroupCounts,
   isUnlockedUntilActive,
+  isVaultDecryptError,
+  isVaultUnlockRequiredError,
   normalizeEntry,
   normalizeText,
+  pickActiveUnlockedUntil,
+  readStoredVaultUnlockUntil,
+  writeStoredVaultUnlockUntil,
 } from '../components/passwords/passwordVaultUtils';
 import { passwordsAPI } from '../api/passwords';
+import { hideScrollbarSx } from '../lib/hideScrollbarSx';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 const DEFAULT_PASSWORD_LENGTH = 20;
@@ -150,7 +159,7 @@ function Passwords() {
   const [selectedGroup, setSelectedGroup] = useState('');
   const [selectedTag, setSelectedTag] = useState('');
   const [includeArchived, setIncludeArchived] = useState(false);
-  const [unlockedUntil, setUnlockedUntil] = useState(null);
+  const [unlockedUntil, setUnlockedUntil] = useState(() => readStoredVaultUnlockUntil(user?.id));
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [revealBusyId, setRevealBusyId] = useState('');
@@ -174,8 +183,10 @@ function Passwords() {
   const searchInputRef = useRef(null);
 
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const { webAuthnReady } = useWebAuthnAvailability();
   const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
   const canWrite = isAdmin || hasPermission('passwords.write');
+  const passkeyUnlockAvailable = webAuthnReady && Number(user?.trusted_devices_count || 0) > 0;
   const isUnlocked = isUnlockedUntilActive(unlockedUntil);
   const unlockedRemainingMs = useMemo(() => {
     const parsed = new Date(unlockedUntil || '');
@@ -184,6 +195,20 @@ function Passwords() {
   }, [nowTs, unlockedUntil]);
 
   const isUnlockExpiringSoon = isUnlocked && unlockedRemainingMs > 0 && unlockedRemainingMs <= 30_000;
+
+  const syncUnlockedUntil = useCallback((...candidates) => {
+    const resolved = pickActiveUnlockedUntil(
+      readStoredVaultUnlockUntil(user?.id),
+      ...candidates,
+    );
+    setUnlockedUntil(resolved);
+    writeStoredVaultUnlockUntil(user?.id, resolved);
+    return resolved;
+  }, [user?.id]);
+
+  useEffect(() => {
+    syncUnlockedUntil(unlockedUntil);
+  }, [user?.id, syncUnlockedUntil]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => setDebouncedQuery(query), 250);
@@ -233,7 +258,7 @@ function Passwords() {
       setEntries((Array.isArray(payload?.items) ? payload.items : []).map(normalizeEntry));
       setGroups(nextGroups);
       setTags(Array.isArray(payload?.tags) ? payload.tags.map(normalizeText).filter(Boolean) : []);
-      setUnlockedUntil(payload?.unlocked_until || null);
+      syncUnlockedUntil(payload?.unlocked_until);
       if (selectedGroup && !nextGroups.includes(selectedGroup)) {
         setSelectedGroup('');
       }
@@ -242,7 +267,7 @@ function Passwords() {
     } finally {
       setLoading(false);
     }
-  }, [debouncedQuery, includeArchived, notifyApiError, selectedGroup, selectedTag]);
+  }, [debouncedQuery, includeArchived, notifyApiError, selectedGroup, selectedTag, syncUnlockedUntil]);
 
   useEffect(() => {
     loadEntries();
@@ -375,11 +400,11 @@ function Passwords() {
     return true;
   };
 
-  const revealEntry = async (entry, purpose) => {
+  const revealEntry = async (entry, purpose, { allowUnlockPrompt = false } = {}) => {
     setRevealBusyId(`${entry.id}:${purpose}`);
     try {
       const payload = await passwordsAPI.revealEntry(entry.id, { purpose });
-      setUnlockedUntil(payload?.unlocked_until || unlockedUntil);
+      syncUnlockedUntil(payload?.unlocked_until);
       if (purpose === 'copy') {
         const copied = await copyPassword(payload.password || '');
         if (copied) {
@@ -390,21 +415,29 @@ function Passwords() {
         scheduleHide(entry.id);
       }
       await loadAudit();
+      return true;
     } catch (error) {
-      notifyApiError(error, 'Не удалось раскрыть пароль.', { dedupeMode: 'none' });
+      if (allowUnlockPrompt && isVaultUnlockRequiredError(error)) {
+        setPendingReveal({ entry, purpose });
+        setUnlockCode('');
+        setUnlockDialogOpen(true);
+        return false;
+      }
+      notifyApiError(
+        error,
+        isVaultDecryptError(error)
+          ? 'Пароль зашифрован старым ключом и не читается. Пересохраните запись или обратитесь к администратору.'
+          : 'Не удалось раскрыть пароль.',
+        { dedupeMode: 'none' },
+      );
+      return false;
     } finally {
       setRevealBusyId('');
     }
   };
 
   const requestReveal = (entry, purpose) => {
-    if (!isUnlocked) {
-      setPendingReveal({ entry, purpose });
-      setUnlockCode('');
-      setUnlockDialogOpen(true);
-      return;
-    }
-    revealEntry(entry, purpose);
+    revealEntry(entry, purpose, { allowUnlockPrompt: true });
   };
 
   const handleCopyLogin = async (entry) => {
@@ -443,6 +476,21 @@ function Passwords() {
     }
   };
 
+  const completeUnlock = useCallback(async (unlockedUntilValue) => {
+    const resolvedUnlock = syncUnlockedUntil(unlockedUntilValue);
+    setUnlockDialogOpen(false);
+    setUnlockCode('');
+    notifySuccess('Доступ к раскрытию паролей открыт на 5 минут.', { source: 'passwords', dedupeMode: 'none' });
+    const nextReveal = pendingReveal;
+    setPendingReveal(null);
+    if (nextReveal?.entry) {
+      await revealEntry(nextReveal.entry, nextReveal.purpose);
+    }
+    await loadEntries();
+    syncUnlockedUntil(resolvedUnlock);
+    await loadAudit();
+  }, [loadAudit, loadEntries, notifySuccess, pendingReveal, revealEntry, syncUnlockedUntil]);
+
   const handleUnlock = async () => {
     const code = unlockCode.trim();
     if (!code) return;
@@ -450,18 +498,29 @@ function Passwords() {
     try {
       const payload = /^\d+$/.test(code) ? { totp_code: code } : { backup_code: code };
       const result = await passwordsAPI.unlock(payload);
-      setUnlockedUntil(result?.unlocked_until || null);
-      setUnlockDialogOpen(false);
-      notifySuccess('Доступ к раскрытию паролей открыт на 5 минут.', { source: 'passwords', dedupeMode: 'none' });
-      const nextReveal = pendingReveal;
-      setPendingReveal(null);
-      await loadEntries();
-      await loadAudit();
-      if (nextReveal?.entry) {
-        await revealEntry(nextReveal.entry, nextReveal.purpose);
-      }
+      await completeUnlock(result?.unlocked_until || null);
     } catch (error) {
       notifyApiError(error, 'Не удалось подтвердить 2FA.', { dedupeMode: 'none' });
+    } finally {
+      setUnlocking(false);
+    }
+  };
+
+  const handleUnlockWithPasskey = async () => {
+    setUnlocking(true);
+    try {
+      const optionsResult = await passwordsAPI.unlockWebAuthnOptions();
+      const credential = await getPasskeyAssertion(optionsResult.public_key);
+      const result = await passwordsAPI.unlockWebAuthnVerify({
+        challenge_id: optionsResult.challenge_id,
+        credential,
+      });
+      await completeUnlock(result?.unlocked_until || null);
+    } catch (error) {
+      notifyWarning(
+        extractWebAuthnErrorMessage(error, 'Не удалось подтвердить passkey.'),
+        { source: 'passwords', dedupeMode: 'none' },
+      );
     } finally {
       setUnlocking(false);
     }
@@ -670,6 +729,7 @@ function Passwords() {
                   overflowX: 'hidden',
                   WebkitOverflowScrolling: 'touch',
                   pr: 0.5,
+                  ...(isMobile ? hideScrollbarSx : {}),
                 }}
                 data-testid="password-entry-list-scroll"
               >
@@ -883,9 +943,11 @@ function Passwords() {
         isMobile={isMobile}
         unlockCode={unlockCode}
         unlocking={unlocking}
+        passkeyAvailable={passkeyUnlockAvailable}
         onClose={() => setUnlockDialogOpen(false)}
         onCodeChange={(event) => setUnlockCode(event.target.value)}
         onSubmit={handleUnlock}
+        onPasskeyUnlock={handleUnlockWithPasskey}
       />
       <Drawer
         anchor="left"
@@ -914,7 +976,7 @@ function Passwords() {
               sx={{ mt: 0.5, ml: 0 }}
             />
           </Box>
-          <Box sx={{ flex: 1, overflowY: 'auto' }}>
+          <Box sx={{ flex: 1, overflowY: 'auto', ...hideScrollbarSx }}>
             <PasswordFiltersPanel
               groups={groups}
               tags={tags}

@@ -155,7 +155,7 @@ def test_send_chat_message_notification_uses_android_friendly_ttl_and_high_urgen
     assert captured["headers"] == {"Urgency": "high"}
     payload = captured["payload"]
     assert payload["channel"] == "chat"
-    assert payload["tag"] == "chat:msg-1"
+    assert payload["tag"] == "chat:conv-1"
     assert payload["data"]["route"] == "/chat?conversation=conv-1&message=msg-1"
     assert payload["renotify"] is True
     assert payload["require_interaction"] is True

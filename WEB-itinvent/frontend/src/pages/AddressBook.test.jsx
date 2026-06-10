@@ -15,7 +15,9 @@ vi.mock('../api/client', () => ({
 let authUser = { role: 'viewer' };
 const notifySuccessMock = vi.fn();
 const notifyWarningMock = vi.fn();
+const notifyApiErrorMock = vi.fn();
 const navigateMock = vi.fn();
+const hasPermissionMock = vi.fn(() => false);
 const windowOpenMock = vi.fn();
 
 vi.mock('react-router-dom', () => ({
@@ -25,6 +27,7 @@ vi.mock('react-router-dom', () => ({
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
     user: authUser,
+    hasPermission: hasPermissionMock,
   }),
 }));
 
@@ -32,7 +35,16 @@ vi.mock('../contexts/NotificationContext', () => ({
   useNotification: () => ({
     notifySuccess: notifySuccessMock,
     notifyWarning: notifyWarningMock,
+    notifyApiError: notifyApiErrorMock,
   }),
+}));
+
+vi.mock('../lib/chatFeature', () => ({
+  CHAT_FEATURE_ENABLED: true,
+}));
+
+vi.mock('../lib/addressBookChat', () => ({
+  openAddressBookChat: vi.fn(),
 }));
 
 vi.mock('../components/layout/MainLayout', () => ({
@@ -84,6 +96,11 @@ const setMatchMedia = (matches = false) => {
   });
 };
 
+const isMobileQuery = (query) => {
+  const normalized = String(query).replace(/\s/g, '');
+  return normalized.includes('max-width:599.95px') || normalized.includes('max-width:600px');
+};
+
 describe('AddressBook page', () => {
   beforeEach(() => {
     setMatchMedia(false);
@@ -122,17 +139,17 @@ describe('AddressBook page', () => {
     vi.clearAllMocks();
   });
 
-  it('renders search results with work and personal phone actions', async () => {
+  it('renders compact list with detail panel on desktop', async () => {
     render(<AddressBook />);
 
-    expect(await screen.findByText('Ivanov Ivan Ivanovich')).toBeInTheDocument();
-    expect(screen.getByText('Monitoring department')).toBeInTheDocument();
-    expect(screen.getByText('Lead specialist')).toBeInTheDocument();
+    expect(await screen.findByTestId('address-book-entry-list')).toBeInTheDocument();
+    expect(screen.getByTestId('address-book-entry-detail')).toBeInTheDocument();
+    expect(screen.getAllByText('Ivanov Ivan Ivanovich').length).toBeGreaterThan(0);
     expect(screen.getByText('Рабочий телефон')).toBeInTheDocument();
-    expect(screen.getByText('83452384202')).toBeInTheDocument();
+    expect(screen.getAllByText('83452384202').length).toBeGreaterThan(0);
     expect(screen.getByText('Мобильный телефон')).toBeInTheDocument();
-    expect(screen.getByText('89312250556')).toBeInTheDocument();
-    expect(screen.getByText('ivanov@zsgp.ru')).toBeInTheDocument();
+    expect(screen.getAllByText('89312250556').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('ivanov@zsgp.ru').length).toBeGreaterThan(0);
   });
 
   it('hides database selector in main layout', async () => {
@@ -146,20 +163,36 @@ describe('AddressBook page', () => {
     render(<AddressBook />);
 
     const workPhone = await screen.findByText('83452384202');
-    const personalPhone = screen.getByText('89312250556');
+    const personalPhone = screen.getAllByText('89312250556')[0];
 
     expect(workPhone.closest('a')).toBeNull();
     expect(personalPhone.closest('a')).toBeNull();
     expect(screen.queryByLabelText('Позвонить 83452384202')).not.toBeInTheDocument();
   });
 
-  it('renders mobile phone call actions with tel links', async () => {
-    setMatchMedia((query) => String(query).includes('max-width'));
+  it('renders mobile compact list with tel quick action', async () => {
+    setMatchMedia(isMobileQuery);
 
     render(<AddressBook />);
 
-    await screen.findByText('83452384202');
-    expect(screen.getByLabelText('Позвонить 83452384202')).toHaveAttribute('href', 'tel:+73452384202');
+    expect(await screen.findByTestId('address-book-mobile-toolbar')).toBeInTheDocument();
+    expect(screen.getByTestId('address-book-entry-list')).toBeInTheDocument();
+    expect(screen.queryByTestId('address-book-entry-detail')).not.toBeInTheDocument();
+    expect(screen.getByLabelText('Позвонить 89312250556')).toHaveAttribute('href', 'tel:+79312250556');
+  });
+
+  it('opens bottom sheet when tapping a row on mobile', async () => {
+    setMatchMedia(isMobileQuery);
+
+    render(<AddressBook />);
+
+    const row = await screen.findByTestId(
+      'address-book-entry-row-Ivanov Ivan Ivanovich|Monitoring department|Lead specialist|0',
+    );
+    fireEvent.click(row);
+
+    expect(await screen.findByTestId('address-book-entry-sheet')).toBeInTheDocument();
+    expect(screen.getAllByText('Ivanov Ivan Ivanovich').length).toBeGreaterThan(1);
   });
 
   it('shows copied phone as a bottom-left notification', async () => {
@@ -178,7 +211,7 @@ describe('AddressBook page', () => {
     expect(screen.queryByText('Номер скопирован')).not.toBeInTheDocument();
   });
 
-  it('opens telegram deeplink for personal phone', async () => {
+  it('opens telegram deeplink for personal phone from detail panel', async () => {
     render(<AddressBook />);
 
     await screen.findByText('89312250556');
@@ -224,16 +257,16 @@ describe('AddressBook page', () => {
     });
   });
 
-  it('opens HUB mail compose for employee email', async () => {
+  it('opens HUB mail compose from row quick action', async () => {
     render(<AddressBook />);
 
     await screen.findByText('ivanov@zsgp.ru');
-    fireEvent.click(screen.getByLabelText('Написать в HUB ivanov@zsgp.ru'));
+    fireEvent.click(screen.getAllByLabelText('Написать в HUB ivanov@zsgp.ru')[0]);
 
     expect(navigateMock).toHaveBeenCalledWith('/mail?folder=inbox&compose_to=ivanov%40zsgp.ru');
   });
 
-  it('keeps external mailto action for employee email', async () => {
+  it('keeps external mailto action for employee email in detail panel', async () => {
     render(<AddressBook />);
 
     await screen.findByText('ivanov@zsgp.ru');
@@ -285,11 +318,25 @@ describe('AddressBook page', () => {
     });
   });
 
-  it('shows manual sync action for admin users', async () => {
+  it('shows manual sync action for admin users on desktop', async () => {
     authUser = { role: 'admin' };
     render(<AddressBook />);
 
     const button = await screen.findByRole('button', { name: /Обновить/i });
+    fireEvent.click(button);
+
+    await waitFor(() => {
+      expect(addressBookAPI.sync).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  it('shows sync icon for admin users on mobile', async () => {
+    authUser = { role: 'admin' };
+    setMatchMedia(isMobileQuery);
+
+    render(<AddressBook />);
+
+    const button = await screen.findByTestId('address-book-sync-button');
     fireEvent.click(button);
 
     await waitFor(() => {

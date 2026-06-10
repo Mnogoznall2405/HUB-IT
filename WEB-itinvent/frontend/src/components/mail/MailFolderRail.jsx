@@ -51,11 +51,11 @@ function SectionTitle({ children }) {
   return (
     <Typography
       sx={{
-        px: 1.5,
-        pb: 0.65,
-        fontSize: '0.78rem',
+        px: 1.2,
+        pb: 0.5,
+        fontSize: '0.74rem',
         fontWeight: 800,
-        letterSpacing: '0.04em',
+        letterSpacing: 0,
         textTransform: 'uppercase',
         color: 'text.secondary',
       }}
@@ -70,14 +70,14 @@ function UnreadBadge({ unread }) {
   return (
     <Box
       sx={{
-        minWidth: 22,
-        height: 22,
-        px: 0.7,
-        borderRadius: '7px',
+        minWidth: 20,
+        height: 20,
+        px: 0.6,
+        borderRadius: '6px',
         bgcolor: 'primary.main',
         color: 'primary.contrastText',
         fontWeight: 700,
-        fontSize: '0.78rem',
+        fontSize: '0.74rem',
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -109,9 +109,9 @@ function RailRow({
       onDragOver={onDragOver}
       onDrop={onDrop}
       sx={{
-        minHeight: 46,
-        px: 1.3,
-        py: 0.5,
+        minHeight: 42,
+        px: 1,
+        py: 0.35,
         borderRadius: tokens?.radiusSm || 0,
         color: active ? 'primary.main' : 'inherit',
         bgcolor: active ? tokens?.selectedBg || 'action.selected' : 'transparent',
@@ -127,7 +127,7 @@ function RailRow({
     >
       <ListItemIcon
         sx={{
-          minWidth: leading ? 58 : 34,
+          minWidth: leading ? 48 : 30,
           color: active ? 'primary.main' : 'inherit',
         }}
       >
@@ -138,7 +138,7 @@ function RailRow({
         primaryTypographyProps={{
           noWrap: true,
           fontWeight: active ? 700 : 600,
-          fontSize: '0.94rem',
+          fontSize: '0.9rem',
         }}
       />
       {trailing}
@@ -208,10 +208,10 @@ function FolderRow({
       }}
       tokens={tokens}
       sx={{
-        pl: 1.3 + (depth * 1.8),
+        pl: 1 + (depth * 1.45),
       }}
       trailing={(
-        <Stack direction="row" spacing={0.5} alignItems="center" sx={{ ml: 1 }}>
+        <Stack direction="row" spacing={0.35} alignItems="center" sx={{ ml: 0.6 }}>
           {item.is_favorite ? <StarRoundedIcon sx={{ fontSize: 15, color: '#f59e0b' }} /> : null}
           <UnreadBadge unread={unread} />
           <IconButton
@@ -222,8 +222,8 @@ function FolderRow({
               onOpenMenu?.(event, item);
             }}
             sx={{
-              width: 28,
-              height: 28,
+              width: 26,
+              height: 26,
               color: tokens.textSecondary,
             }}
           >

@@ -5,6 +5,7 @@ import importlib
 import logging
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -52,6 +53,23 @@ def _feed(message_id: str, unread_count: int, *, subject: str = "Subject", sende
             }
         ],
     }
+
+
+def test_should_emit_when_latest_message_changes_without_unread_growth():
+    service = notification_module.MailNotificationService()
+
+    assert service._should_emit(
+        previous=notification_module.MailNotificationSnapshot(
+            unread_count=2,
+            last_message_id="msg-1",
+            last_received_at="2026-06-09T08:00:00Z",
+        ),
+        current=notification_module.MailNotificationSnapshot(
+            unread_count=2,
+            last_message_id="msg-2",
+            last_received_at="2026-06-09T08:01:00Z",
+        ),
+    )
 
 
 @pytest.mark.asyncio
@@ -127,6 +145,44 @@ async def test_poll_once_emits_notification_on_unread_increase_and_offloads_push
     assert send_calls[0]["tag"] == "mail:msg-2"
     assert send_calls[0]["route"].endswith("message=msg-2&mailbox_id=mbox-1")
     assert thread_calls.count("_send_sync") == 1
+
+
+@pytest.mark.asyncio
+async def test_poll_once_retries_same_mail_when_push_delivery_fully_fails(monkeypatch):
+    service = notification_module.MailNotificationService()
+    send_calls = []
+    feeds = iter([
+        _feed("msg-1", 1),
+        _feed("msg-2", 2, subject="Retry subject"),
+        _feed("msg-2", 2, subject="Retry subject"),
+    ])
+
+    def _candidates():
+        return [_candidate(7, session_id="sess-7")]
+
+    def _feed_sync(*, user_id: int, session_id: str | None):
+        assert user_id == 7
+        assert session_id == "sess-7"
+        return next(feeds)
+
+    def _send_sync(**kwargs):
+        send_calls.append(kwargs)
+        return SimpleNamespace(sent=0, failed=1, disabled=0)
+
+    async def _fake_to_thread(func, /, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(service, "_iter_candidate_users", _candidates)
+    monkeypatch.setattr(service, "_list_notification_feed_sync", _feed_sync)
+    monkeypatch.setattr(service, "_send_notification_sync", _send_sync)
+    monkeypatch.setattr(notification_module.asyncio, "to_thread", _fake_to_thread)
+
+    await service.poll_once()
+    await service.poll_once()
+    await service.poll_once()
+
+    assert [item["tag"] for item in send_calls] == ["mail:msg-2", "mail:msg-2"]
+    assert service._snapshots[7].last_message_id == "msg-1"
 
 
 @pytest.mark.asyncio

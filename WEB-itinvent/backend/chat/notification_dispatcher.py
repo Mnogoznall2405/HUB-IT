@@ -54,6 +54,7 @@ class ChatNotificationDispatcher:
         title: str,
         body: str,
         now: datetime,
+        is_mention: bool = False,
     ) -> bool:
         normalized_channel = _normalize_text(channel) or "chat"
         existing = session.execute(
@@ -71,6 +72,7 @@ class ChatNotificationDispatcher:
                 conversation_id=_normalize_text(conversation_id),
                 recipient_user_id=int(recipient_user_id),
                 channel=normalized_channel,
+                is_mention=bool(is_mention),
                 title=_normalize_text(title) or "Новое сообщение в чате",
                 body=_normalize_text(body) or "Откройте чат, чтобы посмотреть сообщение.",
                 status="queued",
@@ -123,6 +125,7 @@ class ChatNotificationDispatcher:
                 channel="chat",
                 title=title,
                 body=body,
+                is_mention=_normalize_text(event_type) == "chat.mention",
                 now=outbox_now,
             )
             return result

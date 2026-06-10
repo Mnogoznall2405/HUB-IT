@@ -11,11 +11,9 @@
   Stack,
   Typography,
 } from '@mui/material';
-import { lazy, Suspense, useMemo } from 'react';
+import { useMemo } from 'react';
 import { useTheme } from '@mui/material/styles';
-import useMediaQuery from '@mui/material/useMediaQuery';
 import DownloadIcon from '@mui/icons-material/Download';
-import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded';
 import {
   buildMailUiTokens,
   getMailDialogActionsSx,
@@ -24,9 +22,7 @@ import {
   getMailDialogTitleSx,
 } from './mailUiTokens';
 import { getMailAttachmentVisual } from './mailAttachmentVisuals';
-
-const MailPdfPreviewSurface = lazy(() => import('./MailPdfPreviewSurface'));
-const MailExcelPreviewGrid = lazy(() => import('./MailExcelPreviewGrid'));
+import DocumentPreviewDialog, { isDocumentPreviewKind } from '../documentPreview/DocumentPreviewDialog';
 
 export default function MailAttachmentPreviewDialog({
   attachmentPreview,
@@ -37,53 +33,44 @@ export default function MailAttachmentPreviewDialog({
   maxPreviewFileBytes,
 }) {
   const theme = useTheme();
-  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const attachmentVisual = useMemo(
     () => getMailAttachmentVisual({ name: attachmentPreview.filename, content_type: attachmentPreview.contentType }),
     [attachmentPreview.contentType, attachmentPreview.filename],
   );
   const AttachmentIcon = attachmentVisual.Icon;
-  const isOfficeExcel = attachmentPreview.kind === 'office_excel';
-  const isOfficePdf = attachmentPreview.kind === 'office_pdf';
-  const isOfficePreview = isOfficeExcel || isOfficePdf;
+  const isDocumentPreview = isDocumentPreviewKind(attachmentPreview.kind);
 
-  const renderOfficePreviewBody = () => {
-    if (isOfficeExcel && attachmentPreview.excelWorkbook) {
-      return (
-        <Suspense fallback={<Skeleton variant="rectangular" height={360} sx={{ borderRadius: '8px' }} />}>
-          <MailExcelPreviewGrid workbook={attachmentPreview.excelWorkbook} compact={false} />
-        </Suspense>
-      );
-    }
-
-    if (isOfficePdf && attachmentPreview.objectUrl) {
-      return (
-        <Suspense fallback={<Skeleton variant="rectangular" height={360} sx={{ borderRadius: '8px' }} />}>
-          <MailPdfPreviewSurface
-            objectUrl={attachmentPreview.objectUrl}
-            filename={attachmentPreview.filename || 'предпросмотр PDF'}
-            sourceKind={attachmentPreview.sourceKind}
-            sheets={attachmentPreview.sheets}
-            pageCount={attachmentPreview.pageCount}
-            initialPage={1}
-            compact={false}
-          />
-        </Suspense>
-      );
-    }
-
-    return null;
-  };
+  if (isDocumentPreview) {
+    return (
+      <DocumentPreviewDialog
+        open={attachmentPreview.open}
+        title={attachmentPreview.filename || 'вложение'}
+        subtitle={attachmentPreview.sourceKind === 'excel' ? 'Excel' : attachmentVisual.label}
+        kind={attachmentPreview.kind}
+        sourceKind={attachmentPreview.sourceKind}
+        objectUrl={attachmentPreview.objectUrl}
+        excelWorkbook={attachmentPreview.excelWorkbook}
+        pageCount={attachmentPreview.pageCount}
+        sheets={attachmentPreview.sheets}
+        loading={attachmentPreview.loading}
+        error={attachmentPreview.error}
+        onClose={onClose}
+        onDownloadOriginal={onDownload}
+        onDownloadPdf={onDownloadPreviewPdf}
+        canDownloadOriginal={Boolean(attachmentPreview.blob || attachmentPreview.downloadContext)}
+        canDownloadPdf={Boolean(attachmentPreview.previewBlob)}
+      />
+    );
+  }
 
   return (
     <Dialog
       open={attachmentPreview.open}
       onClose={onClose}
-      maxWidth={isOfficePreview ? 'lg' : 'md'}
+      maxWidth="md"
       fullWidth
-      fullScreen={isMobile && isOfficePreview}
-      PaperProps={{ sx: getMailDialogPaperSx(tokens, isMobile && isOfficePreview ? { borderRadius: 0 } : {}) }}
+      PaperProps={{ sx: getMailDialogPaperSx(tokens) }}
     >
       <DialogTitle sx={getMailDialogTitleSx(tokens, { fontWeight: 700 })}>
         <Stack direction="row" spacing={1} alignItems="center" sx={{ minWidth: 0 }}>
@@ -93,7 +80,7 @@ export default function MailAttachmentPreviewDialog({
               {attachmentPreview.filename || 'вложение'}
             </Typography>
             <Typography variant="caption" color="text.secondary">
-              {isOfficeExcel ? 'Таблица Excel' : attachmentVisual.label}
+              {attachmentVisual.label}
             </Typography>
           </Box>
         </Stack>
@@ -122,19 +109,8 @@ export default function MailAttachmentPreviewDialog({
               sx={{ maxWidth: '100%', maxHeight: '70vh', objectFit: 'contain', borderRadius: '8px' }}
             />
           </Box>
-        ) : isOfficePreview ? (
-          renderOfficePreviewBody()
         ) : attachmentPreview.kind === 'pdf' && attachmentPreview.objectUrl ? (
-          <Suspense fallback={<Skeleton variant="rectangular" height={360} sx={{ borderRadius: '8px' }} />}>
-            <MailPdfPreviewSurface
-              objectUrl={attachmentPreview.objectUrl}
-              filename={attachmentPreview.filename || 'предпросмотр PDF'}
-              sourceKind={attachmentPreview.sourceKind}
-              sheets={attachmentPreview.sheets}
-              pageCount={attachmentPreview.pageCount}
-              initialPage={1}
-            />
-          </Suspense>
+          null
         ) : attachmentPreview.kind === 'text' ? (
           <Stack spacing={0.8}>
             <Paper variant="outlined" sx={{ p: 1, borderRadius: '8px', bgcolor: tokens.surfaceBg, borderColor: tokens.surfaceBorder, boxShadow: 'none' }}>
@@ -186,19 +162,8 @@ export default function MailAttachmentPreviewDialog({
           disabled={attachmentPreview.loading || (!attachmentPreview.blob && !attachmentPreview.downloadContext)}
           sx={{ textTransform: 'none', borderRadius: '8px', fontWeight: 600 }}
         >
-          {isOfficePreview ? 'Оригинал' : 'Скачать'}
+          Скачать
         </Button>
-        {isOfficePdf && attachmentPreview.previewBlob ? (
-          <Button
-            variant="outlined"
-            startIcon={<PictureAsPdfRoundedIcon />}
-            onClick={onDownloadPreviewPdf}
-            disabled={attachmentPreview.loading}
-            sx={{ textTransform: 'none', borderRadius: '8px', fontWeight: 600 }}
-          >
-            PDF-версия
-          </Button>
-        ) : null}
       </DialogActions>
     </Dialog>
   );

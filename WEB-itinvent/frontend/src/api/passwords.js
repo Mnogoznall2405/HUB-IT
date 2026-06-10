@@ -48,6 +48,16 @@ export const passwordsAPI = {
     return response.data;
   },
 
+  unlockWebAuthnOptions: async () => {
+    const response = await apiClient.post('/passwords/unlock/webauthn/options');
+    return response.data;
+  },
+
+  unlockWebAuthnVerify: async (payload) => {
+    const response = await apiClient.post('/passwords/unlock/webauthn/verify', payload);
+    return response.data;
+  },
+
   revealEntry: async (id, payload) => {
     const response = await apiClient.post(`/passwords/${encodeId(id)}/reveal`, payload);
     return response.data;

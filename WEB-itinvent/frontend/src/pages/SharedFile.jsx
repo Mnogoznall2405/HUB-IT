@@ -15,6 +15,7 @@ import DownloadOutlinedIcon from '@mui/icons-material/DownloadOutlined';
 import AccessTimeOutlinedIcon from '@mui/icons-material/AccessTimeOutlined';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import { myFilesAPI } from '../api/myFiles';
+import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
 import { getMailAttachmentVisual } from '../components/mail/mailAttachmentVisuals';
 import MailOfficePreviewTeaser from '../components/mail/MailOfficePreviewTeaser';
 import {
@@ -216,6 +217,7 @@ function PreviewPanel({ payload, token }) {
   const [previewMeta, setPreviewMeta] = useState(null);
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  const [previewRefreshKey, setPreviewRefreshKey] = useState(0);
   const [excelWorkbook, setExcelWorkbook] = useState(null);
   const [excelLoading, setExcelLoading] = useState(false);
 
@@ -253,14 +255,8 @@ function PreviewPanel({ payload, token }) {
     if (!payload?.preview_available || !fullPreviewOpen || !isDeferredDocumentPreview) {
       return undefined;
     }
-    if (sourceKind === 'excel' && excelWorkbook) {
-      setPreviewLoading(false);
-      setPreviewError('');
-      return undefined;
-    }
-
     let cancelled = false;
-    setPreviewLoading(true);
+    setPreviewLoading(!(sourceKind === 'excel' && excelWorkbook));
     setPreviewError('');
 
     myFilesAPI.getPublicPreviewMeta(token)
@@ -271,7 +267,7 @@ function PreviewPanel({ payload, token }) {
       })
       .catch((requestError) => {
         if (!cancelled) {
-          setPreviewError(resolvePreviewError(requestError));
+          setPreviewError(sourceKind === 'excel' && excelWorkbook ? '' : resolvePreviewError(requestError));
         }
       })
       .finally(() => {
@@ -286,6 +282,7 @@ function PreviewPanel({ payload, token }) {
     fullPreviewOpen,
     isDeferredDocumentPreview,
     payload?.preview_available,
+    previewRefreshKey,
     sourceKind,
     token,
   ]);
@@ -299,46 +296,72 @@ function PreviewPanel({ payload, token }) {
     );
   }
 
-  if (isDeferredDocumentPreview && !fullPreviewOpen) {
+  if (isDeferredDocumentPreview) {
+    const resolvedSourceKind = previewMeta?.sourceKind || sourceKind;
+    const resolvedKind = resolvedSourceKind === 'excel' && excelWorkbook
+      ? 'office_excel'
+      : (previewMeta?.previewKind || previewKind);
+    const triggerDownload = (url, filename) => {
+      if (typeof document === 'undefined') return;
+      const link = document.createElement('a');
+      link.href = url;
+      if (filename) link.download = filename;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    };
+
     return (
-      <Box sx={{ width: '100%', maxWidth: 920, mx: 'auto' }}>
-        <Paper
-          elevation={0}
-          sx={{
-            p: { xs: 1, sm: 1.5 },
-            bgcolor: PANEL_BG,
-            borderRadius: '8px',
-            boxShadow: '0 20px 64px rgba(15, 23, 42, 0.16)',
-            color: TEXT,
-          }}
-        >
-          <MailOfficePreviewTeaser
-            onOpenFull={() => setFullPreviewOpen(true)}
-            compact={false}
-            alwaysShowAction
+      <>
+        <Box sx={{ width: '100%', maxWidth: 920, mx: 'auto' }}>
+          <Paper
+            elevation={0}
+            sx={{
+              p: { xs: 1, sm: 1.5 },
+              bgcolor: PANEL_BG,
+              borderRadius: '8px',
+              boxShadow: '0 20px 64px rgba(15, 23, 42, 0.16)',
+              color: TEXT,
+            }}
           >
-            <SharedFilePreviewTeaserBody
-              payload={payload}
-              excelLoading={excelLoading}
-              excelWorkbook={excelWorkbook}
-            />
-          </MailOfficePreviewTeaser>
-        </Paper>
-      </Box>
+            <MailOfficePreviewTeaser
+              onOpenFull={() => setFullPreviewOpen(true)}
+              compact={false}
+              alwaysShowAction
+            >
+              <SharedFilePreviewTeaserBody
+                payload={payload}
+                excelLoading={excelLoading}
+                excelWorkbook={excelWorkbook}
+              />
+            </MailOfficePreviewTeaser>
+          </Paper>
+        </Box>
+        <DocumentPreviewDialog
+          open={fullPreviewOpen}
+          title={payload?.file_name || 'Документ'}
+          subtitle={resolvedSourceKind === 'excel' ? 'Excel' : 'PDF-предпросмотр'}
+          kind={resolvedKind}
+          sourceKind={resolvedSourceKind}
+          objectUrl={previewUrl}
+          excelWorkbook={excelWorkbook}
+          pageCount={previewMeta?.pageCount || 0}
+          sheets={previewMeta?.sheets || []}
+          loading={previewLoading}
+          error={previewError}
+          onClose={() => setFullPreviewOpen(false)}
+          onRefresh={() => {
+            setPreviewMeta(null);
+            setPreviewError('');
+            setPreviewRefreshKey((current) => current + 1);
+          }}
+          onDownloadOriginal={() => triggerDownload(myFilesAPI.buildPublicDownloadUrl(token), payload?.file_name || '')}
+          onDownloadPdf={() => triggerDownload(previewUrl, previewMeta?.pdfFilename || `${payload?.file_name || 'preview'}.pdf`)}
+          canDownloadOriginal
+          canDownloadPdf={Boolean(resolvedKind !== 'pdf')}
+        />
+      </>
     );
-  }
-
-  if (isDeferredDocumentPreview && fullPreviewOpen && previewLoading) {
-    return (
-      <Stack spacing={1.5} sx={{ width: '100%', maxWidth: 920, mx: 'auto' }}>
-        <Skeleton variant="text" width="30%" />
-        <Skeleton variant="rectangular" height={420} sx={{ borderRadius: '8px' }} />
-      </Stack>
-    );
-  }
-
-  if (isDeferredDocumentPreview && fullPreviewOpen && previewError) {
-    return <FileFallbackPanel payload={payload} message={previewError} tone="warning" />;
   }
 
   if (previewKind === 'image') {

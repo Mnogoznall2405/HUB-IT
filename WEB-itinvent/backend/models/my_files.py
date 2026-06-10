@@ -20,6 +20,10 @@ class MyFileResponse(BaseModel):
     storage_mode: str
     error_text: str = ""
     security_scan_status: str = "pending"
+    preview_kind: str = "unsupported"
+    preview_available: bool = False
+    preview_status: str = "unsupported"
+    preview_max_bytes: int = 0
     is_shared: bool = False
     share_expires_at: datetime | None = None
     created_at: datetime | None = None
