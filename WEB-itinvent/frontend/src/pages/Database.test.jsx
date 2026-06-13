@@ -59,8 +59,12 @@ vi.mock('../contexts/NotificationContext', () => ({
 }));
 
 vi.mock('../components/layout/MainLayout', () => ({
-  default: ({ children, headerMode = 'default' }) => (
-    <div data-testid="main-layout" data-header-mode={headerMode}>
+  default: ({ children, headerMode = 'default', showDatabaseSelector }) => (
+    <div
+      data-testid="main-layout"
+      data-header-mode={headerMode}
+      data-show-database-selector={String(showDatabaseSelector)}
+    >
       {children}
     </div>
   ),
@@ -301,6 +305,12 @@ beforeEach(() => {
 });
 
 describe('Database equipment row helpers', () => {
+  it('shows database selector in the main layout header', async () => {
+    renderDatabase();
+
+    expect(await screen.findByTestId('main-layout')).toHaveAttribute('data-show-database-selector', 'true');
+  });
+
   it('shows desktop quick actions outside the mobile FAB', async () => {
     renderDatabase();
 

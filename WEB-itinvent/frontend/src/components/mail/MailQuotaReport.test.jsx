@@ -148,9 +148,15 @@ describe('MailQuotaReport', () => {
       expect(screen.getByText('over@example.test')).toBeInTheDocument();
     });
 
+    expect(screen.getByTestId('quota-mobile-toolbar')).toBeInTheDocument();
     expect(screen.getByTestId('quota-mobile-list')).toBeInTheDocument();
     expect(screen.getAllByTestId('quota-mobile-row')).toHaveLength(4);
     expect(screen.queryByRole('table')).not.toBeInTheDocument();
-    expect(screen.getAllByText('Лимит').length).toBeGreaterThan(0);
+    expect(screen.queryByTestId('quota-mobile-filter-panel')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Фильтры/i }));
+
+    expect(screen.getByTestId('quota-mobile-filter-panel')).toBeInTheDocument();
+    expect(screen.getByLabelText('Фильтр базы Exchange')).toBeInTheDocument();
   });
 });

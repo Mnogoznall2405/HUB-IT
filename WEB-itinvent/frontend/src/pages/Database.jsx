@@ -885,7 +885,7 @@ function Database() {
 
   if (loading && filteredData === null) {
     return (
-      <MainLayout headerMode={isMobile ? 'hidden' : 'default'}>
+      <MainLayout headerMode={isMobile ? 'hidden' : 'default'} showDatabaseSelector>
         <PageShell>
           <LoadingSpinner message="Загрузка данных..." />
         </PageShell>
@@ -894,7 +894,7 @@ function Database() {
   }
 
   return (
-    <MainLayout headerMode={isMobile ? 'hidden' : 'default'}>
+    <MainLayout headerMode={isMobile ? 'hidden' : 'default'} showDatabaseSelector>
       <PageShell sx={{ pb: isMobile ? 14 : 3 }}>
         {/* Встроенная шапка для мобильных */}
         {isMobile && (

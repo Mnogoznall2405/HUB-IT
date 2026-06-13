@@ -144,33 +144,25 @@ export function TaskDetailHeader({
           backdropFilter: 'blur(10px)',
         }}
       >
-        <Stack spacing={0.9}>
-          <Stack direction="row" spacing={0.8} alignItems="flex-start" justifyContent="space-between">
-            <Button
-              variant="text"
-              startIcon={<ArrowBackIcon />}
-              onClick={onBack}
-              sx={{ textTransform: 'none', fontWeight: 800, minWidth: 0, px: 0.5 }}
-            >
-              Назад
-            </Button>
-            {Array.isArray(actionMenuItems) && actionMenuItems.length > 0 ? (
-              <Box data-testid="task-detail-mobile-actions">
-                <OverflowMenu
-                  label="Действия задачи"
-                  size="medium"
-                  items={actionMenuItems}
-                  onSelect={onActionMenuSelect}
-                />
-              </Box>
-            ) : null}
-          </Stack>
-
-          <Typography sx={{ fontWeight: 900, fontSize: '1rem', lineHeight: 1.22 }}>
-            {task?.title || 'Карточка задачи'}
-          </Typography>
-
-          {chips}
+        <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between">
+          <Button
+            variant="text"
+            startIcon={<ArrowBackIcon />}
+            onClick={onBack}
+            sx={{ textTransform: 'none', fontWeight: 800, minWidth: 0, px: 0.5 }}
+          >
+            Назад
+          </Button>
+          {Array.isArray(actionMenuItems) && actionMenuItems.length > 0 ? (
+            <Box data-testid="task-detail-mobile-actions">
+              <OverflowMenu
+                label="Действия задачи"
+                size="medium"
+                items={actionMenuItems}
+                onSelect={onActionMenuSelect}
+              />
+            </Box>
+          ) : null}
         </Stack>
       </Box>
     );
@@ -274,6 +266,180 @@ export function TaskDetailHeader({
   );
 }
 
+export function TaskMobileContentSummary({
+  task,
+  attachments = [],
+  canUploadFiles = false,
+  uploadingAttachment = false,
+  onUploadAttachment,
+  onDownloadAttachment,
+  onDownloadReport,
+  formatDateTime,
+  formatFileSize,
+  ui,
+  theme,
+}) {
+  const description = String(task?.description || '').trim();
+  const normalizedAttachments = Array.isArray(attachments) ? attachments : [];
+  const report = task?.latest_report?.file_name
+    ? {
+      id: `report-${task.latest_report.id || task.latest_report.file_name}`,
+      type: 'report',
+      file_name: task.latest_report.file_name,
+      uploaded_at: task.latest_report.uploaded_at,
+      uploaded_by_username: task.latest_report.uploaded_by_username,
+      payload: task.latest_report,
+    }
+    : null;
+  const fileItems = [
+    ...normalizedAttachments.map((attachment) => ({
+      id: `attachment-${attachment.id || attachment.file_name}`,
+      type: 'attachment',
+      file_name: attachment.file_name || 'file',
+      file_size: attachment.file_size,
+      uploaded_at: attachment.uploaded_at,
+      payload: attachment,
+    })),
+    ...(report ? [report] : []),
+  ];
+  const visibleFiles = fileItems.slice(0, 3);
+  const hiddenFilesCount = Math.max(fileItems.length - visibleFiles.length, 0);
+  const hasFiles = fileItems.length > 0;
+  const handleUploadChange = (event) => {
+    const file = event.target.files?.[0];
+    if (file) onUploadAttachment?.(file);
+    event.target.value = '';
+  };
+
+  return (
+    <Stack spacing={1} data-testid="task-mobile-content">
+      <Box
+        sx={{
+          p: 1.15,
+          borderRadius: '14px',
+          border: '1px solid',
+          borderColor: ui.borderSoft,
+          bgcolor: ui.panelSolid,
+          boxShadow: ui.shellShadow,
+        }}
+      >
+        <Typography sx={{ fontWeight: 950, fontSize: '1.12rem', lineHeight: 1.22 }}>
+          {task?.title || 'Карточка задачи'}
+        </Typography>
+      </Box>
+
+      <Box
+        data-testid="task-mobile-description"
+        sx={{
+          p: 1.15,
+          borderRadius: '14px',
+          border: '1px solid',
+          borderColor: ui.borderSoft,
+          bgcolor: ui.panelSolid,
+          boxShadow: ui.shellShadow,
+        }}
+      >
+        <Typography sx={{ fontWeight: 850, mb: 0.65 }}>Описание</Typography>
+        {description ? (
+          <MarkdownRenderer value={description} />
+        ) : (
+          <Typography variant="body2" sx={{ color: ui.mutedText }}>
+            Описание задачи не заполнено.
+          </Typography>
+        )}
+      </Box>
+
+      {(hasFiles || canUploadFiles) && (
+        <Box
+          data-testid="task-mobile-files"
+          sx={{
+            p: 1.05,
+            borderRadius: '14px',
+            border: '1px solid',
+            borderColor: ui.borderSoft,
+            bgcolor: ui.panelSolid,
+            boxShadow: ui.shellShadow,
+          }}
+        >
+          <Stack spacing={0.85}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
+              <Typography sx={{ fontWeight: 850 }}>Файлы</Typography>
+              {hiddenFilesCount > 0 && (
+                <Typography variant="caption" sx={{ color: ui.subtleText, fontWeight: 800 }}>
+                  ещё {hiddenFilesCount}
+                </Typography>
+              )}
+            </Stack>
+
+            {hasFiles ? (
+              <Stack spacing={0.55}>
+                {visibleFiles.map((file) => (
+                  <Stack
+                    key={file.id}
+                    data-testid={`task-mobile-file-${file.id}`}
+                    direction="row"
+                    spacing={0.75}
+                    alignItems="center"
+                    sx={{
+                      minWidth: 0,
+                      p: 0.65,
+                      borderRadius: '10px',
+                      bgcolor: ui.actionBg,
+                    }}
+                  >
+                    <Avatar sx={{ width: 30, height: 30, bgcolor: alpha(theme.palette.primary.main, 0.14), color: theme.palette.primary.main }}>
+                      <AttachFileIcon sx={{ fontSize: 16 }} />
+                    </Avatar>
+                    <Box sx={{ minWidth: 0, flex: 1 }}>
+                      <Typography sx={{ fontWeight: 800, fontSize: '0.86rem', lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {file.file_name}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: ui.subtleText }}>
+                        {file.type === 'report' ? 'Отчёт' : formatFileSize?.(file.file_size)} · {formatDateTime?.(file.uploaded_at)}
+                      </Typography>
+                    </Box>
+                    <IconButton
+                      size="small"
+                      aria-label={`Скачать ${file.file_name}`}
+                      onClick={() => {
+                        if (file.type === 'report') {
+                          onDownloadReport?.(file.payload);
+                          return;
+                        }
+                        onDownloadAttachment?.(file.payload);
+                      }}
+                    >
+                      <DownloadIcon fontSize="small" />
+                    </IconButton>
+                  </Stack>
+                ))}
+              </Stack>
+            ) : (
+              <Typography variant="body2" sx={{ color: ui.mutedText }}>
+                Файлов пока нет.
+              </Typography>
+            )}
+
+            {canUploadFiles && (
+              <Button
+                size="small"
+                variant={hasFiles ? 'text' : 'outlined'}
+                component="label"
+                startIcon={<AttachFileIcon />}
+                disabled={uploadingAttachment}
+                sx={{ alignSelf: hasFiles ? 'flex-start' : 'stretch', textTransform: 'none', fontWeight: 800, borderRadius: '10px' }}
+              >
+                {uploadingAttachment ? 'Загрузка...' : 'Прикрепить файл'}
+                <input type="file" hidden onChange={handleUploadChange} />
+              </Button>
+            )}
+          </Stack>
+        </Box>
+      )}
+    </Stack>
+  );
+}
+
 export function TaskPrimaryActions({
   task,
   canOpenTransferActUpload,
@@ -292,6 +458,58 @@ export function TaskPrimaryActions({
   compactMobile = false,
 }) {
   const showSecondaryActions = !compactMobile && (canEditTask || canDeleteTask || onCopyLink);
+
+  if (compactMobile) {
+    const primaryAction = (() => {
+      if (canOpenTransferActUpload) {
+        return {
+          label: 'Загрузить акт',
+          variant: 'contained',
+          color: 'primary',
+          onClick: () => onOpenTransferActReminder(task),
+        };
+      }
+      if (canStartTask) {
+        return {
+          label: 'Начать',
+          variant: 'outlined',
+          color: 'primary',
+          onClick: () => onStartTask(task.id),
+        };
+      }
+      if (canSubmitTask) {
+        return {
+          label: 'Сдать',
+          variant: 'contained',
+          color: 'primary',
+          onClick: () => onOpenSubmitTask(task),
+        };
+      }
+      if (canReviewTask) {
+        return {
+          label: 'Проверить',
+          variant: 'contained',
+          color: 'secondary',
+          onClick: () => onOpenReviewTask(task),
+        };
+      }
+      return null;
+    })();
+
+    if (!primaryAction) return null;
+
+    return (
+      <Button
+        fullWidth
+        variant={primaryAction.variant}
+        color={primaryAction.color}
+        onClick={primaryAction.onClick}
+        sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '10px', boxShadow: 'none' }}
+      >
+        {primaryAction.label}
+      </Button>
+    );
+  }
 
   return (
     <Stack spacing={0.8}>
@@ -384,6 +602,7 @@ export function TaskContextSidebar({
   transferLabel,
   isTransferReminder,
   formatDateTime,
+  actionState,
   actions,
   mobile = false,
 }) {
@@ -396,7 +615,7 @@ export function TaskContextSidebar({
     { label: 'Объект', value: task?.object_name || 'Без объекта' },
   ];
   const timelineRows = [
-    { label: 'Дата протокола', value: task?.protocol_date ? formatDateTime(task.protocol_date) : '-' },
+    { label: 'Дата постановки задачи', value: task?.protocol_date ? formatDateTime(task.protocol_date) : '-' },
     { label: 'Срок', value: task?.due_at ? formatDateTime(task.due_at) : 'Без срока' },
     { label: 'Создано', value: formatDateTime(task?.created_at) },
     { label: 'Обновлено', value: formatDateTime(task?.updated_at || task?.created_at) },
@@ -406,11 +625,14 @@ export function TaskContextSidebar({
   ];
 
   if (mobile) {
+    const nextActionLabel = actionState?.stepLabel || 'Открыть детали';
+    const actionHint = actionState?.hint || 'Посмотрите описание, чек-лист и обсуждение ниже.';
     return (
       <Stack spacing={1} sx={{ alignSelf: 'stretch' }}>
         <Box
+          data-testid="task-context-mobile-action"
           sx={{
-            p: 1.05,
+            p: 0.9,
             borderRadius: '14px',
             border: '1px solid',
             borderColor: ui.borderSoft,
@@ -418,8 +640,22 @@ export function TaskContextSidebar({
             boxShadow: ui.shellShadow,
           }}
         >
-          <Typography sx={{ fontWeight: 800, mb: 0.8 }}>Действия</Typography>
-          {actions}
+          <Stack spacing={0.65}>
+            <Typography variant="caption" sx={{ color: ui.subtleText, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
+              Что сделать
+            </Typography>
+            <Typography sx={{ fontWeight: 950, fontSize: '0.98rem', lineHeight: 1.18 }}>
+              {nextActionLabel}
+            </Typography>
+            <Typography variant="body2" sx={{ color: ui.mutedText, lineHeight: 1.35 }}>
+              {actionHint}
+            </Typography>
+            {actions ? (
+              <Box sx={{ pt: 0.15 }}>
+                {actions}
+              </Box>
+            ) : null}
+          </Stack>
         </Box>
 
         <Accordion
@@ -583,13 +819,15 @@ export function TaskActivityTabs({
   ui,
   theme,
   mobile = false,
+  hideFilesTab = false,
 }) {
   const commentsRef = useRef(null);
+  const effectiveActiveTab = hideFilesTab && activeTab === 'files' ? 'comments' : activeTab;
 
   useEffect(() => {
-    if (activeTab !== 'comments' || !commentsRef.current) return;
+    if (effectiveActiveTab !== 'comments' || !commentsRef.current) return;
     commentsRef.current.scrollTop = commentsRef.current.scrollHeight;
-  }, [activeTab, comments]);
+  }, [effectiveActiveTab, comments]);
 
   return (
     <Box
@@ -604,7 +842,7 @@ export function TaskActivityTabs({
     >
       <Box sx={{ px: 1.2, pt: 1.05, borderBottom: '1px solid', borderColor: ui.borderSoft }}>
         <Tabs
-          value={activeTab}
+          value={effectiveActiveTab}
           onChange={(_, value) => onTabChange(value)}
           variant="scrollable"
           allowScrollButtonsMobile
@@ -615,13 +853,13 @@ export function TaskActivityTabs({
           }}
         >
           <Tab value="comments" label={`Комментарии (${comments.length})`} />
-          <Tab value="files" label={`Файлы (${attachments.length})`} />
+          {!hideFilesTab && <Tab value="files" label={`Файлы (${attachments.length})`} />}
           <Tab value="history" label={`История (${statusLog.length})`} />
         </Tabs>
       </Box>
 
       <Box sx={{ px: 1.2, py: 1.2 }}>
-        {activeTab === 'comments' && (
+        {effectiveActiveTab === 'comments' && (
           <Stack spacing={1}>
             <Box ref={commentsRef} sx={{ maxHeight: mobile ? 'none' : 380, overflowY: mobile ? 'visible' : 'auto', pr: 0.4 }}>
               {comments.length === 0 ? (
@@ -689,7 +927,7 @@ export function TaskActivityTabs({
           </Stack>
         )}
 
-        {activeTab === 'files' && (
+        {!hideFilesTab && effectiveActiveTab === 'files' && (
           <Stack spacing={1}>
             {attachments.length === 0 ? (
               <Typography variant="body2" sx={{ color: ui.mutedText }}>
@@ -745,7 +983,7 @@ export function TaskActivityTabs({
           </Stack>
         )}
 
-        {activeTab === 'history' && (
+        {effectiveActiveTab === 'history' && (
           <Stack spacing={0.95}>
             {statusLog.length === 0 ? (
               <Typography variant="body2" sx={{ color: ui.mutedText }}>

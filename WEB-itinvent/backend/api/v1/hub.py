@@ -11,13 +11,14 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, 
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 
-from backend.api.deps import ensure_user_permission, get_current_active_user, require_permission
+from backend.api.deps import ensure_user_any_permission, ensure_user_permission, get_current_active_user, require_any_permission, require_permission
 from backend.models.auth import User
 from backend.services.authorization_service import (
     PERM_ANNOUNCEMENTS_WRITE,
     PERM_CHAT_READ,
     PERM_DASHBOARD_READ,
     PERM_MAIL_ACCESS,
+    PERM_TASKS_CREATE,
     PERM_TASKS_READ,
     PERM_TASKS_MANAGE_ALL,
     PERM_TASKS_REVIEW,
@@ -447,7 +448,7 @@ async def get_task_projects(
 @router.post("/task-projects")
 async def create_task_project(
     payload: dict = Body(...),
-    _: User = Depends(require_permission(PERM_TASKS_WRITE)),
+    _: User = Depends(require_any_permission((PERM_TASKS_CREATE, PERM_TASKS_WRITE))),
 ):
     try:
         return hub_service.create_task_project(
@@ -543,8 +544,10 @@ async def transform_markdown(
     if len(text) > 20000:
         raise HTTPException(status_code=413, detail="Text is too large (max 20000 symbols)")
 
-    required_permission = PERM_ANNOUNCEMENTS_WRITE if context == "announcement" else PERM_TASKS_WRITE
-    ensure_user_permission(current_user, required_permission)
+    if context == "announcement":
+        ensure_user_permission(current_user, PERM_ANNOUNCEMENTS_WRITE)
+    else:
+        ensure_user_any_permission(current_user, (PERM_TASKS_CREATE, PERM_TASKS_WRITE))
 
     try:
         return markdown_transform_service.transform_text(text=text, context=context)
@@ -646,13 +649,11 @@ async def export_task_analytics(
 @router.post("/tasks")
 async def create_task(
     payload: dict = Body(...),
-    current_user: User = Depends(require_permission(PERM_TASKS_WRITE)),
+    current_user: User = Depends(require_any_permission((PERM_TASKS_CREATE, PERM_TASKS_WRITE))),
 ):
     try:
         controller_raw = payload.get("controller_user_id")
-        if controller_raw in (None, "", 0, "0"):
-            raise ValueError("controller_user_id is required")
-        controller_user_id = int(controller_raw)
+        controller_user_id = 0 if controller_raw in (None, "", 0, "0") else int(controller_raw)
         assignee_ids_raw = payload.get("assignee_user_ids")
         assignee_ids: list[int] = []
         if isinstance(assignee_ids_raw, list):
@@ -683,6 +684,7 @@ async def create_task(
                     object_id=_normalize_text(payload.get("object_id")) or None,
                     protocol_date=_normalize_text(payload.get("protocol_date")) or None,
                     priority=_normalize_text(payload.get("priority"), "normal"),
+                    checklist_items=payload.get("checklist_items") if isinstance(payload.get("checklist_items"), list) else [],
                     department_id=_normalize_text(payload.get("department_id")) or None,
                     visibility_scope=_normalize_text(payload.get("visibility_scope")) or None,
                     actor=_actor_dict(current_user),

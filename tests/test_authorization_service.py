@@ -8,6 +8,8 @@ from backend.services.authorization_service import (
     PERM_MY_FILES_WRITE,
     PERM_PASSWORDS_READ,
     PERM_PASSWORDS_WRITE,
+    PERM_TASKS_CREATE,
+    PERM_TASKS_WRITE,
     PERM_TICKETS_PERSONAL_DATA_READ,
     PERM_TICKETS_READ,
     PERM_TICKETS_WRITE,
@@ -19,6 +21,7 @@ def test_operator_role_does_not_get_tickets_access_by_default():
     permissions = set(authorization_service.get_permissions_for_role("operator"))
 
     assert PERM_DASHBOARD_READ in permissions
+    assert PERM_TASKS_CREATE in permissions
     assert PERM_TICKETS_READ not in permissions
     assert PERM_TICKETS_WRITE not in permissions
     assert PERM_TICKETS_PERSONAL_DATA_READ not in permissions
@@ -35,6 +38,8 @@ def test_viewer_role_does_not_get_tickets_access_by_default():
     assert PERM_TICKETS_PERSONAL_DATA_READ not in permissions
     assert PERM_PASSWORDS_READ not in permissions
     assert PERM_PASSWORDS_WRITE not in permissions
+    assert PERM_TASKS_CREATE in permissions
+    assert PERM_TASKS_WRITE not in permissions
     assert PERM_MY_FILES_READ in permissions
     assert PERM_MY_FILES_WRITE in permissions
     assert PERM_MY_FILES_SHARE in permissions
@@ -49,6 +54,7 @@ def test_tickets_permissions_remain_available_for_manual_assignment():
     assert PERM_TICKETS_PERSONAL_DATA_READ in all_permissions
     assert PERM_PASSWORDS_READ in all_permissions
     assert PERM_PASSWORDS_WRITE in all_permissions
+    assert PERM_TASKS_CREATE in all_permissions
     assert PERM_MY_FILES_AUDIT_READ in all_permissions
     assert authorization_service.has_permission(
         "operator",

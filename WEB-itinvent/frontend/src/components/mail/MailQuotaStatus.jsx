@@ -62,7 +62,7 @@ export function QuotaStatusChip({ row }) {
   );
 }
 
-export function QuotaUsageBar({ row }) {
+export function QuotaUsageBar({ row, compact = false }) {
   const theme = useTheme();
   const status = resolveQuotaStatus(row);
   const usedPercent = resolveEffectiveUsedPercent(row);
@@ -79,9 +79,9 @@ export function QuotaUsageBar({ row }) {
       : theme.palette.success.main;
 
   return (
-    <Box sx={{ minWidth: 88 }}>
-      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: 0.35 }}>
-        <Typography variant="caption" sx={{ fontWeight: 700 }}>
+    <Box sx={{ minWidth: compact ? 0 : 88 }}>
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', mb: compact ? 0.15 : 0.35 }}>
+        <Typography variant="caption" sx={{ fontWeight: 700, fontSize: compact ? '0.68rem' : undefined, lineHeight: 1 }}>
           {value.toFixed(1)}%
         </Typography>
       </Box>
@@ -89,7 +89,7 @@ export function QuotaUsageBar({ row }) {
         variant="determinate"
         value={value}
         sx={{
-          height: 8,
+          height: compact ? 5 : 8,
           borderRadius: 999,
           bgcolor: alpha(barColor, 0.18),
           '& .MuiLinearProgress-bar': {

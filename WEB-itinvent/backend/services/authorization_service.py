@@ -11,6 +11,7 @@ PERM_DATABASE_WRITE = "database.write"
 PERM_DASHBOARD_READ = "dashboard.read"
 PERM_ANNOUNCEMENTS_WRITE = "announcements.write"
 PERM_TASKS_READ = "tasks.read"
+PERM_TASKS_CREATE = "tasks.create"
 PERM_TASKS_WRITE = "tasks.write"
 PERM_TASKS_REVIEW = "tasks.review"
 PERM_TASKS_MANAGE_ALL = "tasks.manage_all"
@@ -57,6 +58,7 @@ PERM_MY_FILES_AUDIT_READ = "my_files.audit.read"
 _VIEWER_PERMISSIONS = {
     PERM_DASHBOARD_READ,
     PERM_TASKS_READ,
+    PERM_TASKS_CREATE,
     PERM_SETTINGS_READ,
     PERM_CHAT_READ,
     PERM_CHAT_WRITE,

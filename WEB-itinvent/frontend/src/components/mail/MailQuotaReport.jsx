@@ -16,10 +16,12 @@ import {
   Typography,
 } from '@mui/material';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
+import FilterListRoundedIcon from '@mui/icons-material/FilterListRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
 import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded';
 import { alpha, useTheme } from '@mui/material/styles';
 import { mailMailboxQuotasAPI } from '../../api/mailMailboxQuotas';
+import { hideScrollbarSx } from '../../lib/hideScrollbarSx';
 import { buildMailUiTokens, getMailTextFieldSx } from './mailUiTokens';
 import { QuotaStatusChip, QuotaUsageBar, getQuotaRowSx, resolveQuotaStatus } from './MailQuotaStatus';
 
@@ -95,6 +97,7 @@ function MetricPill({
   color,
   onClick,
   testId,
+  compact = false,
 }) {
   const theme = useTheme();
 
@@ -105,11 +108,17 @@ function MetricPill({
       variant="text"
       sx={{
         flex: { xs: '1 1 calc(50% - 6px)', sm: '0 0 auto' },
-        minWidth: { xs: 0, sm: 142 },
-        minHeight: 50,
+        ...(compact ? {
+          flex: '1 1 0',
+          minWidth: 0,
+          minHeight: 34,
+        } : {
+          minWidth: { xs: 0, sm: 142 },
+          minHeight: 50,
+        }),
         justifyContent: 'flex-start',
-        px: 1.2,
-        py: 0.75,
+        px: compact ? 0.65 : 1.2,
+        py: compact ? 0.35 : 0.75,
         borderRadius: 1,
         textAlign: 'left',
         textTransform: 'none',
@@ -126,15 +135,25 @@ function MetricPill({
       }}
     >
       <Stack spacing={0.1} sx={{ minWidth: 0 }}>
-        <Typography variant="caption" sx={{ color: 'text.secondary', lineHeight: 1.15 }}>
+        <Typography
+          variant="caption"
+          sx={{
+            color: 'text.secondary',
+            lineHeight: compact ? 1 : 1.15,
+            fontSize: compact ? '0.64rem' : undefined,
+          }}
+          noWrap
+        >
           {label}
         </Typography>
-        <Typography sx={{ fontWeight: 800, fontSize: '1.12rem', lineHeight: 1.1 }}>
+        <Typography sx={{ fontWeight: 800, fontSize: compact ? '0.92rem' : '1.12rem', lineHeight: 1.05 }}>
           {value}
         </Typography>
-        <Typography variant="caption" sx={{ color: 'text.secondary', lineHeight: 1.15 }} noWrap>
-          {helper}
-        </Typography>
+        {!compact ? (
+          <Typography variant="caption" sx={{ color: 'text.secondary', lineHeight: 1.15 }} noWrap>
+            {helper}
+          </Typography>
+        ) : null}
       </Stack>
     </Button>
   );
@@ -180,7 +199,7 @@ function MobileQuotaRow({ row, tokens, theme }) {
     <Box
       data-testid="quota-mobile-row"
       sx={{
-        p: 1,
+        p: 0.75,
         borderRadius: tokens.radiusSm,
         border: '1px solid',
         borderColor: tokens.panelBorder,
@@ -188,36 +207,57 @@ function MobileQuotaRow({ row, tokens, theme }) {
         ...getQuotaRowSx(status, theme),
       }}
     >
-      <Stack spacing={0.85}>
+      <Stack spacing={0.55}>
         <Stack direction="row" spacing={1} alignItems="flex-start" justifyContent="space-between">
           <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontWeight: 800, fontSize: '0.95rem', lineHeight: 1.2 }} noWrap>
+            <Typography sx={{ fontWeight: 800, fontSize: '0.9rem', lineHeight: 1.15 }} noWrap>
               {row.display_name || row.email || '—'}
             </Typography>
-            <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }} noWrap>
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.7rem', lineHeight: 1.1 }} noWrap>
               {row.email || '—'}
             </Typography>
           </Box>
           <QuotaStatusChip row={row} />
         </Stack>
 
-        <QuotaUsageBar row={row} />
+        <QuotaUsageBar row={row} compact />
 
         <Box
           sx={{
             display: 'grid',
-            gridTemplateColumns: 'repeat(2, minmax(0, 1fr))',
-            gap: 0.75,
+            gridTemplateColumns: 'minmax(0, 1.45fr) minmax(0, 0.9fr) minmax(0, 0.8fr)',
+            gap: 0.55,
           }}
         >
-          <MobileStat label="Занято" value={formatBytes(row.used_bytes)} />
-          <MobileStat label="Лимит" value={formatLimit(row)} />
+          <MobileStat label="Занято / лимит" value={`${formatBytes(row.used_bytes)} / ${formatLimit(row)}`} />
           <MobileStat label="Осталось" value={formatBytes(row.free_bytes)} />
           <MobileStat label="База" value={row.database_name || '—'} />
         </Box>
       </Stack>
     </Box>
   );
+}
+
+function getQuotaSearchFieldSx(tokens, overrides = {}) {
+  const baseSx = getMailTextFieldSx(tokens);
+  return {
+    ...baseSx,
+    '& .MuiOutlinedInput-root': {
+      ...baseSx['& .MuiOutlinedInput-root'],
+      bgcolor: tokens.panelSolid,
+      '&:hover fieldset': {
+        borderColor: tokens.surfaceBorder,
+      },
+      '&.Mui-focused': {
+        boxShadow: 'none',
+        bgcolor: tokens.panelSolid,
+      },
+      '&.Mui-focused fieldset': {
+        borderColor: tokens.surfaceBorder,
+      },
+    },
+    ...overrides,
+  };
 }
 
 export default function MailQuotaReport({ isMobile = false }) {
@@ -233,6 +273,7 @@ export default function MailQuotaReport({ isMobile = false }) {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [quickFilter, setQuickFilter] = useState('all');
   const [databaseName, setDatabaseName] = useState('');
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -290,6 +331,7 @@ export default function MailQuotaReport({ isMobile = false }) {
     setDatabaseName('');
     setSearchInput('');
     setDebouncedSearch('');
+    setMobileFiltersOpen(false);
   }, []);
 
   const databaseOptions = useMemo(
@@ -298,6 +340,7 @@ export default function MailQuotaReport({ isMobile = false }) {
   );
 
   const hasActiveFilters = quickFilter !== 'all' || Boolean(databaseName.trim()) || Boolean(searchInput.trim());
+  const activeFilterCount = Number(quickFilter !== 'all') + Number(Boolean(databaseName.trim())) + Number(Boolean(searchInput.trim()));
   const activeSearch = searchInput.trim();
 
   const renderRowsSummary = () => (
@@ -307,6 +350,57 @@ export default function MailQuotaReport({ isMobile = false }) {
       {hasActiveFilters ? ' · применены фильтры' : ''}
       {total > ROWS_LIMIT ? ` · максимум ${ROWS_LIMIT} строк за запрос` : ''}
     </Typography>
+  );
+
+  const renderMetricPills = (compact = false) => (
+    <Stack
+      direction="row"
+      spacing={compact ? 0.35 : 0.75}
+      useFlexGap
+      flexWrap={compact ? 'nowrap' : 'wrap'}
+      sx={compact ? { minWidth: 0 } : undefined}
+    >
+      <MetricPill
+        compact={compact}
+        label="Всего"
+        value={summary?.total ?? snapshot?.row_count ?? '—'}
+        helper="Все ящики"
+        active={!hasActiveFilters}
+        onClick={resetFilters}
+        color={theme.palette.primary.main}
+        testId="quota-metric-total"
+      />
+      <MetricPill
+        compact={compact}
+        label="≥ 90%"
+        value={summary?.warning_90 ?? '—'}
+        helper="На грани"
+        active={quickFilter === 'warning'}
+        onClick={() => toggleQuickFilter('warning')}
+        color={theme.palette.warning.main}
+        testId="quota-metric-warning"
+      />
+      <MetricPill
+        compact={compact}
+        label="> 100%"
+        value={summary?.over_quota ?? '—'}
+        helper="Переполнено"
+        active={quickFilter === 'over'}
+        onClick={() => toggleQuickFilter('over')}
+        color={theme.palette.error.main}
+        testId="quota-metric-over"
+      />
+      <MetricPill
+        compact={compact}
+        label={compact ? '5 ГБ' : 'Лимит не задан'}
+        value={summary?.no_quota ?? '—'}
+        helper="5 GB по умолч."
+        active={quickFilter === 'no_quota'}
+        onClick={() => toggleQuickFilter('no_quota')}
+        color={theme.palette.info.main}
+        testId="quota-metric-default"
+      />
+    </Stack>
   );
 
   return (
@@ -326,14 +420,144 @@ export default function MailQuotaReport({ isMobile = false }) {
     >
       <Box
         sx={{
-          px: { xs: 1.1, md: 1.5 },
-          py: { xs: 1, md: 1.1 },
+          px: { xs: 0.75, md: 1.5 },
+          py: { xs: 0.65, md: 1.1 },
           borderBottom: '1px solid',
           borderColor: tokens.panelBorder,
           bgcolor: tokens.panelSolid,
         }}
       >
-        <Stack spacing={1}>
+        {isMobile ? (
+          <Stack data-testid="quota-mobile-toolbar" spacing={0.55}>
+            <Stack direction="row" spacing={0.65} alignItems="center">
+              <Box sx={{ minWidth: 0, flex: 1 }}>
+                <Typography sx={{ fontWeight: 800, fontSize: '0.92rem', lineHeight: 1.08 }}>
+                  Квоты почты
+                </Typography>
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontSize: '0.68rem', lineHeight: 1.05 }} noWrap>
+                  {rows.length} из {total || summary?.total || snapshot?.row_count || '—'}
+                  {staleHours != null ? ` · ${staleHours} ч назад` : ''}
+                </Typography>
+              </Box>
+              <Button
+                size="small"
+                aria-label="Обновить квоты"
+                variant="contained"
+                onClick={() => loadData({ searchOverride: activeSearch })}
+                disabled={loading}
+                sx={{ minWidth: 34, width: 34, height: 34, p: 0, borderRadius: 1 }}
+              >
+                {loading ? <CircularProgress size={16} color="inherit" /> : <RefreshRoundedIcon fontSize="small" />}
+              </Button>
+            </Stack>
+
+            {renderMetricPills(true)}
+
+            <Stack direction="row" spacing={0.45} alignItems="center">
+              <TextField
+                size="small"
+                placeholder="Поиск"
+                value={searchInput}
+                onChange={(event) => setSearchInput(event.target.value)}
+                inputProps={{ 'aria-label': 'Поиск по квотам' }}
+                sx={{
+                  ...getMailTextFieldSx(tokens),
+                  flex: 1,
+                  minWidth: 0,
+                  '& .MuiInputBase-root': { minHeight: 34, height: 34, fontSize: '0.82rem' },
+                  '& input': { py: '6px' },
+                }}
+              />
+              <Button
+                size="small"
+                variant="outlined"
+                startIcon={<FilterListRoundedIcon />}
+                onClick={() => setMobileFiltersOpen((current) => !current)}
+                sx={{
+                  minHeight: 34,
+                  px: 0.8,
+                  textTransform: 'none',
+                  whiteSpace: 'nowrap',
+                  '& .MuiButton-startIcon': { mr: 0.35, '& svg': { fontSize: 18 } },
+                }}
+              >
+                {activeFilterCount ? `Фильтры ${activeFilterCount}` : 'Фильтры'}
+              </Button>
+            </Stack>
+
+            {mobileFiltersOpen ? (
+              <Box
+                data-testid="quota-mobile-filter-panel"
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: 'minmax(0, 1fr)',
+                  gap: 0.45,
+                  pt: 0.15,
+                }}
+              >
+                <TextField
+                  select
+                  size="small"
+                  value={quickFilter}
+                  onChange={(event) => setQuickFilter(event.target.value || 'all')}
+                  inputProps={{ 'aria-label': 'Фильтр статуса квоты' }}
+                  sx={{
+                  ...getQuotaSearchFieldSx(tokens),
+                    '& .MuiInputBase-root': { minHeight: 34, height: 34, fontSize: '0.82rem' },
+                    '& .MuiSelect-select': { py: '6px' },
+                  }}
+                >
+                  <MenuItem value="all">Все статусы</MenuItem>
+                  <MenuItem value="warning">≥ 90%</MenuItem>
+                  <MenuItem value="over">&gt; 100%</MenuItem>
+                  <MenuItem value="no_quota">Лимит по умолчанию</MenuItem>
+                </TextField>
+                <TextField
+                  select
+                  size="small"
+                  value={databaseName}
+                  onChange={(event) => setDatabaseName(event.target.value)}
+                  inputProps={{ 'aria-label': 'Фильтр базы Exchange' }}
+                  sx={{
+                    ...getMailTextFieldSx(tokens),
+                    '& .MuiInputBase-root': { minHeight: 34, height: 34, fontSize: '0.82rem' },
+                    '& .MuiSelect-select': { py: '6px' },
+                  }}
+                >
+                  <MenuItem value="">Все базы</MenuItem>
+                  {databaseOptions.map((item) => (
+                    <MenuItem key={item.name} value={item.name}>
+                      {item.name} ({item.total})
+                    </MenuItem>
+                  ))}
+                </TextField>
+                <Stack direction="row" spacing={0.45}>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<RestartAltRoundedIcon />}
+                    disabled={!hasActiveFilters}
+                    onClick={resetFilters}
+                    sx={{ flex: 1, minHeight: 32, textTransform: 'none' }}
+                  >
+                    Сброс
+                  </Button>
+                  <Button
+                    size="small"
+                    variant="outlined"
+                    startIcon={<DownloadRoundedIcon />}
+                    disabled={!rows.length}
+                    onClick={() => exportRowsCsv(rows, snapshot)}
+                    sx={{ flex: 1, minHeight: 32, textTransform: 'none' }}
+                  >
+                    CSV
+                  </Button>
+                </Stack>
+              </Box>
+            ) : null}
+          </Stack>
+        ) : (
+          <Stack spacing={1}>
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.6} justifyContent="space-between" alignItems={{ md: 'center' }}>
             <Box sx={{ minWidth: 0 }}>
               <Typography sx={{ fontWeight: 800, fontSize: { xs: '1rem', md: '1.05rem' }, lineHeight: 1.2 }}>
@@ -348,59 +572,24 @@ export default function MailQuotaReport({ isMobile = false }) {
             </Box>
           </Stack>
 
-          <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
-            <MetricPill
-              label="Всего"
-              value={summary?.total ?? snapshot?.row_count ?? '—'}
-              helper="Все ящики"
-              active={!hasActiveFilters}
-              onClick={resetFilters}
-              color={theme.palette.primary.main}
-              testId="quota-metric-total"
-            />
-            <MetricPill
-              label="≥ 90%"
-              value={summary?.warning_90 ?? '—'}
-              helper="На грани"
-              active={quickFilter === 'warning'}
-              onClick={() => toggleQuickFilter('warning')}
-              color={theme.palette.warning.main}
-              testId="quota-metric-warning"
-            />
-            <MetricPill
-              label="> 100%"
-              value={summary?.over_quota ?? '—'}
-              helper="Переполнено"
-              active={quickFilter === 'over'}
-              onClick={() => toggleQuickFilter('over')}
-              color={theme.palette.error.main}
-              testId="quota-metric-over"
-            />
-            <MetricPill
-              label="Лимит не задан"
-              value={summary?.no_quota ?? '—'}
-              helper="5 GB по умолч."
-              active={quickFilter === 'no_quota'}
-              onClick={() => toggleQuickFilter('no_quota')}
-              color={theme.palette.info.main}
-              testId="quota-metric-default"
-            />
+          {renderMetricPills(false)}
           </Stack>
-        </Stack>
+        )}
       </Box>
 
       {error ? <Alert severity="error" sx={{ m: 1.2 }}>{error}</Alert> : null}
 
-      <Box
-        sx={{
-          px: { xs: 1.1, md: 1.5 },
-          py: 1,
-          borderBottom: '1px solid',
-          borderColor: tokens.panelBorder,
-          bgcolor: tokens.panelBg,
-        }}
-      >
-        <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.8} alignItems={{ md: 'center' }}>
+      {!isMobile ? (
+        <Box
+          sx={{
+            px: { xs: 1.1, md: 1.5 },
+            py: 1,
+            borderBottom: '1px solid',
+            borderColor: tokens.panelBorder,
+            bgcolor: tokens.panelBg,
+          }}
+        >
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.8} alignItems={{ md: 'center' }}>
           <TextField
             size="small"
             placeholder="Поиск по email или ФИО"
@@ -408,7 +597,7 @@ export default function MailQuotaReport({ isMobile = false }) {
             onChange={(event) => setSearchInput(event.target.value)}
             inputProps={{ 'aria-label': 'Поиск по квотам' }}
             sx={{
-              ...getMailTextFieldSx(tokens),
+              ...getQuotaSearchFieldSx(tokens),
               flex: { md: '1 1 320px' },
               minWidth: { md: 260 },
             }}
@@ -479,8 +668,9 @@ export default function MailQuotaReport({ isMobile = false }) {
               Обновить
             </Button>
           </Stack>
-        </Stack>
-      </Box>
+          </Stack>
+        </Box>
+      ) : null}
 
       {isMobile ? (
         <Box
@@ -489,9 +679,10 @@ export default function MailQuotaReport({ isMobile = false }) {
             flex: 1,
             minHeight: 0,
             overflow: 'auto',
-            px: 1,
-            py: 1,
-            pb: 'calc(12px + env(safe-area-inset-bottom, 0px))',
+            ...hideScrollbarSx,
+            px: 0.65,
+            py: 0.65,
+            pb: 'calc(8px + env(safe-area-inset-bottom, 0px))',
           }}
         >
           {loading ? (
@@ -503,7 +694,7 @@ export default function MailQuotaReport({ isMobile = false }) {
             <Box sx={{ py: 4, textAlign: 'center', color: 'text.secondary' }}>Нет данных</Box>
           ) : null}
           {!loading ? (
-            <Stack spacing={0.75}>
+            <Stack spacing={0.55}>
               {rows.map((row) => (
                 <MobileQuotaRow key={`${row.id}-${row.email}`} row={row} tokens={tokens} theme={theme} />
               ))}
@@ -565,17 +756,19 @@ export default function MailQuotaReport({ isMobile = false }) {
         </TableContainer>
       )}
 
-      <Box
-        sx={{
-          px: { xs: 1.1, md: 1.5 },
-          py: 0.8,
-          borderTop: '1px solid',
-          borderColor: tokens.panelBorder,
-          bgcolor: tokens.panelSolid,
-        }}
-      >
-        {renderRowsSummary()}
-      </Box>
+      {!isMobile ? (
+        <Box
+          sx={{
+            px: { xs: 1.1, md: 1.5 },
+            py: 0.8,
+            borderTop: '1px solid',
+            borderColor: tokens.panelBorder,
+            bgcolor: tokens.panelSolid,
+          }}
+        >
+          {renderRowsSummary()}
+        </Box>
+      ) : null}
     </Box>
   );
 }

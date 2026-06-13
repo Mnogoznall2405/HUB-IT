@@ -11,6 +11,29 @@ $ErrorActionPreference = 'Stop'
 $projectRoot = 'C:\Project\Image_scan'
 $script:Pm2SnapshotError = ''
 
+function Resolve-NodeCommand {
+    $node = Get-Command 'node' -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
+    if ($node) {
+        return $node
+    }
+
+    $toolsDir = Join-Path $projectRoot 'tools'
+    if (Test-Path $toolsDir) {
+        $nodeDir = Get-ChildItem -Path $toolsDir -Directory -Filter 'node-*-win-x64-*' -ErrorAction SilentlyContinue |
+            Where-Object { Test-Path (Join-Path $_.FullName 'node.exe') } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+        if ($nodeDir) {
+            $env:Path = "$($nodeDir.FullName);$env:Path"
+            return (Join-Path $nodeDir.FullName 'node.exe')
+        }
+    }
+
+    return $null
+}
+
+$nodeCmd = Resolve-NodeCommand
+
 function Resolve-Pm2Command {
     $preferredGlobalPm2Cmd = Join-Path $env:APPDATA 'npm\pm2.cmd'
     if (Test-Path $preferredGlobalPm2Cmd) {
@@ -36,6 +59,45 @@ function Resolve-Pm2Command {
     }
 
     throw 'PM2 command not found.'
+}
+
+function Convert-Pm2JlistWithNode {
+    param([string[]]$JlistRaw)
+
+    $nodeScript = @"
+let input = '';
+process.stdin.setEncoding('utf8');
+process.stdin.on('data', chunk => { input += chunk; });
+process.stdin.on('end', () => {
+  const rows = JSON.parse(input);
+  const slim = rows.map((item) => ({
+    name: item && item.name,
+    pid: item && item.pid,
+    pm2_env: {
+      status: item && item.pm2_env && item.pm2_env.status,
+      restart_time: item && item.pm2_env && item.pm2_env.restart_time,
+      pm_uptime: item && item.pm2_env && item.pm2_env.pm_uptime,
+    },
+    monit: {
+      memory: item && item.monit && item.monit.memory,
+    },
+  }));
+  for (const item of slim) {
+    process.stdout.write(JSON.stringify(item) + '\n');
+  }
+});
+"@
+    $slimRaw = (($JlistRaw -join "`n") | & $nodeCmd -e $nodeScript 2>&1)
+    if ($LASTEXITCODE -ne 0 -or -not $slimRaw) {
+        $errorText = (($slimRaw | ForEach-Object { "$_" }) -join ' ').Trim()
+        throw "Failed to reduce PM2 jlist JSON with Node: $errorText"
+    }
+
+    return @(
+        $slimRaw |
+            Where-Object { "$_".Trim() } |
+            ForEach-Object { "$_" | ConvertFrom-Json }
+    )
 }
 
 try {
@@ -69,25 +131,49 @@ function Get-Pm2Snapshot {
         return @()
     }
 
-    try {
-        $rows = @(($jlistRaw -join "`n") | ConvertFrom-Json)
-    } catch {
-        $script:Pm2SnapshotError = "Failed to parse PM2 jlist JSON: $($_.Exception.Message)"
-        return @()
+    if ($nodeCmd) {
+        try {
+            $rows = Convert-Pm2JlistWithNode -JlistRaw $jlistRaw
+        } catch {
+            $script:Pm2SnapshotError = $_.Exception.Message
+            return @()
+        }
+    } else {
+        try {
+            $rows = @(($jlistRaw -join "`n") | ConvertFrom-Json)
+        } catch {
+            $script:Pm2SnapshotError = "Failed to parse PM2 jlist JSON and Node fallback is unavailable: $($_.Exception.Message)"
+            return @()
+        }
     }
 
     $script:Pm2SnapshotError = ''
     return @($rows | ForEach-Object {
         $pm2Env = $_.pm2_env
         $monit = $_.monit
-        $memoryBytes = if ($monit -and $null -ne $monit.memory) { [double]$monit.memory } else { 0.0 }
+        $memoryRaw = if ($monit -and $null -ne $monit.memory) { $monit.memory } else { 0.0 }
+        if ($memoryRaw -is [array]) {
+            $memoryRaw = $memoryRaw | Select-Object -First 1
+        }
+        $restartRaw = if ($pm2Env) { $pm2Env.restart_time } else { 0 }
+        if ($restartRaw -is [array]) {
+            $restartRaw = $restartRaw | Select-Object -First 1
+        }
+        $uptimeRaw = if ($pm2Env) { $pm2Env.pm_uptime } else { 0 }
+        if ($uptimeRaw -is [array]) {
+            $uptimeRaw = $uptimeRaw | Select-Object -First 1
+        }
+        $memoryBytes = 0.0
+        [void][double]::TryParse([string]$memoryRaw, [ref]$memoryBytes)
+        $uptimeMs = 0
+        [void][int64]::TryParse([string]$uptimeRaw, [ref]$uptimeMs)
         [pscustomobject]@{
             Name = $_.name
             Status = if ($pm2Env) { $pm2Env.status } else { $null }
             PID = $_.pid
             MemoryMB = '{0:N1}' -f ($memoryBytes / 1MB)
-            Restarts = if ($pm2Env) { $pm2Env.restart_time } else { $null }
-            UptimeSec = if ($pm2Env -and $null -ne $pm2Env.pm_uptime) { [int]($pm2Env.pm_uptime / 1000) } else { 0 }
+            Restarts = $restartRaw
+            UptimeSec = if ($pm2Env -and $null -ne $uptimeRaw) { [int]($uptimeMs / 1000) } else { 0 }
         }
     })
 }

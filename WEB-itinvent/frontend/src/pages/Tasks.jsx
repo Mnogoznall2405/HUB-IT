@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Accordion,
   AccordionDetails,
@@ -6,7 +6,10 @@ import {
   Autocomplete,
   Alert,
   Avatar,
+  Badge,
   Box,
+  BottomNavigation,
+  BottomNavigationAction,
   Button,
   Card,
   Checkbox,
@@ -15,6 +18,7 @@ import {
   Dialog,
   DialogActions,
   DialogContent,
+  Divider,
   Drawer,
   FormControl,
   FormControlLabel,
@@ -22,11 +26,21 @@ import {
   IconButton,
   InputLabel,
   LinearProgress,
+  List,
+  ListItem,
+  ListItemAvatar,
+  ListItemText,
   MenuItem,
   Select,
   Skeleton,
   Stack,
   Switch,
+  Table,
+  TableBody,
+  TableCell,
+  TableContainer,
+  TableHead,
+  TableRow,
   Tab,
   Tabs,
   TextField,
@@ -51,6 +65,11 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MenuIcon from '@mui/icons-material/Menu';
 import CloseIcon from '@mui/icons-material/Close';
+import CalendarMonthOutlinedIcon from '@mui/icons-material/CalendarMonthOutlined';
+import ChecklistOutlinedIcon from '@mui/icons-material/ChecklistOutlined';
+import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
+import SupervisorAccountOutlinedIcon from '@mui/icons-material/SupervisorAccountOutlined';
+import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { hubAPI } from '../api/client';
@@ -73,6 +92,15 @@ import {
   getTransferActUploadUrl,
   isTransferActUploadTask,
 } from '../lib/hubTaskIntegrations';
+import {
+  TASK_MODE_OPTIONS,
+  buildCalendarDays,
+  buildDeadlineBuckets,
+  buildGanttRows,
+  buildMobileTaskActionState,
+  buildMobileTaskFeed,
+  normalizeTaskMode,
+} from './tasksViewModel';
 import { buildOfficeUiTokens, getOfficeDialogPaperSx, getOfficeEmptyStateSx, getOfficeHeaderBandSx, getOfficeMetricBlockSx, getOfficePanelSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
 import {
   Bar,
@@ -230,9 +258,36 @@ const findTaskUserById = (options, value) => (
 
 const areSameTaskUsers = (option, value) => String(option?.id || '') === String(value?.id || '');
 
+const TASK_MODE_STORAGE_KEY = 'hub.tasks.taskMode';
+
+const safeReadStoredTaskMode = () => {
+  if (typeof window === 'undefined' || !window.localStorage) return '';
+  try {
+    return normalizeTaskMode(window.localStorage.getItem(TASK_MODE_STORAGE_KEY) || '', '');
+  } catch {
+    return '';
+  }
+};
+
+const safeWriteStoredTaskMode = (value) => {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  const normalized = normalizeTaskMode(value || '', 'list') || 'list';
+  try {
+    window.localStorage.setItem(TASK_MODE_STORAGE_KEY, normalized);
+  } catch {
+    // localStorage can be unavailable in private or locked-down browsers.
+  }
+};
+
+const hasTaskModeQueryParam = (search = '') => {
+  const params = new URLSearchParams(search || '');
+  return params.has('task_mode');
+};
+
 const readTaskFilters = (search = '') => {
   const params = new URLSearchParams(search || '');
   return {
+    taskMode: normalizeTaskMode(params.get('task_mode') || '', ''),
     viewMode: String(params.get('task_view') || ''),
     q: String(params.get('task_q') || ''),
     status: String(params.get('task_status') || ''),
@@ -281,7 +336,7 @@ const analyticsPresetOptions = [
 ];
 
 const analyticsDateBasisOptions = [
-  { value: 'protocol_date', label: 'По дате протокола' },
+  { value: 'protocol_date', label: 'По дате постановки' },
   { value: 'completed_at', label: 'По завершению' },
   { value: 'due_at', label: 'По сроку' },
 ];
@@ -355,6 +410,70 @@ const createEmptyObjectDraft = (projectId = '') => ({
   is_active: true,
 });
 
+const createOptionalSectionOptions = [
+  { key: 'priority', label: 'В приоритете', icon: FlagIcon },
+  { key: 'files', label: 'Файлы', icon: AttachFileIcon },
+  { key: 'checklist', label: 'Чек-листы', icon: ChecklistOutlinedIcon },
+  { key: 'project', label: 'Проект', icon: FolderOpenOutlinedIcon },
+  { key: 'controller', label: 'Контролёр', icon: SupervisorAccountOutlinedIcon },
+  { key: 'advanced', label: 'Полная форма', icon: TuneOutlinedIcon },
+];
+
+const createEmptyOptionalSections = () => ({
+  priority: false,
+  files: false,
+  checklist: false,
+  schedule: false,
+  project: false,
+  controller: false,
+  access: false,
+  advanced: false,
+});
+
+const createInitialTaskDraft = (projectId = '') => ({
+  title: '',
+  description: '',
+  assignee_user_ids: [],
+  controller_user_id: '',
+  project_id: String(projectId || ''),
+  object_id: '',
+  protocol_date: toDateInput(new Date().toISOString()),
+  due_at: '',
+  priority: 'normal',
+  department_id: '',
+  visibility_scope: 'department',
+});
+
+const getFileIdentity = (file) => (
+  `${String(file?.name || '')}:${Number(file?.size || 0)}:${Number(file?.lastModified || 0)}`
+);
+
+const getCreatedTaskItems = (response) => {
+  if (Array.isArray(response?.items)) return response.items;
+  if (response?.id) return [response];
+  return [];
+};
+
+const createChecklistItemId = () => (
+  globalThis.crypto?.randomUUID?.() || `checklist-${Date.now()}-${Math.random().toString(16).slice(2)}`
+);
+
+const createEmptyChecklistItem = () => ({
+  id: createChecklistItemId(),
+  text: '',
+  done: false,
+});
+
+const normalizeChecklistItems = (items) => (
+  (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      id: String(item?.id || createChecklistItemId()),
+      text: String(item?.text || '').trim(),
+      done: Boolean(item?.done),
+    }))
+    .filter((item) => item.text.length > 0)
+);
+
 const clampPercent = (value) => {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return 0;
@@ -374,6 +493,64 @@ const buildAnalyticsTableColumns = () => ([
   { key: 'overdue', label: 'Просрочено' },
 ]);
 
+const LocalTaskDescriptionField = memo(function LocalTaskDescriptionField({
+  initialValue = '',
+  onDraftChange,
+  resetKey = '',
+  ...props
+}) {
+  const [value, setValue] = useState(() => String(initialValue || ''));
+
+  useEffect(() => {
+    const nextValue = String(initialValue || '');
+    setValue(nextValue);
+    onDraftChange?.(nextValue);
+  }, [initialValue, onDraftChange, resetKey]);
+
+  const handleChange = useCallback((event) => {
+    const nextValue = event.target.value;
+    setValue(nextValue);
+    onDraftChange?.(nextValue);
+  }, [onDraftChange]);
+
+  return (
+    <TextField
+      {...props}
+      value={value}
+      onChange={handleChange}
+    />
+  );
+});
+
+const LocalTaskMarkdownEditor = memo(function LocalTaskMarkdownEditor({
+  initialValue = '',
+  onDraftChange,
+  resetKey = '',
+  ...props
+}) {
+  const [value, setValue] = useState(() => String(initialValue || ''));
+
+  useEffect(() => {
+    const nextValue = String(initialValue || '');
+    setValue(nextValue);
+    onDraftChange?.(nextValue);
+  }, [initialValue, onDraftChange, resetKey]);
+
+  const handleChange = useCallback((nextValue) => {
+    const normalizedValue = String(nextValue || '');
+    setValue(normalizedValue);
+    onDraftChange?.(normalizedValue);
+  }, [onDraftChange]);
+
+  return (
+    <MarkdownEditor
+      {...props}
+      value={value}
+      onChange={handleChange}
+    />
+  );
+});
+
 function Tasks() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
@@ -383,19 +560,24 @@ function Tasks() {
   const analyticsGridStroke = ui?.borderSoft || 'rgba(148,163,184,0.22)';
   const navigate = useNavigate();
   const location = useLocation();
-  const { user, hasPermission } = useAuth();
+  const { user, hasPermission, hasAnyPermission } = useAuth();
   const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
   const canManageAllTasks = isAdmin || hasPermission('tasks.manage_all');
+  const canCreateTasks = hasAnyPermission(['tasks.create', 'tasks.write']);
   const canWriteTasks = hasPermission('tasks.write');
   const canReviewTasks = hasPermission('tasks.review');
   const canUseCreatorTab = true;
   const canUseControllerTab = canReviewTasks;
   const initialFilters = readTaskFilters(location.search);
+  const initialPageMode = initialFilters.taskMode || (
+    hasTaskModeQueryParam(location.search) ? '' : safeReadStoredTaskMode()
+  ) || 'list';
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [tasksPayload, setTasksPayload] = useState({ items: [], total: 0 });
-  const [pageMode, setPageMode] = useState('board');
+  const [pageMode, setPageMode] = useState(initialPageMode);
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
   const [taskProjects, setTaskProjects] = useState([]);
   const [taskObjects, setTaskObjects] = useState([]);
   const [taxonomyOpen, setTaxonomyOpen] = useState(false);
@@ -444,19 +626,12 @@ function Tasks() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createSaving, setCreateSaving] = useState(false);
-  const [createData, setCreateData] = useState({
-    title: '',
-    description: '',
-    assignee_user_ids: [],
-    controller_user_id: '',
-    project_id: '',
-    object_id: '',
-    protocol_date: toDateInput(new Date().toISOString()),
-    due_at: '',
-    priority: 'normal',
-    department_id: '',
-    visibility_scope: 'department',
-  });
+  const [createOptionalSections, setCreateOptionalSections] = useState(createEmptyOptionalSections);
+  const [createData, setCreateData] = useState(() => createInitialTaskDraft());
+  const [createFiles, setCreateFiles] = useState([]);
+  const [createChecklistItems, setCreateChecklistItems] = useState([]);
+  const [createProjectName, setCreateProjectName] = useState('');
+  const [createProjectSaving, setCreateProjectSaving] = useState(false);
 
   const [submitTask, setSubmitTask] = useState(null);
   const [submitComment, setSubmitComment] = useState('');
@@ -486,6 +661,16 @@ function Tasks() {
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
 
   const searchInputRef = useRef(null);
+  const createDescriptionRef = useRef('');
+  const editDescriptionRef = useRef('');
+
+  const handleCreateDescriptionDraftChange = useCallback((value) => {
+    createDescriptionRef.current = String(value || '');
+  }, []);
+
+  const handleEditDescriptionDraftChange = useCallback((value) => {
+    editDescriptionRef.current = String(value || '');
+  }, []);
 
   const updateSearch = useCallback((mutate, { replace = true } = {}) => {
     const params = new URLSearchParams(location.search || '');
@@ -523,7 +708,11 @@ function Tasks() {
     if (nextView === 'all' && !canManageAllTasks) nextView = fallbackView;
     if (nextView === 'controller' && !canUseControllerTab) nextView = fallbackView;
     if (!['all', 'assignee', 'creator', 'controller', 'department'].includes(nextView)) nextView = fallbackView;
+    const nextPageMode = next.taskMode || (
+      hasTaskModeQueryParam(location.search) ? '' : safeReadStoredTaskMode()
+    ) || 'list';
 
+    setPageMode((prev) => (prev === nextPageMode ? prev : nextPageMode));
     setViewMode((prev) => (prev === nextView ? prev : nextView));
     setQ((prev) => (prev === next.q ? prev : next.q));
     setStatusFilter((prev) => (prev === next.status ? prev : next.status));
@@ -537,7 +726,10 @@ function Tasks() {
   }, [location.search, canManageAllTasks, canUseControllerTab]);
 
   useEffect(() => {
+    safeWriteStoredTaskMode(pageMode);
     updateSearch((params) => {
+      if (pageMode && pageMode !== 'list') params.set('task_mode', pageMode);
+      else params.delete('task_mode');
       if (viewMode && !(viewMode === 'assignee' && !canManageAllTasks)) params.set('task_view', viewMode);
       else params.delete('task_view');
       if (q) params.set('task_q', q);
@@ -567,6 +759,7 @@ function Tasks() {
     dueState,
     focusMode,
     hasAttachments,
+    pageMode,
     q,
     statusFilter,
     unreadCommentsOnly,
@@ -600,6 +793,7 @@ function Tasks() {
     try {
       const scope = viewMode === 'all' ? 'all' : (viewMode === 'department' ? 'department' : 'my');
       const roleScope = viewMode === 'all' || viewMode === 'department' ? 'both' : viewMode;
+      const deadlineMode = ['deadlines', 'calendar', 'gantt'].includes(pageMode);
       const response = await hubAPI.getTasks({
         scope,
         role_scope: roleScope,
@@ -609,8 +803,8 @@ function Tasks() {
         has_attachments: hasAttachments || undefined,
         assignee_user_id: canManageAllTasks && viewMode === 'all' && assigneeFilter ? Number(assigneeFilter) : undefined,
         department_id: departmentFilter || undefined,
-        sort_by: 'status',
-        sort_dir: 'asc',
+        sort_by: pageMode === 'board' ? 'status' : (deadlineMode ? 'due_at' : 'updated_at'),
+        sort_dir: deadlineMode || pageMode === 'board' ? 'asc' : 'desc',
         limit: 500,
       });
       setTasksPayload(response || { items: [], total: 0 });
@@ -619,7 +813,7 @@ function Tasks() {
     } finally {
       setLoading(false);
     }
-  }, [assigneeFilter, canManageAllTasks, debouncedQ, departmentFilter, dueState, hasAttachments, statusFilter, viewMode]);
+  }, [assigneeFilter, canManageAllTasks, debouncedQ, departmentFilter, dueState, hasAttachments, pageMode, statusFilter, viewMode]);
 
   useEffect(() => {
     void loadTasks();
@@ -661,23 +855,45 @@ function Tasks() {
     void loadTaskAnalytics();
   }, [loadTaskAnalytics, pageMode]);
 
-  const createProjectObjects = useMemo(() => (
-    taskObjects.filter((item) => item?.is_active !== false && String(item?.project_id || '') === String(createData.project_id || ''))
-  ), [createData.project_id, taskObjects]);
-
-  const editProjectObjects = useMemo(() => (
-    taskObjects.filter((item) => item?.is_active !== false && String(item?.project_id || '') === String(editData.project_id || ''))
-  ), [editData.project_id, taskObjects]);
-
   const activeTaskProjects = useMemo(
     () => taskProjects.filter((item) => item?.is_active !== false),
     [taskProjects],
   );
 
+  const defaultCreateProject = useMemo(() => {
+    const generalProject = activeTaskProjects.find((item) => (
+      String(item?.id || '') === 'general-tasks'
+      || String(item?.code || '').trim().toUpperCase() === 'GENERAL'
+      || String(item?.name || '').trim().toLowerCase() === 'общие задачи'
+    ));
+    return generalProject || activeTaskProjects[0] || null;
+  }, [activeTaskProjects]);
+
+  const defaultCreateProjectId = String(defaultCreateProject?.id || '');
+  const effectiveCreateProjectId = String(createData.project_id || defaultCreateProjectId || '').trim();
+
+  const effectiveCreateProject = useMemo(
+    () => activeTaskProjects.find((item) => String(item?.id || '') === effectiveCreateProjectId) || null,
+    [activeTaskProjects, effectiveCreateProjectId],
+  );
+
+  const editProjectObjects = useMemo(() => (
+    taskObjects.filter((item) => item?.is_active !== false && String(item?.project_id || '') === String(editData.project_id || ''))
+  ), [editData.project_id, taskObjects]);
+
   const activeTaskObjects = useMemo(
     () => taskObjects.filter((item) => item?.is_active !== false),
     [taskObjects],
   );
+
+  useEffect(() => {
+    if (!createOpen || createData.project_id || !defaultCreateProjectId) return;
+    setCreateData((prev) => (
+      prev.project_id
+        ? prev
+        : { ...prev, project_id: defaultCreateProjectId }
+    ));
+  }, [createData.project_id, createOpen, defaultCreateProjectId]);
 
   const selectedBoardAssignee = useMemo(
     () => findTaskUserById(assignees, assigneeFilter),
@@ -1126,6 +1342,29 @@ function Tasks() {
     [columnData],
   );
 
+  const isTaskDataMode = pageMode !== 'analytics';
+  const activeTaskModeMeta = useMemo(
+    () => TASK_MODE_OPTIONS.find((item) => item.value === pageMode) || TASK_MODE_OPTIONS[0],
+    [pageMode],
+  );
+  const taskGroupingNow = useMemo(() => new Date(), [tasksPayload]);
+  const mobileFeedItems = useMemo(
+    () => buildMobileTaskFeed(visibleTaskItems, taskGroupingNow),
+    [taskGroupingNow, visibleTaskItems],
+  );
+  const deadlineBuckets = useMemo(
+    () => buildDeadlineBuckets(visibleTaskItems, taskGroupingNow),
+    [taskGroupingNow, visibleTaskItems],
+  );
+  const calendarPayload = useMemo(
+    () => buildCalendarDays(visibleTaskItems, calendarMonth),
+    [calendarMonth, visibleTaskItems],
+  );
+  const ganttPayload = useMemo(
+    () => buildGanttRows(visibleTaskItems),
+    [visibleTaskItems],
+  );
+
   const openTasksCount = useMemo(
     () => visibleTaskItems.filter((item) => String(item?.status || '').toLowerCase() !== 'done').length,
     [visibleTaskItems],
@@ -1170,6 +1409,21 @@ function Tasks() {
     setHasAttachments(false);
     setUnreadCommentsOnly(false);
     setFocusMode('all');
+  }, []);
+
+  const shiftCalendarMonth = useCallback((delta) => {
+    setCalendarMonth((prev) => new Date(prev.getFullYear(), prev.getMonth() + delta, 1));
+  }, []);
+
+  const openCreateTaskWithPreset = useCallback((preset = {}) => {
+    const hasDuePreset = Object.prototype.hasOwnProperty.call(preset, 'due_at');
+    if (hasDuePreset) {
+      setCreateData((prev) => ({
+        ...prev,
+        due_at: preset.due_at ? toDateTimeInput(preset.due_at) : '',
+      }));
+    }
+    setCreateOpen(true);
   }, []);
 
   const closeTaskDetails = useCallback(() => {
@@ -1251,6 +1505,78 @@ function Tasks() {
     }
   }, [downloadBlob]);
 
+  const handleToggleCreateOptionalSection = useCallback((key) => {
+    if (key === 'priority') {
+      setCreateData((prev) => ({
+        ...prev,
+        priority: prev.priority === 'high' ? 'normal' : 'high',
+      }));
+      setCreateOptionalSections((prev) => ({ ...prev, priority: !prev.priority }));
+      return;
+    }
+    if (key === 'checklist') {
+      setCreateChecklistItems((prev) => (prev.length > 0 ? prev : [createEmptyChecklistItem()]));
+    }
+    setCreateOptionalSections((prev) => {
+      if (key === 'advanced') {
+        const nextAdvanced = !prev.advanced;
+        return {
+          ...prev,
+          advanced: nextAdvanced,
+          schedule: nextAdvanced,
+          access: nextAdvanced,
+          project: nextAdvanced ? true : prev.project,
+          controller: nextAdvanced ? true : prev.controller,
+        };
+      }
+      return { ...prev, [key]: !prev[key] };
+    });
+  }, []);
+
+  const handleAddChecklistItem = useCallback(() => {
+    setCreateChecklistItems((prev) => [...prev, createEmptyChecklistItem()]);
+    setCreateOptionalSections((prev) => ({ ...prev, checklist: true }));
+  }, []);
+
+  const handleUpdateChecklistItem = useCallback((itemId, patch) => {
+    setCreateChecklistItems((prev) => prev.map((item) => (
+      item.id === itemId ? { ...item, ...patch } : item
+    )));
+  }, []);
+
+  const handleRemoveChecklistItem = useCallback((itemId) => {
+    setCreateChecklistItems((prev) => {
+      const next = prev.filter((item) => item.id !== itemId);
+      return next.length > 0 ? next : [createEmptyChecklistItem()];
+    });
+  }, []);
+
+  const handleCreateProjectFromTaskDialog = useCallback(async () => {
+    const name = String(createProjectName || '').trim();
+    if (name.length < 2 || createProjectSaving) return;
+    setCreateProjectSaving(true);
+    try {
+      const created = await hubAPI.createTaskProject({
+        name,
+        code: '',
+        description: '',
+        is_active: true,
+      });
+      setCreateProjectName('');
+      await loadTaskUsers();
+      setCreateData((prev) => ({
+        ...prev,
+        project_id: String(created?.id || prev.project_id || ''),
+        object_id: '',
+      }));
+      setCreateOptionalSections((prev) => ({ ...prev, project: true }));
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || 'Ошибка создания проекта');
+    } finally {
+      setCreateProjectSaving(false);
+    }
+  }, [createProjectName, createProjectSaving, loadTaskUsers]);
+
   const refreshTasksAndDetails = useCallback(async (taskId = '') => {
     await loadTasks();
     if (taskId) {
@@ -1258,24 +1584,60 @@ function Tasks() {
     }
   }, [loadTaskDetails, loadTasks]);
 
+  const handleAddCreateFiles = useCallback((fileList) => {
+    const nextFiles = Array.from(fileList || []).filter(Boolean);
+    if (nextFiles.length === 0) return;
+    setCreateFiles((prev) => {
+      const seen = new Set(prev.map(getFileIdentity));
+      const merged = [...prev];
+      nextFiles.forEach((file) => {
+        const identity = getFileIdentity(file);
+        if (!seen.has(identity)) {
+          seen.add(identity);
+          merged.push(file);
+        }
+      });
+      return merged;
+    });
+    setCreateOptionalSections((prev) => ({ ...prev, files: true }));
+  }, []);
+
+  const handleRemoveCreateFile = useCallback((index) => {
+    setCreateFiles((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+  }, []);
+
+  const handleCloseCreateDialog = useCallback(() => {
+    if (createSaving) return;
+    setCreateOpen(false);
+    setCreateFiles([]);
+    setCreateChecklistItems([]);
+    setCreateProjectName('');
+    setCreateOptionalSections((prev) => {
+      if (!Object.values(prev).some(Boolean)) return prev;
+      return createEmptyOptionalSections();
+    });
+  }, [createSaving]);
+
   const handleCreateTask = async () => {
     const assigneeIds = Array.isArray(createData.assignee_user_ids) ? createData.assignee_user_ids : [];
     const controllerUserId = Number(createData.controller_user_id || 0);
+    const projectId = effectiveCreateProjectId;
+    const filesToUpload = createFiles.filter(Boolean);
     if (
       String(createData.title || '').trim().length < 3
       || assigneeIds.length === 0
-      || controllerUserId <= 0
-      || !String(createData.project_id || '').trim()
+      || !projectId
       || !String(createData.protocol_date || '').trim()
     ) return;
     setCreateSaving(true);
     try {
-      await hubAPI.createTask({
+      const createResponse = await hubAPI.createTask({
         title: String(createData.title || '').trim(),
-        description: String(createData.description || '').trim(),
+        description: String(createDescriptionRef.current || createData.description || '').trim(),
+        checklist_items: normalizeChecklistItems(createChecklistItems),
         assignee_user_ids: assigneeIds.map(Number).filter(Number.isInteger),
-        controller_user_id: controllerUserId,
-        project_id: String(createData.project_id || '').trim(),
+        controller_user_id: controllerUserId > 0 ? controllerUserId : null,
+        project_id: projectId,
         object_id: String(createData.object_id || '').trim() || null,
         protocol_date: String(createData.protocol_date || '').trim() || null,
         due_at: String(createData.due_at || '').trim() || null,
@@ -1283,22 +1645,41 @@ function Tasks() {
         department_id: String(createData.department_id || '').trim() || null,
         visibility_scope: String(createData.visibility_scope || 'department').trim() || 'department',
       });
+      const createdTasks = getCreatedTaskItems(createResponse);
+      const uploadFailures = [];
+      if (filesToUpload.length > 0 && createdTasks.length === 0) {
+        uploadFailures.push('API не вернул id задачи');
+      }
+      if (filesToUpload.length > 0 && createdTasks.length > 0) {
+        for (const task of createdTasks) {
+          const taskId = String(task?.id || '').trim();
+          if (!taskId) {
+            uploadFailures.push('API не вернул id задачи');
+            continue;
+          }
+          for (const file of filesToUpload) {
+            try {
+              await hubAPI.uploadTaskAttachment({ taskId, file });
+            } catch {
+              uploadFailures.push(file?.name || 'file');
+            }
+          }
+        }
+      }
       setCreateOpen(false);
-      setCreateData({
-        title: '',
-        description: '',
-        assignee_user_ids: [],
-        controller_user_id: '',
-        project_id: '',
-        object_id: '',
-        protocol_date: toDateInput(new Date().toISOString()),
-        due_at: '',
-        priority: 'normal',
-        department_id: '',
-        visibility_scope: 'department',
-      });
+      setCreateOptionalSections(createEmptyOptionalSections());
+      setCreateData(createInitialTaskDraft(defaultCreateProjectId));
+      createDescriptionRef.current = '';
+      setCreateFiles([]);
+      setCreateChecklistItems([]);
+      setCreateProjectName('');
       await loadTasks();
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
+      if (uploadFailures.length > 0) {
+        const visibleFailures = uploadFailures.slice(0, 3).join(', ');
+        const suffix = uploadFailures.length > 3 ? ` и ещё ${uploadFailures.length - 3}` : '';
+        setError(`Задача создана, но часть файлов не загрузилась: ${visibleFailures}${suffix}`);
+      }
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка создания задачи');
     } finally {
@@ -1366,6 +1747,7 @@ function Tasks() {
   };
 
   const openEditTask = useCallback((task) => {
+    editDescriptionRef.current = String(task?.description || '');
     setEditData({
       id: String(task?.id || ''),
       title: task?.title || '',
@@ -1390,7 +1772,7 @@ function Tasks() {
     try {
       await hubAPI.updateTask(taskId, {
         title: String(editData.title || '').trim(),
-        description: String(editData.description || '').trim(),
+        description: String(editDescriptionRef.current || editData.description || '').trim(),
         due_at: String(editData.due_at || '').trim() || null,
         protocol_date: String(editData.protocol_date || '').trim() || null,
         priority: editData.priority || 'normal',
@@ -1593,6 +1975,76 @@ function Tasks() {
     );
   }, [canManageAllTasks, user?.id]);
 
+  const canUpdateTaskChecklist = useCallback((task) => {
+    if (!task?.id || String(task?.status || '').toLowerCase() === 'done') return false;
+    if (canManageAllTasks) return true;
+    if (currentUserManagedDepartmentIds.has(String(task?.department_id || ''))) return true;
+    const actorId = Number(user?.id);
+    return actorId > 0 && (
+      Number(task?.assignee_user_id) === actorId
+      || Number(task?.created_by_user_id) === actorId
+      || Number(task?.controller_user_id) === actorId
+    );
+  }, [canManageAllTasks, currentUserManagedDepartmentIds, user?.id]);
+
+  const handleToggleTaskChecklistItem = useCallback(async (task, itemId, done) => {
+    const taskId = String(task?.id || '').trim();
+    const items = Array.isArray(task?.checklist_items) ? task.checklist_items : [];
+    if (!taskId || !itemId || items.length === 0) return;
+    const nextItems = items.map((item) => (
+      String(item?.id || '') === String(itemId)
+        ? { ...item, done: Boolean(done) }
+        : item
+    ));
+    try {
+      await hubAPI.updateTask(taskId, { checklist_items: nextItems });
+      await refreshTasksAndDetails(taskId);
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || 'Ошибка обновления чек-листа');
+    }
+  }, [refreshTasksAndDetails]);
+
+  const renderTaskChecklist = useCallback((task) => {
+    const items = Array.isArray(task?.checklist_items) ? task.checklist_items : [];
+    if (items.length === 0) return null;
+    const doneCount = items.filter((item) => Boolean(item?.done)).length;
+    const totalCount = items.length;
+    const progress = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
+    const canUpdate = canUpdateTaskChecklist(task);
+    return (
+      <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '14px' }) }}>
+        <Stack direction="row" justifyContent="space-between" spacing={1} alignItems="center" sx={{ mb: 0.8 }}>
+          <Typography sx={{ fontWeight: 900 }}>Чек-лист</Typography>
+          <Chip size="small" label={`${doneCount}/${totalCount}`} sx={{ fontWeight: 800 }} />
+        </Stack>
+        <LinearProgress variant="determinate" value={progress} sx={{ height: 6, borderRadius: 999, mb: 0.8 }} />
+        <Stack spacing={0.45}>
+          {items.map((item, index) => (
+            <Stack key={item.id || `${item.text}-${index}`} direction="row" spacing={0.7} alignItems="center">
+              <Checkbox
+                checked={Boolean(item.done)}
+                disabled={!canUpdate}
+                onChange={(event) => void handleToggleTaskChecklistItem(task, item.id, event.target.checked)}
+                inputProps={{ 'aria-label': `Отметить пункт ${index + 1}` }}
+                sx={{ p: 0.45 }}
+              />
+              <Typography
+                variant="body2"
+                sx={{
+                  color: item.done ? ui.subtleText : ui.text,
+                  textDecoration: item.done ? 'line-through' : 'none',
+                  overflowWrap: 'anywhere',
+                }}
+              >
+                {item.text}
+              </Typography>
+            </Stack>
+          ))}
+        </Stack>
+      </Box>
+    );
+  }, [canUpdateTaskChecklist, handleToggleTaskChecklistItem, ui]);
+
   useEffect(() => {
     const handleKeyDown = (event) => {
       const target = event.target;
@@ -1625,7 +2077,7 @@ function Tasks() {
 
       if (isTyping) return;
 
-      if (canWriteTasks && String(event.key || '').toLowerCase() === 'n') {
+      if (canCreateTasks && String(event.key || '').toLowerCase() === 'n') {
         event.preventDefault();
         setCreateOpen(true);
         return;
@@ -1652,15 +2104,30 @@ function Tasks() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [canWriteTasks, closeTaskDetails, createOpen, detailsOpen, editOpen, isAnalyticsMobile, isMobile, pageMode, reviewTask, submitTask]);
+  }, [canCreateTasks, closeTaskDetails, createOpen, detailsOpen, editOpen, isAnalyticsMobile, isMobile, pageMode, reviewTask, submitTask]);
 
   const renderTaskCard = useCallback((task, column) => {
     const latestComment = getTaskCommentPreview(task);
     const canEdit = canEditTask(task);
     const attachCount = Number(task?.attachments_count || 0);
     const isTransferReminder = isTransferActUploadTask(task);
-    const columnMeta = column || KANBAN_COLUMNS.find((item) => item.key === String(task?.status || '').toLowerCase()) || KANBAN_COLUMNS[0];
     const priority = priorityMeta(task?.priority);
+    const checklistTotal = Number(task?.checklist_total ?? (Array.isArray(task?.checklist_items) ? task.checklist_items.length : 0));
+    const checklistDone = Number(task?.checklist_done ?? (Array.isArray(task?.checklist_items) ? task.checklist_items.filter((item) => item?.done).length : 0));
+    const mobileActionState = buildMobileTaskActionState(task, {
+      canOpenTransferActUpload: canOpenTransferActUpload(task),
+      canStart: canStartTask(task),
+      canSubmit: canSubmitTask(task),
+      canReview: canReviewTask(task),
+    });
+    const mobilePrimaryAction = (() => {
+      if (!mobileActionState.actionLabel) return null;
+      if (mobileActionState.key === 'upload_act') return () => openTransferActReminder(task);
+      if (mobileActionState.key === 'start') return () => void handleStartTask(task.id);
+      if (mobileActionState.key === 'submit') return () => setSubmitTask(task);
+      if (mobileActionState.key === 'review') return () => setReviewTask(task);
+      return null;
+    })();
     const mobileCardMenuItems = [
       canEdit ? { key: 'edit', label: 'Редактировать' } : null,
       { key: 'copy', label: 'Копировать ссылку' },
@@ -1674,8 +2141,8 @@ function Tasks() {
           data-testid={`mobile-task-card-${task.id}`}
           onClick={() => openTaskDetails(task)}
           sx={{
-            p: 1,
-            borderRadius: '14px',
+            p: 0.78,
+            borderRadius: '12px',
             border: '1px solid',
             borderColor: ui.borderSoft,
             bgcolor: ui.panelSolid,
@@ -1687,13 +2154,13 @@ function Tasks() {
             },
           }}
         >
-          <Stack spacing={0.75}>
+          <Stack spacing={0.55}>
             <Stack direction="row" spacing={0.6} alignItems="flex-start">
               <Typography
                 sx={{
-                  fontWeight: 800,
-                  fontSize: '0.88rem',
-                  lineHeight: 1.28,
+                  fontWeight: 850,
+                  fontSize: '0.85rem',
+                  lineHeight: 1.22,
                   minWidth: 0,
                   flex: 1,
                   display: '-webkit-box',
@@ -1725,20 +2192,27 @@ function Tasks() {
               ) : null}
             </Stack>
 
-            <Stack direction="row" spacing={0.45} sx={{ flexWrap: 'wrap', gap: 0.35 }}>
-              <Chip size="small" label={statusMeta(task?.status).label} sx={{ height: 21, fontSize: '0.68rem', fontWeight: 800, bgcolor: statusMeta(task?.status).bg, color: statusMeta(task?.status).color, border: 'none' }} />
-              {isTransferReminder ? (
-                <Chip
-                  size="small"
-                  label={getTransferActReminderLabel(task)}
-                  sx={{ height: 21, fontSize: '0.68rem', fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb', border: 'none' }}
-                />
-              ) : null}
+            <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
+              <Typography variant="caption" sx={{ color: statusMeta(task?.status).color, fontWeight: 900, flexShrink: 0 }}>
+                {statusMeta(task?.status).label}
+              </Typography>
+              <Typography variant="caption" sx={{ color: ui.subtleText, flexShrink: 0 }}>·</Typography>
+              <Typography variant="caption" sx={{ color: task?.is_overdue ? '#dc2626' : ui.subtleText, fontWeight: 800, flexShrink: 0 }}>
+                {task?.due_at ? formatShortDate(task.due_at) : 'Без срока'}
+              </Typography>
+              <Typography variant="caption" sx={{ color: ui.subtleText, flexShrink: 0 }}>·</Typography>
+              <Typography variant="caption" sx={{ color: ui.subtleText, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                {task?.assignee_full_name || task?.assignee_username || '-'}
+              </Typography>
+            </Stack>
+
+            <Stack direction="row" spacing={0.35} justifyContent="space-between" alignItems="center" sx={{ minWidth: 0 }}>
+              <Stack direction="row" spacing={0.35} sx={{ flexWrap: 'wrap', gap: 0.3, minWidth: 0, flex: 1 }}>
               {task?.is_overdue ? (
-                <Chip size="small" label="Просрочено" sx={{ height: 21, fontSize: '0.68rem', fontWeight: 800, bgcolor: 'rgba(220,38,38,0.12)', color: '#dc2626', border: 'none' }} />
+                <Chip size="small" label="Просрочено" sx={{ height: 19, fontSize: '0.64rem', fontWeight: 850, bgcolor: 'rgba(220,38,38,0.12)', color: '#dc2626', border: 'none' }} />
               ) : null}
               {task?.has_unread_comments ? (
-                <Chip size="small" label="Новый комментарий" sx={{ height: 21, fontSize: '0.68rem', fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb', border: 'none' }} />
+                <Chip size="small" label="Новый комментарий" sx={{ height: 19, fontSize: '0.64rem', fontWeight: 850, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb', border: 'none', maxWidth: 136 }} />
               ) : null}
               {priority.value !== 'normal' ? (
                 <Chip
@@ -1746,9 +2220,9 @@ function Tasks() {
                   icon={<FlagIcon sx={{ fontSize: '11px !important', color: `${priority.dotColor} !important` }} />}
                   label={priority.label}
                   sx={{
-                    height: 21,
-                    fontSize: '0.68rem',
-                    fontWeight: 700,
+                    height: 19,
+                    fontSize: '0.64rem',
+                    fontWeight: 800,
                     bgcolor: alpha(priority.dotColor, 0.12),
                     color: priority.dotColor,
                     border: 'none',
@@ -1756,35 +2230,8 @@ function Tasks() {
                   }}
                 />
               ) : null}
-            </Stack>
-
-            {latestComment ? (
-              <Typography
-                sx={{
-                  fontSize: '0.74rem',
-                  lineHeight: 1.32,
-                  color: task?.has_unread_comments ? 'text.primary' : ui.mutedText,
-                  fontWeight: task?.has_unread_comments ? 700 : 500,
-                  display: '-webkit-box',
-                  WebkitLineClamp: 1,
-                  WebkitBoxOrient: 'vertical',
-                  overflow: 'hidden',
-                }}
-              >
-                {latestComment}
-              </Typography>
-            ) : null}
-
-            <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ minWidth: 0 }}>
-              <Stack direction="row" spacing={0.6} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
-                <Avatar sx={{ width: 22, height: 22, fontSize: '0.62rem', bgcolor: alpha(columnMeta.color, theme.palette.mode === 'dark' ? 0.18 : 0.10), color: columnMeta.color }}>
-                  {getInitials(task?.assignee_full_name || task?.assignee_username)}
-                </Avatar>
-                <Typography variant="caption" sx={{ color: ui.subtleText, minWidth: 0, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                  {task?.assignee_full_name || task?.assignee_username || '-'}
-                </Typography>
               </Stack>
-              <Stack direction="row" spacing={0.7} alignItems="center" sx={{ flexShrink: 0 }}>
+              <Stack direction="row" spacing={0.55} alignItems="center" sx={{ flexShrink: 0 }}>
                 <Stack direction="row" spacing={0.25} alignItems="center">
                   <ModeCommentOutlinedIcon sx={{ fontSize: 13, color: task?.has_unread_comments ? '#2563eb' : ui.subtleText }} />
                   <Typography variant="caption" sx={{ color: task?.has_unread_comments ? '#2563eb' : ui.subtleText, fontWeight: task?.has_unread_comments ? 800 : 700 }}>
@@ -1799,10 +2246,38 @@ function Tasks() {
                     </Typography>
                   </Stack>
                 ) : null}
-                <Typography variant="caption" sx={{ color: task?.is_overdue ? '#dc2626' : ui.subtleText, fontWeight: 700 }}>
-                  {task?.due_at ? formatShortDate(task.due_at) : 'Без срока'}
-                </Typography>
+                {checklistTotal > 0 ? (
+                  <Stack direction="row" spacing={0.25} alignItems="center">
+                    <ChecklistOutlinedIcon sx={{ fontSize: 13, color: ui.subtleText }} />
+                    <Typography variant="caption" sx={{ color: ui.subtleText, fontWeight: 700 }}>
+                      {checklistDone}/{checklistTotal}
+                    </Typography>
+                  </Stack>
+                ) : null}
               </Stack>
+            </Stack>
+
+            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={0.75}>
+              <Typography
+                data-testid={`mobile-task-card-action-${task.id}`}
+                variant="caption"
+                sx={{ color: ui.text, fontWeight: 900, lineHeight: 1.15, minWidth: 0 }}
+              >
+                {mobileActionState.stepLabel}
+              </Typography>
+              {mobilePrimaryAction ? (
+                <Button
+                  size="small"
+                  variant="contained"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    mobilePrimaryAction();
+                  }}
+                  sx={{ minHeight: 27, px: 1.05, py: 0.2, textTransform: 'none', fontWeight: 900, borderRadius: '9px', boxShadow: 'none', flexShrink: 0 }}
+                >
+                  {mobileActionState.actionLabel}
+                </Button>
+              ) : null}
             </Stack>
           </Stack>
         </Card>
@@ -1999,7 +2474,632 @@ function Tasks() {
         </Stack>
       </Card>
     );
-  }, [canDeleteTask, canEditTask, handleCopyTaskLink, handleDeleteTask, isMobile, openEditTask, openTaskDetails, openTransferActReminder, theme.palette.mode, ui.actionBg, ui.actionHover, ui.borderSoft, ui.dialogShadow, ui.mutedText, ui.panelSolid, ui.selectedBorder, ui.shellShadow, ui.subtleText]);
+  }, [canDeleteTask, canEditTask, canReviewTask, canStartTask, canSubmitTask, handleCopyTaskLink, handleDeleteTask, handleStartTask, isMobile, openEditTask, openTaskDetails, openTransferActReminder, theme.palette.mode, ui.actionBg, ui.actionHover, ui.borderSoft, ui.dialogShadow, ui.mutedText, ui.panelSolid, ui.selectedBorder, ui.shellShadow, ui.subtleText]);
+
+  const renderTaskTags = (task) => {
+    const status = statusMeta(task?.status);
+    const priority = priorityMeta(task?.priority);
+    const attachCount = Number(task?.attachments_count || 0);
+    const commentCount = Number(task?.comments_count || 0);
+    const checklistTotal = Number(task?.checklist_total ?? (Array.isArray(task?.checklist_items) ? task.checklist_items.length : 0));
+    const checklistDone = Number(task?.checklist_done ?? (Array.isArray(task?.checklist_items) ? task.checklist_items.filter((item) => item?.done).length : 0));
+    const chips = [
+      { key: 'status', label: status.label, color: status.color, bg: status.bg },
+      priority.value !== 'normal' ? { key: 'priority', label: priority.label, color: priority.dotColor, bg: alpha(priority.dotColor, 0.12) } : null,
+      task?.is_overdue ? { key: 'overdue', label: 'Просрочено', color: '#dc2626', bg: 'rgba(220,38,38,0.12)' } : null,
+      attachCount > 0 ? { key: 'files', label: `Файлы ${attachCount}`, color: ui.mutedText, bg: ui.actionBg } : null,
+      commentCount > 0 ? { key: 'comments', label: `Комментарии ${commentCount}`, color: task?.has_unread_comments ? '#2563eb' : ui.mutedText, bg: task?.has_unread_comments ? 'rgba(37,99,235,0.12)' : ui.actionBg } : null,
+      checklistTotal > 0 ? { key: 'checklist', label: `Чек-лист ${checklistDone}/${checklistTotal}`, color: '#0f766e', bg: 'rgba(15,118,110,0.12)' } : null,
+    ].filter(Boolean);
+
+    return (
+      <Stack direction="row" spacing={0.45} sx={{ flexWrap: 'wrap', gap: 0.4 }}>
+        {chips.map((chip) => (
+          <Chip
+            key={chip.key}
+            size="small"
+            label={chip.label}
+            sx={{
+              height: 22,
+              fontSize: '0.67rem',
+              fontWeight: 800,
+              borderRadius: '8px',
+              bgcolor: chip.bg,
+              color: chip.color,
+              border: 'none',
+            }}
+          />
+        ))}
+      </Stack>
+    );
+  };
+
+  const mobileScrollSx = {
+    height: '100%',
+    minHeight: 0,
+    overflowY: 'auto',
+    overflowX: 'hidden',
+    pr: 0.15,
+    pb: 'calc(72px + env(safe-area-inset-bottom, 0px))',
+  };
+
+  const renderMobileTaskFeedView = () => (
+    <Box data-testid="tasks-mobile-feed-view" sx={mobileScrollSx}>
+      {loading && taskItems.length === 0 ? (
+        <Stack spacing={0.8}>
+          {[0, 1, 2, 3].map((item) => <Skeleton key={item} variant="rounded" height={118} sx={{ borderRadius: '14px' }} />)}
+        </Stack>
+      ) : mobileFeedItems.length === 0 ? (
+        <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
+          <Typography sx={{ fontWeight: 800, mb: 0.4 }}>Задачи по текущим фильтрам не найдены.</Typography>
+          <Typography variant="body2" sx={{ color: ui.mutedText }}>
+            Смените роль, фокус, срок или поисковый запрос.
+          </Typography>
+        </Box>
+      ) : (
+        <Stack spacing={0.8}>
+          {mobileFeedItems.map((task) => renderTaskCard(task))}
+        </Stack>
+      )}
+    </Box>
+  );
+
+  const renderMobileBucketList = ({ buckets, testId, showCreateButtons = false }) => (
+    <Box data-testid={testId} sx={mobileScrollSx}>
+      <Stack spacing={0.85}>
+        {buckets.map((bucket) => (
+          <Card
+            key={bucket.key}
+            sx={{ ...getOfficePanelSx(ui, { p: 0.85, borderRadius: '14px' }) }}
+          >
+            <Stack spacing={0.75}>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={0.75}>
+                <Stack direction="row" spacing={0.65} alignItems="center" sx={{ minWidth: 0 }}>
+                  <Box sx={{ width: 8, height: 8, borderRadius: '999px', bgcolor: bucket.color, flexShrink: 0 }} />
+                  <Typography sx={{ fontWeight: 900, color: bucket.color, minWidth: 0 }}>
+                    {bucket.label}
+                  </Typography>
+                  <Chip size="small" label={bucket.items.length} sx={{ height: 22, fontWeight: 900, bgcolor: alpha(bucket.color, 0.12), color: bucket.color }} />
+                </Stack>
+                {showCreateButtons && canCreateTasks ? (
+                  <IconButton
+                    size="small"
+                    aria-label={`Создать задачу: ${bucket.label}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      openCreateTaskWithPreset({ due_at: bucket.createDueAt });
+                    }}
+                    sx={{ width: 30, height: 30, color: bucket.color }}
+                  >
+                    <AddIcon sx={{ fontSize: 17 }} />
+                  </IconButton>
+                ) : null}
+              </Stack>
+              {bucket.items.length === 0 ? (
+                <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1 }) }}>
+                  <Typography sx={{ fontWeight: 800 }}>Нет задач.</Typography>
+                </Box>
+              ) : (
+                <Stack spacing={0.75}>
+                  {bucket.items.map((task) => renderTaskCard(task, bucket))}
+                </Stack>
+              )}
+            </Stack>
+          </Card>
+        ))}
+      </Stack>
+    </Box>
+  );
+
+  const renderMobileBoardGroups = () => (
+    <Box data-testid="tasks-mobile-board" sx={mobileScrollSx}>
+      <Stack direction="row" spacing={0.6} sx={{ overflowX: 'auto', pb: 0.7 }}>
+        {KANBAN_COLUMNS.map((column) => (
+          <Chip
+            key={column.key}
+            label={`${column.label}: ${(columnData[column.key] || []).length}`}
+            sx={{ flexShrink: 0, height: 28, fontWeight: 900, bgcolor: alpha(column.color, 0.12), color: column.color }}
+          />
+        ))}
+      </Stack>
+      {loading && taskItems.length === 0 ? (
+        <Stack spacing={0.8}>
+          {[0, 1, 2, 3].map((item) => <Skeleton key={item} variant="rounded" height={118} sx={{ borderRadius: '14px' }} />)}
+        </Stack>
+      ) : mobileBoardItems.length === 0 ? (
+        <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
+          <Typography sx={{ fontWeight: 800, mb: 0.4 }}>Задачи по текущим фильтрам не найдены.</Typography>
+          <Typography variant="body2" sx={{ color: ui.mutedText }}>
+            Смените быстрый статус, фокус или расширенные фильтры.
+          </Typography>
+        </Box>
+      ) : (
+        <Stack spacing={0.9}>
+          {KANBAN_COLUMNS.map((column) => {
+            const items = columnData[column.key] || [];
+            if (items.length === 0) return null;
+            return (
+              <Box key={column.key}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.55, px: 0.25 }}>
+                  <Typography sx={{ fontWeight: 900, color: column.color, fontSize: '0.88rem' }}>{column.label}</Typography>
+                  <Chip size="small" label={items.length} sx={{ height: 22, fontWeight: 900, bgcolor: alpha(column.color, 0.12), color: column.color }} />
+                </Stack>
+                <Stack spacing={0.75}>
+                  {items.map((task) => renderTaskCard(task, column))}
+                </Stack>
+              </Box>
+            );
+          })}
+        </Stack>
+      )}
+    </Box>
+  );
+
+  const renderListView = () => (
+    isMobile ? renderMobileTaskFeedView() : (
+    <Card
+      data-testid="tasks-list-view"
+      sx={{
+        ...getOfficePanelSx(ui),
+        height: '100%',
+        borderRadius: '16px',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      <TableContainer sx={{ flex: 1, minHeight: 0, overflow: 'auto' }}>
+        <Table stickyHeader size="small" aria-label="Список задач">
+          <TableHead>
+            <TableRow>
+              {['Название', 'Активность', 'Крайний срок', 'Постановщик', 'Исполнитель', 'Проект', 'Теги'].map((label) => (
+                <TableCell
+                  key={label}
+                  sx={{
+                    bgcolor: ui.panelSolid,
+                    color: ui.subtleText,
+                    fontWeight: 900,
+                    fontSize: '0.75rem',
+                    borderColor: ui.borderSoft,
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {label}
+                </TableCell>
+              ))}
+            </TableRow>
+          </TableHead>
+          <TableBody>
+            {loading && visibleTaskItems.length === 0 ? (
+              [0, 1, 2, 3].map((item) => (
+                <TableRow key={item}>
+                  <TableCell colSpan={7} sx={{ borderColor: ui.borderSoft }}>
+                    <Skeleton variant="rounded" height={34} sx={{ borderRadius: '10px' }} />
+                  </TableCell>
+                </TableRow>
+              ))
+            ) : visibleTaskItems.length === 0 ? (
+              <TableRow>
+                <TableCell colSpan={7} sx={{ borderColor: ui.borderSoft }}>
+                  <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 2 }) }}>
+                    <Typography sx={{ fontWeight: 850 }}>Задачи по текущим фильтрам не найдены.</Typography>
+                    <Typography variant="body2" sx={{ color: ui.mutedText, mt: 0.35 }}>
+                      Смените роль, статус, срок или поисковый запрос.
+                    </Typography>
+                  </Box>
+                </TableCell>
+              </TableRow>
+            ) : visibleTaskItems.map((task) => {
+              const projectLabel = task?.project_name
+                || activeTaskProjects.find((project) => String(project?.id || '') === String(task?.project_id || ''))?.name
+                || '-';
+              return (
+                <TableRow
+                  key={task.id}
+                  hover
+                  data-testid={`tasks-list-row-${task.id}`}
+                  onClick={() => openTaskDetails(task)}
+                  sx={{
+                    cursor: 'pointer',
+                    '&:hover td': { bgcolor: ui.actionHover },
+                  }}
+                >
+                  <TableCell sx={{ minWidth: 260, borderColor: ui.borderSoft }}>
+                    <Typography sx={{ fontWeight: 850, lineHeight: 1.25 }}>{task?.title || '-'}</Typography>
+                    {task?.description ? (
+                      <Typography variant="caption" sx={{ color: ui.subtleText, display: 'block', mt: 0.2, maxWidth: 420, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                        {task.description}
+                      </Typography>
+                    ) : null}
+                  </TableCell>
+                  <TableCell sx={{ minWidth: 150, borderColor: ui.borderSoft }}>
+                    <Typography variant="body2" sx={{ fontWeight: 700 }}>{formatShortDate(task?.updated_at || task?.created_at) || '-'}</Typography>
+                    <Typography variant="caption" sx={{ color: ui.subtleText }}>
+                      {Number(task?.comments_count || 0)} комм. · {Number(task?.attachments_count || 0)} файл.
+                    </Typography>
+                  </TableCell>
+                  <TableCell sx={{ minWidth: 140, borderColor: ui.borderSoft }}>
+                    <Typography variant="body2" sx={{ fontWeight: 800, color: task?.is_overdue ? '#dc2626' : 'text.primary' }}>
+                      {task?.due_at ? formatDateTime(task.due_at) : 'Без срока'}
+                    </Typography>
+                  </TableCell>
+                  <TableCell sx={{ minWidth: 160, borderColor: ui.borderSoft }}>{task?.created_by_full_name || task?.created_by_username || '-'}</TableCell>
+                  <TableCell sx={{ minWidth: 160, borderColor: ui.borderSoft }}>{task?.assignee_full_name || task?.assignee_username || '-'}</TableCell>
+                  <TableCell sx={{ minWidth: 150, borderColor: ui.borderSoft }}>{projectLabel}</TableCell>
+                  <TableCell sx={{ minWidth: 260, borderColor: ui.borderSoft }}>{renderTaskTags(task)}</TableCell>
+                </TableRow>
+              );
+            })}
+          </TableBody>
+        </Table>
+      </TableContainer>
+    </Card>
+    )
+  );
+
+  const renderBucketColumns = ({ buckets, testId, showCreateButtons = false }) => (
+    isMobile ? renderMobileBucketList({ buckets, testId, showCreateButtons }) : (
+    <Box
+      data-testid={testId}
+      sx={{
+        display: 'grid',
+        gridTemplateColumns: {
+          xs: '1fr',
+          md: 'repeat(2, minmax(0, 1fr))',
+          xl: `repeat(${Math.min(buckets.length, 7)}, minmax(0, 1fr))`,
+        },
+        gap: 1,
+        height: '100%',
+        minHeight: 0,
+        overflow: 'hidden',
+      }}
+    >
+      {buckets.map((bucket) => (
+        <Card
+          key={bucket.key}
+          sx={{
+            ...getOfficePanelSx(ui),
+            display: 'flex',
+            flexDirection: 'column',
+            minHeight: 0,
+            height: '100%',
+            borderRadius: '16px',
+            overflow: 'hidden',
+          }}
+        >
+          <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 1, py: 0.85, bgcolor: alpha(bucket.color, theme.palette.mode === 'dark' ? 0.12 : 0.08), borderColor: alpha(bucket.color, 0.14) }) }}>
+            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={0.6}>
+              <Typography sx={{ fontWeight: 900, fontSize: '0.8rem', color: bucket.color, minWidth: 0 }}>
+                {bucket.label}
+              </Typography>
+              <Stack direction="row" spacing={0.35} alignItems="center" sx={{ flexShrink: 0 }}>
+                <Chip size="small" label={bucket.items.length} sx={{ height: 22, minWidth: 30, fontWeight: 900, bgcolor: alpha(bucket.color, 0.12), color: bucket.color, border: 'none' }} />
+                {showCreateButtons && canCreateTasks ? (
+                  <Tooltip title="Создать задачу">
+                    <IconButton
+                      size="small"
+                      aria-label={`Создать задачу: ${bucket.label}`}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        openCreateTaskWithPreset({ due_at: bucket.createDueAt });
+                      }}
+                      sx={{ width: 24, height: 24, color: bucket.color }}
+                    >
+                      <AddIcon sx={{ fontSize: 16 }} />
+                    </IconButton>
+                  </Tooltip>
+                ) : null}
+              </Stack>
+            </Stack>
+          </Box>
+          <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', p: 0.85 }}>
+            {loading && taskItems.length === 0 ? (
+              <Stack spacing={0.8}>
+                {[0, 1, 2].map((item) => <Skeleton key={item} variant="rounded" height={94} sx={{ borderRadius: '14px' }} />)}
+              </Stack>
+            ) : bucket.items.length === 0 ? (
+              <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.1 }) }}>
+                <Typography sx={{ fontWeight: 800 }}>Нет задач.</Typography>
+              </Box>
+            ) : (
+              <Stack spacing={0.8}>
+                {bucket.items.map((task) => renderTaskCard(task, bucket))}
+              </Stack>
+            )}
+          </Box>
+        </Card>
+      ))}
+    </Box>
+    )
+  );
+
+  const renderCalendarView = () => {
+    const monthLabel = calendarPayload.monthStart.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' });
+    const weekDays = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+    return (
+      <Card
+        data-testid="tasks-calendar-view"
+        sx={{
+          ...getOfficePanelSx(ui),
+          height: '100%',
+          minHeight: 0,
+          borderRadius: '16px',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+      >
+        <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 1.1, py: 0.9 }) }}>
+          <Stack direction={{ xs: 'column', md: 'row' }} spacing={0.8} justifyContent="space-between" alignItems={{ xs: 'stretch', md: 'center' }}>
+            <Stack direction="row" spacing={0.7} alignItems="center">
+              <CalendarMonthOutlinedIcon sx={{ fontSize: 18, color: theme.palette.primary.main }} />
+              <Typography sx={{ fontWeight: 900, textTransform: 'capitalize' }}>{monthLabel}</Typography>
+            </Stack>
+            <Stack direction="row" spacing={0.6} alignItems="center" justifyContent={{ xs: 'space-between', md: 'flex-end' }}>
+              <Button size="small" variant="outlined" onClick={() => shiftCalendarMonth(-1)} sx={{ textTransform: 'none', fontWeight: 800 }}>Назад</Button>
+              <Button size="small" variant="outlined" onClick={() => setCalendarMonth(new Date())} sx={{ textTransform: 'none', fontWeight: 800 }}>Сегодня</Button>
+              <Button size="small" variant="outlined" onClick={() => shiftCalendarMonth(1)} sx={{ textTransform: 'none', fontWeight: 800 }}>Вперёд</Button>
+              <Button
+                size="small"
+                variant="text"
+                onClick={() => {
+                  setPageMode('deadlines');
+                  setDueState('none');
+                }}
+                sx={{ textTransform: 'none', fontWeight: 850, whiteSpace: 'nowrap' }}
+              >
+                Без срока: {calendarPayload.noDueCount}
+              </Button>
+            </Stack>
+          </Stack>
+        </Box>
+        <Box sx={{ px: 0.8, py: 0.65, borderBottom: '1px solid', borderColor: ui.borderSoft, display: 'grid', gridTemplateColumns: 'repeat(7, minmax(0, 1fr))', gap: 0.5 }}>
+          {weekDays.map((day) => (
+            <Typography key={day} variant="caption" sx={{ color: ui.subtleText, fontWeight: 900, textAlign: 'center' }}>{day}</Typography>
+          ))}
+        </Box>
+        <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', p: 0.8 }}>
+          <Box sx={{ display: 'grid', gridTemplateColumns: 'repeat(7, minmax(120px, 1fr))', gridAutoRows: 'minmax(104px, 1fr)', gap: 0.55, minWidth: { xs: 840, md: 'auto' }, minHeight: '100%' }}>
+            {calendarPayload.days.map((day) => (
+              <Box
+                key={day.dateKey}
+                sx={{
+                  border: '1px solid',
+                  borderColor: day.isToday ? ui.selectedBorder : ui.borderSoft,
+                  bgcolor: day.inMonth ? ui.panelSolid : alpha(ui.panelSolid, 0.45),
+                  borderRadius: '10px',
+                  p: 0.65,
+                  minHeight: 104,
+                  overflow: 'hidden',
+                }}
+              >
+                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.45 }}>
+                  <Typography variant="caption" sx={{ fontWeight: 900, color: day.inMonth ? 'text.primary' : ui.subtleText }}>
+                    {day.date.getDate()}
+                  </Typography>
+                  {day.items.length > 0 ? (
+                    <Chip size="small" label={day.items.length} sx={{ height: 18, minWidth: 24, fontSize: '0.62rem', fontWeight: 900 }} />
+                  ) : null}
+                </Stack>
+                <Stack spacing={0.35}>
+                  {day.items.slice(0, 3).map((task) => {
+                    const meta = statusMeta(task?.status);
+                    return (
+                      <Box
+                        key={task.id}
+                        role="button"
+                        tabIndex={0}
+                        onClick={() => openTaskDetails(task)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') openTaskDetails(task);
+                        }}
+                        sx={{
+                          borderLeft: '3px solid',
+                          borderColor: meta.color,
+                          bgcolor: meta.bg,
+                          borderRadius: '7px',
+                          px: 0.55,
+                          py: 0.35,
+                          cursor: 'pointer',
+                        }}
+                      >
+                        <Typography variant="caption" sx={{ display: 'block', fontWeight: 800, lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                          {task?.title || '-'}
+                        </Typography>
+                      </Box>
+                    );
+                  })}
+                  {day.items.length > 3 ? (
+                    <Typography variant="caption" sx={{ color: ui.subtleText, fontWeight: 800 }}>+{day.items.length - 3}</Typography>
+                  ) : null}
+                </Stack>
+              </Box>
+            ))}
+          </Box>
+        </Box>
+      </Card>
+    );
+  };
+
+  const renderGanttView = () => (
+    <Card
+      data-testid="tasks-gantt-view"
+      sx={{
+        ...getOfficePanelSx(ui),
+        height: '100%',
+        minHeight: 0,
+        borderRadius: '16px',
+        overflow: 'hidden',
+        display: 'flex',
+        flexDirection: 'column',
+      }}
+    >
+      <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 1.1, py: 0.9 }) }}>
+        <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={0.8}>
+          <Box>
+            <Typography sx={{ fontWeight: 900 }}>Гант</Typography>
+            <Typography variant="caption" sx={{ color: ui.subtleText }}>
+              {formatShortDate(ganttPayload.rangeStart)} - {formatShortDate(ganttPayload.rangeEnd)}
+            </Typography>
+          </Box>
+          <Chip size="small" label={`Без срока: ${ganttPayload.noDueItems.length}`} sx={{ alignSelf: { xs: 'flex-start', md: 'center' }, fontWeight: 850 }} />
+        </Stack>
+      </Box>
+      <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', p: 1 }}>
+        {loading && taskItems.length === 0 ? (
+          <Stack spacing={0.8}>
+            {[0, 1, 2].map((item) => <Skeleton key={item} variant="rounded" height={50} sx={{ borderRadius: '12px' }} />)}
+          </Stack>
+        ) : ganttPayload.rows.length === 0 ? (
+          <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 2 }) }}>
+            <Typography sx={{ fontWeight: 850 }}>Нет задач со сроком для диаграммы.</Typography>
+          </Box>
+        ) : (
+          <Stack spacing={0.65} sx={{ minWidth: { xs: 760, md: 0 } }}>
+            {ganttPayload.rows.map((row) => {
+              const meta = statusMeta(row.task?.status);
+              return (
+                <Box
+                  key={row.task.id}
+                  data-testid={`tasks-gantt-row-${row.task.id}`}
+                  onClick={() => openTaskDetails(row.task)}
+                  sx={{
+                    display: 'grid',
+                    gridTemplateColumns: 'minmax(180px, 260px) minmax(360px, 1fr)',
+                    gap: 0.8,
+                    alignItems: 'center',
+                    cursor: 'pointer',
+                    p: 0.55,
+                    borderRadius: '10px',
+                    '&:hover': { bgcolor: ui.actionHover },
+                  }}
+                >
+                  <Box sx={{ minWidth: 0 }}>
+                    <Typography sx={{ fontWeight: 850, lineHeight: 1.2, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{row.task?.title || '-'}</Typography>
+                    <Typography variant="caption" sx={{ color: ui.subtleText }}>{row.startKey} - {row.endKey}</Typography>
+                  </Box>
+                  <Box sx={{ position: 'relative', height: 32, borderRadius: '9px', bgcolor: ui.actionBg, overflow: 'hidden', border: '1px solid', borderColor: ui.borderSoft }}>
+                    <Box
+                      sx={{
+                        position: 'absolute',
+                        left: `${row.leftPercent}%`,
+                        width: `${row.widthPercent}%`,
+                        top: 5,
+                        bottom: 5,
+                        borderRadius: '7px',
+                        bgcolor: alpha(meta.color, 0.22),
+                        border: '1px solid',
+                        borderColor: alpha(meta.color, 0.42),
+                        color: meta.color,
+                        display: 'flex',
+                        alignItems: 'center',
+                        px: 0.8,
+                        minWidth: 42,
+                      }}
+                    >
+                      <Typography variant="caption" sx={{ fontWeight: 900, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{meta.label}</Typography>
+                    </Box>
+                  </Box>
+                </Box>
+              );
+            })}
+          </Stack>
+        )}
+
+        {ganttPayload.noDueItems.length > 0 ? (
+          <Box sx={{ mt: 1, ...getOfficeSubtlePanelSx(ui, { p: 0.9, borderRadius: '13px' }) }}>
+            <Typography sx={{ fontWeight: 900, mb: 0.65 }}>Без срока</Typography>
+            <Stack spacing={0.45}>
+              {ganttPayload.noDueItems.map((task) => (
+                <Button
+                  key={task.id}
+                  variant="text"
+                  onClick={() => openTaskDetails(task)}
+                  sx={{ justifyContent: 'flex-start', textTransform: 'none', fontWeight: 800, px: 0.7 }}
+                >
+                  {task?.title || '-'}
+                </Button>
+              ))}
+            </Stack>
+          </Box>
+        ) : null}
+      </Box>
+    </Card>
+  );
+
+  const renderBoardView = () => (
+    isMobile ? renderMobileBoardGroups() : (
+      <Box
+        data-testid="tasks-desktop-kanban"
+        sx={{
+          display: 'grid',
+          gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' },
+          gap: 1.2,
+          height: '100%',
+          minHeight: 0,
+          overflow: 'hidden',
+        }}
+      >
+        {KANBAN_COLUMNS.map((column) => {
+          const items = columnData[column.key] || [];
+          return (
+            <Card
+              key={column.key}
+              sx={{
+                ...getOfficePanelSx(ui),
+                display: 'flex',
+                flexDirection: 'column',
+                minHeight: 0,
+                height: '100%',
+                borderRadius: '16px',
+                overflow: 'hidden',
+              }}
+            >
+              <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 1.2, py: 0.9, bgcolor: alpha(column.color, theme.palette.mode === 'dark' ? 0.12 : 0.08), borderColor: alpha(column.color, 0.14) }) }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center">
+                  <Typography sx={{ fontWeight: 900, fontSize: '0.84rem', color: column.color }}>
+                    {column.label}
+                  </Typography>
+                  <Chip size="small" label={items.length} sx={{ height: 22, minWidth: 30, fontWeight: 900, bgcolor: alpha(column.color, 0.12), color: column.color, border: 'none' }} />
+                </Stack>
+              </Box>
+
+              <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', p: 1, pr: 0.8 }}>
+                {loading && taskItems.length === 0 ? (
+                  <Stack spacing={0.8}>
+                    {[0, 1, 2].map((item) => <Skeleton key={item} variant="rounded" height={110} sx={{ borderRadius: '14px' }} />)}
+                  </Stack>
+                ) : items.length === 0 ? (
+                  <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
+                    <Typography sx={{ fontWeight: 800, mb: 0.4 }}>Нет задач в колонке.</Typography>
+                    <Typography variant="body2" sx={{ color: ui.mutedText }}>
+                      {focusMode !== 'all'
+                        ? 'Попробуйте переключить быстрый вид или ослабить фильтры.'
+                        : 'Когда появятся подходящие задачи, они окажутся здесь.'}
+                    </Typography>
+                  </Box>
+                ) : (
+                  <Stack spacing={0.85}>
+                    {items.map((task) => renderTaskCard(task, column))}
+                  </Stack>
+                )}
+              </Box>
+            </Card>
+          );
+        })}
+      </Box>
+    )
+  );
+
+  const renderTaskDataModeContent = () => {
+    if (pageMode === 'deadlines') {
+      return renderBucketColumns({ buckets: deadlineBuckets, testId: 'tasks-deadlines-view', showCreateButtons: true });
+    }
+    if (pageMode === 'calendar') return renderCalendarView();
+    if (pageMode === 'gantt') return renderGanttView();
+    if (pageMode === 'board') return renderBoardView();
+    return renderListView();
+  };
 
   const detailActionMenuItems = useMemo(() => {
     if (!detailsTask) return [];
@@ -2010,6 +3110,16 @@ function Tasks() {
     ].filter(Boolean);
     return items;
   }, [canDeleteTask, canEditTask, detailsTask]);
+
+  const detailMobileActionState = useMemo(() => {
+    if (!detailsTask) return null;
+    return buildMobileTaskActionState(detailsTask, {
+      canOpenTransferActUpload: canOpenTransferActUpload(detailsTask),
+      canStart: canStartTask(detailsTask),
+      canSubmit: canSubmitTask(detailsTask),
+      canReview: canReviewTask(detailsTask),
+    });
+  }, [canReviewTask, canStartTask, canSubmitTask, detailsTask]);
 
   const detailPrimaryActions = detailsTask ? (
     <TaskPrimaryActions
@@ -2052,6 +3162,8 @@ function Tasks() {
           </Typography>
         )}
       </Box>
+
+      {renderTaskChecklist(detailsTask)}
 
       {detailsTask.latest_report && (
         <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '14px' }) }}>
@@ -2127,6 +3239,7 @@ function Tasks() {
                 transferLabel={getTransferActReminderLabel(detailsTask)}
                 isTransferReminder={isTransferActUploadTask(detailsTask)}
                 formatDateTime={formatDateTime}
+                actionState={detailMobileActionState}
                 actions={detailPrimaryActions}
                 mobile
               />
@@ -2185,6 +3298,8 @@ function Tasks() {
                   </Typography>
                 )}
               </Box>
+
+              {renderTaskChecklist(detailsTask)}
 
               {detailsTask.latest_report && (
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '14px' }) }}>
@@ -2247,6 +3362,7 @@ function Tasks() {
               transferLabel={getTransferActReminderLabel(detailsTask)}
               isTransferReminder={isTransferActUploadTask(detailsTask)}
               formatDateTime={formatDateTime}
+              actionState={detailMobileActionState}
               actions={(
                 <TaskPrimaryActions
                   task={detailsTask}
@@ -2612,42 +3728,49 @@ function Tasks() {
   );
 
   const mobileTasksCopy = {
-    tasksTitle: '\u0417\u0430\u0434\u0430\u0447\u0438',
-    analyticsTitle: '\u0410\u043d\u0430\u043b\u0438\u0442\u0438\u043a\u0430',
-    listSuffix: '\u0437\u0430\u0434\u0430\u0447 \u0432 \u043b\u0435\u043d\u0442\u0435',
-    boardHint: '\u0420\u0435\u0436\u0438\u043c\u044b, \u0444\u0438\u043b\u044c\u0442\u0440\u044b \u0438 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044f \u0441\u043f\u0440\u044f\u0442\u0430\u043d\u044b \u0432 \u043c\u0435\u043d\u044e.',
-    analyticsHint: '\u0424\u0438\u043b\u044c\u0442\u0440\u044b \u0430\u043d\u0430\u043b\u0438\u0442\u0438\u043a\u0438 \u0438 \u044d\u043a\u0441\u043f\u043e\u0440\u0442 \u0441\u043f\u0440\u044f\u0442\u0430\u043d\u044b \u0432 \u043c\u0435\u043d\u044e.',
-    drawerTitle: '\u041c\u0435\u043d\u044e \u0437\u0430\u0434\u0430\u0447',
-    drawerBoardSubtitle: '\u0420\u0435\u0436\u0438\u043c\u044b, \u0444\u0438\u043b\u044c\u0442\u0440\u044b \u0438 \u0434\u0435\u0439\u0441\u0442\u0432\u0438\u044f \u0441\u043f\u0438\u0441\u043a\u0430.',
-    drawerAnalyticsSubtitle: '\u041d\u0430\u0432\u0438\u0433\u0430\u0446\u0438\u044f, \u0444\u0438\u043b\u044c\u0442\u0440\u044b \u0438 \u044d\u043a\u0441\u043f\u043e\u0440\u0442 \u0430\u043d\u0430\u043b\u0438\u0442\u0438\u043a\u0438.',
-    closeDrawer: '\u0417\u0430\u043a\u0440\u044b\u0442\u044c \u043c\u0435\u043d\u044e \u0437\u0430\u0434\u0430\u0447',
-    boardTab: '\u0414\u043e\u0441\u043a\u0430 \u0437\u0430\u0434\u0430\u0447',
-    refresh: '\u041e\u0431\u043d\u043e\u0432\u0438\u0442\u044c',
-    newTask: '\u041d\u043e\u0432\u0430\u044f',
-    taxonomy: '\u0421\u043f\u0440\u0430\u0432\u043e\u0447\u043d\u0438\u043a\u0438',
-    listView: '\u0412\u0438\u0434 \u0441\u043f\u0438\u0441\u043a\u0430',
-    all: '\u0412\u0441\u0435',
-    assignee: '\u0418\u0441\u043f\u043e\u043b\u043d\u044f\u044e',
-    department: '\u041e\u0442\u0434\u0435\u043b',
-    creator: '\u0421\u043e\u0437\u0434\u0430\u043d\u043d\u044b\u0435',
-    controller: '\u041d\u0430 \u043a\u043e\u043d\u0442\u0440\u043e\u043b\u0435',
-    status: '\u0421\u0442\u0430\u0442\u0443\u0441',
-    focus: '\u0424\u043e\u043a\u0443\u0441',
-    advancedFilters: '\u0420\u0430\u0441\u0448\u0438\u0440\u0435\u043d\u043d\u044b\u0435 \u0444\u0438\u043b\u044c\u0442\u0440\u044b',
-    analyticsFilters: '\u0424\u0438\u043b\u044c\u0442\u0440\u044b \u0430\u043d\u0430\u043b\u0438\u0442\u0438\u043a\u0438',
-    resetFilters: '\u0421\u0431\u0440\u043e\u0441\u0438\u0442\u044c \u0444\u0438\u043b\u044c\u0442\u0440\u044b',
-    closeMenu: '\u0417\u0430\u043a\u0440\u044b\u0442\u044c \u043c\u0435\u043d\u044e',
-    openMenu: '\u041e\u0442\u043a\u0440\u044b\u0442\u044c \u043c\u0435\u043d\u044e \u0437\u0430\u0434\u0430\u0447',
-    filtersChip: '\u0424\u0438\u043b\u044c\u0442\u0440\u044b',
-    search: '\u041f\u043e\u0438\u0441\u043a',
-    searchPlaceholder: '\u0417\u0430\u0433\u043e\u043b\u043e\u0432\u043e\u043a, \u043a\u043e\u043c\u043c\u0435\u043d\u0442\u0430\u0440\u0438\u0439, \u0443\u0447\u0430\u0441\u0442\u043d\u0438\u043a...',
+    tasksTitle: 'Задачи',
+    analyticsTitle: 'Аналитика',
+    feedTitle: 'Лента',
+    listSuffix: 'задач в ленте',
+    boardHint: 'Откройте карточку, чтобы увидеть детали, файлы и обсуждение.',
+    analyticsHint: 'Фильтры аналитики и экспорт спрятаны в «Ещё».',
+    drawerTitle: 'Ещё и фильтры',
+    drawerBoardSubtitle: 'Режимы, роли, статусы и расширенные фильтры.',
+    drawerAnalyticsSubtitle: 'Навигация, фильтры и экспорт аналитики.',
+    closeDrawer: 'Закрыть меню задач',
+    refresh: 'Обновить',
+    taxonomy: 'Справочники',
+    listView: 'Роль',
+    all: 'Все',
+    assignee: 'Исполняю',
+    department: 'Отдел',
+    creator: 'Созданные',
+    controller: 'На контроле',
+    status: 'Статус',
+    focus: 'Фокус',
+    advancedFilters: 'Расширенные фильтры',
+    analyticsFilters: 'Фильтры аналитики',
+    resetFilters: 'Сбросить фильтры',
+    closeMenu: 'Закрыть меню',
+    openMenu: 'Открыть ещё и фильтры',
+    filtersChip: 'Фильтры',
+    search: 'Поиск',
+    searchPlaceholder: 'Заголовок, комментарий, участник...',
   };
 
-  const mobileHeaderSubtitleSafe = pageMode === 'board'
-    ? `${mobileBoardItems.length} ${mobileTasksCopy.listSuffix}`
+  const mobileModeLabel = pageMode === 'list' ? mobileTasksCopy.feedTitle : activeTaskModeMeta.label;
+  const mobileBottomMode = ['list', 'deadlines', 'board'].includes(pageMode) ? pageMode : 'more';
+  const mobileMoreModeOptions = [
+    { value: 'calendar', label: 'Календарь', icon: CalendarMonthOutlinedIcon },
+    { value: 'gantt', label: 'Гант', icon: AssignmentIcon },
+    { value: 'analytics', label: 'Аналитика', icon: TuneOutlinedIcon },
+  ];
+
+  const mobileHeaderSubtitleSafe = isTaskDataMode
+    ? `${visibleTaskItems.length} ${mobileTasksCopy.listSuffix}`
     : analyticsFocusMeta.title;
 
-  const mobileHeaderHintSafe = pageMode === 'board'
+  const mobileHeaderHintSafe = isTaskDataMode
     ? (activeFilterCount
       ? `\u041f\u0440\u0438\u043c\u0435\u043d\u0435\u043d\u043e ${mobileTasksCopy.filtersChip.toLowerCase()}: ${activeFilterCount}. \u041e\u0441\u0442\u0430\u043b\u044c\u043d\u044b\u0435 \u043d\u0430\u0441\u0442\u0440\u043e\u0439\u043a\u0438 \u0441\u043f\u0440\u044f\u0442\u0430\u043d\u044b \u0432 \u043c\u0435\u043d\u044e.`
       : mobileTasksCopy.boardHint)
@@ -2655,17 +3778,20 @@ function Tasks() {
 
   const mobileNavigationDrawerSafe = isMobile ? (
     <Drawer
-      anchor="left"
+      anchor="bottom"
       open={mobileBoardFiltersOpen}
       onClose={() => setMobileBoardFiltersOpen(false)}
       PaperProps={{
         sx: {
-          width: 'min(92vw, 360px)',
-          maxWidth: '360px',
+          width: '100%',
+          maxHeight: '88dvh',
           bgcolor: ui.pageBg,
           backgroundImage: 'none',
-          borderRight: '1px solid',
+          borderTopLeftRadius: '18px',
+          borderTopRightRadius: '18px',
+          borderTop: '1px solid',
           borderColor: ui.borderSoft,
+          overflow: 'hidden',
         },
       }}
     >
@@ -2675,7 +3801,7 @@ function Tasks() {
             <Box sx={{ minWidth: 0 }}>
               <Typography sx={{ fontWeight: 900, fontSize: '1rem', lineHeight: 1.1 }}>{mobileTasksCopy.drawerTitle}</Typography>
               <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.25 }}>
-                {pageMode === 'board' ? mobileTasksCopy.drawerBoardSubtitle : mobileTasksCopy.drawerAnalyticsSubtitle}
+                {isTaskDataMode ? mobileTasksCopy.drawerBoardSubtitle : mobileTasksCopy.drawerAnalyticsSubtitle}
               </Typography>
             </Box>
             <IconButton
@@ -2698,27 +3824,32 @@ function Tasks() {
 
         <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: 1, py: 1 }}>
           <Stack spacing={1}>
-            <Box sx={{ ...getOfficeSubtlePanelSx(ui, { borderRadius: '12px', px: 0.5 }) }}>
-              <Tabs
-                value={pageMode}
-                onChange={(_, value) => {
-                  setPageMode(value);
-                  setMobileBoardFiltersOpen(false);
-                }}
-                variant="scrollable"
-                allowScrollButtonsMobile
-                sx={{
-                  minHeight: 40,
-                  '& .MuiTab-root': { textTransform: 'none', fontWeight: 800, minHeight: 40, fontSize: '0.84rem' },
-                  '& .MuiTabs-indicator': { borderRadius: '2px', height: 3 },
-                }}
-              >
-                <Tab value="board" label={mobileTasksCopy.boardTab} />
-                <Tab value="analytics" label={mobileTasksCopy.analyticsTitle} />
-              </Tabs>
+            <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 0.8, borderRadius: '13px' }) }}>
+              <Typography sx={{ fontWeight: 800, mb: 0.65 }}>Дополнительные режимы</Typography>
+              <Stack direction="row" spacing={0.65} sx={{ overflowX: 'auto', pb: 0.1 }}>
+                {mobileMoreModeOptions.map((option) => {
+                  const IconComponent = option.icon;
+                  const selected = pageMode === option.value;
+                  return (
+                    <Button
+                      key={option.value}
+                      variant={selected ? 'contained' : 'outlined'}
+                      size="small"
+                      startIcon={<IconComponent sx={{ fontSize: 17 }} />}
+                      onClick={() => {
+                        setPageMode(option.value);
+                        setMobileBoardFiltersOpen(false);
+                      }}
+                      sx={{ flexShrink: 0, textTransform: 'none', fontWeight: 850, borderRadius: '10px', boxShadow: 'none' }}
+                    >
+                      {option.label}
+                    </Button>
+                  );
+                })}
+              </Stack>
             </Box>
 
-            {pageMode === 'board' ? (
+            {isTaskDataMode ? (
               <>
                 <Stack direction="row" spacing={0.75}>
                   <Button
@@ -2734,21 +3865,6 @@ function Tasks() {
                   >
                     {mobileTasksCopy.refresh}
                   </Button>
-                  {canWriteTasks ? (
-                    <Button
-                      fullWidth
-                      size="small"
-                      variant="contained"
-                      startIcon={<AddIcon />}
-                      onClick={() => {
-                        setCreateOpen(true);
-                        setMobileBoardFiltersOpen(false);
-                      }}
-                      sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
-                    >
-                      {mobileTasksCopy.newTask}
-                    </Button>
-                  ) : null}
                 </Stack>
 
                 {canWriteTasks ? (
@@ -2938,7 +4054,7 @@ function Tasks() {
           }}
         >
           <Stack spacing={0.75}>
-            {pageMode === 'board' ? (
+            {isTaskDataMode ? (
               <Button
                 fullWidth
                 variant="outlined"
@@ -2958,6 +4074,75 @@ function Tasks() {
         </Box>
       </Box>
     </Drawer>
+  ) : null;
+
+  const mobileBottomNavigationSafe = isMobile && !detailsOpen ? (
+    <Box
+      data-testid="tasks-mobile-bottom-nav"
+      sx={{
+        position: 'fixed',
+        left: 0,
+        right: 0,
+        bottom: 0,
+        zIndex: theme.zIndex.drawer + 1,
+        borderTop: '1px solid',
+        borderColor: ui.borderSoft,
+        bgcolor: ui.panelSolid,
+        pb: 'env(safe-area-inset-bottom, 0px)',
+        boxShadow: ui.shellShadow,
+      }}
+    >
+      <BottomNavigation
+        showLabels
+        value={mobileBottomMode}
+        onChange={(_, value) => {
+          if (value === 'more') {
+            setMobileBoardFiltersOpen(true);
+            return;
+          }
+          if (value === 'create') {
+            setCreateOpen(true);
+            return;
+          }
+          setPageMode(value);
+        }}
+        sx={{
+          height: 60,
+          bgcolor: 'transparent',
+          '& .MuiBottomNavigationAction-root': { minWidth: 0, fontWeight: 800, px: 0.25 },
+          '& .MuiBottomNavigationAction-label': { fontSize: '0.68rem', fontWeight: 800 },
+        }}
+      >
+        <BottomNavigationAction label="Лента" value="list" icon={<AssignmentIcon />} />
+        <BottomNavigationAction label="Сроки" value="deadlines" icon={<CalendarMonthOutlinedIcon />} />
+        {canCreateTasks ? (
+          <BottomNavigationAction
+            label="Создать"
+            value="create"
+            data-testid="tasks-mobile-create-nav-button"
+            icon={(
+              <Box
+                sx={{
+                  width: 36,
+                  height: 36,
+                  borderRadius: '999px',
+                  display: 'grid',
+                  placeItems: 'center',
+                  bgcolor: theme.palette.primary.main,
+                  color: theme.palette.primary.contrastText,
+                  boxShadow: ui.dialogShadow,
+                  mt: -0.4,
+                }}
+              >
+                <AddIcon sx={{ fontSize: 22 }} />
+              </Box>
+            )}
+          />
+        ) : null}
+        <BottomNavigationAction label="Доска" value="board" icon={<ChecklistOutlinedIcon />} />
+        <BottomNavigationAction label="Ещё" value="more" icon={<TuneOutlinedIcon />} />
+      </BottomNavigation>
+    </Box>
   ) : null;
 
   return (
@@ -2988,91 +4173,73 @@ function Tasks() {
             <>
           {isMobile ? (
             <>
-              <Card data-testid="tasks-mobile-header" sx={{ ...getOfficePanelSx(ui, { mb: 1, p: 0.85, borderRadius: '15px', flexShrink: 0 }) }}>
-                <Stack spacing={0.8}>
-                  <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                    <Box sx={{ minWidth: 0, flex: 1 }}>
-                      <Typography
-                        variant="overline"
-                        sx={{
-                          display: 'block',
-                          fontWeight: 900,
-                          letterSpacing: '0.08em',
-                          lineHeight: 1,
-                          color: ui.subtleText,
-                        }}
-                      >
-                        {pageMode === 'board' ? mobileTasksCopy.tasksTitle : mobileTasksCopy.analyticsTitle}
-                      </Typography>
-                      <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.25 }}>
-                        {mobileHeaderSubtitleSafe}
-                      </Typography>
-                    </Box>
-                    <Stack direction="row" spacing={0.6} alignItems="center" sx={{ flexShrink: 0 }}>
-                      {pageMode === 'board' && activeFilterCount ? (
-                        <Chip
-                          label={`${mobileTasksCopy.filtersChip}: ${activeFilterCount}`}
-                          size="small"
-                          sx={{
-                            height: 24,
-                            fontWeight: 800,
-                            borderRadius: '8px',
-                            bgcolor: alpha(theme.palette.primary.main, 0.12),
-                            color: theme.palette.primary.main,
-                            flexShrink: 0,
-                          }}
-                        />
-                      ) : null}
-                      <IconButton
-                        size="small"
-                        data-testid="tasks-mobile-open-navigation"
-                        aria-label={mobileTasksCopy.openMenu}
-                        onClick={() => setMobileBoardFiltersOpen(true)}
-                        sx={{
-                          width: 32,
-                          height: 32,
-                          borderRadius: '10px',
-                          border: '1px solid',
-                          borderColor: ui.actionBorder,
-                          bgcolor: ui.actionBg,
-                        }}
-                      >
-                        <FilterListIcon fontSize="small" />
-                      </IconButton>
-                    </Stack>
-                  </Stack>
+              <Card data-testid="tasks-mobile-header" sx={{ ...getOfficePanelSx(ui, { mb: 0.65, p: 0.45, borderRadius: '13px', flexShrink: 0 }) }}>
+                <Stack direction="row" spacing={0.6} alignItems="center" sx={{ minHeight: 40 }}>
+                  <Box sx={{ minWidth: 72, maxWidth: 108, flexShrink: 0 }}>
+                    <Typography
+                      data-testid="tasks-mobile-header-mode"
+                      sx={{ fontWeight: 900, fontSize: '0.78rem', lineHeight: 1.05, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                    >
+                      {mobileModeLabel} · {visibleTaskItems.length}
+                    </Typography>
+                  </Box>
 
-                  {pageMode === 'board' ? (
-                    <>
-                      <TextField
-                        fullWidth
-                        size="small"
-                        value={q}
-                        inputRef={searchInputRef}
-                        onChange={(event) => setQ(event.target.value)}
-                        placeholder={mobileTasksCopy.searchPlaceholder}
-                        inputProps={{ 'data-testid': 'tasks-mobile-search-input' }}
-                        InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 18, color: ui.subtleText, mr: 0.8 }} /> }}
-                        sx={{
-                          '& .MuiOutlinedInput-root': {
-                            minHeight: 42,
-                          },
-                        }}
-                      />
-                      {activeFilterCount ? (
-                        <Typography variant="caption" sx={{ color: ui.subtleText, lineHeight: 1.35 }}>
-                          {mobileHeaderHintSafe}
-                        </Typography>
-                      ) : null}
-                    </>
+                  {isTaskDataMode ? (
+                    <TextField
+                      fullWidth
+                      size="small"
+                      value={q}
+                      inputRef={searchInputRef}
+                      onChange={(event) => setQ(event.target.value)}
+                      placeholder={mobileTasksCopy.searchPlaceholder}
+                      inputProps={{ 'data-testid': 'tasks-mobile-search-input', 'aria-label': mobileTasksCopy.search }}
+                      InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 16, color: ui.subtleText, mr: 0.55 }} /> }}
+                      sx={{
+                        minWidth: 0,
+                        '& .MuiOutlinedInput-root': {
+                          minHeight: 36,
+                          borderRadius: '11px',
+                        },
+                        '& .MuiOutlinedInput-input': {
+                          py: 0.65,
+                          fontSize: '0.82rem',
+                        },
+                      }}
+                    />
                   ) : (
-                    <Typography variant="caption" sx={{ color: ui.subtleText, lineHeight: 1.35 }}>
-                      {mobileHeaderHintSafe}
+                    <Typography variant="caption" sx={{ color: ui.subtleText, minWidth: 0, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                      {mobileHeaderSubtitleSafe}
                     </Typography>
                   )}
+
+                  <Badge
+                    color="primary"
+                    badgeContent={activeFilterCount}
+                    invisible={!isTaskDataMode || activeFilterCount <= 0}
+                    overlap="circular"
+                  >
+                    <IconButton
+                      size="small"
+                      data-testid="tasks-mobile-open-navigation"
+                      aria-label={mobileTasksCopy.openMenu}
+                      onClick={() => setMobileBoardFiltersOpen(true)}
+                      sx={{
+                        width: 36,
+                        height: 36,
+                        borderRadius: '11px',
+                        border: '1px solid',
+                        borderColor: ui.actionBorder,
+                        bgcolor: ui.actionBg,
+                        flexShrink: 0,
+                      }}
+                    >
+                      <FilterListIcon fontSize="small" />
+                    </IconButton>
+                  </Badge>
                 </Stack>
               </Card>
-              <Box sx={{ display: 'none' }}>
+              {false ? (
+                <>
               <Card data-testid="tasks-mobile-header-legacy" sx={{ ...getOfficePanelSx(ui, { mb: 1, p: 1, borderRadius: '16px', flexShrink: 0 }) }}>
                 <Stack spacing={1}>
                   <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
@@ -3186,7 +4353,7 @@ function Tasks() {
                     >
                       <RefreshIcon fontSize="small" />
                     </IconButton>
-                    {canWriteTasks && pageMode === 'board' ? (
+                    {canCreateTasks && pageMode === 'board' ? (
                       <Button
                         size="small"
                         variant="contained"
@@ -3362,149 +4529,166 @@ function Tasks() {
               </Stack>
             </Card>
               </Box>
-              </Box>
+                </>
+              ) : null}
             </>
           ) : null}
 
           {!isMobile ? (
-          <Card sx={{ ...getOfficePanelSx(ui, { mb: 1, p: 1.05, borderRadius: '16px', flexShrink: 0 }) }}>
-            <Stack spacing={0.9}>
-              <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={0.9}>
-                <Stack direction="row" spacing={1} alignItems="center">
-                  <Avatar sx={{ width: 36, height: 36, bgcolor: alpha(theme.palette.primary.main, 0.14), color: theme.palette.primary.main }}>
-                    <AssignmentIcon />
-                  </Avatar>
-                  <Box>
-                    <Typography sx={{ fontWeight: 900, fontSize: '0.98rem', lineHeight: 1.1 }}>Задачи</Typography>
-                    <Typography variant="caption" sx={{ color: ui.mutedText, display: 'block', mt: 0.2 }}>
-                      Единая рабочая доска: исполнение, контроль, проверка и обсуждение в одном экране.
-                    </Typography>
+          <Card sx={{ ...getOfficePanelSx(ui, { mb: 0.75, p: 0.65, borderRadius: '14px', flexShrink: 0 }) }}>
+            <Stack spacing={0.55}>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={0.8} sx={{ minHeight: 34 }}>
+                <Stack direction="row" spacing={0.8} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
+                  <Stack direction="row" spacing={0.65} alignItems="center" sx={{ flexShrink: 0 }}>
+                    <Avatar sx={{ width: 28, height: 28, bgcolor: alpha(theme.palette.primary.main, 0.14), color: theme.palette.primary.main }}>
+                      <AssignmentIcon sx={{ fontSize: 17 }} />
+                    </Avatar>
+                    <Typography sx={{ fontWeight: 900, fontSize: '0.94rem', lineHeight: 1 }}>Задачи</Typography>
+                  </Stack>
+
+                  <Box sx={{ ...getOfficeSubtlePanelSx(ui, { borderRadius: '10px', px: 0.35 }), flexShrink: 0 }}>
+                    <Tabs
+                      value={pageMode}
+                      onChange={(_, value) => setPageMode(value)}
+                      variant="scrollable"
+                      allowScrollButtonsMobile
+                      sx={{
+                        minHeight: 32,
+                        '& .MuiTab-root': { textTransform: 'none', fontWeight: 800, minHeight: 32, px: 1.15, fontSize: '0.8rem' },
+                        '& .MuiTabs-indicator': { borderRadius: '2px', height: 2 },
+                      }}
+                    >
+                      {TASK_MODE_OPTIONS.map((option) => (
+                        <Tab key={option.value} value={option.value} label={option.label} />
+                      ))}
+                    </Tabs>
                   </Box>
-                </Stack>
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8}>
-                  <Button
-                    size="small"
-                    variant="outlined"
-                    startIcon={<RefreshIcon />}
-                    onClick={() => void (pageMode === 'analytics' ? loadTaskAnalytics() : loadTasks())}
-                    sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}
-                  >
-                    Обновить
-                  </Button>
-                  {canWriteTasks && (
-                    <Button size="small" variant="outlined" onClick={() => setTaxonomyOpen(true)} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
-                      Справочники
-                    </Button>
+
+                  {isTaskDataMode ? (
+                    <Stack direction="row" spacing={0.45} sx={{ minWidth: 0, overflowX: 'auto', flex: 1 }}>
+                      {boardSummaryItems.map((item) => (
+                        <Chip
+                          key={item.key}
+                          size="small"
+                          label={`${item.label}: ${item.value}`}
+                          sx={{
+                            flexShrink: 0,
+                            height: 24,
+                            fontWeight: 850,
+                            fontSize: '0.7rem',
+                            borderRadius: '8px',
+                            bgcolor: alpha(item.color, 0.12),
+                            color: item.color,
+                          }}
+                        />
+                      ))}
+                    </Stack>
+                  ) : (
+                    <Typography variant="caption" sx={{ color: ui.subtleText, lineHeight: 1.1, minWidth: 0 }} noWrap>
+                      Аналитика по постановке, срокам и выполнению задач.
+                    </Typography>
                   )}
+                </Stack>
+
+                <Stack direction="row" spacing={0.45} alignItems="center" sx={{ flexShrink: 0 }}>
+                  <Tooltip title="Обновить">
+                    <span>
+                      <IconButton
+                        size="small"
+                        aria-label="Обновить"
+                        onClick={() => void (pageMode === 'analytics' ? loadTaskAnalytics() : loadTasks())}
+                        sx={{ width: 32, height: 32, borderRadius: '10px', border: '1px solid', borderColor: ui.actionBorder, bgcolor: ui.actionBg }}
+                      >
+                        <RefreshIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
                   {canWriteTasks && (
-                    <Button size="small" variant="contained" startIcon={<AddIcon />} onClick={() => setCreateOpen(true)} sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}>
+                    <Tooltip title="Справочники">
+                      <span>
+                        <IconButton
+                          size="small"
+                          aria-label="Справочники"
+                          onClick={() => setTaxonomyOpen(true)}
+                          sx={{ width: 32, height: 32, borderRadius: '10px', border: '1px solid', borderColor: ui.actionBorder, bgcolor: ui.actionBg }}
+                        >
+                          <AssignmentIcon sx={{ fontSize: 17 }} />
+                        </IconButton>
+                      </span>
+                    </Tooltip>
+                  )}
+                  {canCreateTasks && (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      startIcon={<AddIcon />}
+                      onClick={() => setCreateOpen(true)}
+                      sx={{ minHeight: 32, textTransform: 'none', fontWeight: 850, borderRadius: '10px', boxShadow: 'none', px: 1.25 }}
+                    >
                       Новая задача
                     </Button>
                   )}
                 </Stack>
               </Stack>
 
-              <Box sx={{ ...getOfficeSubtlePanelSx(ui, { borderRadius: '12px', px: 0.5 }) }}>
-                <Tabs
-                  value={pageMode}
-                  onChange={(_, value) => setPageMode(value)}
-                  variant="scrollable"
-                  allowScrollButtonsMobile
-                  sx={{
-                    minHeight: 40,
-                    '& .MuiTab-root': { textTransform: 'none', fontWeight: 800, minHeight: 40, fontSize: '0.84rem' },
-                    '& .MuiTabs-indicator': { borderRadius: '2px', height: 3 },
-                  }}
-                >
-                  <Tab value="board" label="Доска задач" />
-                  <Tab value="analytics" label="Аналитика" />
-                </Tabs>
-              </Box>
+              {isTaskDataMode ? (
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={0.8} sx={{ minHeight: 32 }}>
+                <Box sx={{ ...getOfficeSubtlePanelSx(ui, { borderRadius: '10px', px: 0.35 }), minWidth: 0, flex: '1 1 auto' }}>
+                  <Tabs
+                    value={viewMode}
+                    onChange={(_, value) => setViewMode(value)}
+                    variant="scrollable"
+                    allowScrollButtonsMobile
+                    sx={{
+                      minHeight: 32,
+                      '& .MuiTab-root': { textTransform: 'none', fontWeight: 750, minHeight: 32, px: 1.15, fontSize: '0.79rem' },
+                      '& .MuiTabs-indicator': { borderRadius: '2px', height: 2 },
+                    }}
+                  >
+                    {canManageAllTasks && <Tab value="all" label="Все" />}
+                    <Tab value="assignee" label="Исполняю" />
+                    <Tab value="department" label="Отдел" />
+                    {canUseCreatorTab && <Tab value="creator" label="Созданные" />}
+                    {canUseControllerTab && <Tab value="controller" label="На контроле" />}
+                  </Tabs>
+                </Box>
 
-              {pageMode === 'board' ? (
-              <Grid container spacing={0.8}>
-                <Grid item xs={6} sm={3}>
-                  <Box sx={{ ...getOfficeMetricBlockSx(ui, '#2563eb', { p: 0.8, minHeight: 66 }) }}>
-                    <Typography sx={{ fontWeight: 900, color: '#2563eb', fontSize: '0.98rem', lineHeight: 1 }}>{openTasksCount}</Typography>
-                    <Typography sx={{ mt: 0.4, fontWeight: 800, fontSize: '0.72rem' }}>Открыто сейчас</Typography>
-                  </Box>
-                </Grid>
-                <Grid item xs={6} sm={3}>
-                  <Box sx={{ ...getOfficeMetricBlockSx(ui, '#7c3aed', { p: 0.8, minHeight: 66 }) }}>
-                    <Typography sx={{ fontWeight: 900, color: '#7c3aed', fontSize: '0.98rem', lineHeight: 1 }}>{focusCounts.review}</Typography>
-                    <Typography sx={{ mt: 0.4, fontWeight: 800, fontSize: '0.72rem' }}>Ждут проверки</Typography>
-                  </Box>
-                </Grid>
-                <Grid item xs={6} sm={3}>
-                  <Box sx={{ ...getOfficeMetricBlockSx(ui, '#dc2626', { p: 0.8, minHeight: 66 }) }}>
-                    <Typography sx={{ fontWeight: 900, color: '#dc2626', fontSize: '0.98rem', lineHeight: 1 }}>{focusCounts.overdue}</Typography>
-                    <Typography sx={{ mt: 0.4, fontWeight: 800, fontSize: '0.72rem' }}>Просрочено</Typography>
-                  </Box>
-                </Grid>
-                <Grid item xs={6} sm={3}>
-                  <Box sx={{ ...getOfficeMetricBlockSx(ui, '#059669', { p: 0.8, minHeight: 66 }) }}>
-                    <Typography sx={{ fontWeight: 900, color: '#059669', fontSize: '0.98rem', lineHeight: 1 }}>{focusCounts.comments}</Typography>
-                    <Typography sx={{ mt: 0.4, fontWeight: 800, fontSize: '0.72rem' }}>Новые комментарии</Typography>
-                  </Box>
-                </Grid>
-              </Grid>
-              ) : null}
-
-              {pageMode === 'board' ? (
-              <Box sx={{ ...getOfficeSubtlePanelSx(ui, { borderRadius: '12px', px: 0.5 }) }}>
-                <Tabs
-                  value={viewMode}
-                  onChange={(_, value) => setViewMode(value)}
-                  variant="scrollable"
-                  allowScrollButtonsMobile
-                  sx={{
-                    minHeight: 40,
-                    '& .MuiTab-root': { textTransform: 'none', fontWeight: 700, minHeight: 40, fontSize: '0.84rem' },
-                    '& .MuiTabs-indicator': { borderRadius: '2px', height: 3 },
-                  }}
-                >
-                  {canManageAllTasks && <Tab value="all" label="Все" />}
-                  <Tab value="assignee" label="Исполняю" />
-                  <Tab value="department" label="Отдел" />
-                  {canUseCreatorTab && <Tab value="creator" label="Созданные" />}
-                  {canUseControllerTab && <Tab value="controller" label="На контроле" />}
-                </Tabs>
-              </Box>
-              ) : null}
-
-              {pageMode === 'board' ? (
-              <Stack direction={{ xs: 'column', md: 'row' }} justifyContent="space-between" spacing={0.8}>
-                <Stack direction="row" spacing={0.6} flexWrap="wrap" sx={{ gap: 0.6 }}>
-                  {focusOptions.map((option) => (
-                    <Chip
-                      key={option.value}
-                      clickable
-                      label={`${option.label}: ${focusCounts[option.value] || 0}`}
-                      onClick={() => setFocusMode(option.value)}
-                      sx={{
-                        height: 24,
-                        fontSize: '0.72rem',
-                        fontWeight: 800,
-                        border: '1px solid',
-                        borderColor: focusMode === option.value ? ui.selectedBorder : ui.actionBorder,
-                        bgcolor: focusMode === option.value ? ui.selectedBg : ui.actionBg,
-                        color: focusMode === option.value ? theme.palette.primary.main : 'text.primary',
-                      }}
-                    />
-                  ))}
-                </Stack>
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8} alignItems={{ xs: 'flex-start', sm: 'center' }}>
-                  <Button size="small" variant="text" startIcon={<FilterListIcon />} onClick={() => setShowFilters((prev) => !prev)} sx={{ textTransform: 'none', fontWeight: 800, py: 0.25 }}>
+                <Stack direction="row" spacing={0.45} alignItems="center" sx={{ flexShrink: 0, minWidth: 0 }}>
+                  <Stack direction="row" spacing={0.45} sx={{ maxWidth: { md: 520, lg: 640 }, overflowX: 'auto' }}>
+                    {focusOptions.map((option) => (
+                      <Chip
+                        key={option.value}
+                        clickable
+                        label={`${option.label}: ${focusCounts[option.value] || 0}`}
+                        onClick={() => setFocusMode(option.value)}
+                        sx={{
+                          flexShrink: 0,
+                          height: 24,
+                          fontSize: '0.7rem',
+                          fontWeight: 850,
+                          borderRadius: '8px',
+                          border: '1px solid',
+                          borderColor: focusMode === option.value ? ui.selectedBorder : ui.actionBorder,
+                          bgcolor: focusMode === option.value ? ui.selectedBg : ui.actionBg,
+                          color: focusMode === option.value ? theme.palette.primary.main : 'text.primary',
+                        }}
+                      />
+                    ))}
+                  </Stack>
+                  <Button
+                    size="small"
+                    variant={showFilters ? 'contained' : 'text'}
+                    startIcon={<FilterListIcon />}
+                    onClick={() => setShowFilters((prev) => !prev)}
+                    sx={{ minHeight: 30, textTransform: 'none', fontWeight: 850, borderRadius: '9px', px: 1, py: 0.25, whiteSpace: 'nowrap', boxShadow: 'none' }}
+                  >
                     {showFilters ? 'Свернуть фильтры' : `Развернуть фильтры${activeFilterCount ? ` (${activeFilterCount})` : ''}`}
                   </Button>
-                  <Typography variant="caption" sx={{ color: ui.subtleText, lineHeight: 1.2 }}>
-                    Горячие клавиши: `N` создать задачу, `/` или `F` открыть поиск, `Esc` закрыть окно.
-                  </Typography>
                 </Stack>
               </Stack>
               ) : null}
 
-              {pageMode === 'board' && showFilters && (
+              {isTaskDataMode && showFilters && (
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1, borderRadius: '14px' }) }}>
                   <Grid container spacing={1.1}>
                     <Grid item xs={12} md={4}>
@@ -4039,7 +5223,7 @@ function Tasks() {
                   <Grid item xs={12} lg={8}>
                     <Card sx={{ ...getOfficePanelSx(ui, { p: 1.05, borderRadius: '16px' }), height: '100%' }}>
                       <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={0.8} sx={{ mb: 0.8 }}>
-                        <Typography sx={{ fontWeight: 900 }}>Протокол и выполнение по времени</Typography>
+                        <Typography sx={{ fontWeight: 900 }}>Постановка и выполнение по времени</Typography>
                         <Typography variant="caption" sx={{ color: ui.subtleText }}>
                           Гранулярность: {analyticsPayload?.trend?.granularity || 'day'}
                         </Typography>
@@ -4268,89 +5452,7 @@ function Tasks() {
                 </Stack>
               </Box>
             ) : (
-              isMobile ? (
-                <Box
-                  data-testid="tasks-mobile-board"
-                  sx={{ height: '100%', minHeight: 0, overflowY: 'auto', pr: 0.15 }}
-                >
-                  {loading && taskItems.length === 0 ? (
-                    <Stack spacing={0.8}>
-                      {[0, 1, 2, 3].map((item) => <Skeleton key={item} variant="rounded" height={96} sx={{ borderRadius: '14px' }} />)}
-                    </Stack>
-                  ) : mobileBoardItems.length === 0 ? (
-                    <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
-                      <Typography sx={{ fontWeight: 800, mb: 0.4 }}>Задачи по текущим фильтрам не найдены.</Typography>
-                      <Typography variant="body2" sx={{ color: ui.mutedText }}>
-                        Смените быстрый статус, фокус или расширенные фильтры.
-                      </Typography>
-                    </Box>
-                  ) : (
-                    <Stack spacing={0.8} sx={{ pb: 0.6 }}>
-                      {mobileBoardItems.map((task) => renderTaskCard(task))}
-                    </Stack>
-                  )}
-                </Box>
-              ) : (
-              <Box
-              data-testid="tasks-desktop-kanban"
-              sx={{
-                display: 'grid',
-                gridTemplateColumns: { xs: '1fr', sm: 'repeat(2, minmax(0, 1fr))', lg: 'repeat(4, minmax(0, 1fr))' },
-                gap: 1.2,
-                height: '100%',
-                minHeight: 0,
-                overflow: 'hidden',
-              }}
-            >
-              {KANBAN_COLUMNS.map((column) => {
-                const items = columnData[column.key] || [];
-                return (
-                  <Card
-                    key={column.key}
-                    sx={{
-                      ...getOfficePanelSx(ui),
-                      display: 'flex',
-                      flexDirection: 'column',
-                      minHeight: 0,
-                      height: '100%',
-                      borderRadius: '16px',
-                      overflow: 'hidden',
-                    }}
-                  >
-                    <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 1.2, py: 0.9, bgcolor: alpha(column.color, theme.palette.mode === 'dark' ? 0.12 : 0.08), borderColor: alpha(column.color, 0.14) }) }}>
-                      <Stack direction="row" justifyContent="space-between" alignItems="center">
-                        <Typography sx={{ fontWeight: 900, fontSize: '0.84rem', color: column.color }}>
-                          {column.label}
-                        </Typography>
-                        <Chip size="small" label={items.length} sx={{ height: 22, minWidth: 30, fontWeight: 900, bgcolor: alpha(column.color, 0.12), color: column.color, border: 'none' }} />
-                      </Stack>
-                    </Box>
-
-                    <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', p: 1, pr: 0.8 }}>
-                      {loading && taskItems.length === 0 ? (
-                        <Stack spacing={0.8}>
-                          {[0, 1, 2].map((item) => <Skeleton key={item} variant="rounded" height={110} sx={{ borderRadius: '14px' }} />)}
-                        </Stack>
-                      ) : items.length === 0 ? (
-                        <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
-                          <Typography sx={{ fontWeight: 800, mb: 0.4 }}>Нет задач в колонке.</Typography>
-                          <Typography variant="body2" sx={{ color: ui.mutedText }}>
-                            {focusMode !== 'all'
-                              ? 'Попробуйте переключить быстрый вид или ослабить фильтры.'
-                              : 'Когда появятся подходящие задачи, они окажутся здесь.'}
-                          </Typography>
-                        </Box>
-                      ) : (
-                        <Stack spacing={0.85}>
-                          {items.map((task) => renderTaskCard(task, column))}
-                        </Stack>
-                      )}
-                    </Box>
-                  </Card>
-                );
-              })}
-            </Box>
-              )
+              renderTaskDataModeContent()
             )}
           </Box>
             </>
@@ -4358,6 +5460,7 @@ function Tasks() {
         </Box>
 
         {mobileNavigationDrawerSafe}
+        {mobileBottomNavigationSafe}
 
         {false ? (
         <>
@@ -4724,87 +5827,196 @@ function Tasks() {
 
         <Dialog
           open={createOpen}
-          onClose={() => setCreateOpen(false)}
+          onClose={handleCloseCreateDialog}
           fullScreen={isMobile}
           fullWidth
-          maxWidth="md"
+          maxWidth="sm"
           PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}
         >
-          <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 2.2, py: 1.7 }), position: { xs: 'sticky', sm: 'static' }, top: 0, zIndex: 2 }}>
-            <Stack direction="row" alignItems="center" spacing={1.2}>
-              <Avatar sx={{ width: 38, height: 38, bgcolor: alpha(theme.palette.primary.main, 0.14), color: theme.palette.primary.main }}>
-                <AddIcon />
-              </Avatar>
-              <Box>
-                <Typography sx={{ fontWeight: 900, fontSize: '1.05rem', lineHeight: 1.1 }}>Создать задачу</Typography>
-                <Typography variant="body2" sx={{ color: ui.mutedText, mt: 0.2 }}>
-                  Одна форма для постановки, контроля и дальнейшей сдачи.
-                </Typography>
-              </Box>
-            </Stack>
-          </Box>
-
-          <DialogContent sx={{ px: { xs: 1, sm: 2.2 }, py: { xs: 1, sm: 1.7 } }}>
-            <Stack spacing={1.5}>
-              <TextField
-                label="Заголовок"
-                value={createData.title}
-                onChange={(event) => setCreateData((prev) => ({ ...prev, title: event.target.value }))}
-                fullWidth
-                required
-                error={createData.title.length > 0 && createData.title.trim().length < 3}
-                helperText={createData.title.length > 0 && createData.title.trim().length < 3 ? 'Минимум 3 символа' : ' '}
-              />
-
-              <MarkdownEditor
-                label="Описание"
-                value={createData.description}
-                onChange={(value) => setCreateData((prev) => ({ ...prev, description: value }))}
-                minRows={6}
-                placeholder="Опишите задачу, критерии готовности и ожидания по результату."
-                enableAiTransform
-                transformContext="task"
-                onAiTransform={transformTaskMarkdown}
-                visualVariant="taskDialog"
-              />
-
-              <Grid container spacing={1.2}>
-                <Grid item xs={12} md={7}>
-                  <Autocomplete
-                    multiple
+          <DialogContent sx={{ px: { xs: 1.2, sm: 2.2 }, py: { xs: 1.2, sm: 1.8 } }}>
+            <Stack spacing={1.35}>
+              <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1.2, sm: 1.6 }, borderRadius: '16px' }) }}>
+                <Stack direction="row" alignItems="flex-start" spacing={1}>
+                  <TextField
+                    value={createData.title}
+                    onChange={(event) => setCreateData((prev) => ({ ...prev, title: event.target.value }))}
                     fullWidth
-                    size="small"
-                    options={assignees}
-                    value={selectedCreateAssignees}
-                    onChange={(_, value) => setCreateData((prev) => ({
-                      ...prev,
-                      assignee_user_ids: Array.isArray(value) ? value.map((item) => String(item?.id || '')).filter(Boolean) : [],
-                    }))}
-                    getOptionLabel={getTaskUserLabel}
-                    filterOptions={filterTaskUserOptions}
-                    isOptionEqualToValue={areSameTaskUsers}
-                    disableCloseOnSelect
-                    filterSelectedOptions
-                    noOptionsText="Ничего не найдено"
-                    renderOption={(props, option, { selected }) => {
-                      const { key, ...optionProps } = props;
-                      return (
-                        <Box component="li" key={key} {...optionProps}>
-                        <Checkbox checked={selected} sx={{ mr: 1 }} />
-                        <Typography>{getTaskUserLabel(option)}</Typography>
-                        </Box>
-                      );
+                    required
+                    autoFocus={!isMobile}
+                    variant="standard"
+                    placeholder="Название задачи"
+                    inputProps={{ 'aria-label': 'Что нужно сделать' }}
+                    InputProps={{ disableUnderline: true }}
+                    error={createData.title.length > 0 && createData.title.trim().length < 3}
+                    helperText={createData.title.length > 0 && createData.title.trim().length < 3 ? 'Минимум 3 символа' : ' '}
+                    sx={{
+                      '& .MuiInputBase-input': {
+                        py: 0.2,
+                        fontSize: { xs: '1.25rem', sm: '1.45rem' },
+                        fontWeight: 900,
+                        lineHeight: 1.18,
+                      },
+                      '& .MuiInputBase-input::placeholder': {
+                        color: ui.mutedText,
+                        opacity: 0.8,
+                      },
+                      '& .MuiFormHelperText-root': { mx: 0, mt: 0.35 },
                     }}
-                    renderInput={(params) => (
-                      <TextField
-                        {...params}
-                        label="Исполнители"
-                        placeholder={selectedCreateAssignees.length === 0 ? 'Введите фамилию или логин' : ''}
-                      />
-                    )}
                   />
-                </Grid>
-                <Grid item xs={12} md={5}>
+                  <Tooltip title="Закрыть">
+                    <span>
+                      <IconButton
+                        size="small"
+                        onClick={handleCloseCreateDialog}
+                        disabled={createSaving}
+                        aria-label="Закрыть создание задачи"
+                        sx={{ mt: 0.1 }}
+                      >
+                        <CloseIcon fontSize="small" />
+                      </IconButton>
+                    </span>
+                  </Tooltip>
+                </Stack>
+
+                <LocalTaskDescriptionField
+                  initialValue={createData.description}
+                  onDraftChange={handleCreateDescriptionDraftChange}
+                  resetKey={createOpen ? 'open' : 'closed'}
+                  fullWidth
+                  multiline
+                  minRows={2}
+                  maxRows={5}
+                  variant="standard"
+                  placeholder="Описание"
+                  inputProps={{ 'aria-label': 'Описание' }}
+                  InputProps={{ disableUnderline: true }}
+                  sx={{
+                    mt: 0.2,
+                    '& .MuiInputBase-input': { color: ui.text, fontSize: '0.96rem', lineHeight: 1.45 },
+                    '& .MuiInputBase-input::placeholder': { color: ui.mutedText, opacity: 0.85 },
+                  }}
+                />
+
+                <Stack spacing={1.05} sx={{ mt: 1.2 }}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={{ xs: 0.45, sm: 1.4 }} alignItems={{ xs: 'stretch', sm: 'center' }}>
+                    <Typography sx={{ width: { sm: 120 }, flexShrink: 0, color: ui.subtleText, fontSize: '0.86rem', fontWeight: 700 }}>
+                      Исполнитель
+                    </Typography>
+                    <Autocomplete
+                      multiple
+                      fullWidth
+                      size="small"
+                      options={assignees}
+                      value={selectedCreateAssignees}
+                      onChange={(_, value) => setCreateData((prev) => ({
+                        ...prev,
+                        assignee_user_ids: Array.isArray(value) ? value.map((item) => String(item?.id || '')).filter(Boolean) : [],
+                      }))}
+                      getOptionLabel={getTaskUserLabel}
+                      filterOptions={filterTaskUserOptions}
+                      isOptionEqualToValue={areSameTaskUsers}
+                      disableCloseOnSelect
+                      filterSelectedOptions
+                      noOptionsText="Ничего не найдено"
+                      renderOption={(props, option, { selected }) => {
+                        const { key, ...optionProps } = props;
+                        return (
+                          <Box component="li" key={key} {...optionProps}>
+                            <Checkbox checked={selected} sx={{ mr: 1 }} />
+                            <Typography>{getTaskUserLabel(option)}</Typography>
+                          </Box>
+                        );
+                      }}
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          variant="standard"
+                          placeholder={selectedCreateAssignees.length === 0 ? 'Фамилия или логин' : ''}
+                          InputProps={{ ...params.InputProps, disableUnderline: true }}
+                          inputProps={{ ...params.inputProps, 'aria-label': 'Исполнители' }}
+                          sx={{
+                            '& .MuiInputBase-root': { minHeight: 34 },
+                            '& .MuiChip-root': { borderRadius: '999px', fontWeight: 800 },
+                          }}
+                        />
+                      )}
+                    />
+                  </Stack>
+
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={{ xs: 0.45, sm: 1.4 }} alignItems={{ xs: 'stretch', sm: 'center' }}>
+                    <Typography sx={{ width: { sm: 120 }, flexShrink: 0, color: ui.subtleText, fontSize: '0.86rem', fontWeight: 700 }}>
+                      Крайний срок
+                    </Typography>
+                    <TextField
+                      type="datetime-local"
+                      value={createData.due_at}
+                      onChange={(event) => setCreateData((prev) => ({ ...prev, due_at: event.target.value }))}
+                      fullWidth
+                      size="small"
+                      variant="standard"
+                      inputProps={{ 'aria-label': 'Крайний срок' }}
+                      InputProps={{
+                        disableUnderline: true,
+                        startAdornment: <CalendarMonthOutlinedIcon sx={{ mr: 1, fontSize: 19, color: theme.palette.primary.main }} />,
+                      }}
+                      sx={{ '& .MuiInputBase-root': { minHeight: 34 } }}
+                    />
+                  </Stack>
+                </Stack>
+
+                <Divider sx={{ my: 1.25, borderColor: ui.borderSoft }} />
+
+                <Stack direction="row" spacing={0.8} useFlexGap flexWrap="wrap">
+                  {createOptionalSectionOptions.map((option) => {
+                    const selected = option.key === 'priority'
+                      ? createData.priority !== 'normal'
+                      : Boolean(createOptionalSections[option.key]);
+                    const IconComponent = option.icon;
+                    let label = option.label;
+                    if (option.key === 'priority' && createData.priority !== 'normal') {
+                      label = priorityMeta(createData.priority).label;
+                    } else if (option.key === 'files' && createFiles.length > 0) {
+                      label = `${option.label}: ${createFiles.length}`;
+                    } else if (option.key === 'checklist') {
+                      const count = normalizeChecklistItems(createChecklistItems).length;
+                      if (count > 0) label = `Чек-лист: ${count}`;
+                    } else if (option.key === 'controller' && selectedCreateController) {
+                      label = `Контролёр: ${getTaskUserLabel(selectedCreateController)}`;
+                    } else if (option.key === 'project' && effectiveCreateProject) {
+                      label = `Проект: ${effectiveCreateProject.name}`;
+                    }
+                    return (
+                      <Chip
+                        key={option.key}
+                        clickable
+                        icon={IconComponent ? <IconComponent /> : undefined}
+                        color={selected ? 'primary' : 'default'}
+                        variant={selected ? 'filled' : 'outlined'}
+                        label={label}
+                        onClick={() => handleToggleCreateOptionalSection(option.key)}
+                        sx={{
+                          fontWeight: 800,
+                          borderRadius: '8px',
+                          ...(option.key === 'priority' && selected ? {
+                            bgcolor: alpha(priorityMeta(createData.priority).dotColor, 0.16),
+                            color: priorityMeta(createData.priority).dotColor,
+                            '& .MuiChip-icon': { color: `${priorityMeta(createData.priority).dotColor} !important` },
+                          } : {}),
+                        }}
+                      />
+                    );
+                  })}
+                </Stack>
+
+                <Stack direction="row" spacing={0.7} useFlexGap flexWrap="wrap" sx={{ mt: 1.05 }}>
+                  <Chip size="small" variant="outlined" label={`Дата постановки: ${createData.protocol_date ? formatShortDate(createData.protocol_date) : 'сегодня'}`} />
+                  <Chip size="small" variant="outlined" label={`Приоритет: ${priorityMeta(createData.priority).label}`} />
+                  {createFiles.length > 0 ? <Chip size="small" variant="outlined" icon={<AttachFileIcon />} label={`Файлы: ${createFiles.length}`} /> : null}
+                </Stack>
+              </Box>
+
+              <Collapse in={Boolean(createOptionalSections.controller || createOptionalSections.advanced)} unmountOnExit>
+                <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px' }) }}>
                   <Autocomplete
                     fullWidth
                     size="small"
@@ -4820,118 +6032,264 @@ function Tasks() {
                       <TextField
                         {...params}
                         label="Контролёр"
-                        placeholder="Введите фамилию или логин"
+                        placeholder="Фамилия или логин"
                       />
                     )}
                   />
+                </Box>
+              </Collapse>
+
+              <Collapse in={Boolean(createOptionalSections.checklist)} unmountOnExit>
+                <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px' }) }}>
+                  <Stack spacing={0.9}>
+                    <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+                      <Typography sx={{ fontWeight: 900 }}>Чек-лист</Typography>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<AddIcon />}
+                        onClick={handleAddChecklistItem}
+                        sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px' }}
+                      >
+                        Пункт
+                      </Button>
+                    </Stack>
+                    {createChecklistItems.map((item, index) => (
+                      <Stack key={item.id} direction="row" spacing={0.8} alignItems="center">
+                        <Checkbox
+                          checked={Boolean(item.done)}
+                          onChange={(event) => handleUpdateChecklistItem(item.id, { done: event.target.checked })}
+                          inputProps={{ 'aria-label': `Пункт чек-листа ${index + 1}` }}
+                          sx={{ p: 0.4 }}
+                        />
+                        <TextField
+                          value={item.text}
+                          onChange={(event) => handleUpdateChecklistItem(item.id, { text: event.target.value })}
+                          placeholder={`Пункт ${index + 1}`}
+                          size="small"
+                          fullWidth
+                        />
+                        <Tooltip title="Удалить пункт">
+                          <span>
+                            <IconButton
+                              size="small"
+                              onClick={() => handleRemoveChecklistItem(item.id)}
+                              aria-label={`Удалить пункт ${index + 1}`}
+                            >
+                              <DeleteOutlineIcon fontSize="small" />
+                            </IconButton>
+                          </span>
+                        </Tooltip>
+                      </Stack>
+                    ))}
+                  </Stack>
+                </Box>
+              </Collapse>
+
+              <Collapse in={Boolean(createOptionalSections.files)} unmountOnExit>
+                <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px' }) }}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+                    <Typography sx={{ fontWeight: 900 }}>Файлы к задаче</Typography>
+                    <Button
+                      component="label"
+                      size="small"
+                      variant="outlined"
+                      startIcon={<AttachFileIcon />}
+                      disabled={createSaving}
+                      sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', alignSelf: { xs: 'stretch', sm: 'center' } }}
+                    >
+                      {createFiles.length > 0 ? 'Добавить файлы' : 'Выбрать файлы'}
+                      <input
+                        type="file"
+                        hidden
+                        multiple
+                        onChange={(event) => {
+                          handleAddCreateFiles(event.target.files);
+                          event.target.value = '';
+                        }}
+                      />
+                    </Button>
+                  </Stack>
+
+                  {createFiles.length === 0 ? (
+                    <Typography variant="body2" sx={{ color: ui.mutedText, mt: 1 }}>
+                      Файлы можно выбрать до постановки задачи. После создания они прикрепятся автоматически.
+                    </Typography>
+                  ) : (
+                    <Stack spacing={0.7} sx={{ mt: 1 }}>
+                      {createFiles.map((file, index) => (
+                        <Box
+                          key={`${getFileIdentity(file)}:${index}`}
+                          sx={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 1,
+                            minHeight: 44,
+                            px: 1,
+                            py: 0.7,
+                            border: '1px solid',
+                            borderColor: ui.borderSoft,
+                            borderRadius: '10px',
+                            bgcolor: ui.panelSolid,
+                          }}
+                        >
+                          <Avatar sx={{ width: 28, height: 28, bgcolor: alpha(theme.palette.primary.main, 0.14), color: theme.palette.primary.main }}>
+                            <AttachFileIcon sx={{ fontSize: 15 }} />
+                          </Avatar>
+                          <Box sx={{ minWidth: 0, flex: 1 }}>
+                            <Typography sx={{ fontWeight: 800, fontSize: '0.86rem' }} noWrap title={file?.name || 'file'}>
+                              {file?.name || 'file'}
+                            </Typography>
+                            <Typography variant="caption" sx={{ color: ui.subtleText }}>
+                              {formatFileSize(file?.size)}
+                            </Typography>
+                          </Box>
+                          <Tooltip title="Убрать файл">
+                            <span>
+                              <IconButton
+                                size="small"
+                                aria-label={`Убрать файл ${file?.name || index + 1}`}
+                                onClick={() => handleRemoveCreateFile(index)}
+                                disabled={createSaving}
+                              >
+                                <DeleteOutlineIcon fontSize="small" />
+                              </IconButton>
+                            </span>
+                          </Tooltip>
+                        </Box>
+                      ))}
+                    </Stack>
+                  )}
+                </Box>
+              </Collapse>
+
+              <Collapse in={Boolean(createOptionalSections.schedule)} unmountOnExit>
+                <Grid container spacing={1.2}>
+                  <Grid item xs={12} md={4}>
+                    <TextField
+                      label="Дата постановки задачи"
+                      type="date"
+                      value={createData.protocol_date}
+                      onChange={(event) => setCreateData((prev) => ({ ...prev, protocol_date: event.target.value }))}
+                      InputLabelProps={{ shrink: true }}
+                      fullWidth
+                      size="small"
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <TextField label="Срок" type="datetime-local" value={createData.due_at} onChange={(event) => setCreateData((prev) => ({ ...prev, due_at: event.target.value }))} InputLabelProps={{ shrink: true }} fullWidth size="small" />
+                  </Grid>
+                  <Grid item xs={12} md={4}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel id="create-priority-label">Приоритет</InputLabel>
+                      <Select labelId="create-priority-label" label="Приоритет" value={createData.priority} onChange={(event) => setCreateData((prev) => ({ ...prev, priority: event.target.value }))}>
+                        {priorityOptions.map((item) => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
+                      </Select>
+                    </FormControl>
+                  </Grid>
                 </Grid>
-                <Grid item xs={12} md={6}>
-                  <Autocomplete
-                    fullWidth
-                    size="small"
-                    options={departments}
-                    value={selectedCreateDepartment}
-                    onChange={(_, value) => setCreateData((prev) => ({
-                      ...prev,
-                      department_id: String(value?.id || ''),
-                      visibility_scope: value?.id ? (prev.visibility_scope || 'department') : 'private',
-                    }))}
-                    getOptionLabel={getDepartmentLabel}
-                    isOptionEqualToValue={(option, value) => String(option?.id || '') === String(value?.id || '')}
-                    clearOnEscape
-                    noOptionsText="Ничего не найдено"
-                    renderInput={(params) => (
+              </Collapse>
+
+              <Collapse in={Boolean(createOptionalSections.project)} unmountOnExit>
+                <Grid container spacing={1.2} alignItems="flex-start">
+                  <Grid item xs={12}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel id="create-project-label">Проект</InputLabel>
+                      <Select
+                        labelId="create-project-label"
+                        label="Проект"
+                        value={effectiveCreateProjectId}
+                        onChange={(event) => setCreateData((prev) => ({
+                          ...prev,
+                          project_id: String(event.target.value || ''),
+                          object_id: '',
+                        }))}
+                      >
+                        {activeTaskProjects.map((item) => (
+                          <MenuItem key={item.id} value={String(item.id)}>
+                            {item.name}
+                          </MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Grid>
+                  <Grid item xs={12}>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
                       <TextField
-                        {...params}
-                        label="Отдел"
-                        placeholder="Автоматически по исполнителю"
+                        label="Новый проект"
+                        value={createProjectName}
+                        onChange={(event) => setCreateProjectName(event.target.value)}
+                        size="small"
+                        fullWidth
+                        placeholder="Например: Переезд бухгалтерии"
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter') {
+                            event.preventDefault();
+                            void handleCreateProjectFromTaskDialog();
+                          }
+                        }}
                       />
-                    )}
-                  />
+                      <Button
+                        variant="outlined"
+                        onClick={() => void handleCreateProjectFromTaskDialog()}
+                        disabled={createProjectSaving || String(createProjectName || '').trim().length < 2}
+                        sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', whiteSpace: 'nowrap' }}
+                      >
+                        {createProjectSaving ? 'Создание...' : 'Добавить'}
+                      </Button>
+                    </Stack>
+                  </Grid>
                 </Grid>
-                <Grid item xs={12} md={6}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel id="create-visibility-label">Видимость</InputLabel>
-                    <Select
-                      labelId="create-visibility-label"
-                      label="Видимость"
-                      value={createData.visibility_scope}
-                      onChange={(event) => setCreateData((prev) => ({ ...prev, visibility_scope: event.target.value }))}
-                    >
-                      {taskVisibilityOptions.map((item) => (
-                        <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Grid>
-                <Grid item xs={12} md={4}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel id="create-project-label">Проект</InputLabel>
-                    <Select
-                      labelId="create-project-label"
-                      label="Проект"
-                      value={String(createData.project_id || '')}
-                      onChange={(event) => setCreateData((prev) => ({
+              </Collapse>
+
+              <Collapse in={Boolean(createOptionalSections.access)} unmountOnExit>
+                <Grid container spacing={1.2}>
+                  <Grid item xs={12} md={6}>
+                    <Autocomplete
+                      fullWidth
+                      size="small"
+                      options={departments}
+                      value={selectedCreateDepartment}
+                      onChange={(_, value) => setCreateData((prev) => ({
                         ...prev,
-                        project_id: String(event.target.value || ''),
-                        object_id: '',
+                        department_id: String(value?.id || ''),
+                        visibility_scope: value?.id ? (prev.visibility_scope || 'department') : 'private',
                       }))}
-                    >
-                      {activeTaskProjects.map((item) => (
-                        <MenuItem key={item.id} value={String(item.id)}>
-                          {item.name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
+                      getOptionLabel={getDepartmentLabel}
+                      isOptionEqualToValue={(option, value) => String(option?.id || '') === String(value?.id || '')}
+                      clearOnEscape
+                      noOptionsText="Ничего не найдено"
+                      renderInput={(params) => (
+                        <TextField
+                          {...params}
+                          label="Отдел"
+                          placeholder="Автоматически по исполнителю"
+                        />
+                      )}
+                    />
+                  </Grid>
+                  <Grid item xs={12} md={6}>
+                    <FormControl fullWidth size="small">
+                      <InputLabel id="create-visibility-label">Видимость</InputLabel>
+                      <Select
+                        labelId="create-visibility-label"
+                        label="Видимость"
+                        value={createData.visibility_scope}
+                        onChange={(event) => setCreateData((prev) => ({ ...prev, visibility_scope: event.target.value }))}
+                      >
+                        {taskVisibilityOptions.map((item) => (
+                          <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>
+                        ))}
+                      </Select>
+                    </FormControl>
+                  </Grid>
                 </Grid>
-                <Grid item xs={12} md={4}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel id="create-object-label">Объект</InputLabel>
-                    <Select
-                      labelId="create-object-label"
-                      label="Объект"
-                      value={String(createData.object_id || '')}
-                      onChange={(event) => setCreateData((prev) => ({ ...prev, object_id: String(event.target.value || '') }))}
-                      disabled={!createData.project_id}
-                    >
-                      <MenuItem value="">Без объекта</MenuItem>
-                      {createProjectObjects.map((item) => (
-                        <MenuItem key={item.id} value={String(item.id)}>
-                          {item.name}
-                        </MenuItem>
-                      ))}
-                    </Select>
-                  </FormControl>
-                </Grid>
-                <Grid item xs={12} md={4}>
-                  <TextField
-                    label="Дата протокола"
-                    type="date"
-                    value={createData.protocol_date}
-                    onChange={(event) => setCreateData((prev) => ({ ...prev, protocol_date: event.target.value }))}
-                    InputLabelProps={{ shrink: true }}
-                    fullWidth
-                    size="small"
-                  />
-                </Grid>
-                <Grid item xs={12} md={6}>
-                  <TextField label="Срок" type="datetime-local" value={createData.due_at} onChange={(event) => setCreateData((prev) => ({ ...prev, due_at: event.target.value }))} InputLabelProps={{ shrink: true }} fullWidth size="small" />
-                </Grid>
-                <Grid item xs={12} md={6}>
-                  <FormControl fullWidth size="small">
-                    <InputLabel id="create-priority-label">Приоритет</InputLabel>
-                    <Select labelId="create-priority-label" label="Приоритет" value={createData.priority} onChange={(event) => setCreateData((prev) => ({ ...prev, priority: event.target.value }))}>
-                      {priorityOptions.map((item) => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
-                    </Select>
-                  </FormControl>
-                </Grid>
-              </Grid>
+              </Collapse>
             </Stack>
           </DialogContent>
 
           <DialogActions sx={{ px: { xs: 1, sm: 2.2 }, py: 1.4, borderTop: '1px solid', borderColor: ui.borderSoft, position: { xs: 'sticky', sm: 'static' }, bottom: 0, bgcolor: ui.pageBg, flexDirection: { xs: 'column-reverse', sm: 'row' }, gap: { xs: 0.8, sm: 0 }, '& > :not(style)': { m: 0, width: { xs: '100%', sm: 'auto' } } }}>
-            <Button onClick={() => setCreateOpen(false)} disabled={createSaving} sx={{ textTransform: 'none', fontWeight: 700 }}>
+            <Button onClick={handleCloseCreateDialog} disabled={createSaving} sx={{ textTransform: 'none', fontWeight: 700 }}>
               Отмена
             </Button>
             <Button
@@ -4941,8 +6299,7 @@ function Tasks() {
                 createSaving
                 || String(createData.title || '').trim().length < 3
                 || createData.assignee_user_ids.length === 0
-                || Number(createData.controller_user_id || 0) <= 0
-                || !String(createData.project_id || '').trim()
+                || !effectiveCreateProjectId
                 || !String(createData.protocol_date || '').trim()
               }
               sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
@@ -4971,10 +6328,11 @@ function Tasks() {
             <Stack spacing={1.5}>
               <TextField label="Заголовок" value={editData.title} onChange={(event) => setEditData((prev) => ({ ...prev, title: event.target.value }))} fullWidth required />
 
-              <MarkdownEditor
+              <LocalTaskMarkdownEditor
                 label="Описание"
-                value={editData.description}
-                onChange={(value) => setEditData((prev) => ({ ...prev, description: value }))}
+                initialValue={editData.description}
+                onDraftChange={handleEditDescriptionDraftChange}
+                resetKey={editData.id}
                 minRows={6}
                 enableAiTransform
                 transformContext="task"
@@ -5098,7 +6456,7 @@ function Tasks() {
                 </Grid>
                 <Grid item xs={12} md={4}>
                   <TextField
-                    label="Дата протокола"
+                    label="Дата постановки задачи"
                     type="date"
                     value={editData.protocol_date}
                     onChange={(event) => setEditData((prev) => ({ ...prev, protocol_date: event.target.value }))}

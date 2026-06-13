@@ -19,6 +19,7 @@ from backend.database.equipment_db import invalidate_equipment_cache
 from backend.services.authorization_service import (
     PERM_DATABASE_WRITE,
     PERM_MAIL_ACCESS,
+    PERM_TASKS_CREATE,
     PERM_TASKS_READ,
     PERM_TASKS_WRITE,
     authorization_service,
@@ -111,6 +112,12 @@ def _has_permission(user: Any, permission: str) -> bool:
 def _require_permission(user: Any, permission: str) -> None:
     if not _has_permission(user, permission):
         raise PermissionError(f"Permission required: {permission}")
+
+
+def _require_any_permission(user: Any, permissions: tuple[str, ...]) -> None:
+    if any(_has_permission(user, permission) for permission in permissions):
+        return
+    raise PermissionError(f"Permission required: one of {', '.join(permissions)}")
 
 
 def _is_admin_user(user: Any) -> bool:
@@ -1152,7 +1159,7 @@ def _execute_office_mail(*, action_type: str, payload: dict[str, Any], current_u
 
 
 def _execute_office_task_create(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
-    _require_permission(current_user, PERM_TASKS_WRITE)
+    _require_any_permission(current_user, (PERM_TASKS_CREATE, PERM_TASKS_WRITE))
     task = hub_service.create_task(
         title=_normalize_text(payload.get("title")),
         description=_normalize_text(payload.get("description")),

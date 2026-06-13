@@ -11,6 +11,7 @@ const rolePermissionFallback = {
   viewer: [
     'dashboard.read',
     'tasks.read',
+    'tasks.create',
     'chat.read',
     'chat.write',
     'chat.ai.use',
@@ -21,6 +22,7 @@ const rolePermissionFallback = {
     'dashboard.read',
     'announcements.write',
     'tasks.read',
+    'tasks.create',
     'tasks.write',
     'chat.read',
     'chat.write',
@@ -44,6 +46,7 @@ const rolePermissionFallback = {
     'dashboard.read',
     'announcements.write',
     'tasks.read',
+    'tasks.create',
     'tasks.write',
     'tasks.review',
     'tasks.manage_all',

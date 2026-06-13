@@ -122,6 +122,7 @@ _HUB_REQUIRED_COLUMNS = {
         "reviewer_full_name",
         "review_comment",
         "priority",
+        "checklist_items",
         "project_id",
         "object_id",
         "protocol_date",
@@ -433,6 +434,8 @@ class HubService:
         cols = self._table_columns(conn, self._TASKS_TABLE)
         if "priority" not in cols:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
+        if "checklist_items" not in cols:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN checklist_items TEXT NOT NULL DEFAULT '[]'")
 
     def _ensure_task_extended_columns(self, conn: sqlite3.Connection) -> None:
         columns = self._table_columns(conn, self._TASKS_TABLE)
@@ -899,7 +902,8 @@ class HubService:
                     reviewer_user_id INTEGER NULL,
                     reviewer_username TEXT NULL,
                     review_comment TEXT NULL,
-                    priority TEXT NOT NULL DEFAULT 'normal'
+                    priority TEXT NOT NULL DEFAULT 'normal',
+                    checklist_items TEXT NOT NULL DEFAULT '[]'
                 );
                 CREATE TABLE IF NOT EXISTS {self._TASK_REPORTS_TABLE} (
                     id TEXT PRIMARY KEY,
@@ -1122,6 +1126,32 @@ class HubService:
         if not isinstance(values, list):
             values = []
         return json.dumps(values, ensure_ascii=False)
+
+    @classmethod
+    def _normalize_checklist_items(cls, values: Any) -> list[dict[str, Any]]:
+        source = cls._json_load_list(values) if isinstance(values, str) else (values if isinstance(values, list) else [])
+        items: list[dict[str, Any]] = []
+        for raw in source[:100]:
+            if isinstance(raw, dict):
+                text = _normalize_text(raw.get("text"))
+                item_id = _normalize_text(raw.get("id")) or str(uuid.uuid4())
+                is_done = bool(raw.get("done"))
+            else:
+                text = _normalize_text(raw)
+                item_id = str(uuid.uuid4())
+                is_done = False
+            if not text:
+                continue
+            items.append({
+                "id": item_id[:80],
+                "text": text[:500],
+                "done": is_done,
+            })
+        return items
+
+    @classmethod
+    def _serialize_checklist_items(cls, values: Any) -> str:
+        return cls._serialize_json_list(cls._normalize_checklist_items(values))
 
     @staticmethod
     def _preview_text(value: Any, *, limit: int = 140) -> str:
@@ -1346,6 +1376,10 @@ class HubService:
         item["is_overdue"] = self._is_task_overdue(item.get("due_at"), item.get("status"))
         item.update(self._get_task_comment_summary(conn, task_id=item["id"], viewer_user_id=viewer_user_id))
         item["reviewer_full_name"] = _normalize_text(item.get("reviewer_full_name"))
+        checklist_items = self._normalize_checklist_items(item.get("checklist_items"))
+        item["checklist_items"] = checklist_items
+        item["checklist_total"] = len(checklist_items)
+        item["checklist_done"] = sum(1 for checklist_item in checklist_items if bool(checklist_item.get("done")))
         project = self._get_task_project(conn, item.get("project_id"))
         task_object = self._get_task_object(conn, item.get("object_id"))
         item["project_id"] = _normalize_text(item.get("project_id")) or None
@@ -2701,6 +2735,7 @@ class HubService:
         object_id: Optional[str] = None,
         protocol_date: Optional[str] = None,
         priority: Optional[str] = "normal",
+        checklist_items: Optional[list[dict[str, Any]]] = None,
         department_id: Optional[str] = None,
         visibility_scope: Optional[str] = None,
         actor: dict[str, Any],
@@ -2712,16 +2747,19 @@ class HubService:
         assignee = user_service.get_by_id(int(assignee_user_id))
         if not assignee or not bool(assignee.get("is_active", True)):
             raise ValueError("Assignee user is not available")
-        controller = user_service.get_by_id(int(controller_user_id))
-        if not controller or not bool(controller.get("is_active", True)):
-            raise ValueError("Controller user is not available")
         normalized_department_id = _normalize_text(department_id)
         if not normalized_department_id:
             normalized_department_id = department_service.get_user_primary_department_id(assignee) or department_service.get_user_primary_department_id(actor) or ""
         if normalized_department_id and not department_service.get_department(normalized_department_id):
             raise ValueError("Department is not available")
-        if not (self._user_can_review_tasks(controller) or (normalized_department_id and user_is_department_manager(controller, normalized_department_id))):
-            raise ValueError("Controller must have tasks.review permission or be department manager")
+        controller_id = self._as_int(controller_user_id)
+        controller = None
+        if controller_id > 0:
+            controller = user_service.get_by_id(controller_id)
+            if not controller or not bool(controller.get("is_active", True)):
+                raise ValueError("Controller user is not available")
+            if not (self._user_can_review_tasks(controller) or (normalized_department_id and user_is_department_manager(controller, normalized_department_id))):
+                raise ValueError("Controller must have tasks.review permission or be department manager")
         if normalized_department_id and not can_create_task_for_department(
             actor,
             department_id=normalized_department_id,
@@ -2750,15 +2788,16 @@ class HubService:
             if not validated_project_id:
                 raise ValueError("project_id is required")
             normalized_protocol_date = self._normalize_protocol_date(protocol_date) or self._normalize_protocol_date(now_iso)
+            serialized_checklist_items = self._serialize_checklist_items(checklist_items)
             conn.execute(
                 f"""
                 INSERT INTO {self._TASKS_TABLE}
-                (id, title, description, status, due_at, priority, project_id, object_id, protocol_date, completed_at, completed_at_source,
+                (id, title, description, status, due_at, priority, checklist_items, project_id, object_id, protocol_date, completed_at, completed_at_source,
                  department_id, visibility_scope,
                  assignee_user_id, assignee_username, assignee_full_name,
                  controller_user_id, controller_username, controller_full_name,
                  created_by_user_id, created_by_username, created_by_full_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
@@ -2767,6 +2806,7 @@ class HubService:
                     initial_status_text,
                     _normalize_text(due_at) or None,
                     priority_text,
+                    serialized_checklist_items,
                     validated_project_id,
                     validated_object_id,
                     normalized_protocol_date,
@@ -2777,9 +2817,9 @@ class HubService:
                     self._as_int(assignee.get("id")),
                     _normalize_text(assignee.get("username")),
                     _normalize_text(assignee.get("full_name")) or _normalize_text(assignee.get("username")),
-                    self._as_int(controller.get("id")),
-                    _normalize_text(controller.get("username")),
-                    _normalize_text(controller.get("full_name")) or _normalize_text(controller.get("username")),
+                    controller_id if controller else 0,
+                    _normalize_text(controller.get("username")) if controller else "",
+                    (_normalize_text(controller.get("full_name")) or _normalize_text(controller.get("username"))) if controller else "",
                     self._as_int(actor.get("id")),
                     _normalize_text(actor.get("username")),
                     _normalize_text(actor.get("full_name")) or _normalize_text(actor.get("username")),
@@ -2796,7 +2836,6 @@ class HubService:
                 username=_normalize_text(actor.get("username")),
             )
             assignee_id = self._as_int(assignee.get("id"))
-            controller_id = self._as_int(controller.get("id"))
             actor_id = self._as_int(actor.get("id"))
             assignee_recipients = {assignee_id, *self._task_delegate_user_ids(assignee_id)}
             self._create_task_notifications(
@@ -2808,15 +2847,16 @@ class HubService:
                 body=title_text,
                 task_id=task_id,
             )
-            self._create_task_notifications(
-                conn,
-                recipient_user_ids={controller_id},
-                skip_user_ids={actor_id, assignee_id},
-                event_type="task.controller_assigned",
-                title="Вы назначены контролером задачи",
-                body=title_text,
-                task_id=task_id,
-            )
+            if controller_id > 0:
+                self._create_task_notifications(
+                    conn,
+                    recipient_user_ids={controller_id},
+                    skip_user_ids={actor_id, assignee_id},
+                    event_type="task.controller_assigned",
+                    title="Вы назначены контролером задачи",
+                    body=title_text,
+                    task_id=task_id,
+                )
             conn.commit()
             row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (task_id,)).fetchone()
             return self._task_with_latest_report(conn, row, viewer_user_id=self._as_int(actor.get("id"))) if row else {}
@@ -2836,7 +2876,13 @@ class HubService:
         with self._lock, self._connect() as conn:
             task = self._task_access_or_raise(conn, task_id=normalized_id, user_id=actor_id, is_admin=is_admin)
             actor = user_service.get_by_id(actor_id) or {"id": actor_id, "role": "viewer"}
-            if not is_admin and self._as_int(task.get("created_by_user_id")) != actor_id and not user_is_department_manager(actor, task.get("department_id")):
+            payload_keys = {str(key) for key in (payload or {}).keys()}
+            checklist_only = payload_keys and payload_keys <= {"checklist_items"}
+            checklist_actor_allowed = (
+                actor_id in self._task_participant_user_ids(task, include_delegates=True)
+                or user_is_department_manager(actor, task.get("department_id"))
+            )
+            if not is_admin and self._as_int(task.get("created_by_user_id")) != actor_id and not user_is_department_manager(actor, task.get("department_id")) and not (checklist_only and checklist_actor_allowed):
                 raise PermissionError("Only task creator or admin can edit task")
             updates: list[str] = []
             params: list[Any] = []
@@ -2868,6 +2914,9 @@ class HubService:
                     next_scope = VISIBILITY_PRIVATE
                 updates.append("visibility_scope = ?")
                 params.append(next_scope)
+            if "checklist_items" in payload:
+                updates.append("checklist_items = ?")
+                params.append(self._serialize_checklist_items(payload.get("checklist_items")))
             for key in ("title", "description", "due_at", "priority", "assignee_user_id", "controller_user_id", "protocol_date"):
                 if key not in payload:
                     continue
@@ -2887,7 +2936,12 @@ class HubService:
                         ]
                     )
                 elif key == "controller_user_id":
-                    controller = user_service.get_by_id(int(payload.get(key)))
+                    controller_id = self._as_int(payload.get(key))
+                    if controller_id <= 0:
+                        updates.extend(["controller_user_id = ?", "controller_username = ?", "controller_full_name = ?"])
+                        params.extend([0, "", ""])
+                        continue
+                    controller = user_service.get_by_id(controller_id)
                     if not controller or not bool(controller.get("is_active", True)):
                         raise ValueError("Controller user is not available")
                     effective_department_id = _normalize_text(payload.get("department_id")) or _normalize_text(task.get("department_id"))

@@ -13,7 +13,7 @@ from backend.services.hub_service import hub_service
 
 
 _DATE_BASIS_LABELS = {
-    "protocol_date": "По дате протокола",
+    "protocol_date": "По дате постановки",
     "completed_at": "По завершению",
     "due_at": "По сроку",
 }
@@ -173,7 +173,7 @@ def build_task_analytics_excel(
         [
             ["Период с", _normalize_text(filters.get("start_date")) or "Без ограничения"],
             ["Период по", _normalize_text(filters.get("end_date")) or "Без ограничения"],
-            ["База дат", _DATE_BASIS_LABELS.get(_normalize_text(filters.get("date_basis"), "protocol_date"), "По дате протокола")],
+            ["База дат", _DATE_BASIS_LABELS.get(_normalize_text(filters.get("date_basis"), "protocol_date"), "По дате постановки")],
             ["Проекты", filter_labels["projects"]],
             ["Объекты", filter_labels["objects"]],
             ["Участники", filter_labels["participants"]],

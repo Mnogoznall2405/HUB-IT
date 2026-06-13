@@ -145,12 +145,21 @@ describe('TaskUi helpers', () => {
           transferLabel="Осталось актов: 1"
           isTransferReminder={false}
           formatDateTime={(value) => value || '-'}
+          actionState={{
+            key: 'submit',
+            stepLabel: 'Сдать результат',
+            actionLabel: 'Сдать',
+            hint: 'Нажмите "Сдать", добавьте комментарий и файл при необходимости.',
+          }}
           actions={<button type="button">primary</button>}
           mobile
         />
       </ThemeProvider>,
     );
 
+    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Что сделать');
+    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Сдать результат');
+    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Нажмите "Сдать"');
     expect(screen.getByTestId('task-context-mobile-context')).toBeInTheDocument();
     expect(screen.getByTestId('task-context-mobile-timeline')).toBeInTheDocument();
 

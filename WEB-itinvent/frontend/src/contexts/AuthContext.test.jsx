@@ -29,6 +29,7 @@ function AuthProbe() {
       <div data-testid="loading">{String(loading)}</div>
       <div data-testid="username">{user?.username || ''}</div>
       <div data-testid="can-dashboard">{String(hasPermission('dashboard.read'))}</div>
+      <div data-testid="can-task-create">{String(hasPermission('tasks.create'))}</div>
       <div data-testid="can-tickets">{String(hasPermission('tickets.read'))}</div>
       <button type="button" onClick={() => refreshSession({ suppressAuthRequired: true })}>
         refresh
@@ -103,6 +104,7 @@ describe('AuthProvider startup', () => {
       expect(screen.getByTestId('username')).toHaveTextContent('operator');
     });
     expect(screen.getByTestId('can-dashboard')).toHaveTextContent('true');
+    expect(screen.getByTestId('can-task-create')).toHaveTextContent('true');
     expect(screen.getByTestId('can-tickets')).toHaveTextContent('false');
   });
 
@@ -115,6 +117,7 @@ describe('AuthProvider startup', () => {
       expect(screen.getByTestId('username')).toHaveTextContent('viewer');
     });
     expect(screen.getByTestId('can-dashboard')).toHaveTextContent('true');
+    expect(screen.getByTestId('can-task-create')).toHaveTextContent('true');
     expect(screen.getByTestId('can-tickets')).toHaveTextContent('false');
   });
 });

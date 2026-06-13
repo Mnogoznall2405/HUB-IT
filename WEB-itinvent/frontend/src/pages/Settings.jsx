@@ -206,6 +206,7 @@ const permissionGroups = [
     group: 'Задачи',
     permissions: [
       { value: 'tasks.read', label: 'Задачи: просмотр' },
+      { value: 'tasks.create', label: 'Задачи: создание' },
       { value: 'tasks.write', label: 'Задачи: создание/редактирование' },
       { value: 'tasks.review', label: 'Задачи: проверка' },
       { value: 'tasks.manage_all', label: 'Задачи: управление всеми отделами' },

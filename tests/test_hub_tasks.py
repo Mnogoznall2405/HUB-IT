@@ -27,6 +27,7 @@ hub_service_module = importlib.import_module("backend.services.hub_service")
 
 
 TASKS_READ = "tasks.read"
+TASKS_CREATE = "tasks.create"
 TASKS_WRITE = "tasks.write"
 TASKS_REVIEW = "tasks.review"
 DASHBOARD_READ = "dashboard.read"
@@ -99,6 +100,7 @@ def task_env(temp_dir, monkeypatch):
         5: _raw_user(5, "admin", "Task Admin", "admin", [DASHBOARD_READ, TASKS_READ, TASKS_WRITE, TASKS_REVIEW]),
         6: _raw_user(6, "taskonly", "Task Only User", "viewer", [TASKS_READ]),
         7: _raw_user(7, "assistant", "Task Assistant", "viewer", [TASKS_READ]),
+        8: _raw_user(8, "createonly", "Task Create Only", "viewer", [DASHBOARD_READ, TASKS_READ, TASKS_CREATE]),
     }
     users_by_id = dict(raw_users)
     store = SimpleNamespace(
@@ -199,6 +201,87 @@ def test_create_task_detail_access_and_role_scopes(task_env):
 
     set_user(4)
     denied = client.get(f"/hub/tasks/{task_id}")
+    assert denied.status_code == 403
+
+
+def test_create_only_user_can_create_task_without_taxonomy_management(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(8)
+    project_response = client.post(
+        "/hub/task-projects",
+        json={"name": "Create Only Project", "code": f"create-only-{uuid4().hex[:8]}"},
+    )
+    assert project_response.status_code == 200, project_response.text
+    project = project_response.json()
+
+    created = client.post(
+        "/hub/tasks",
+        json={
+            "title": "Create Only Task",
+            "description": "Viewer role can create tasks",
+            "assignee_user_ids": [8],
+            "controller_user_id": None,
+            "project_id": project["id"],
+            "protocol_date": "2026-03-01",
+            "priority": "high",
+            "checklist_items": [
+                {"id": "step-1", "text": "Collect inventory", "done": False},
+                {"id": "step-2", "text": "Confirm result", "done": True},
+            ],
+        },
+    )
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["created"] == 1
+    assert payload["items"][0]["controller_user_id"] == 0
+    assert payload["items"][0]["controller_full_name"] == ""
+    task = payload["items"][0]
+    assert task["created_by_user_id"] == 8
+    assert task["assignee_user_id"] == 8
+    assert task["project_id"] == project["id"]
+    assert task["priority"] == "high"
+    assert task["checklist_total"] == 2
+    assert task["checklist_done"] == 1
+    assert task["checklist_items"][0]["text"] == "Collect inventory"
+
+
+def test_assignee_can_update_task_checklist_only(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Checklist Access")
+    seed_response = client.patch(
+        f"/hub/tasks/{task['id']}",
+        json={"checklist_items": [{"id": "step-1", "text": "Check workstation", "done": False}]},
+    )
+    assert seed_response.status_code == 200, seed_response.text
+    assert seed_response.json()["checklist_done"] == 0
+
+    clear_controller = client.patch(
+        f"/hub/tasks/{task['id']}",
+        json={"controller_user_id": None},
+    )
+    assert clear_controller.status_code == 200, clear_controller.text
+    assert clear_controller.json()["controller_user_id"] == 0
+    assert clear_controller.json()["controller_full_name"] == ""
+
+    set_user(2)
+    updated = client.patch(
+        f"/hub/tasks/{task['id']}",
+        json={"checklist_items": [{"id": "step-1", "text": "Check workstation", "done": True}]},
+    )
+    assert updated.status_code == 200, updated.text
+    payload = updated.json()
+    assert payload["checklist_done"] == 1
+    assert payload["checklist_items"][0]["done"] is True
+
+    denied = client.patch(
+        f"/hub/tasks/{task['id']}",
+        json={"title": "Blocked rename"},
+    )
     assert denied.status_code == 403
 
 

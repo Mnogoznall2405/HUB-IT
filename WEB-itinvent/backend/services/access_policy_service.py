@@ -7,6 +7,7 @@ from backend.services.authorization_service import (
     PERM_KB_MANAGE_ALL,
     PERM_KB_PUBLISH,
     PERM_KB_WRITE,
+    PERM_TASKS_CREATE,
     PERM_TASKS_MANAGE_ALL,
     PERM_TASKS_REVIEW,
     PERM_TASKS_WRITE,
@@ -65,6 +66,10 @@ def user_permissions(user: Any) -> set[str]:
 
 def user_has_permission(user: Any, permission: str) -> bool:
     return str(permission or "").strip() in user_permissions(user)
+
+
+def user_can_create_tasks(user: Any) -> bool:
+    return user_has_permission(user, PERM_TASKS_CREATE) or user_has_permission(user, PERM_TASKS_WRITE)
 
 
 def user_can_manage_tasks_all(user: Any) -> bool:
@@ -144,7 +149,7 @@ def can_create_task_for_department(
 ) -> bool:
     target = str(department_id or "").strip()
     if not target:
-        return user_has_permission(user, PERM_TASKS_WRITE)
+        return user_can_create_tasks(user)
     if user_can_manage_tasks_all(user):
         return True
     if user_is_department_manager(user, target):
