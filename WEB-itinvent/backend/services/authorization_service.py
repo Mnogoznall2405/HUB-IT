@@ -32,6 +32,7 @@ PERM_SETTINGS_USERS_MANAGE = "settings.users.manage"
 PERM_SETTINGS_SESSIONS_MANAGE = "settings.sessions.manage"
 PERM_SETTINGS_AI_MANAGE = "settings.ai.manage"
 PERM_MAIL_ACCESS = "mail.access"
+PERM_MAIL_QUOTAS_READ = "mail.quotas.read"
 PERM_CHAT_READ = "chat.read"
 PERM_CHAT_WRITE = "chat.write"
 PERM_CHAT_AI_USE = "chat.ai.use"
@@ -94,6 +95,7 @@ _ADMIN_EXTRA_PERMISSIONS = {
     PERM_SETTINGS_SESSIONS_MANAGE,
     PERM_SETTINGS_AI_MANAGE,
     PERM_MAIL_ACCESS,
+    PERM_MAIL_QUOTAS_READ,
     PERM_AD_USERS_READ,
     PERM_AD_USERS_MANAGE,
     PERM_VCS_MANAGE,

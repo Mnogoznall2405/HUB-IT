@@ -227,6 +227,7 @@ const permissionGroups = [
     group: 'Интеграции',
     permissions: [
       { value: 'mail.access', label: 'Почта: доступ к Exchange' },
+      { value: 'mail.quotas.read', label: 'Почта: отчёт по квотам ящиков' },
     ],
   },
   {

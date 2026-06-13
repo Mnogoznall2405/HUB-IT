@@ -2825,7 +2825,7 @@ function Networks() {
   );
 
   return (
-    <MainLayout>
+    <MainLayout showDatabaseSelector>
       <PageShell fullHeight={!isMobile} sx={isMobile ? {} : { display: 'flex', flexDirection: 'column' }}>
         {!isMobile && (
           <Stack direction="row" justifyContent="space-between" spacing={1.5} sx={{ mb: 2, flexShrink: 0 }}>

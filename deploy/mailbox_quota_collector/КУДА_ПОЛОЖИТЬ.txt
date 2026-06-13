@@ -1,0 +1,26 @@
+Два файла для доменного ПК-сборщика
+====================================
+
+1) mail_box_sync_domain.ps1
+   -> C:\ProgramData\IT-Invent\MailboxQuota\scripts\mail_box_sync_domain.ps1
+
+2) collector.env  (переименовать в .env)
+   -> C:\ProgramData\IT-Invent\MailboxQuota\.env
+
+Перед запуском: в .env впишите ZSGP\логин и пароль Exchange.
+
+Тест (5 ящиков, без отправки на сервер):
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\IT-Invent\MailboxQuota\scripts\mail_box_sync_domain.ps1 -ResultSize 5 -WhatIf -SaveLocalJson
+
+Полный прогон:
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\IT-Invent\MailboxQuota\scripts\mail_box_sync_domain.ps1
+
+Автозапуск (от администратора; если NextRunTime пустой — перерегистрировать):
+  powershell -ExecutionPolicy Bypass -File C:\ProgramData\IT-Invent\MailboxQuota\scripts\install_mailbox_quota_task.ps1 -RepeatHours 4 -StartAfterRegister
+
+Скопировать install_mailbox_quota_task.ps1 рядом со sync-скриптом или из deploy\mailbox_quota_collector\
+
+Если не бежит каждые 4 ч — диагностика:
+  powershell -ExecutionPolicy Bypass -File C:\Project\Image_scan\scripts\diagnose_mailbox_quota_task.ps1
+
+Лог: C:\ProgramData\IT-Invent\MailboxQuota\sync.log

@@ -52,6 +52,8 @@ import MailMessageReader from '../components/mail/MailMessageReader';
 import MailPreviewHeader from '../components/mail/MailPreviewHeader';
 import MailShortcutHelpDialog from '../components/mail/MailShortcutHelpDialog';
 import MailToolbar from '../components/mail/MailToolbar';
+import MailQuotaReport from '../components/mail/MailQuotaReport';
+import MailSectionTabs from '../components/mail/MailSectionTabs';
 import MailToolsMenu from '../components/mail/MailToolsMenu';
 import MailViewSettingsDialog from '../components/mail/MailViewSettingsDialog';
 import MailComposeHost, { loadMailComposeDialog } from '../components/mail/MailComposeHost';
@@ -141,6 +143,25 @@ import {
 } from '../components/mail/mailUiTokens';
 import { getMailPersonDisplay, getMailPersonEmail } from '../components/mail/mailPeople';
 import { splitQuotedHistoryHtml } from '../components/mail/mailQuotedHistory';
+
+const MAIL_SHELL_SECTION_KEY = 'mail_shell_section';
+
+function readStoredMailShellSection() {
+  try {
+    const value = String(sessionStorage.getItem(MAIL_SHELL_SECTION_KEY) || '').trim();
+    return value === 'quotas' ? 'quotas' : 'inbox';
+  } catch {
+    return 'inbox';
+  }
+}
+
+function writeStoredMailShellSection(section) {
+  try {
+    sessionStorage.setItem(MAIL_SHELL_SECTION_KEY, section === 'quotas' ? 'quotas' : 'inbox');
+  } catch {
+    // ignore storage errors
+  }
+}
 
 const MailAttachmentPreviewDialog = lazy(() => import('../components/mail/MailAttachmentPreviewDialog'));
 const MailAdvancedSearchDialog = lazy(() => import('../components/mail/MailAdvancedSearchDialog'));
@@ -440,6 +461,13 @@ function Mail() {
     [initialMailCacheScope, initialMailRecentContextKey]
   );
   const canManageUsers = hasPermission('settings.users.manage');
+  const canQuotasRead = hasPermission('mail.quotas.read');
+  const [mailShellSection, setMailShellSection] = useState(() => readStoredMailShellSection());
+  const handleMailShellSectionChange = useCallback((section) => {
+    const next = section === 'quotas' ? 'quotas' : 'inbox';
+    setMailShellSection(next);
+    writeStoredMailShellSection(next);
+  }, []);
 
   const [loading, setLoading] = useState(false);
   const [loadingMore, setLoadingMore] = useState(false);
@@ -2982,13 +3010,21 @@ function Mail() {
     && !hasHydratedMailScreen
     && (mailConfigLoading || loading)
   );
-  const showSearchToolbar = (!isMobile || !hasMobileSelection) && !showInitialMailLoading;
+  const showQuotasSection = canQuotasRead && mailShellSection === 'quotas';
+  const showSearchToolbar = !showQuotasSection && (!isMobile || !hasMobileSelection) && !showInitialMailLoading;
   const showPageChrome = !isMobileFullscreenPreview;
+  const mailHeaderTabs = canQuotasRead && !isMobileFullscreenPreview ? (
+    <MailSectionTabs
+      value={mailShellSection}
+      onChange={handleMailShellSectionChange}
+    />
+  ) : null;
 
   return (
     <MainLayout
       headerMode={isMobileFullscreenPreview ? 'hidden' : 'notifications-only'}
       contentMode={isMobile ? 'edge-to-edge-mobile' : 'default'}
+      headerInlineContent={mailHeaderTabs}
     >
       <PageShell
         fullHeight={!isMobile}
@@ -3133,13 +3169,17 @@ function Mail() {
           mobile={isMobile}
         />
 
-        {showInitialMailLoading ? (
+        {showQuotasSection ? (
+          <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', p: { xs: 0.5, md: 1 } }}>
+            <MailQuotaReport isMobile={isMobile} />
+          </Box>
+        ) : showInitialMailLoading ? (
           <MailInitialLoadingState ui={ui} />
         ) : (
           canRenderMailArea ? mainMailArea : mailCredentialsPanel
         )}
 
-        {canRenderMailArea && !isMobileFullscreenPreview && !composeOpen ? (
+        {canRenderMailArea && !showQuotasSection && !isMobileFullscreenPreview && !composeOpen ? (
           <IconButton
             data-testid="mail-compose-fab"
             data-mobile-bulk-offset={isMobile && selectedMessageIds.length > 0 ? 'true' : 'false'}

@@ -30,7 +30,11 @@ vi.mock('../contexts/AuthContext', () => ({
 }));
 
 vi.mock('../components/layout/MainLayout', () => ({
-  default: ({ children }) => <div data-testid="main-layout">{children}</div>,
+  default: ({ children, showDatabaseSelector }) => (
+    <div data-testid="main-layout" data-show-database-selector={String(showDatabaseSelector)}>
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock('../components/layout/PageShell', () => ({
@@ -209,6 +213,12 @@ describe('ScanCenter page', () => {
     expect(screen.getByText('Обработано PDF')).toBeInTheDocument();
     expect(screen.getByText('120')).toBeInTheDocument();
     expect(screen.getByText('чисто: 100 · инциденты: 18 · ошибки: 2')).toBeInTheDocument();
+  });
+
+  it('shows database selector in the main layout header', async () => {
+    render(<ScanCenter />);
+
+    expect(await screen.findByTestId('main-layout')).toHaveAttribute('data-show-database-selector', 'true');
   });
 
   it('creates scan task without full page reload and switches to task polling', async () => {

@@ -22,6 +22,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 
+# Collector deploy package (contains API key)
+deploy/mailbox_quota_collector/collector.env
+
 # Virtual environments
 .env
 .venv
@@ -97,6 +100,8 @@ codex_tmp_*/
 _codex_*/
 iz/Py.txt
 iz/move_log_*.csv
+mailbox_quotas_*.csv
+mailbox_quotas_*.json
 iz/moved_files/
 WEB-itinvent/.tmp_*/
 WEB-itinvent/backend/.tmp_test_chat_uploads/

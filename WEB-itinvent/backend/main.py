@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, ad_users, vcs, ai_bots, departments, tickets, address_book, system, passwords, my_files
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, system, passwords, my_files
 from backend.services.ad_sync_service import background_ad_sync_loop
 from backend.services.address_book_service import background_address_book_sync_loop
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
@@ -345,6 +345,7 @@ app.include_router(hub.router, prefix="/api/v1/hub", tags=["Hub"])
 app.include_router(departments.router, prefix="/api/v1/departments", tags=["Departments"])
 app.include_router(ad_users.router, prefix="/api/v1/ad-users", tags=["AD Users"])
 app.include_router(mail.router, prefix="/api/v1/mail", tags=["Mail"])
+app.include_router(mailbox_quota.router, prefix="/api/v1/mail", tags=["Mail"])
 app.include_router(vcs.router, prefix="/api/v1/vcs", tags=["VCS"])
 app.include_router(ai_bots.router, prefix="/api/v1/ai-bots", tags=["AI Bots"])
 app.include_router(tickets.router, prefix="/api/v1/tickets", tags=["Tickets"])

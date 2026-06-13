@@ -14,11 +14,11 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-06-10 03:42 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-06-11 10:00 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
-| **`app`** | **83** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
+| **`app`** | **85** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
 | **`chat`** | **1** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
 
@@ -28,7 +28,7 @@ _Обновлено: 2026-06-10 03:42 UTC_ · инстанс `127.0.0.1:5432/hub
 
 > **Chat:** на инстансе 1 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
 
-## Схема `app` (83 таблиц)
+## Схема `app` (85 таблиц)
 
 ### Auth и пользователи
 
@@ -154,6 +154,8 @@ _Обновлено: 2026-06-10 03:42 UTC_ · инстанс `127.0.0.1:5432/hub
 | Таблица | Назначение |
 |---------|------------|
 | `equipment_recent_cards` | — |
+| `mailbox_quota_rows` | — |
+| `mailbox_quota_snapshots` | — |
 | `my_file_audit` | — |
 | `my_file_blobs` | — |
 | `my_file_download_grants` | — |
@@ -269,7 +271,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-06-10:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 83, `chat` 1, `system` 8).
+- **2026-06-11:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 85, `chat` 1, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

@@ -952,7 +952,7 @@ function Mfu() {
   const snmpDetailHelper = `ошибки: ${snmpError}, неизвестно: ${snmpUnknown}`;
 
   return (
-    <MainLayout>
+    <MainLayout showDatabaseSelector>
       <PageShell sx={{ width: '100%', pb: 2 }}>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>

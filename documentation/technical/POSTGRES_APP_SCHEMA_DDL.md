@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-06-10 03:42 UTC_  
+_Сгенерировано: 2026-06-11 10:00 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (83 tables)
+## Schema `app` (85 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -852,6 +852,49 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 - **Primary key:** `user_id, folder_id`
 - **Indexes:**
   - `idx_mail_visible_custom_folders_user_created`: (user_id, created_at)
+
+---
+
+### `app.mailbox_quota_rows`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.mailbox_quota_rows_id_seq'::regclass)` |
+| `snapshot_id` | integer | no | `` |
+| `email` | varchar(320) | no | `` |
+| `display_name` | varchar(512) | no | `` |
+| `upn` | varchar(320) | no | `` |
+| `mailbox_type` | varchar(64) | no | `` |
+| `used_bytes` | bigint | yes | `` |
+| `quota_bytes` | bigint | yes | `` |
+| `free_bytes` | bigint | yes | `` |
+| `used_percent` | double precision | yes | `` |
+| `database_name` | varchar(255) | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_mailbox_quota_rows_snapshot_email`: (snapshot_id, email)
+  - `ix_app_mailbox_quota_rows_snapshot_id`: (snapshot_id)
+  - `ix_app_mailbox_quota_rows_snapshot_used_percent`: (snapshot_id, used_percent)
+
+---
+
+### `app.mailbox_quota_snapshots`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.mailbox_quota_snapshots_id_seq'::regclass)` |
+| `imported_at` | timestamptz | no | `` |
+| `collected_at` | timestamptz | yes | `` |
+| `source_host` | varchar(255) | no | `` |
+| `exchange_server` | varchar(255) | no | `` |
+| `payload_sha256` | varchar(64) | no | `` |
+| `row_count` | integer | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_mailbox_quota_snapshots_imported_at`: (imported_at)
+  - `ix_app_mailbox_quota_snapshots_payload_sha256`: (payload_sha256)
 
 ---
 

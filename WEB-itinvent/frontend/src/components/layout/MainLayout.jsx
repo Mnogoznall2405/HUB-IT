@@ -162,6 +162,7 @@ function MainLayout({
   headerMode = 'default',
   contentMode = 'default',
   showDatabaseSelector = false,
+  headerInlineContent = null,
 }) {
   const theme = useTheme();
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
@@ -1773,6 +1774,11 @@ useEffect(() => {
                   >
                     <MenuIcon />
                   </IconButton>
+                  {headerInlineContent ? (
+                    <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0, mr: 1 }}>
+                      {headerInlineContent}
+                    </Box>
+                  ) : null}
                   <Box sx={{ flexGrow: 1 }} />
                   {showNotificationsButton ? (
                     <IconButton aria-label="Открыть уведомления" onClick={handleOpenNotifications} sx={{ ...getOfficeQuietActionSx(ui, theme) }}>
