@@ -6,10 +6,14 @@ import MailPdfPreviewSurface, { clampPage, normalizePreviewSheets } from './Mail
 const loadPdfDocumentFromUrl = vi.fn();
 const renderPdfPage = vi.fn();
 
-vi.mock('../../lib/pdfPreview', () => ({
-  loadPdfDocumentFromUrl: (...args) => loadPdfDocumentFromUrl(...args),
-  renderPdfPage: (...args) => renderPdfPage(...args),
-}));
+vi.mock('../../lib/pdfPreview', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    loadPdfDocumentFromUrl: (...args) => loadPdfDocumentFromUrl(...args),
+    renderPdfPage: (...args) => renderPdfPage(...args),
+  };
+});
 
 const renderWithTheme = (node) => render(
   <ThemeProvider theme={createTheme()}>

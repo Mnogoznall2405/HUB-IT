@@ -103,6 +103,7 @@ import { APP_BRAND_NAME, buildDocumentTitle, INVENTORY_SECTION_LABEL } from '../
 
 const DRAWER_WIDTH_CSS_VAR = 'var(--app-density-drawer-width)';
 const HUB_POLL_INTERVAL_MS = 20_000;
+const PWA_BADGE_POLL_INTERVAL_MS = 60_000;
 const navigationItems = [
   { path: '/dashboard', label: 'Главная', icon: <DashboardIcon />, permission: 'dashboard.read' },
   { path: '/tasks', label: 'Задачи', icon: <TaskAltIcon />, permission: 'tasks.read' },
@@ -436,6 +437,37 @@ function MainLayout({
   useEffect(() => {
     void syncAppBadge(appBadgeValue);
   }, [appBadgeValue]);
+
+  useEffect(() => {
+    if (!isStandaloneShell) return undefined;
+    if (!hasHubNotificationPermission && !hasMailPermission) return undefined;
+
+    const syncBackgroundBadge = () => {
+      if (document.visibilityState === 'visible') return;
+      fetchUnreadCountsRef.current?.(null, {
+        reason: 'pwa-badge-background',
+        forceMailUnread: hasMailPermission,
+      });
+    };
+
+    syncBackgroundBadge();
+    const timer = window.setInterval(syncBackgroundBadge, PWA_BADGE_POLL_INTERVAL_MS);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'hidden') {
+        syncBackgroundBadge();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+
+    return () => {
+      window.clearInterval(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [
+    hasHubNotificationPermission,
+    hasMailPermission,
+    isStandaloneShell,
+  ]);
 
   const rememberRecentMailNotification = useCallback((messageId) => {
     const normalizedId = String(messageId || '').trim();

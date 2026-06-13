@@ -29,6 +29,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PUSH_TTL_SEC = 90
 CHAT_PUSH_TTL_SEC = 12 * 60 * 60
+MAX_APP_BADGE_COUNT = 999
 
 
 def _utc_now() -> datetime:
@@ -470,6 +471,25 @@ class ChatPushService:
                     result.failed += 1
         return result
 
+    def _compute_app_badge_count(self, *, recipient_user_id: int) -> int:
+        """Bell icon badge: hub unread notifications + aggregate mail unread."""
+        hub_total = 0
+        mail_total = 0
+        try:
+            from backend.services.hub_service import hub_service
+
+            hub_counts = hub_service.get_unread_counts(user_id=int(recipient_user_id))
+            hub_total = int(hub_counts.get("notifications_unread_total") or 0)
+        except Exception:
+            logger.warning("push badge: failed to resolve hub unread counts", exc_info=True)
+        try:
+            from backend.services.mail_service import mail_service
+
+            mail_total = int(mail_service.get_unread_count(user_id=int(recipient_user_id)) or 0)
+        except Exception:
+            logger.warning("push badge: failed to resolve mail unread count", exc_info=True)
+        return min(MAX_APP_BADGE_COUNT, max(0, hub_total + mail_total))
+
     def send_notification(
         self,
         *,
@@ -483,6 +503,7 @@ class ChatPushService:
         badge: str = "/hubit-badge.svg",
         data: Optional[dict[str, Any]] = None,
         ttl: int = 90,
+        app_badge_count: Optional[int] = None,
     ) -> ChatPushSendResult:
         normalized_channel = _normalize_text(channel) or "system"
         if normalized_channel == "mail":
@@ -503,7 +524,7 @@ class ChatPushService:
             **({} if not isinstance(data, dict) else data),
         }
         normalized_tag = _normalize_text(tag) or f"{normalized_channel}:{int(recipient_user_id)}"
-        payload = {
+        payload: dict[str, Any] = {
             "title": _normalize_text(title) or "Новое уведомление",
             "body": _normalize_text(body) or "Откройте приложение, чтобы посмотреть подробности.",
             "tag": normalized_tag,
@@ -517,6 +538,13 @@ class ChatPushService:
                 data=payload_data,
             ),
         }
+        if normalized_channel != "chat":
+            resolved_badge_count = (
+                min(MAX_APP_BADGE_COUNT, max(0, int(app_badge_count)))
+                if app_badge_count is not None
+                else self._compute_app_badge_count(recipient_user_id=int(recipient_user_id))
+            )
+            payload["app_badge_count"] = resolved_badge_count
         result = ChatPushSendResult()
         if subscriptions:
             result = self._send_payload_to_subscriptions(

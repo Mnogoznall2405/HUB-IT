@@ -15,7 +15,7 @@ import NavigateNextRoundedIcon from '@mui/icons-material/NavigateNextRounded';
 import ZoomInRoundedIcon from '@mui/icons-material/ZoomInRounded';
 import ZoomOutRoundedIcon from '@mui/icons-material/ZoomOutRounded';
 import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded';
-import { loadPdfDocumentFromUrl, renderPdfPage } from '../../lib/pdfPreview';
+import { loadPdfDocumentFromUrl, renderPdfPage, resolveInitialPdfFitZoom } from '../../lib/pdfPreview';
 
 export const clampPage = (value, totalPages = 1) => {
   const total = Math.max(1, Number(totalPages || 1));
@@ -82,6 +82,7 @@ export default function MailPdfPreviewSurface({
   const [renderingPage, setRenderingPage] = useState(false);
   const [previewError, setPreviewError] = useState('');
   const canvasRef = useRef(null);
+  const previewContainerRef = useRef(null);
   const renderRequestRef = useRef(0);
 
   const activeSheet = useMemo(() => {
@@ -135,7 +136,7 @@ export default function MailPdfPreviewSurface({
     setPdfDoc(null);
 
     loadPdfDocumentFromUrl(objectUrl)
-      .then((pdf) => {
+      .then(async (pdf) => {
         loadedPdf = pdf;
         if (cancelled || requestId !== renderRequestRef.current) {
           pdf.destroy?.();
@@ -146,6 +147,30 @@ export default function MailPdfPreviewSurface({
         setResolvedPageCount(nextPageCount);
         setPage((current) => clampPage(current, nextPageCount));
         setLoadingPdf(false);
+
+        try {
+          const firstPage = await pdf.getPage(clampPage(initialPage, nextPageCount));
+          const viewport = firstPage.getViewport({ scale: 1 });
+          const measureFitZoom = () => resolveInitialPdfFitZoom({
+            pageWidth: viewport.width,
+            containerWidth: previewContainerRef.current?.clientWidth || 0,
+            horizontalPadding: compact ? 16 : 24,
+          });
+          let fitZoom = measureFitZoom();
+          if (fitZoom === 1 && typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+            await new Promise((resolve) => {
+              window.requestAnimationFrame(resolve);
+            });
+            if (!cancelled && requestId === renderRequestRef.current) {
+              fitZoom = measureFitZoom();
+            }
+          }
+          if (!cancelled && requestId === renderRequestRef.current && fitZoom !== 1) {
+            setZoom(fitZoom);
+          }
+        } catch {
+          // Keep the default zoom when fit-to-width cannot be measured yet.
+        }
       })
       .catch((error) => {
         if (cancelled || requestId !== renderRequestRef.current) return;
@@ -160,7 +185,7 @@ export default function MailPdfPreviewSurface({
         loadedPdf.destroy();
       }
     };
-  }, [objectUrl, pageCount]);
+  }, [compact, initialPage, objectUrl, pageCount]);
 
   useEffect(() => {
     if (!pdfDoc || !canvasRef.current) return undefined;
@@ -304,6 +329,7 @@ export default function MailPdfPreviewSurface({
       ) : null}
 
       <Box
+        ref={previewContainerRef}
         sx={{
           position: 'relative',
           minHeight: compact ? 220 : { xs: 260, sm: 360 },

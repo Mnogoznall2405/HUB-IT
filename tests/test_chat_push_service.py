@@ -88,6 +88,120 @@ def test_send_notification_builds_generic_payload_without_type_error(monkeypatch
     assert payload["actions"][0]["action"] == "open-mail"
     assert payload["actions"][1]["action"] == "dismiss"
     assert isinstance(payload["timestamp"], int)
+    assert "app_badge_count" in payload
+    assert isinstance(payload["app_badge_count"], int)
+
+
+def test_send_notification_includes_app_badge_count_for_non_chat_channels(monkeypatch):
+    service = ChatPushService()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        service,
+        "_get_active_subscriptions",
+        lambda **_: [object()],
+    )
+    monkeypatch.setattr(
+        service,
+        "_compute_app_badge_count",
+        lambda **_: 12,
+    )
+    monkeypatch.setattr(
+        service,
+        "_send_payload_to_subscriptions",
+        lambda **kwargs: captured.update(kwargs) or ChatPushSendResult(sent=1),
+    )
+
+    service.send_notification(
+        recipient_user_id=7,
+        title="Task update",
+        body="Body",
+        channel="tasks",
+        route="/tasks",
+    )
+
+    payload = captured["payload"]
+    assert payload["app_badge_count"] == 12
+
+
+def test_send_notification_omits_app_badge_count_for_chat_channel(monkeypatch):
+    service = ChatPushService()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        service,
+        "_get_active_subscriptions",
+        lambda **_: [object()],
+    )
+    monkeypatch.setattr(
+        service,
+        "_compute_app_badge_count",
+        lambda **_: (_ for _ in ()).throw(AssertionError("chat push must not resolve badge count")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_send_payload_to_subscriptions",
+        lambda **kwargs: captured.update(kwargs) or ChatPushSendResult(sent=1),
+    )
+
+    service.send_chat_message_notification(
+        recipient_user_id=7,
+        conversation_id="conv-1",
+        message_id="msg-1",
+        title="Chat title",
+        body="Chat body",
+    )
+
+    payload = captured["payload"]
+    assert payload["channel"] == "chat"
+    assert "app_badge_count" not in payload
+
+
+def test_send_notification_respects_explicit_app_badge_count_override(monkeypatch):
+    service = ChatPushService()
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        service,
+        "_get_active_subscriptions",
+        lambda **_: [object()],
+    )
+    monkeypatch.setattr(
+        service,
+        "_compute_app_badge_count",
+        lambda **_: (_ for _ in ()).throw(AssertionError("explicit override must skip compute")),
+    )
+    monkeypatch.setattr(
+        service,
+        "_send_payload_to_subscriptions",
+        lambda **kwargs: captured.update(kwargs) or ChatPushSendResult(sent=1),
+    )
+
+    service.send_notification(
+        recipient_user_id=7,
+        title="Mail subject",
+        body="Mail body",
+        channel="mail",
+        route="/mail",
+        app_badge_count=3,
+    )
+
+    assert captured["payload"]["app_badge_count"] == 3
+
+
+def test_compute_app_badge_count_sums_hub_and_mail_unread(monkeypatch):
+    service = ChatPushService()
+
+    monkeypatch.setattr(
+        "backend.services.hub_service.hub_service.get_unread_counts",
+        lambda *, user_id: {"notifications_unread_total": 4},
+    )
+    monkeypatch.setattr(
+        "backend.services.mail_service.mail_service.get_unread_count",
+        lambda *, user_id: 6,
+    )
+
+    assert service._compute_app_badge_count(recipient_user_id=9) == 10
 
 
 def test_send_notification_skips_mail_when_channel_disabled(monkeypatch):

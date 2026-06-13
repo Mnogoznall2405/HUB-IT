@@ -1,9 +1,11 @@
-const SW_VERSION = '2026-06-03T21:30:00+05:00';
-const APP_SHELL_CACHE = 'hubit-app-shell-v2026-06-03-21-30';
-const APP_ASSET_CACHE = 'hubit-app-assets-v2026-06-03-21-30';
+const SW_VERSION = '2026-06-13T12:00:00+05:00';
+const APP_SHELL_CACHE = 'hubit-app-shell-v2026-06-13-12-00';
+const APP_ASSET_CACHE = 'hubit-app-assets-v2026-06-13-12-00';
 const CHAT_MEDIA_CACHE = 'hubit-chat-media-v2026-04-17-1';
 const PUSH_RUNTIME_CACHE = 'itinvent-push-runtime-v1';
 const PUSH_PENDING_SYNC_URL = `${self.location.origin}/__push/pending-sync`;
+const APP_BADGE_COUNT_URL = `${self.location.origin}/__badge/count`;
+const MAX_APP_BADGE_VALUE = 999;
 const SHELL_ENTRY_URL = '/index.html';
 const STATIC_ASSET_DESTINATIONS = new Set(['style', 'script', 'font', 'image', 'manifest', 'worker']);
 const CHAT_MEDIA_VARIANTS = new Set(['thumb', 'preview', 'poster']);
@@ -67,6 +69,78 @@ function normalizeVibratePattern(value) {
     .map((item) => Number(item))
     .filter((item) => Number.isFinite(item) && item >= 0 && item <= 10000)
     .slice(0, 8);
+}
+
+function normalizeAppBadgeValue(value) {
+  const normalized = Math.trunc(Number(value || 0));
+  if (!Number.isFinite(normalized) || normalized <= 0) return 0;
+  return Math.min(normalized, MAX_APP_BADGE_VALUE);
+}
+
+function resolvePushAppBadgeCount(payload) {
+  if (!payload || typeof payload !== 'object') return null;
+  if (Object.prototype.hasOwnProperty.call(payload, 'app_badge_count')) {
+    return normalizeAppBadgeValue(payload.app_badge_count);
+  }
+  if (payload.data && Object.prototype.hasOwnProperty.call(payload.data, 'app_badge_count')) {
+    return normalizeAppBadgeValue(payload.data.app_badge_count);
+  }
+  return null;
+}
+
+async function readCachedAppBadgeCount() {
+  try {
+    const cache = await caches.open(PUSH_RUNTIME_CACHE);
+    const response = await cache.match(APP_BADGE_COUNT_URL);
+    if (!response) return 0;
+    const payload = await response.json();
+    return normalizeAppBadgeValue(payload?.count);
+  } catch {
+    return 0;
+  }
+}
+
+async function writeCachedAppBadgeCount(value) {
+  const nextValue = normalizeAppBadgeValue(value);
+  try {
+    const cache = await caches.open(PUSH_RUNTIME_CACHE);
+    await cache.put(
+      APP_BADGE_COUNT_URL,
+      new Response(JSON.stringify({ count: nextValue }), {
+        headers: { 'Content-Type': 'application/json' },
+      }),
+    );
+  } catch {
+    // Ignore cache write failures; badge API may still succeed.
+  }
+  return nextValue;
+}
+
+async function syncSwAppBadge(value) {
+  const nextValue = await writeCachedAppBadgeCount(value);
+  try {
+    if (nextValue > 0 && typeof navigator.setAppBadge === 'function') {
+      await navigator.setAppBadge(nextValue);
+      return true;
+    }
+    if (nextValue === 0 && typeof navigator.clearAppBadge === 'function') {
+      await navigator.clearAppBadge();
+      return true;
+    }
+  } catch {
+    return false;
+  }
+  return false;
+}
+
+async function applyPushAppBadge(payload) {
+  const explicitCount = resolvePushAppBadgeCount(payload);
+  if (explicitCount !== null) {
+    await syncSwAppBadge(explicitCount);
+    return;
+  }
+  const cachedCount = await readCachedAppBadgeCount();
+  await syncSwAppBadge(cachedCount + 1);
 }
 
 function urlBase64ToUint8Array(base64String) {
@@ -657,6 +731,7 @@ self.addEventListener('push', (event) => {
       conversation_id: String(data?.conversation_id || '').trim(),
       message_id: String(data?.message_id || '').trim(),
       notification_id: String(data?.notification_id || '').trim(),
+      app_badge_count: resolvePushAppBadgeCount(payload),
       delivery_mode: shouldForwardToVisibleClientOnly
         ? (clientSnapshot.has_focused_visible_client ? 'foreground_focused' : 'foreground_visible_conversation')
         : 'background',
@@ -665,6 +740,10 @@ self.addEventListener('push', (event) => {
       focused_visible_client_count: clientSnapshot.focused_visible_client_count,
       clients: clientSnapshot.clients,
     });
+
+    if (pushChannel !== 'chat') {
+      await applyPushAppBadge(payload);
+    }
 
     if (shouldForwardToVisibleClientOnly) {
       await notifyClients('itinvent:push-foreground-notification', {
@@ -788,6 +867,13 @@ self.addEventListener('message', (event) => {
 
   if (messageType === 'itinvent:sw-runtime-snapshot') {
     event.waitUntil(broadcastRuntimeState('snapshot'));
+    return;
+  }
+
+  if (messageType === 'itinvent:sync-app-badge') {
+    event.waitUntil((async () => {
+      await syncSwAppBadge(event?.data?.count);
+    })());
     return;
   }
 

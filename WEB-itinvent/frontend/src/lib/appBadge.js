@@ -6,20 +6,35 @@ function normalizeBadgeValue(value) {
   return Math.min(normalized, MAX_APP_BADGE_VALUE);
 }
 
+async function postBadgeToServiceWorker(value) {
+  if (typeof navigator === 'undefined' || !('serviceWorker' in navigator)) return;
+  try {
+    const registration = await navigator.serviceWorker.ready;
+    const target = registration?.active || registration?.waiting || navigator.serviceWorker.controller;
+    target?.postMessage?.({
+      type: 'itinvent:sync-app-badge',
+      count: normalizeBadgeValue(value),
+    });
+  } catch {
+    // Ignore SW sync failures; direct Badging API may still succeed.
+  }
+}
+
 export async function syncAppBadge(value) {
   if (typeof navigator === 'undefined') return false;
   const nextValue = normalizeBadgeValue(value);
+  let synced = false;
   try {
     if (nextValue > 0 && typeof navigator.setAppBadge === 'function') {
       await navigator.setAppBadge(nextValue);
-      return true;
-    }
-    if (nextValue === 0 && typeof navigator.clearAppBadge === 'function') {
+      synced = true;
+    } else if (nextValue === 0 && typeof navigator.clearAppBadge === 'function') {
       await navigator.clearAppBadge();
-      return true;
+      synced = true;
     }
   } catch {
-    return false;
+    synced = false;
   }
-  return false;
+  await postBadgeToServiceWorker(nextValue);
+  return synced;
 }
