@@ -54,4 +54,11 @@ describe('DocumentPreviewDialog', () => {
 
     expect(screen.getByRole('dialog')).toHaveClass('MuiDialog-paperFullScreen');
   });
+
+  it('uses fullscreen dialog on desktop media queries', () => {
+    setMobileMedia(false);
+    renderDialog();
+
+    expect(screen.getByRole('dialog')).toHaveClass('MuiDialog-paperFullScreen');
+  });
 });

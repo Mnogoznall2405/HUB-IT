@@ -65,6 +65,7 @@ import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import MenuIcon from '@mui/icons-material/Menu';
 import CloseIcon from '@mui/icons-material/Close';
+import CheckIcon from '@mui/icons-material/Check';
 import CalendarMonthOutlinedIcon from '@mui/icons-material/CalendarMonthOutlined';
 import ChecklistOutlinedIcon from '@mui/icons-material/ChecklistOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
@@ -83,6 +84,7 @@ import {
   TaskActivityTabs,
   TaskContextSidebar,
   TaskDetailHeader,
+  TaskMobileContentSummary,
   TaskPrimaryActions,
   normalizeTaskDetailTab,
 } from '../components/hub/TaskUi';
@@ -95,10 +97,12 @@ import {
 import {
   TASK_MODE_OPTIONS,
   buildCalendarDays,
+  buildCreateDuePresets,
   buildDeadlineBuckets,
   buildGanttRows,
   buildMobileTaskActionState,
   buildMobileTaskFeed,
+  formatCreateDueLabel,
   normalizeTaskMode,
 } from './tasksViewModel';
 import { buildOfficeUiTokens, getOfficeDialogPaperSx, getOfficeEmptyStateSx, getOfficeHeaderBandSx, getOfficeMetricBlockSx, getOfficePanelSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
@@ -315,6 +319,14 @@ const toDateInput = (value) => {
   if (Number.isNaN(parsed.getTime())) return '';
   const local = new Date(parsed.getTime() - (parsed.getTimezoneOffset() * 60000));
   return local.toISOString().slice(0, 10);
+};
+
+const hideMobileScrollbarSx = {
+  scrollbarWidth: 'none',
+  msOverflowStyle: 'none',
+  '&::-webkit-scrollbar': {
+    display: 'none',
+  },
 };
 
 const formatPercent = (value) => `${Number(value || 0).toFixed(1)}%`;
@@ -612,6 +624,7 @@ function Tasks() {
   const [focusMode, setFocusMode] = useState(initialFilters.focusMode || 'all');
   const [showFilters, setShowFilters] = useState(false);
   const [mobileBoardFiltersOpen, setMobileBoardFiltersOpen] = useState(false);
+  const [mobileSearchOpen, setMobileSearchOpen] = useState(() => Boolean(initialFilters.q));
 
   const [assignees, setAssignees] = useState([]);
   const [controllers, setControllers] = useState([]);
@@ -626,6 +639,10 @@ function Tasks() {
 
   const [createOpen, setCreateOpen] = useState(false);
   const [createSaving, setCreateSaving] = useState(false);
+  const [createDueSheetOpen, setCreateDueSheetOpen] = useState(false);
+  const [createDueCustomOpen, setCreateDueCustomOpen] = useState(false);
+  const [createMobileSheet, setCreateMobileSheet] = useState('');
+  const [createDescriptionPreview, setCreateDescriptionPreview] = useState('');
   const [createOptionalSections, setCreateOptionalSections] = useState(createEmptyOptionalSections);
   const [createData, setCreateData] = useState(() => createInitialTaskDraft());
   const [createFiles, setCreateFiles] = useState([]);
@@ -700,6 +717,14 @@ function Tasks() {
     const timer = window.setTimeout(() => setDebouncedQ(String(q || '').trim()), 250);
     return () => window.clearTimeout(timer);
   }, [q]);
+
+  useEffect(() => {
+    if (!mobileSearchOpen || !isMobile) return undefined;
+    const frameId = window.requestAnimationFrame(() => {
+      searchInputRef.current?.focus?.();
+    });
+    return () => window.cancelAnimationFrame(frameId);
+  }, [isMobile, mobileSearchOpen]);
 
   useEffect(() => {
     const next = readTaskFilters(location.search);
@@ -938,6 +963,13 @@ function Tasks() {
     () => findTaskUserById(controllers, createData.controller_user_id),
     [controllers, createData.controller_user_id],
   );
+
+  const createDuePresets = useMemo(() => buildCreateDuePresets(new Date()), [createOpen]);
+  const createDueLabel = useMemo(
+    () => formatCreateDueLabel(createData.due_at, new Date()),
+    [createData.due_at],
+  );
+  const createDescriptionSummary = String(createDescriptionPreview || createData.description || '').trim();
 
   const selectedEditAssignee = useMemo(
     () => findTaskUserById(assignees, editData.assignee_user_id),
@@ -1533,6 +1565,39 @@ function Tasks() {
     });
   }, []);
 
+  const handleOpenCreateMobileSheet = useCallback((key) => {
+    const normalizedKey = String(key || '').trim();
+    if (!normalizedKey) return;
+
+    if (!isMobile) {
+      handleToggleCreateOptionalSection(normalizedKey);
+      return;
+    }
+
+    if (normalizedKey === 'checklist') {
+      setCreateChecklistItems((prev) => (prev.length > 0 ? prev : [createEmptyChecklistItem()]));
+      setCreateOptionalSections((prev) => ({ ...prev, checklist: true }));
+    } else if (['files', 'project', 'controller'].includes(normalizedKey)) {
+      setCreateOptionalSections((prev) => ({ ...prev, [normalizedKey]: true }));
+    } else if (normalizedKey === 'advanced') {
+      setCreateOptionalSections((prev) => ({
+        ...prev,
+        advanced: true,
+        schedule: true,
+        access: true,
+        project: true,
+        controller: true,
+      }));
+    }
+
+    setCreateMobileSheet(normalizedKey);
+  }, [handleToggleCreateOptionalSection, isMobile]);
+
+  const handleCloseCreateMobileSheet = useCallback(() => {
+    setCreateDescriptionPreview(String(createDescriptionRef.current || '').trim());
+    setCreateMobileSheet('');
+  }, []);
+
   const handleAddChecklistItem = useCallback(() => {
     setCreateChecklistItems((prev) => [...prev, createEmptyChecklistItem()]);
     setCreateOptionalSections((prev) => ({ ...prev, checklist: true }));
@@ -1609,6 +1674,10 @@ function Tasks() {
   const handleCloseCreateDialog = useCallback(() => {
     if (createSaving) return;
     setCreateOpen(false);
+    setCreateDueSheetOpen(false);
+    setCreateDueCustomOpen(false);
+    setCreateMobileSheet('');
+    setCreateDescriptionPreview('');
     setCreateFiles([]);
     setCreateChecklistItems([]);
     setCreateProjectName('');
@@ -1617,6 +1686,16 @@ function Tasks() {
       return createEmptyOptionalSections();
     });
   }, [createSaving]);
+
+  const handleSelectCreateDuePreset = useCallback((value) => {
+    setCreateData((prev) => ({ ...prev, due_at: String(value || '') }));
+    setCreateDueCustomOpen(false);
+    setCreateDueSheetOpen(false);
+  }, []);
+
+  const handleOpenCreateCustomDue = useCallback(() => {
+    setCreateDueCustomOpen(true);
+  }, []);
 
   const handleCreateTask = async () => {
     const assigneeIds = Array.isArray(createData.assignee_user_ids) ? createData.assignee_user_ids : [];
@@ -1667,6 +1746,10 @@ function Tasks() {
         }
       }
       setCreateOpen(false);
+      setCreateDueSheetOpen(false);
+      setCreateDueCustomOpen(false);
+      setCreateMobileSheet('');
+      setCreateDescriptionPreview('');
       setCreateOptionalSections(createEmptyOptionalSections());
       setCreateData(createInitialTaskDraft(defaultCreateProjectId));
       createDescriptionRef.current = '';
@@ -2095,6 +2178,8 @@ function Tasks() {
         }
         if (!isMobile) {
           setShowFilters(true);
+        } else {
+          setMobileSearchOpen(true);
         }
         window.requestAnimationFrame(() => {
           searchInputRef.current?.focus?.();
@@ -2112,22 +2197,7 @@ function Tasks() {
     const attachCount = Number(task?.attachments_count || 0);
     const isTransferReminder = isTransferActUploadTask(task);
     const priority = priorityMeta(task?.priority);
-    const checklistTotal = Number(task?.checklist_total ?? (Array.isArray(task?.checklist_items) ? task.checklist_items.length : 0));
-    const checklistDone = Number(task?.checklist_done ?? (Array.isArray(task?.checklist_items) ? task.checklist_items.filter((item) => item?.done).length : 0));
-    const mobileActionState = buildMobileTaskActionState(task, {
-      canOpenTransferActUpload: canOpenTransferActUpload(task),
-      canStart: canStartTask(task),
-      canSubmit: canSubmitTask(task),
-      canReview: canReviewTask(task),
-    });
-    const mobilePrimaryAction = (() => {
-      if (!mobileActionState.actionLabel) return null;
-      if (mobileActionState.key === 'upload_act') return () => openTransferActReminder(task);
-      if (mobileActionState.key === 'start') return () => void handleStartTask(task.id);
-      if (mobileActionState.key === 'submit') return () => setSubmitTask(task);
-      if (mobileActionState.key === 'review') return () => setReviewTask(task);
-      return null;
-    })();
+    const descriptionPreview = String(task?.description || '').trim();
     const mobileCardMenuItems = [
       canEdit ? { key: 'edit', label: 'Редактировать' } : null,
       { key: 'copy', label: 'Копировать ссылку' },
@@ -2141,16 +2211,18 @@ function Tasks() {
           data-testid={`mobile-task-card-${task.id}`}
           onClick={() => openTaskDetails(task)}
           sx={{
-            p: 0.78,
-            borderRadius: '12px',
-            border: '1px solid',
+            px: 1.35,
+            py: 1,
+            borderRadius: 0,
+            border: 'none',
+            borderBottom: '1px solid',
             borderColor: ui.borderSoft,
-            bgcolor: ui.panelSolid,
-            boxShadow: ui.shellShadow,
+            bgcolor: 'transparent',
+            boxShadow: 'none',
             cursor: 'pointer',
-            transition: 'border-color 0.16s ease, transform 0.16s ease',
+            transition: 'background-color 0.16s ease',
             '&:active': {
-              borderColor: ui.selectedBorder,
+              bgcolor: ui.actionBg,
             },
           }}
         >
@@ -2192,6 +2264,23 @@ function Tasks() {
               ) : null}
             </Stack>
 
+            {descriptionPreview ? (
+              <Typography
+                data-testid={`mobile-task-card-description-${task.id}`}
+                sx={{
+                  color: ui.mutedText,
+                  fontSize: '0.76rem',
+                  lineHeight: 1.32,
+                  display: '-webkit-box',
+                  WebkitLineClamp: 2,
+                  WebkitBoxOrient: 'vertical',
+                  overflow: 'hidden',
+                }}
+              >
+                {descriptionPreview}
+              </Typography>
+            ) : null}
+
             <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
               <Typography variant="caption" sx={{ color: statusMeta(task?.status).color, fontWeight: 900, flexShrink: 0 }}>
                 {statusMeta(task?.status).label}
@@ -2232,12 +2321,6 @@ function Tasks() {
               ) : null}
               </Stack>
               <Stack direction="row" spacing={0.55} alignItems="center" sx={{ flexShrink: 0 }}>
-                <Stack direction="row" spacing={0.25} alignItems="center">
-                  <ModeCommentOutlinedIcon sx={{ fontSize: 13, color: task?.has_unread_comments ? '#2563eb' : ui.subtleText }} />
-                  <Typography variant="caption" sx={{ color: task?.has_unread_comments ? '#2563eb' : ui.subtleText, fontWeight: task?.has_unread_comments ? 800 : 700 }}>
-                    {Number(task?.comments_count || 0)}
-                  </Typography>
-                </Stack>
                 {attachCount > 0 ? (
                   <Stack direction="row" spacing={0.25} alignItems="center">
                     <AttachFileIcon sx={{ fontSize: 13, color: ui.subtleText }} />
@@ -2246,38 +2329,7 @@ function Tasks() {
                     </Typography>
                   </Stack>
                 ) : null}
-                {checklistTotal > 0 ? (
-                  <Stack direction="row" spacing={0.25} alignItems="center">
-                    <ChecklistOutlinedIcon sx={{ fontSize: 13, color: ui.subtleText }} />
-                    <Typography variant="caption" sx={{ color: ui.subtleText, fontWeight: 700 }}>
-                      {checklistDone}/{checklistTotal}
-                    </Typography>
-                  </Stack>
-                ) : null}
               </Stack>
-            </Stack>
-
-            <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={0.75}>
-              <Typography
-                data-testid={`mobile-task-card-action-${task.id}`}
-                variant="caption"
-                sx={{ color: ui.text, fontWeight: 900, lineHeight: 1.15, minWidth: 0 }}
-              >
-                {mobileActionState.stepLabel}
-              </Typography>
-              {mobilePrimaryAction ? (
-                <Button
-                  size="small"
-                  variant="contained"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    mobilePrimaryAction();
-                  }}
-                  sx={{ minHeight: 27, px: 1.05, py: 0.2, textTransform: 'none', fontWeight: 900, borderRadius: '9px', boxShadow: 'none', flexShrink: 0 }}
-                >
-                  {mobileActionState.actionLabel}
-                </Button>
-              ) : null}
             </Stack>
           </Stack>
         </Card>
@@ -2474,7 +2526,7 @@ function Tasks() {
         </Stack>
       </Card>
     );
-  }, [canDeleteTask, canEditTask, canReviewTask, canStartTask, canSubmitTask, handleCopyTaskLink, handleDeleteTask, handleStartTask, isMobile, openEditTask, openTaskDetails, openTransferActReminder, theme.palette.mode, ui.actionBg, ui.actionHover, ui.borderSoft, ui.dialogShadow, ui.mutedText, ui.panelSolid, ui.selectedBorder, ui.shellShadow, ui.subtleText]);
+  }, [canDeleteTask, canEditTask, handleCopyTaskLink, handleDeleteTask, isMobile, openEditTask, openTaskDetails, openTransferActReminder, theme.palette.mode, ui.actionBg, ui.actionHover, ui.borderSoft, ui.dialogShadow, ui.mutedText, ui.panelSolid, ui.selectedBorder, ui.shellShadow, ui.subtleText]);
 
   const renderTaskTags = (task) => {
     const status = statusMeta(task?.status);
@@ -2519,8 +2571,9 @@ function Tasks() {
     minHeight: 0,
     overflowY: 'auto',
     overflowX: 'hidden',
-    pr: 0.15,
+    px: 0,
     pb: 'calc(72px + env(safe-area-inset-bottom, 0px))',
+    ...hideMobileScrollbarSx,
   };
 
   const renderMobileTaskFeedView = () => (
@@ -2530,14 +2583,14 @@ function Tasks() {
           {[0, 1, 2, 3].map((item) => <Skeleton key={item} variant="rounded" height={118} sx={{ borderRadius: '14px' }} />)}
         </Stack>
       ) : mobileFeedItems.length === 0 ? (
-        <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
+        <Box sx={{ mx: 1.35, mt: 1, ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
           <Typography sx={{ fontWeight: 800, mb: 0.4 }}>Задачи по текущим фильтрам не найдены.</Typography>
           <Typography variant="body2" sx={{ color: ui.mutedText }}>
             Смените роль, фокус, срок или поисковый запрос.
           </Typography>
         </Box>
       ) : (
-        <Stack spacing={0.8}>
+        <Stack spacing={0}>
           {mobileFeedItems.map((task) => renderTaskCard(task))}
         </Stack>
       )}
@@ -2546,14 +2599,18 @@ function Tasks() {
 
   const renderMobileBucketList = ({ buckets, testId, showCreateButtons = false }) => (
     <Box data-testid={testId} sx={mobileScrollSx}>
-      <Stack spacing={0.85}>
+      <Stack spacing={0}>
         {buckets.map((bucket) => (
-          <Card
+          <Box
             key={bucket.key}
-            sx={{ ...getOfficePanelSx(ui, { p: 0.85, borderRadius: '14px' }) }}
+            sx={{
+              py: 0.9,
+              borderBottom: '1px solid',
+              borderColor: ui.borderSoft,
+            }}
           >
-            <Stack spacing={0.75}>
-              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={0.75}>
+            <Stack spacing={0.7}>
+              <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={0.75} sx={{ px: 1.35 }}>
                 <Stack direction="row" spacing={0.65} alignItems="center" sx={{ minWidth: 0 }}>
                   <Box sx={{ width: 8, height: 8, borderRadius: '999px', bgcolor: bucket.color, flexShrink: 0 }} />
                   <Typography sx={{ fontWeight: 900, color: bucket.color, minWidth: 0 }}>
@@ -2576,16 +2633,16 @@ function Tasks() {
                 ) : null}
               </Stack>
               {bucket.items.length === 0 ? (
-                <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1 }) }}>
+                <Box sx={{ mx: 1.35, ...getOfficeEmptyStateSx(ui, { p: 1 }) }}>
                   <Typography sx={{ fontWeight: 800 }}>Нет задач.</Typography>
                 </Box>
               ) : (
-                <Stack spacing={0.75}>
+                <Stack spacing={0}>
                   {bucket.items.map((task) => renderTaskCard(task, bucket))}
                 </Stack>
               )}
             </Stack>
-          </Card>
+          </Box>
         ))}
       </Stack>
     </Box>
@@ -2593,7 +2650,7 @@ function Tasks() {
 
   const renderMobileBoardGroups = () => (
     <Box data-testid="tasks-mobile-board" sx={mobileScrollSx}>
-      <Stack direction="row" spacing={0.6} sx={{ overflowX: 'auto', pb: 0.7 }}>
+      <Stack direction="row" spacing={0.6} sx={{ overflowX: 'auto', px: 1.35, py: 0.75, borderBottom: '1px solid', borderColor: ui.borderSoft }}>
         {KANBAN_COLUMNS.map((column) => (
           <Chip
             key={column.key}
@@ -2607,24 +2664,24 @@ function Tasks() {
           {[0, 1, 2, 3].map((item) => <Skeleton key={item} variant="rounded" height={118} sx={{ borderRadius: '14px' }} />)}
         </Stack>
       ) : mobileBoardItems.length === 0 ? (
-        <Box sx={{ ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
+        <Box sx={{ mx: 1.35, mt: 1, ...getOfficeEmptyStateSx(ui, { p: 1.4 }) }}>
           <Typography sx={{ fontWeight: 800, mb: 0.4 }}>Задачи по текущим фильтрам не найдены.</Typography>
           <Typography variant="body2" sx={{ color: ui.mutedText }}>
             Смените быстрый статус, фокус или расширенные фильтры.
           </Typography>
         </Box>
       ) : (
-        <Stack spacing={0.9}>
+        <Stack spacing={0}>
           {KANBAN_COLUMNS.map((column) => {
             const items = columnData[column.key] || [];
             if (items.length === 0) return null;
             return (
-              <Box key={column.key}>
-                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.55, px: 0.25 }}>
+              <Box key={column.key} sx={{ borderBottom: '1px solid', borderColor: ui.borderSoft, py: 0.85 }}>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" sx={{ mb: 0.55, px: 1.35 }}>
                   <Typography sx={{ fontWeight: 900, color: column.color, fontSize: '0.88rem' }}>{column.label}</Typography>
                   <Chip size="small" label={items.length} sx={{ height: 22, fontWeight: 900, bgcolor: alpha(column.color, 0.12), color: column.color }} />
                 </Stack>
-                <Stack spacing={0.75}>
+                <Stack spacing={0}>
                   {items.map((task) => renderTaskCard(task, column))}
                 </Stack>
               </Box>
@@ -3225,11 +3282,25 @@ function Tasks() {
         theme={theme}
       />
 
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: { xs: 1, md: 1.25 }, py: 1.1 }}>
+      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: { xs: 1, md: 1.25 }, py: 1.1, ...(isMobile ? hideMobileScrollbarSx : {}) }}>
         {detailsLoading && <LinearProgress sx={{ mb: 1.2, borderRadius: 999 }} />}
         {detailsTask ? (
           isMobile ? (
             <Stack spacing={1.1} sx={{ minWidth: 0 }}>
+              <TaskMobileContentSummary
+                task={detailsTask}
+                attachments={Array.isArray(detailsTask.attachments) ? detailsTask.attachments : []}
+                canUploadFiles={canUploadFiles(detailsTask)}
+                uploadingAttachment={uploadingAttachment}
+                onUploadAttachment={(file) => void handleUploadAttachment(detailsTask.id, file)}
+                onDownloadAttachment={(attachment) => void handleDownloadAttachment(detailsTask, attachment)}
+                onDownloadReport={(report) => void handleDownloadReport(report)}
+                formatDateTime={formatDateTime}
+                formatFileSize={formatFileSize}
+                ui={ui}
+                theme={theme}
+              />
+
               <TaskContextSidebar
                 task={detailsTask}
                 ui={ui}
@@ -3244,7 +3315,16 @@ function Tasks() {
                 mobile
               />
 
-              {detailOverviewSections}
+              {String(detailsTask.review_comment || '').trim() && (
+                <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '14px' }) }}>
+                  <Typography sx={{ fontWeight: 800, mb: 0.45 }}>Комментарий проверки</Typography>
+                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
+                    {detailsTask.review_comment}
+                  </Typography>
+                </Box>
+              )}
+
+              {renderTaskChecklist(detailsTask)}
 
               <TaskActivityTabs
                 activeTab={selectedTaskTab}
@@ -3267,6 +3347,7 @@ function Tasks() {
                 ui={ui}
                 theme={theme}
                 mobile
+                hideFilesTab
               />
             </Stack>
           ) : (
@@ -4076,6 +4157,406 @@ function Tasks() {
     </Drawer>
   ) : null;
 
+  const createMobileSheetTitle = ({
+    description: 'Описание',
+    priority: 'Приоритет',
+    files: 'Файлы',
+    checklist: 'Чек-лист',
+    project: 'Проект',
+    controller: 'Контролёр',
+    advanced: 'Полная форма',
+  })[createMobileSheet] || '';
+
+  const createMobileSheetContent = (() => {
+    if (createMobileSheet === 'description') {
+      return (
+        <Stack spacing={1}>
+          <LocalTaskDescriptionField
+            initialValue={createDescriptionRef.current || createDescriptionPreview || createData.description}
+            onDraftChange={handleCreateDescriptionDraftChange}
+            resetKey={`${createOpen ? 'open' : 'closed'}:mobile-description:${createMobileSheet}`}
+            fullWidth
+            autoFocus
+            multiline
+            minRows={10}
+            maxRows={16}
+            label="Описание задачи"
+            placeholder="Что нужно сделать, какие детали важны, что приложить..."
+            inputProps={{ 'data-testid': 'create-description-mobile-input', 'aria-label': 'Описание задачи' }}
+          />
+          <Button variant="contained" onClick={handleCloseCreateMobileSheet} sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px', boxShadow: 'none' }}>
+            Готово
+          </Button>
+        </Stack>
+      );
+    }
+
+    if (createMobileSheet === 'priority') {
+      return (
+        <Stack spacing={0.35}>
+          {priorityOptions.map((item) => {
+            const selected = createData.priority === item.value;
+            return (
+              <Button
+                key={item.value}
+                data-testid={`create-priority-mobile-${item.value}`}
+                onClick={() => {
+                  setCreateData((prev) => ({ ...prev, priority: item.value }));
+                  setCreateOptionalSections((prev) => ({ ...prev, priority: item.value !== 'normal' }));
+                  setCreateMobileSheet('');
+                }}
+                sx={{
+                  minHeight: 56,
+                  justifyContent: 'space-between',
+                  textTransform: 'none',
+                  color: ui.text,
+                  borderRadius: '14px',
+                  bgcolor: selected ? alpha(item.dotColor, 0.16) : 'transparent',
+                  '&:hover': { bgcolor: selected ? alpha(item.dotColor, 0.2) : ui.actionHover },
+                }}
+              >
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Box sx={{ width: 9, height: 9, borderRadius: '999px', bgcolor: item.dotColor }} />
+                  <Typography sx={{ fontWeight: 900 }}>{item.label}</Typography>
+                </Stack>
+                {selected ? <CheckIcon sx={{ color: item.dotColor }} /> : null}
+              </Button>
+            );
+          })}
+        </Stack>
+      );
+    }
+
+    if (createMobileSheet === 'files') {
+      return (
+        <Stack spacing={1}>
+          <Button
+            component="label"
+            variant="outlined"
+            startIcon={<AttachFileIcon />}
+            disabled={createSaving}
+            sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px' }}
+          >
+            {createFiles.length > 0 ? 'Добавить файлы' : 'Выбрать файлы'}
+            <input
+              type="file"
+              hidden
+              multiple
+              onChange={(event) => {
+                handleAddCreateFiles(event.target.files);
+                event.target.value = '';
+              }}
+            />
+          </Button>
+          {createFiles.length === 0 ? (
+            <Typography variant="body2" sx={{ color: ui.mutedText }}>
+              Файлы прикрепятся автоматически после создания задачи.
+            </Typography>
+          ) : (
+            <Stack spacing={0.7}>
+              {createFiles.map((file, index) => (
+                <Box key={`${getFileIdentity(file)}:${index}`} sx={{ display: 'flex', alignItems: 'center', gap: 1, p: 0.75, borderRadius: '12px', bgcolor: ui.actionBg }}>
+                  <Avatar sx={{ width: 30, height: 30, bgcolor: alpha(theme.palette.primary.main, 0.14), color: theme.palette.primary.main }}>
+                    <AttachFileIcon sx={{ fontSize: 16 }} />
+                  </Avatar>
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
+                    <Typography sx={{ fontWeight: 850, fontSize: '0.88rem' }} noWrap>
+                      {file?.name || 'file'}
+                    </Typography>
+                    <Typography variant="caption" sx={{ color: ui.subtleText }}>
+                      {formatFileSize(file?.size)}
+                    </Typography>
+                  </Box>
+                  <IconButton size="small" aria-label={`Убрать файл ${file?.name || index + 1}`} onClick={() => handleRemoveCreateFile(index)} disabled={createSaving}>
+                    <DeleteOutlineIcon fontSize="small" />
+                  </IconButton>
+                </Box>
+              ))}
+            </Stack>
+          )}
+          <Button onClick={handleCloseCreateMobileSheet} sx={{ textTransform: 'none', fontWeight: 800 }}>
+            Готово
+          </Button>
+        </Stack>
+      );
+    }
+
+    if (createMobileSheet === 'checklist') {
+      return (
+        <Stack spacing={1}>
+          <Button variant="outlined" startIcon={<AddIcon />} onClick={handleAddChecklistItem} sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px' }}>
+            Добавить пункт
+          </Button>
+          <Stack spacing={0.8}>
+            {createChecklistItems.map((item, index) => (
+              <Stack key={item.id} direction="row" spacing={0.7} alignItems="center">
+                <Checkbox checked={Boolean(item.done)} onChange={(event) => handleUpdateChecklistItem(item.id, { done: event.target.checked })} sx={{ p: 0.35 }} />
+                <TextField
+                  value={item.text}
+                  onChange={(event) => handleUpdateChecklistItem(item.id, { text: event.target.value })}
+                  placeholder={`Пункт ${index + 1}`}
+                  size="small"
+                  fullWidth
+                />
+                <IconButton size="small" aria-label={`Удалить пункт ${index + 1}`} onClick={() => handleRemoveChecklistItem(item.id)}>
+                  <DeleteOutlineIcon fontSize="small" />
+                </IconButton>
+              </Stack>
+            ))}
+          </Stack>
+          <Button variant="contained" onClick={handleCloseCreateMobileSheet} sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px', boxShadow: 'none' }}>
+            Готово
+          </Button>
+        </Stack>
+      );
+    }
+
+    if (createMobileSheet === 'project') {
+      return (
+        <Stack spacing={1}>
+          <FormControl fullWidth size="small">
+            <InputLabel id="create-project-mobile-label">Проект</InputLabel>
+            <Select
+              labelId="create-project-mobile-label"
+              label="Проект"
+              value={effectiveCreateProjectId}
+              onChange={(event) => setCreateData((prev) => ({ ...prev, project_id: String(event.target.value || ''), object_id: '' }))}
+            >
+              {activeTaskProjects.map((item) => (
+                <MenuItem key={item.id} value={String(item.id)}>{item.name}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+          <Stack direction="row" spacing={0.8}>
+            <TextField label="Новый проект" value={createProjectName} onChange={(event) => setCreateProjectName(event.target.value)} size="small" fullWidth />
+            <Button variant="outlined" onClick={() => void handleCreateProjectFromTaskDialog()} disabled={createProjectSaving || String(createProjectName || '').trim().length < 2} sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '10px' }}>
+              {createProjectSaving ? '...' : 'Добавить'}
+            </Button>
+          </Stack>
+          <Button variant="contained" onClick={handleCloseCreateMobileSheet} sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px', boxShadow: 'none' }}>
+            Готово
+          </Button>
+        </Stack>
+      );
+    }
+
+    if (createMobileSheet === 'controller') {
+      return (
+        <Stack spacing={1}>
+          <Autocomplete
+            fullWidth
+            size="small"
+            options={controllers}
+            value={selectedCreateController}
+            onChange={(_, value) => setCreateData((prev) => ({ ...prev, controller_user_id: String(value?.id || '') }))}
+            getOptionLabel={getTaskUserLabel}
+            filterOptions={filterTaskUserOptions}
+            isOptionEqualToValue={areSameTaskUsers}
+            clearOnEscape
+            noOptionsText="Ничего не найдено"
+            renderInput={(params) => <TextField {...params} label="Контролёр" placeholder="Фамилия или логин" />}
+          />
+          <Button variant="contained" onClick={handleCloseCreateMobileSheet} sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px', boxShadow: 'none' }}>
+            Готово
+          </Button>
+        </Stack>
+      );
+    }
+
+    if (createMobileSheet === 'advanced') {
+      return (
+        <Stack spacing={1.1}>
+          <TextField label="Дата постановки задачи" type="date" value={createData.protocol_date} onChange={(event) => setCreateData((prev) => ({ ...prev, protocol_date: event.target.value }))} InputLabelProps={{ shrink: true }} fullWidth size="small" />
+          <TextField label="Срок" type="datetime-local" value={createData.due_at} onChange={(event) => setCreateData((prev) => ({ ...prev, due_at: event.target.value }))} InputLabelProps={{ shrink: true }} fullWidth size="small" />
+          <FormControl fullWidth size="small">
+            <InputLabel id="create-priority-mobile-advanced-label">Приоритет</InputLabel>
+            <Select labelId="create-priority-mobile-advanced-label" label="Приоритет" value={createData.priority} onChange={(event) => setCreateData((prev) => ({ ...prev, priority: event.target.value }))}>
+              {priorityOptions.map((item) => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <FormControl fullWidth size="small">
+            <InputLabel id="create-project-mobile-advanced-label">Проект</InputLabel>
+            <Select labelId="create-project-mobile-advanced-label" label="Проект" value={effectiveCreateProjectId} onChange={(event) => setCreateData((prev) => ({ ...prev, project_id: String(event.target.value || ''), object_id: '' }))}>
+              {activeTaskProjects.map((item) => <MenuItem key={item.id} value={String(item.id)}>{item.name}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <Autocomplete
+            fullWidth
+            size="small"
+            options={controllers}
+            value={selectedCreateController}
+            onChange={(_, value) => setCreateData((prev) => ({ ...prev, controller_user_id: String(value?.id || '') }))}
+            getOptionLabel={getTaskUserLabel}
+            filterOptions={filterTaskUserOptions}
+            isOptionEqualToValue={areSameTaskUsers}
+            renderInput={(params) => <TextField {...params} label="Контролёр" placeholder="Фамилия или логин" />}
+          />
+          <Autocomplete
+            fullWidth
+            size="small"
+            options={departments}
+            value={selectedCreateDepartment}
+            onChange={(_, value) => setCreateData((prev) => ({ ...prev, department_id: String(value?.id || ''), visibility_scope: value?.id ? (prev.visibility_scope || 'department') : 'private' }))}
+            getOptionLabel={getDepartmentLabel}
+            isOptionEqualToValue={(option, value) => String(option?.id || '') === String(value?.id || '')}
+            renderInput={(params) => <TextField {...params} label="Отдел" placeholder="Автоматически по исполнителю" />}
+          />
+          <FormControl fullWidth size="small">
+            <InputLabel id="create-visibility-mobile-advanced-label">Видимость</InputLabel>
+            <Select labelId="create-visibility-mobile-advanced-label" label="Видимость" value={createData.visibility_scope} onChange={(event) => setCreateData((prev) => ({ ...prev, visibility_scope: event.target.value }))}>
+              {taskVisibilityOptions.map((item) => <MenuItem key={item.value} value={item.value}>{item.label}</MenuItem>)}
+            </Select>
+          </FormControl>
+          <Button variant="contained" onClick={handleCloseCreateMobileSheet} sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px', boxShadow: 'none' }}>
+            Готово
+          </Button>
+        </Stack>
+      );
+    }
+
+    return null;
+  })();
+
+  const mobileTasksHeaderInline = useMemo(() => {
+    if (!isMobile || detailsOpen) return null;
+    const headerLabel = `${mobileModeLabel} · ${visibleTaskItems.length}`;
+    return (
+      <Stack
+        data-testid="tasks-mobile-header-inline"
+        direction="row"
+        spacing={0.45}
+        alignItems="center"
+        sx={{
+          width: 'calc(100vw - 118px)',
+          minWidth: 0,
+        }}
+      >
+        {mobileSearchOpen && isTaskDataMode ? (
+          <TextField
+            fullWidth
+            size="small"
+            value={q}
+            inputRef={searchInputRef}
+            onChange={(event) => setQ(event.target.value)}
+            placeholder={mobileTasksCopy.searchPlaceholder}
+            inputProps={{ 'data-testid': 'tasks-mobile-search-input', 'aria-label': mobileTasksCopy.search }}
+            InputProps={{
+              startAdornment: <SearchIcon sx={{ fontSize: 16, color: ui.subtleText, mr: 0.55, flexShrink: 0 }} />,
+              endAdornment: (
+                <IconButton
+                  size="small"
+                  data-testid="tasks-mobile-close-search"
+                  aria-label="Закрыть поиск"
+                  onClick={() => setMobileSearchOpen(false)}
+                  sx={{ width: 26, height: 26, flexShrink: 0 }}
+                >
+                  <CloseIcon sx={{ fontSize: 16 }} />
+                </IconButton>
+              ),
+            }}
+            sx={{
+              minWidth: 0,
+              '& .MuiOutlinedInput-root': {
+                minHeight: 34,
+                borderRadius: '11px',
+                bgcolor: ui.actionBg,
+                '& .MuiOutlinedInput-notchedOutline': {
+                  borderColor: 'transparent',
+                },
+                '&:hover .MuiOutlinedInput-notchedOutline': {
+                  borderColor: 'transparent',
+                },
+                '&.Mui-focused .MuiOutlinedInput-notchedOutline': {
+                  borderColor: 'transparent',
+                  borderWidth: 1,
+                },
+              },
+              '& .MuiOutlinedInput-input': {
+                py: 0.55,
+                fontSize: '0.82rem',
+              },
+            }}
+          />
+        ) : (
+          <>
+            <Box sx={{ minWidth: 0, flex: 1 }}>
+              <Typography
+                data-testid="tasks-mobile-header-mode"
+                sx={{ fontWeight: 900, fontSize: '0.82rem', lineHeight: 1.08, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+              >
+                {headerLabel}
+              </Typography>
+              {!isTaskDataMode ? (
+                <Typography variant="caption" sx={{ color: ui.subtleText, display: 'block', lineHeight: 1.1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {mobileHeaderSubtitleSafe}
+                </Typography>
+              ) : null}
+            </Box>
+            {isTaskDataMode ? (
+              <IconButton
+                size="small"
+                data-testid="tasks-mobile-open-search"
+                aria-label={mobileTasksCopy.search}
+                onClick={() => setMobileSearchOpen(true)}
+                sx={{
+                  width: 34,
+                  height: 34,
+                  borderRadius: '999px',
+                  color: q ? theme.palette.primary.main : ui.mutedText,
+                  bgcolor: q ? alpha(theme.palette.primary.main, 0.1) : 'transparent',
+                  flexShrink: 0,
+                }}
+              >
+                <SearchIcon fontSize="small" />
+              </IconButton>
+            ) : null}
+          </>
+        )}
+
+        <Badge
+          color="primary"
+          badgeContent={activeFilterCount}
+          invisible={!isTaskDataMode || activeFilterCount <= 0}
+          overlap="circular"
+        >
+          <IconButton
+            size="small"
+            data-testid="tasks-mobile-open-navigation"
+            aria-label={mobileTasksCopy.openMenu}
+            onClick={() => setMobileBoardFiltersOpen(true)}
+            sx={{
+              width: 34,
+              height: 34,
+              borderRadius: '999px',
+              color: ui.mutedText,
+              bgcolor: activeFilterCount > 0 ? alpha(theme.palette.primary.main, 0.1) : 'transparent',
+              flexShrink: 0,
+            }}
+          >
+            <FilterListIcon fontSize="small" />
+          </IconButton>
+        </Badge>
+      </Stack>
+    );
+  }, [
+    activeFilterCount,
+    detailsOpen,
+    isMobile,
+    isTaskDataMode,
+    mobileHeaderSubtitleSafe,
+    mobileModeLabel,
+    mobileSearchOpen,
+    mobileTasksCopy.openMenu,
+    mobileTasksCopy.search,
+    mobileTasksCopy.searchPlaceholder,
+    q,
+    theme.palette.primary.main,
+    ui.actionBg,
+    ui.mutedText,
+    ui.subtleText,
+    visibleTaskItems.length,
+  ]);
+
   const mobileBottomNavigationSafe = isMobile && !detailsOpen ? (
     <Box
       data-testid="tasks-mobile-bottom-nav"
@@ -4086,10 +4567,11 @@ function Tasks() {
         bottom: 0,
         zIndex: theme.zIndex.drawer + 1,
         borderTop: '1px solid',
-        borderColor: ui.borderSoft,
-        bgcolor: ui.panelSolid,
+        borderColor: alpha(theme.palette.divider, 0.55),
+        bgcolor: alpha(theme.palette.background.paper, theme.palette.mode === 'dark' ? 0.84 : 0.92),
+        backdropFilter: 'blur(18px)',
         pb: 'env(safe-area-inset-bottom, 0px)',
-        boxShadow: ui.shellShadow,
+        boxShadow: '0 -8px 22px rgba(15, 23, 42, 0.08)',
       }}
     >
       <BottomNavigation
@@ -4146,12 +4628,16 @@ function Tasks() {
   ) : null;
 
   return (
-    <MainLayout headerMode={isMobile ? 'notifications-only' : 'default'}>
+    <MainLayout
+      headerMode={isMobile ? 'notifications-only' : 'default'}
+      contentMode={isMobile ? 'edge-to-edge-mobile' : 'default'}
+      headerInlineContent={mobileTasksHeaderInline}
+    >
       <PageShell fullHeight sx={{ bgcolor: ui.pageBg }}>
         <Box
           sx={{
-            px: { xs: 1, md: 1.25 },
-            py: 1,
+            px: { xs: 0, md: 1.25 },
+            py: { xs: 0, md: 1 },
             height: '100%',
             display: 'flex',
             flexDirection: 'column',
@@ -4173,71 +4659,6 @@ function Tasks() {
             <>
           {isMobile ? (
             <>
-              <Card data-testid="tasks-mobile-header" sx={{ ...getOfficePanelSx(ui, { mb: 0.65, p: 0.45, borderRadius: '13px', flexShrink: 0 }) }}>
-                <Stack direction="row" spacing={0.6} alignItems="center" sx={{ minHeight: 40 }}>
-                  <Box sx={{ minWidth: 72, maxWidth: 108, flexShrink: 0 }}>
-                    <Typography
-                      data-testid="tasks-mobile-header-mode"
-                      sx={{ fontWeight: 900, fontSize: '0.78rem', lineHeight: 1.05, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
-                    >
-                      {mobileModeLabel} · {visibleTaskItems.length}
-                    </Typography>
-                  </Box>
-
-                  {isTaskDataMode ? (
-                    <TextField
-                      fullWidth
-                      size="small"
-                      value={q}
-                      inputRef={searchInputRef}
-                      onChange={(event) => setQ(event.target.value)}
-                      placeholder={mobileTasksCopy.searchPlaceholder}
-                      inputProps={{ 'data-testid': 'tasks-mobile-search-input', 'aria-label': mobileTasksCopy.search }}
-                      InputProps={{ startAdornment: <SearchIcon sx={{ fontSize: 16, color: ui.subtleText, mr: 0.55 }} /> }}
-                      sx={{
-                        minWidth: 0,
-                        '& .MuiOutlinedInput-root': {
-                          minHeight: 36,
-                          borderRadius: '11px',
-                        },
-                        '& .MuiOutlinedInput-input': {
-                          py: 0.65,
-                          fontSize: '0.82rem',
-                        },
-                      }}
-                    />
-                  ) : (
-                    <Typography variant="caption" sx={{ color: ui.subtleText, minWidth: 0, flex: 1, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                      {mobileHeaderSubtitleSafe}
-                    </Typography>
-                  )}
-
-                  <Badge
-                    color="primary"
-                    badgeContent={activeFilterCount}
-                    invisible={!isTaskDataMode || activeFilterCount <= 0}
-                    overlap="circular"
-                  >
-                    <IconButton
-                      size="small"
-                      data-testid="tasks-mobile-open-navigation"
-                      aria-label={mobileTasksCopy.openMenu}
-                      onClick={() => setMobileBoardFiltersOpen(true)}
-                      sx={{
-                        width: 36,
-                        height: 36,
-                        borderRadius: '11px',
-                        border: '1px solid',
-                        borderColor: ui.actionBorder,
-                        bgcolor: ui.actionBg,
-                        flexShrink: 0,
-                      }}
-                    >
-                      <FilterListIcon fontSize="small" />
-                    </IconButton>
-                  </Badge>
-                </Stack>
-              </Card>
               {false ? (
                 <>
               <Card data-testid="tasks-mobile-header-legacy" sx={{ ...getOfficePanelSx(ui, { mb: 1, p: 1, borderRadius: '16px', flexShrink: 0 }) }}>
@@ -5878,24 +6299,62 @@ function Tasks() {
                   </Tooltip>
                 </Stack>
 
-                <LocalTaskDescriptionField
-                  initialValue={createData.description}
-                  onDraftChange={handleCreateDescriptionDraftChange}
-                  resetKey={createOpen ? 'open' : 'closed'}
-                  fullWidth
-                  multiline
-                  minRows={2}
-                  maxRows={5}
-                  variant="standard"
-                  placeholder="Описание"
-                  inputProps={{ 'aria-label': 'Описание' }}
-                  InputProps={{ disableUnderline: true }}
-                  sx={{
-                    mt: 0.2,
-                    '& .MuiInputBase-input': { color: ui.text, fontSize: '0.96rem', lineHeight: 1.45 },
-                    '& .MuiInputBase-input::placeholder': { color: ui.mutedText, opacity: 0.85 },
-                  }}
-                />
+                {isMobile ? (
+                  <Button
+                    type="button"
+                    fullWidth
+                    data-testid="create-description-mobile-open"
+                    onClick={() => handleOpenCreateMobileSheet('description')}
+                    sx={{
+                      mt: 0.2,
+                      px: 0,
+                      py: 0.55,
+                      justifyContent: 'flex-start',
+                      textAlign: 'left',
+                      textTransform: 'none',
+                      color: createDescriptionSummary ? ui.text : ui.mutedText,
+                      borderRadius: '10px',
+                    }}
+                  >
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography sx={{ fontWeight: 850, fontSize: '0.92rem', lineHeight: 1.25 }}>
+                        Описание
+                      </Typography>
+                      <Typography
+                        variant="body2"
+                        sx={{
+                          color: createDescriptionSummary ? ui.mutedText : ui.subtleText,
+                          mt: 0.25,
+                          display: '-webkit-box',
+                          WebkitLineClamp: 2,
+                          WebkitBoxOrient: 'vertical',
+                          overflow: 'hidden',
+                        }}
+                      >
+                        {createDescriptionSummary || 'Добавить описание задачи'}
+                      </Typography>
+                    </Box>
+                  </Button>
+                ) : (
+                  <LocalTaskDescriptionField
+                    initialValue={createData.description}
+                    onDraftChange={handleCreateDescriptionDraftChange}
+                    resetKey={createOpen ? 'open' : 'closed'}
+                    fullWidth
+                    multiline
+                    minRows={2}
+                    maxRows={5}
+                    variant="standard"
+                    placeholder="Описание"
+                    inputProps={{ 'aria-label': 'Описание' }}
+                    InputProps={{ disableUnderline: true }}
+                    sx={{
+                      mt: 0.2,
+                      '& .MuiInputBase-input': { color: ui.text, fontSize: '0.96rem', lineHeight: 1.45 },
+                      '& .MuiInputBase-input::placeholder': { color: ui.mutedText, opacity: 0.85 },
+                    }}
+                  />
+                )}
 
                 <Stack spacing={1.05} sx={{ mt: 1.2 }}>
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={{ xs: 0.45, sm: 1.4 }} alignItems={{ xs: 'stretch', sm: 'center' }}>
@@ -5947,20 +6406,43 @@ function Tasks() {
                     <Typography sx={{ width: { sm: 120 }, flexShrink: 0, color: ui.subtleText, fontSize: '0.86rem', fontWeight: 700 }}>
                       Крайний срок
                     </Typography>
-                    <TextField
-                      type="datetime-local"
-                      value={createData.due_at}
-                      onChange={(event) => setCreateData((prev) => ({ ...prev, due_at: event.target.value }))}
-                      fullWidth
-                      size="small"
-                      variant="standard"
-                      inputProps={{ 'aria-label': 'Крайний срок' }}
-                      InputProps={{
-                        disableUnderline: true,
-                        startAdornment: <CalendarMonthOutlinedIcon sx={{ mr: 1, fontSize: 19, color: theme.palette.primary.main }} />,
-                      }}
-                      sx={{ '& .MuiInputBase-root': { minHeight: 34 } }}
-                    />
+                    {isMobile ? (
+                      <Button
+                        type="button"
+                        fullWidth
+                        variant="text"
+                        data-testid="create-due-mobile-open"
+                        onClick={() => setCreateDueSheetOpen(true)}
+                        startIcon={<CalendarMonthOutlinedIcon />}
+                        sx={{
+                          justifyContent: 'flex-start',
+                          minHeight: 34,
+                          px: 0,
+                          color: ui.text,
+                          textTransform: 'none',
+                          fontWeight: 800,
+                          borderRadius: '10px',
+                          '& .MuiButton-startIcon': { color: theme.palette.primary.main },
+                        }}
+                      >
+                        {createDueLabel}
+                      </Button>
+                    ) : (
+                      <TextField
+                        type="datetime-local"
+                        value={createData.due_at}
+                        onChange={(event) => setCreateData((prev) => ({ ...prev, due_at: event.target.value }))}
+                        fullWidth
+                        size="small"
+                        variant="standard"
+                        inputProps={{ 'aria-label': 'Крайний срок' }}
+                        InputProps={{
+                          disableUnderline: true,
+                          startAdornment: <CalendarMonthOutlinedIcon sx={{ mr: 1, fontSize: 19, color: theme.palette.primary.main }} />,
+                        }}
+                        sx={{ '& .MuiInputBase-root': { minHeight: 34 } }}
+                      />
+                    )}
                   </Stack>
                 </Stack>
 
@@ -5993,7 +6475,7 @@ function Tasks() {
                         color={selected ? 'primary' : 'default'}
                         variant={selected ? 'filled' : 'outlined'}
                         label={label}
-                        onClick={() => handleToggleCreateOptionalSection(option.key)}
+                        onClick={() => handleOpenCreateMobileSheet(option.key)}
                         sx={{
                           fontWeight: 800,
                           borderRadius: '8px',
@@ -6015,7 +6497,7 @@ function Tasks() {
                 </Stack>
               </Box>
 
-              <Collapse in={Boolean(createOptionalSections.controller || createOptionalSections.advanced)} unmountOnExit>
+              <Collapse in={Boolean(!isMobile && (createOptionalSections.controller || createOptionalSections.advanced))} unmountOnExit>
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px' }) }}>
                   <Autocomplete
                     fullWidth
@@ -6039,7 +6521,7 @@ function Tasks() {
                 </Box>
               </Collapse>
 
-              <Collapse in={Boolean(createOptionalSections.checklist)} unmountOnExit>
+              <Collapse in={Boolean(!isMobile && createOptionalSections.checklist)} unmountOnExit>
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px' }) }}>
                   <Stack spacing={0.9}>
                     <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
@@ -6086,7 +6568,7 @@ function Tasks() {
                 </Box>
               </Collapse>
 
-              <Collapse in={Boolean(createOptionalSections.files)} unmountOnExit>
+              <Collapse in={Boolean(!isMobile && createOptionalSections.files)} unmountOnExit>
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: { xs: 1, sm: 1.2 }, borderRadius: '12px' }) }}>
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
                     <Typography sx={{ fontWeight: 900 }}>Файлы к задаче</Typography>
@@ -6163,7 +6645,7 @@ function Tasks() {
                 </Box>
               </Collapse>
 
-              <Collapse in={Boolean(createOptionalSections.schedule)} unmountOnExit>
+              <Collapse in={Boolean(!isMobile && createOptionalSections.schedule)} unmountOnExit>
                 <Grid container spacing={1.2}>
                   <Grid item xs={12} md={4}>
                     <TextField
@@ -6190,7 +6672,7 @@ function Tasks() {
                 </Grid>
               </Collapse>
 
-              <Collapse in={Boolean(createOptionalSections.project)} unmountOnExit>
+              <Collapse in={Boolean(!isMobile && createOptionalSections.project)} unmountOnExit>
                 <Grid container spacing={1.2} alignItems="flex-start">
                   <Grid item xs={12}>
                     <FormControl fullWidth size="small">
@@ -6242,7 +6724,7 @@ function Tasks() {
                 </Grid>
               </Collapse>
 
-              <Collapse in={Boolean(createOptionalSections.access)} unmountOnExit>
+              <Collapse in={Boolean(!isMobile && createOptionalSections.access)} unmountOnExit>
                 <Grid container spacing={1.2}>
                   <Grid item xs={12} md={6}>
                     <Autocomplete
@@ -6308,6 +6790,174 @@ function Tasks() {
             </Button>
           </DialogActions>
         </Dialog>
+
+        <Drawer
+          data-testid="create-due-mobile-drawer"
+          anchor="bottom"
+          open={Boolean(isMobile && createDueSheetOpen)}
+          onClose={() => {
+            setCreateDueSheetOpen(false);
+            setCreateDueCustomOpen(false);
+          }}
+          sx={{ zIndex: theme.zIndex.modal + 2 }}
+          PaperProps={{
+            style: { zIndex: theme.zIndex.modal + 3 },
+            sx: {
+              borderTopLeftRadius: 22,
+              borderTopRightRadius: 22,
+              bgcolor: ui.panelSolid,
+              color: ui.text,
+              borderTop: '1px solid',
+              borderColor: ui.borderSoft,
+              boxShadow: ui.dialogShadow,
+              maxHeight: '82dvh',
+              overflow: 'hidden',
+            },
+          }}
+        >
+          <Box
+            data-testid="create-due-mobile-sheet"
+            sx={{
+              px: 2,
+              pt: 1.1,
+              pb: 'calc(1.4rem + env(safe-area-inset-bottom, 0px))',
+            }}
+          >
+            <Box sx={{ width: 54, height: 5, borderRadius: 999, bgcolor: alpha(ui.mutedText, 0.35), mx: 'auto', mb: 1.4 }} />
+            <Typography sx={{ textAlign: 'center', fontWeight: 950, fontSize: '1.16rem', mb: 1.2 }}>
+              Крайний срок
+            </Typography>
+            <Stack spacing={0.15}>
+              {createDuePresets.map((preset) => {
+                const selected = String(createData.due_at || '') === String(preset.value || '');
+                return (
+                  <Button
+                    key={preset.key}
+                    data-testid={`create-due-preset-${preset.key}`}
+                    onClick={() => handleSelectCreateDuePreset(preset.value)}
+                    sx={{
+                      minHeight: 64,
+                      px: 1.3,
+                      py: 0.9,
+                      justifyContent: 'space-between',
+                      textAlign: 'left',
+                      textTransform: 'none',
+                      borderRadius: '14px',
+                      color: ui.text,
+                      bgcolor: selected ? alpha(theme.palette.primary.main, 0.16) : 'transparent',
+                      '&:hover': {
+                        bgcolor: selected ? alpha(theme.palette.primary.main, 0.2) : ui.actionHover,
+                      },
+                    }}
+                  >
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography sx={{ fontWeight: 900, fontSize: '1rem', lineHeight: 1.15 }}>
+                        {preset.label}
+                      </Typography>
+                      {preset.description ? (
+                        <Typography variant="body2" sx={{ color: ui.subtleText, mt: 0.35 }}>
+                          {preset.description}
+                        </Typography>
+                      ) : null}
+                    </Box>
+                    {selected ? <CheckIcon sx={{ color: theme.palette.primary.main, flexShrink: 0 }} /> : null}
+                  </Button>
+                );
+              })}
+
+              <Button
+                data-testid="create-due-custom-open"
+                onClick={handleOpenCreateCustomDue}
+                endIcon={<CalendarMonthOutlinedIcon />}
+                sx={{
+                  minHeight: 60,
+                  px: 1.3,
+                  py: 0.9,
+                  justifyContent: 'space-between',
+                  textAlign: 'left',
+                  textTransform: 'none',
+                  borderRadius: '14px',
+                  color: ui.text,
+                  '&:hover': { bgcolor: ui.actionHover },
+                }}
+              >
+                <Typography sx={{ fontWeight: 900, fontSize: '1rem' }}>
+                  Указать свою дату
+                </Typography>
+              </Button>
+            </Stack>
+
+            <Collapse in={createDueCustomOpen} unmountOnExit>
+              <Stack spacing={1} sx={{ mt: 1.1 }}>
+                <TextField
+                  data-testid="create-due-custom-input"
+                  label="Свой срок"
+                  type="datetime-local"
+                  value={createData.due_at}
+                  onChange={(event) => setCreateData((prev) => ({ ...prev, due_at: event.target.value }))}
+                  InputLabelProps={{ shrink: true }}
+                  fullWidth
+                  size="small"
+                />
+                <Button
+                  variant="contained"
+                  onClick={() => {
+                    setCreateDueSheetOpen(false);
+                    setCreateDueCustomOpen(false);
+                  }}
+                  sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px', boxShadow: 'none' }}
+                >
+                  Готово
+                </Button>
+              </Stack>
+            </Collapse>
+          </Box>
+        </Drawer>
+
+        <Drawer
+          data-testid="create-mobile-sheet-drawer"
+          anchor="bottom"
+          open={Boolean(isMobile && createMobileSheet)}
+          onClose={handleCloseCreateMobileSheet}
+          sx={{ zIndex: theme.zIndex.modal + 2 }}
+          PaperProps={{
+            style: { zIndex: theme.zIndex.modal + 3 },
+            sx: {
+              borderTopLeftRadius: 22,
+              borderTopRightRadius: 22,
+              bgcolor: ui.panelSolid,
+              color: ui.text,
+              borderTop: '1px solid',
+              borderColor: ui.borderSoft,
+              boxShadow: ui.dialogShadow,
+              maxHeight: '88dvh',
+              overflow: 'hidden',
+            },
+          }}
+        >
+          <Box
+            data-testid="create-mobile-sheet"
+            sx={{
+              px: 2,
+              pt: 1.1,
+              pb: 'calc(1.4rem + env(safe-area-inset-bottom, 0px))',
+              maxHeight: '88dvh',
+              overflowY: 'auto',
+              ...hideMobileScrollbarSx,
+            }}
+          >
+            <Box sx={{ width: 54, height: 5, borderRadius: 999, bgcolor: alpha(ui.mutedText, 0.35), mx: 'auto', mb: 1.4 }} />
+            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: 1.2 }}>
+              <Typography sx={{ fontWeight: 950, fontSize: '1.16rem' }}>
+                {createMobileSheetTitle}
+              </Typography>
+              <IconButton size="small" aria-label="Закрыть плашку" onClick={handleCloseCreateMobileSheet}>
+                <CloseIcon fontSize="small" />
+              </IconButton>
+            </Stack>
+            {createMobileSheetContent}
+          </Box>
+        </Drawer>
 
         <Dialog
           open={editOpen}

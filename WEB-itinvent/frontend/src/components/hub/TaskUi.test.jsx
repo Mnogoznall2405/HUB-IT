@@ -8,6 +8,7 @@ import {
   normalizeTaskDetailTab,
   TaskContextSidebar,
   TaskDetailHeader,
+  TaskMobileContentSummary,
   TaskPreviewDrawer,
 } from './TaskUi';
 
@@ -131,6 +132,46 @@ describe('TaskUi helpers', () => {
     expect(screen.getByTestId('task-detail-mobile-header')).toBeInTheDocument();
     expect(screen.getByTestId('task-detail-mobile-actions')).toBeInTheDocument();
     expect(screen.getByRole('button', { name: /Назад/i })).toBeInTheDocument();
+  });
+
+  it('renders mobile task content with title, description, and files first', () => {
+    const onDownloadAttachment = vi.fn();
+    const onDownloadReport = vi.fn();
+
+    render(
+      <ThemeProvider theme={theme}>
+        <TaskMobileContentSummary
+          task={sampleTask}
+          attachments={[
+            {
+              id: 'att-1',
+              file_name: 'акт-перемещения.pdf',
+              file_size: 2048,
+              uploaded_at: '2026-03-21T09:10:00Z',
+            },
+          ]}
+          canUploadFiles
+          uploadingAttachment={false}
+          onUploadAttachment={vi.fn()}
+          onDownloadAttachment={onDownloadAttachment}
+          onDownloadReport={onDownloadReport}
+          formatDateTime={(value) => value || '-'}
+          formatFileSize={(value) => `${value} B`}
+          ui={ui}
+          theme={theme}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByTestId('task-mobile-content')).toBeInTheDocument();
+    expect(screen.getByText(sampleTask.title)).toBeInTheDocument();
+    expect(screen.getByTestId('task-mobile-description')).toHaveTextContent('Проверить INV_NO');
+    expect(screen.getByTestId('task-mobile-files')).toHaveTextContent('акт-перемещения.pdf');
+    expect(screen.getByTestId('task-mobile-files')).toHaveTextContent('report.pdf');
+    expect(screen.getByRole('button', { name: /Прикрепить файл/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Скачать акт-перемещения\.pdf/i }));
+    expect(onDownloadAttachment).toHaveBeenCalledTimes(1);
   });
 
   it('renders mobile context sidebar as compact sections', () => {

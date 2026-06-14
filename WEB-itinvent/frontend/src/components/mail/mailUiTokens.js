@@ -103,6 +103,10 @@ export function buildMailUiTokens(theme) {
     fontSizeMeta: '0.8rem',
     fontSizeFine: '0.78rem',
     fontSizeLabel: '0.82rem',
+    mobilePreviewSubjectFontSize: '1.28rem',
+    mobilePreviewSenderFontSize: '0.95rem',
+    mobilePreviewMetaColor: office.mutedText,
+    metadataEmailLinkColor: office.isDark ? '#e7c66a' : '#b45309',
     lineHeightMeta: 1.35,
     uiFontFamily: MAIL_UI_FONT_FAMILY,
     messageFontFamily: MAIL_MESSAGE_FONT_FAMILY,
@@ -318,6 +322,257 @@ export function getMailSheetHandleSx(tokens, overrides = {}) {
     borderRadius: MAIL_UI_RADII.round,
     bgcolor: tokens.panelBorder || tokens.borderSoft,
     mx: 'auto',
+    ...overrides,
+  };
+}
+
+export function getMailMobileBottomBarSx(tokens, overrides = {}) {
+  return {
+    flexShrink: 0,
+    minHeight: `calc(${tokens.bulkBarHeight}px + env(safe-area-inset-bottom, 0px))`,
+    px: 1,
+    pt: 0.45,
+    pb: 'calc(0.45rem + env(safe-area-inset-bottom, 0px))',
+    bgcolor: tokens.bulkBottomBarBg,
+    borderTop: '1px solid',
+    borderColor: tokens.panelBorder,
+    boxShadow: tokens.isDark
+      ? '0 -8px 24px rgba(0, 0, 0, 0.22)'
+      : '0 -8px 24px rgba(15, 23, 42, 0.08)',
+    ...overrides,
+  };
+}
+
+export function getMailMobileBottomBarOffset(tokens, extraPx = 24) {
+  return `calc(${tokens.bulkBarHeight}px + ${extraPx}px + env(safe-area-inset-bottom, 0px))`;
+}
+
+export function getMailMobilePreviewSubjectSx(tokens, overrides = {}) {
+  return {
+    fontWeight: 400,
+    fontSize: tokens.mobilePreviewSubjectFontSize || '1.28rem',
+    lineHeight: 1.28,
+    color: tokens.textPrimary,
+    display: '-webkit-box',
+    WebkitLineClamp: 3,
+    WebkitBoxOrient: 'vertical',
+    overflow: 'hidden',
+    wordBreak: 'break-word',
+    ...overrides,
+  };
+}
+
+export function getMailMobilePreviewSenderSx(tokens, overrides = {}) {
+  return {
+    fontWeight: 600,
+    fontSize: tokens.mobilePreviewSenderFontSize || '0.95rem',
+    lineHeight: 1.25,
+    color: tokens.textPrimary,
+    wordBreak: 'break-word',
+    ...overrides,
+  };
+}
+
+export function getMailMetadataEmailLinkSx(tokens, overrides = {}) {
+  const linkColor = tokens.metadataEmailLinkColor || (tokens.isDark ? '#e7c66a' : '#b45309');
+  return {
+    color: linkColor,
+    textDecoration: 'none',
+    wordBreak: 'break-all',
+    '&:hover': {
+      textDecoration: 'underline',
+    },
+    ...overrides,
+  };
+}
+
+export function getMailQuickReplyBarSx(tokens, overrides = {}) {
+  const { embedded = false, ...restOverrides } = overrides;
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 0.75,
+    px: 1.25,
+    py: embedded ? 0.85 : 0.65,
+    bgcolor: embedded ? 'transparent' : (tokens.isDark ? alpha(tokens.panelBg, 0.92) : alpha(tokens.panelBg, 0.98)),
+    borderTop: embedded ? '1px solid' : '1px solid',
+    borderColor: tokens.panelBorder,
+    mt: embedded ? 1.5 : 0,
+    ...restOverrides,
+  };
+}
+
+export function getMailQuickReplyInputSx(tokens, overrides = {}) {
+  return {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 0.75,
+    px: 1.35,
+    py: 0.75,
+    borderRadius: tokens.chipRadius || MAIL_UI_RADII.round,
+    bgcolor: tokens.isDark ? alpha('#ffffff', 0.06) : alpha('#000000', 0.04),
+    border: '1px solid',
+    borderColor: tokens.isDark ? alpha('#ffffff', 0.08) : alpha('#000000', 0.08),
+    ...overrides,
+  };
+}
+
+export function getMailAttachmentSummarySx(tokens, overrides = {}) {
+  return {
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 0.75,
+    mb: 0.75,
+    px: 0.1,
+    ...overrides,
+  };
+}
+
+export function getMailAttachmentStripSx(tokens, overrides = {}) {
+  return {
+    display: 'flex',
+    gap: 0.75,
+    overflowX: 'auto',
+    WebkitOverflowScrolling: 'touch',
+    scrollbarWidth: 'none',
+    '&::-webkit-scrollbar': { display: 'none' },
+    pb: 0.25,
+    mx: -0.15,
+    px: 0.15,
+    ...overrides,
+  };
+}
+
+export function getMailAttachmentCompactCardSx(tokens, overrides = {}) {
+  return {
+    width: 132,
+    minWidth: 132,
+    height: 74,
+    flexShrink: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'flex-start',
+    justifyContent: 'space-between',
+    textAlign: 'left',
+    p: 0.85,
+    borderRadius: tokens.radiusMd,
+    border: '1px solid',
+    borderColor: tokens.isDark ? alpha('#ffffff', 0.08) : '#dfe3ea',
+    bgcolor: tokens.isDark ? '#2a3038' : '#eef1f5',
+    overflow: 'hidden',
+    transition: tokens.transition,
+    '&:hover': {
+      bgcolor: tokens.isDark ? '#323844' : '#e4e8ee',
+    },
+    ...overrides,
+  };
+}
+
+export function getMailAttachmentCompactBadgeSx(tokens, color, overrides = {}) {
+  return {
+    display: 'inline-flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    px: 0.55,
+    py: 0.1,
+    borderRadius: tokens.radiusXs,
+    bgcolor: color,
+    color: '#fff',
+    fontSize: '0.62rem',
+    fontWeight: 800,
+    lineHeight: 1.2,
+    letterSpacing: '0.02em',
+    ...overrides,
+  };
+}
+
+export function getMailAttachmentIconTileSx(tokens, overrides = {}) {
+  return {
+    width: 48,
+    height: 48,
+    flexShrink: 0,
+    display: 'grid',
+    placeItems: 'center',
+    borderRadius: tokens.chipRadius || MAIL_UI_RADII.round,
+    border: '1px solid',
+    borderColor: tokens.isDark ? alpha('#ffffff', 0.08) : '#e7e9ee',
+    bgcolor: tokens.isDark ? '#191d24' : '#f5f6f8',
+    transition: tokens.transition,
+    '&:hover': {
+      bgcolor: tokens.isDark ? '#20252d' : '#eef1f5',
+    },
+    ...overrides,
+  };
+}
+
+export function getMailSmartReplyChipsSx(tokens, overrides = {}) {
+  const { embedded = false, ...restOverrides } = overrides;
+  return {
+    display: 'flex',
+    gap: 0.65,
+    px: 1.1,
+    py: embedded ? 0.75 : 0.55,
+    pb: embedded ? 1.25 : 0.55,
+    overflowX: 'auto',
+    WebkitOverflowScrolling: 'touch',
+    scrollbarWidth: 'none',
+    '&::-webkit-scrollbar': { display: 'none' },
+    borderTop: embedded ? 'none' : '1px solid',
+    borderColor: alpha(tokens.panelBorder, tokens.isDark ? 0.72 : 0.85),
+    ...restOverrides,
+  };
+}
+
+export function getMailMobilePreviewChromeSx(tokens, overrides = {}) {
+  return {
+    flexShrink: 0,
+    borderBottom: '1px solid',
+    borderColor: tokens.panelBorder,
+    bgcolor: tokens.panelBg,
+    ...overrides,
+  };
+}
+
+export function getMailMobileChromeBackButtonSx(tokens, overrides = {}) {
+  return {
+    width: 40,
+    height: 40,
+    color: tokens.textPrimary,
+    bgcolor: 'transparent',
+    border: 'none',
+    boxShadow: 'none',
+    borderRadius: tokens.iconButtonRadius || MAIL_UI_RADII.md,
+    transition: tokens.transition,
+    '&:hover': {
+      bgcolor: alpha(tokens.textPrimary, tokens.isDark ? 0.08 : 0.06),
+    },
+    '&.Mui-focusVisible': {
+      boxShadow: tokens.focusRing,
+    },
+    ...overrides,
+  };
+}
+
+export function getMailMobileDetailsToggleSx(tokens, overrides = {}) {
+  return {
+    flex: 1,
+    minWidth: 0,
+    display: 'flex',
+    alignItems: 'center',
+    gap: 0.55,
+    px: 0.15,
+    py: 0.35,
+    borderRadius: tokens.radiusSm,
+    textAlign: 'left',
+    justifyContent: 'flex-start',
+    color: tokens.textPrimary,
+    transition: tokens.transition,
+    '&:hover': {
+      bgcolor: tokens.actionHover,
+    },
     ...overrides,
   };
 }

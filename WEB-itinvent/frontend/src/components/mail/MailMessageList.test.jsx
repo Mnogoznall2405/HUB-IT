@@ -205,6 +205,33 @@ describe('MailMessageList', () => {
     expect(screen.queryByText('Sender Name')).toBeNull();
   });
 
+  it('shows the real attachment count in the message list chip', () => {
+    const props = buildProps({
+      isMobile: false,
+      listData: {
+        items: [
+          {
+            id: 'msg-att',
+            sender: 'boss@example.com',
+            sender_email: 'boss@example.com',
+            sender_display: 'Boss Name',
+            subject: 'Files attached',
+            body_preview: 'Preview text',
+            received_at: '2026-04-08T10:00:00Z',
+            is_read: false,
+            has_attachments: true,
+            attachments_count: 4,
+          },
+        ],
+        has_more: false,
+      },
+    });
+
+    renderWithTheme(<MailMessageList {...props} />);
+
+    expect(screen.getByText('4')).toBeVisible();
+  });
+
   it('keeps swipe labels hidden at rest, reveals parked actions and commits full swipe on mobile', () => {
     vi.useFakeTimers();
     const props = buildProps();

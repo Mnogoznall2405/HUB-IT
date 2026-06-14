@@ -56,7 +56,7 @@ export default function MailConversationReader({
           WebkitOverflowScrolling: 'touch',
           px: 1.2,
           py: 1,
-          pb: isMobile ? 'calc(86px + env(safe-area-inset-bottom, 0px))' : { xs: 9, sm: 1.4 },
+          pb: { xs: 1, sm: 1.4 },
           bgcolor: ui?.panelBg,
         }}
       >

@@ -1,12 +1,15 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  buildCreateDuePresets,
   buildCalendarDays,
   buildDeadlineBuckets,
   buildGanttRows,
   buildMobileTaskActionState,
   buildMobileTaskFeed,
+  formatCreateDueLabel,
   normalizeTaskMode,
+  toLocalDateTimeInput,
   toLocalDateKey,
 } from './tasksViewModel';
 
@@ -117,6 +120,26 @@ describe('tasks view model', () => {
       stepLabel: 'Завершено',
       actionLabel: '',
     }));
+  });
+
+  it('builds quick create due presets at 19:00', () => {
+    const presets = buildCreateDuePresets(new Date(2026, 5, 14, 13, 5, 0));
+    const byKey = Object.fromEntries(presets.map((preset) => [preset.key, preset]));
+
+    expect(byKey.today.value).toBe('2026-06-14T19:00');
+    expect(byKey.tomorrow.value).toBe('2026-06-15T19:00');
+    expect(byKey.next_week_end.value).toBe('2026-06-19T19:00');
+    expect(byKey.none.value).toBe('');
+  });
+
+  it('formats quick create due labels', () => {
+    const reference = new Date(2026, 5, 14, 13, 5, 0);
+
+    expect(formatCreateDueLabel('', reference)).toBe('Без срока');
+    expect(formatCreateDueLabel('2026-06-14T19:00', reference)).toBe('сегодня в 19:00');
+    expect(formatCreateDueLabel('2026-06-15T19:00', reference)).toBe('завтра в 19:00');
+    expect(formatCreateDueLabel('2026-06-19T19:00', reference)).toBe('19.06 в 19:00');
+    expect(toLocalDateTimeInput(new Date(2026, 5, 15, 19, 0, 0))).toBe('2026-06-15T19:00');
   });
 
   it('places due tasks into the calendar grid and counts open tasks without due date', () => {

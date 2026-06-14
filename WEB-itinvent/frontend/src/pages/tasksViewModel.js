@@ -68,6 +68,79 @@ const dateAtHour = (value, hour = 18) => {
   return date;
 };
 
+export const toLocalDateTimeInput = (value) => {
+  const parsed = parseTaskDate(value);
+  if (!parsed) return '';
+  const local = new Date(parsed.getTime() - (parsed.getTimezoneOffset() * 60000));
+  return local.toISOString().slice(0, 16);
+};
+
+const WORK_END_HOUR = 19;
+
+const dateAtWorkEnd = (value) => {
+  const date = startOfLocalDay(value);
+  date.setHours(WORK_END_HOUR, 0, 0, 0);
+  return date;
+};
+
+const nextFridayAtWorkEnd = (value) => {
+  const source = parseTaskDate(value) || new Date();
+  const target = dateAtWorkEnd(source);
+  const normalizedDay = target.getDay() || 7;
+  let daysUntilFriday = 5 - normalizedDay;
+  if (daysUntilFriday < 0) daysUntilFriday += 7;
+  if (daysUntilFriday === 0 && source.getTime() > target.getTime()) daysUntilFriday = 7;
+  target.setDate(target.getDate() + daysUntilFriday);
+  return target;
+};
+
+export const buildCreateDuePresets = (now = new Date()) => {
+  const today = dateAtWorkEnd(now);
+  const tomorrow = dateAtWorkEnd(addDays(now, 1));
+  const nextWeekEnd = nextFridayAtWorkEnd(now);
+
+  return [
+    {
+      key: 'today',
+      label: 'Сегодня',
+      description: today.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' }),
+      value: toLocalDateTimeInput(today),
+    },
+    {
+      key: 'tomorrow',
+      label: 'Завтра',
+      description: tomorrow.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' }),
+      value: toLocalDateTimeInput(tomorrow),
+    },
+    {
+      key: 'next_week_end',
+      label: 'В конце следующей недели',
+      description: nextWeekEnd.toLocaleDateString('ru-RU', { weekday: 'long', day: 'numeric', month: 'long' }),
+      value: toLocalDateTimeInput(nextWeekEnd),
+    },
+    {
+      key: 'none',
+      label: 'Без срока',
+      description: '',
+      value: '',
+    },
+  ];
+};
+
+export const formatCreateDueLabel = (value, now = new Date()) => {
+  const parsed = parseTaskDate(value);
+  if (!parsed) return 'Без срока';
+
+  const valueKey = toLocalDateKey(parsed);
+  const todayKey = toLocalDateKey(now);
+  const tomorrowKey = toLocalDateKey(addDays(now, 1));
+  const time = parsed.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+
+  if (valueKey === todayKey) return `сегодня в ${time}`;
+  if (valueKey === tomorrowKey) return `завтра в ${time}`;
+  return `${parsed.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' })} в ${time}`;
+};
+
 export const toLocalDateKey = (value) => {
   const date = parseTaskDate(value);
   if (!date) return '';

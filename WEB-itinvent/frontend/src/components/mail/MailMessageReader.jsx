@@ -1,11 +1,12 @@
-import { Alert, Box, Button, Stack, Typography } from '@mui/material';
-import MailAttachmentCard from './MailAttachmentCard';
+import { Alert, Box, Button } from '@mui/material';
+import MailAttachmentHero from './MailAttachmentHero';
 
 export default function MailMessageReader({
   message,
   renderState,
   ui,
   isMobile = false,
+  scrollRoot = true,
   formatFileSize,
   getRenderedContentSx,
   onRevealRemoteImages,
@@ -29,15 +30,17 @@ export default function MailMessageReader({
 
   return (
     <Box
-      className="mail-scroll-hidden mail-safe-bottom"
+      className={scrollRoot ? 'mail-scroll-hidden mail-safe-bottom' : undefined}
       sx={{
-        flex: 1,
-        minHeight: 0,
-        overflowY: 'auto',
-        overflowX: 'hidden',
-        WebkitOverflowScrolling: 'touch',
+        ...(scrollRoot ? {
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          WebkitOverflowScrolling: 'touch',
+        } : {}),
         p: { xs: 1.35, md: 2 },
-        pb: isMobile ? 'calc(86px + env(safe-area-inset-bottom, 0px))' : { xs: 1.35, md: 2 },
+        pb: { xs: scrollRoot ? 1.35 : 0.5, md: 2 },
       }}
     >
       {renderResult.hasBlockedExternalImages ? (
@@ -58,23 +61,12 @@ export default function MailMessageReader({
         </Alert>
       ) : null}
       {visibleAttachments.length > 0 ? (
-        <Stack spacing={0.6} sx={{ mb: 1.2 }}>
-          <Typography variant="caption" color="text.secondary">{`${visibleAttachments.length} вложений • ${attachmentTotalSize}`}</Typography>
-          <Stack spacing={0.85}>
-            {visibleAttachments.map((attachment, index) => (
-              <MailAttachmentCard
-                key={`${attachment?.id || attachment?.name || index}`}
-                attachment={attachment}
-                formatFileSize={formatFileSize}
-                onOpen={() => onOpenAttachment?.(message, attachment)}
-                onDownload={(event) => {
-                  event?.stopPropagation?.();
-                  onDownloadAttachment?.(message, attachment);
-                }}
-              />
-            ))}
-          </Stack>
-        </Stack>
+        <MailAttachmentHero
+          attachments={visibleAttachments}
+          attachmentTotalSize={attachmentTotalSize}
+          formatFileSize={formatFileSize}
+          onOpen={(attachment) => onOpenAttachment?.(message, attachment)}
+        />
       ) : null}
       {hasQuotedHistory ? (
         <Button

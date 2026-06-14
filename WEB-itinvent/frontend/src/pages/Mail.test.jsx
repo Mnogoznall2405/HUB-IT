@@ -179,25 +179,50 @@ vi.mock('../components/mail/MailAdvancedSearchDialog', () => ({
   ) : null),
 }));
 vi.mock('../components/mail/MailBulkActionBar', () => ({
-  default: ({ count, isMobile, onClear, onMarkRead, onMarkUnread, onDelete, onArchive }) => (
-    <div data-testid="mail-bulk-action-bar" data-count={String(count || 0)} data-mobile={isMobile ? 'true' : 'false'}>
-      <button type="button" data-testid="mail-bulk-mark-read" onClick={() => onMarkRead?.()}>
-        mark-read
-      </button>
-      <button type="button" data-testid="mail-bulk-mark-unread" onClick={() => onMarkUnread?.()}>
-        mark-unread
-      </button>
-      <button type="button" data-testid="mail-bulk-archive" onClick={() => onArchive?.()}>
-        archive
-      </button>
-      <button type="button" data-testid="mail-bulk-delete" onClick={() => onDelete?.()}>
-        delete
-      </button>
-      <button type="button" data-testid="mail-bulk-clear" onClick={() => onClear?.()}>
-        clear-bulk
-      </button>
-    </div>
-  ),
+  default: ({
+    count,
+    isMobile,
+    mobilePlacement = 'all',
+    onClear,
+    onMarkRead,
+    onMarkUnread,
+    onDelete,
+    onArchive,
+  }) => {
+    const testId = mobilePlacement === 'footer'
+      ? 'mail-bulk-action-bar-footer'
+      : mobilePlacement === 'header'
+        ? 'mail-bulk-action-bar-header'
+        : 'mail-bulk-action-bar';
+    return (
+      <div
+        data-testid={testId}
+        data-count={String(count || 0)}
+        data-mobile={isMobile ? 'true' : 'false'}
+        data-mobile-placement={mobilePlacement}
+      >
+        {mobilePlacement !== 'footer' ? (
+          <>
+            <button type="button" data-testid="mail-bulk-mark-read" onClick={() => onMarkRead?.()}>
+              mark-read
+            </button>
+            <button type="button" data-testid="mail-bulk-mark-unread" onClick={() => onMarkUnread?.()}>
+              mark-unread
+            </button>
+            <button type="button" data-testid="mail-bulk-archive" onClick={() => onArchive?.()}>
+              archive
+            </button>
+            <button type="button" data-testid="mail-bulk-delete" onClick={() => onDelete?.()}>
+              delete
+            </button>
+            <button type="button" data-testid="mail-bulk-clear" onClick={() => onClear?.()}>
+              clear-bulk
+            </button>
+          </>
+        ) : null}
+      </div>
+    );
+  },
 }));
 vi.mock('../components/mail/MailComposeDialog', () => ({
   default: ({
@@ -1462,12 +1487,13 @@ describe('Mail read-state behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Требуется корпоративный пароль')).toBeTruthy();
+      expect(screen.getAllByText(/пароль.*корпоративн.*компьютер/i).length).toBeGreaterThan(0);
     });
 
     expect(mockGetBootstrap).toHaveBeenCalledTimes(1);
 
     fireEvent.change(screen.getByLabelText('Логин Exchange'), { target: { value: 'user@zsgp.corp' } });
-    fireEvent.change(screen.getByLabelText('Корпоративный пароль'), { target: { value: 'Secret123!' } });
+    fireEvent.change(screen.getByLabelText('Пароль от корпоративного компьютера'), { target: { value: 'Secret123!' } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить и открыть почту' }));
 
     await waitFor(() => {
@@ -1557,10 +1583,11 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(saveForAllDevicesButton);
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Корпоративный пароль')).toBeTruthy();
+      expect(screen.getByLabelText('Пароль от корпоративного компьютера')).toBeTruthy();
+      expect(screen.getAllByText(/пароль.*корпоративн.*компьютер/i).length).toBeGreaterThan(0);
     });
 
-    fireEvent.change(screen.getByLabelText('Корпоративный пароль'), { target: { value: 'SharedPass123!' } });
+    fireEvent.change(screen.getByLabelText('Пароль от корпоративного компьютера'), { target: { value: 'SharedPass123!' } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить и открыть почту' }));
 
     await waitFor(() => {
@@ -1577,7 +1604,7 @@ describe('Mail read-state behavior', () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByLabelText('Корпоративный пароль')).toBeNull();
+      expect(screen.queryByLabelText('Пароль от корпоративного компьютера')).toBeNull();
     });
   });
 
@@ -1735,16 +1762,17 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('mail-item-select-msg-1'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('mail-bulk-action-bar')).toHaveAttribute('data-mobile', 'true');
+      expect(screen.getByTestId('mail-bulk-action-bar-header')).toHaveAttribute('data-mobile', 'true');
     });
-    expect(screen.getByTestId('mail-bulk-action-bar')).toHaveAttribute('data-count', '1');
-    expect(screen.getByTestId('mail-list')).toHaveAttribute('data-bottom-inset', 'calc(78px + env(safe-area-inset-bottom, 0px))');
+    expect(screen.getByTestId('mail-bulk-action-bar-header')).toHaveAttribute('data-count', '1');
+    expect(screen.getByTestId('mail-bulk-action-bar-footer')).toHaveAttribute('data-count', '1');
+    expect(screen.getByTestId('mail-list')).toHaveAttribute('data-bottom-inset', '');
     expect(screen.getByTestId('mail-compose-fab')).toHaveAttribute('data-mobile-bulk-offset', 'true');
 
     fireEvent.click(screen.getByTestId('mail-item-msg-2'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('mail-bulk-action-bar')).toHaveAttribute('data-count', '2');
+      expect(screen.getByTestId('mail-bulk-action-bar-header')).toHaveAttribute('data-count', '2');
     });
     expect(screen.queryByTestId('mail-mobile-preview-screen')).toBeNull();
     expect(mockGetMessage).not.toHaveBeenCalledWith('msg-2', expect.any(Object));

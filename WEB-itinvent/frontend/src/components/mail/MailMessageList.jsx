@@ -808,7 +808,7 @@ function MessageRow({
                   <Chip
                     size="small"
                     icon={<AttachFileIcon sx={{ fontSize: '14px !important' }} />}
-                    label={String(Number(item.attachments_count || 0) || 1)}
+                    label={String(Math.max(Number(item.attachments_count || 0), item.has_attachments ? 1 : 0))}
                     sx={{
                       height: 24,
                       bgcolor: tokens.surfaceBg,

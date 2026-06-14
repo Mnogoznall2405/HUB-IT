@@ -67,6 +67,45 @@ class MailMessageActions:
             state = "read" if is_read else "unread"
             raise MailMessageActionError(f"Failed to mark message as {state}: {exc}") from exc
 
+    def set_importance(
+        self,
+        *,
+        account: Any,
+        folder_key: str,
+        exchange_id: str,
+        importance: str,
+    ) -> bool:
+        normalized = _normalize_text(importance, "normal").lower()
+        if normalized not in {"high", "normal", "low"}:
+            raise MailMessageActionError(f"Unsupported importance value: {importance}")
+
+        _folder_obj, _resolved_folder_key, item = self._message_item(
+            account=account,
+            folder_key=folder_key,
+            exchange_id=exchange_id,
+        )
+        try:
+            try:
+                from exchangelib import Importance
+            except Exception as exc:
+                raise MailMessageActionError("Exchange Importance API is unavailable.") from exc
+
+            mapping = {
+                "high": Importance.HIGH,
+                "normal": Importance.NORMAL,
+                "low": Importance.LOW,
+            }
+            target = mapping[normalized]
+            current = getattr(item, "importance", None)
+            if current != target:
+                item.importance = target
+                item.save(update_fields=["importance"])
+            return True
+        except MailMessageActionError:
+            raise
+        except Exception as exc:
+            raise MailMessageActionError(f"Failed to set message importance: {exc}") from exc
+
     def set_items_read_state(self, *, items: Iterable[Any], is_read: bool) -> MailReadStateBulkResult:
         changed = 0
         failed = 0

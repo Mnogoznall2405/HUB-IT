@@ -2171,6 +2171,7 @@ class MailService:
                 "categories",
                 "importance",
                 "has_attachments",
+                "attachments",
             )
         except Exception:
             return queryset
@@ -2925,6 +2926,98 @@ class MailService:
             )
             return True
         except MailMessageActionError as exc:
+            raise MailServiceError(str(exc)) from exc
+
+    def _update_cached_message_detail_importance(
+        self,
+        *,
+        user_id: int,
+        mailbox_id: str = "",
+        message_id: str,
+        importance: str,
+    ) -> None:
+        cache_key = self._cache_key(
+            user_id=int(user_id),
+            bucket="message_detail",
+            extra=_normalize_text(message_id),
+            mailbox_scope=mailbox_id,
+        )
+        self._runtime_cache.update_dict_value(cache_key, {"importance": _normalize_text(importance, "normal").lower()})
+
+    def set_message_importance(
+        self,
+        *,
+        user_id: int,
+        mailbox_id: str | None = None,
+        message_id: str,
+        importance: str,
+    ) -> dict[str, Any]:
+        normalized_importance = _normalize_text(importance, "normal").lower()
+        if normalized_importance not in {"high", "normal", "low"}:
+            raise MailServiceError("Unsupported importance value.")
+
+        folder_key, exchange_id, encoded_mailbox_id = self._decode_message_ref(message_id)
+        profile = self._resolve_mail_profile(
+            user_id=int(user_id),
+            mailbox_id=self._resolve_mailbox_scope(mailbox_id, encoded_mailbox_id),
+            require_password=False,
+        )
+        resolved_mailbox_id = _normalize_text(profile.get("mailbox_id"))
+        mail_context = self._resolve_account_context(
+            user_id=int(user_id),
+            mailbox_id=resolved_mailbox_id,
+            require_password=True,
+        )
+        account = mail_context["account"]
+        try:
+            self._message_actions.set_importance(
+                account=account,
+                folder_key=folder_key,
+                exchange_id=exchange_id,
+                importance=normalized_importance,
+            )
+            self._update_cached_message_detail_importance(
+                user_id=int(user_id),
+                mailbox_id=resolved_mailbox_id,
+                message_id=message_id,
+                importance=normalized_importance,
+            )
+            self.invalidate_user_cache(
+                user_id=int(user_id),
+                prefixes=("messages", "message_detail", "notification_feed", "bootstrap"),
+            )
+            return {"ok": True, "importance": normalized_importance}
+        except MailMessageActionError as exc:
+            raise MailServiceError(str(exc)) from exc
+
+    def summarize_message(
+        self,
+        *,
+        user_id: int,
+        mailbox_id: str | None = None,
+        message_id: str,
+    ) -> dict[str, str]:
+        from backend.services.mail_ai_service import MailAiServiceError, mail_ai_service
+
+        detail = self.get_message(user_id=int(user_id), mailbox_id=mailbox_id, message_id=message_id)
+        try:
+            return mail_ai_service.summarize_message(detail)
+        except MailAiServiceError as exc:
+            raise MailServiceError(str(exc)) from exc
+
+    def smart_replies_for_message(
+        self,
+        *,
+        user_id: int,
+        mailbox_id: str | None = None,
+        message_id: str,
+    ) -> dict[str, list[str]]:
+        from backend.services.mail_ai_service import MailAiServiceError, mail_ai_service
+
+        detail = self.get_message(user_id=int(user_id), mailbox_id=mailbox_id, message_id=message_id)
+        try:
+            return mail_ai_service.smart_replies(detail)
+        except MailAiServiceError as exc:
             raise MailServiceError(str(exc)) from exc
 
     def _set_conversation_read_state(

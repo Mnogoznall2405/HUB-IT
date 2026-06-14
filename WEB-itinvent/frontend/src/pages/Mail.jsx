@@ -49,7 +49,10 @@ import MailFolderRail from '../components/mail/MailFolderRail';
 import MailInitialLoadingState from '../components/mail/MailInitialLoadingState';
 import MailMessageList from '../components/mail/MailMessageList';
 import MailMessageReader from '../components/mail/MailMessageReader';
+import MailMobilePreviewChrome from '../components/mail/MailMobilePreviewChrome';
 import MailPreviewHeader from '../components/mail/MailPreviewHeader';
+import MailPreviewMobileFooter from '../components/mail/MailPreviewMobileFooter';
+import MailPreviewMobileReplySection from '../components/mail/MailPreviewMobileReplySection';
 import MailShortcutHelpDialog from '../components/mail/MailShortcutHelpDialog';
 import MailToolbar from '../components/mail/MailToolbar';
 import MailQuotaReport from '../components/mail/MailQuotaReport';
@@ -71,6 +74,7 @@ import useMailMailboxUnreadCounts from '../components/mail/useMailMailboxUnreadC
 import useMailMessageFileActions from '../components/mail/useMailMessageFileActions';
 import useMailMessageRenderState from '../components/mail/useMailMessageRenderState';
 import useMailQuickReply from '../components/mail/useMailQuickReply';
+import useMailMessageAi from '../components/mail/useMailMessageAi';
 import useMailReadMutations from '../components/mail/useMailReadMutations';
 import useMailRecentSnapshots from '../components/mail/useMailRecentSnapshots';
 import useMailRemoteImages from '../components/mail/useMailRemoteImages';
@@ -135,6 +139,7 @@ import {
 } from '../components/mail/mailComposeState';
 import {
   buildMailUiTokens,
+  getMailMobileBottomBarOffset,
   getMailDialogActionsSx,
   getMailDialogContentSx,
   getMailDialogPaperSx,
@@ -145,6 +150,9 @@ import { getMailPersonDisplay, getMailPersonEmail } from '../components/mail/mai
 import { splitQuotedHistoryHtml } from '../components/mail/mailQuotedHistory';
 
 const MAIL_SHELL_SECTION_KEY = 'mail_shell_section';
+const MAIL_COMPUTER_PASSWORD_LABEL = 'Пароль от корпоративного компьютера';
+const MAIL_COMPUTER_PASSWORD_HELPER = 'Тот же пароль, что при входе в Windows на рабочем ПК';
+const MAIL_COMPUTER_PASSWORD_HINT = 'Это пароль, который вы вводите при входе в корпоративный компьютер (Windows). Не пароль от HUB-IT и не отдельный пароль «только для почты».';
 
 function readStoredMailShellSection() {
   try {
@@ -413,6 +421,11 @@ function Mail() {
     if (!text) return;
     notifySuccess(text, { source: 'mail', dedupeMode: 'none', ...options });
   }, [notifySuccess]);
+  const notifyMailInfo = useCallback((value, options = {}) => {
+    const text = String(value || '').trim();
+    if (!text) return;
+    notifyInfo(text, { source: 'mail', dedupeMode: 'recent', ...options });
+  }, [notifyInfo]);
   const notifyMailComposeWarning = useCallback((warning) => {
     const message = String(warning?.message || '').trim();
     if (!message) return;
@@ -1318,11 +1331,11 @@ function Mail() {
     openMailCredentialsDialog(nextConfig, {
       reason: errorCode === 'MAIL_AUTH_INVALID' ? 'expired' : 'missing',
       errorText: errorCode === 'MAIL_AUTH_INVALID'
-        ? 'Пароль корпоративной почты устарел или неверен. Введите новый пароль.'
+        ? 'Неверный или устаревший пароль. Введите актуальный пароль от корпоративного компьютера (Windows).'
         : '',
     });
     setError(errorCode === 'MAIL_AUTH_INVALID'
-      ? 'Пароль корпоративной почты устарел или неверен. Введите новый пароль.'
+      ? 'Неверный или устаревший пароль. Введите актуальный пароль от корпоративного компьютера (Windows).'
       : String(fallbackMessage || '').trim());
     return true;
   }, [getMailErrorCode, mailboxInfo, openMailCredentialsDialog, refreshConfig]);
@@ -1454,6 +1467,17 @@ function Mail() {
     withActiveMailboxParams,
   });
 
+  const handleQuickReplySendingStart = useCallback(() => {
+    notifyMailInfo('Письмо отправляется…', {
+      dedupeKey: 'mail-quick-reply:sending',
+      durationMs: 4000,
+    });
+  }, [notifyMailInfo]);
+
+  const handleQuickReplySent = useCallback(() => {
+    notifyMailSuccess('Письмо отправлено.');
+  }, [notifyMailSuccess]);
+
   const {
     quickReplyBody,
     setQuickReplyBody,
@@ -1468,6 +1492,8 @@ function Mail() {
     handleMailCredentialsRequired,
     getMailErrorDetail,
     onError: setError,
+    onSendingStart: handleQuickReplySendingStart,
+    onSent: handleQuickReplySent,
   });
 
   const {
@@ -1930,7 +1956,7 @@ function Mail() {
     const password = String(mailCredentialsPassword || '').trim();
     const mailboxEmail = String(mailCredentialsEmail || '').trim();
     if (!password) {
-      setMailCredentialsError('Введите корпоративный пароль.');
+      setMailCredentialsError('Введите пароль от корпоративного компьютера.');
       return;
     }
     setMailCredentialsSaving(true);
@@ -2044,21 +2070,62 @@ function Mail() {
     handleDeleteSelectedMessage,
     handleMoveSelectedMessage,
     handleRestoreSelectedMessage,
+    handleToggleImportance,
     handleToggleReadState,
   } = useMailSelectedPreviewActions({
     afterListMutation,
     clearSelection,
     getMailErrorDetail,
     handleMailCredentialsRequired,
+    invalidateMailClientCache,
     mailAPI,
     moveTarget,
     performMailReadMutation,
     selectedConversation,
     selectedMessage,
     setError,
+    setSelectedMessage,
     viewMode,
     withActiveMailboxPayload,
   });
+
+  const handleMailAiError = useCallback((requestError) => {
+    setError(getMailErrorDetail(requestError, 'Не удалось выполнить AI-действие для письма.'));
+  }, [getMailErrorDetail, setError]);
+
+  const {
+    summary: mailAiSummary,
+    summaryLoading: mailAiSummaryLoading,
+    smartReplies: mailAiSmartReplies,
+    smartRepliesLoading: mailAiSmartRepliesLoading,
+    loadSummary: loadMailAiSummary,
+    loadSmartReplies: loadMailAiSmartReplies,
+  } = useMailMessageAi({
+    messageId: selectedMessage?.id,
+    mailboxId: activeMailboxId,
+    enabled: Boolean(selectedMessage?.id) && viewMode === 'messages',
+    onError: handleMailAiError,
+  });
+
+  const handleCopyMailSummary = useCallback(async (text) => {
+    try {
+      await navigator.clipboard.writeText(String(text || ''));
+      notifyMailSuccess('Пересказ скопирован.');
+    } catch {
+      setError('Не удалось скопировать пересказ.');
+    }
+  }, [notifyMailSuccess, setError]);
+
+  const handleSmartReplySelect = useCallback(async (suggestion) => {
+    const nextBody = String(suggestion || '').trim();
+    if (!nextBody || !selectedMessage?.id) return;
+    await sendQuickReply(selectedMessage, nextBody);
+  }, [selectedMessage, sendQuickReply]);
+
+  const handleQuickReplySend = useCallback(async () => {
+    if (!selectedMessage?.id) return;
+    await sendQuickReply(selectedMessage);
+  }, [selectedMessage, sendQuickReply]);
 
   const handleMarkAllRead = useCallback(async () => {
     try {
@@ -2467,6 +2534,7 @@ function Mail() {
           })}
           onClear={clearBulkSelection}
           isMobile={isMobile}
+          mobilePlacement={isMobile ? 'header' : 'all'}
         />
       ) : null}
       <Box
@@ -2611,7 +2679,6 @@ function Mail() {
         messageListRef={messageListRef}
         loadMoreSentinelRef={loadMoreSentinelRef}
         isMobile={isMobile}
-        bottomInset={isMobile && selectedMessageIds.length > 0 ? 'calc(78px + env(safe-area-inset-bottom, 0px))' : 0}
         onSwipeRead={isMobile ? undefined : handleSwipeRead}
         onSwipeDelete={isMobile ? undefined : handleSwipeDelete}
         onRestoreMessage={handleListRestoreMessage}
@@ -2623,6 +2690,27 @@ function Mail() {
         moveTargets={moveTargets}
         onPullToRefresh={undefined}
       />
+      {viewMode === 'messages' && selectedMessageIds.length > 0 && isMobile ? (
+        <MailBulkActionBar
+          count={selectedMessageIds.length}
+          moveTarget={moveTarget}
+          moveTargets={moveTargets}
+          loading={bulkActionLoading}
+          onMoveTargetChange={setMoveTarget}
+          onMarkRead={() => runBulkAction({ action: 'mark_read', successMessage: 'Выбранные письма отмечены как прочитанные.' })}
+          onMarkUnread={() => runBulkAction({ action: 'mark_unread', successMessage: 'Выбранные письма отмечены как непрочитанные.' })}
+          onArchive={() => runBulkAction({ action: 'archive', successMessage: 'Выбранные письма отправлены в архив.' })}
+          onMove={() => runBulkAction({ action: 'move', targetFolder: moveTarget, successMessage: 'Выбранные письма перемещены.' })}
+          onDelete={() => runBulkAction({
+            action: 'delete',
+            permanent: folder === 'trash',
+            successMessage: folder === 'trash' ? 'Выбранные письма удалены навсегда.' : 'Выбранные письма перемещены в удаленные.',
+          })}
+          onClear={clearBulkSelection}
+          isMobile={isMobile}
+          mobilePlacement="footer"
+        />
+      ) : null}
     </Box>
   );
   const previewContent = composeOpen && !isMobile ? (
@@ -2653,38 +2741,88 @@ function Mail() {
       />
     </Suspense>
   ) : detailLoading && selectedMessage ? (
-    <>
-      <MailPreviewHeader
-        selectedMessage={selectedMessage}
-        selectedConversation={selectedConversation}
-        viewMode={viewMode}
-        folder={folder}
-        messageActionLoading
-        onOpenComposeFromDraft={openComposeFromDraft}
-        onOpenComposeFromMessage={openComposeFromMessage}
-        onToggleReadState={() => {}}
-        onRestoreSelectedMessage={() => {}}
-        onDeleteSelectedMessage={() => {}}
-        onArchiveSelectedMessage={() => {}}
-        moveTarget={moveTarget}
-        onMoveTargetChange={() => {}}
-        onMoveSelectedMessage={() => {}}
-        moveTargets={moveTargets}
-        onOpenHeaders={() => {}}
-        onDownloadSource={() => {}}
-        onPrintSelectedMessage={() => {}}
-        getAvatarColor={getAvatarColor}
-        getInitials={getInitials}
-        formatFullDate={formatFullDate}
-        showBackButton={isMobile}
-        onBackToList={handleBackToList}
-        compactMobile={isMobile}
-      />
-      <Box sx={{ p: 2 }}>
-        <Skeleton variant="text" width="60%" />
-        <Skeleton variant="rectangular" height={280} sx={{ mt: 1, borderRadius: '8px' }} />
+    <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {isMobile ? (
+        <MailMobilePreviewChrome
+          selectedMessage={selectedMessage}
+          selectedConversation={selectedConversation}
+          viewMode={viewMode}
+          folder={folder}
+          onBackToList={handleBackToList}
+          getAvatarColor={getAvatarColor}
+          getInitials={getInitials}
+          formatFullDate={formatFullDate}
+          formatTime={formatTime}
+        />
+      ) : (
+        <MailPreviewHeader
+          selectedMessage={selectedMessage}
+          selectedConversation={selectedConversation}
+          viewMode={viewMode}
+          folder={folder}
+          messageActionLoading
+          onOpenComposeFromDraft={openComposeFromDraft}
+          onOpenComposeFromMessage={openComposeFromMessage}
+          onToggleReadState={() => {}}
+          onRestoreSelectedMessage={() => {}}
+          onDeleteSelectedMessage={() => {}}
+          onArchiveSelectedMessage={() => {}}
+          moveTarget={moveTarget}
+          onMoveTargetChange={() => {}}
+          onMoveSelectedMessage={() => {}}
+          moveTargets={moveTargets}
+          onOpenHeaders={() => {}}
+          onDownloadSource={() => {}}
+          onPrintSelectedMessage={() => {}}
+          getAvatarColor={getAvatarColor}
+          getInitials={getInitials}
+          formatFullDate={formatFullDate}
+          showBackButton={readingPaneMode === 'off'}
+          compactMobile={false}
+          onBackToList={handleBackToList}
+        />
+      )}
+      <Box
+        className="mail-scroll-hidden"
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          WebkitOverflowScrolling: 'touch',
+        }}
+      >
+        <Box sx={{ p: 2 }}>
+          <Skeleton variant="text" width="60%" />
+          <Skeleton variant="rectangular" height={280} sx={{ mt: 1, borderRadius: '8px' }} />
+        </Box>
+        <MailPreviewMobileReplySection quickReplyDisabled />
       </Box>
-    </>
+      {isMobile ? (
+        <MailPreviewMobileFooter
+          actionBarProps={{
+            selectedMessage,
+            selectedConversation,
+            viewMode,
+            folder,
+            messageActionLoading: true,
+            onOpenComposeFromDraft: openComposeFromDraft,
+            onOpenComposeFromMessage: openComposeFromMessage,
+            onToggleReadState: () => {},
+            onRestoreSelectedMessage: () => {},
+            onDeleteSelectedMessage: () => {},
+            onArchiveSelectedMessage: () => {},
+            moveTarget,
+            onMoveTargetChange: () => {},
+            onMoveSelectedMessage: () => {},
+            moveTargets,
+            onOpenHeaders: () => {},
+            onDownloadSource: () => {},
+            onPrintSelectedMessage: () => {},
+          }}
+        />
+      ) : null}
+    </Box>
   ) : detailLoading ? (
     <Box sx={{ p: 2 }}><Skeleton variant="text" width="60%" /><Skeleton variant="rectangular" height={280} sx={{ mt: 1, borderRadius: '8px' }} /></Box>
   ) : !selectedMessage ? (
@@ -2693,33 +2831,55 @@ function Mail() {
       <Typography variant="body2" color="text.secondary">{viewMode === 'conversations' ? 'Выберите диалог' : 'Выберите письмо'}</Typography>
     </Box>
   ) : (
-    <>
-      <MailPreviewHeader
-        selectedMessage={selectedMessage}
-        selectedConversation={selectedConversation}
-        viewMode={viewMode}
-        folder={folder}
-        messageActionLoading={messageActionLoading}
-        onOpenComposeFromDraft={openComposeFromDraft}
-        onOpenComposeFromMessage={openComposeFromMessage}
-        onToggleReadState={handleToggleReadState}
-        onRestoreSelectedMessage={handleRestoreSelectedMessage}
-        onDeleteSelectedMessage={handleDeleteSelectedMessage}
-        onArchiveSelectedMessage={handleArchiveSelectedMessage}
-        moveTarget={moveTarget}
-        onMoveTargetChange={setMoveTarget}
-        onMoveSelectedMessage={handleMoveSelectedMessage}
-        moveTargets={moveTargets}
-        onOpenHeaders={handleOpenHeaders}
-        onDownloadSource={handleDownloadMessageSource}
-        onPrintSelectedMessage={handlePrintSelectedMessage}
-        getAvatarColor={getAvatarColor}
-        getInitials={getInitials}
-        formatFullDate={formatFullDate}
-        showBackButton={isMobile || readingPaneMode === 'off'}
-        compactMobile={isMobile}
-        onBackToList={handleBackToList}
-      />
+    <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
+      {isMobile ? (
+        <MailMobilePreviewChrome
+          selectedMessage={selectedMessage}
+          selectedConversation={selectedConversation}
+          viewMode={viewMode}
+          folder={folder}
+          onBackToList={handleBackToList}
+          getAvatarColor={getAvatarColor}
+          getInitials={getInitials}
+          formatFullDate={formatFullDate}
+          formatTime={formatTime}
+          summarizeLoading={mailAiSummaryLoading}
+          summarizeText={mailAiSummary}
+          onSummarize={loadMailAiSummary}
+          onCopySummary={handleCopyMailSummary}
+        />
+      ) : (
+        <MailPreviewHeader
+          selectedMessage={selectedMessage}
+          selectedConversation={selectedConversation}
+          viewMode={viewMode}
+          folder={folder}
+          messageActionLoading={messageActionLoading}
+          onOpenComposeFromDraft={openComposeFromDraft}
+          onOpenComposeFromMessage={openComposeFromMessage}
+          onToggleReadState={handleToggleReadState}
+          onRestoreSelectedMessage={handleRestoreSelectedMessage}
+          onDeleteSelectedMessage={handleDeleteSelectedMessage}
+          onArchiveSelectedMessage={handleArchiveSelectedMessage}
+          moveTarget={moveTarget}
+          onMoveTargetChange={setMoveTarget}
+          onMoveSelectedMessage={handleMoveSelectedMessage}
+          moveTargets={moveTargets}
+          onOpenHeaders={handleOpenHeaders}
+          onDownloadSource={handleDownloadMessageSource}
+          onPrintSelectedMessage={handlePrintSelectedMessage}
+          getAvatarColor={getAvatarColor}
+          getInitials={getInitials}
+          formatFullDate={formatFullDate}
+          showBackButton={readingPaneMode === 'off'}
+          compactMobile={false}
+          summarizeLoading={mailAiSummaryLoading}
+          summarizeText={mailAiSummary}
+          onSummarize={loadMailAiSummary}
+          onCopySummary={handleCopyMailSummary}
+          onBackToList={handleBackToList}
+        />
+      )}
       {viewMode === 'conversations' ? (
         <MailConversationReader
           conversation={selectedConversation}
@@ -2747,19 +2907,68 @@ function Mail() {
           onDownloadAttachment={downloadAttachmentFile}
         />
       ) : (
-        <MailMessageReader
-          message={selectedMessage}
-          renderState={selectedMessageRenderState}
-          ui={ui}
-          isMobile={isMobile}
-          formatFileSize={formatFileSize}
-          getRenderedContentSx={(options = {}) => getMailRenderedContentSx({ ...options, theme })}
-          onRevealRemoteImages={revealRemoteImagesForMessage}
-          onOpenAttachment={openAttachmentPreview}
-          onDownloadAttachment={downloadAttachmentFile}
-        />
+        <Box
+          className="mail-scroll-hidden"
+          sx={{
+            flex: 1,
+            minHeight: 0,
+            overflowY: 'auto',
+            overflowX: 'hidden',
+            WebkitOverflowScrolling: 'touch',
+          }}
+        >
+          <MailMessageReader
+            message={selectedMessage}
+            renderState={selectedMessageRenderState}
+            ui={ui}
+            isMobile={isMobile}
+            scrollRoot={false}
+            formatFileSize={formatFileSize}
+            formatFullDate={formatFullDate}
+            getRenderedContentSx={(options = {}) => getMailRenderedContentSx({ ...options, theme })}
+            onRevealRemoteImages={revealRemoteImagesForMessage}
+            onOpenAttachment={openAttachmentPreview}
+            onDownloadAttachment={downloadAttachmentFile}
+          />
+          <MailPreviewMobileReplySection
+            quickReplyBody={quickReplyBody}
+            quickReplySending={quickReplySending}
+            quickReplyDisabled={folder === 'drafts'}
+            onQuickReplyBodyChange={setQuickReplyBody}
+            onSendQuickReply={handleQuickReplySend}
+            onQuickReplyFocus={loadMailAiSmartReplies}
+            smartReplySuggestions={mailAiSmartReplies}
+            smartReplyLoading={mailAiSmartRepliesLoading}
+            onSmartReplySelect={handleSmartReplySelect}
+          />
+        </Box>
       )}
-    </>
+      {isMobile ? (
+        <MailPreviewMobileFooter
+          actionBarProps={{
+            selectedMessage,
+            selectedConversation,
+            viewMode,
+            folder,
+            messageActionLoading,
+            onOpenComposeFromDraft: openComposeFromDraft,
+            onOpenComposeFromMessage: openComposeFromMessage,
+            onToggleReadState: handleToggleReadState,
+            onToggleImportance: handleToggleImportance,
+            onRestoreSelectedMessage: handleRestoreSelectedMessage,
+            onDeleteSelectedMessage: handleDeleteSelectedMessage,
+            onArchiveSelectedMessage: handleArchiveSelectedMessage,
+            moveTarget,
+            onMoveTargetChange: setMoveTarget,
+            onMoveSelectedMessage: handleMoveSelectedMessage,
+            moveTargets,
+            onOpenHeaders: handleOpenHeaders,
+            onDownloadSource: handleDownloadMessageSource,
+            onPrintSelectedMessage: handlePrintSelectedMessage,
+          }}
+        />
+      ) : null}
+    </Box>
   );
   const previewPanel = (
     <Box
@@ -2968,11 +3177,14 @@ function Mail() {
                 : 'Текущая веб-сессия больше не может автоматически подтвердить доступ к Exchange. Выйдите и войдите заново.'
             )
             : mailCredentialsReason === 'expired'
-              ? 'Пароль корпоративной почты изменился или устарел. Логин сохранён, введите только новый пароль и почта снова откроется на всех ваших устройствах.'
-              : 'При первом входе в раздел Почта нужно один раз подтвердить корпоративный логин и пароль для Exchange, чтобы он сохранился в вашем профиле.'}
+              ? 'Пароль от корпоративного компьютера изменился. Логин сохранён — введите только новый пароль от Windows.'
+              : 'При первом входе в раздел Почта нужно один раз подтвердить логин и пароль от корпоративного компьютера. После этого почта откроется без повторного ввода.'}
         </Typography>
         {!mailRequiresRelogin || canSaveMailForAllDevices ? (
           <>
+            <Alert severity="info" sx={{ borderRadius: ui.radiusMd }}>
+              {MAIL_COMPUTER_PASSWORD_HINT}
+            </Alert>
             <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1}>
               <Chip size="small" variant="outlined" label={`Логин: ${mailCredentialsLogin || mailboxInfo?.effective_mailbox_login || 'не указан'}`} />
               <Chip size="small" variant="outlined" label={`Ящик: ${mailCredentialsEmail || mailboxInfo?.mailbox_email || 'не указан'}`} />
@@ -3190,7 +3402,7 @@ function Mail() {
               right: { xs: 16, md: 24 },
               bottom: {
                 xs: selectedMessageIds.length > 0
-                  ? 'calc(92px + env(safe-area-inset-bottom, 0px))'
+                  ? getMailMobileBottomBarOffset(ui)
                   : 'calc(20px + env(safe-area-inset-bottom, 0px))',
                 md: 28,
               },
@@ -3300,10 +3512,13 @@ function Mail() {
             <Stack spacing={1.3} sx={{ mt: 0.5 }}>
               <Alert severity={mailCredentialsReason === 'expired' ? 'warning' : 'info'} sx={{ borderRadius: ui.radiusMd }}>
                 {mailCredentialsReason === 'expired'
-                  ? 'Exchange больше не принимает сохранённый пароль. Введите новый пароль от корпоративной учётной записи.'
+                  ? 'Exchange больше не принимает сохранённый пароль. Введите новый пароль от корпоративного компьютера — тот же, что вы используете для входа в Windows.'
                   : mailCredentialsReason === 'shared'
                     ? 'После успешной проверки логин и пароль сохранятся в вашем профиле, и этот ящик будет работать на всех ваших устройствах.'
                     : 'После успешной проверки логин и пароль будут сохранены и почта откроется без повторного ввода.'}
+              </Alert>
+              <Alert severity="info" sx={{ borderRadius: ui.radiusMd }}>
+                {MAIL_COMPUTER_PASSWORD_HINT}
               </Alert>
               <TextField
                 fullWidth
@@ -3325,7 +3540,8 @@ function Mail() {
                 fullWidth
                 size="small"
                 type="password"
-                label="Корпоративный пароль"
+                label={MAIL_COMPUTER_PASSWORD_LABEL}
+                helperText={MAIL_COMPUTER_PASSWORD_HELPER}
                 value={mailCredentialsPassword}
                 onChange={(event) => setMailCredentialsPassword(event.target.value)}
                 autoFocus

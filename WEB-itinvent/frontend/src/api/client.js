@@ -965,6 +965,10 @@ export const mailAPI = {
     return mailMessageActionsAPI.markAllRead;
   },
 
+  get setImportance() {
+    return mailMessageActionsAPI.setImportance;
+  },
+
   get saveDraftMultipart() {
     return mailComposeAPI.saveDraftMultipart;
   },
@@ -1358,5 +1362,4 @@ export const scanAPI = {
 };
 
 export { adUsersAPI } from './adUsers';
-export { addressBookAPI } from './addressBook';
 export { ticketsAPI } from './tickets';

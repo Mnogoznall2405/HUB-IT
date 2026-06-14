@@ -112,7 +112,7 @@ export default function DocumentPreviewDialog({
 
     if (hasPdfPreview) {
       return (
-        <Box sx={{ p: { xs: 1, sm: 1.5 }, minHeight: 0, flex: 1, overflow: 'hidden' }}>
+        <Box sx={{ minHeight: 0, flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
           <Suspense fallback={surfaceFallback}>
             <MailPdfPreviewSurface
               objectUrl={objectUrl}
@@ -122,6 +122,7 @@ export default function DocumentPreviewDialog({
               pageCount={pageCount}
               initialPage={1}
               compact={false}
+              fillContainer
             />
           </Suspense>
         </Box>
@@ -155,14 +156,15 @@ export default function DocumentPreviewDialog({
     <Dialog
       open={Boolean(open)}
       onClose={onClose}
-      fullScreen={isMobile}
+      fullScreen
       maxWidth={false}
       PaperProps={{
         sx: {
-          width: isMobile ? '100%' : 'min(1180px, calc(100vw - 32px))',
-          height: isMobile ? '100dvh' : 'min(860px, calc(100dvh - 32px))',
-          m: isMobile ? 0 : 2,
-          borderRadius: isMobile ? 0 : '8px',
+          width: '100%',
+          height: '100dvh',
+          maxHeight: '100dvh',
+          m: 0,
+          borderRadius: 0,
           overflow: 'hidden',
           display: 'flex',
           flexDirection: 'column',

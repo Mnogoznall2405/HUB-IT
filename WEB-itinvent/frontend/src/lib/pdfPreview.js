@@ -53,6 +53,19 @@ export const loadPdfDocumentFromUrl = async (objectUrl) => {
   return loadingTask.promise;
 };
 
+export const measurePdfPageSize = async (pdf, pageNumber = 1, scale = 1) => {
+  if (!pdf) {
+    throw new Error('PDF document is missing.');
+  }
+  const safePage = Math.max(1, Math.round(Number(pageNumber || 1)));
+  const page = await pdf.getPage(safePage);
+  const viewport = page.getViewport({ scale: clampPdfDisplayScale(scale) });
+  return {
+    width: viewport.width,
+    height: viewport.height,
+  };
+};
+
 export const renderPdfPage = async ({
   pdf,
   pageNumber,
