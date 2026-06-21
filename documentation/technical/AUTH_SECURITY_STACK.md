@@ -50,6 +50,8 @@ The in-memory fallback is for dev/test only. It is not safe for multi-process pr
    - Returns `authenticated`, `2fa_required`, or `2fa_setup_required`.
 2. `POST /api/v1/auth/enable-2fa`
    - Starts TOTP enrollment for a login challenge.
+   - `otpauth_uri` uses `TOTP_ISSUER` as the display label in the path and `WEBAUTHN_RP_ID` as the `issuer` query parameter (Apple Passwords matches saved logins by domain).
+   - On iOS/macOS Safari the login UI links with `apple-otpauth://` so «Пароли» can attach the code to an existing Keychain entry; the user must save the site password first or pick the account when prompted.
 3. `POST /api/v1/auth/verify-2fa`
    - Consumes the login challenge once, enables TOTP, returns backup codes once, completes login.
 4. `POST /api/v1/auth/verify-2fa-login`

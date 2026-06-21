@@ -8,6 +8,7 @@ import {
   CHAT_SOCKET_CONVERSATION_UPDATED_EVENT,
   CHAT_SOCKET_MESSAGE_CREATED_EVENT,
   CHAT_SOCKET_MESSAGE_DELETED_EVENT,
+  CHAT_SOCKET_MESSAGE_UPDATED_EVENT,
   CHAT_SOCKET_MESSAGE_REACTION_EVENT,
   CHAT_SOCKET_MESSAGE_READ_EVENT,
   CHAT_SOCKET_PRESENCE_UPDATED_EVENT,
@@ -38,6 +39,7 @@ export default function useChatSocketEvents({
   mergeMessageIntoThread,
   messagesLoadingRef,
   messagesRef,
+  onConversationRemoved,
   promoteConversationToTop,
   queueAutoScroll,
   setAiStatusByConversation,
@@ -223,6 +225,15 @@ export default function useChatSocketEvents({
       syncConversationPreview(conversationId, message);
     };
 
+    const handleMessageUpdated = (event) => {
+      const envelope = event?.detail || {};
+      const message = envelope?.payload || {};
+      const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
+      if (!message?.id || conversationId !== activeConversationIdRef.current) return;
+      mergeMessageIntoThread(message);
+      syncConversationPreview(conversationId, message);
+    };
+
     const handleMessageRead = (event) => {
       const envelope = event?.detail || {};
       const payload = envelope?.payload || {};
@@ -338,6 +349,9 @@ export default function useChatSocketEvents({
       const payload = envelope?.payload || {};
       const conversationId = String(envelope?.conversation_id || payload?.conversation_id || '').trim();
       if (!conversationId) return;
+      if (typeof onConversationRemoved === 'function') {
+        onConversationRemoved(conversationId);
+      }
       void loadConversations({ silent: true, force: true });
     };
 
@@ -363,6 +377,7 @@ export default function useChatSocketEvents({
     window.addEventListener(CHAT_SOCKET_CONVERSATION_REMOVED_EVENT, handleConversationRemoved);
     window.addEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleMessageCreated);
     window.addEventListener(CHAT_SOCKET_MESSAGE_DELETED_EVENT, handleMessageDeleted);
+    window.addEventListener(CHAT_SOCKET_MESSAGE_UPDATED_EVENT, handleMessageUpdated);
     window.addEventListener(CHAT_SOCKET_MESSAGE_READ_EVENT, handleMessageRead);
     window.addEventListener(CHAT_SOCKET_MESSAGE_REACTION_EVENT, handleMessageReaction);
     window.addEventListener(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, handlePresenceUpdated);
@@ -377,6 +392,7 @@ export default function useChatSocketEvents({
       window.removeEventListener(CHAT_SOCKET_CONVERSATION_REMOVED_EVENT, handleConversationRemoved);
       window.removeEventListener(CHAT_SOCKET_MESSAGE_CREATED_EVENT, handleMessageCreated);
       window.removeEventListener(CHAT_SOCKET_MESSAGE_DELETED_EVENT, handleMessageDeleted);
+      window.removeEventListener(CHAT_SOCKET_MESSAGE_UPDATED_EVENT, handleMessageUpdated);
       window.removeEventListener(CHAT_SOCKET_MESSAGE_READ_EVENT, handleMessageRead);
       window.removeEventListener(CHAT_SOCKET_MESSAGE_REACTION_EVENT, handleMessageReaction);
       window.removeEventListener(CHAT_SOCKET_PRESENCE_UPDATED_EVENT, handlePresenceUpdated);
@@ -404,6 +420,7 @@ export default function useChatSocketEvents({
     mergeMessageIntoThread,
     messagesLoadingRef,
     messagesRef,
+    onConversationRemoved,
     promoteConversationToTop,
     queueAutoScroll,
     setAiStatusByConversation,

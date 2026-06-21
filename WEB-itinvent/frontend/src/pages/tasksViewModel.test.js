@@ -107,6 +107,15 @@ describe('tasks view model', () => {
       actionLabel: 'Проверить',
     }));
 
+    expect(buildMobileTaskActionState(makeTask({ id: 'waiting-review', status: 'review' }), {
+      canReview: false,
+    })).toEqual(expect.objectContaining({
+      key: 'waiting_review',
+      stepLabel: 'На проверке',
+      actionLabel: '',
+      passive: true,
+    }));
+
     expect(buildMobileTaskActionState(makeTask({ id: 'act', status: 'in_progress' }), {
       canOpenTransferActUpload: true,
     })).toEqual(expect.objectContaining({

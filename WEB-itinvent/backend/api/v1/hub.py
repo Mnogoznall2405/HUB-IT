@@ -25,6 +25,11 @@ from backend.services.authorization_service import (
     PERM_TASKS_WRITE,
 )
 from backend.services.hub_service import hub_service
+from backend.chat.task_discussion import (
+    ensure_task_discussion,
+    get_task_discussion,
+    is_task_discussion_chat_enabled,
+)
 from backend.services.task_analytics_export_service import build_task_analytics_excel
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 from backend.services.markdown_transform_service import (
@@ -426,7 +431,11 @@ async def get_assignee_users(
     department_id: str = Query("", min_length=0),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return {"items": hub_service.list_assignees(department_id=_normalize_text(department_id) or None)}
+    items = await run_in_threadpool(
+        hub_service.list_assignees,
+        department_id=_normalize_text(department_id) or None,
+    )
+    return {"items": items}
 
 
 @router.get("/users/controllers")
@@ -434,7 +443,11 @@ async def get_controller_users(
     department_id: str = Query("", min_length=0),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return {"items": hub_service.list_controllers(department_id=_normalize_text(department_id) or None)}
+    items = await run_in_threadpool(
+        hub_service.list_controllers,
+        department_id=_normalize_text(department_id) or None,
+    )
+    return {"items": items}
 
 
 @router.get("/task-projects")
@@ -442,7 +455,11 @@ async def get_task_projects(
     include_inactive: bool = Query(False),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return {"items": hub_service.list_task_projects(include_inactive=bool(include_inactive))}
+    items = await run_in_threadpool(
+        hub_service.list_task_projects,
+        include_inactive=bool(include_inactive),
+    )
+    return {"items": items}
 
 
 @router.post("/task-projects")
@@ -482,12 +499,12 @@ async def get_task_objects(
     include_inactive: bool = Query(False),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return {
-        "items": hub_service.list_task_objects(
-            project_ids=project_id,
-            include_inactive=bool(include_inactive),
-        )
-    }
+    items = await run_in_threadpool(
+        hub_service.list_task_objects,
+        project_ids=project_id,
+        include_inactive=bool(include_inactive),
+    )
+    return {"items": items}
 
 
 @router.post("/task-objects")
@@ -578,7 +595,8 @@ async def get_tasks(
     allow_all = str(getattr(current_user, "role", "") or "").lower() == "admin" or _has_permission(current_user, PERM_TASKS_MANAGE_ALL)
     if scope == "all" and not allow_all:
         raise HTTPException(status_code=403, detail="Insufficient permissions: tasks.all")
-    payload = hub_service.list_tasks(
+    payload = await run_in_threadpool(
+        hub_service.list_tasks,
         user_id=int(current_user.id),
         scope=scope,
         role_scope=_normalize_text(role_scope).lower(),
@@ -607,7 +625,8 @@ async def get_task_analytics(
     participant_user_id: list[int] = Query(default=[]),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return hub_service.get_task_analytics(
+    return await run_in_threadpool(
+        hub_service.get_task_analytics,
         start_date=_normalize_text(start_date) or None,
         end_date=_normalize_text(end_date) or None,
         date_basis=_normalize_text(date_basis, "protocol_date"),
@@ -706,7 +725,8 @@ async def get_task(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        item = hub_service.get_task(
+        item = await run_in_threadpool(
+            hub_service.get_task,
             task_id,
             user_id=int(current_user.id),
             is_admin=_is_admin_user(current_user),
@@ -717,7 +737,8 @@ async def get_task(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not item:
         raise HTTPException(status_code=404, detail="Task not found")
-    hub_service.mark_task_notifications_read(
+    await run_in_threadpool(
+        hub_service.mark_task_notifications_read,
         task_id=task_id,
         user_id=int(current_user.id),
     )
@@ -941,6 +962,48 @@ async def download_task_report(
     )
 
 
+@router.get("/tasks/{task_id}/discussion")
+async def get_task_discussion_endpoint(
+    task_id: str,
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    if not is_task_discussion_chat_enabled():
+        raise HTTPException(status_code=404, detail="Task discussion chat is disabled")
+    try:
+        return await run_in_threadpool(
+            get_task_discussion,
+            task_id=task_id,
+            actor_user_id=int(current_user.id),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/tasks/{task_id}/discussion")
+async def open_task_discussion_endpoint(
+    task_id: str,
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    if not is_task_discussion_chat_enabled():
+        raise HTTPException(status_code=404, detail="Task discussion chat is disabled")
+    try:
+        return await run_in_threadpool(
+            ensure_task_discussion,
+            task_id=task_id,
+            actor_user_id=int(current_user.id),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @router.get("/tasks/{task_id}/comments")
 async def get_task_comments(
     task_id: str,
@@ -979,6 +1042,10 @@ async def create_task_comment(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        if str(exc) == "use_task_discussion_chat":
+            raise HTTPException(status_code=400, detail="use_task_discussion_chat") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not result:
         raise HTTPException(status_code=404, detail="Task not found")
     return result
@@ -1039,7 +1106,8 @@ async def poll_notifications(
     unread_only: bool = Query(False),
     current_user: User = Depends(_require_notifications_access),
 ):
-    return hub_service.poll_notifications(
+    return await run_in_threadpool(
+        hub_service.poll_notifications,
         user_id=int(current_user.id),
         since=_normalize_text(since),
         limit=int(limit),
@@ -1051,7 +1119,7 @@ async def poll_notifications(
 async def get_notification_unread_counts(
     current_user: User = Depends(_require_notifications_access),
 ):
-    return hub_service.get_unread_counts(user_id=int(current_user.id))
+    return await run_in_threadpool(hub_service.get_unread_counts, user_id=int(current_user.id))
 
 
 @router.post("/notifications/{notification_id}/read")

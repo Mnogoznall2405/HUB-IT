@@ -139,7 +139,7 @@ import {
 } from '../components/mail/mailComposeState';
 import {
   buildMailUiTokens,
-  getMailMobileBottomBarOffset,
+  getMailMobileFabBottomOffset,
   getMailDialogActionsSx,
   getMailDialogContentSx,
   getMailDialogPaperSx,
@@ -3234,9 +3234,8 @@ function Mail() {
 
   return (
     <MainLayout
-      headerMode={isMobileFullscreenPreview ? 'hidden' : 'notifications-only'}
       contentMode={isMobile ? 'edge-to-edge-mobile' : 'default'}
-      headerInlineContent={mailHeaderTabs}
+      mobileBottomNavMode={isMobileFullscreenPreview ? 'hidden' : 'auto'}
     >
       <PageShell
         fullHeight={!isMobile}
@@ -3294,6 +3293,8 @@ function Mail() {
             currentFolderLabel={currentFolderLabel}
             hasActiveFilters={hasActiveFilters}
             mobile={isMobile}
+            mobileHeaderTabs={isMobile && !isMobileFullscreenPreview ? mailHeaderTabs : null}
+            sectionTabs={!isMobile && !isMobileFullscreenPreview ? mailHeaderTabs : null}
             loading={loading}
             searchInputRef={searchInputRef}
           />
@@ -3382,8 +3383,26 @@ function Mail() {
         />
 
         {showQuotasSection ? (
-          <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', p: { xs: 0.5, md: 1 } }}>
-            <MailQuotaReport isMobile={isMobile} />
+          <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+            {mailHeaderTabs ? (
+              <Box
+                className="mail-safe-top"
+                data-testid="mail-quotas-section-header"
+                sx={{
+                  px: 1,
+                  py: 0.75,
+                  bgcolor: ui.panelBg,
+                  borderBottom: '1px solid',
+                  borderColor: ui.borderSoft,
+                  flexShrink: 0,
+                }}
+              >
+                {mailHeaderTabs}
+              </Box>
+            ) : null}
+            <Box sx={{ flex: 1, minHeight: 0, display: 'flex', flexDirection: 'column', p: { xs: 0.5, md: 1 } }}>
+              <MailQuotaReport isMobile={isMobile} />
+            </Box>
           </Box>
         ) : showInitialMailLoading ? (
           <MailInitialLoadingState ui={ui} />
@@ -3401,9 +3420,7 @@ function Mail() {
               position: 'fixed',
               right: { xs: 16, md: 24 },
               bottom: {
-                xs: selectedMessageIds.length > 0
-                  ? getMailMobileBottomBarOffset(ui)
-                  : 'calc(20px + env(safe-area-inset-bottom, 0px))',
+                xs: getMailMobileFabBottomOffset(ui, { bulkActive: selectedMessageIds.length > 0 }),
                 md: 28,
               },
               width: 58,

@@ -6,6 +6,16 @@ export const MainLayoutShellContext = createContext({
   openDrawer: () => {},
   closeDrawer: () => {},
   toggleDrawer: () => {},
+  openNotifications: () => {},
+  notificationsBadgeValue: 0,
+  showNotificationsButton: false,
+  showDatabaseSelector: false,
+  databases: [],
+  currentDb: null,
+  currentDbName: 'База данных',
+  dbLoading: false,
+  dbLocked: false,
+  onDatabaseChange: () => {},
 });
 
 export function useMainLayoutShell() {

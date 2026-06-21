@@ -1,4 +1,4 @@
-﻿/**
+/**
  * Main Layout component - AppBar and Sidebar navigation.
  */
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react';
@@ -7,6 +7,8 @@ import {
   Alert,
   AppBar,
   Badge,
+  BottomNavigation,
+  BottomNavigationAction,
   Box,
   Toolbar,
   Typography,
@@ -25,6 +27,9 @@ import {
   Chip,
   Stack,
   CircularProgress,
+  Collapse,
+  Menu,
+  Tooltip,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
@@ -51,8 +56,12 @@ import VideocamIcon from '@mui/icons-material/Videocam';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
+import PersonOutlineRoundedIcon from '@mui/icons-material/PersonOutlineRounded';
+import AdminPanelSettingsOutlinedIcon from '@mui/icons-material/AdminPanelSettingsOutlined';
+import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
+import { usePreferences } from '../../contexts/PreferencesContext';
 import apiClient, { chatAPI, mailAPI, settingsAPI } from '../../api/client';
 import { databaseAPI } from '../../api/database';
 import { CHAT_FEATURE_ENABLED, CHAT_WS_ENABLED } from '../../lib/chatFeature';
@@ -86,46 +95,40 @@ import {
 } from '../../lib/chatSocket';
 import {
   buildChatNotificationRoute,
+  claimChatMessageNotification,
   createChatSystemNotification,
   getChatNotificationState,
   refreshChatNotificationState,
   setChatForegroundDiagnostic,
   setChatSocketStatus,
+  shouldDeliverExternalChatViaPushOnly,
+  shouldSkipChatPushForegroundNotification,
   syncChatPushSubscription,
 } from '../../lib/chatNotifications';
+import { emitAgentDebugLog } from '../../lib/debugClientLog';
 import { hasAnyAppPushPermission } from '../../lib/appPushPermissions';
 import { syncAppBadge } from '../../lib/appBadge';
 import { applyPwaUpdate, getPwaInstallState, subscribePwaInstallState } from '../../lib/pwaInstall';
 import { prefetchRouteByPath } from '../../lib/routeLoaders';
 import { getMessagePreview } from '../chat/chatHelpers';
 import { MainLayoutShellContext } from './MainLayoutShellContext';
-import { APP_BRAND_NAME, buildDocumentTitle, INVENTORY_SECTION_LABEL } from '../../lib/appBranding';
+import { APP_BRAND_NAME, buildDocumentTitle } from '../../lib/appBranding';
+import { AccountAvatar, AccountIdentity } from '../account/AccountIdentity';
+import { canAccessAdminArea } from '../account/accountNavigationConfig';
+import {
+  getNavigationBadgeCount,
+  getVisibleNavigationItems,
+  isNavigationItemActive,
+  navigationItems,
+  resolveMobileNavigationItems,
+} from './navigationConfig';
 
 const DRAWER_WIDTH_CSS_VAR = 'var(--app-density-drawer-width)';
+const DRAWER_RAIL_WIDTH = 68;
 const HUB_POLL_INTERVAL_MS = 20_000;
 const PWA_BADGE_POLL_INTERVAL_MS = 60_000;
-const navigationItems = [
-  { path: '/dashboard', label: 'Главная', icon: <DashboardIcon />, permission: 'dashboard.read' },
-  { path: '/tasks', label: 'Задачи', icon: <TaskAltIcon />, permission: 'tasks.read' },
-  { path: '/tickets', label: 'Билеты', icon: <ConfirmationNumberIcon />, permission: 'tickets.read' },
-  ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', label: 'Корпоративный чат', icon: <ForumOutlinedIcon />, permission: 'chat.read' }] : []),
-  { path: '/mail', label: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access' },
-  { path: '/address-book', label: 'Адресная книга', icon: <ContactPhoneIcon />, permission: 'address_book.read' },
-  { path: '/passwords', label: 'Пароли', icon: <VpnKeyOutlinedIcon />, permission: 'passwords.read' },
-  { path: '/my-files', label: 'Мои файлы', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read' },
-  { path: '/database', label: INVENTORY_SECTION_LABEL, icon: <StorageIcon />, permission: 'database.read' },
-  { path: '/networks', label: 'Сети', icon: <LanIcon />, permission: 'networks.read' },
-  { path: '/ad-users', label: 'Пользователи AD', icon: <GroupIcon />, adminOnly: true },
-  { path: '/vcs', label: 'ВКС терминалы', icon: <VideocamIcon />, permission: 'vcs.read' },
-  { path: '/mfu', label: 'МФУ', icon: <PrintIcon />, permission: 'database.read' },
-  { path: '/computers', label: 'Компьютеры', icon: <ComputerIcon />, permission: 'computers.read' },
-  { path: '/scan-center', label: 'Scan Center', icon: <ShieldIcon />, permission: 'scan.read' },
-  { path: '/statistics', label: 'Статистика', icon: <BarChartIcon />, permission: 'statistics.read' },
-  { path: '/kb', label: 'IT База знаний', icon: <MenuBookIcon />, permission: 'kb.read' },
-  { path: '/settings', label: 'Настройки', icon: <SettingsIcon />, permission: 'settings.read' },
-];
-
 const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
+const SIDEBAR_TOOLS_EXPANDED_KEY = 'sidebar_tools_expanded';
 const normalizeDbId = (value) => String(value ?? '').trim();
 const MAIL_LOCAL_DEDUPE_WINDOW_MS = 30_000;
 const MAIL_ROUTE_UNREAD_REFRESH_TTL_MS = 120_000;
@@ -162,6 +165,8 @@ function MainLayout({
   children,
   headerMode = 'default',
   contentMode = 'default',
+  mobileBottomNavMode = 'auto',
+  mobileBottomNavTransitionMs = 280,
   showDatabaseSelector = false,
   headerInlineContent = null,
 }) {
@@ -174,9 +179,14 @@ function MainLayout({
     const saved = localStorage.getItem(SIDEBAR_COLLAPSED_KEY);
     return saved === 'true';
   });
+  const [sidebarToolsExpanded, setSidebarToolsExpanded] = useState(() => (
+    localStorage.getItem(SIDEBAR_TOOLS_EXPANDED_KEY) !== 'false'
+  ));
+  const [accountMenuAnchorEl, setAccountMenuAnchorEl] = useState(null);
   const navigate = useNavigate();
   const location = useLocation();
   const { user, logout, hasPermission } = useAuth();
+  const { preferences } = usePreferences();
   const {
     notifyApiError,
     notifyInfo,
@@ -242,13 +252,13 @@ function MainLayout({
   const mailUnreadFetchedAtRef = useRef(0);
   const mailUnreadBaselineReadyRef = useRef(false);
   const mailChannelEnabledRef = useRef(true);
-  const seenChatSocketMessageIdsRef = useRef(new Set());
   const hasDashboardPermission = hasPermission('dashboard.read');
   const hasTasksPermission = hasPermission('tasks.read');
   const hasChatPermission = CHAT_FEATURE_ENABLED && hasPermission('chat.read');
   const hasMailPermission = hasPermission('mail.access');
   const hasHubNotificationPermission = hasDashboardPermission || hasTasksPermission || hasChatPermission;
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
+  const showAdminArea = canAccessAdminArea({ user, hasPermission });
   const activeChatConversationIdFromUrl = useMemo(
     () => String(new URLSearchParams(location.search).get('conversation') || '').trim(),
     [location.search],
@@ -271,7 +281,7 @@ function MainLayout({
   const isDesktopChatRoute = !isPhone && isChatRoute;
   const isEdgeToEdgeMobileContent = isPhone && contentMode === 'edge-to-edge-mobile';
   const notificationsOnlyHeader = headerMode === 'notifications-only';
-  const hiddenHeader = headerMode === 'hidden';
+  const hiddenHeader = headerMode === 'hidden' || isPhone;
   const minimalHeader = isPhone && headerMode === 'minimal';
   const unreadHubNotificationCount = useMemo(
     () => (
@@ -296,8 +306,38 @@ function MainLayout({
     [mailNotifications],
   );
   const unreadBellInboxCount = unreadHubNotificationCount + unreadMailNotificationCount;
-  const visibleNavigationItems = navigationItems.filter(
-    (item) => (!item.adminOnly || isAdmin) && (!item.permission || hasPermission(item.permission))
+  const visibleNavigationItems = getVisibleNavigationItems({ user, hasPermission });
+  const mainNavigationItems = useMemo(
+    () => visibleNavigationItems.filter((item) => item.group === 'main'),
+    [visibleNavigationItems],
+  );
+  const toolNavigationItems = useMemo(
+    () => visibleNavigationItems.filter((item) => item.group === 'tools'),
+    [visibleNavigationItems],
+  );
+  const visibleMobileNavigationItems = useMemo(
+    () => resolveMobileNavigationItems({
+      selectedPaths: preferences.mobile_bottom_nav_items,
+      user,
+      hasPermission,
+    }),
+    [hasPermission, preferences.mobile_bottom_nav_items, user],
+  );
+  const showMobileBottomNavigation = Boolean(
+    isPhone
+    && mobileBottomNavMode !== 'hidden'
+    && visibleMobileNavigationItems.length > 0
+  );
+  const hasMobileBottomNavigation = Boolean(
+    isPhone && visibleMobileNavigationItems.length > 0
+  );
+  const mobileBottomNavHidden = mobileBottomNavMode === 'hidden';
+  const mobileBottomNavTransition = useMemo(
+    () => theme.transitions.create(['padding-bottom', 'transform'], {
+      duration: mobileBottomNavTransitionMs,
+      easing: theme.transitions.easing.easeInOut,
+    }),
+    [mobileBottomNavTransitionMs, theme.transitions],
   );
   const showNotificationsButton = hasHubNotificationPermission || hasMailPermission;
   const notificationsBadgeValue = Number(unreadCounts?.notifications_unread_total || 0);
@@ -505,6 +545,13 @@ function MainLayout({
     if (channel === 'chat') {
       const conversationId = String(data?.conversation_id || '').trim();
       const messageId = String(data?.message_id || '').trim();
+      const pushTag = String(detail?.tag || '').trim();
+      const dedupeKey = `chat:${messageId || pushTag || conversationId}`;
+      const skipBecauseSocketConnected = shouldSkipChatPushForegroundNotification();
+      if (skipBecauseSocketConnected) {
+        setChatForegroundDiagnostic('chat_socket_connected');
+        return;
+      }
       const navigateTo = route !== '/'
         ? route
         : buildChatNotificationRoute({ conversationId, messageId });
@@ -521,12 +568,15 @@ function MainLayout({
         setChatForegroundDiagnostic('active_visible_conversation');
         return;
       }
+      if (!claimChatMessageNotification(messageId)) {
+        return;
+      }
       notifyInfoRef.current?.(body || title || 'Новое сообщение', {
         title: title || 'Собеседник',
         source: 'chat',
         channel: 'system',
         dedupeMode: 'recent',
-        dedupeKey: `chat:${messageId || String(detail?.tag || '').trim() || navigateTo}`,
+        dedupeKey,
         action: createNavigateToastAction(navigateTo, 'Открыть чат'),
         durationMs: 5200,
       });
@@ -685,16 +735,6 @@ function MainLayout({
 
   useEffect(() => {
     if (!hasChatPermission || !CHAT_WS_ENABLED) return undefined;
-    const releaseSocket = chatSocket.retain();
-    chatSocket.subscribeInbox();
-    return () => {
-      chatSocket.unsubscribeInbox();
-      releaseSocket();
-    };
-  }, [hasChatPermission]);
-
-  useEffect(() => {
-    if (!hasChatPermission || !CHAT_WS_ENABLED) return undefined;
     const handleUnreadSummary = (event) => {
       const detail = event?.detail || {};
       const messagesUnreadTotal = Math.max(0, Number(detail?.messages_unread_total || 0));
@@ -721,6 +761,7 @@ function MainLayout({
       setChatSocketStatus('disabled');
       return undefined;
     }
+    setChatSocketStatus(chatSocket.getConnectionState());
     const handleChatSocketStatus = (event) => {
       const status = String(event?.detail?.status || '').trim() || 'disconnected';
       setChatSocketStatus(status);
@@ -739,12 +780,7 @@ function MainLayout({
       const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
       const messageId = String(message?.id || '').trim();
       if (!messageId || !conversationId || Boolean(message?.is_own)) return;
-      if (seenChatSocketMessageIdsRef.current.has(messageId)) return;
-      seenChatSocketMessageIdsRef.current.add(messageId);
-      if (seenChatSocketMessageIdsRef.current.size > 200) {
-        const [firstSeenId] = seenChatSocketMessageIdsRef.current;
-        if (firstSeenId) seenChatSocketMessageIdsRef.current.delete(firstSeenId);
-      }
+      if (!claimChatMessageNotification(messageId)) return;
 
       const isActiveVisibleConversation = (
         location.pathname.startsWith('/chat')
@@ -785,10 +821,26 @@ function MainLayout({
         setChatForegroundDiagnostic('permission_not_granted');
         return;
       }
-      const shouldShowForegroundSystemNotification = (
-        !isVisible && !currentChatNotificationState.pushSubscribed
+      const shouldShowLocalSystemNotification = (
+        !isVisible
+        && !shouldDeliverExternalChatViaPushOnly(currentChatNotificationState)
       );
-      if (shouldShowForegroundSystemNotification) {
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'MainLayout.jsx:handleChatMessageCreated',
+        message: shouldShowLocalSystemNotification ? 'local system notification requested' : 'local system notification skipped',
+        hypothesisId: 'H-EXT-DUP',
+        data: {
+          messageId,
+          conversationId,
+          visibility: document.visibilityState,
+          pushSubscribed: currentChatNotificationState.pushSubscribed,
+          backgroundCapable: currentChatNotificationState.backgroundCapable,
+          shouldShowLocalSystemNotification,
+        },
+      });
+      // #endregion
+      if (shouldShowLocalSystemNotification) {
         setChatForegroundDiagnostic('');
         createChatSystemNotification({
           messageId,
@@ -1339,8 +1391,23 @@ useEffect(() => {
   ]);
 
   const handleLogout = () => {
+    setAccountMenuAnchorEl(null);
     logout();
     navigate('/login');
+  };
+
+  const toggleToolsGroup = () => {
+    setSidebarToolsExpanded((current) => {
+      const next = !current;
+      localStorage.setItem(SIDEBAR_TOOLS_EXPANDED_KEY, String(next));
+      return next;
+    });
+  };
+
+  const openAccountRoute = (path) => {
+    setAccountMenuAnchorEl(null);
+    setDrawerOpen(false);
+    navigate(path);
   };
 
   const handleMarkNotificationRead = async (notificationId) => {
@@ -1490,25 +1557,32 @@ useEffect(() => {
   };
 
   const isItemActive = (path, candidatePath = location.pathname) => {
-    if (path === '/networks') {
-      return candidatePath === '/networks' || candidatePath.startsWith('/networks/');
-    }
-    return candidatePath === path;
+    return isNavigationItemActive(path, candidatePath);
   };
 
   const activeNavigationPath = String(pendingNavigation?.path || '').trim() || location.pathname;
-  const shouldHideHeaderContext = useMemo(() => (
-    activeNavigationPath === '/dashboard'
-    || activeNavigationPath === '/tasks'
-    || activeNavigationPath.startsWith('/chat')
-    || activeNavigationPath.startsWith('/mail')
-    || activeNavigationPath.startsWith('/settings')
-  ), [activeNavigationPath]);
+  const shouldHideHeaderContext = false;
   const getCurrentTitle = () => {
     const item = visibleNavigationItems.find((item) => isItemActive(item.path, activeNavigationPath));
-    return item ? item.label : APP_BRAND_NAME;
+    if (item) return item.label;
+    if (activeNavigationPath.startsWith('/profile')) return 'Профиль';
+    if (activeNavigationPath.startsWith('/settings')) return 'Настройки';
+    if (activeNavigationPath.startsWith('/admin')) return 'Администрирование';
+    if (activeNavigationPath.startsWith('/menu')) return 'Меню';
+    return APP_BRAND_NAME;
   };
   const currentTitle = getCurrentTitle();
+  const activeMobileNavigationPath = useMemo(() => {
+    const item = visibleMobileNavigationItems.find((item) => isNavigationItemActive(item.path, activeNavigationPath));
+    if (item?.path) return item.path;
+    const isVisibleOverflowRoute = visibleNavigationItems.some((navigationItem) => (
+      isNavigationItemActive(navigationItem.path, activeNavigationPath)
+    ));
+    const isAccountRoute = ['/profile', '/settings', '/admin', '/menu'].some((path) => (
+      activeNavigationPath === path || activeNavigationPath.startsWith(`${path}/`)
+    ));
+    return (isVisibleOverflowRoute || isAccountRoute) ? '/menu' : false;
+  }, [activeNavigationPath, visibleMobileNavigationItems, visibleNavigationItems]);
   const documentTitle = useMemo(() => buildDocumentTitle(currentTitle), [currentTitle]);
 
   useEffect(() => {
@@ -1566,85 +1640,158 @@ useEffect(() => {
     }
   }, [hasPermission, user]);
 
-  const drawerContent = (
-    <Box sx={{ height: '100%', bgcolor: ui.navBg }}>
+  const renderNavigationItem = (item, compact = false) => {
+    const selected = !item.externalUrl && isItemActive(item.path, activeNavigationPath);
+    const pending = !item.externalUrl && String(pendingNavigation?.path || '').trim() === String(item.path || '').trim();
+    const badgeCount = getNavigationBadgeCount(item.path, unreadCounts);
+    const button = (
+      <ListItemButton
+        data-testid={`main-layout-sidebar-${item.path.replace(/^\//, '')}`}
+        selected={selected}
+        onClick={() => handleNavigation(item)}
+        onPointerEnter={() => {
+          if (!item.externalUrl) void prefetchRouteByPath(item.path).catch(() => {});
+        }}
+        onFocus={() => {
+          if (!item.externalUrl) void prefetchRouteByPath(item.path).catch(() => {});
+        }}
+        sx={{
+          minHeight: compact ? 46 : { xs: 44, sm: 'var(--app-density-sidebar-item-min-height)' },
+          px: compact ? 0 : { xs: 1.35, sm: 'var(--app-density-sidebar-item-px)' },
+          justifyContent: compact ? 'center' : 'flex-start',
+          borderRadius: compact ? '15px' : '12px',
+          color: selected ? theme.palette.text.primary : ui.iconPrimary,
+          border: '1px solid',
+          borderColor: selected ? ui.selectedBorder : 'transparent',
+          backgroundColor: selected ? alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.09) : 'transparent',
+          opacity: pending ? 0.96 : 1,
+          transition: theme.transitions.create(['background-color', 'color', 'border-color'], {
+            duration: theme.transitions.duration.shorter,
+          }),
+          '& .MuiListItemIcon-root': {
+            minWidth: compact ? 0 : { xs: 38, sm: 'var(--app-density-sidebar-icon-min-width)' },
+            justifyContent: 'center',
+            color: selected ? theme.palette.primary.main : ui.iconMuted,
+          },
+          '& .MuiListItemText-primary': {
+            fontWeight: selected ? 750 : 600,
+            color: selected ? theme.palette.text.primary : ui.iconPrimary,
+          },
+          '&:hover': {
+            backgroundColor: selected ? ui.selectedBg : ui.actionHover,
+            borderColor: selected ? ui.selectedBorder : ui.actionBorder,
+          },
+          '@media (prefers-reduced-motion: reduce)': {
+            transition: 'none',
+          },
+        }}
+      >
+        <ListItemIcon>
+          {badgeCount > 0 ? (
+            <Badge color="error" badgeContent={badgeCount}>
+              {item.icon}
+            </Badge>
+          ) : item.icon}
+        </ListItemIcon>
+        {compact ? null : <ListItemText primary={item.label} />}
+      </ListItemButton>
+    );
+    return (
+      <ListItem key={item.path} disablePadding sx={{ py: compact ? 0.25 : 'var(--app-density-sidebar-item-py)' }}>
+        {compact ? (
+          <Tooltip title={item.label} placement="right">
+            {button}
+          </Tooltip>
+        ) : button}
+      </ListItem>
+    );
+  };
+
+  const renderDrawerContent = ({ compact = false } = {}) => (
+    <Box
+      sx={{
+        height: '100%',
+        minHeight: 0,
+        display: 'flex',
+        flexDirection: 'column',
+        bgcolor: alpha(ui.navBg, theme.palette.mode === 'dark' ? 0.86 : 0.9),
+        backdropFilter: 'blur(20px) saturate(140%)',
+        WebkitBackdropFilter: 'blur(20px) saturate(140%)',
+      }}
+    >
       {hiddenHeader ? (
-        <Box sx={{ height: 'max(env(safe-area-inset-top), 10px)' }} />
+        <Box sx={{ height: 'max(env(safe-area-inset-top), 10px)', flexShrink: 0 }} />
       ) : (
-        <Toolbar sx={{ minHeight: 'var(--app-shell-header-offset) !important' }} />
+        <Toolbar sx={{ minHeight: 'var(--app-shell-header-offset) !important', flexShrink: 0 }} />
       )}
-      <List sx={{ px: 'var(--app-density-sidebar-list-px)', pt: 'var(--app-density-sidebar-list-pt)' }}>
-        {visibleNavigationItems.map((item) => (
-          <ListItem key={item.path} disablePadding sx={{ px: 0.5, py: 'var(--app-density-sidebar-item-py)' }}>
-            <ListItemButton
-              selected={!item.externalUrl && isItemActive(item.path, activeNavigationPath)}
-              onClick={() => handleNavigation(item)}
-              onPointerEnter={() => {
-                if (!item.externalUrl) void prefetchRouteByPath(item.path).catch(() => {});
-              }}
-              onFocus={() => {
-                if (!item.externalUrl) void prefetchRouteByPath(item.path).catch(() => {});
-              }}
-              onTouchStart={() => {
-                if (!item.externalUrl) void prefetchRouteByPath(item.path).catch(() => {});
-              }}
-              sx={() => {
-                const selected = !item.externalUrl && isItemActive(item.path, activeNavigationPath);
-                const pending = !item.externalUrl && String(pendingNavigation?.path || '').trim() === String(item.path || '').trim();
-                return {
-                  minHeight: { xs: 44, sm: 'var(--app-density-sidebar-item-min-height)' },
-                  px: { xs: 1.35, sm: 'var(--app-density-sidebar-item-px)' },
-                  borderRadius: 2.25,
-                  color: selected ? theme.palette.text.primary : ui.iconPrimary,
-                  transition: theme.transitions.create(['background-color', 'color', 'border-color'], {
-                    duration: theme.transitions.duration.shorter,
-                  }),
-                  border: '1px solid',
-                  borderColor: selected ? ui.selectedBorder : 'transparent',
-                  backgroundColor: selected ? alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.12 : 0.07) : 'transparent',
-                  opacity: pending ? 0.96 : 1,
-                  '& .MuiListItemIcon-root': {
-                    minWidth: { xs: 38, sm: 'var(--app-density-sidebar-icon-min-width)' },
-                    color: selected ? theme.palette.primary.main : ui.iconMuted,
-                  },
-                  '& .MuiListItemText-primary': {
-                    fontWeight: selected ? 700 : 600,
-                    color: selected ? theme.palette.text.primary : ui.iconPrimary,
-                  },
-                  ...(pending ? {
-                    boxShadow: `0 0 0 1px ${alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.22 : 0.18)}`,
-                  } : {}),
-                  '&:hover': {
-                    backgroundColor: selected ? ui.selectedBg : ui.actionHover,
-                    borderColor: selected ? ui.selectedBorder : ui.actionBorder,
-                    '& .MuiListItemIcon-root': {
-                      color: selected ? theme.palette.primary.main : ui.iconPrimary,
-                    },
-                  },
-                };
-              }}
+
+      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: compact ? 0.75 : 'var(--app-density-sidebar-list-px)' }}>
+        {compact ? null : (
+          <Typography variant="caption" sx={{ display: 'block', px: 1, pt: 0.65, pb: 0.3, color: ui.subtleText, fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }}>
+            Основное
+          </Typography>
+        )}
+        <List disablePadding>
+          {mainNavigationItems.map((item) => renderNavigationItem(item, compact))}
+        </List>
+
+        {toolNavigationItems.length > 0 ? (
+          <>
+            {compact ? <Divider sx={{ my: 0.7, borderColor: ui.borderSoft }} /> : (
+              <ListItem disablePadding sx={{ mt: 0.5 }}>
+                <ListItemButton
+                  data-testid="main-layout-sidebar-tools-toggle"
+                  onClick={toggleToolsGroup}
+                  sx={{ minHeight: 34, px: 1, borderRadius: '10px', color: ui.mutedText }}
+                >
+                  <ListItemText primary="Инструменты" primaryTypographyProps={{ fontSize: '0.72rem', fontWeight: 800, letterSpacing: '0.06em', textTransform: 'uppercase' }} />
+                  <ExpandMoreRoundedIcon
+                    sx={{
+                      fontSize: 19,
+                      transform: sidebarToolsExpanded ? 'rotate(180deg)' : 'rotate(0deg)',
+                      transition: theme.transitions.create('transform', { duration: theme.transitions.duration.shorter }),
+                    }}
+                  />
+                </ListItemButton>
+              </ListItem>
+            )}
+            <Collapse in={compact || sidebarToolsExpanded} timeout="auto" unmountOnExit={false}>
+              <List disablePadding>
+                {toolNavigationItems.map((item) => renderNavigationItem(item, compact))}
+              </List>
+            </Collapse>
+          </>
+        ) : null}
+      </Box>
+
+      <Box sx={{ flexShrink: 0, p: compact ? 0.75 : 1, borderTop: '1px solid', borderColor: ui.borderSoft }}>
+        {compact ? (
+          <Tooltip title="Профиль и настройки" placement="right">
+            <IconButton
+              data-testid="main-layout-account-button"
+              onClick={(event) => setAccountMenuAnchorEl(event.currentTarget)}
+              sx={{ width: 50, height: 50, borderRadius: '16px' }}
             >
-              <ListItemIcon>
-                {item.path === '/tasks' && Number(unreadCounts?.tasks_open || 0) > 0 ? (
-                  <Badge color="error" badgeContent={Number(unreadCounts?.tasks_open || 0)}>
-                    {item.icon}
-                  </Badge>
-                ) : item.path === '/chat' && Number(unreadCounts?.chat_messages_unread_total || 0) > 0 ? (
-                  <Badge color="error" badgeContent={Number(unreadCounts?.chat_messages_unread_total || 0)}>
-                    {item.icon}
-                  </Badge>
-                ) : item.path === '/mail' && Number(unreadCounts?.mail_unread || 0) > 0 ? (
-                  <Badge color="error" badgeContent={Number(unreadCounts?.mail_unread || 0)}>
-                    {item.icon}
-                  </Badge>
-                ) : item.icon}
-              </ListItemIcon>
-              <ListItemText primary={item.label} />
-            </ListItemButton>
-          </ListItem>
-        ))}
-      </List>
-      <Divider sx={{ borderColor: ui.borderSoft }} />
+              <AccountAvatar user={user} size={38} />
+            </IconButton>
+          </Tooltip>
+        ) : (
+          <ListItemButton
+            data-testid="main-layout-account-button"
+            onClick={(event) => setAccountMenuAnchorEl(event.currentTarget)}
+            sx={{
+              minHeight: 58,
+              px: 1,
+              borderRadius: '15px',
+              border: '1px solid',
+              borderColor: alpha(theme.palette.divider, 0.55),
+              bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.42 : 0.55),
+            }}
+          >
+            <AccountIdentity user={user} />
+          </ListItemButton>
+        )}
+      </Box>
     </Box>
   );
 
@@ -1654,7 +1801,30 @@ useEffect(() => {
     openDrawer: () => setDrawerOpen(true),
     closeDrawer: () => setDrawerOpen(false),
     toggleDrawer: () => setDrawerOpen((current) => !current),
-  }), [drawerOpen, headerMode]);
+    openNotifications: handleOpenNotifications,
+    notificationsBadgeValue,
+    showNotificationsButton,
+    showDatabaseSelector,
+    databases,
+    currentDb,
+    currentDbName,
+    dbLoading,
+    dbLocked,
+    onDatabaseChange: handleDatabaseChange,
+  }), [
+    currentDb,
+    currentDbName,
+    databases,
+    dbLoading,
+    dbLocked,
+    drawerOpen,
+    handleDatabaseChange,
+    handleOpenNotifications,
+    headerMode,
+    notificationsBadgeValue,
+    showDatabaseSelector,
+    showNotificationsButton,
+  ]);
   const shouldRenderTopSpacer = !hiddenHeader || topBannerOffset > 0;
 
   return (
@@ -1672,6 +1842,9 @@ useEffect(() => {
               ? `${appBarHeight}px`
               : 'var(--app-shell-header-offset)',
           '--app-shell-top-offset': 'calc(var(--app-shell-safe-top-offset) + var(--app-shell-banner-offset) + var(--app-shell-measured-header-offset))',
+          '--app-shell-mobile-bottom-nav-height': hasMobileBottomNavigation && !mobileBottomNavHidden
+            ? 'calc(64px + env(safe-area-inset-bottom, 0px))'
+            : '0px',
         }}
         sx={{
           display: 'flex',
@@ -1771,8 +1944,8 @@ useEffect(() => {
               borderColor: ui.borderSoft,
               backdropFilter: 'blur(18px)',
               pt: isWindowControlsOverlay ? 'env(titlebar-area-height, 0px)' : 0,
-              width: { sm: sidebarCollapsed ? '100%' : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})` },
-              ml: { sm: sidebarCollapsed ? 0 : DRAWER_WIDTH_CSS_VAR },
+              width: { sm: sidebarCollapsed ? `calc(100% - ${DRAWER_RAIL_WIDTH}px)` : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})` },
+              ml: { sm: sidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
               transition: (theme) => theme.transitions.create(['width', 'margin'], {
                 duration: theme.transitions.duration.standard,
               }),
@@ -1786,26 +1959,24 @@ useEffect(() => {
             >
               {notificationsOnlyHeader ? (
                 <>
-                  <IconButton
-                    edge="start"
-                    aria-label="Открыть главное меню"
-                    onClick={() => {
-                      if (window.innerWidth < 600) {
-                        setDrawerOpen(!drawerOpen);
-                      } else {
+                  {!isPhone ? (
+                    <IconButton
+                      edge="start"
+                      aria-label="Открыть главное меню"
+                      onClick={() => {
                         toggleSidebar();
-                      }
-                    }}
-                    sx={{
-                      mr: 1,
-                      ...getOfficeQuietActionSx(ui, theme, 'neutral', {
-                        borderColor: 'transparent',
-                        bgcolor: 'transparent',
-                      }),
-                    }}
-                  >
-                    <MenuIcon />
-                  </IconButton>
+                      }}
+                      sx={{
+                        mr: 1,
+                        ...getOfficeQuietActionSx(ui, theme, 'neutral', {
+                          borderColor: 'transparent',
+                          bgcolor: 'transparent',
+                        }),
+                      }}
+                    >
+                      <MenuIcon />
+                    </IconButton>
+                  ) : null}
                   {headerInlineContent ? (
                     <Box sx={{ display: 'flex', alignItems: 'center', minWidth: 0, mr: 1 }}>
                       {headerInlineContent}
@@ -1813,7 +1984,16 @@ useEffect(() => {
                   ) : null}
                   <Box sx={{ flexGrow: 1 }} />
                   {showNotificationsButton ? (
-                    <IconButton aria-label="Открыть уведомления" onClick={handleOpenNotifications} sx={{ ...getOfficeQuietActionSx(ui, theme) }}>
+                    <IconButton
+                      aria-label="Открыть уведомления"
+                      onClick={handleOpenNotifications}
+                      sx={{
+                        ...getOfficeQuietActionSx(ui, theme, 'neutral', {
+                          borderColor: 'transparent',
+                          bgcolor: 'transparent',
+                        }),
+                      }}
+                    >
                       <Badge color="error" badgeContent={notificationsBadgeValue}>
                         <NotificationsIcon />
                       </Badge>
@@ -1822,31 +2002,29 @@ useEffect(() => {
                 </>
               ) : (
                 <>
-                  <IconButton
-                    edge="start"
-                    onClick={() => {
-                      if (window.innerWidth < 600) {
-                        setDrawerOpen(!drawerOpen);
-                      } else {
+                  {!isPhone ? (
+                    <IconButton
+                      edge="start"
+                      onClick={() => {
                         toggleSidebar();
-                      }
-                    }}
-                    sx={{
-                      mr: 2,
-                      ...getOfficeQuietActionSx(ui, theme, 'neutral', {
-                        borderColor: 'transparent',
-                        bgcolor: 'transparent',
-                      }),
-                      '& .MuiSvgIcon-root': {
-                        transition: (theme) => theme.transitions.create('transform', {
-                          duration: theme.transitions.duration.standard,
+                      }}
+                      sx={{
+                        mr: 2,
+                        ...getOfficeQuietActionSx(ui, theme, 'neutral', {
+                          borderColor: 'transparent',
+                          bgcolor: 'transparent',
                         }),
-                        transform: sidebarCollapsed ? 'rotate(180deg)' : 'rotate(0deg)',
-                      },
-                    }}
-                  >
-                    <MenuIcon />
-                  </IconButton>
+                        '& .MuiSvgIcon-root': {
+                          transition: (theme) => theme.transitions.create('transform', {
+                            duration: theme.transitions.duration.standard,
+                          }),
+                          transform: sidebarCollapsed ? 'rotate(180deg)' : 'rotate(0deg)',
+                        },
+                      }}
+                    >
+                      <MenuIcon />
+                    </IconButton>
+                  ) : null}
                   {isMobileChatRoute ? (
                     <Box sx={{ flexGrow: 1 }} />
                   ) : minimalHeader ? (
@@ -1918,44 +2096,28 @@ useEffect(() => {
                     <>
                       <Stack direction="row" spacing={1.2} alignItems="center" sx={{ flexGrow: 1, minWidth: 0 }}>
                         {!shouldHideHeaderContext && !isPhone && (
-                          <>
-                            <Box
-                              sx={{
-                                px: 1.35,
-                                py: 0.7,
-                                borderRadius: 2.6,
-                                bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.16 : 0.08),
-                                border: '1px solid',
-                                borderColor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.22 : 0.14),
-                                boxShadow: 'none',
-                                flexShrink: 0,
-                              }}
-                            >
-                              <Typography sx={{ fontWeight: 600, letterSpacing: '0.04em', fontSize: '0.9rem', lineHeight: 1, color: theme.palette.primary.main }}>
-                                {APP_BRAND_NAME}
-                              </Typography>
-                            </Box>
-                            <Box sx={{ minWidth: 0 }}>
-                              <Typography variant="caption" sx={{ display: 'block', color: ui.subtleText, textTransform: 'uppercase', letterSpacing: '0.08em', lineHeight: 1.1 }}>
-                                Рабочая область
-                              </Typography>
-                              <Typography variant="subtitle1" noWrap sx={{ fontWeight: 600, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
-                                {currentTitle}
-                              </Typography>
-                            </Box>
-                          </>
+                          <Typography variant="subtitle1" noWrap sx={{ fontWeight: 800, letterSpacing: '-0.01em', lineHeight: 1.25 }}>
+                            {currentTitle}
+                          </Typography>
                         )}
                       </Stack>
                       {showNotificationsButton && !minimalHeader ? (
-                        <IconButton aria-label="Открыть уведомления" onClick={handleOpenNotifications} sx={{ mr: 1, ...getOfficeQuietActionSx(ui, theme) }}>
+                        <IconButton
+                          aria-label="Открыть уведомления"
+                          onClick={handleOpenNotifications}
+                          sx={{
+                            mr: 1,
+                            ...getOfficeQuietActionSx(ui, theme, 'neutral', {
+                              borderColor: 'transparent',
+                              bgcolor: 'transparent',
+                            }),
+                          }}
+                        >
                           <Badge color="error" badgeContent={notificationsBadgeValue}>
                             <NotificationsIcon />
                           </Badge>
                         </IconButton>
                       ) : null}
-                      <Typography variant="body2" sx={{ mr: 1.5, color: ui.mutedText, fontWeight: 600, display: { xs: 'none', md: minimalHeader ? 'none' : 'block' } }}>
-                        {user?.username}
-                      </Typography>
                       {!minimalHeader && !shouldHideHeaderContext && showDatabaseSelector && (
                         dbLoading ? (
                           <Box sx={{ mr: 1.5, display: 'flex', alignItems: 'center', minWidth: { xs: 132, sm: 180 }, justifyContent: 'center' }}>
@@ -2030,17 +2192,6 @@ useEffect(() => {
                           sx={{ mr: 2, border: 'none' }}
                         />
                       )}
-                      {!minimalHeader && !isPhone && (
-                        <Button
-                          color="inherit"
-                          variant="outlined"
-                          onClick={handleLogout}
-                          startIcon={<LogoutIcon />}
-                          sx={getOfficeQuietActionSx(ui, theme)}
-                        >
-                          Выход
-                        </Button>
-                      )}
                     </>
                   )}
                 </>
@@ -2053,7 +2204,7 @@ useEffect(() => {
       <Box
         component="nav"
         sx={{
-          width: { sm: sidebarCollapsed ? 0 : DRAWER_WIDTH_CSS_VAR },
+          width: { sm: sidebarCollapsed ? `${DRAWER_RAIL_WIDTH}px` : DRAWER_WIDTH_CSS_VAR },
           flexShrink: { sm: 0 },
           overflow: 'hidden',
           transition: (theme) => theme.transitions.create('width', {
@@ -2071,7 +2222,7 @@ useEffect(() => {
             '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH_CSS_VAR, bgcolor: ui.navBg, borderRightColor: ui.borderSoft },
           }}
         >
-          {drawerContent}
+          {renderDrawerContent({ compact: false })}
         </Drawer>
         <Drawer
           variant="permanent"
@@ -2079,7 +2230,7 @@ useEffect(() => {
             display: { xs: 'none', sm: 'block' },
             '& .MuiDrawer-paper': {
               boxSizing: 'border-box',
-              width: sidebarCollapsed ? 0 : DRAWER_WIDTH_CSS_VAR,
+              width: sidebarCollapsed ? DRAWER_RAIL_WIDTH : DRAWER_WIDTH_CSS_VAR,
               overflowX: 'hidden',
               bgcolor: ui.navBg,
               borderRightColor: ui.borderSoft,
@@ -2090,9 +2241,52 @@ useEffect(() => {
           }}
           open
         >
-          {drawerContent}
+          {renderDrawerContent({ compact: sidebarCollapsed })}
         </Drawer>
       </Box>
+
+      <Menu
+        anchorEl={accountMenuAnchorEl}
+        open={Boolean(accountMenuAnchorEl)}
+        onClose={() => setAccountMenuAnchorEl(null)}
+        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
+        transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
+        slotProps={{
+          paper: {
+            sx: {
+              minWidth: 220,
+              mb: 1,
+              borderRadius: '16px',
+              border: '1px solid',
+              borderColor: ui.borderSoft,
+              bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.9 : 0.94),
+              backdropFilter: 'blur(20px)',
+              WebkitBackdropFilter: 'blur(20px)',
+              boxShadow: ui.dialogShadow,
+            },
+          },
+        }}
+      >
+        <MenuItem onClick={() => openAccountRoute('/profile')}>
+          <PersonOutlineRoundedIcon sx={{ mr: 1.2, color: ui.iconMuted }} />
+          Профиль
+        </MenuItem>
+        <MenuItem onClick={() => openAccountRoute('/settings')}>
+          <SettingsIcon sx={{ mr: 1.2, color: ui.iconMuted }} />
+          Настройки
+        </MenuItem>
+        {showAdminArea ? (
+          <MenuItem onClick={() => openAccountRoute('/admin')}>
+            <AdminPanelSettingsOutlinedIcon sx={{ mr: 1.2, color: ui.iconMuted }} />
+            Администрирование
+          </MenuItem>
+        ) : null}
+        <Divider />
+        <MenuItem onClick={handleLogout} sx={{ color: 'error.main' }}>
+          <LogoutIcon sx={{ mr: 1.2 }} />
+          Выход
+        </MenuItem>
+      </Menu>
 
       {/* Main Content */}
       <Box
@@ -2113,7 +2307,9 @@ useEffect(() => {
             sm: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 'var(--app-density-page-padding)',
           },
           pb: {
-            xs: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2,
+            xs: hasMobileBottomNavigation
+              ? (mobileBottomNavHidden ? 0 : 'var(--app-shell-mobile-bottom-nav-height)')
+              : ((isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 2),
             sm: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 0 : 'var(--app-density-page-padding)',
           },
           pt: {
@@ -2123,10 +2319,11 @@ useEffect(() => {
           bgcolor: (isMobileChatRoute || isEdgeToEdgeMobileContent) ? 'transparent' : ui.pageBg,
           width: {
             xs: '100%',
-            sm: sidebarCollapsed ? '100%' : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})`
+            sm: sidebarCollapsed ? `calc(100% - ${DRAWER_RAIL_WIDTH}px)` : `calc(100% - ${DRAWER_WIDTH_CSS_VAR})`
           },
-          transition: (theme) => theme.transitions.create(['width', 'margin'], {
-            duration: theme.transitions.duration.standard,
+          transition: (theme) => theme.transitions.create(['width', 'margin', 'padding-bottom'], {
+            duration: hasMobileBottomNavigation ? mobileBottomNavTransitionMs : theme.transitions.duration.standard,
+            easing: theme.transitions.easing.easeInOut,
           }),
         }}
       >
@@ -2147,6 +2344,128 @@ useEffect(() => {
           />
         ) : null}
       </Box>
+
+      {hasMobileBottomNavigation ? (
+        <Box
+          data-testid="main-layout-mobile-bottom-nav"
+          data-mobile-bottom-nav-hidden={mobileBottomNavHidden ? 'true' : 'false'}
+          sx={{
+            position: 'fixed',
+            left: 0,
+            right: 0,
+            bottom: 0,
+            zIndex: theme.zIndex.appBar + 2,
+            bgcolor: alpha(ui.navBg, theme.palette.mode === 'dark' ? 0.82 : 0.86),
+            backdropFilter: 'blur(22px) saturate(150%)',
+            WebkitBackdropFilter: 'blur(22px) saturate(150%)',
+            pb: 'env(safe-area-inset-bottom, 0px)',
+            boxShadow: theme.palette.mode === 'dark'
+              ? '0 -12px 30px rgba(0,0,0,0.28)'
+              : '0 -10px 28px rgba(15,23,42,0.10)',
+            transform: mobileBottomNavHidden ? 'translateY(100%)' : 'translateY(0)',
+            transition: mobileBottomNavTransition,
+            pointerEvents: mobileBottomNavHidden ? 'none' : 'auto',
+            visibility: mobileBottomNavHidden ? 'hidden' : 'visible',
+            '@media (prefers-reduced-motion: reduce)': {
+              transition: 'none',
+            },
+          }}
+        >
+          <BottomNavigation
+            showLabels
+            value={activeMobileNavigationPath}
+            onChange={(_, value) => {
+              const item = visibleMobileNavigationItems.find((navItem) => navItem.path === value);
+              if (item) handleNavigation(item);
+            }}
+            sx={{
+              height: 64,
+              bgcolor: 'transparent',
+              '& .MuiBottomNavigationAction-root': {
+                minWidth: 0,
+                minHeight: 56,
+                px: 0.2,
+                color: ui.iconMuted,
+                transition: theme.transitions.create(['color', 'transform'], {
+                  duration: theme.transitions.duration.shorter,
+                }),
+              },
+              '& .MuiBottomNavigationAction-root.Mui-selected': {
+                color: theme.palette.primary.main,
+              },
+              '& .mobile-bottom-nav-icon-shell': {
+                width: 42,
+                height: 30,
+                borderRadius: '15px',
+                display: 'grid',
+                placeItems: 'center',
+                transition: theme.transitions.create(['background-color', 'box-shadow', 'transform'], {
+                  duration: theme.transitions.duration.shorter,
+                }),
+              },
+              '& .MuiBottomNavigationAction-root.Mui-selected .mobile-bottom-nav-icon-shell': {
+                bgcolor: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.24 : 0.13),
+                boxShadow: `0 5px 14px ${alpha(theme.palette.primary.main, 0.16)}`,
+                transform: 'translateY(-1px)',
+              },
+              '& .MuiBottomNavigationAction-label': {
+                mt: 0.15,
+                maxWidth: '100%',
+                fontSize: '0.64rem',
+                fontWeight: 700,
+                whiteSpace: 'nowrap',
+                overflow: 'hidden',
+                textOverflow: 'ellipsis',
+              },
+              '& .MuiBottomNavigationAction-label.Mui-selected': {
+                fontSize: '0.66rem',
+                fontWeight: 800,
+              },
+              '& .MuiSvgIcon-root': {
+                fontSize: 24,
+              },
+              '@media (prefers-reduced-motion: reduce)': {
+                '& .MuiBottomNavigationAction-root, & .mobile-bottom-nav-icon-shell': {
+                  transition: 'none',
+                },
+              },
+            }}
+          >
+            {visibleMobileNavigationItems.map((item) => {
+              const badgeCount = getNavigationBadgeCount(item.path, unreadCounts);
+              const icon = badgeCount > 0 ? (
+                <Badge color="error" badgeContent={badgeCount}>
+                  {item.icon}
+                </Badge>
+              ) : item.icon;
+
+              return (
+                <BottomNavigationAction
+                  key={item.path}
+                  value={item.path}
+                  label={item.shortLabel || item.label}
+                  icon={<Box className="mobile-bottom-nav-icon-shell">{icon}</Box>}
+                  data-testid={`main-layout-mobile-bottom-nav-${item.path.replace(/^\//, '')}`}
+                  onPointerEnter={() => {
+                    if (item.path !== '/menu') void prefetchRouteByPath(item.path).catch(() => {});
+                  }}
+                  onFocus={() => {
+                    if (item.path !== '/menu') void prefetchRouteByPath(item.path).catch(() => {});
+                  }}
+                  onTouchStart={() => {
+                    void prefetchRouteByPath(item.path).catch(() => {});
+                  }}
+                  sx={{
+                    '&.Mui-selected .MuiBottomNavigationAction-label': {
+                      color: theme.palette.text.primary,
+                    },
+                  }}
+                />
+              );
+            })}
+          </BottomNavigation>
+        </Box>
+      ) : null}
 
       <Drawer
         anchor="right"

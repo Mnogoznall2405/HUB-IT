@@ -17,6 +17,8 @@ export default function useChatMessageMenuActions({
   setComposerMenuAnchor,
   setMessageMenuAnchor,
   setMessageMenuMessage,
+  setEditingMessage,
+  setMessageText,
   setReplyMessage,
   setSelectedMessageIds,
   setThreadMenuAnchor,
@@ -85,14 +87,24 @@ export default function useChatMessageMenuActions({
 
   const handleReplyMessage = useCallback((message) => {
     if (!message || !message.id) return;
+    setEditingMessage(null);
     setReplyMessage(message);
     focusComposer();
-  }, [focusComposer, setReplyMessage]);
+  }, [focusComposer, setEditingMessage, setReplyMessage]);
 
   const handleReplyFromMessageMenu = useCallback((message) => {
     closeMessageMenu();
     handleReplyMessage(message);
   }, [closeMessageMenu, handleReplyMessage]);
+
+  const handleEditFromMessageMenu = useCallback((message) => {
+    closeMessageMenu();
+    if (!message?.id) return;
+    setReplyMessage(null);
+    setEditingMessage(message);
+    setMessageText(String(message?.body || '').trim());
+    focusComposer({ forceMobile: true });
+  }, [closeMessageMenu, focusComposer, setEditingMessage, setMessageText, setReplyMessage]);
 
   const handleCopyMessage = useCallback(async (message) => {
     closeMessageMenu();
@@ -200,6 +212,7 @@ export default function useChatMessageMenuActions({
     closeMessageMenu,
     handleCopyMessage,
     handleCopyMessageLink,
+    handleEditFromMessageMenu,
     handleOpenAttachmentFromMessageMenu,
     handleOpenReadsFromMessageMenu,
     handleOpenTaskFromMessageMenu,

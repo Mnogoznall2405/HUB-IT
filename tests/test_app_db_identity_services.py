@@ -111,17 +111,76 @@ def test_settings_and_db_selection_work_with_app_db_backend(temp_dir):
     settings_service = SettingsService(file_path=Path(temp_dir) / "web_user_settings.json", database_url=database_url)
     selection_service = UserDBSelectionService(file_path=Path(temp_dir) / "user_db_selection.json", database_url=database_url)
 
+    assert settings_service.get_user_settings(15)["mobile_bottom_nav_items"] == [
+        "/dashboard",
+        "/tasks",
+        "/chat",
+        "/mail",
+    ]
     updated = settings_service.update_user_settings(15, {
         "theme_mode": "dark",
         "font_family": "Segoe UI",
         "font_scale": 1.1,
         "pinned_database": "ITINVENT",
+        "mobile_bottom_nav_items": [
+            "/mail",
+            "invalid",
+            "/tasks",
+            "/mail",
+            "/dashboard",
+            "/settings",
+            "/database",
+        ],
     })
     selection_service.set_assigned_database(123456, "ITINVENT")
 
     assert updated["theme_mode"] == "dark"
+    assert updated["mobile_bottom_nav_items"] == ["/mail", "/tasks", "/dashboard", "/database"]
     assert settings_service.get_user_settings(15)["pinned_database"] == "ITINVENT"
+    assert settings_service.get_user_settings(15)["mobile_bottom_nav_items"] == [
+        "/mail",
+        "/tasks",
+        "/dashboard",
+        "/database",
+    ]
     assert selection_service.get_assigned_database(123456) == "ITINVENT"
+
+
+def test_settings_mobile_bottom_nav_items_work_with_json_fallback(temp_dir, monkeypatch):
+    settings_module = importlib.import_module("backend.services.settings_service")
+    monkeypatch.setattr(settings_module, "is_app_database_configured", lambda: False)
+    service = SettingsService(file_path=Path(temp_dir) / "web_user_settings.json")
+
+    assert service.get_user_settings(22)["mobile_bottom_nav_items"] == [
+        "/dashboard",
+        "/tasks",
+        "/chat",
+        "/mail",
+    ]
+
+    updated = service.update_user_settings(22, {
+        "mobile_bottom_nav_items": [
+            "/settings",
+            "/settings",
+            "invalid",
+            "/database",
+            "/tasks",
+            "/mail",
+            "/kb",
+        ],
+    })
+
+    assert updated["mobile_bottom_nav_items"] == ["/database", "/tasks", "/mail", "/kb"]
+    assert service.get_user_settings(22)["mobile_bottom_nav_items"] == [
+        "/database",
+        "/tasks",
+        "/mail",
+        "/kb",
+    ]
+
+    assert service.update_user_settings(22, {"mobile_bottom_nav_items": []})[
+        "mobile_bottom_nav_items"
+    ] == []
 
 
 def test_app_settings_service_persists_controller_in_app_db(temp_dir, monkeypatch):
@@ -195,3 +254,62 @@ def test_user_service_replaces_task_delegates_idempotently_in_app_db(temp_dir):
     assert len(updated) == 1
     assert updated[0]["delegate_user_id"] == delegate["id"]
     assert updated[0]["role_type"] == "deputy"
+
+
+def test_user_service_lists_task_delegates_bulk_with_single_store_pass(temp_dir, monkeypatch):
+    service = UserService(file_path=Path(temp_dir) / "web_users.json", database_url=_sqlite_url(temp_dir))
+
+    owner_a = service.create_user(username="owner-a", password="secret123", role="admin", email="owner-a@example.com")
+    owner_b = service.create_user(username="owner-b", password="secret123", role="admin", email="owner-b@example.com")
+    delegate_a = service.create_user(
+        username="delegate-a",
+        password="secret123",
+        role="operator",
+        email="delegate-a@example.com",
+        full_name="Delegate A",
+    )
+    delegate_b = service.create_user(
+        username="delegate-b",
+        password="secret123",
+        role="operator",
+        email="delegate-b@example.com",
+        full_name="Delegate B",
+    )
+
+    service.replace_task_delegates(
+        owner_a["id"],
+        [
+            {"delegate_user_id": delegate_b["id"], "role_type": "assistant", "is_active": True},
+            {"delegate_user_id": delegate_a["id"], "role_type": "deputy", "is_active": True},
+        ],
+    )
+    service.replace_task_delegates(
+        owner_b["id"],
+        [{"delegate_user_id": delegate_b["id"], "role_type": "assistant", "is_active": True}],
+    )
+
+    calls = {"users": 0, "links": 0}
+    original_load_users = service._load_users
+    original_load_links = service._load_task_delegate_links
+
+    def _load_users_once():
+        calls["users"] += 1
+        return original_load_users()
+
+    def _load_links_once():
+        calls["links"] += 1
+        return original_load_links()
+
+    monkeypatch.setattr(service, "_load_users", _load_users_once)
+    monkeypatch.setattr(service, "_load_task_delegate_links", _load_links_once)
+
+    grouped = service.list_task_delegates_bulk([owner_a["id"], owner_b["id"], 999, owner_a["id"]])
+
+    assert calls == {"users": 1, "links": 1}
+    assert [item["owner_user_id"] for item in grouped] == [owner_a["id"], owner_b["id"], 999]
+    assert [item["delegate_user_id"] for item in grouped[0]["task_delegate_links"]] == [
+        delegate_a["id"],
+        delegate_b["id"],
+    ]
+    assert [item["delegate_user_id"] for item in grouped[1]["task_delegate_links"]] == [delegate_b["id"]]
+    assert grouped[2]["task_delegate_links"] == []

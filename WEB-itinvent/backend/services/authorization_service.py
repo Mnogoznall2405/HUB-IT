@@ -8,6 +8,7 @@ from typing import Iterable
 
 PERM_DATABASE_READ = "database.read"
 PERM_DATABASE_WRITE = "database.write"
+PERM_MFU_READ = "mfu.read"
 PERM_DASHBOARD_READ = "dashboard.read"
 PERM_ANNOUNCEMENTS_WRITE = "announcements.write"
 PERM_TASKS_READ = "tasks.read"
@@ -74,6 +75,7 @@ _OPERATOR_EXTRA_PERMISSIONS = {
     PERM_TASKS_WRITE,
     PERM_DATABASE_READ,
     PERM_DATABASE_WRITE,
+    PERM_MFU_READ,
     PERM_NETWORKS_READ,
     PERM_NETWORKS_WRITE,
     PERM_COMPUTERS_READ,

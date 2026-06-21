@@ -11,7 +11,7 @@ import {
   isArchiveFile,
 } from './chatHelpers';
 
-const CHAT_ARCHIVE_UPLOAD_WARNING = 'РђСЂС…РёРІС‹ (.zip, .rar, .7z, .tar, .gz) РЅРµР»СЊР·СЏ РѕС‚РїСЂР°РІР»СЏС‚СЊ РІ С‡Р°С‚.';
+const CHAT_ARCHIVE_UPLOAD_WARNING = 'Архивы (.zip, .rar, .7z, .tar, .gz) нельзя отправлять в чат.';
 
 export default function useChatFileSending({
   activeConversation,
@@ -84,7 +84,7 @@ export default function useChatFileSending({
     }
 
     if ((existingItems.length + uniqueIncomingFiles.length) > CHAT_MAX_FILE_COUNT) {
-      notifyWarning?.(`РњРѕР¶РЅРѕ РѕС‚РїСЂР°РІРёС‚СЊ РЅРµ Р±РѕР»РµРµ ${CHAT_MAX_FILE_COUNT} С„Р°Р№Р»РѕРІ Р·Р° РѕРґРёРЅ СЂР°Р·.`);
+      notifyWarning?.(`Можно отправить не более ${CHAT_MAX_FILE_COUNT} файлов за один раз.`);
       return false;
     }
 
@@ -108,13 +108,13 @@ export default function useChatFileSending({
       const nextItems = [...existingItems, ...preparedItems];
       const totalBytes = nextItems.reduce((sum, item) => sum + Number(item?.file?.size || 0), 0);
       if (totalBytes > CHAT_MAX_FILE_BYTES) {
-        notifyWarning?.('РЎСѓРјРјР°СЂРЅС‹Р№ СЂР°Р·РјРµСЂ С„Р°Р№Р»РѕРІ РїРѕСЃР»Рµ РїРѕРґРіРѕС‚РѕРІРєРё РїСЂРµРІС‹С€Р°РµС‚ 25 РњР‘.');
+        notifyWarning?.('Суммарный размер файлов после подготовки превышает 25 МБ.');
         return false;
       }
       setSelectedUploadItems(nextItems);
       return true;
     } catch {
-      notifyWarning?.('РќРµ СѓРґР°Р»РѕСЃСЊ РїРѕРґРіРѕС‚РѕРІРёС‚СЊ С„Р°Р№Р»С‹ Рє РѕС‚РїСЂР°РІРєРµ.');
+      notifyWarning?.('Не удалось подготовить файлы к отправке.');
       return false;
     } finally {
       setPreparingFiles(false);
@@ -239,7 +239,7 @@ export default function useChatFileSending({
       if (serverMessage?.id) {
         applyOutgoingThreadMessage(conversationId, serverMessage, {
           replaceId: optimisticMessage?.id,
-          scroll: false,
+          scroll: true,
           scrollSource: 'sendFiles:server',
         });
         if (activeConversation?.kind === 'ai') {
@@ -253,7 +253,7 @@ export default function useChatFileSending({
         removeThreadMessage(optimisticMessage.id);
       }
       if (String(error?.code || '') !== 'ERR_CANCELED') {
-        notifyApiError(error, 'РќРµ СѓРґР°Р»РѕСЃСЊ РѕС‚РїСЂР°РІРёС‚СЊ С„Р°Р№Р»С‹ РІ С‡Р°С‚.');
+        notifyApiError(error, 'Не удалось отправить файлы в чат.');
       }
     } finally {
       revokeObjectUrls(optimisticMessage?.optimisticObjectUrls);

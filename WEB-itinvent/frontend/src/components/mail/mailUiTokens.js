@@ -1,5 +1,5 @@
 import { alpha } from '@mui/material/styles';
-import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
+import { buildOfficeUiTokens, getAppShellMobileFabBottomOffset } from '../../theme/officeUiTokens';
 
 export const MAIL_UI_FONT_FAMILY = '"Segoe UI Variable", "Segoe UI", system-ui, -apple-system, BlinkMacSystemFont, "Roboto", Arial, sans-serif';
 export const MAIL_MESSAGE_FONT_FAMILY = '"Aptos", "Calibri", "Segoe UI", Arial, sans-serif';
@@ -345,6 +345,13 @@ export function getMailMobileBottomBarSx(tokens, overrides = {}) {
 
 export function getMailMobileBottomBarOffset(tokens, extraPx = 24) {
   return `calc(${tokens.bulkBarHeight}px + ${extraPx}px + env(safe-area-inset-bottom, 0px))`;
+}
+
+export function getMailMobileFabBottomOffset(tokens, { bulkActive = false, gapPx = 16 } = {}) {
+  if (bulkActive) {
+    return getMailMobileBottomBarOffset(tokens);
+  }
+  return getAppShellMobileFabBottomOffset(gapPx);
 }
 
 export function getMailMobilePreviewSubjectSx(tokens, overrides = {}) {

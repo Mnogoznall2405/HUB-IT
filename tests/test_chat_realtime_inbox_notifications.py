@@ -14,7 +14,7 @@ if str(WEB_ROOT) not in sys.path:
 chat_api_module = importlib.import_module("backend.api.v1.chat")
 
 
-def test_publish_message_created_notifies_inbox_and_conversation(monkeypatch):
+def test_publish_message_created_notifies_inbox_only_for_message_created(monkeypatch):
     inbox_events = []
     conversation_events = []
 
@@ -77,9 +77,7 @@ def test_publish_message_created_notifies_inbox_and_conversation(monkeypatch):
     assert sorted(item["user_id"] for item in message_created_events) == [2, 3]
     assert all(item["conversation_id"] == "conv-1" for item in message_created_events)
 
-    assert sorted(item["user_id"] for item in conversation_events) == [2, 3]
-    assert [item["event_type"] for item in conversation_events] == ["chat.message.created", "chat.message.created"]
-    assert all(item["conversation_id"] == "conv-1" for item in conversation_events)
+    assert conversation_events == []
 
     conversation_update_events = [
         item for item in inbox_events

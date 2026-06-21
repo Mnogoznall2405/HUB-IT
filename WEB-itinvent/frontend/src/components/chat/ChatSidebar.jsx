@@ -1,5 +1,5 @@
-import { memo, useMemo, useState } from 'react';
-import { CircularProgress, Menu, MenuItem, Skeleton, Tooltip } from '@mui/material';
+import { memo, useMemo, useRef, useState } from 'react';
+import { Checkbox, CircularProgress, Menu, MenuItem, Skeleton, Tooltip } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
@@ -10,22 +10,24 @@ import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import NotificationsOffOutlinedIcon from '@mui/icons-material/NotificationsOffOutlined';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
+import SettingsOutlinedIcon from '@mui/icons-material/SettingsOutlined';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
-import { motion, useReducedMotion } from 'framer-motion';
+import { motion, useReducedMotion, AnimatePresence } from 'framer-motion';
 
-import { PresenceAvatar } from './ChatCommon';
+import { AiConversationAvatar, ConversationAvatar, PresenceAvatar } from './ChatCommon';
+import ChatFolderTabs from './ChatFolderTabs';
+import { getConversationFolderIds, shouldShowAiChatSection } from './chatFolderUtils';
 import { formatShortTime, getConversationStatusLine, getPersonStatusLine } from './chatHelpers';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
 
-const FILTERS = [
-  { value: 'all', label: 'Все чаты' },
-  { value: 'unread', label: 'Непрочитанные' },
-  { value: 'direct', label: 'Личные' },
-  { value: 'group', label: 'Группы' },
-  { value: 'pinned', label: 'Закреплённые' },
-  { value: 'archived', label: 'Архив' },
-];
 export const CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION = false;
+
+export const getChatFolderPanelMotionProps = (reducedMotion = false) => ({
+  initial: reducedMotion ? false : { opacity: 0, y: 10 },
+  animate: { opacity: 1, y: 0 },
+  exit: reducedMotion ? undefined : { opacity: 0, y: -8 },
+  transition: { duration: reducedMotion ? 0 : 0.24, ease: 'easeOut' },
+});
 
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
 const FALLBACK_DENSITY = {
@@ -180,17 +182,32 @@ function ConversationRow({
   activeConversationId,
   onOpenConversation,
   onPrefetchConversation,
+  onOpenFolderMenu,
   draftPreview,
   compactMobile = false,
   index = 0,
   reducedMotion = false,
 }) {
   const density = getDensity(ui);
+  const longPressTimerRef = useRef(null);
   const unreadCount = Number(item?.unread_count || 0);
   const active = item.id === activeConversationId;
   const previewText = draftPreview || (item?.kind === 'ai'
     ? `AI • ${String(item?.last_message_preview || '').trim() || 'Готов к диалогу'}`
     : getConversationStatusLine(item));
+
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleOpenFolderMenu = (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onOpenFolderMenu?.(item, event);
+  };
 
   return (
     <motion.div
@@ -201,8 +218,17 @@ function ConversationRow({
       <button
         type="button"
         onClick={() => onOpenConversation(item.id)}
+        onContextMenu={handleOpenFolderMenu}
         onPointerDown={() => onPrefetchConversation?.(item.id)}
-        onTouchStart={() => onPrefetchConversation?.(item.id)}
+        onTouchStart={(event) => {
+          onPrefetchConversation?.(item.id);
+          clearLongPress();
+          longPressTimerRef.current = window.setTimeout(() => {
+            onOpenFolderMenu?.(item, event);
+          }, 520);
+        }}
+        onTouchEnd={clearLongPress}
+        onTouchMove={clearLongPress}
         aria-current={active ? 'page' : undefined}
         data-chat-active={active ? 'true' : 'false'}
         className={joinClasses(
@@ -230,8 +256,8 @@ function ConversationRow({
         }}
       >
         <div className="flex items-center gap-2.5">
-          <PresenceAvatar
-            item={item.kind === 'direct' ? (item.direct_peer || item) : item}
+          <ConversationAvatar
+            conversation={item}
             online={Boolean(item?.kind === 'direct' && item?.direct_peer?.presence?.is_online)}
             size={getSidebarAvatarSize(density, compactMobile)}
           />
@@ -353,7 +379,7 @@ function AiBotRow({ bot, openingAiBotId, onOpenAiBot, compactMobile = false, ui 
         padding: `${density.sidebarResultRowPy}px ${density.sidebarResultRowPx}px`,
       }}
     >
-      <PresenceAvatar item={{ title: bot?.title || 'AI', username: bot?.slug || 'ai' }} online={false} size={compactMobile ? 54 : density.sidebarAvatar} />
+      <AiConversationAvatar size={compactMobile ? 54 : density.sidebarAvatar} />
       <div className="min-w-0 flex-1">
         <p
           className={joinClasses('truncate font-semibold tracking-[-0.01em] text-[color:var(--chat-text-primary)]', compactMobile ? 'text-[17px]' : 'text-[16px]')}
@@ -444,7 +470,7 @@ function AiConversationRow({
         }}
       >
         <div className="flex items-center gap-2.5">
-          <PresenceAvatar item={{ title: bot?.title || 'AI', username: bot?.slug || 'ai' }} online={false} size={getSidebarAvatarSize(density, compactMobile)} />
+          <AiConversationAvatar size={getSidebarAvatarSize(density, compactMobile)} />
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-3">
               <p className={joinClasses(
@@ -545,14 +571,19 @@ function ChatSidebar({
   conversations,
   onOpenGroup,
   sidebarScrollRef,
-  conversationFilter,
-  onConversationFilterChange,
-  conversationFilterCounts,
+  activeFolderKey = 'all',
+  onActiveFolderChange,
+  customFolders = [],
+  folderUnreadCounts = {},
+  conversationIdsByFolder = {},
+  onOpenFolderManager,
+  onOpenArchive,
+  onToggleConversationInFolder,
   draftsByConversation,
   aiBots = [],
   aiBotsLoading = false,
   aiBotsError = '',
-  showAiSection = false,
+  showAiSection: showAiSectionEnabled = false,
   onOpenAiBot,
   openingAiBotId = '',
 }) {
@@ -560,14 +591,32 @@ function ChatSidebar({
   const { openDrawer, headerMode } = useMainLayoutShell();
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = disableMotion || prefersReducedMotion;
-  const [filterAnchorEl, setFilterAnchorEl] = useState(null);
+  const [actionsAnchorEl, setActionsAnchorEl] = useState(null);
+  const [folderMenuAnchorEl, setFolderMenuAnchorEl] = useState(null);
+  const [folderMenuConversation, setFolderMenuConversation] = useState(null);
   const [searchFocused, setSearchFocused] = useState(false);
-  const showEmbeddedMenuButton = compactMobile && headerMode !== 'notifications-only';
-  const activeFilter = useMemo(
-    () => FILTERS.find((item) => item.value === conversationFilter) || FILTERS[0],
-    [conversationFilter],
-  );
+  const showEmbeddedMenuButton = false;
   const chatUnavailable = health?.available === false;
+  const showAiSection = showAiSectionEnabled
+    && shouldShowAiChatSection(activeFolderKey)
+    && String(activeFolderKey || '') !== 'archived'
+    && !sidebarSearchActive;
+  const folderMenuConversationId = String(folderMenuConversation?.id || '').trim();
+  const selectedFolderIds = useMemo(
+    () => new Set(getConversationFolderIds(folderMenuConversationId, conversationIdsByFolder)),
+    [conversationIdsByFolder, folderMenuConversationId],
+  );
+  const folderPanelMotion = getChatFolderPanelMotionProps(reducedMotion);
+
+  const handleOpenFolderMenu = (conversation, event) => {
+    setFolderMenuConversation(conversation);
+    setFolderMenuAnchorEl(event?.currentTarget || event?.target || null);
+  };
+
+  const handleCloseFolderMenu = () => {
+    setFolderMenuAnchorEl(null);
+    setFolderMenuConversation(null);
+  };
   const aiSection = showAiSection ? (
     <>
       <SearchSectionHeader ui={ui} compactMobile={compactMobile}>AI</SearchSectionHeader>
@@ -645,6 +694,9 @@ function ChatSidebar({
         '--chat-info-card-text': ui.infoCardText || ui.textSecondary,
         '--chat-filter-strip-bg': ui.filterStripBg || ui.surfaceMuted,
         '--chat-filter-strip-border': ui.filterStripBorder || ui.borderSoft,
+        '--chat-folder-tab-bg': 'transparent',
+        '--chat-folder-tab-active-bg': ui.accentText || theme.palette.primary.main,
+        '--chat-folder-tab-active-text': ui.textOnAccent || '#ffffff',
         '--chat-skeleton-base': ui.skeletonBase || alpha(theme.palette.text.primary, 0.12),
         '--chat-skeleton-wave': ui.skeletonWave || alpha(theme.palette.common.white, 0.42),
         '--chat-header-action-bg': ui.headerActionBg || alpha(theme.palette.common.white, theme.palette.mode === 'dark' ? 0.05 : 0.06),
@@ -696,6 +748,18 @@ function ChatSidebar({
           </SidebarActionButton>
         </div>
 
+        {!sidebarSearchActive ? (
+          <div className={compactMobile ? 'mb-2.5' : 'mb-3'}>
+            <ChatFolderTabs
+              activeFolderKey={activeFolderKey}
+              customFolders={customFolders}
+              folderUnreadCounts={folderUnreadCounts}
+              onFolderChange={onActiveFolderChange}
+              disableMotion={reducedMotion}
+            />
+          </div>
+        ) : null}
+
         <motion.div
           initial={false}
           animate={reducedMotion ? undefined : { y: searchFocused ? -1 : 0, scale: searchFocused ? 1.005 : 1 }}
@@ -729,8 +793,8 @@ function ChatSidebar({
               style={compactMobile ? undefined : { fontSize: density.sidebarSearchFontSize }}
             />
             <SidebarActionButton
-              title="Фильтр списка"
-              onClick={(event) => setFilterAnchorEl(event.currentTarget)}
+              title="Действия"
+              onClick={(event) => setActionsAnchorEl(event.currentTarget)}
               compactMobile={compactMobile}
               ui={ui}
               className="h-9 w-9 bg-transparent"
@@ -740,31 +804,10 @@ function ChatSidebar({
           </div>
         </motion.div>
 
-        {!compactMobile ? (
-          <div
-            className="mt-3 flex items-center justify-between rounded-[14px] border px-3 py-2"
-            style={{
-              borderColor: 'var(--chat-filter-strip-border)',
-              backgroundColor: 'var(--chat-filter-strip-bg)',
-              padding: '6px 10px',
-            }}
-          >
-            <span className="text-[12px] font-semibold text-[color:var(--chat-text-secondary)]">
-              {activeFilter.label}
-              {conversationFilterCounts?.[activeFilter.value] ? ` • ${conversationFilterCounts[activeFilter.value]}` : ''}
-            </span>
-            {chatUnavailable ? (
-              <span className="text-[12px] font-semibold text-amber-400">
-                Offline
-              </span>
-            ) : null}
-          </div>
-        ) : null}
-
         <Menu
-          anchorEl={filterAnchorEl}
-          open={Boolean(filterAnchorEl)}
-          onClose={() => setFilterAnchorEl(null)}
+          anchorEl={actionsAnchorEl}
+          open={Boolean(actionsAnchorEl)}
+          onClose={() => setActionsAnchorEl(null)}
           PaperProps={{
             elevation: 12,
             sx: {
@@ -777,25 +820,79 @@ function ChatSidebar({
           <MenuItem
             onClick={() => {
               onOpenGroup?.();
-              setFilterAnchorEl(null);
+              setActionsAnchorEl(null);
             }}
             disabled={chatUnavailable}
           >
             Новый чат
           </MenuItem>
-          {FILTERS.map((filter) => (
-            <MenuItem
-              key={filter.value}
-              selected={conversationFilter === filter.value}
-              onClick={() => {
-                onConversationFilterChange?.(filter.value);
-                setFilterAnchorEl(null);
-              }}
-            >
-              {filter.label}
-              {conversationFilterCounts?.[filter.value] ? ` • ${conversationFilterCounts[filter.value]}` : ''}
-            </MenuItem>
-          ))}
+          <MenuItem
+            selected={String(activeFolderKey) === 'archived'}
+            onClick={() => {
+              onOpenArchive?.();
+              setActionsAnchorEl(null);
+            }}
+          >
+            <ArchiveOutlinedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
+            Архив
+            {Number(folderUnreadCounts?.archived || 0) > 0
+              ? ` (${Number(folderUnreadCounts.archived) > 99 ? '99+' : folderUnreadCounts.archived})`
+              : ''}
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              onOpenFolderManager?.();
+              setActionsAnchorEl(null);
+            }}
+          >
+            <SettingsOutlinedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
+            Управление папками
+          </MenuItem>
+          <MenuItem
+            onClick={() => {
+              onOpenFolderManager?.({ create: true });
+              setActionsAnchorEl(null);
+            }}
+          >
+            <CreateRoundedIcon fontSize="small" sx={{ mr: 1.5, color: 'inherit' }} />
+            Создать папку
+          </MenuItem>
+        </Menu>
+
+        <Menu
+          anchorEl={folderMenuAnchorEl}
+          open={Boolean(folderMenuAnchorEl)}
+          onClose={handleCloseFolderMenu}
+          PaperProps={{
+            elevation: 12,
+            sx: {
+              mt: 0.5,
+              borderRadius: 1.75,
+              minWidth: 240,
+            },
+          }}
+        >
+          <MenuItem disabled sx={{ opacity: 1, fontWeight: 700 }}>
+            Добавить в папку
+          </MenuItem>
+          {(Array.isArray(customFolders) ? customFolders : []).length === 0 ? (
+            <MenuItem disabled>Нет пользовательских папок</MenuItem>
+          ) : null}
+          {(Array.isArray(customFolders) ? customFolders : []).map((folder) => {
+            const folderId = String(folder?.id || '');
+            const checked = selectedFolderIds.has(folderId);
+            return (
+              <MenuItem
+                key={folderId}
+                onClick={() => {
+                  void onToggleConversationInFolder?.(folderId, folderMenuConversationId, !checked);
+                }}
+              >
+                <Checkbox size="small" checked={checked} sx={{ mr: 1, p: 0.5 }} />
+                {folder?.name || 'Папка'}
+              </MenuItem>
+            );
+          })}
         </Menu>
       </div>
 
@@ -840,6 +937,7 @@ function ChatSidebar({
                       activeConversationId={activeConversationId}
                       onOpenConversation={onOpenConversation}
                       onPrefetchConversation={onPrefetchConversation}
+                      onOpenFolderMenu={handleOpenFolderMenu}
                       draftPreview={draftsByConversation?.[item.id] || ''}
                       compactMobile={compactMobile}
                       index={index}
@@ -856,34 +954,51 @@ function ChatSidebar({
               </InfoCard>
             ) : null}
           </>
-        ) : conversationsLoading ? (
-          <SidebarLoadingSkeleton ui={ui} compactMobile={compactMobile} />
-        ) : conversations.length === 0 ? (
-          <>
-            {aiSection}
-            <InfoCard compactMobile={compactMobile}>
-            Чаты пока не найдены. Найдите человека через поиск или создайте новый групповой чат.
-            </InfoCard>
-          </>
         ) : (
-          <div className={compactMobile ? '' : 'pt-2'}>
-            {aiSection}
-            {conversations.map((item, index) => (
-              <ConversationRow
-                key={item.id}
-                item={item}
-                theme={theme}
-                ui={ui}
-                activeConversationId={activeConversationId}
-                onOpenConversation={onOpenConversation}
-                onPrefetchConversation={onPrefetchConversation}
-                draftPreview={draftsByConversation?.[item.id] || ''}
-                compactMobile={compactMobile}
-                index={index}
-                reducedMotion={reducedMotion}
-              />
-            ))}
-          </div>
+          <AnimatePresence mode="wait" initial={!reducedMotion}>
+            {conversationsLoading ? (
+              <motion.div
+                key="sidebar-loading"
+                {...folderPanelMotion}
+              >
+                <SidebarLoadingSkeleton ui={ui} compactMobile={compactMobile} />
+              </motion.div>
+            ) : conversations.length === 0 ? (
+              <motion.div
+                key={`folder-empty-${activeFolderKey}`}
+                {...folderPanelMotion}
+              >
+                {aiSection}
+                <InfoCard compactMobile={compactMobile}>
+                  Чаты пока не найдены. Найдите человека через поиск или создайте новый групповой чат.
+                </InfoCard>
+              </motion.div>
+            ) : (
+              <motion.div
+                key={`folder-list-${activeFolderKey}`}
+                className={compactMobile ? '' : 'pt-2'}
+                {...folderPanelMotion}
+              >
+                {aiSection}
+                {conversations.map((item, index) => (
+                  <ConversationRow
+                    key={item.id}
+                    item={item}
+                    theme={theme}
+                    ui={ui}
+                    activeConversationId={activeConversationId}
+                    onOpenConversation={onOpenConversation}
+                    onPrefetchConversation={onPrefetchConversation}
+                    onOpenFolderMenu={handleOpenFolderMenu}
+                    draftPreview={draftsByConversation?.[item.id] || ''}
+                    compactMobile={compactMobile}
+                    index={index}
+                    reducedMotion={reducedMotion}
+                  />
+                ))}
+              </motion.div>
+            )}
+          </AnimatePresence>
         )}
       </div>
     </div>

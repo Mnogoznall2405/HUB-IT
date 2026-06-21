@@ -27,6 +27,7 @@ import {
   TextField,
   Tooltip,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
@@ -36,6 +37,7 @@ import RouterIcon from '@mui/icons-material/Router';
 import PrintIcon from '@mui/icons-material/Print';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import MainLayout from '../components/layout/MainLayout';
+import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
 import { mfuAPI, equipmentAPI } from '../api/client';
 import jsonAPI from '../api/json_client';
@@ -399,6 +401,7 @@ function Mfu() {
   const { hasPermission, user } = useAuth();
   const canWrite = hasPermission('database.write');
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const getMfuCacheKey = useCallback(() => buildCacheKey(
     'mfu-dashboard',
@@ -953,7 +956,8 @@ function Mfu() {
 
   return (
     <MainLayout showDatabaseSelector>
-      <PageShell sx={{ width: '100%', pb: 2 }}>
+      <PageShell sx={{ width: '100%', pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : 2 }}>
+        {isMobile ? <MobileShellPageHeader title="МФУ" showDatabaseSelector /> : null}
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 1.5 }}>
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
             <PrintIcon color="primary" />

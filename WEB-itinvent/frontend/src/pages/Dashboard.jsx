@@ -61,6 +61,7 @@ import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import SettingsIcon from '@mui/icons-material/Settings';
 import MainLayout from '../components/layout/MainLayout';
+import ShellNotificationsButton from '../components/layout/ShellNotificationsButton';
 import PageShell from '../components/layout/PageShell';
 import { hubAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
@@ -78,7 +79,8 @@ import {
   getTransferActUploadUrl,
   isTransferActUploadTask,
 } from '../lib/hubTaskIntegrations';
-import { CHAT_FEATURE_ENABLED } from '../lib/chatFeature';
+import { CHAT_FEATURE_ENABLED, TASK_DISCUSSION_CHAT_ENABLED } from '../lib/chatFeature';
+import { invalidateSWRCacheByPrefix } from '../lib/swrCache';
 import { buildOfficeUiTokens, getOfficeDialogPaperSx, getOfficeEmptyStateSx, getOfficeHeaderBandSx, getOfficeMetricBlockSx, getOfficePanelSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
 
 const DASHBOARD_ANNOUNCEMENTS_LIMIT = 120;
@@ -378,6 +380,8 @@ function Dashboard() {
   const [taskOpen, setTaskOpen] = useState(false);
   const [taskLoading, setTaskLoading] = useState(false);
   const [taskDetails, setTaskDetails] = useState(null);
+  const [discussionOpening, setDiscussionOpening] = useState(false);
+  const taskDiscussionChatEnabled = CHAT_FEATURE_ENABLED && TASK_DISCUSSION_CHAT_ENABLED;
   const searchInputRef = useRef(null);
   const mobileSwipeRef = useRef(null);
   const mobileViewDirectionRef = useRef(0);
@@ -1005,6 +1009,26 @@ function Dashboard() {
       setTaskLoading(false);
     }
   }, [loadDashboard, patchTaskItem]);
+
+  const handleOpenTaskDiscussion = useCallback(async (task = taskDetails) => {
+    const taskId = String(task?.id || '').trim();
+    if (!taskId || !taskDiscussionChatEnabled) return;
+    setDiscussionOpening(true);
+    try {
+      const response = await hubAPI.openTaskDiscussion(taskId);
+      const conversationId = String(response?.conversation_id || '').trim();
+      if (!conversationId) {
+        throw new Error('Не удалось открыть чат по задаче');
+      }
+      invalidateSWRCacheByPrefix('chat', 'conversations', String(user?.id || 'guest'));
+      navigate(`/chat?conversation=${encodeURIComponent(conversationId)}`);
+      window.dispatchEvent(new CustomEvent('chat-unread-needs-refresh'));
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || 'Ошибка открытия чата по задаче');
+    } finally {
+      setDiscussionOpening(false);
+    }
+  }, [navigate, taskDetails, taskDiscussionChatEnabled, user?.id]);
 
   useEffect(() => {
     if (!selectedTaskId) {
@@ -2038,8 +2062,14 @@ function Dashboard() {
   }), [theme.palette.common.white, theme.palette.mode, ui.borderSoft, ui.mutedText, ui.selectedBorder, ui.textPrimary]);
 
   return (
-    <MainLayout headerMode={isMobile ? 'notifications-only' : 'default'}>
-      <PageShell fullHeight={!isMobile} sx={{ bgcolor: ui.pageBg }}>
+    <MainLayout>
+      <PageShell
+        fullHeight={!isMobile}
+        sx={{
+          bgcolor: ui.pageBg,
+          pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : undefined,
+        }}
+      >
         <Box
           sx={{
             px: { xs: 1, md: 1.25 },
@@ -2071,6 +2101,7 @@ function Dashboard() {
                       </Typography>
                     </Box>
                     <OverflowMenu items={mobileHeaderActions} onSelect={handleMobileActionSelect} label="Действия главной" />
+                    <ShellNotificationsButton size="small" />
                   </Stack>
 
                   <Tabs
@@ -3093,11 +3124,19 @@ function Dashboard() {
           onOpenTransferActReminder={openTransferActReminder}
           onOpenInTasks={() => {
             if (!taskDetails?.id) return;
-            navigate(`/tasks?task=${encodeURIComponent(taskDetails.id)}&task_tab=comments`);
+            const url = new URL('/tasks', window.location.origin);
+            url.searchParams.set('task', taskDetails.id);
+            if (!taskDiscussionChatEnabled) {
+              url.searchParams.set('task_tab', 'comments');
+            }
+            navigate(`${url.pathname}${url.search}`);
           }}
           onDownloadReport={(report) => void downloadTaskReport(report)}
           formatDateTime={fmtDateTime}
           latestCommentPreview={getTaskCommentPreview(taskDetails)}
+          taskDiscussionEnabled={taskDiscussionChatEnabled}
+          onOpenTaskDiscussion={() => void handleOpenTaskDiscussion(taskDetails)}
+          discussionOpening={discussionOpening}
         />
       </Box>
       </PageShell>

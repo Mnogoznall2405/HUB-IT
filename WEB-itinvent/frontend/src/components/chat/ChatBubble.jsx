@@ -34,7 +34,7 @@ import MarkdownRenderer from '../hub/MarkdownRenderer';
 import {
   detectChatBodyFormat,
   formatFullDate,
-  formatShortTime,
+  formatMessageMetaLabel,
   getEmojiOnlyCount,
   getReplyPreviewText,
   hasChatMarkdownTable,
@@ -139,6 +139,18 @@ function isShortInlineMessage(body = '', { compactMobile = false } = {}) {
   if (normalized.includes('\n')) return false;
   const inlineLimit = compactMobile ? 34 : 24;
   return normalized.length <= inlineLimit;
+}
+
+function getInlineMetaReserveWidth({
+  compactMobile = false,
+  isOwnDirect = false,
+  edited = false,
+} = {}) {
+  const base = isOwnDirect
+    ? (compactMobile ? 4.15 : 3.9)
+    : (compactMobile ? 2.8 : 2.5);
+  const editedExtra = edited ? (compactMobile ? 1.45 : 1.25) : 0;
+  return `${base + editedExtra}rem`;
 }
 
 function getGalleryAttachmentsForDisplay(attachments) {
@@ -590,8 +602,14 @@ function ChatBubbleMeta({
         </Tooltip>
       ) : null}
 
-      <Typography variant="caption" title={formatFullDate(message?.created_at)} sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta, lineHeight: 1, fontFamily: CHAT_FONT_FAMILY }}>
-        {formatShortTime(message?.created_at)}
+      <Typography
+        variant="caption"
+        title={message?.edited_at
+          ? `${formatFullDate(message?.created_at)} · изменено ${formatFullDate(message?.edited_at)}`
+          : formatFullDate(message?.created_at)}
+        sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta, lineHeight: 1, fontFamily: CHAT_FONT_FAMILY, whiteSpace: 'nowrap' }}
+      >
+        {formatMessageMetaLabel(message)}
       </Typography>
 
       {shouldShowUploadProgress ? (
@@ -1564,7 +1582,11 @@ export function ChatBubble({
               '&::after': inlineMeta ? {
                 content: '""',
                 display: 'inline-block',
-                width: isOwnDirect ? (compactMobile ? '4.15rem' : '3.9rem') : (compactMobile ? '2.8rem' : '2.5rem'),
+                width: getInlineMetaReserveWidth({
+                  compactMobile,
+                  isOwnDirect,
+                  edited: Boolean(String(message?.edited_at || '').trim()),
+                }),
                 height: '0.9em',
               } : undefined,
             }}

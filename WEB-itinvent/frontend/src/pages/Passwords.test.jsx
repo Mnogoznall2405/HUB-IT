@@ -20,6 +20,8 @@ const {
   mockNotifyWarning,
   mockNotifyApiError,
   mockUseMediaQuery,
+  mockSearchParams,
+  mockSetSearchParams,
 } = vi.hoisted(() => ({
   mockGetEntries: vi.fn(),
   mockGetGroups: vi.fn(),
@@ -37,6 +39,8 @@ const {
   mockNotifyWarning: vi.fn(),
   mockNotifyApiError: vi.fn(),
   mockUseMediaQuery: vi.fn(() => false),
+  mockSearchParams: new URLSearchParams(),
+  mockSetSearchParams: vi.fn(),
 }));
 
 vi.mock('@mui/material/useMediaQuery', () => ({
@@ -94,8 +98,13 @@ vi.mock('react-router-dom', async () => {
   return {
     ...actual,
     useNavigate: () => vi.fn(),
+    useSearchParams: () => [mockSearchParams, mockSetSearchParams],
   };
 });
+
+vi.mock('../components/passwords/PasswordAdExpiryView', () => ({
+  default: () => <div data-testid="password-ad-expiry-view">AD expiry view</div>,
+}));
 
 import Passwords, { generateVaultPassword, normalizeTagList } from './Passwords';
 
@@ -163,6 +172,8 @@ describe('Passwords page', () => {
   beforeEach(() => {
     window.sessionStorage.clear();
     mockUseMediaQuery.mockReturnValue(false);
+    mockSearchParams.delete('section');
+    mockSetSearchParams.mockReset();
     mockGetEntries.mockReset();
     mockCreateEntry.mockReset();
     mockGetGroups.mockReset();
@@ -211,6 +222,26 @@ describe('Passwords page', () => {
 
     fireEvent.change(screen.getByTestId('password-search-input'), { target: { value: 'prod' } });
     await waitFor(() => expect(mockGetEntries).toHaveBeenCalledWith(expect.objectContaining({ q: 'prod' })));
+  });
+
+  it('switches between vault and AD expiry tabs', async () => {
+    renderPage();
+
+    expect(screen.getByTestId('password-section-tabs')).toBeInTheDocument();
+    expect(screen.getByTestId('password-search-input')).toBeInTheDocument();
+    expect(screen.queryByTestId('password-ad-expiry-view')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('password-section-ad-expiry-tab'));
+    expect(mockSetSearchParams).toHaveBeenCalled();
+    const params = mockSetSearchParams.mock.calls.at(-1)?.[0];
+    expect(params?.get('section')).toBe('ad-expiry');
+  });
+
+  it('renders AD expiry view when section query is set', async () => {
+    mockSearchParams.set('section', 'ad-expiry');
+    renderPage();
+    expect(screen.getByTestId('password-ad-expiry-view')).toBeInTheDocument();
+    expect(screen.queryByTestId('password-search-input')).not.toBeInTheDocument();
   });
 
   it('searches by login and applies group/tag filters', async () => {

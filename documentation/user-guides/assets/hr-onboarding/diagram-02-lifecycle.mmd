@@ -1,0 +1,10 @@
+flowchart LR
+    A[Priglashenie] --> B[Politika_PDn]
+    B --> C[Soglasie_otdelno]
+    C --> D[Zagruzka_dokumentov]
+    D --> E[Proverka_HR]
+    E --> F{Reshenie}
+    F -->|Prinyat| G[Lichnoe_delo_KEDO]
+    F -->|Otkaz| H[Unichtozhenie_30_dnej]
+    F -->|Otzov_soglasiya| H
+    G --> I[Arhiv_50_let]

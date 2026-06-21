@@ -1,4 +1,4 @@
-﻿import React from 'react';
+import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
@@ -674,13 +674,13 @@ describe('ChatDialogs attachment preview', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Ответить' }));
     expect(onReplyFromMessageMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Копировать' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Копировать текст' }));
     expect(onCopyMessage).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Закрепить' }));
     expect(onTogglePinMessageFromMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Копировать ссылку' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Копировать ссылку на сообщение' }));
     expect(onCopyMessageLink).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
 
     fireEvent.click(screen.getByRole('menuitem', { name: 'Переслать' }));
@@ -689,7 +689,7 @@ describe('ChatDialogs attachment preview', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: 'Пожаловаться' }));
     expect(onReportMessageFromMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
 
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Выбрать' }));
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Выделить' }));
     expect(onSelectMessageFromMenu).toHaveBeenCalledWith(expect.objectContaining({ id: 'msg-1' }));
 
     expect(screen.queryByRole('menuitem', { name: 'Перевести' })).not.toBeInTheDocument();

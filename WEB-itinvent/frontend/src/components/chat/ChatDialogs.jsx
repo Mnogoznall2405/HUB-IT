@@ -36,6 +36,7 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import FlagOutlinedIcon from '@mui/icons-material/FlagOutlined';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
@@ -59,9 +60,12 @@ import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 import ChatContextPanel from './ChatContextPanel';
 import ChatFileUploadDialog from './ChatFileUploadDialog';
 import ChatMediaPreviewDialog from './ChatMediaPreviewDialog';
-import { PresenceAvatar } from './ChatCommon';
+import MailAttachmentPreviewDialog from '../mail/MailAttachmentPreviewDialog';
+import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
+import ChatMessageContextMenu from './ChatMessageContextMenu';
 import {
   CHAT_MAX_FILE_COUNT,
+  formatFileSize,
   formatFullDate,
   getConversationHeaderSubtitle,
   getMessagePreview,
@@ -332,6 +336,7 @@ export default function ChatDialogs({
   onForwardMessageFromMenu,
   onReportMessageFromMenu,
   onDeleteMessageFromMenu,
+  onEditMessageFromMenu,
   onSelectMessageFromMenu,
   onOpenReadsFromMessageMenu,
   onOpenAttachmentFromMessageMenu,
@@ -395,6 +400,10 @@ export default function ChatDialogs({
   onOpenAttachmentPreview,
   attachmentPreview,
   onCloseAttachmentPreview,
+  documentPreview,
+  onCloseDocumentPreview,
+  onDownloadDocumentPreview,
+  onDownloadDocumentPreviewPdf,
   messageReadsOpen,
   onCloseMessageReads,
   messageReadsMessage,
@@ -442,15 +451,6 @@ export default function ChatDialogs({
   const messageMenuAnchorPosition = messageMenuAnchor?.anchorPosition || null;
   const messageMenuUsesPointerAnchor = Boolean(messageMenuAnchorPosition);
   const messageMenuOpen = Boolean(messageMenuMessage && (messageMenuAnchorElement || messageMenuAnchorPosition));
-  const messageMenuAttachments = Array.isArray(messageMenuMessage?.attachments) ? messageMenuMessage.attachments : [];
-  const canCopyMessage = Boolean(String(getMessagePreview(messageMenuMessage) || '').trim());
-  const canTogglePinMessage = Boolean(messageMenuMessage?.id);
-  const canCopyMessageLink = Boolean(messageMenuMessage?.id && (messageMenuMessage?.conversation_id || activeConversationId));
-  const canForwardMessage = Boolean(messageMenuMessage?.id);
-  const canReportMessage = Boolean(messageMenuMessage?.id && !messageMenuMessage?.is_own);
-  const canSelectMessage = Boolean(messageMenuMessage?.id);
-  const canDeleteMessage = activeConversationKind === 'group'
-    && Boolean(messageMenuMessage?.id && !messageMenuMessage?.is_deleted && messageMenuMessage?.kind !== 'system');
   const forwardConversationItems = useMemo(() => {
     const source = Array.isArray(forwardTargets) ? forwardTargets : [];
     const normalizedQuery = String(forwardConversationQuery || '').trim().toLowerCase();
@@ -473,11 +473,6 @@ export default function ChatDialogs({
   const forwardSearchPlaceholder = forwardSelectedCount > 1
     ? `Переслать ${forwardSelectedCount} сообщений...`
     : 'Переслать...';
-  const canOpenReadsFromMessage = activeConversationKind === 'group'
-    && Boolean(messageMenuMessage?.is_own)
-    && Number(messageMenuMessage?.read_by_count || 0) > 0;
-  const canOpenAttachmentFromMessage = messageMenuAttachments.length > 0;
-  const canOpenTaskFromMessage = Boolean(messageMenuMessage?.kind === 'task_share' && messageMenuMessage?.task_preview?.id);
   const selectedGroupMemberIds = useMemo(
     () => new Set(selectedGroupUsers.map((item) => String(item?.id || '').trim()).filter(Boolean)),
     [selectedGroupUsers],
@@ -535,61 +530,6 @@ export default function ChatDialogs({
     bgcolor: ui.surfaceMuted || alpha(ui.pageBg || ui.panelBg || '#020617', 0.44),
     boxShadow: 'none',
   }), [ui.borderSoft, ui.pageBg, ui.panelBg, ui.surfaceMuted]);
-  const messageMenuPaperSx = useMemo(() => ({
-    minWidth: 248,
-    maxWidth: 300,
-    mt: messageMenuUsesPointerAnchor ? 0 : 0.75,
-    borderRadius: 3.2,
-    border: `1px solid ${popupBorderColor}`,
-    bgcolor: popupSurface,
-    color: popupTextColor,
-    backgroundImage: 'none',
-    backdropFilter: 'blur(18px)',
-    boxShadow: popupShadow,
-    overflow: 'hidden',
-    '& .MuiList-root': {
-      py: 0.65,
-    },
-    '& .MuiMenuItem-root': {
-      minHeight: density.dialogMenuItemMinHeight || 44,
-      gap: density.dialogMenuItemGap || 1.55,
-      px: density.dialogMenuItemPx || 1.8,
-      py: density.dialogMenuItemPy || 1,
-      mx: 0.5,
-      my: 0.1,
-      borderRadius: 1.7,
-      fontSize: density.dialogMenuFontSize || '1.05rem',
-      fontWeight: 600,
-      letterSpacing: '-0.01em',
-      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-      color: popupTextColor,
-      transition: 'background-color 120ms ease, opacity 100ms ease',
-      '&:hover': {
-        bgcolor: popupHoverBg,
-      },
-      '&:active': {
-        bgcolor: popupActiveBg,
-      },
-      '&.Mui-disabled': {
-        opacity: 0.42,
-      },
-      '& .MuiSvgIcon-root': {
-        fontSize: density.dialogMenuIconSize || 22,
-        color: popupIconColor,
-        flexShrink: 0,
-      },
-      '&[data-message-menu-tone="danger"]': {
-        color: popupDangerColor,
-      },
-      '&[data-message-menu-tone="danger"] .MuiSvgIcon-root': {
-        color: popupDangerColor,
-      },
-    },
-    '& .MuiDivider-root': {
-      my: 0.4,
-      borderColor: popupBorderColor,
-    },
-  }), [density.dialogMenuFontSize, density.dialogMenuIconSize, density.dialogMenuItemGap, density.dialogMenuItemMinHeight, density.dialogMenuItemPx, density.dialogMenuItemPy, messageMenuUsesPointerAnchor, popupActiveBg, popupBorderColor, popupDangerColor, popupHoverBg, popupIconColor, popupShadow, popupSurface, popupTextColor]);
   const forwardDialogPaperSx = useMemo(() => ({
     borderRadius: { xs: 3, sm: 4 },
     border: `1px solid ${popupBorderColor}`,
@@ -725,92 +665,32 @@ export default function ChatDialogs({
 
   return (
     <>
-      <Menu
-        anchorReference={messageMenuUsesPointerAnchor ? 'anchorPosition' : 'anchorEl'}
-        anchorEl={messageMenuUsesPointerAnchor ? null : messageMenuAnchorElement}
-        anchorPosition={messageMenuUsesPointerAnchor ? messageMenuAnchorPosition : undefined}
+      <ChatMessageContextMenu
+        theme={theme}
+        ui={ui}
         open={messageMenuOpen}
         onClose={onCloseMessageMenu}
-        anchorOrigin={messageMenuUsesPointerAnchor ? undefined : { vertical: 'bottom', horizontal: 'center' }}
-        transformOrigin={messageMenuUsesPointerAnchor ? { vertical: 'top', horizontal: 'left' } : { vertical: 'top', horizontal: 'center' }}
-        PaperProps={{
-          elevation: 0,
-          sx: messageMenuPaperSx,
-        }}
-      >
-        {typeof onToggleReactionFromMenu === 'function' ? (
-          <Box sx={{ display: 'flex', gap: '2px', px: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
-            {['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => (
-              <Box
-                key={emoji}
-                component="button"
-                type="button"
-                onClick={() => { onToggleReactionFromMenu?.(messageMenuMessage, emoji); onCloseMessageMenu?.(); }}
-                sx={{ fontSize: '22px', lineHeight: 1, cursor: 'pointer', border: 'none', bgcolor: 'transparent', p: '4px', borderRadius: 1.5, transition: 'transform 100ms ease', '&:hover': { transform: 'scale(1.3)' }, '&:active': { transform: 'scale(0.9)' } }}
-              >
-                {emoji}
-              </Box>
-            ))}
-          </Box>
-        ) : null}
-        <MenuItem onClick={() => onReplyFromMessageMenu?.(messageMenuMessage)} disabled={!messageMenuMessage}>
-          <ReplyRoundedIcon />
-          Ответить
-        </MenuItem>
-        <MenuItem onClick={() => onCopyMessage?.(messageMenuMessage)} disabled={!messageMenuMessage || !canCopyMessage}>
-          <ContentCopyRoundedIcon />
-          Копировать
-        </MenuItem>
-        <MenuItem onClick={() => onTogglePinMessageFromMenu?.(messageMenuMessage)} disabled={!messageMenuMessage || !canTogglePinMessage}>
-          <PushPinOutlinedIcon />
-          {messageMenuPinned ? 'Открепить' : 'Закрепить'}
-        </MenuItem>
-        <MenuItem onClick={() => onForwardMessageFromMenu?.(messageMenuMessage)} disabled={!messageMenuMessage || !canForwardMessage}>
-          <ForwardRoundedIcon />
-          Переслать
-        </MenuItem>
-        <MenuItem onClick={() => onSelectMessageFromMenu?.(messageMenuMessage)} disabled={!messageMenuMessage || !canSelectMessage}>
-          <CheckCircleOutlineRoundedIcon />
-          Выбрать
-        </MenuItem>
-        {canCopyMessageLink || canOpenReadsFromMessage || canOpenAttachmentFromMessage || canOpenTaskFromMessage || canReportMessage || canDeleteMessage ? <Divider /> : null}
-        {canCopyMessageLink ? (
-          <MenuItem onClick={() => onCopyMessageLink?.(messageMenuMessage)} disabled={!messageMenuMessage}>
-            <LinkRoundedIcon />
-            Копировать ссылку
-          </MenuItem>
-        ) : null}
-        {canOpenReadsFromMessage ? (
-          <MenuItem onClick={() => onOpenReadsFromMessageMenu?.(messageMenuMessage)}>
-            <DoneAllRoundedIcon />
-            Кто прочитал
-          </MenuItem>
-        ) : null}
-        {canOpenAttachmentFromMessage ? (
-          <MenuItem onClick={() => onOpenAttachmentFromMessageMenu?.(messageMenuMessage)}>
-            <OpenInNewRoundedIcon />
-            Открыть вложение
-          </MenuItem>
-        ) : null}
-        {canOpenTaskFromMessage ? (
-          <MenuItem onClick={() => onOpenTaskFromMessageMenu?.(messageMenuMessage)}>
-            <TaskAltRoundedIcon />
-            Открыть задачу
-          </MenuItem>
-        ) : null}
-        {canReportMessage ? (
-          <MenuItem data-message-menu-tone="danger" onClick={() => onReportMessageFromMenu?.(messageMenuMessage)}>
-            <FlagOutlinedIcon />
-            Пожаловаться
-          </MenuItem>
-        ) : null}
-        {canDeleteMessage ? (
-          <MenuItem data-message-menu-tone="danger" onClick={() => onDeleteMessageFromMenu?.(messageMenuMessage)}>
-            <DeleteOutlineIcon />
-            Удалить сообщение
-          </MenuItem>
-        ) : null}
-      </Menu>
+        anchorEl={messageMenuAnchorElement}
+        anchorPosition={messageMenuAnchorPosition}
+        usesPointerAnchor={messageMenuUsesPointerAnchor}
+        message={messageMenuMessage}
+        activeConversation={activeConversation}
+        activeConversationId={activeConversationId}
+        messageMenuPinned={messageMenuPinned}
+        onToggleReactionFromMenu={onToggleReactionFromMenu}
+        onReplyFromMessageMenu={onReplyFromMessageMenu}
+        onCopyMessage={onCopyMessage}
+        onTogglePinMessageFromMenu={onTogglePinMessageFromMenu}
+        onCopyMessageLink={onCopyMessageLink}
+        onForwardMessageFromMenu={onForwardMessageFromMenu}
+        onReportMessageFromMenu={onReportMessageFromMenu}
+        onSelectMessageFromMenu={onSelectMessageFromMenu}
+        onEditMessageFromMenu={onEditMessageFromMenu}
+        onDeleteMessageFromMenu={onDeleteMessageFromMenu}
+        onOpenReadsFromMessageMenu={onOpenReadsFromMessageMenu}
+        onOpenAttachmentFromMessageMenu={onOpenAttachmentFromMessageMenu}
+        onOpenTaskFromMessageMenu={onOpenTaskFromMessageMenu}
+      />
 
       {/* Меню 3 точки, стиль Telegram */}
       <Menu
@@ -1816,7 +1696,6 @@ export default function ChatDialogs({
                   const isForwarding = forwardingConversationId === item.id;
                   const hasOtherForward = Boolean(forwardingConversationId) && !isForwarding;
                   const subtitle = getConversationHeaderSubtitle(item) || item?.last_message_preview || 'Чат';
-                  const avatarItem = item?.kind === 'direct' ? (item?.direct_peer || item) : item;
                   return (
                     <Box key={item.id}>
                       <Paper
@@ -1831,8 +1710,8 @@ export default function ChatDialogs({
                           bgcolor: isForwarding ? alpha(accentColor, isDarkTheme ? 0.16 : 0.1) : 'transparent',
                         }}
                       >
-                        <PresenceAvatar
-                          item={avatarItem}
+                        <ConversationAvatar
+                          conversation={item}
                           online={Boolean(item?.kind === 'direct' && item?.direct_peer?.presence?.is_online)}
                           size={density.dialogForwardAvatar || 52}
                         />
@@ -1863,6 +1742,15 @@ export default function ChatDialogs({
         onClose={onCloseAttachmentPreview}
         prefersReducedMotion={prefersReducedMotion}
       />
+      {documentPreview?.open ? (
+        <MailAttachmentPreviewDialog
+          attachmentPreview={documentPreview}
+          onClose={onCloseDocumentPreview}
+          onDownload={onDownloadDocumentPreview}
+          onDownloadPreviewPdf={onDownloadDocumentPreviewPdf}
+          formatFileSize={formatFileSize}
+        />
+      ) : null}
       <Dialog open={searchOpen} onClose={onCloseSearch} fullWidth maxWidth="sm" PaperProps={{ sx: dialogPaperSx }}>
         <DialogTitle sx={dialogTitleSx}>Поиск по сообщениям</DialogTitle>
         <DialogContent sx={dialogContentSx}>

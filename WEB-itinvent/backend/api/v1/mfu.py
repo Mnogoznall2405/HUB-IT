@@ -15,7 +15,7 @@ from backend.api.deps import get_current_database_id, require_permission
 from backend.database.equipment_db import get_all_equipment_flat, get_equipment_grouped
 from backend.json_db.works import WorksManager
 from backend.models.auth import User
-from backend.services.authorization_service import PERM_DATABASE_READ
+from backend.services.authorization_service import PERM_MFU_READ
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
 
 router = APIRouter()
@@ -299,7 +299,7 @@ async def get_mfu_devices(
     recent_limit: int = Query(5, ge=0, le=50),
     limit: int = Query(5000, ge=1, le=10000),
     db_id: Optional[str] = Depends(get_current_database_id),
-    _: User = Depends(require_permission(PERM_DATABASE_READ)),
+    _: User = Depends(require_permission(PERM_MFU_READ)),
 ):
     """
     MFU/Printer/Plotter inventory with runtime status and maintenance history.
@@ -438,7 +438,7 @@ async def get_mfu_devices(
 async def get_mfu_pages_monthly(
     device_key: str = Query(..., min_length=3, max_length=255),
     months: int = Query(12, ge=1, le=36),
-    _: User = Depends(require_permission(PERM_DATABASE_READ)),
+    _: User = Depends(require_permission(PERM_MFU_READ)),
 ):
     """
     Monthly printed pages summary for one MFU device key.

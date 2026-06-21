@@ -3,15 +3,16 @@ import logging
 import math
 import re
 from datetime import datetime, timezone, timedelta
-from typing import Any, List, Dict
+from typing import Any, List, Dict, Literal
 
-from ldap3 import Server, Connection, ALL, SUBTREE
+from ldap3 import Server, Connection, ALL, SUBTREE, LEVEL
 from ldap3.utils.conv import escape_filter_chars
 from sqlalchemy import select
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
 from backend.appdb.models import AppAdUserBranchOverride
 from backend.config import config
 from backend.database.connection import get_db
+from backend.services.ad_expiry_cache import ad_expiry_cache, cache_metadata
 from local_store import get_local_store
 
 logger = logging.getLogger(__name__)
@@ -25,6 +26,7 @@ if not logger.handlers:
 # 100-nanosecond intervals from Jan 1, 1601 to Jan 1, 1970
 epoch_diff = 116444736000000000
 AD_PASSWORD_MAX_AGE_DAYS_DEFAULT = 40
+AD_UF_DONT_EXPIRE_PASSWD = 0x10000
 
 # Built-in AD groups to exclude from user group listings by default
 _BUILTIN_GROUPS = frozenset({
@@ -33,6 +35,28 @@ _BUILTIN_GROUPS = frozenset({
     "Users",
     "Пользователи домена",
 })
+
+_AD_USER_ENABLED_FILTER = (
+    "(&(objectCategory=person)(objectClass=user)"
+    "(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
+)
+
+_AD_USER_PASSWORD_ATTRIBUTES = [
+    "sAMAccountName",
+    "displayName",
+    "department",
+    "title",
+    "pwdLastSet",
+    "userAccountControl",
+    "distinguishedName",
+]
+
+_SERVICE_ACCOUNT_PATTERNS = re.compile(
+    r"^(healthmailbox|svc[_\-]|admin(?:[_\-.]|$)|1c|1bit|bcpexec|corp[\.\-]admin|aid$|"
+    r"scan[_\-]|backup|test[_\-]|service|system|sql|exchange|smtp|ftp|www|http|"
+    r"ldap[_\-]|bdd[\.\-]|personal$|usa$|lnk\.|lrk\.)",
+    re.IGNORECASE,
+)
 
 
 def get_ad_password_max_age_days() -> int:
@@ -168,6 +192,557 @@ def _open_ad_connection() -> Connection | None:
     except Exception as e:
         logger.error(f"Failed to bind anonymously. Set LDAP_SYNC_USER and LDAP_SYNC_PASSWORD: {e}")
         return None
+
+
+def _resolve_search_base(ou_dn: str | None) -> str:
+    normalized = str(ou_dn or "").strip()
+    return normalized or _resolve_ad_search_base()
+
+
+def _build_ad_users_search_filter(*, expiring_only: bool = False) -> str:
+    if not expiring_only:
+        return _AD_USER_ENABLED_FILTER
+    return (
+        "(&"
+        "(objectCategory=person)"
+        "(objectClass=user)"
+        "(!(userAccountControl:1.2.840.113556.1.4.803:=2))"
+        "(displayName=* *)"
+        ")"
+    )
+
+
+def _search_ad_users(
+    search_base: str,
+    *,
+    expiring_only: bool = False,
+    attributes: list[str] | None = None,
+) -> tuple[list[Any], str | None]:
+    conn = _open_ad_connection()
+    if conn is None:
+        return [], "LDAP connection is not configured or bind failed."
+    try:
+        conn.search(
+            search_base=search_base,
+            search_filter=_build_ad_users_search_filter(expiring_only=expiring_only),
+            attributes=attributes or _AD_USER_PASSWORD_ATTRIBUTES,
+            search_scope=SUBTREE,
+            size_limit=0,
+        )
+        return list(getattr(conn, "entries", []) or []), None
+    except Exception as exc:
+        logger.error("AD user search failed: %s", exc)
+        return [], str(exc)
+    finally:
+        try:
+            conn.unbind()
+        except Exception:
+            pass
+
+
+def _ou_label_from_entry(entry: Any) -> str:
+    label = _entry_value(entry, "ou") or _entry_value(entry, "name")
+    if label:
+        return label
+    dn = _entry_value(entry, "distinguishedName")
+    if not dn:
+        return ""
+    first_segment = dn.split(",", 1)[0]
+    if "=" in first_segment:
+        return first_segment.split("=", 1)[1]
+    return first_segment
+
+
+def _ou_path_from_dn(dn: str) -> str:
+    parts: list[str] = []
+    for segment in str(dn or "").split(","):
+        if segment.upper().startswith("OU="):
+            parts.append(segment[3:])
+    return " / ".join(reversed(parts))
+
+
+def _load_branch_mapping_context() -> dict[str, Any]:
+    branch_map: dict[str, dict[str, Any]] = {}
+    try:
+        db = get_db("OBJ-ITINVENT")
+        query = """
+            SELECT
+                o.OWNER_LOGIN,
+                b.BRANCH_NO,
+                b.BRANCH_NAME
+            FROM OWNERS o
+            LEFT JOIN (
+                SELECT EMPL_NO, MAX(BRANCH_NO) as BRANCH_NO
+                FROM ITEMS
+                WHERE EMPL_NO IS NOT NULL AND BRANCH_NO IS NOT NULL AND BRANCH_NO > 0
+                GROUP BY EMPL_NO
+            ) as i ON i.EMPL_NO = o.OWNER_NO
+            LEFT JOIN BRANCHES b ON b.BRANCH_NO = i.BRANCH_NO
+            WHERE o.OWNER_LOGIN IS NOT NULL AND b.BRANCH_NAME IS NOT NULL
+        """
+        res = db.execute_query(query)
+        for row in res:
+            login = str(row["OWNER_LOGIN"]).lower().strip()
+            branch_map[login] = {
+                "branch_no": row["BRANCH_NO"],
+                "branch_name": decode_cp1251(row["BRANCH_NAME"]) or "Неотсортированные",
+            }
+    except Exception as exc:
+        logger.error("Failed to fetch branch mappings from DB: %s", exc)
+
+    try:
+        custom_branches = _load_custom_branch_mappings()
+    except Exception as exc:
+        logger.error("Failed to load custom branch mappings from internal store: %s", exc)
+        custom_branches = {}
+
+    all_branches: dict[int, str] = {}
+    try:
+        from backend.database.equipment_db import get_all_branches
+
+        branches_list = get_all_branches("OBJ-ITINVENT")
+        for branch in branches_list:
+            branch_no = branch.get("BRANCH_NO") or branch.get("branch_no")
+            branch_name = branch.get("BRANCH_NAME") or branch.get("branch_name")
+            if branch_name and isinstance(branch_name, str):
+                branch_name = decode_cp1251(branch_name)
+            if branch_no:
+                all_branches[int(branch_no)] = branch_name or "Неотсортированные"
+    except Exception as exc:
+        logger.error("Failed to fetch all branches for mapping: %s", exc)
+
+    return {
+        "branch_map": branch_map,
+        "custom_branches": custom_branches,
+        "all_branches": all_branches,
+    }
+
+
+def _resolve_branch_for_login(login_lower: str, branch_context: dict[str, Any]) -> tuple[Any, str]:
+    custom_branches = branch_context.get("custom_branches") or {}
+    branch_map = branch_context.get("branch_map") or {}
+    all_branches = branch_context.get("all_branches") or {}
+
+    local_branch_no = custom_branches.get(login_lower)
+    if local_branch_no:
+        return local_branch_no, all_branches.get(local_branch_no, "Неотсортированные")
+
+    mapped_branch = branch_map.get(login_lower, {})
+    return mapped_branch.get("branch_no"), mapped_branch.get("branch_name", "Неотсортированные")
+
+
+def _entry_user_account_control_raw(entry: Any) -> int:
+    try:
+        attr = getattr(entry, "userAccountControl")
+    except Exception:
+        attr = None
+    if attr is None:
+        return 0
+    raw_values = getattr(attr, "raw_values", None)
+    if raw_values:
+        try:
+            return int(raw_values[0])
+        except (TypeError, ValueError):
+            pass
+    value = getattr(attr, "value", None)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _entry_password_never_expires(entry: Any) -> bool:
+    return bool(_entry_user_account_control_raw(entry) & AD_UF_DONT_EXPIRE_PASSWD)
+
+
+def _apply_password_never_expires(
+    password_status: dict[str, Any],
+    *,
+    never_expires: bool,
+    pwd_last_set_raw: int,
+) -> dict[str, Any]:
+    if never_expires and pwd_last_set_raw > 0:
+        password_status.update({
+            "password_never_expires": True,
+            "expiration_date": None,
+            "days_to_expire": None,
+            "expired": False,
+            "expired_days": 0,
+            "must_change_now": False,
+        })
+    else:
+        password_status["password_never_expires"] = False
+    return password_status
+
+
+def _user_record_from_entry(
+    entry: Any,
+    branch_context: dict[str, Any],
+    *,
+    include_pwd_last_set: bool = False,
+) -> dict[str, Any] | None:
+    display_name = _entry_value(entry, "displayName")
+    login = _entry_value(entry, "sAMAccountName")
+    if not display_name and not login:
+        return None
+
+    pwd_last_set_raw = _entry_pwd_last_set_raw(entry)
+    password_status = calculate_password_expiration_status(pwd_last_set_raw)
+    password_status = _apply_password_never_expires(
+        password_status,
+        never_expires=_entry_password_never_expires(entry),
+        pwd_last_set_raw=pwd_last_set_raw,
+    )
+    if not include_pwd_last_set:
+        password_status.pop("pwd_last_set", None)
+
+    login_lower = str(login).lower().strip()
+    branch_no, branch_name = _resolve_branch_for_login(login_lower, branch_context)
+    distinguished_name = _entry_value(entry, "distinguishedName")
+
+    return {
+        "login": login,
+        "display_name": display_name,
+        "department": _entry_value(entry, "department"),
+        "title": _entry_value(entry, "title"),
+        **password_status,
+        "branch_name": branch_name,
+        "branch_no": branch_no,
+        "ou_path": _ou_path_from_dn(distinguished_name) if distinguished_name else "",
+    }
+
+
+def _matches_expiring_person_account(login: str, display_name: str) -> bool:
+    login_value = str(login or "").strip()
+    display_name_value = str(display_name or "").strip()
+    if _SERVICE_ACCOUNT_PATTERNS.match(login_value):
+        return False
+    if len(display_name_value.split()) < 2:
+        return False
+    if display_name_value and not display_name_value[0].isalpha():
+        return False
+    name_parts = display_name_value.split()
+    if len(name_parts) < 2 or len(name_parts) > 5:
+        return False
+    first_word = name_parts[0]
+    if len(first_word) < 3 or not first_word[0].isupper():
+        return False
+    return True
+
+
+def _matches_search_query(user: dict[str, Any], query: str) -> bool:
+    normalized_query = _normalize_lookup_text(query)
+    if not normalized_query:
+        return True
+    haystacks = [
+        _normalize_lookup_text(user.get("login")),
+        _normalize_lookup_text(user.get("display_name")),
+        _normalize_lookup_text(user.get("department")),
+    ]
+    if any(normalized_query in haystack for haystack in haystacks if haystack):
+        return True
+    tokens = _lookup_tokens(query)
+    if not tokens:
+        return True
+    display_name = _normalize_lookup_text(user.get("display_name"))
+    login = _normalize_lookup_text(user.get("login"))
+    return any(token in display_name or token in login for token in tokens)
+
+
+def _fetch_organizational_units_from_ldap(*, parent_dn: str | None = None) -> dict[str, Any]:
+    conn = _open_ad_connection()
+    if conn is None:
+        return {
+            "status": "error",
+            "error": "LDAP connection is not configured or bind failed.",
+            "parent_dn": str(parent_dn or "").strip() or None,
+            "items": [],
+        }
+
+    search_base = _resolve_search_base(parent_dn)
+    try:
+        conn.search(
+            search_base=search_base,
+            search_filter="(objectClass=organizationalUnit)",
+            attributes=["distinguishedName", "name", "ou"],
+            search_scope=LEVEL,
+        )
+        entries = list(getattr(conn, "entries", []) or [])
+        items: list[dict[str, Any]] = []
+        for entry in entries:
+            dn = _entry_value(entry, "distinguishedName")
+            if not dn:
+                continue
+            label = _ou_label_from_entry(entry) or dn
+            items.append({
+                "dn": dn,
+                "label": label,
+                "has_children": True,
+            })
+        items.sort(key=lambda item: str(item.get("label") or "").casefold())
+        return {
+            "status": "ok",
+            "parent_dn": str(parent_dn or "").strip() or None,
+            "items": items,
+        }
+    except Exception as exc:
+        logger.error("AD organizational unit lookup failed: %s", exc)
+        return {
+            "status": "error",
+            "error": str(exc),
+            "parent_dn": str(parent_dn or "").strip() or None,
+            "items": [],
+        }
+    finally:
+        try:
+            conn.unbind()
+        except Exception:
+            pass
+
+
+def list_ad_organizational_units(*, parent_dn: str | None = None, force: bool = False) -> dict[str, Any]:
+    normalized_parent = str(parent_dn or "").strip() or None
+
+    if not force:
+        cached = ad_expiry_cache.get_ou_children(normalized_parent)
+        if cached is not None:
+            return {
+                "status": "ok",
+                "parent_dn": normalized_parent,
+                "items": list(cached.value),
+                **cache_metadata(cached, from_cache=True),
+            }
+
+    cache_key = ad_expiry_cache.build_ou_key(normalized_parent)
+
+    def load_fresh() -> dict[str, Any]:
+        payload = _fetch_organizational_units_from_ldap(parent_dn=normalized_parent)
+        if payload.get("status") != "ok":
+            return payload
+        stored = ad_expiry_cache.set_ou_children(normalized_parent, payload["items"])
+        return {
+            **payload,
+            **cache_metadata(stored, from_cache=False),
+        }
+
+    if force:
+        return load_fresh()
+
+    def singleflight_loader():
+        result = load_fresh()
+        if result.get("status") != "ok":
+            raise RuntimeError(str(result.get("error") or "OU lookup failed"))
+        stored = ad_expiry_cache.get_ou_children(normalized_parent)
+        if stored is None:
+            raise RuntimeError("OU cache entry missing after load")
+        return stored
+
+    try:
+        cached = ad_expiry_cache.run_singleflight(cache_key, singleflight_loader)
+    except RuntimeError as exc:
+        return {
+            "status": "error",
+            "error": str(exc),
+            "parent_dn": normalized_parent,
+            "items": [],
+        }
+
+    return {
+        "status": "ok",
+        "parent_dn": normalized_parent,
+        "items": list(cached.value),
+        **cache_metadata(cached, from_cache=True),
+    }
+
+
+def _build_password_expiry_users(
+    entries: list[Any],
+    *,
+    normalized_mode: str,
+    threshold: int,
+    branch_context: dict[str, Any],
+) -> list[dict[str, Any]]:
+    users: list[dict[str, Any]] = []
+    for entry in entries:
+        record = _user_record_from_entry(entry, branch_context, include_pwd_last_set=False)
+        if not record:
+            continue
+        if _detect_account_type(str(record.get("login") or "")) == "mailbox":
+            continue
+        if normalized_mode == "all":
+            if not str(record.get("display_name") or "").strip():
+                continue
+        else:
+            if not _matches_expiring_person_account(
+                str(record.get("login") or ""),
+                str(record.get("display_name") or ""),
+            ):
+                continue
+            days_to_expire = int(record.get("days_to_expire") or 0)
+            expired = bool(record.get("expired"))
+            must_change = bool(record.get("must_change_now"))
+            pwd_never_expires = bool(record.get("password_never_expires"))
+            if pwd_never_expires:
+                continue
+            if not (days_to_expire <= threshold or expired or must_change):
+                continue
+        users.append(record)
+
+    urgency_sort_key = lambda user: (
+        0 if user.get("must_change_now") or user.get("expired") else 1,
+        1 if user.get("password_never_expires") else 0,
+        int(user.get("days_to_expire") or 0),
+        str(user.get("display_name") or ""),
+    )
+
+    if normalized_mode == "expiring":
+        users.sort(key=urgency_sort_key)
+    else:
+        users.sort(key=lambda user: (
+            urgency_sort_key(user),
+            user.get("branch_name") == "Неотсортированные",
+            user.get("branch_name"),
+        ))
+    return users
+
+
+def _fetch_password_expiry_users_from_ldap(
+    *,
+    ou_dn: str | None,
+    normalized_mode: str,
+    threshold: int,
+) -> tuple[list[dict[str, Any]], int, str | None]:
+    search_base = _resolve_search_base(ou_dn)
+    policy_days = get_ad_password_max_age_days()
+    entries, error = _search_ad_users(search_base, expiring_only=normalized_mode == "expiring")
+    if error:
+        return [], policy_days, error
+    branch_context = _load_branch_mapping_context()
+    users = _build_password_expiry_users(
+        entries,
+        normalized_mode=normalized_mode,
+        threshold=threshold,
+        branch_context=branch_context,
+    )
+    return users, policy_days, None
+
+
+def get_ad_password_expiry_report(
+    *,
+    ou_dn: str | None = None,
+    mode: Literal["all", "expiring"] | str = "all",
+    days_threshold: int = 7,
+    q: str = "",
+    force: bool = False,
+) -> dict[str, Any]:
+    normalized_mode = str(mode or "all").strip().lower()
+    if normalized_mode not in {"all", "expiring"}:
+        normalized_mode = "all"
+    threshold = max(1, int(days_threshold or 7))
+    normalized_ou = str(ou_dn or "").strip() or None
+    policy_days = get_ad_password_max_age_days()
+    cache_key = ad_expiry_cache.build_report_key(
+        ou_dn=normalized_ou,
+        mode=normalized_mode,
+        days_threshold=threshold,
+    )
+
+    def build_response(
+        users_snapshot: list[dict[str, Any]],
+        snapshot_policy_days: int,
+        *,
+        cached_hit,
+        from_cache: bool,
+    ) -> dict[str, Any]:
+        filtered_users = [
+            user for user in users_snapshot
+            if _matches_search_query(user, q)
+        ]
+        payload = {
+            "status": "ok",
+            "ou_dn": normalized_ou,
+            "mode": normalized_mode,
+            "threshold_days": threshold if normalized_mode == "expiring" else None,
+            "policy_days": snapshot_policy_days,
+            "total": len(filtered_users),
+            "users": filtered_users,
+        }
+        if cached_hit is not None:
+            payload.update(cache_metadata(cached_hit, from_cache=from_cache))
+        return payload
+
+    if not force:
+        cached = ad_expiry_cache.get_report_snapshot(cache_key)
+        if cached is not None:
+            snapshot = cached.value
+            return build_response(
+                list(snapshot.get("users") or []),
+                int(snapshot.get("policy_days") or policy_days),
+                cached_hit=cached,
+                from_cache=True,
+            )
+
+    def loader():
+        users_snapshot, snapshot_policy_days, error = _fetch_password_expiry_users_from_ldap(
+            ou_dn=normalized_ou,
+            normalized_mode=normalized_mode,
+            threshold=threshold,
+        )
+        if error:
+            return {
+                "status": "error",
+                "error": error,
+                "ou_dn": normalized_ou,
+                "mode": normalized_mode,
+                "threshold_days": threshold if normalized_mode == "expiring" else None,
+                "policy_days": snapshot_policy_days,
+                "total": 0,
+                "users": [],
+            }
+        stored = ad_expiry_cache.set_report_snapshot(
+            cache_key,
+            {"users": users_snapshot, "policy_days": snapshot_policy_days},
+        )
+        return build_response(
+            users_snapshot,
+            snapshot_policy_days,
+            cached_hit=stored,
+            from_cache=False,
+        )
+
+    if force:
+        return loader()
+
+    def singleflight_loader():
+        result = loader()
+        if result.get("status") == "error":
+            raise RuntimeError(str(result.get("error") or "AD password expiry lookup failed"))
+        stored = ad_expiry_cache.get_report_snapshot(cache_key)
+        if stored is None:
+            raise RuntimeError("AD password expiry cache entry missing after load")
+        return stored
+
+    try:
+        cached = ad_expiry_cache.run_singleflight(cache_key, singleflight_loader)
+    except RuntimeError as exc:
+        return {
+            "status": "error",
+            "error": str(exc),
+            "ou_dn": normalized_ou,
+            "mode": normalized_mode,
+            "threshold_days": threshold if normalized_mode == "expiring" else None,
+            "policy_days": policy_days,
+            "total": 0,
+            "users": [],
+        }
+
+    snapshot = cached.value
+    return build_response(
+        list(snapshot.get("users") or []),
+        int(snapshot.get("policy_days") or policy_days),
+        cached_hit=cached,
+        from_cache=True,
+    )
 
 
 def _entry_value(entry: Any, attr_name: str) -> str:
@@ -414,95 +989,19 @@ def list_ad_users_expiring_soon(*, days_threshold: int = 3, limit: int = 50) -> 
     """
     threshold = max(1, int(days_threshold or 3))
     safe_limit = max(1, min(int(limit or 50), 200))
-
-    conn = _open_ad_connection()
-    if conn is None:
-        return {"status": "error", "error": "LDAP connection is not configured or bind failed."}
-
-    attributes = ["sAMAccountName", "displayName", "department", "title", "mail", "pwdLastSet"]
-    # Search enabled users with a real pwdLastSet, exclude service/system accounts
-    search_filter = (
-        "(&"
-        "(objectCategory=person)"
-        "(objectClass=user)"
-        "(!(userAccountControl:1.2.840.113556.1.4.803:=2))"
-        "(pwdLastSet>=1)"
-        "(displayName=* *)"  # Real people have spaces in displayName (Фамилия Имя)
-        ")"
-    )
-    try:
-        conn.search(
-            search_base=_resolve_ad_search_base(),
-            search_filter=search_filter,
-            attributes=attributes,
-            search_scope=SUBTREE,
-            size_limit=0,  # no server-side limit; we filter client-side
-        )
-        entries = list(getattr(conn, "entries", []) or [])
-    except Exception as e:
-        logger.error(f"AD expiring passwords lookup failed: {e}")
-        return {"status": "error", "error": str(e)}
-    finally:
-        try:
-            conn.unbind()
-        except Exception:
-            pass
-
-    policy_days = get_ad_password_max_age_days()
-    expiring_users: list[dict[str, Any]] = []
-
-    # Service account patterns to exclude
-    _service_patterns = re.compile(
-        r"^(healthmailbox|svc[_\-]|admin|1c|1bit|bcpexec|corp[\.\-]admin|aid$|"
-        r"scan[_\-]|backup|test[_\-]|service|system|sql|exchange|smtp|ftp|www|http|"
-        r"ldap[_\-]|bdd[\.\-]|personal$|usa$|lnk\.|lrk\.)",
-        re.IGNORECASE,
-    )
-
-    for entry in entries:
-        payload = _entry_password_status(entry, include_raw=False)
-        if not payload:
-            continue
-        login = str(payload.get("login") or "").strip()
-        display_name = str(payload.get("display_name") or "").strip()
-        # Skip service accounts
-        if _service_patterns.match(login):
-            continue
-        # Skip entries without a proper display name (at least 2 words)
-        if len(display_name.split()) < 2:
-            continue
-        # Skip display names starting with special chars (service/group accounts like "!Служба...")
-        if display_name and not display_name[0].isalpha():
-            continue
-        # Skip generic/lab accounts (display name looks like a department, not a person)
-        name_parts = display_name.split()
-        if len(name_parts) < 2 or len(name_parts) > 5:
-            continue
-        # A real person's name: first word should be capitalized and look like a surname
-        # (at least 3 chars, starts with uppercase letter)
-        first_word = name_parts[0]
-        if len(first_word) < 3 or not first_word[0].isupper():
-            continue
-        days_to_expire = int(payload.get("days_to_expire") or 0)
-        expired = bool(payload.get("expired"))
-        must_change = bool(payload.get("must_change_now"))
-        # Include users expiring within threshold OR already expired
-        if days_to_expire <= threshold or expired or must_change:
-            expiring_users.append(payload)
-
-    # Sort: expired first, then by days_to_expire ascending
-    expiring_users.sort(key=lambda u: (
-        0 if u.get("must_change_now") else 1,
-        int(u.get("days_to_expire") or 0),
-        str(u.get("display_name") or ""),
-    ))
-
+    report = get_ad_password_expiry_report(mode="expiring", days_threshold=threshold)
+    if report.get("status") != "ok":
+        return {
+            "status": "error",
+            "error": report.get("error") or "AD password expiry lookup failed.",
+        }
+    users = list(report.get("users") or [])[:safe_limit]
     return {
         "status": "ok",
-        "policy_days": policy_days,
+        "policy_days": report.get("policy_days"),
         "threshold_days": threshold,
-        "total_found": len(expiring_users),
-        "users": expiring_users[:safe_limit],
+        "total_found": int(report.get("total") or 0),
+        "users": users,
     }
 
 
@@ -1010,117 +1509,10 @@ def decode_cp1251(val):
 
 def get_ad_users_password_status() -> List[Dict]:
     """Fetch active users from AD and calculate password expiration days."""
-    conn = _open_ad_connection()
-    if conn is None:
+    report = get_ad_password_expiry_report(mode="all")
+    if report.get("status") != "ok":
         return []
-
-    # Search specifically within the 'Users Objects' OU which is inside 'Users standart'
-    search_base = _resolve_ad_search_base()
-    search_filter = "(&(objectCategory=person)(objectClass=user)(!(userAccountControl:1.2.840.113556.1.4.803:=2)))"
-    attributes = ['sAMAccountName', 'displayName', 'department', 'title', 'pwdLastSet']
-    
-    try:
-        conn.search(search_base=search_base, search_filter=search_filter, attributes=attributes, search_scope=SUBTREE)
-    except Exception as e:
-        logger.error(f"AD Search failed: {e}")
-        conn.unbind()
-        return []
-        
-    entries = conn.entries
-    conn.unbind()
-    
-    # Try mapping users to branches via IT-Invent Database
-    branch_map = {}
-    try:
-        db = get_db('OBJ-ITINVENT')
-        query = '''
-            SELECT 
-                o.OWNER_LOGIN, 
-                b.BRANCH_NO,
-                b.BRANCH_NAME
-            FROM OWNERS o
-            LEFT JOIN (
-                SELECT EMPL_NO, MAX(BRANCH_NO) as BRANCH_NO 
-                FROM ITEMS 
-                WHERE EMPL_NO IS NOT NULL AND BRANCH_NO IS NOT NULL AND BRANCH_NO > 0
-                GROUP BY EMPL_NO
-            ) as i ON i.EMPL_NO = o.OWNER_NO
-            LEFT JOIN BRANCHES b ON b.BRANCH_NO = i.BRANCH_NO
-            WHERE o.OWNER_LOGIN IS NOT NULL AND b.BRANCH_NAME IS NOT NULL
-        '''
-        res = db.execute_query(query)
-        for r in res:
-            login = str(r['OWNER_LOGIN']).lower().strip()
-            branch_map[login] = {
-                'branch_no': r['BRANCH_NO'],
-                'branch_name': decode_cp1251(r['BRANCH_NAME']) or 'Неотсортированные'
-            }
-    except Exception as e:
-        logger.error(f"Failed to fetch branch mappings from DB: {e}")
-
-    users_list = []
-    # Load custom branches from internal store
-    try:
-        custom_branches = _load_custom_branch_mappings()
-    except Exception as e:
-        logger.error(f"Failed to load custom branch mappings from internal store: {e}")
-        custom_branches = {}
-
-    # Fetch all branches from DB to ensure we can map custom branches correctly
-    all_branches = {}
-    try:
-        from backend.database.equipment_db import get_all_branches
-        db_id = 'OBJ-ITINVENT' # We use the same hardcoded one
-        branches_list = get_all_branches(db_id)
-        for b in branches_list:
-            b_no = b.get('BRANCH_NO') or b.get('branch_no')
-            b_name = b.get('BRANCH_NAME') or b.get('branch_name')
-            if b_name and isinstance(b_name, str):
-                b_name = decode_cp1251(b_name)
-            if b_no:
-                all_branches[b_no] = b_name or 'Неотсортированные'
-    except Exception as e:
-        logger.error(f"Failed to fetch all branches for mapping: {e}")
-
-    for entry in entries:
-        try:
-            display_name = _entry_value(entry, "displayName")
-            if not display_name:
-                continue
-            
-            login = _entry_value(entry, "sAMAccountName")
-            department = _entry_value(entry, "department")
-            title = _entry_value(entry, "title")
-            password_status = calculate_password_expiration_status(_entry_pwd_last_set_raw(entry))
-            
-            login_lower = str(login).lower().strip()
-            mapped_branch = branch_map.get(login_lower, {})
-            
-            # Use local_store mapping if exists, else fallback to IT-Invent db mapping
-            local_branch_no = custom_branches.get(login_lower)
-            if local_branch_no:
-                branch_no = local_branch_no
-                branch_name = all_branches.get(local_branch_no, 'Неотсортированные')
-            else:
-                branch_no = mapped_branch.get('branch_no', None)
-                branch_name = mapped_branch.get('branch_name', 'Неотсортированные')
-
-            users_list.append({
-                "login": login,
-                "display_name": display_name,
-                "department": department,
-                "title": title,
-                **password_status,
-                "branch_name": branch_name,
-                "branch_no": branch_no
-            })
-        except Exception as e:
-            logger.debug(f"Failed to parse AD entry: {e}")
-            
-    # Sort users by branch_name then days_to_expire, then display_name
-    users_list.sort(key=lambda x: (x["branch_name"] == "Неотсортированные", x["branch_name"], x["days_to_expire"], x["display_name"]))
-    
-    return users_list
+    return list(report.get("users") or [])
 
 def set_ad_user_branch(login: str, branch_no: int | None) -> bool:
     """Manually set or update a user's branch in the local store."""

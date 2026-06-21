@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from backend.chat.db import chat_session
 from backend.chat.models import ChatEventOutbox
@@ -445,23 +445,30 @@ class ChatEventOutboxService:
         terminal_failed = 0
         oldest_queued_age_sec = 0.0
         with chat_session() as session:
-            rows = list(
-                session.execute(
-                    select(ChatEventOutbox.status, ChatEventOutbox.created_at, ChatEventOutbox.next_attempt_at)
-                ).all()
-            )
-        for status, created_at, next_attempt_at in rows:
+            status_rows = session.execute(
+                select(ChatEventOutbox.status, func.count())
+                .group_by(ChatEventOutbox.status)
+            ).all()
+            oldest_row = session.execute(
+                select(
+                    func.min(ChatEventOutbox.created_at),
+                    func.min(ChatEventOutbox.next_attempt_at),
+                ).where(ChatEventOutbox.status == EVENT_OUTBOX_STATUS_QUEUED)
+            ).one()
+        for status, count in status_rows:
             normalized_status = _normalize_text(status)
+            count_value = int(count or 0)
             if normalized_status == EVENT_OUTBOX_STATUS_QUEUED:
-                queued += 1
-                created = _coerce_utc(created_at) or now
-                next_attempt = _coerce_utc(next_attempt_at) or created
-                age_sec = max(0.0, (now - min(created, next_attempt)).total_seconds())
-                oldest_queued_age_sec = max(oldest_queued_age_sec, age_sec)
+                queued = count_value
             elif normalized_status == EVENT_OUTBOX_STATUS_PROCESSING:
-                processing += 1
+                processing = count_value
             elif normalized_status == EVENT_OUTBOX_STATUS_FAILED:
-                terminal_failed += 1
+                terminal_failed = count_value
+        created_at, next_attempt_at = oldest_row
+        if queued > 0:
+            created = _coerce_utc(created_at) or now
+            next_attempt = _coerce_utc(next_attempt_at) or created
+            oldest_queued_age_sec = max(0.0, (now - min(created, next_attempt)).total_seconds())
         return {
             "queued": queued,
             "processing": processing,

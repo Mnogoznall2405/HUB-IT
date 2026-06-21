@@ -3,16 +3,11 @@ import {
   Alert,
   Box,
   CircularProgress,
-  IconButton,
   Stack,
   Tab,
   Tabs,
-  Tooltip,
   Typography,
 } from '@mui/material';
-import ZoomInRoundedIcon from '@mui/icons-material/ZoomInRounded';
-import ZoomOutRoundedIcon from '@mui/icons-material/ZoomOutRounded';
-import RestartAltRoundedIcon from '@mui/icons-material/RestartAltRounded';
 import MailPdfPageTile from './MailPdfPageTile';
 import {
   loadPdfDocumentFromUrl,
@@ -20,6 +15,8 @@ import {
   resolveInitialPdfFitZoom,
 } from '../../lib/pdfPreview';
 import useDocumentPinchPan from '../../lib/useDocumentPinchPan';
+
+const EMPTY_PREVIEW_SHEETS = Object.freeze([]);
 
 export const clampPage = (value, totalPages = 1) => {
   const total = Math.max(1, Number(totalPages || 1));
@@ -136,7 +133,7 @@ export default function MailPdfPreviewSurface({
   objectUrl = '',
   filename = 'предпросмотр PDF',
   sourceKind = '',
-  sheets = [],
+  sheets = EMPTY_PREVIEW_SHEETS,
   initialPage = 1,
   pageCount = 0,
   compact = false,
@@ -164,11 +161,7 @@ export default function MailPdfPreviewSurface({
   const {
     viewportRef,
     contentRef,
-    isZoomed,
     resetTransform,
-    zoomIn,
-    zoomOut,
-    viewportProps,
     viewportSx,
     contentSx,
   } = useDocumentPinchPan({
@@ -357,9 +350,12 @@ export default function MailPdfPreviewSurface({
     <Stack
       spacing={0}
       sx={{
+        display: 'flex',
+        flexDirection: 'column',
         minHeight: 0,
         height: fillContainer ? '100%' : 'auto',
         flex: fillContainer ? 1 : undefined,
+        overflow: 'hidden',
       }}
     >
       {excelSheetMode ? (
@@ -392,11 +388,7 @@ export default function MailPdfPreviewSurface({
         </Tabs>
       ) : null}
 
-      <Stack
-        direction="row"
-        spacing={0.6}
-        alignItems="center"
-        justifyContent="space-between"
+      <Box
         sx={{
           px: { xs: 1, sm: 1.25 },
           py: 0.75,
@@ -409,38 +401,17 @@ export default function MailPdfPreviewSurface({
         <Typography variant="body2" sx={{ fontWeight: 700, color: 'text.secondary' }}>
           {pageCounterLabel}
         </Typography>
-        <Stack direction="row" spacing={0.4} alignItems="center">
-          <Tooltip title="Уменьшить">
-            <span>
-              <IconButton size="small" onClick={zoomOut} disabled={loadingPdf || !isZoomed}>
-                <ZoomOutRoundedIcon />
-              </IconButton>
-            </span>
-          </Tooltip>
-          <Tooltip title="Сбросить масштаб">
-            <span>
-              <IconButton size="small" onClick={resetTransform} disabled={loadingPdf || !isZoomed}>
-                <RestartAltRoundedIcon />
-              </IconButton>
-            </span>
-          </Tooltip>
-          <Tooltip title="Увеличить">
-            <span>
-              <IconButton size="small" onClick={zoomIn} disabled={loadingPdf}>
-                <ZoomInRoundedIcon />
-              </IconButton>
-            </span>
-          </Tooltip>
-        </Stack>
-      </Stack>
+      </Box>
 
       <Box
         ref={viewportRef}
-        {...viewportProps}
+        data-testid="mail-pdf-preview-viewport"
         sx={{
           position: 'relative',
-          flex: 1,
+          flex: fillContainer ? '1 1 0' : undefined,
           minHeight: fillContainer ? 0 : { xs: 260, sm: 360 },
+          height: fillContainer ? 0 : undefined,
+          maxHeight: fillContainer ? undefined : { xs: 'calc(100dvh - 220px)', sm: '65vh' },
           bgcolor: '#f3f4f6',
           ...viewportSx,
         }}

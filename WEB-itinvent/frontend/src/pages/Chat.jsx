@@ -19,7 +19,11 @@ import useMediaQuery from '@mui/material/useMediaQuery';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
 
+import { emitAgentDebugLog } from '../lib/debugClientLog';
 import { chatAPI, mailAPI } from '../api/client';
+import chatAttachmentsAPI from '../api/chatAttachments';
+import chatFoldersAPI from '../api/chatFolders';
+import ChatFolderDialogs from '../components/chat/ChatFolderDialogs';
 import ChatSidebar from '../components/chat/ChatSidebar';
 import ChatThread from '../components/chat/ChatThread';
 import {
@@ -27,6 +31,7 @@ import {
 } from '../components/chat/chatUploadPrep';
 import {
   CHAT_FILE_ACCEPT,
+  applyReadReceiptDeltaToMessages,
   buildAttachmentUrl,
   buildChatDraftKey,
   buildChatPinnedMessageKey,
@@ -38,8 +43,15 @@ import {
   isMediaAttachment,
   isVideoAttachment,
   normalizeChatAttachmentUrl,
+  pickBlobAttachmentUrl,
   resolveLatestMessageIdInOrder,
+  sortSidebarConversations,
 } from '../components/chat/chatHelpers';
+import {
+  buildChatDocumentPreviewState,
+  isChatDocumentPreviewableAttachment,
+  mapChatAttachmentForPreview,
+} from '../components/chat/chatAttachmentPreview';
 import useReadReceipts from '../components/chat/useReadReceipts';
 import useChatActiveThreadPolling from '../components/chat/useChatActiveThreadPolling';
 import useChatAiStatusPolling from '../components/chat/useChatAiStatusPolling';
@@ -52,6 +64,13 @@ import useChatMessageMenuActions from '../components/chat/useChatMessageMenuActi
 import useChatMessageSearch from '../components/chat/useChatMessageSearch';
 import useChatSelectedMessageActions from '../components/chat/useChatSelectedMessageActions';
 import useChatSidebarSearch from '../components/chat/useChatSidebarSearch';
+import {
+  buildConversationIdsByFolder,
+  buildFolderUnreadCounts,
+  filterSidebarConversationsByFolder,
+  readStoredActiveFolderKey,
+  writeStoredActiveFolderKey,
+} from '../components/chat/chatFolderUtils';
 import useChatSocketEvents from '../components/chat/useChatSocketEvents';
 import useChatSocketLifecycle from '../components/chat/useChatSocketLifecycle';
 import useChatTaskShareDialog from '../components/chat/useChatTaskShareDialog';
@@ -61,6 +80,11 @@ import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { useMainLayoutShell } from '../components/layout/MainLayoutShellContext';
 import { sanitizeMailHtmlFragment } from '../components/mail/mailHtmlContent';
+import {
+  buildAttachmentBlobPayload,
+  createEmptyAttachmentPreview,
+  downloadBlobFile,
+} from '../components/mail/mailMessageFileActions';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import {
@@ -104,10 +128,22 @@ const OUTGOING_BOTTOM_SETTLE_FRAMES = 2;
 const ACTIVE_THREAD_REVALIDATE_DEDUP_MS = 2_500;
 const CHAT_SWR_STALE_TIME_MS = 30_000;
 const CHAT_THREAD_BOOTSTRAP_LIMIT = 40;
-export const getChatBottomInstantSettleFrames = ({ userInitiated = false } = {}) => (
-  userInitiated ? OUTGOING_BOTTOM_SETTLE_FRAMES : 1
-);
+export const isChatLayoutKeyboardOpen = (container) => {
+  const layoutHeight = Math.round(Number(window.innerHeight || document.documentElement?.clientHeight || 0));
+  const clientHeight = Math.round(Number(container?.clientHeight || 0));
+  if (clientHeight <= 0 || layoutHeight <= 0) return false;
+  return (layoutHeight - clientHeight) > 180;
+};
+
+export const getChatBottomInstantSettleFrames = ({
+  userInitiated = false,
+  mobileKeyboardDeferred = false,
+} = {}) => {
+  if (mobileKeyboardDeferred) return userInitiated ? 4 : 3;
+  return userInitiated ? OUTGOING_BOTTOM_SETTLE_FRAMES : 1;
+};
 export const buildChatConversationsCacheKeyParts = (userId) => ['chat', 'conversations', String(userId || 'guest')];
+export const buildChatAiBotsCacheKeyParts = (userId) => ['chat', 'ai-bots', String(userId || 'guest')];
 export const buildChatThreadCacheKeyParts = (userId, conversationId) => ['chat', 'thread', String(userId || 'guest'), String(conversationId || '').trim(), 'latest'];
 export const buildChatLastConversationSessionKey = (userId) => `chat:last-conversation:${String(userId || 'guest')}`;
 export const buildChatLastMobileViewSessionKey = (userId) => `chat:last-mobile-view:${String(userId || 'guest')}`;
@@ -123,6 +159,40 @@ const CHAT_MOBILE_HISTORY_FLAG = '__hubChatMobileShell';
 const CHAT_MOBILE_HISTORY_VIEW_KEY = '__hubChatMobileShellView';
 const CHAT_MOBILE_HISTORY_DRAWER_KEY = '__hubChatMobileShellDrawer';
 const CHAT_MOBILE_HISTORY_INFO_KEY = '__hubChatMobileShellInfo';
+
+export const CHAT_MOBILE_SCREEN_TRANSITION_MS = 320;
+const CHAT_MOBILE_SCREEN_PARALLAX_RATIO = 0.12;
+export const CHAT_MOBILE_SCREEN_TRANSITION_EASE = [0.25, 0.1, 0.25, 1];
+
+export const buildChatMobileScreenVariants = ({ motionDisabled = false } = {}) => ({
+  enter: (direction) => ({
+    x: motionDisabled ? 0 : (direction > 0 ? '100%' : `-${CHAT_MOBILE_SCREEN_PARALLAX_RATIO * 100}%`),
+    opacity: 1,
+  }),
+  center: {
+    x: 0,
+    opacity: 1,
+  },
+  exit: (direction) => ({
+    x: motionDisabled ? 0 : (direction > 0 ? `-${CHAT_MOBILE_SCREEN_PARALLAX_RATIO * 100}%` : '100%'),
+    opacity: 1,
+  }),
+});
+
+export function resolveChatMobileBottomNavMode(isMobile, hideBottomNav) {
+  return isMobile && hideBottomNav ? 'hidden' : 'auto';
+}
+
+export function readChatMobileHistoryState(state) {
+  if (!state || typeof state !== 'object' || state[CHAT_MOBILE_HISTORY_FLAG] !== true) return null;
+  const nextView = String(state[CHAT_MOBILE_HISTORY_VIEW_KEY] || '').trim() === 'thread' ? 'thread' : 'inbox';
+  return {
+    view: nextView,
+    drawerOpen: false,
+    infoOpen: nextView === 'thread' && Boolean(state[CHAT_MOBILE_HISTORY_INFO_KEY]),
+  };
+}
+
 export const canUseAiChatPermission = (hasPermission) => (
   typeof hasPermission === 'function' ? Boolean(hasPermission('chat.ai.use')) : false
 );
@@ -566,6 +636,21 @@ const shouldPreserveFreshLocalThreadMessage = ({
   return compareThreadMessagePosition(message, incomingLastMessage) > 0;
 };
 
+const shouldPreserveLoadedOlderThreadMessage = ({
+  message,
+  conversationId = '',
+  incomingIds,
+  incomingFirstMessage,
+}) => {
+  const normalizedMessageId = normalizeThreadMessageId(message);
+  if (!normalizedMessageId || incomingIds.has(normalizedMessageId)) return false;
+  if (message?.isOptimistic) return false;
+  const normalizedConversationId = String(conversationId || '').trim();
+  if (normalizedConversationId && String(message?.conversation_id || '').trim() !== normalizedConversationId) return false;
+  if (!incomingFirstMessage?.id) return false;
+  return compareThreadMessagePosition(message, incomingFirstMessage) < 0;
+};
+
 export const reconcileThreadMessages = (currentMessages, incomingMessages, {
   conversationId = '',
   preserveSendingOptimistic = false,
@@ -596,15 +681,27 @@ export const reconcileThreadMessages = (currentMessages, incomingMessages, {
   });
 
   if (String(mode || '').trim() === 'replaceWindowButPreserveFreshLocal') {
-    const incomingLastMessage = sortThreadMessages(incoming).at(-1) || null;
+    const sortedIncoming = sortThreadMessages(incoming);
+    const incomingLastMessage = sortedIncoming.at(-1) || null;
+    const incomingFirstMessage = sortedIncoming.at(0) || null;
     current.forEach((message) => {
-      if (!shouldPreserveFreshLocalThreadMessage({
+      if (shouldPreserveFreshLocalThreadMessage({
         message,
         conversationId,
         incomingIds,
         incomingLastMessage,
-      })) return;
-      next.push(message);
+      })) {
+        next.push(message);
+        return;
+      }
+      if (shouldPreserveLoadedOlderThreadMessage({
+        message,
+        conversationId,
+        incomingIds,
+        incomingFirstMessage,
+      })) {
+        next.push(message);
+      }
     });
   }
 
@@ -707,33 +804,46 @@ export const buildActiveThreadPollLoadOptions = (messagesOrLastMessageId) => {
     force: true,
   };
 };
+
+export const isTransientLoadMessagesError = (error) => {
+  const status = Number(error?.response?.status || 0);
+  return status === 0 || status === 502 || status === 503 || status === 504;
+};
+
+export const isBackgroundLoadMessagesReason = (reason) => {
+  const normalizedReason = String(reason || '').trim().toLowerCase();
+  return normalizedReason.startsWith('poll:')
+    || normalizedReason.includes(':revalidate')
+    || normalizedReason.startsWith('window:')
+    || normalizedReason.startsWith('socket:');
+};
+
+export const shouldNotifyLoadMessagesError = ({
+  silent = false,
+  reason = '',
+  error = null,
+  loadingOlderRequest = false,
+  loadingNewerRequest = false,
+} = {}) => {
+  const code = String(error?.code || '');
+  const name = String(error?.name || '');
+  if (code === 'ERR_CANCELED' || name === 'CanceledError') return false;
+  if (!silent) return true;
+  if (isBackgroundLoadMessagesReason(reason)) return false;
+  if (isTransientLoadMessagesError(error)) return false;
+  return Boolean(loadingOlderRequest || loadingNewerRequest);
+};
 export const isRegularSidebarConversation = (item) => (
   Boolean(item) && String(item?.kind || '').trim() !== 'ai'
 );
 
-export const buildConversationFilterCounts = (conversations) => {
-  const items = (Array.isArray(conversations) ? conversations : []).filter(isRegularSidebarConversation);
-  return {
-    all: items.filter((item) => !item?.is_archived).length,
-    unread: items.filter((item) => !item?.is_archived && Number(item?.unread_count || 0) > 0).length,
-    direct: items.filter((item) => !item?.is_archived && item?.kind === 'direct').length,
-    group: items.filter((item) => !item?.is_archived && item?.kind !== 'direct').length,
-    pinned: items.filter((item) => !item?.is_archived && Boolean(item?.is_pinned)).length,
-    archived: items.filter((item) => Boolean(item?.is_archived)).length,
-  };
-};
+export const buildConversationFilterCounts = (conversations) => (
+  buildFolderUnreadCounts(conversations, [], {})
+);
 
-export const filterSidebarConversations = (conversations, conversationFilter) => {
-  const items = (Array.isArray(conversations) ? conversations : []).filter(isRegularSidebarConversation);
-  return items.filter((item) => {
-    if (conversationFilter === 'archived') return Boolean(item?.is_archived);
-    if (item?.is_archived) return false;
-    if (conversationFilter === 'unread') return Number(item?.unread_count || 0) > 0;
-    if (conversationFilter === 'direct') return item?.kind === 'direct';
-    if (conversationFilter === 'group') return item?.kind !== 'direct';
-    if (conversationFilter === 'pinned') return Boolean(item?.is_pinned);
-    return true;
-  });
+export const filterSidebarConversations = (conversations, conversationFilter, conversationIdsByFolder = {}) => {
+  const folderKey = conversationFilter === 'direct' ? 'personal' : String(conversationFilter || 'all');
+  return filterSidebarConversationsByFolder(conversations, folderKey, conversationIdsByFolder);
 };
 
 export const buildThreadPrefetchQueue = (
@@ -887,8 +997,9 @@ export default function Chat() {
   const location = useLocation();
   const { user, hasPermission } = useAuth();
   const { notifyApiError, notifyInfo, notifyWarning } = useNotification();
-  const { drawerOpen, openDrawer, closeDrawer } = useMainLayoutShell();
+  const { closeDrawer } = useMainLayoutShell();
   const userCacheId = String(user?.id || 'guest').trim() || 'guest';
+  const canUseAiChat = canUseAiChatPermission(hasPermission);
   const requestedConversationId = String(new URLSearchParams(location.search).get('conversation') || '').trim();
   const requestedMessageId = String(new URLSearchParams(location.search).get('message') || '').trim();
   const composePrefillRequested = isChatComposePrefillRoute(location.search);
@@ -904,6 +1015,13 @@ export default function Chat() {
     [userCacheId],
   );
   const initialConversationsCache = peekSWRCache(conversationsCacheKeyParts, { staleTimeMs: CHAT_SWR_STALE_TIME_MS });
+  const aiBotsCacheKeyParts = useMemo(
+    () => buildChatAiBotsCacheKeyParts(userCacheId),
+    [userCacheId],
+  );
+  const initialAiBotsCache = canUseAiChat
+    ? peekSWRCache(aiBotsCacheKeyParts, { staleTimeMs: CHAT_SWR_STALE_TIME_MS })
+    : null;
   const initialThreadCache = initialConversationId && !requestedMessageId
     ? peekSWRCache(buildChatThreadCacheKeyParts(userCacheId, initialConversationId), { staleTimeMs: CHAT_SWR_STALE_TIME_MS })
     : null;
@@ -912,6 +1030,7 @@ export default function Chat() {
   const bottomRef = useRef(null);
   const sidebarScrollRef = useRef(null);
   const threadScrollRef = useRef(null);
+  const pinnedScrollRef = useRef(null);
   const threadContentRef = useRef(null);
   const autoScrollRef = useRef(false);
   const autoScrollMetaRef = useRef(null);
@@ -923,6 +1042,7 @@ export default function Chat() {
   const conversationsRef = useRef([]);
   const messagesRef = useRef([]);
   const requestedConversationHandledRef = useRef('');
+  const requestedConversationRetryRef = useRef('');
   const applyingRequestedConversationRef = useRef('');
   const requestedMessageRevealKeyRef = useRef('');
   const conversationsRequestSeqRef = useRef(0);
@@ -934,6 +1054,7 @@ export default function Chat() {
   const threadNearBottomRef = useRef(true);
   const threadViewportSyncFrameRef = useRef(null);
   const bottomInstantSettleFrameRef = useRef(null);
+  const mobileKeyboardSettleTimeoutsRef = useRef([]);
   const prependScrollRestoreRef = useRef(null);
   const loadOlderInFlightCursorRef = useRef('');
   const messagesHasMoreRef = useRef(false);
@@ -978,8 +1099,13 @@ export default function Chat() {
   const skippedInitialSnapshotRefreshRef = useRef(false);
   const lastConversationsLoadAtRef = useRef(0);
   const conversationsCacheHydratedRef = useRef(Boolean(initialConversationsCache?.data));
+  const aiBotsCacheHydratedRef = useRef(Boolean(initialAiBotsCache?.data));
+  const aiBotsRequestSeqRef = useRef(0);
+  const aiBotsLoadingRequestSeqRef = useRef(0);
+  const aiBotsLoadingRef = useRef(canUseAiChat ? !initialAiBotsCache?.data : false);
   const hydratedThreadConversationIdRef = useRef(initialThreadCache?.data ? initialConversationId : '');
   const mobileHistoryReadyRef = useRef(false);
+  const notesEnsuredRef = useRef(false);
   const mobileHistoryModeRef = useRef('inbox');
   const lastHandledThreadLayoutKeyRef = useRef('');
   const initialViewportGuardRef = useRef(null);
@@ -994,7 +1120,13 @@ export default function Chat() {
   const [conversationDetailsById, setConversationDetailsById] = useState({});
   const [conversationsLoading, setConversationsLoading] = useState(() => !initialConversationsCache?.data);
   const [conversationBootstrapComplete, setConversationBootstrapComplete] = useState(false);
-  const [conversationFilter, setConversationFilter] = useState('all');
+  const [conversationFilter, setConversationFilter] = useState(() => readStoredActiveFolderKey());
+  const [customFolders, setCustomFolders] = useState([]);
+  const [conversationIdsByFolder, setConversationIdsByFolder] = useState({});
+  const [foldersLoading, setFoldersLoading] = useState(false);
+  const [folderManagerOpen, setFolderManagerOpen] = useState(false);
+  const [folderManagerCreateMode, setFolderManagerCreateMode] = useState(false);
+  const [folderSaving, setFolderSaving] = useState(false);
   const {
     patchSearchConversations,
     patchSearchPersonPresence,
@@ -1011,8 +1143,12 @@ export default function Chat() {
     notifyApiError,
     searchDebounceMs: SEARCH_MS,
   });
-  const [aiBots, setAiBots] = useState([]);
-  const [aiBotsLoading, setAiBotsLoading] = useState(false);
+  const [aiBots, setAiBots] = useState(() => (
+    Array.isArray(initialAiBotsCache?.data?.items) ? initialAiBotsCache.data.items : []
+  ));
+  const [aiBotsLoading, setAiBotsLoading] = useState(() => (
+    canUseAiChat ? !initialAiBotsCache?.data : false
+  ));
   const [aiBotsError, setAiBotsError] = useState('');
   const [openingAiBotId, setOpeningAiBotId] = useState('');
   const [aiStatusByConversation, setAiStatusByConversation] = useState({});
@@ -1023,6 +1159,7 @@ export default function Chat() {
       : (isMobile && restoredConversationId && restoredMobileView === 'thread' ? 'thread' : 'inbox')
   ));
   const [mobileTransitionDirection, setMobileTransitionDirection] = useState(1);
+  const [mobileBottomNavHidden, setMobileBottomNavHidden] = useState(false);
   const [messages, setMessages] = useState(() => (
     Array.isArray(initialThreadCache?.data?.items) ? initialThreadCache.data.items : []
   ));
@@ -1034,6 +1171,7 @@ export default function Chat() {
   const [viewerLastReadAt, setViewerLastReadAt] = useState(() => String(initialThreadCache?.data?.viewer_last_read_at || '').trim());
   const [messageText, setMessageText] = useState('');
   const [replyMessage, setReplyMessage] = useState(null);
+  const [editingMessage, setEditingMessage] = useState(null);
   const [pinnedMessage, setPinnedMessage] = useState(null);
   const {
     addGroupMember,
@@ -1160,6 +1298,7 @@ export default function Chat() {
   const [lastSocketActivityAt, setLastSocketActivityAt] = useState(0);
   const [typingUsers, setTypingUsers] = useState([]);
   const [attachmentPreview, setAttachmentPreview] = useState(null);
+  const [documentPreview, setDocumentPreview] = useState(null);
   const deferredMessageText = useDeferredValue(messageText);
 
   useEffect(() => () => {
@@ -1225,7 +1364,6 @@ export default function Chat() {
     const response = await chatAPI.getUsers({ q: normalizedQuery, limit: 8 });
     return Array.isArray(response?.items) ? response.items : [];
   }, []);
-  const canUseAiChat = canUseAiChatPermission(hasPermission);
   const activeAiStatus = useMemo(
     () => aiStatusByConversation[String(activeConversationId || '').trim()] || null,
     [activeConversationId, aiStatusByConversation],
@@ -1236,6 +1374,7 @@ export default function Chat() {
   );
   const aiTypingStatus = useMemo(() => {
     if (String(activeConversation?.kind || '').trim() !== 'ai') return null;
+    if (activeAiStatusDisplay.visible) return null;
     const status = String(activeAiStatus?.status || '').trim();
     const visible = status === 'queued' || status === 'running';
     if (!visible) return null;
@@ -1243,7 +1382,7 @@ export default function Chat() {
       visible: true,
       botName: String(activeAiStatus?.bot_title || activeAiStatusDisplay?.primaryText || 'AI Ассистент').trim() || 'AI Ассистент',
     };
-  }, [activeConversation?.kind, activeAiStatus, activeAiStatusDisplay]);
+  }, [activeAiStatus, activeAiStatusDisplay, activeConversation?.kind]);
   const activeAiLiveDataNotice = useMemo(
     () => buildAiLiveDataNotice({
       activeConversationKind: activeConversation?.kind,
@@ -1285,7 +1424,7 @@ export default function Chat() {
   }, [lastConversationSessionKey, lastMobileViewSessionKey, userCacheId]);
 
   const applyConversationsPayload = useCallback((payload, { preserveSidebarScrollTop = null } = {}) => {
-    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const items = sortSidebarConversations(Array.isArray(payload?.items) ? payload.items : []);
     lastConversationsLoadAtRef.current = Date.now();
     conversationsCacheHydratedRef.current = true;
     setConversations(items);
@@ -1324,12 +1463,51 @@ export default function Chat() {
     hydratedThreadConversationIdRef.current = hydrateLatestCache ? normalizedConversationId : '';
     setViewerLastReadMessageId(String(payload?.viewer_last_read_message_id || '').trim());
     setViewerLastReadAt(String(payload?.viewer_last_read_at || '').trim());
-    setMessages((current) => reconcileThreadMessages(current, items, {
-      conversationId: normalizedConversationId,
-      preserveSendingOptimistic: true,
-      mode: 'replaceWindowButPreserveFreshLocal',
-    }));
-    setMessagesHasMore(Boolean(payload?.has_older ?? payload?.has_more));
+    setMessages((current) => {
+      const next = reconcileThreadMessages(current, items, {
+        conversationId: normalizedConversationId,
+        preserveSendingOptimistic: true,
+        mode: 'replaceWindowButPreserveFreshLocal',
+      });
+      const sortedIncoming = sortThreadMessages(items);
+      const incomingFirstMessage = sortedIncoming.at(0) || null;
+      const preservedOlderCount = next.filter((message) => (
+        !items.some((item) => normalizeThreadMessageId(item) === normalizeThreadMessageId(message))
+        && compareThreadMessagePosition(message, incomingFirstMessage) < 0
+      )).length;
+      const payloadHasOlder = Boolean(payload?.has_older ?? payload?.has_more);
+      const extendedHistory = next.length > items.length;
+      setMessagesHasMore(extendedHistory ? (payloadHasOlder || messagesHasMoreRef.current) : payloadHasOlder);
+      // #region agent log
+      if (preservedOlderCount > 0) {
+        emitAgentDebugLog({
+          location: 'Chat.jsx:applyLatestThreadPayload',
+          message: 'preserved loaded older messages during thread revalidate',
+          hypothesisId: 'H-HISTORY-WIPE',
+          data: {
+            conversationId: normalizedConversationId,
+            incomingCount: items.length,
+            currentCount: current.length,
+            nextCount: next.length,
+            preservedOlderCount,
+          },
+        });
+      } else if (next.length < current.length) {
+        emitAgentDebugLog({
+          location: 'Chat.jsx:applyLatestThreadPayload',
+          message: 'thread message count decreased during revalidate',
+          hypothesisId: 'H-HISTORY-WIPE',
+          data: {
+            conversationId: normalizedConversationId,
+            incomingCount: items.length,
+            currentCount: current.length,
+            nextCount: next.length,
+          },
+        });
+      }
+      // #endregion
+      return next;
+    });
     setMessagesHasNewer(Boolean(payload?.has_newer));
     return items;
   }, []);
@@ -1355,13 +1533,13 @@ export default function Chat() {
   );
 
   const conversationFilterCounts = useMemo(
-    () => buildConversationFilterCounts(conversations),
-    [conversations],
+    () => buildFolderUnreadCounts(conversations, customFolders, conversationIdsByFolder),
+    [conversationIdsByFolder, conversations, customFolders],
   );
 
   const filteredConversations = useMemo(
-    () => filterSidebarConversations(conversations, conversationFilter),
-    [conversationFilter, conversations],
+    () => filterSidebarConversationsByFolder(conversations, conversationFilter, conversationIdsByFolder),
+    [conversationFilter, conversationIdsByFolder, conversations],
   );
 
   const watchedPresenceUserIds = useMemo(() => {
@@ -1478,6 +1656,7 @@ export default function Chat() {
     || forwardOpen
     || fileDialogOpen
     || attachmentPreview
+    || documentPreview
     || messageReadsOpen
     || searchOpen
     || (isMobile && infoOpen),
@@ -1486,7 +1665,11 @@ export default function Chat() {
   const contextPanelExitDuration = prefersReducedMotion ? 1 : CONTEXT_PANEL_EXIT_MS;
   const mobileScreenTransition = mobileMotionDisabled
     ? { duration: 0.01 }
-    : { type: 'spring', stiffness: 430, damping: 38, mass: 0.9 };
+    : {
+      type: 'tween',
+      duration: CHAT_MOBILE_SCREEN_TRANSITION_MS / 1000,
+      ease: CHAT_MOBILE_SCREEN_TRANSITION_EASE,
+    };
   const resolvedMobileView = isMobile
     && mobileView === 'thread'
     && !String(activeConversationId || '').trim()
@@ -1501,6 +1684,28 @@ export default function Chat() {
           ? 'inbox'
           : mobileView
       );
+
+  useEffect(() => {
+    if (!isMobile) {
+      setMobileBottomNavHidden(false);
+      return undefined;
+    }
+    if (resolvedMobileView !== 'thread') {
+      setMobileBottomNavHidden(false);
+      return undefined;
+    }
+    if (mobileMotionDisabled) {
+      setMobileBottomNavHidden(true);
+    }
+    return undefined;
+  }, [isMobile, mobileMotionDisabled, resolvedMobileView]);
+
+  const handleMobileThreadScreenAnimationComplete = useCallback((definition) => {
+    if (definition !== 'center') return;
+    if (!isMobile || mobileMotionDisabled) return;
+    if (resolvedMobileView !== 'thread') return;
+    setMobileBottomNavHidden(true);
+  }, [isMobile, mobileMotionDisabled, resolvedMobileView]);
 
   const threadWallpaperSx = useMemo(
     () => (
@@ -1603,7 +1808,7 @@ export default function Chat() {
 
   const getMobileHistoryKey = useCallback((nextState, conversationId = activeConversationIdRef.current) => {
     const nextView = String(nextState?.view || '').trim() === 'thread' ? 'thread' : 'inbox';
-    const drawerKey = Boolean(nextState?.drawerOpen) ? 'drawer' : 'closed';
+    const drawerKey = 'closed';
     const infoKey = nextView === 'thread' && Boolean(nextState?.infoOpen) ? 'info' : 'main';
     const normalizedConversationId = nextView === 'thread'
       ? (String(conversationId || '').trim() || 'none')
@@ -1611,20 +1816,14 @@ export default function Chat() {
     return `${nextView}:${drawerKey}:${infoKey}:${normalizedConversationId}`;
   }, []);
 
-  const readMobileHistoryState = useCallback((state = window.history.state) => {
-    if (!state || typeof state !== 'object' || state[CHAT_MOBILE_HISTORY_FLAG] !== true) return null;
-    const nextView = String(state[CHAT_MOBILE_HISTORY_VIEW_KEY] || '').trim() === 'thread' ? 'thread' : 'inbox';
-    return {
-      view: nextView,
-      drawerOpen: Boolean(state[CHAT_MOBILE_HISTORY_DRAWER_KEY]),
-      infoOpen: nextView === 'thread' && Boolean(state[CHAT_MOBILE_HISTORY_INFO_KEY]),
-    };
-  }, []);
+  const readMobileHistoryState = useCallback((state = window.history.state) => (
+    readChatMobileHistoryState(state)
+  ), []);
 
   const writeMobileHistoryState = useCallback((nextState, strategy = 'push', conversationId = activeConversationIdRef.current) => {
     if (!isMobile || typeof window === 'undefined') return;
     const normalizedView = String(nextState?.view || '').trim() === 'thread' ? 'thread' : 'inbox';
-    const normalizedDrawerOpen = Boolean(nextState?.drawerOpen);
+    const normalizedDrawerOpen = false;
     const normalizedInfoOpen = normalizedView === 'thread' && Boolean(nextState?.infoOpen);
     const currentState = window.history.state && typeof window.history.state === 'object'
       ? window.history.state
@@ -1668,6 +1867,7 @@ export default function Chat() {
 
   const openMobileInboxView = useCallback(() => {
     if (!isMobile) return;
+    setMobileBottomNavHidden(false);
     const currentMobileHistoryState = typeof window !== 'undefined' && mobileHistoryReadyRef.current
       ? readMobileHistoryState()
       : null;
@@ -1715,6 +1915,93 @@ export default function Chat() {
   const closeAttachmentPreview = useCallback(() => {
     setAttachmentPreview(null);
   }, []);
+
+  const closeDocumentPreview = useCallback(() => {
+    setDocumentPreview((current) => {
+      if (current?.objectUrl && typeof window.URL?.revokeObjectURL === 'function') {
+        try {
+          window.URL.revokeObjectURL(current.objectUrl);
+        } catch {
+          // Ignore revoke failures on close.
+        }
+      }
+      return null;
+    });
+  }, []);
+
+  const openDocumentPreview = useCallback(async (messageId, attachment) => {
+    void loadChatDialogsModule();
+    const normalizedMessageId = String(messageId || '').trim();
+    const attachmentId = String(attachment?.id || '').trim();
+    if (!normalizedMessageId || !attachmentId) return;
+
+    const mapped = mapChatAttachmentForPreview(attachment);
+    setDocumentPreview({
+      ...createEmptyAttachmentPreview(),
+      open: true,
+      loading: true,
+      filename: mapped.name,
+      contentType: mapped.content_type,
+    });
+
+    try {
+      const previewState = await buildChatDocumentPreviewState({
+        chatAttachmentsAPI,
+        messageId: normalizedMessageId,
+        attachmentId,
+        attachment,
+      });
+      // #region agent log
+      fetch('http://127.0.0.1:7567/ingest/0dd98d48-9716-48e2-8a2d-050e49aa7cea', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '891634' }, body: JSON.stringify({ sessionId: '891634', location: 'Chat.jsx:openDocumentPreview', message: 'chat document preview loaded', data: { messageId: normalizedMessageId, attachmentId, kind: previewState.kind, filename: previewState.filename }, timestamp: Date.now(), runId: 'doc-preview', hypothesisId: 'H-DOC-PREVIEW' }) }).catch(() => {});
+      // #endregion
+      setDocumentPreview(previewState);
+    } catch (error) {
+      // #region agent log
+      fetch('http://127.0.0.1:7567/ingest/0dd98d48-9716-48e2-8a2d-050e49aa7cea', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '891634' }, body: JSON.stringify({ sessionId: '891634', location: 'Chat.jsx:openDocumentPreview', message: 'chat document preview failed', data: { messageId: normalizedMessageId, attachmentId, error: String(error?.message || error || '') }, timestamp: Date.now(), runId: 'doc-preview', hypothesisId: 'H-DOC-PREVIEW' }) }).catch(() => {});
+      // #endregion
+      setDocumentPreview({
+        ...createEmptyAttachmentPreview(),
+        open: true,
+        loading: false,
+        error: String(error?.message || 'Не удалось открыть предпросмотр документа.'),
+        filename: mapped.name,
+        contentType: mapped.content_type,
+      });
+    }
+  }, []);
+
+  const handleDownloadDocumentPreview = useCallback(async () => {
+    const ctx = documentPreview?.downloadContext;
+    if (!ctx?.messageId || !ctx?.attachmentId) return;
+    try {
+      const response = await chatAttachmentsAPI.downloadAttachment(ctx.messageId, ctx.attachmentId);
+      const { blob, filename } = buildAttachmentBlobPayload({
+        response,
+        attachment: mapChatAttachmentForPreview(ctx.attachment),
+      });
+      downloadBlobFile(blob, filename, { preferOpenFallback: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось скачать файл.');
+    }
+  }, [documentPreview, notifyApiError]);
+
+  const handleDownloadDocumentPreviewPdf = useCallback(async () => {
+    const ctx = documentPreview?.downloadContext;
+    if (!ctx?.messageId || !ctx?.attachmentId) return;
+    try {
+      const response = await chatAttachmentsAPI.downloadAttachmentPreviewPdf(ctx.messageId, ctx.attachmentId);
+      const { blob, filename } = buildAttachmentBlobPayload({
+        response,
+        attachment: {
+          name: documentPreview?.pdfFilename || `${documentPreview?.filename || 'preview'}.pdf`,
+          content_type: 'application/pdf',
+        },
+      });
+      downloadBlobFile(blob, filename, { preferOpenFallback: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось скачать PDF-предпросмотр.');
+    }
+  }, [documentPreview, notifyApiError]);
 
   const persistPinnedMessage = useCallback((nextPinnedMessage) => {
     setPinnedMessage(nextPinnedMessage || null);
@@ -1937,14 +2224,45 @@ export default function Chat() {
     }
     container.scrollTop = normalizedScrollTop;
     syncThreadViewportState(container);
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'Chat.jsx:setThreadScrollTop',
+      message: 'scroll write',
+      data: {
+        source: String(source || ''),
+        scrollTop: Math.round(normalizedScrollTop),
+        scrollHeight: Math.round(Number(container.scrollHeight || 0)),
+        clientHeight: Math.round(Number(container.clientHeight || 0)),
+        distanceFromBottom: Math.round(Math.max(0, Number(container.scrollHeight || 0) - normalizedScrollTop - Number(container.clientHeight || 0))),
+      },
+      hypothesisId: 'H1',
+    });
+    // #endregion
     return true;
   }, [isInitialViewportGuardActive, suppressThreadScrollCancel, syncThreadViewportState, traceProgrammaticThreadScroll]);
+
+  const bindPinnedScroll = useCallback((scrollFn) => {
+    pinnedScrollRef.current = typeof scrollFn === 'function' ? scrollFn : null;
+  }, []);
 
   const scrollThreadToBottomInstant = useCallback(({
     source = 'unknown',
     settleFrames = 0,
     userInitiated = false,
   } = {}) => {
+    const pinnedScroll = pinnedScrollRef.current;
+    const framesToSettle = Math.max(0, Math.floor(Number(settleFrames || 0)));
+    if (typeof pinnedScroll === 'function') {
+      threadNearBottomRef.current = true;
+      showJumpToLatestRef.current = false;
+      setShowJumpToLatest(false);
+      pinnedScroll({
+        settleFrames: Math.max(0, Math.floor(Number(settleFrames || 0))),
+        forcePin: true,
+      });
+      return true;
+    }
+
     const container = threadScrollRef.current;
     if (!container) return false;
 
@@ -1965,7 +2283,6 @@ export default function Chat() {
 
     scrollToCurrentBottom(source);
 
-    const framesToSettle = Math.max(0, Math.floor(Number(settleFrames || 0)));
     if (framesToSettle <= 0) return true;
 
     let remainingFrames = framesToSettle;
@@ -1990,6 +2307,36 @@ export default function Chat() {
     bottomInstantSettleFrameRef.current = window.requestAnimationFrame(settle);
     return true;
   }, [setThreadScrollTop]);
+
+  const clearMobileKeyboardSettleTimeouts = useCallback(() => {
+    mobileKeyboardSettleTimeoutsRef.current.forEach((timeoutId) => {
+      window.clearTimeout(timeoutId);
+    });
+    mobileKeyboardSettleTimeoutsRef.current = [];
+  }, []);
+
+  const scheduleMobileKeyboardBottomSettle = useCallback(({
+    conversationId,
+    source,
+    userInitiated = false,
+  } = {}) => {
+    const normalizedConversationId = String(conversationId || '').trim();
+    if (!normalizedConversationId) return;
+    clearMobileKeyboardSettleTimeouts();
+    [150, 320].forEach((delayMs) => {
+      const timeoutId = window.setTimeout(() => {
+        mobileKeyboardSettleTimeoutsRef.current = mobileKeyboardSettleTimeoutsRef.current
+          .filter((id) => id !== timeoutId);
+        if (String(activeConversationIdRef.current || '').trim() !== normalizedConversationId) return;
+        scrollThreadToBottomInstant({
+          source: `${source}:keyboard-settle-${delayMs}`,
+          userInitiated,
+          settleFrames: delayMs <= 150 ? 3 : 2,
+        });
+      }, delayMs);
+      mobileKeyboardSettleTimeoutsRef.current.push(timeoutId);
+    });
+  }, [clearMobileKeyboardSettleTimeouts, scrollThreadToBottomInstant]);
 
   const scrollThreadBottomIntoView = useCallback(({ source = 'unknown', behavior = 'smooth' } = {}) => {
     const container = threadScrollRef.current;
@@ -2035,6 +2382,14 @@ export default function Chat() {
       source,
       userInitiated,
     });
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'Chat.jsx:queueAutoScroll',
+      message: 'autoScroll queued',
+      data: { mode: normalizedMode, source: String(source || ''), userInitiated: Boolean(userInitiated) },
+      hypothesisId: 'H1',
+    });
+    // #endregion
     return true;
   }, [isInitialViewportGuardActive, logChatDebug]);
 
@@ -2130,7 +2485,8 @@ export default function Chat() {
     clearPendingInitialAnchorSettleTimer();
     clearPendingInitialAnchorRetryTimer();
     clearPendingInitialAnchorResizeFrame();
-  }, [clearPendingInitialAnchorResizeFrame, clearPendingInitialAnchorRetryTimer, clearPendingInitialAnchorSettleTimer]);
+    clearInitialViewportGuard('pending_anchor_cancel');
+  }, [clearInitialViewportGuard, clearPendingInitialAnchorResizeFrame, clearPendingInitialAnchorRetryTimer, clearPendingInitialAnchorSettleTimer]);
   cancelPendingInitialAnchorRef.current = cancelPendingInitialAnchor;
 
   const queueInitialThreadPosition = useCallback((conversationId, items = conversationsRef.current) => {
@@ -2384,16 +2740,29 @@ export default function Chat() {
       const normalizedItemId = String(item?.id || '').trim();
       if (!normalizedItemId) return null;
       const variantUrls = item?.variant_urls || {};
+      const localBlobUrl = pickBlobAttachmentUrl(
+        item?.preview_url,
+        item?.previewUrl,
+        item?.original_url,
+        item?.originalUrl,
+        item?.open_url,
+        item?.openUrl,
+        variantUrls.preview,
+        variantUrls.thumb,
+      );
       const inlineOriginalUrl = buildAttachmentUrl(normalizedMessageId, normalizedItemId, { inline: true });
-      const originalUrl = normalizeChatAttachmentUrl(item?.original_url || item?.originalUrl)
+      const originalUrl = localBlobUrl
+        || normalizeChatAttachmentUrl(item?.original_url || item?.originalUrl)
         || inlineOriginalUrl
         || buildAttachmentUrl(normalizedMessageId, normalizedItemId);
-      const previewUrl = normalizeChatAttachmentUrl(
-        item?.preview_url
-        || item?.previewUrl
-        || variantUrls.preview
-        || variantUrls.thumb,
-      ) || originalUrl;
+      const previewUrl = localBlobUrl
+        || normalizeChatAttachmentUrl(
+          item?.preview_url
+          || item?.previewUrl
+          || variantUrls.preview
+          || variantUrls.thumb,
+        )
+        || originalUrl;
       return {
         ...item,
         id: normalizedItemId,
@@ -2410,6 +2779,10 @@ export default function Chat() {
     const normalizedAttachment = normalizePreviewAttachment(attachment);
     if (!normalizedAttachment) return;
     if (!isMediaAttachment(normalizedAttachment)) {
+      if (isChatDocumentPreviewableAttachment(normalizedAttachment)) {
+        void openDocumentPreview(normalizedMessageId, attachment);
+        return;
+      }
       const openUrl = normalizeChatAttachmentUrl(
         normalizedAttachment?.open_url
         || normalizedAttachment?.openUrl
@@ -2434,6 +2807,9 @@ export default function Chat() {
     const activeIndex = Math.max(0, previewItems.findIndex((item) => item.id === attachmentId));
     const activeAttachment = previewItems[activeIndex] || normalizedAttachment;
 
+    const isProcessing = isSendingOptimisticThreadMessage(sourceMessage, activeConversationIdRef.current)
+      || String(sourceMessage?.delivery_status || '').trim() === 'sending';
+
     setAttachmentPreview({
       messageId: normalizedMessageId,
       attachment: activeAttachment,
@@ -2448,13 +2824,14 @@ export default function Chat() {
       createdAt: String(sourceMessage?.created_at || '').trim(),
       kind: isVideoAttachment(activeAttachment) ? 'video' : 'image',
       startedFromGallery: previewItems.length > 1,
+      isProcessing,
     });
-  }, []);
+  }, [openDocumentPreview]);
 
   const openTaskFromChat = useCallback((taskId) => {
     const normalizedTaskId = String(taskId || '').trim();
     if (!normalizedTaskId) return;
-    navigate(`/tasks?task=${encodeURIComponent(normalizedTaskId)}&task_tab=comments`);
+    navigate(`/tasks?task=${encodeURIComponent(normalizedTaskId)}`);
   }, [navigate]);
 
   const emitChatUnreadRefresh = useCallback(() => {
@@ -2516,6 +2893,7 @@ export default function Chat() {
 
   conversationsRef.current = conversations;
   conversationsLoadingRef.current = conversationsLoading;
+  aiBotsLoadingRef.current = aiBotsLoading;
   messagesRef.current = messages;
   messagesLoadingRef.current = messagesLoading;
   messagesHasMoreRef.current = messagesHasMore;
@@ -2525,6 +2903,11 @@ export default function Chat() {
     if (!conversationsCacheHydratedRef.current) return;
     setSWRCache(conversationsCacheKeyParts, { items: conversations });
   }, [conversations, conversationsCacheKeyParts]);
+
+  useEffect(() => {
+    if (!canUseAiChat || !aiBotsCacheHydratedRef.current) return;
+    setSWRCache(aiBotsCacheKeyParts, { items: aiBots });
+  }, [aiBots, aiBotsCacheKeyParts, canUseAiChat]);
 
   useEffect(() => {
     const normalizedConversationId = String(activeConversationId || '').trim();
@@ -2582,8 +2965,7 @@ export default function Chat() {
       return;
     }
 
-    writeMobileHistoryState({ view: 'inbox', drawerOpen: true, infoOpen: false }, 'replace');
-    writeMobileHistoryState({ view: 'inbox', drawerOpen: false, infoOpen: false }, 'push');
+    writeMobileHistoryState({ view: 'inbox', drawerOpen: false, infoOpen: false }, 'replace');
     if (resolvedMobileView === 'thread') {
       writeMobileHistoryState({ view: 'thread', drawerOpen: false, infoOpen: false }, 'push', activeConversationId);
     }
@@ -2597,7 +2979,7 @@ export default function Chat() {
       if (!nextState) return;
       const previousState = {
         view: resolvedMobileView === 'thread' ? 'thread' : 'inbox',
-        drawerOpen,
+        drawerOpen: false,
         infoOpen,
       };
       const nextConversationId = nextState.view === 'thread'
@@ -2624,13 +3006,12 @@ export default function Chat() {
         setActiveConversationId('');
       }
       setMobileView(nextState.view);
-      if (nextState.drawerOpen) openDrawer?.();
-      else closeDrawer?.();
+      closeDrawer?.();
     };
 
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, [closeDrawer, drawerOpen, getCurrentBrowserConversationId, getMobileHistoryKey, infoOpen, isMobile, openDrawer, readMobileHistoryState, resolvedMobileView]);
+  }, [closeDrawer, getCurrentBrowserConversationId, getMobileHistoryKey, infoOpen, isMobile, readMobileHistoryState, resolvedMobileView]);
 
   useEffect(() => () => {
     if (highlightResetTimeoutRef.current) {
@@ -2669,6 +3050,7 @@ export default function Chat() {
       if (!pendingAnchor?.ready) return;
       if (pendingAnchor.conversationId !== activeConversationIdRef.current) return;
       if (!isInitialViewportGuardActive(pendingAnchor.conversationId)) return;
+      if (threadNearBottomRef.current) return;
 
       const container = threadScrollRef.current;
       if (!container) return;
@@ -2901,6 +3283,9 @@ export default function Chat() {
         open_url: objectUrl,
         preview_url: objectUrl,
         poster_url: '',
+        ...(String(file?.type || '').startsWith('image/')
+          ? { width: 216, height: 176 }
+          : {}),
       };
     });
     const optimisticId = `optimistic:${normalizedConversationId}:file:${Date.now()}:${optimisticMessageSeqRef.current}`;
@@ -3008,17 +3393,8 @@ export default function Chat() {
     )));
   }, []);
 
-  const promoteConversationToTop = useCallback((conversationId) => {
-    const id = String(conversationId || '').trim();
-    if (!id) return;
-    setConversations((current) => {
-      const index = current.findIndex((item) => item.id === id);
-      if (index <= 0) return current;
-      const next = [...current];
-      const [selected] = next.splice(index, 1);
-      next.unshift(selected);
-      return next;
-    });
+  const promoteConversationToTop = useCallback(() => {
+    setConversations((current) => sortSidebarConversations(current));
   }, []);
 
   const upsertConversation = useCallback((conversation, { promote = false } = {}) => {
@@ -3029,13 +3405,7 @@ export default function Chat() {
       const next = index >= 0
         ? current.map((item) => (item.id === normalizedConversationId ? conversation : item))
         : [conversation, ...current];
-      if (!promote) return next;
-      const promotedIndex = next.findIndex((item) => item.id === normalizedConversationId);
-      if (promotedIndex <= 0) return next;
-      const ordered = [...next];
-      const [selected] = ordered.splice(promotedIndex, 1);
-      ordered.unshift(selected);
-      return ordered;
+      return sortSidebarConversations(next);
     });
     upsertSearchConversation(conversation);
     setConversationDetailsById((current) => {
@@ -3096,16 +3466,7 @@ export default function Chat() {
   const applyMessageReadDelta = useCallback((payload) => {
     const messageId = String(payload?.message_id || '').trim();
     if (!messageId) return;
-    const nextReadByCount = Number(payload?.read_by_count);
-    const nextDeliveryStatus = String(payload?.delivery_status || '').trim();
-    setMessages((current) => current.map((item) => {
-      if (String(item?.id || '').trim() !== messageId) return item;
-      return {
-        ...item,
-        read_by_count: Number.isFinite(nextReadByCount) ? nextReadByCount : item?.read_by_count,
-        delivery_status: nextDeliveryStatus || item?.delivery_status,
-      };
-    }));
+    setMessages((current) => applyReadReceiptDeltaToMessages(current, payload));
   }, []);
 
   const removeThreadMessage = useCallback((messageId) => {
@@ -3306,6 +3667,134 @@ export default function Chat() {
     }
   }, [applyConversationsPayload, conversationsCacheKeyParts, notifyApiError]);
   loadConversationsRef.current = loadConversations;
+
+  const applyFoldersPayload = useCallback((payload) => {
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    const idsByFolder = buildConversationIdsByFolder(items, payload?.conversation_ids_by_folder || {});
+    setCustomFolders(items);
+    setConversationIdsByFolder(idsByFolder);
+    return items;
+  }, []);
+
+  const loadChatFolders = useCallback(async ({ silent = false } = {}) => {
+    if (!CHAT_FEATURE_ENABLED) return [];
+    if (!silent) setFoldersLoading(true);
+    try {
+      const payload = await chatFoldersAPI.listFolders();
+      return applyFoldersPayload(payload);
+    } catch (error) {
+      if (!silent) notifyApiError(error, 'Не удалось загрузить папки чатов.');
+      return [];
+    } finally {
+      if (!silent) setFoldersLoading(false);
+    }
+  }, [applyFoldersPayload, notifyApiError]);
+
+  const handleActiveFolderChange = useCallback((nextFolderKey) => {
+    const normalized = String(nextFolderKey || 'all').trim() || 'all';
+    setConversationFilter(normalized);
+    writeStoredActiveFolderKey(normalized);
+  }, []);
+
+  const handleOpenArchiveFolder = useCallback(() => {
+    handleActiveFolderChange('archived');
+  }, [handleActiveFolderChange]);
+
+  const handleOpenFolderManager = useCallback((options = {}) => {
+    setFolderManagerCreateMode(Boolean(options?.create));
+    setFolderManagerOpen(true);
+  }, []);
+
+  const handleCreateChatFolder = useCallback(async (name) => {
+    setFolderSaving(true);
+    try {
+      await chatFoldersAPI.createFolder(name);
+      await loadChatFolders({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось создать папку.');
+      throw error;
+    } finally {
+      setFolderSaving(false);
+    }
+  }, [loadChatFolders, notifyApiError]);
+
+  const handleRenameChatFolder = useCallback(async (folderId, name) => {
+    setFolderSaving(true);
+    try {
+      await chatFoldersAPI.updateFolder(folderId, { name });
+      await loadChatFolders({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось переименовать папку.');
+      throw error;
+    } finally {
+      setFolderSaving(false);
+    }
+  }, [loadChatFolders, notifyApiError]);
+
+  const handleDeleteChatFolder = useCallback(async (folderId) => {
+    setFolderSaving(true);
+    try {
+      await chatFoldersAPI.deleteFolder(folderId);
+      if (String(conversationFilter) === String(folderId)) {
+        handleActiveFolderChange('all');
+      }
+      await loadChatFolders({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось удалить папку.');
+    } finally {
+      setFolderSaving(false);
+    }
+  }, [conversationFilter, handleActiveFolderChange, loadChatFolders, notifyApiError]);
+
+  const handleReorderChatFolder = useCallback(async (folderId, direction) => {
+    const items = [...customFolders];
+    const index = items.findIndex((item) => String(item?.id || '') === String(folderId));
+    if (index < 0) return;
+    const targetIndex = direction === 'up' ? index - 1 : index + 1;
+    if (targetIndex < 0 || targetIndex >= items.length) return;
+    const next = [...items];
+    const [moved] = next.splice(index, 1);
+    next.splice(targetIndex, 0, moved);
+    setFolderSaving(true);
+    try {
+      await Promise.all(next.map((folder, sortOrder) => (
+        chatFoldersAPI.updateFolder(folder.id, { sort_order: sortOrder })
+      )));
+      await loadChatFolders({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось изменить порядок папок.');
+    } finally {
+      setFolderSaving(false);
+    }
+  }, [customFolders, loadChatFolders, notifyApiError]);
+
+  const handleRemoveConversationFromFolder = useCallback(async (folderId, conversationId) => {
+    setFolderSaving(true);
+    try {
+      await chatFoldersAPI.removeFolderConversation(folderId, conversationId);
+      await loadChatFolders({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось убрать чат из папки.');
+    } finally {
+      setFolderSaving(false);
+    }
+  }, [loadChatFolders, notifyApiError]);
+
+  const handleToggleConversationInFolder = useCallback(async (folderId, conversationId, nextIncluded) => {
+    const normalizedFolderId = String(folderId || '').trim();
+    const normalizedConversationId = String(conversationId || '').trim();
+    if (!normalizedFolderId || !normalizedConversationId) return;
+    try {
+      if (nextIncluded) {
+        await chatFoldersAPI.addFolderConversation(normalizedFolderId, normalizedConversationId);
+      } else {
+        await chatFoldersAPI.removeFolderConversation(normalizedFolderId, normalizedConversationId);
+      }
+      await loadChatFolders({ silent: true });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось обновить папку чата.');
+    }
+  }, [loadChatFolders, notifyApiError]);
 
   const abortActiveThreadLoad = useCallback(() => {
     const controller = threadLoadAbortRef.current;
@@ -3536,8 +4025,12 @@ export default function Chat() {
       setMessagesLoading(true);
     }
 
-    const requestSeq = messagesRequestSeqRef.current + 1;
-    messagesRequestSeqRef.current = requestSeq;
+    const requestSeq = loadingOlderRequest
+      ? messagesRequestSeqRef.current
+      : messagesRequestSeqRef.current + 1;
+    if (!loadingOlderRequest) {
+      messagesRequestSeqRef.current = requestSeq;
+    }
     logChatDebug('loadMessages:start', {
       conversationId: id,
       reason,
@@ -3601,13 +4094,28 @@ export default function Chat() {
               revalidateStale: false,
             },
           )).data;
-      if (requestSeq !== messagesRequestSeqRef.current || activeConversationIdRef.current !== id) {
+      if (activeConversationIdRef.current !== id) {
         logChatDebug('loadMessages:stale', {
           conversationId: id,
           reason,
           requestSeq,
           latestRequestSeq: messagesRequestSeqRef.current,
           activeConversationId: activeConversationIdRef.current,
+          loadingOlderRequest,
+        });
+        if (loadingOlderRequest) {
+          prependScrollRestoreRef.current = null;
+        }
+        return [];
+      }
+      if (!loadingOlderRequest && requestSeq !== messagesRequestSeqRef.current) {
+        logChatDebug('loadMessages:stale', {
+          conversationId: id,
+          reason,
+          requestSeq,
+          latestRequestSeq: messagesRequestSeqRef.current,
+          activeConversationId: activeConversationIdRef.current,
+          loadingOlderRequest,
         });
         return [];
       }
@@ -3643,14 +4151,32 @@ export default function Chat() {
       const hasNewer = Boolean(data?.has_newer);
 
       if (loadingOlderRequest) {
-        setMessagesHasMore(hasOlder);
-        setMessagesHasNewer((current) => current || hasNewer);
-        setMessages((current) => {
-          const seen = new Set(current.map((item) => item.id));
-          const older = items.filter((item) => !seen.has(item.id));
-          if (older.length === 0) return current;
-          return [...older, ...current];
+        const seen = new Set(messagesRef.current.map((item) => item.id));
+        const older = items.filter((item) => !seen.has(item.id));
+        const appendedCount = older.length;
+        // #region agent log
+        emitAgentDebugLog({
+          location: 'Chat.jsx:loadMessages:prependOlder',
+          message: 'load older prepend evaluated',
+          hypothesisId: 'H-HISTORY-WIPE',
+          data: {
+            conversationId: id,
+            reason,
+            apiItemsCount: items.length,
+            appendedCount,
+            hasOlder,
+            beforeMessageId: beforeId || null,
+          },
         });
+        // #endregion
+        if (appendedCount === 0) {
+          prependScrollRestoreRef.current = null;
+          setMessagesHasMore(false);
+        } else {
+          setMessagesHasMore(hasOlder);
+          setMessagesHasNewer((current) => current || hasNewer);
+          setMessages((current) => [...older, ...current]);
+        }
         return items;
       }
 
@@ -3719,17 +4245,35 @@ export default function Chat() {
         requestSeq,
         error: String(error?.message || error),
       });
-      if (
-        String(error?.code || '') !== 'ERR_CANCELED'
-        && String(error?.name || '') !== 'CanceledError'
-        && (!silent || loadingOlderRequest || loadingNewerRequest)
-      ) {
+      const notifyLoadError = shouldNotifyLoadMessagesError({
+        silent,
+        reason,
+        error,
+        loadingOlderRequest,
+        loadingNewerRequest,
+      });
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'Chat.jsx:loadMessages',
+        message: notifyLoadError ? 'loadMessages error toast shown' : 'loadMessages error suppressed',
+        hypothesisId: 'H-502',
+        data: {
+          reason,
+          silent,
+          loadingOlderRequest,
+          loadingNewerRequest,
+          status: Number(error?.response?.status || 0),
+          notifyLoadError,
+        },
+      });
+      // #endregion
+      if (notifyLoadError) {
         notifyApiError(error, loadingOlderRequest ? 'Не удалось загрузить более ранние сообщения.' : 'Не удалось загрузить сообщения чата.');
       }
       return [];
     } finally {
       if (loadingOlderRequest) {
-        if (requestSeq === messagesRequestSeqRef.current && activeConversationIdRef.current === id) setLoadingOlder(false);
+        if (activeConversationIdRef.current === id) setLoadingOlder(false);
       } else if (requestSeq === messagesLoadingRequestSeqRef.current) {
         messagesLoadingRequestSeqRef.current = 0;
         setMessagesLoading(false);
@@ -3847,16 +4391,7 @@ export default function Chat() {
       const updated = await chatAPI.updateConversationSettings(conversationId, payload);
       setConversations((current) => {
         const next = current.map((item) => (item.id === updated.id ? updated : item));
-        next.sort((left, right) => {
-          const leftPinned = left?.is_pinned ? 1 : 0;
-          const rightPinned = right?.is_pinned ? 1 : 0;
-          if (leftPinned !== rightPinned) return rightPinned - leftPinned;
-          const leftArchived = left?.is_archived ? 1 : 0;
-          const rightArchived = right?.is_archived ? 1 : 0;
-          if (leftArchived !== rightArchived) return leftArchived - rightArchived;
-          return String(right?.last_message_at || right?.updated_at || '').localeCompare(String(left?.last_message_at || left?.updated_at || ''));
-        });
-        return next;
+        return sortSidebarConversations(next);
       });
       upsertSearchConversation(updated);
     } catch (error) {
@@ -3964,34 +4499,128 @@ export default function Chat() {
     }
   }, [clearStoredConversationState, isMobile, notifyApiError, openMobileInboxView]);
 
-  const loadAiBots = useCallback(async () => {
+  const handleRemoteConversationRemoved = useCallback((conversationId) => {
+    const normalizedConversationId = String(conversationId || '').trim();
+    if (!normalizedConversationId) return;
+    setConversations((current) => current.filter((item) => String(item?.id || '').trim() !== normalizedConversationId));
+    setConversationDetailsById((current) => {
+      const next = { ...current };
+      delete next[normalizedConversationId];
+      return next;
+    });
+    if (String(activeConversationIdRef.current || '').trim() === normalizedConversationId) {
+      clearStoredConversationState({ conversationId: normalizedConversationId, invalidateThread: true });
+      setInfoOpen(false);
+      setContextPanelOpen(false);
+      setActiveConversationId('');
+      setMessages([]);
+      setMessagesHasMore(false);
+      setMessagesHasNewer(false);
+      setViewerLastReadMessageId('');
+      setViewerLastReadAt('');
+      if (isMobile) openMobileInboxView();
+    }
+  }, [clearStoredConversationState, isMobile, openMobileInboxView]);
+
+  const applyAiBotsPayload = useCallback((payload) => {
+    const items = Array.isArray(payload?.items) ? payload.items : [];
+    aiBotsCacheHydratedRef.current = true;
+    setAiBots(items);
+    setAiBotsError('');
+    return items;
+  }, []);
+
+  const loadAiBots = useCallback(async ({ silent = false, force = false } = {}) => {
     if (!canUseAiChat) {
       setAiBots([]);
       setAiBotsError('');
       setAiBotsLoading(false);
       return [];
     }
-    setAiBotsLoading(true);
+
+    const requestSeq = aiBotsRequestSeqRef.current + 1;
+    aiBotsRequestSeqRef.current = requestSeq;
+    if (!silent) {
+      aiBotsLoadingRequestSeqRef.current = requestSeq;
+      setAiBotsLoading(true);
+    } else if (aiBotsLoadingRef.current) {
+      aiBotsLoadingRequestSeqRef.current = requestSeq;
+    }
     setAiBotsError('');
+
     try {
-      const response = await chatAPI.listAiBots();
-      const items = Array.isArray(response?.items) ? response.items : [];
-      setAiBots(items);
-      setAiBotsError('');
+      const cachedEntry = !silent && !force
+        ? peekSWRCache(aiBotsCacheKeyParts, { staleTimeMs: CHAT_SWR_STALE_TIME_MS })
+        : null;
+
+      if (cachedEntry?.data) {
+        if (requestSeq !== aiBotsRequestSeqRef.current) return [];
+        const items = applyAiBotsPayload(cachedEntry.data);
+        if (requestSeq === aiBotsLoadingRequestSeqRef.current) {
+          aiBotsLoadingRequestSeqRef.current = 0;
+          setAiBotsLoading(false);
+        }
+        if (!cachedEntry.isFresh) {
+          void loadAiBots({ silent: true, force: true }).catch(() => {});
+        }
+        return items;
+      }
+
+      const result = await getOrFetchSWR(
+        aiBotsCacheKeyParts,
+        () => chatAPI.listAiBots(),
+        {
+          staleTimeMs: CHAT_SWR_STALE_TIME_MS,
+          force,
+          revalidateStale: false,
+        },
+      );
+      if (requestSeq !== aiBotsRequestSeqRef.current) return [];
+      const items = applyAiBotsPayload(result.data);
+      if (result.fromCache && !result.isFresh && !force) {
+        void loadAiBots({ silent: true, force: true }).catch(() => {});
+      }
       return items;
     } catch (error) {
-      notifyApiError(error, 'Не удалось загрузить AI-ботов.');
+      if (!silent) notifyApiError(error, 'Не удалось загрузить AI-ботов.');
       setAiBots([]);
       setAiBotsError('Failed to load AI bots.');
       return [];
     } finally {
-      setAiBotsLoading(false);
+      if (requestSeq === aiBotsLoadingRequestSeqRef.current) {
+        aiBotsLoadingRequestSeqRef.current = 0;
+        setAiBotsLoading(false);
+      }
     }
-  }, [canUseAiChat, notifyApiError]);
+  }, [aiBotsCacheKeyParts, applyAiBotsPayload, canUseAiChat, notifyApiError]);
 
   useEffect(() => {
     void loadConversations();
-  }, [loadConversations]);
+    void loadChatFolders();
+  }, [loadChatFolders, loadConversations]);
+
+  useEffect(() => {
+    if (!CHAT_FEATURE_ENABLED || notesEnsuredRef.current || conversationsLoading) return;
+    notesEnsuredRef.current = true;
+    void chatAPI.ensureNotesConversation()
+      .then((notes) => {
+        const normalizedConversationId = String(notes?.id || '').trim();
+        if (!normalizedConversationId) return;
+        setConversations((current) => {
+          const exists = current.some((item) => String(item?.id || '').trim() === normalizedConversationId);
+          const next = exists
+            ? current.map((item) => (
+              String(item?.id || '').trim() === normalizedConversationId ? { ...item, ...notes } : item
+            ))
+            : [{ ...notes }, ...current];
+          return sortSidebarConversations(next);
+        });
+        upsertSearchConversation(notes);
+      })
+      .catch(() => {
+        notesEnsuredRef.current = false;
+      });
+  }, [conversationsLoading, upsertSearchConversation]);
 
   useEffect(() => {
     void loadAiBots();
@@ -4049,6 +4678,7 @@ export default function Chat() {
       logChatDebugRef.current?.('effect:activeConversation:clear');
       cancelPendingInitialAnchorRef.current?.();
       clearInitialViewportGuard('conversation_cleared');
+      clearMobileKeyboardSettleTimeouts();
       hydratedThreadConversationIdRef.current = '';
       setMessages([]);
       setMessagesHasMore(false);
@@ -4058,12 +4688,14 @@ export default function Chat() {
       messagesLoadingRequestSeqRef.current = 0;
       setMessagesLoading(false);
       setReplyMessage(null);
+      setEditingMessage(null);
       return;
     }
     logChatDebugRef.current?.('effect:activeConversation:load', {
       conversationId: activeConversationId,
     });
     queueInitialThreadPositionRef.current?.(activeConversationId);
+    clearMobileKeyboardSettleTimeouts();
     focusComposerRef.current?.();
 
     const isFromNotification = String(requestedConversationId || '').trim() === activeConversationId;
@@ -4079,34 +4711,48 @@ export default function Chat() {
       )
       : null;
 
-    if (cachedThreadEntry?.data) {
-      applyLatestThreadPayload(activeConversationId, cachedThreadEntry.data);
-      resolvePendingInitialAnchorFromPayload(activeConversationId, cachedThreadEntry.data);
-      setMessagesLoading(false);
-      void loadThreadBootstrap(activeConversationId, {
-        silent: true,
-        reason: 'effect:activeConversation:revalidate',
-        force: true,
-      });
-    } else {
-      hydratedThreadConversationIdRef.current = '';
-      setMessages([]);
-      setMessagesHasMore(false);
-      setMessagesHasNewer(false);
-      setViewerLastReadMessageId('');
-      setViewerLastReadAt('');
-      void loadThreadBootstrap(activeConversationId, {
-        reason: isFromNotification ? 'effect:activeConversation:fromNotification' : 'effect:activeConversation',
-        force: isFromNotification,
-      });
+    const applyActiveConversationThreadLoad = () => {
+      if (cachedThreadEntry?.data) {
+        applyLatestThreadPayload(activeConversationId, cachedThreadEntry.data);
+        resolvePendingInitialAnchorFromPayload(activeConversationId, cachedThreadEntry.data);
+        setMessagesLoading(false);
+        void loadThreadBootstrap(activeConversationId, {
+          silent: true,
+          reason: 'effect:activeConversation:revalidate',
+          force: true,
+        });
+      } else {
+        hydratedThreadConversationIdRef.current = '';
+        setMessages([]);
+        setMessagesHasMore(false);
+        setMessagesHasNewer(false);
+        setViewerLastReadMessageId('');
+        setViewerLastReadAt('');
+        void loadThreadBootstrap(activeConversationId, {
+          reason: isFromNotification ? 'effect:activeConversation:fromNotification' : 'effect:activeConversation',
+          force: isFromNotification,
+        });
+      }
+      setReplyMessage(null);
+      setEditingMessage(null);
+      resetMessageSearch();
+    };
+
+    if (isMobile && !mobileMotionDisabled) {
+      const timeoutId = window.setTimeout(
+        applyActiveConversationThreadLoad,
+        CHAT_MOBILE_SCREEN_TRANSITION_MS,
+      );
+      return () => window.clearTimeout(timeoutId);
     }
-    setReplyMessage(null);
-    resetMessageSearch();
-  }, [activeConversationId, applyLatestThreadPayload, clearInitialViewportGuard, loadThreadBootstrap, requestedConversationId, resetMessageSearch, resolvePendingInitialAnchorFromPayload, userCacheId]);
+    applyActiveConversationThreadLoad();
+    return undefined;
+  }, [activeConversationId, applyLatestThreadPayload, clearInitialViewportGuard, clearMobileKeyboardSettleTimeouts, isMobile, loadThreadBootstrap, mobileMotionDisabled, requestedConversationId, resetMessageSearch, resolvePendingInitialAnchorFromPayload, userCacheId]);
 
   useEffect(() => {
     suppressDraftSyncRef.current = true;
     setReplyMessage(null);
+    setEditingMessage(null);
     if (!draftStorageKey) {
       setMessageText('');
       const timeoutId = window.setTimeout(() => {
@@ -4245,8 +4891,9 @@ export default function Chat() {
         return;
       }
       if (requestedConversationId) {
-        requestedConversationHandledRef.current = requestedConversationId;
         if (requestedExists) {
+          requestedConversationHandledRef.current = requestedConversationId;
+          requestedConversationRetryRef.current = '';
           invalidConversationRef.current = '';
           applyingRequestedConversationRef.current = requestedConversationId;
           setActiveConversationId(requestedConversationId);
@@ -4259,6 +4906,12 @@ export default function Chat() {
           setConversationBootstrapComplete(true);
           return;
         }
+        if (requestedConversationRetryRef.current !== requestedConversationId) {
+          requestedConversationRetryRef.current = requestedConversationId;
+          void loadConversations({ silent: true, force: true }).catch(() => {});
+          return;
+        }
+        requestedConversationHandledRef.current = requestedConversationId;
         applyingRequestedConversationRef.current = '';
         if (invalidConversationRef.current !== requestedConversationId) {
           invalidConversationRef.current = requestedConversationId;
@@ -4293,8 +4946,9 @@ export default function Chat() {
     }
 
     if (requestedConversationId && requestedConversationId !== requestedConversationHandledRef.current) {
-      requestedConversationHandledRef.current = requestedConversationId;
       if (requestedExists) {
+        requestedConversationHandledRef.current = requestedConversationId;
+        requestedConversationRetryRef.current = '';
         invalidConversationRef.current = '';
         applyingRequestedConversationRef.current = requestedConversationId;
         setActiveConversationId(requestedConversationId);
@@ -4306,6 +4960,12 @@ export default function Chat() {
         }
         return;
       }
+      if (requestedConversationRetryRef.current !== requestedConversationId) {
+        requestedConversationRetryRef.current = requestedConversationId;
+        void loadConversations({ silent: true, force: true }).catch(() => {});
+        return;
+      }
+      requestedConversationHandledRef.current = requestedConversationId;
       applyingRequestedConversationRef.current = '';
       if (invalidConversationRef.current !== requestedConversationId) {
         invalidConversationRef.current = requestedConversationId;
@@ -4328,7 +4988,7 @@ export default function Chat() {
     cancelPendingInitialAnchor();
     setActiveConversationId('');
     if (isMobile) setMobileView('inbox');
-  }, [activeConversationId, cancelPendingInitialAnchor, clearStoredConversationState, composePrefillRequested, conversationBootstrapComplete, conversations, conversationsLoading, isMobile, navigate, notifyInfo, requestedConversationId, restoredConversationId, restoredMobileView, writeMobileHistoryState]);
+  }, [activeConversationId, cancelPendingInitialAnchor, clearStoredConversationState, composePrefillRequested, conversationBootstrapComplete, conversations, conversationsLoading, isMobile, loadConversations, navigate, notifyInfo, requestedConversationId, restoredConversationId, restoredMobileView, writeMobileHistoryState]);
 
   useEffect(() => {
     if (!conversationBootstrapComplete) return;
@@ -4429,6 +5089,7 @@ export default function Chat() {
     mergeMessageIntoThread,
     messagesLoadingRef,
     messagesRef,
+    onConversationRemoved: handleRemoteConversationRemoved,
     promoteConversationToTop,
     queueAutoScroll,
     setAiStatusByConversation,
@@ -4520,10 +5181,113 @@ export default function Chat() {
       return;
     }
     const scrollMode = autoScrollRef.current;
+    const scrollMeta = autoScrollMetaRef.current;
     const hasPendingInitialAnchor = pendingInitialAnchorRef.current?.conversationId === activeConversationIdRef.current;
     if (!scrollMode && !hasPendingInitialAnchor) return;
     const container = threadScrollRef.current;
     if (!container) return;
+
+    if (scrollMode) {
+      autoScrollRef.current = false;
+      autoScrollMetaRef.current = null;
+      if (scrollMeta?.userInitiated) {
+        cancelPendingInitialAnchor();
+      }
+      const autoScrollSource = String(scrollMeta?.source || '').trim();
+      const tracedScrollSource = autoScrollSource
+        ? `autoScroll:${scrollMode}:${autoScrollSource}`
+        : `autoScroll:${scrollMode}`;
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'Chat.jsx:autoScrollLayoutEffect',
+        message: 'autoScroll prioritized over pendingAnchor',
+        data: {
+          mode: scrollMode,
+          source: autoScrollSource || 'unknown',
+          userInitiated: Boolean(scrollMeta?.userInitiated),
+          hadPendingAnchor: hasPendingInitialAnchor,
+        },
+        hypothesisId: 'H5',
+      });
+      // #endregion
+      if (scrollMode === 'bottom_instant') {
+        const container = threadScrollRef.current;
+        const isSocketSource = autoScrollSource.startsWith('socket:');
+        const layoutKeyboardNow = isPhone && isChatLayoutKeyboardOpen(container);
+        const needsMobileKeyboardDefer = isPhone && (layoutKeyboardNow || isSocketSource);
+        const userInitiated = Boolean(scrollMeta?.userInitiated);
+        const conversationId = String(activeConversationIdRef.current || '').trim();
+
+        const runInstantScroll = (sourceSuffix = '') => {
+          scrollThreadToBottomInstant({
+            source: sourceSuffix ? `${tracedScrollSource}${sourceSuffix}` : tracedScrollSource,
+            userInitiated,
+            settleFrames: getChatBottomInstantSettleFrames({
+              userInitiated,
+              mobileKeyboardDeferred: needsMobileKeyboardDefer,
+            }),
+          });
+        };
+
+        if (needsMobileKeyboardDefer) {
+          // #region agent log
+          emitAgentDebugLog({
+            location: 'Chat.jsx:autoScrollLayoutEffect',
+            message: isSocketSource && !userInitiated
+              ? 'deferred socket/layout-keyboard autoScroll'
+              : 'mobile keyboard follow-up autoScroll scheduled',
+            data: {
+              source: autoScrollSource,
+              layoutKeyboardNow,
+              userInitiated,
+              clientHeight: Math.round(Number(container?.clientHeight || 0)),
+            },
+            hypothesisId: 'H-M9',
+          });
+          // #endregion
+          if (isSocketSource && !userInitiated) {
+            window.requestAnimationFrame(() => {
+              window.requestAnimationFrame(() => {
+                if (String(activeConversationIdRef.current || '').trim() !== conversationId) return;
+                runInstantScroll(':deferred-rAF');
+                scheduleMobileKeyboardBottomSettle({
+                  conversationId,
+                  source: tracedScrollSource,
+                  userInitiated,
+                });
+              });
+            });
+          } else {
+            runInstantScroll();
+            scheduleMobileKeyboardBottomSettle({
+              conversationId,
+              source: tracedScrollSource,
+              userInitiated,
+            });
+          }
+        } else {
+          runInstantScroll();
+        }
+        logChatDebug('autoScroll:bottom_instant', {
+          conversationId: activeConversationIdRef.current,
+          source: autoScrollSource || 'unknown',
+          userInitiated: Boolean(scrollMeta?.userInitiated),
+        });
+        return;
+      }
+      if (scrollMode === 'bottom') {
+        threadNearBottomRef.current = true;
+        showJumpToLatestRef.current = false;
+        setShowJumpToLatest(false);
+      }
+      logChatDebug('autoScroll:bottom', {
+        conversationId: activeConversationIdRef.current,
+        source: autoScrollSource || 'unknown',
+        userInitiated: Boolean(scrollMeta?.userInitiated),
+      });
+      if (scrollThreadBottomIntoView({ source: tracedScrollSource, behavior: 'smooth' })) return;
+      return;
+    }
 
     if (pendingInitialAnchorRef.current?.conversationId === activeConversationIdRef.current) {
       // Первичную позицию выставляем синхронно в layout-effect.
@@ -4563,53 +5327,19 @@ export default function Chat() {
         if (retryFrameId) window.cancelAnimationFrame(retryFrameId);
       };
     }
-
-    if (!scrollMode) return;
-    const scrollMeta = autoScrollMetaRef.current;
-    autoScrollRef.current = false;
-    autoScrollMetaRef.current = null;
-    const autoScrollSource = String(scrollMeta?.source || '').trim();
-    const tracedScrollSource = autoScrollSource
-      ? `autoScroll:${scrollMode}:${autoScrollSource}`
-      : `autoScroll:${scrollMode}`;
-
-    if (scrollMode === 'bottom_instant') {
-      scrollThreadToBottomInstant({
-        source: tracedScrollSource,
-        userInitiated: Boolean(scrollMeta?.userInitiated),
-        settleFrames: getChatBottomInstantSettleFrames({
-          userInitiated: Boolean(scrollMeta?.userInitiated),
-        }),
-      });
-      logChatDebug('autoScroll:bottom_instant', {
-        conversationId: activeConversationIdRef.current,
-        source: autoScrollSource || 'unknown',
-        userInitiated: Boolean(scrollMeta?.userInitiated),
-      });
-      return;
-    }
-
-    if (scrollMode === 'bottom') {
-      threadNearBottomRef.current = true;
-      showJumpToLatestRef.current = false;
-      setShowJumpToLatest(false);
-    }
-    logChatDebug('autoScroll:bottom', {
-      conversationId: activeConversationIdRef.current,
-      source: autoScrollSource || 'unknown',
-      userInitiated: Boolean(scrollMeta?.userInitiated),
-    });
-    if (scrollThreadBottomIntoView({ source: tracedScrollSource, behavior: 'smooth' })) return;
   }, [
     activeConversationId,
     applyPendingInitialAnchor,
+    cancelPendingInitialAnchor,
     messages,
     schedulePendingInitialAnchorSettle,
     schedulePendingInitialAnchorRetry,
     logChatDebug,
     scrollThreadBottomIntoView,
     scrollThreadToBottomInstant,
+    scheduleMobileKeyboardBottomSettle,
     setThreadScrollTop,
+    isPhone,
   ]);
 
   useEffect(() => {
@@ -4784,15 +5514,18 @@ export default function Chat() {
     cancelPendingInitialAnchor,
     createOptimisticTextMessage,
     draftWriteTimeoutRef,
+    editingMessage,
     flushDraftToStorage,
     focusComposer,
     latestMessageTextRef,
     logChatDebug,
+    mergeMessageIntoThread,
     messageText,
     notifyApiError,
     readSelectedDatabaseId,
     removeThreadMessage,
     replyMessage,
+    setEditingMessage,
     setMessageText,
     setOptimisticAiQueuedStatus,
     setReplyMessage,
@@ -5001,6 +5734,7 @@ export default function Chat() {
     closeMessageMenu,
     handleCopyMessage,
     handleCopyMessageLink,
+    handleEditFromMessageMenu,
     handleOpenAttachmentFromMessageMenu,
     handleOpenReadsFromMessageMenu,
     handleOpenTaskFromMessageMenu,
@@ -5027,6 +5761,8 @@ export default function Chat() {
     setComposerMenuAnchor,
     setMessageMenuAnchor,
     setMessageMenuMessage,
+    setEditingMessage,
+    setMessageText,
     setReplyMessage,
     setSelectedMessageIds,
     setThreadMenuAnchor,
@@ -5040,6 +5776,9 @@ export default function Chat() {
     if (typeof window !== 'undefined' && !window.confirm('Удалить сообщение?')) return;
     try {
       const updated = await chatAPI.deleteChatMessage(conversationId, messageId);
+      // #region agent log
+      fetch('http://127.0.0.1:7567/ingest/0dd98d48-9716-48e2-8a2d-050e49aa7cea',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'891634'},body:JSON.stringify({sessionId:'891634',location:'Chat.jsx:handleDeleteMessageFromMenu',message:'message deleted',data:{conversationId,messageId,isDeleted:Boolean(updated?.is_deleted)},timestamp:Date.now(),runId:'edit-delete',hypothesisId:'MSG-DELETE'})}).catch(()=>{});
+      // #endregion
       mergeMessageIntoThread(updated);
     } catch (error) {
       notifyApiError(error, 'Не удалось удалить сообщение.');
@@ -5105,18 +5844,50 @@ export default function Chat() {
     focusComposer();
   }, [focusComposer]);
 
+  const clearEditingMessage = useCallback(() => {
+    setEditingMessage(null);
+    setMessageText('');
+    focusComposer();
+  }, [focusComposer]);
+
   const loadOlderMessages = useCallback(async () => {
     const firstMessageId = String(messagesRef.current[0]?.id || '').trim();
     if (!activeConversationId || !firstMessageId || loadingOlder || !messagesHasMore) return;
     const cursorKey = `${activeConversationId}:${firstMessageId}`;
     if (loadOlderInFlightCursorRef.current === cursorKey) return;
     loadOlderInFlightCursorRef.current = cursorKey;
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'Chat.jsx:loadOlderMessages',
+      message: 'load older history requested',
+      hypothesisId: 'H-HISTORY-WIPE',
+      data: {
+        conversationId: activeConversationId,
+        firstMessageId,
+        currentCount: messagesRef.current.length,
+      },
+    });
+    // #endregion
     try {
-      await loadMessages(activeConversationId, {
+      const olderItems = await loadMessages(activeConversationId, {
         silent: true,
         beforeMessageId: firstMessageId,
         reason: 'loadOlderMessages',
       });
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'Chat.jsx:loadOlderMessages',
+        message: 'load older history completed',
+        hypothesisId: 'H-HISTORY-WIPE',
+        data: {
+          conversationId: activeConversationId,
+          firstMessageId,
+          loadedCount: Array.isArray(olderItems) ? olderItems.length : 0,
+          nextCount: messagesRef.current.length,
+          messagesHasMore: messagesHasMoreRef.current,
+        },
+      });
+      // #endregion
     } finally {
       if (loadOlderInFlightCursorRef.current === cursorKey) {
         loadOlderInFlightCursorRef.current = '';
@@ -5244,23 +6015,10 @@ export default function Chat() {
     setContextPanelOpen((current) => !current);
   }, [getCurrentBrowserConversationId, getMobileHistoryKey, isMobile, readMobileHistoryState, writeMobileHistoryState]);
 
-  const mobileScreenVariants = {
-    enter: (direction) => ({
-      x: mobileMotionDisabled ? 0 : (direction > 0 ? '100%' : '-16%'),
-      opacity: mobileMotionDisabled ? 1 : (direction > 0 ? 1 : 0.96),
-      scale: 1,
-    }),
-    center: {
-      x: 0,
-      opacity: 1,
-      scale: 1,
-    },
-    exit: (direction) => ({
-      x: mobileMotionDisabled ? 0 : (direction > 0 ? '-14%' : '100%'),
-      opacity: mobileMotionDisabled ? 1 : (direction > 0 ? 0.95 : 1),
-      scale: 1,
-    }),
-  };
+  const mobileScreenVariants = useMemo(
+    () => buildChatMobileScreenVariants({ motionDisabled: mobileMotionDisabled }),
+    [mobileMotionDisabled],
+  );
 
   const sidebarPane = (
     <ChatSidebar
@@ -5288,9 +6046,14 @@ export default function Chat() {
       conversations={filteredConversations}
       onOpenGroup={openGroupDialog}
       sidebarScrollRef={sidebarScrollRef}
-      conversationFilter={conversationFilter}
-      onConversationFilterChange={setConversationFilter}
-      conversationFilterCounts={conversationFilterCounts}
+      activeFolderKey={conversationFilter}
+      onActiveFolderChange={handleActiveFolderChange}
+      customFolders={customFolders}
+      folderUnreadCounts={conversationFilterCounts}
+      conversationIdsByFolder={conversationIdsByFolder}
+      onOpenFolderManager={handleOpenFolderManager}
+      onOpenArchive={handleOpenArchiveFolder}
+      onToggleConversationInFolder={handleToggleConversationInFolder}
       draftsByConversation={draftsByConversation}
       onUpdateConversationSettings={updateConversationSettings}
       aiBots={aiSidebarRows}
@@ -5373,6 +6136,7 @@ export default function Chat() {
       bottomRef={bottomRef}
       onBack={openMobileInboxView}
       onOpenInfo={handleOpenInfo}
+      onOpenTask={openTaskFromChat}
       onOpenSearch={openSearchDialog}
       onOpenMenu={handleOpenMenu}
       onOpenReads={openMessageReads}
@@ -5413,6 +6177,8 @@ export default function Chat() {
       onJumpToLatest={jumpToLatest}
       replyMessage={replyMessage}
       onClearReply={clearReplyMessage}
+      editingMessage={editingMessage}
+      onClearEditing={clearEditingMessage}
       aiTypingStatus={aiTypingStatus}
       aiStatus={activeConversation?.kind === 'ai' ? activeAiStatus : null}
       pinnedMessage={pinnedMessage}
@@ -5444,11 +6210,16 @@ export default function Chat() {
       onStartVoiceRecording={startVoiceRecording}
       onStopVoiceRecording={stopVoiceRecording}
       onCancelVoiceRecording={cancelVoiceRecording}
+      onBindPinnedScroll={bindPinnedScroll}
     />
   );
 
   return (
-    <MainLayout headerMode={isPhone ? 'hidden' : 'default'}>
+    <MainLayout
+      headerMode={isPhone ? 'hidden' : 'default'}
+      mobileBottomNavMode={resolveChatMobileBottomNavMode(isMobile, mobileBottomNavHidden)}
+      mobileBottomNavTransitionMs={CHAT_MOBILE_SCREEN_TRANSITION_MS}
+    >
       <PageShell
         sx={{
           bgcolor: isPhone ? ui.threadBg : ui.pageBg,
@@ -5527,7 +6298,18 @@ export default function Chat() {
               }}
             >
               {isMobile ? (
-                <Box sx={{ position: 'relative', minWidth: 0, minHeight: 0, width: '100%', height: '100%', overflow: 'hidden', display: 'flex', flex: 1 }}>
+                <Box sx={{
+                  position: 'relative',
+                  minWidth: 0,
+                  minHeight: 0,
+                  width: '100%',
+                  height: '100%',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  flex: 1,
+                  isolation: 'isolate',
+                }}
+                >
                   <AnimatePresence initial={false} custom={mobileTransitionDirection} mode="sync">
                     {resolvedMobileView === 'thread' ? (
                       <Box
@@ -5539,8 +6321,19 @@ export default function Chat() {
                         animate="center"
                         exit="exit"
                         transition={mobileScreenTransition}
+                        onAnimationComplete={handleMobileThreadScreenAnimationComplete}
                         data-testid="chat-mobile-thread-screen"
-                        sx={{ position: 'absolute', inset: 0, display: 'flex', width: '100%', height: '100%', minHeight: 0, zIndex: 2 }}
+                        sx={{
+                          position: 'absolute',
+                          inset: 0,
+                          display: 'flex',
+                          width: '100%',
+                          height: '100%',
+                          minHeight: 0,
+                          zIndex: 2,
+                          willChange: mobileMotionDisabled ? 'auto' : 'transform',
+                          backfaceVisibility: 'hidden',
+                        }}
                       >
                         {threadPane}
                       </Box>
@@ -5555,7 +6348,17 @@ export default function Chat() {
                         exit="exit"
                         transition={mobileScreenTransition}
                         data-testid="chat-mobile-inbox-screen"
-                        sx={{ position: 'absolute', inset: 0, display: 'flex', width: '100%', height: '100%', minHeight: 0, zIndex: 1 }}
+                        sx={{
+                          position: 'absolute',
+                          inset: 0,
+                          display: 'flex',
+                          width: '100%',
+                          height: '100%',
+                          minHeight: 0,
+                          zIndex: 1,
+                          willChange: mobileMotionDisabled ? 'auto' : 'transform',
+                          backfaceVisibility: 'hidden',
+                        }}
                       >
                         {sidebarPane}
                       </Box>
@@ -5663,6 +6466,7 @@ export default function Chat() {
                 onForwardMessageFromMenu={forwardHookMessageFromMenu}
                 onReportMessageFromMenu={handleReportMessageFromMenu}
                 onDeleteMessageFromMenu={handleDeleteMessageFromMenu}
+                onEditMessageFromMenu={handleEditFromMessageMenu}
                 onSelectMessageFromMenu={handleSelectMessageFromMenu}
                 onOpenReadsFromMessageMenu={handleOpenReadsFromMessageMenu}
                 onOpenAttachmentFromMessageMenu={handleOpenAttachmentFromMessageMenu}
@@ -5728,6 +6532,10 @@ export default function Chat() {
                 onOpenAttachmentPreview={openMediaViewer}
                 attachmentPreview={attachmentPreview}
                 onCloseAttachmentPreview={closeAttachmentPreview}
+                documentPreview={documentPreview}
+                onCloseDocumentPreview={closeDocumentPreview}
+                onDownloadDocumentPreview={handleDownloadDocumentPreview}
+                onDownloadDocumentPreviewPdf={handleDownloadDocumentPreviewPdf}
                 messageReadsOpen={messageReadsOpen}
                 onCloseMessageReads={() => setMessageReadsOpen(false)}
                 messageReadsMessage={messageReadsMessage}
@@ -5757,6 +6565,24 @@ export default function Chat() {
               />
             </Suspense>
           ) : null}
+
+          <ChatFolderDialogs
+            open={folderManagerOpen}
+            createMode={folderManagerCreateMode}
+            folders={customFolders}
+            conversations={conversations}
+            conversationIdsByFolder={conversationIdsByFolder}
+            saving={folderSaving || foldersLoading}
+            onClose={() => {
+              setFolderManagerOpen(false);
+              setFolderManagerCreateMode(false);
+            }}
+            onCreateFolder={handleCreateChatFolder}
+            onRenameFolder={handleRenameChatFolder}
+            onDeleteFolder={handleDeleteChatFolder}
+            onReorderFolder={handleReorderChatFolder}
+            onRemoveConversationFromFolder={handleRemoveConversationFromFolder}
+          />
         </Stack>
       </PageShell>
     </MainLayout>

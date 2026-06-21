@@ -17,6 +17,14 @@ def _read_env(name: str, default: str = "") -> str:
     return str(os.getenv(name, default) or default).strip()
 
 
+def _read_positive_float(name: str, default: float, minimum: float = 0.1) -> float:
+    raw = _read_env(name, str(default))
+    try:
+        return max(float(raw), minimum)
+    except (TypeError, ValueError):
+        return max(float(default), minimum)
+
+
 def _is_private_smtp_host(host: str) -> bool:
     normalized = str(host or "").strip().lower()
     return (
@@ -40,6 +48,7 @@ class SecurityEmailService:
         if not _read_env("SMTP_USE_AUTH", ""):
             self.use_auth = not _is_private_smtp_host(self.smtp_server)
         self.use_tls = _read_env("SMTP_USE_TLS", "0").lower() in {"1", "true", "yes", "on"} and self.use_auth
+        self.smtp_timeout = _read_positive_float("SECURITY_EMAIL_SMTP_TIMEOUT_SECONDS", 3.0, minimum=1.0)
 
     def send_new_login_alert(
         self,
@@ -75,7 +84,7 @@ class SecurityEmailService:
         msg["Subject"] = subject
         msg.attach(MIMEText(body, "plain", "utf-8"))
         try:
-            with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=15) as server:
+            with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=self.smtp_timeout) as server:
                 if self.use_tls:
                     server.ehlo()
                     server.starttls()
@@ -87,7 +96,7 @@ class SecurityEmailService:
         except smtplib.SMTPNotSupportedError as exc:
             logger.warning("Security email AUTH not supported, retrying without AUTH: %s", exc)
             try:
-                with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=15) as server:
+                with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=self.smtp_timeout) as server:
                     server.sendmail(self.email, [email], msg.as_string())
                 return True
             except Exception as retry_exc:

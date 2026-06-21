@@ -3354,6 +3354,7 @@ describe('chatAiActionsAPI contract', () => {
 describe('chatThreadMessagesAPI contract', () => {
   const threadMessageMethods = [
     'deleteChatMessage',
+    'editChatMessage',
     'getThreadBootstrap',
     'getMessages',
     'searchMessages',
@@ -3365,6 +3366,7 @@ describe('chatThreadMessagesAPI contract', () => {
     apiClientMock.get.mockReset();
     apiClientMock.get.mockResolvedValue({ data: { items: [] } });
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.patch = vi.fn().mockResolvedValue({ data: { id: 'msg-1', body: 'updated' } });
     apiClientMock.delete = vi.fn().mockResolvedValue({ data: { deleted: true } });
   });
 
@@ -3411,6 +3413,22 @@ describe('chatThreadMessagesAPI contract', () => {
     expect(apiClientMock.post).toHaveBeenCalledWith('/chat/conversations/conv%2F1%20A/read', {
       message_id: 'msg/2 B',
     });
+  });
+
+  it('edits messages with encoded ids and body payload', async () => {
+    const { chatThreadMessagesAPI } = await importChatThreadMessagesAPI();
+
+    await expect(chatThreadMessagesAPI.editChatMessage('conv/1 A', 'msg/2 B', 'Updated text', {
+      body_format: 'plain',
+    })).resolves.toEqual({ id: 'msg-1', body: 'updated' });
+
+    expect(apiClientMock.patch).toHaveBeenCalledWith(
+      '/chat/conversations/conv%2F1%20A/messages/msg%2F2%20B',
+      {
+        body: 'Updated text',
+        body_format: 'plain',
+      },
+    );
   });
 
   it('keeps client chat thread message methods compatible with the dedicated module and re-export', async () => {
@@ -5335,6 +5353,29 @@ describe('authUserAdminAPI contract', () => {
     expect(apiClientMock.put.mock.calls[0][1].items).toBe(delegateItems);
   });
 
+  it('loads task delegates in bulk with comma-separated numeric owner ids', async () => {
+    const bulkPayload = {
+      items: [
+        { owner_user_id: 1, task_delegate_links: [{ delegate_user_id: 12, role_type: 'assistant' }] },
+        { owner_user_id: 2, task_delegate_links: [] },
+      ],
+    };
+    apiClientMock.get.mockResolvedValueOnce({ data: bulkPayload });
+
+    const { authUserAdminAPI } = await importAuthUserAdminAPI();
+
+    await expect(authUserAdminAPI.getTaskDelegatesBulk([1, '2', 'bad', 0])).resolves.toBe(bulkPayload);
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/auth/task-delegates', {
+      params: { owner_ids: '1,2' },
+    });
+
+    apiClientMock.get.mockClear();
+
+    await expect(authUserAdminAPI.getTaskDelegatesBulk([])).resolves.toEqual({ items: [] });
+    expect(apiClientMock.get).not.toHaveBeenCalled();
+  });
+
   it('falls back to an empty delegate items array for non-array update payloads', async () => {
     const { authUserAdminAPI } = await importAuthUserAdminAPI();
 
@@ -5357,6 +5398,7 @@ describe('authUserAdminAPI contract', () => {
     expect(authAPI.updateUser).toBe(authUserAdminAPI.updateUser);
     expect(authAPI.deleteUser).toBe(authUserAdminAPI.deleteUser);
     expect(authAPI.getTaskDelegates).toBe(authUserAdminAPI.getTaskDelegates);
+    expect(authAPI.getTaskDelegatesBulk).toBe(authUserAdminAPI.getTaskDelegatesBulk);
     expect(authAPI.updateTaskDelegates).toBe(authUserAdminAPI.updateTaskDelegates);
     expect(authUserAdminAPI.syncAD).toBeUndefined();
     expect(authUserAdminAPI.adminResetTwoFactor).toBeUndefined();

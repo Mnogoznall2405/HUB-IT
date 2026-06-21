@@ -8,6 +8,17 @@ export const chatThreadMessagesAPI = {
     return response.data;
   },
 
+  editChatMessage: async (conversationId, messageId, body, options = {}) => {
+    const response = await apiClient.patch(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(messageId)}`,
+      {
+        body,
+        body_format: options?.body_format || 'plain',
+      },
+    );
+    return response.data;
+  },
+
   getThreadBootstrap: async (conversationId, params = {}, options = {}) => {
     const response = await apiClient.get(
       `/chat/conversations/${encodeURIComponent(conversationId)}/thread-bootstrap`,

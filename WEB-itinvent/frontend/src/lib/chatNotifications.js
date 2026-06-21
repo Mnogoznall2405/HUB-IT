@@ -1,4 +1,7 @@
 import { settingsAPI } from '../api/client';
+import { CHAT_WS_ENABLED } from './chatFeature';
+import { chatSocket } from './chatSocket';
+import { emitAgentDebugLog } from './debugClientLog';
 import { isNativeShellRuntime } from './platform';
 import { getBrowserNotificationPermission, isBrowserNotificationSupported, requestBrowserNotificationPermission } from './windowsNotifications';
 
@@ -10,6 +13,11 @@ export const CHAT_PUSH_LAST_HARD_RESUBSCRIBE_AT_KEY = 'itinvent_chat_push_last_h
 export const CHAT_PUSH_VAPID_PUBLIC_KEY_KEY = 'itinvent_chat_push_vapid_public_key';
 
 const MAX_SHOWN_IDS = 300;
+const MAX_CLAIMED_CHAT_MESSAGE_IDS = 200;
+const LOCAL_CHAT_NOTIFICATION_VISIBLE_MS = 6_000;
+const claimedChatMessageNotificationIds = new Set();
+const localChatNotificationQueue = [];
+let localChatNotificationDrainRunning = false;
 const PUSH_SYNC_MIN_INTERVAL_MS = 60_000;
 const PUSH_CONFIG_CACHE_TTL_MS = 5 * 60 * 1000;
 const PUSH_HARD_RESUBSCRIBE_INTERVAL_MS = 24 * 60 * 60 * 1000;
@@ -170,15 +178,17 @@ function persistShownIds(ids) {
 function hasShownMessageNotification(messageId) {
   const normalized = String(messageId || '').trim();
   if (!normalized) return false;
-  return readShownIds().includes(`chat:${normalized}`);
+  const ids = readShownIds();
+  return ids.includes(buildChatNotificationTag(normalized))
+    || ids.includes(`chat:${normalized}`);
 }
 
 function markMessageNotificationShown(messageId) {
   const normalized = String(messageId || '').trim();
   if (!normalized) return false;
-  const token = `chat:${normalized}`;
+  const token = buildChatNotificationTag(normalized);
   const ids = readShownIds();
-  if (ids.includes(token)) return false;
+  if (ids.includes(token) || ids.includes(`chat:${normalized}`)) return false;
   ids.push(token);
   persistShownIds(ids);
   return true;
@@ -325,6 +335,23 @@ export function applyChatPushDiagnostic(message = {}) {
   };
   persistPushDiagnostics();
   emitChange();
+  if (
+    stage === 'sw_push_received'
+    || stage === 'sw_show_notification_success'
+    || stage === 'sw_push_duplicate_suppressed'
+  ) {
+    emitAgentDebugLog({
+      location: 'chatNotifications.js:applyChatPushDiagnostic',
+      message: stage,
+      hypothesisId: 'H-EXT-DUP',
+      data: {
+        stage,
+        swVersion,
+        deliveryMode,
+        ...detail,
+      },
+    });
+  }
   return getSnapshot();
 }
 
@@ -419,6 +446,38 @@ export async function requestChatNotificationPermission() {
   return result;
 }
 
+export function claimChatMessageNotification(messageId) {
+  const normalizedMessageId = String(messageId || '').trim();
+  if (!normalizedMessageId) return false;
+  if (claimedChatMessageNotificationIds.has(normalizedMessageId)) return false;
+  claimedChatMessageNotificationIds.add(normalizedMessageId);
+  if (claimedChatMessageNotificationIds.size > MAX_CLAIMED_CHAT_MESSAGE_IDS) {
+    const [firstClaimedId] = claimedChatMessageNotificationIds;
+    if (firstClaimedId) claimedChatMessageNotificationIds.delete(firstClaimedId);
+  }
+  return true;
+}
+
+export function buildChatNotificationTag(messageId) {
+  const normalizedMessageId = String(messageId || '').trim();
+  if (!normalizedMessageId) return 'chat:unknown';
+  return `chat:msg:${normalizedMessageId}`;
+}
+
+export function shouldDeliverExternalChatViaPushOnly(state = getSnapshot()) {
+  return Boolean(state?.backgroundCapable || state?.pushSubscribed);
+}
+
+export function shouldSkipChatPushForegroundNotification() {
+  if (!CHAT_WS_ENABLED) return false;
+  const liveStatus = typeof chatSocket?.getConnectionState === 'function'
+    ? chatSocket.getConnectionState()
+    : '';
+  const snapshotStatus = getChatNotificationState().socketStatus;
+  const status = liveStatus !== 'disconnected' ? liveStatus : snapshotStatus;
+  return status === 'connected';
+}
+
 export function buildChatNotificationRoute({ conversationId, messageId } = {}) {
   const normalizedConversationId = String(conversationId || '').trim();
   const normalizedMessageId = String(messageId || '').trim();
@@ -431,6 +490,40 @@ export function buildChatNotificationRoute({ conversationId, messageId } = {}) {
   return `/chat?${query.toString()}`;
 }
 
+function drainLocalChatNotificationQueue() {
+  if (localChatNotificationDrainRunning) return;
+  localChatNotificationDrainRunning = true;
+
+  const runNext = () => {
+    const nextJob = localChatNotificationQueue.shift();
+    if (!nextJob) {
+      localChatNotificationDrainRunning = false;
+      return;
+    }
+    const notification = nextJob();
+    if (!notification) {
+      runNext();
+      return;
+    }
+    window.setTimeout(() => {
+      try {
+        notification.close?.();
+      } catch {
+        // Ignore close failures.
+      }
+      runNext();
+    }, LOCAL_CHAT_NOTIFICATION_VISIBLE_MS);
+  };
+
+  runNext();
+}
+
+function enqueueLocalChatNotification(factory) {
+  if (typeof factory !== 'function') return;
+  localChatNotificationQueue.push(factory);
+  drainLocalChatNotificationQueue();
+}
+
 export function createChatSystemNotification({ messageId, title, body, conversationId, onNavigate } = {}) {
   const normalizedMessageId = String(messageId || '').trim();
   const normalizedConversationId = String(conversationId || '').trim();
@@ -439,36 +532,39 @@ export function createChatSystemNotification({ messageId, title, body, conversat
   if (!state.enabled || state.permission !== 'granted' || !state.supported) return null;
   if (hasShownMessageNotification(normalizedMessageId)) return null;
 
-  try {
-    const notification = new window.Notification(String(title || 'Новое сообщение').trim() || 'Новое сообщение', {
-      body: String(body || 'Откройте чат, чтобы посмотреть сообщение.').trim() || 'Откройте чат, чтобы посмотреть сообщение.',
-      tag: `chat:${normalizedMessageId}`,
-      renotify: false,
-      icon: '/pwa-192.png',
-    });
-    markMessageNotificationShown(normalizedMessageId);
-    notification.onclick = () => {
-      try {
-        notification.close?.();
-      } catch {
-        // Ignore close failures.
-      }
-      try {
-        window.focus?.();
-      } catch {
-        // Ignore focus failures.
-      }
-      if (typeof onNavigate === 'function') {
-        onNavigate(buildChatNotificationRoute({
-          conversationId: normalizedConversationId,
-          messageId: normalizedMessageId,
-        }));
-      }
-    };
-    return notification;
-  } catch {
-    return null;
-  }
+  enqueueLocalChatNotification(() => {
+    try {
+      const notification = new window.Notification(String(title || 'Новое сообщение').trim() || 'Новое сообщение', {
+        body: String(body || 'Откройте чат, чтобы посмотреть сообщение.').trim() || 'Откройте чат, чтобы посмотреть сообщение.',
+        tag: buildChatNotificationTag(normalizedMessageId),
+        renotify: false,
+        icon: '/pwa-192.png',
+      });
+      markMessageNotificationShown(normalizedMessageId);
+      notification.onclick = () => {
+        try {
+          notification.close?.();
+        } catch {
+          // Ignore close failures.
+        }
+        try {
+          window.focus?.();
+        } catch {
+          // Ignore focus failures.
+        }
+        if (typeof onNavigate === 'function') {
+          onNavigate(buildChatNotificationRoute({
+            conversationId: normalizedConversationId,
+            messageId: normalizedMessageId,
+          }));
+        }
+      };
+      return notification;
+    } catch {
+      return null;
+    }
+  });
+  return { queued: true, messageId: normalizedMessageId };
 }
 
 export async function disableChatPushSubscription({ removeServer = true } = {}) {

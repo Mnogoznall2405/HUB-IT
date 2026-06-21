@@ -7,8 +7,11 @@ const hoisted = vi.hoisted(() => ({
   adUsersAPI: {
     getImportCandidates: vi.fn(),
     syncToApp: vi.fn(),
+    getSyncStatus: vi.fn(),
+    syncAllToApp: vi.fn(),
   },
   hasPermission: vi.fn(),
+  authUser: { role: 'operator' },
 }));
 
 vi.mock('../api/client', () => ({
@@ -18,6 +21,7 @@ vi.mock('../api/client', () => ({
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
     hasPermission: hoisted.hasPermission,
+    user: hoisted.authUser,
   }),
 }));
 
@@ -92,8 +96,10 @@ describe('AdUsers', () => {
     vi.clearAllMocks();
     installMatchMedia();
     window.open = vi.fn();
+    hoisted.authUser = { role: 'operator' };
     hoisted.hasPermission.mockImplementation((permission) => permission === 'ad_users.manage');
     hoisted.adUsersAPI.getImportCandidates.mockResolvedValue(candidates);
+    hoisted.adUsersAPI.getSyncStatus.mockResolvedValue({ status: 'never', last_sync_at: null, result: null });
     hoisted.adUsersAPI.syncToApp.mockResolvedValue({
       created: 1,
       updated: 0,

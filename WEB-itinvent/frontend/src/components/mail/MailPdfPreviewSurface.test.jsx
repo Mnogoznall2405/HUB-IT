@@ -11,7 +11,7 @@ vi.mock('./MailPdfPageTile', () => ({
   default: forwardRef(({ pageNumber, onVisibilityChange }, ref) => {
     useEffect(() => {
       onVisibilityChange?.(pageNumber, 1);
-    }, [pageNumber]);
+    }, [onVisibilityChange, pageNumber]);
     return <div ref={ref} data-testid={`mail-pdf-page-tile-${pageNumber}`} />;
   }),
 }));
@@ -26,12 +26,8 @@ vi.mock('../../lib/useDocumentPinchPan', () => ({
   default: () => ({
     viewportRef: { current: null },
     contentRef: { current: null },
-    isZoomed: false,
     resetTransform: resetTransformMock,
-    zoomIn: vi.fn(),
-    zoomOut: vi.fn(),
-    viewportProps: {},
-    viewportSx: { overflow: 'auto' },
+    viewportSx: { overflowY: 'auto', overflowX: 'hidden' },
     contentSx: {},
   }),
 }));
@@ -94,6 +90,8 @@ describe('MailPdfPreviewSurface', () => {
     expect(screen.getByTestId('mail-pdf-page-tile-3')).toBeTruthy();
     expect(screen.getByTestId('mail-pdf-page-tile-4')).toBeTruthy();
     expect(screen.getByText('1 / 4')).toBeTruthy();
+    expect(screen.getByTestId('mail-pdf-preview-viewport')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Увеличить/i })).toBeNull();
   });
 
   it('scrolls to the selected excel sheet page when tab is clicked', async () => {

@@ -2,9 +2,9 @@ import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import AddressBook from './AddressBook';
-import { addressBookAPI } from '../api/client';
+import { addressBookAPI } from '../api/addressBook';
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/addressBook', () => ({
   addressBookAPI: {
     search: vi.fn(),
     getStatus: vi.fn(),

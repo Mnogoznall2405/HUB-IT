@@ -2,6 +2,15 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useState } 
 import { ThemeProvider, CssBaseline } from '@mui/material';
 import { alpha, createTheme } from '@mui/material/styles';
 import { settingsAPI } from '../api/client';
+import {
+  DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
+  normalizeMobileBottomNavItems,
+} from '../lib/mobileNavigationPreferences';
+
+export {
+  DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
+  normalizeMobileBottomNavItems,
+} from '../lib/mobileNavigationPreferences';
 
 const PreferencesContext = createContext(null);
 const CACHE_KEY = 'web_preferences_cache';
@@ -14,6 +23,7 @@ const DEFAULT_PREFERENCES = {
   font_family: 'Aptos',
   font_scale: 1.0,
   dashboard_mobile_sections: DEFAULT_DASHBOARD_MOBILE_SECTIONS,
+  mobile_bottom_nav_items: DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
 };
 
 const FONT_MAP = {
@@ -46,6 +56,7 @@ function readCachedPreferences() {
       ...DEFAULT_PREFERENCES,
       ...parsed,
       dashboard_mobile_sections: normalizeDashboardMobileSections(parsed?.dashboard_mobile_sections),
+      mobile_bottom_nav_items: normalizeMobileBottomNavItems(parsed?.mobile_bottom_nav_items),
     };
   } catch {
     return DEFAULT_PREFERENCES;
@@ -78,6 +89,7 @@ export function PreferencesProvider({ children }) {
         ...DEFAULT_PREFERENCES,
         ...data,
         dashboard_mobile_sections: normalizeDashboardMobileSections(data?.dashboard_mobile_sections),
+        mobile_bottom_nav_items: normalizeMobileBottomNavItems(data?.mobile_bottom_nav_items),
       };
       setPreferences(next);
       cachePreferences(next);
@@ -129,6 +141,9 @@ export function PreferencesProvider({ children }) {
       ...(patch?.dashboard_mobile_sections !== undefined
         ? { dashboard_mobile_sections: normalizeDashboardMobileSections(patch.dashboard_mobile_sections) }
         : {}),
+      ...(patch?.mobile_bottom_nav_items !== undefined
+        ? { mobile_bottom_nav_items: normalizeMobileBottomNavItems(patch.mobile_bottom_nav_items, []) }
+        : {}),
     };
     const optimistic = { ...preferences, ...normalizedPatch };
     setPreferences(optimistic);
@@ -144,6 +159,7 @@ export function PreferencesProvider({ children }) {
         ...DEFAULT_PREFERENCES,
         ...saved,
         dashboard_mobile_sections: normalizeDashboardMobileSections(saved?.dashboard_mobile_sections),
+        mobile_bottom_nav_items: normalizeMobileBottomNavItems(saved?.mobile_bottom_nav_items),
       };
       setPreferences(next);
       cachePreferences(next);

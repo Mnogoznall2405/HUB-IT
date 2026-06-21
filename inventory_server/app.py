@@ -92,6 +92,14 @@ app = FastAPI(title="Inventory Ingest Server", lifespan=lifespan)
 
 @app.get("/health")
 def health() -> dict:
+    return {
+        "status": "ok" if worker.is_alive() else "degraded",
+        "worker_alive": worker.is_alive(),
+    }
+
+
+@app.get("/health/ready")
+def health_ready() -> dict:
     stats = store.queue_stats()
     return {
         "status": "ok" if worker.is_alive() else "degraded",

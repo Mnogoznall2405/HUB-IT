@@ -6,6 +6,7 @@ import {
   buildAiLiveDataNotice,
   buildAiSidebarRows,
   buildAiStatusDisplayModel,
+  buildChatAiBotsCacheKeyParts,
   getChatBottomInstantSettleFrames,
   buildConversationFilterCounts,
   canUseAiChatPermission,
@@ -16,10 +17,14 @@ import {
   normalizeForwardMessageQueue,
   resolveActiveAiBotRecord,
   resolveActiveThreadTransportState,
+  resolveChatMobileBottomNavMode,
+  buildChatMobileScreenVariants,
+  readChatMobileHistoryState,
   shouldDeferChatUrlSyncForRequestedConversation,
   shouldSkipActiveThreadRevalidate,
   shouldPollActiveThreadIncrementally,
   shouldPollActiveAiThread,
+  shouldNotifyLoadMessagesError,
   shouldRequestConversationAiStatus,
 } from './Chat';
 
@@ -27,6 +32,8 @@ describe('Chat page AI helpers', () => {
   it('settles user-initiated instant bottom scroll for outgoing messages', () => {
     expect(getChatBottomInstantSettleFrames({ userInitiated: true })).toBe(2);
     expect(getChatBottomInstantSettleFrames({ userInitiated: false })).toBe(1);
+    expect(getChatBottomInstantSettleFrames({ userInitiated: true, mobileKeyboardDeferred: true })).toBe(4);
+    expect(getChatBottomInstantSettleFrames({ userInitiated: false, mobileKeyboardDeferred: true })).toBe(3);
   });
 
   it('builds lightweight active-thread poll requests from the latest loaded message', () => {
@@ -41,6 +48,11 @@ describe('Chat page AI helpers', () => {
       reason: 'poll:active-thread:bootstrap',
       force: true,
     });
+  });
+
+  it('builds stable AI bots cache keys per user', () => {
+    expect(buildChatAiBotsCacheKeyParts(7)).toEqual(['chat', 'ai-bots', '7']);
+    expect(buildChatAiBotsCacheKeyParts()).toEqual(['chat', 'ai-bots', 'guest']);
   });
 
   it('defers desktop URL sync while a notification deep-link conversation is being applied', () => {
@@ -117,6 +129,34 @@ describe('Chat page AI helpers', () => {
       force: true,
       reason: 'poll:active-thread:newer:cursor-invalid',
     });
+  });
+
+  it('suppresses toast for silent background thread polls on transient 502 errors', () => {
+    const transient502 = { response: { status: 502 } };
+    expect(shouldNotifyLoadMessagesError({
+      silent: true,
+      reason: 'poll:active-thread:newer',
+      error: transient502,
+      loadingNewerRequest: true,
+    })).toBe(false);
+    expect(shouldNotifyLoadMessagesError({
+      silent: true,
+      reason: 'loadOlderMessages',
+      error: transient502,
+      loadingOlderRequest: true,
+    })).toBe(false);
+    expect(shouldNotifyLoadMessagesError({
+      silent: false,
+      reason: 'poll:active-thread:newer',
+      error: transient502,
+      loadingNewerRequest: true,
+    })).toBe(true);
+    expect(shouldNotifyLoadMessagesError({
+      silent: true,
+      reason: 'loadOlderMessages',
+      error: { response: { status: 500 } },
+      loadingOlderRequest: true,
+    })).toBe(true);
   });
 
   it('grants AI chat access only when the permission function allows chat.ai.use', () => {
@@ -313,26 +353,35 @@ describe('Chat page AI helpers', () => {
     })).toBe(false);
   });
 
-  it('excludes AI conversations from the regular sidebar filters and counters', () => {
+  it('keeps AI in a separate section but includes notes in personal folder counters', () => {
     const conversations = [
       { id: 'direct-1', kind: 'direct', is_archived: false, unread_count: 2, is_pinned: false },
       { id: 'group-1', kind: 'group', is_archived: false, unread_count: 0, is_pinned: true },
+      { id: 'notes-1', kind: 'notes', title: 'Заметки', is_archived: false, unread_count: 0, is_pinned: true },
+      { id: 'task-1', kind: 'task', task_id: 'hub-task-1', is_archived: false, unread_count: 1, is_pinned: false },
       { id: 'ai-1', kind: 'ai', is_archived: false, unread_count: 9, is_pinned: true },
       { id: 'archived-1', kind: 'group', is_archived: true, unread_count: 0, is_pinned: false },
     ];
+    const customFolderMembership = { 'folder-work': ['group-1', 'notes-1'] };
 
     expect(isRegularSidebarConversation(conversations[0])).toBe(true);
-    expect(isRegularSidebarConversation(conversations[2])).toBe(false);
+    expect(isRegularSidebarConversation(conversations[2])).toBe(true);
+    expect(isRegularSidebarConversation(conversations[3])).toBe(true);
+    expect(isRegularSidebarConversation(conversations[4])).toBe(false);
     expect(buildConversationFilterCounts(conversations)).toEqual({
-      all: 2,
-      unread: 1,
-      direct: 1,
-      group: 1,
-      pinned: 1,
-      archived: 1,
+      all: 3,
+      personal: 11,
+      tasks: 1,
+      archived: 0,
     });
-    expect(filterSidebarConversations(conversations, 'all').map((item) => item.id)).toEqual(['direct-1', 'group-1']);
-    expect(filterSidebarConversations(conversations, 'group').map((item) => item.id)).toEqual(['group-1']);
+    expect(filterSidebarConversations(conversations, 'all').map((item) => item.id)).toEqual(['direct-1', 'group-1', 'notes-1', 'task-1']);
+    expect(filterSidebarConversations(conversations, 'personal').map((item) => item.id)).toEqual(['direct-1', 'notes-1']);
+    expect(filterSidebarConversations(conversations, 'direct').map((item) => item.id)).toEqual(['direct-1', 'notes-1']);
+    expect(filterSidebarConversations(conversations, 'tasks').map((item) => item.id)).toEqual(['task-1']);
+    expect(filterSidebarConversations(conversations, 'archived').map((item) => item.id)).toEqual(['archived-1']);
+    expect(
+      filterSidebarConversations(conversations, 'folder-work', customFolderMembership).map((item) => item.id),
+    ).toEqual(['group-1', 'notes-1']);
   });
 
   it('normalizes single and selected forwards into the same ordered message queue', () => {
@@ -443,5 +492,50 @@ describe('Chat page AI helpers', () => {
       aiStatus: { bot_id: 'bot-1' },
       aiBots,
     })).toBeNull();
+  });
+});
+
+describe('Chat mobile bottom navigation', () => {
+  it('keeps global bottom nav visible on mobile inbox', () => {
+    expect(resolveChatMobileBottomNavMode(true, false)).toBe('auto');
+  });
+
+  it('hides global bottom nav on mobile thread', () => {
+    expect(resolveChatMobileBottomNavMode(true, true)).toBe('hidden');
+  });
+
+  it('keeps global bottom nav visible on desktop thread', () => {
+    expect(resolveChatMobileBottomNavMode(false, true)).toBe('auto');
+  });
+
+  it('uses synchronized push/pop parallax for mobile chat screens', () => {
+    const variants = buildChatMobileScreenVariants();
+    expect(variants.enter(1)).toEqual({ x: '100%', opacity: 1 });
+    expect(variants.exit(1)).toEqual({ x: '-12%', opacity: 1 });
+    expect(variants.enter(-1)).toEqual({ x: '-12%', opacity: 1 });
+    expect(variants.exit(-1)).toEqual({ x: '100%', opacity: 1 });
+  });
+
+  it('does not open the main drawer from mobile history popstate payload', () => {
+    expect(readChatMobileHistoryState({
+      __hubChatMobileShell: true,
+      __hubChatMobileShellView: 'inbox',
+      __hubChatMobileShellDrawer: true,
+    })).toEqual({
+      view: 'inbox',
+      drawerOpen: false,
+      infoOpen: false,
+    });
+
+    expect(readChatMobileHistoryState({
+      __hubChatMobileShell: true,
+      __hubChatMobileShellView: 'thread',
+      __hubChatMobileShellDrawer: true,
+      __hubChatMobileShellInfo: true,
+    })).toEqual({
+      view: 'thread',
+      drawerOpen: false,
+      infoOpen: true,
+    });
   });
 });

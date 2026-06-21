@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 import logging
+import threading
 import uuid
 from typing import Any, Optional
 
@@ -23,6 +25,8 @@ from backend.utils.request_network import is_twofa_required_for_zone, resolve_tw
 from backend.utils.security import create_access_token, create_refresh_token
 
 logger = logging.getLogger(__name__)
+_SECURITY_EMAIL_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="security-email")
+_SECURITY_EMAIL_QUEUE_SLOTS = threading.BoundedSemaphore(8)
 
 
 class AuthSecurityError(RuntimeError):
@@ -39,6 +43,32 @@ def _utc_iso() -> str:
 
 def _ttl_seconds(delta: timedelta) -> int:
     return max(1, int(delta.total_seconds()))
+
+
+def _dispatch_new_login_alert(**payload: Any) -> None:
+    if not config.security.new_login_email_enabled:
+        return
+    if not str(payload.get("recipient_email") or "").strip():
+        return
+    if not _SECURITY_EMAIL_QUEUE_SLOTS.acquire(blocking=False):
+        logger.warning("Security email dispatch skipped: queue is full")
+        return
+
+    send_new_login_alert = security_email_service.send_new_login_alert
+
+    def _send() -> None:
+        try:
+            send_new_login_alert(**payload)
+        except Exception:
+            logger.warning("Security email dispatch failed for %s", payload.get("username"), exc_info=True)
+        finally:
+            _SECURITY_EMAIL_QUEUE_SLOTS.release()
+
+    try:
+        _SECURITY_EMAIL_EXECUTOR.submit(_send)
+    except Exception:
+        _SECURITY_EMAIL_QUEUE_SLOTS.release()
+        logger.warning("Security email dispatch submit failed for %s", payload.get("username"), exc_info=True)
 
 
 class AuthSecurityService:
@@ -145,6 +175,35 @@ class AuthSecurityService:
         if not isinstance(payload, dict):
             raise AuthSecurityError("Сессия подтверждения истекла. Войдите снова")
         return payload
+
+    def validate_safari_password_beacon(
+        self,
+        *,
+        challenge_id: str,
+        username: str,
+        password: str,
+    ) -> None:
+        normalized_challenge_id = str(challenge_id or "").strip()
+        if not normalized_challenge_id:
+            raise AuthSecurityError("Invalid credentials")
+        challenge = self.get_login_challenge(normalized_challenge_id)
+        expected_username = str(
+            challenge.get("request_username") or challenge.get("username") or "",
+        ).strip()
+        provided_username = str(username or "").strip()
+        if not expected_username or not provided_username:
+            raise AuthSecurityError("Invalid credentials")
+        if provided_username.casefold() != expected_username.casefold():
+            raise AuthSecurityError("Invalid credentials")
+        password_enc = str(challenge.get("password_enc") or "").strip()
+        if not password_enc:
+            raise AuthSecurityError("Invalid credentials")
+        try:
+            expected_password = decrypt_secret(password_enc)
+        except Exception as exc:
+            raise AuthSecurityError("Invalid credentials") from exc
+        if str(password or "") != expected_password:
+            raise AuthSecurityError("Invalid credentials")
 
     def consume_login_challenge(self, challenge_id: str) -> dict[str, Any]:
         payload = auth_runtime_store_service.consume_login_challenge(challenge_id)
@@ -253,18 +312,25 @@ class AuthSecurityService:
         user = user_service.get_by_id(int(challenge.get("user_id") or 0))
         if not user:
             raise AuthSecurityError("Пользователь не найден")
+        # Apple Passwords matches 2FA setup to the saved login by domain + username.
+        # Use the username typed at login, not email, so apple-otpauth finds the entry.
+        account_name = str(
+            challenge.get("request_username")
+            or user.get("username")
+            or user.get("email")
+            or "",
+        ).strip()
         provisioning = twofa_service.build_provisioning(
-            username=str(user.get("email") or user.get("username") or "").strip(),
+            username=account_name,
             issuer=config.security.totp_issuer,
         )
         challenge["pending_totp_secret_enc"] = twofa_service.encrypt_secret(provisioning.secret)
         challenge["pending_totp_otpauth_uri"] = provisioning.otpauth_uri
         self._save_login_challenge(challenge_id, challenge)
-        account_name = str(user.get("email") or user.get("username") or "").strip()
         return {
             "login_challenge_id": challenge_id,
             "otpauth_uri": provisioning.otpauth_uri,
-            "issuer": str(config.security.totp_issuer or "HUB-IT").strip() or "HUB-IT",
+            "issuer": twofa_service.resolve_totp_issuer_domain(),
             "account_name": account_name,
             "manual_entry_key": provisioning.secret,
             "qr_svg": provisioning.qr_svg,
@@ -496,17 +562,14 @@ class AuthSecurityService:
         final_device_id = str(device_id or f"session:{session_id}")
         tokens = self.issue_tokens(user=user, session_id=session_id, device_id=final_device_id)
         self.delete_login_challenge(str(challenge.get("challenge_id") or ""))
-        try:
-            security_email_service.send_new_login_alert(
-                recipient_email=user.get("email"),
-                username=str(user.get("username") or ""),
-                ip_address=str(challenge.get("ip_address") or ""),
-                device_label=_build_device_label(str(challenge.get("user_agent") or "")),
-                auth_method=auth_method,
-                login_at=_now_utc(),
-            )
-        except Exception:
-            logger.warning("Security email dispatch failed for %s", user.get("username"), exc_info=True)
+        _dispatch_new_login_alert(
+            recipient_email=user.get("email"),
+            username=str(user.get("username") or ""),
+            ip_address=str(challenge.get("ip_address") or ""),
+            device_label=_build_device_label(str(challenge.get("user_agent") or "")),
+            auth_method=auth_method,
+            login_at=_now_utc(),
+        )
         return {
             "status": "authenticated",
             "user": self._build_public_user(

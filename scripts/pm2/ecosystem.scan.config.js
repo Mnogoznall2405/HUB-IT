@@ -39,9 +39,9 @@ module.exports = {
       restart_delay: 5000,
       env: {
         PYTHONUNBUFFERED: '1',
-        SCAN_WORKER_INTERVAL_SEC: '1',
-        SCAN_JOB_MAX_WORKERS: '12',
-        SCAN_OCR_MAX_PROCESSES: '12',
+        SCAN_WORKER_INTERVAL_SEC: '3',
+        SCAN_JOB_MAX_WORKERS: '4',
+        SCAN_OCR_MAX_PROCESSES: '3',
         SCAN_JOB_PROCESSING_TIMEOUT_SEC: '1800',
         SCAN_JOB_MAX_ATTEMPTS: '3',
       },

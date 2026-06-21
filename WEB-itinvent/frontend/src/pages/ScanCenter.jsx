@@ -38,6 +38,7 @@ import {
   Tabs,
   TextField,
   Typography,
+  useMediaQuery,
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
 import {
@@ -49,6 +50,7 @@ import {
 } from '@mui/icons-material';
 import { FixedSizeList as VirtualList } from 'react-window';
 import MainLayout from '../components/layout/MainLayout';
+import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
 import { scanAPI } from '../api/client';
 import { useAuth } from '../contexts/AuthContext';
@@ -443,6 +445,7 @@ function renderTaskSummary(task) {
 
 function ScanCenter() {
   const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const incidentWorkAreaHeight = 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 360px)';
   const { hasPermission } = useAuth();
@@ -1533,7 +1536,8 @@ function ScanCenter() {
 
   return (
     <MainLayout showDatabaseSelector>
-      <PageShell sx={{ width: '100%', pb: 2, minHeight: 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 32px)' }}>
+      <PageShell sx={{ width: '100%', pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : 2, minHeight: isMobile ? undefined : 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 32px)' }}>
+        {isMobile ? <MobileShellPageHeader title="Scan Center" showDatabaseSelector /> : null}
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 2, flexWrap: 'wrap' }}>
           <Box>
             <Typography variant="h5" sx={{ fontWeight: 700 }}>Центр сканирования</Typography>

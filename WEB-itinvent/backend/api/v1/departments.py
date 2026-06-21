@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Body, Depends, HTTPException
+from fastapi.concurrency import run_in_threadpool
 
 from backend.api.deps import require_permission
 from backend.models.auth import User
@@ -18,17 +19,19 @@ async def list_departments(
     include_inactive: bool = False,
     current_user: User = Depends(require_permission(PERM_SETTINGS_READ)),
 ):
-    department_service.sync_departments_from_users(user_service.list_users())
-    manager_department_ids = set(department_service.get_user_department_ids(current_user.model_dump(), roles=["manager"]))
-    return {
-        "items": [
-            {
-                **item,
-                "is_current_user_manager": str(item.get("id") or "") in manager_department_ids,
-            }
-            for item in department_service.list_departments(include_inactive=bool(include_inactive))
-        ]
-    }
+    def _build_response() -> dict:
+        manager_department_ids = set(department_service.get_user_department_ids(current_user.model_dump(), roles=["manager"]))
+        return {
+            "items": [
+                {
+                    **item,
+                    "is_current_user_manager": str(item.get("id") or "") in manager_department_ids,
+                }
+                for item in department_service.list_departments(include_inactive=bool(include_inactive))
+            ]
+        }
+
+    return await run_in_threadpool(_build_response)
 
 
 @router.get("/{department_id}/members")

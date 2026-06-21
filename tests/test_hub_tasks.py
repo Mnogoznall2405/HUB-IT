@@ -247,6 +247,42 @@ def test_create_only_user_can_create_task_without_taxonomy_management(task_env):
     assert task["checklist_items"][0]["text"] == "Collect inventory"
 
 
+def test_create_task_without_department_allows_cross_assignee(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(8)
+    project_response = client.post(
+        "/hub/task-projects",
+        json={"name": "Cross Assignee Project", "code": f"cross-assignee-{uuid4().hex[:8]}"},
+    )
+    assert project_response.status_code == 200, project_response.text
+    project = project_response.json()
+
+    created = client.post(
+        "/hub/tasks",
+        json={
+            "title": "Cross Assignee Task",
+            "description": "No department required",
+            "assignee_user_ids": [2],
+            "controller_user_id": None,
+            "project_id": project["id"],
+            "protocol_date": "2026-03-01",
+            "priority": "normal",
+            "department_id": None,
+            "visibility_scope": "private",
+        },
+    )
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["created"] == 1
+    task = payload["items"][0]
+    assert task["assignee_user_id"] == 2
+    assert task["created_by_user_id"] == 8
+    assert not task.get("department_id")
+    assert task.get("visibility_scope") == "private"
+
+
 def test_assignee_can_update_task_checklist_only(task_env):
     client = task_env["client"]
     set_user = task_env["set_user"]

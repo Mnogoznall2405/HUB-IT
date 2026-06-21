@@ -21,6 +21,19 @@ export const authUserAdminAPI = {
     return response.data;
   },
 
+  getTaskDelegatesBulk: async (ownerIds = []) => {
+    const normalizedOwnerIds = (Array.isArray(ownerIds) ? ownerIds : [])
+      .map((item) => Number(item))
+      .filter((item) => Number.isFinite(item) && item > 0);
+    if (normalizedOwnerIds.length === 0) {
+      return { items: [] };
+    }
+    const response = await apiClient.get('/auth/task-delegates', {
+      params: { owner_ids: normalizedOwnerIds.join(',') },
+    });
+    return response.data;
+  },
+
   updateTaskDelegates: async (userId, items = []) => {
     const response = await apiClient.put(`/auth/users/${userId}/task-delegates`, {
       items: Array.isArray(items) ? items : [],

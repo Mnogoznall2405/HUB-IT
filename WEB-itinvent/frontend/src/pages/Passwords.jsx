@@ -30,10 +30,9 @@ import { alpha, useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
-import KeyOutlinedIcon from '@mui/icons-material/KeyOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import PasswordAuditAccordion from '../components/passwords/PasswordAuditAccordion';
@@ -45,6 +44,8 @@ import PasswordMobileToolbar from '../components/passwords/PasswordMobileToolbar
 import PasswordUnlockBanner from '../components/passwords/PasswordUnlockBanner';
 import PasswordUnlockDialog from '../components/passwords/PasswordUnlockDialog';
 import PasswordUnlockStrip from '../components/passwords/PasswordUnlockStrip';
+import PasswordSectionTabs from '../components/passwords/PasswordSectionTabs';
+import PasswordAdExpiryView from '../components/passwords/PasswordAdExpiryView';
 import { getPasskeyAssertion } from '../lib/passkeyWebAuthn';
 import { extractWebAuthnErrorMessage } from '../lib/trustedDeviceEnrollment';
 import { useWebAuthnAvailability } from '../lib/useWebAuthnAvailability';
@@ -148,6 +149,8 @@ function Passwords() {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const activeSection = searchParams.get('section') === 'ad-expiry' ? 'ad-expiry' : 'vault';
   const { user, hasPermission } = useAuth();
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
   const [entries, setEntries] = useState([]);
@@ -182,7 +185,7 @@ function Passwords() {
   const hideTimersRef = useRef({});
   const searchInputRef = useRef(null);
 
-  const isMobile = useMediaQuery(theme.breakpoints.down('md'));
+  const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
   const { webAuthnReady } = useWebAuthnAvailability();
   const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
   const canWrite = isAdmin || hasPermission('passwords.write');
@@ -195,6 +198,16 @@ function Passwords() {
   }, [nowTs, unlockedUntil]);
 
   const isUnlockExpiringSoon = isUnlocked && unlockedRemainingMs > 0 && unlockedRemainingMs <= 30_000;
+
+  const handleSectionChange = useCallback((next) => {
+    const params = new URLSearchParams(searchParams);
+    if (next === 'ad-expiry') {
+      params.set('section', 'ad-expiry');
+    } else {
+      params.delete('section');
+    }
+    setSearchParams(params, { replace: true });
+  }, [searchParams, setSearchParams]);
 
   const syncUnlockedUntil = useCallback((...candidates) => {
     const resolved = pickActiveUnlockedUntil(
@@ -554,7 +567,30 @@ function Passwords() {
 
   return (
     <MainLayout>
-      <PageShell fullHeight sx={{ gap: { xs: 0.75, md: 2.5 } }} data-testid="passwords-page">
+      <PageShell
+        fullHeight={!isMobile}
+        sx={{
+          gap: { xs: 0.75, md: 2.5 },
+          pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : undefined,
+        }}
+        data-testid="passwords-page"
+      >
+        <Paper
+          elevation={0}
+          sx={{
+            flexShrink: 0,
+            p: 1.25,
+            border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
+            bgcolor: 'background.paper',
+          }}
+        >
+          <PasswordSectionTabs value={activeSection} onChange={handleSectionChange} />
+        </Paper>
+
+        {activeSection === 'ad-expiry' ? (
+          <PasswordAdExpiryView />
+        ) : (
+        <>
         {isMobile ? (
           <>
             <PasswordMobileToolbar
@@ -577,39 +613,13 @@ function Passwords() {
           </>
         ) : (
           <>
-            <Paper
-              elevation={0}
-              sx={{
-                flexShrink: 0,
-                p: 2.5,
-                border: `1px solid ${alpha(theme.palette.divider, 0.9)}`,
-                bgcolor: 'background.paper',
-              }}
-            >
-              <Stack direction="row" spacing={2} alignItems="center" justifyContent="space-between">
-                <Box>
-                  <Stack direction="row" spacing={1} alignItems="center">
-                    <KeyOutlinedIcon color="primary" />
-                    <Typography variant="h5" fontWeight={800}>Пароли</Typography>
-                  </Stack>
-                  <Typography variant="body2" color="text.secondary" sx={{ mt: 0.5 }}>
-                    Хранилище доступов с 2FA-разблокировкой перед раскрытием.
-                  </Typography>
-                </Box>
-                {canWrite ? (
-                  <Button variant="contained" startIcon={<AddOutlinedIcon />} onClick={openCreateDialog}>
-                    Новая запись
-                  </Button>
-                ) : null}
-              </Stack>
-            </Paper>
-
             <PasswordUnlockBanner
               isUnlocked={isUnlocked}
               isUnlockExpiringSoon={isUnlockExpiringSoon}
               unlockedRemainingMs={unlockedRemainingMs}
               unlockedUntil={unlockedUntil}
               onUnlockClick={handleOpenUnlock}
+              compact
             />
 
             <Paper
@@ -617,10 +627,10 @@ function Passwords() {
               sx={{
                 flexShrink: 0,
                 border: `1px solid ${theme.palette.divider}`,
-                p: 2,
+                p: 1.25,
               }}
             >
-              <Stack direction="row" spacing={1.5} alignItems="center">
+              <Stack direction="row" spacing={1} alignItems="center">
                 <TextField
                   fullWidth
                   size="small"
@@ -641,15 +651,20 @@ function Passwords() {
                 <FormControlLabel
                   control={<Switch checked={includeArchived} onChange={(event) => setIncludeArchived(event.target.checked)} />}
                   label="Архив"
-                  sx={{ flexShrink: 0 }}
+                  sx={{ flexShrink: 0, mr: 0 }}
                 />
                 <Tooltip title="Обновить">
                   <span>
-                    <IconButton onClick={loadEntries} disabled={loading} aria-label="Обновить пароли">
-                      <RefreshOutlinedIcon />
+                    <IconButton onClick={loadEntries} disabled={loading} aria-label="Обновить пароли" size="small">
+                      <RefreshOutlinedIcon fontSize="small" />
                     </IconButton>
                   </span>
                 </Tooltip>
+                {canWrite ? (
+                  <Button variant="contained" size="small" startIcon={<AddOutlinedIcon />} onClick={openCreateDialog}>
+                    Новая запись
+                  </Button>
+                ) : null}
               </Stack>
             </Paper>
           </>
@@ -670,7 +685,7 @@ function Passwords() {
             sx={{
               flex: 1,
               minHeight: 0,
-              height: '100%',
+              height: isMobile ? 'auto' : '100%',
             }}
           >
             {!isMobile ? (
@@ -718,7 +733,7 @@ function Passwords() {
                 display: 'flex',
                 flexDirection: 'column',
                 minHeight: 0,
-                height: '100%',
+                height: isMobile ? 'auto' : '100%',
               }}
             >
               <Box
@@ -792,6 +807,8 @@ function Passwords() {
             </Box>
           ) : null}
         </Box>
+        </>
+        )}
       </PageShell>
 
       <Dialog open={entryDialogOpen} onClose={() => setEntryDialogOpen(false)} fullWidth maxWidth="md">
@@ -818,7 +835,7 @@ function Passwords() {
                   <Alert severity="warning">
                     Нет доступных групп. Попросите администратора добавить группы в Настройках.
                     <Box sx={{ mt: 1 }}>
-                      <Button size="small" variant="outlined" onClick={() => navigate('/settings?tab=env#password-groups-settings')}>
+                      <Button size="small" variant="outlined" onClick={() => navigate('/admin/system#password-groups-settings')}>
                         Открыть Настройки
                       </Button>
                     </Box>

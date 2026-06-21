@@ -49,6 +49,28 @@ function TestHarness({ onAction = vi.fn() }) {
       >
         action-serialized
       </button>
+      <button
+        type="button"
+        onClick={() => notifyInfo('Первое сообщение', {
+          source: 'chat',
+          title: 'Chat 1',
+          durationMs: 1000,
+          dedupeKey: 'chat:1',
+        })}
+      >
+        chat-one
+      </button>
+      <button
+        type="button"
+        onClick={() => notifyInfo('Второе сообщение', {
+          source: 'chat',
+          title: 'Chat 2',
+          durationMs: 1000,
+          dedupeKey: 'chat:2',
+        })}
+      >
+        chat-two
+      </button>
     </div>
   );
 }
@@ -156,5 +178,23 @@ describe('NotificationProvider', () => {
     });
 
     window.removeEventListener('itinvent:toast-action-execute', actionListener);
+  });
+
+  it('shows chat toasts sequentially instead of stacking them', () => {
+    vi.useFakeTimers();
+    renderNotifications();
+
+    fireEvent.click(screen.getByRole('button', { name: 'chat-one' }));
+    fireEvent.click(screen.getByRole('button', { name: 'chat-two' }));
+
+    expect(screen.getByText('Chat 1')).toBeInTheDocument();
+    expect(screen.queryByText('Chat 2')).not.toBeInTheDocument();
+
+    act(() => {
+      vi.advanceTimersByTime(1100);
+    });
+
+    expect(screen.queryByText('Chat 1')).not.toBeInTheDocument();
+    expect(screen.getByText('Chat 2')).toBeInTheDocument();
   });
 });

@@ -1,6 +1,6 @@
-const SW_VERSION = '2026-06-13T12:00:00+05:00';
-const APP_SHELL_CACHE = 'hubit-app-shell-v2026-06-13-12-00';
-const APP_ASSET_CACHE = 'hubit-app-assets-v2026-06-13-12-00';
+const SW_VERSION = '2026-06-20T15:15:00+05:00';
+const APP_SHELL_CACHE = 'hubit-app-shell-v2026-06-20-15-15';
+const APP_ASSET_CACHE = 'hubit-app-assets-v2026-06-20-15-15';
 const CHAT_MEDIA_CACHE = 'hubit-chat-media-v2026-04-17-1';
 const PUSH_RUNTIME_CACHE = 'itinvent-push-runtime-v1';
 const PUSH_PENDING_SYNC_URL = `${self.location.origin}/__push/pending-sync`;
@@ -39,6 +39,166 @@ function extractBuildAssetUrls(html) {
     match = assetPattern.exec(text);
   }
   return [...urls];
+}
+
+const CHAT_PUSH_DEDUPE_MS = 60_000;
+const CHAT_NOTIFICATION_VISIBLE_MS = 6_000;
+const recentChatPushMessageIds = new Map();
+const inFlightChatPushMessageIds = new Set();
+const chatBackgroundNotificationQueue = [];
+let chatBackgroundNotificationDrainPromise = null;
+
+function sleepMs(ms) {
+  return new Promise((resolve) => {
+    setTimeout(resolve, Math.max(0, Number(ms) || 0));
+  });
+}
+
+async function closeNotificationsByTag(tag) {
+  const normalizedTag = String(tag || '').trim();
+  if (!normalizedTag || typeof self.registration?.getNotifications !== 'function') return;
+  try {
+    const notifications = await self.registration.getNotifications({ tag: normalizedTag });
+    notifications.forEach((item) => {
+      try {
+        item.close();
+      } catch {
+        // Ignore close failures.
+      }
+    });
+  } catch {
+    // Ignore lookup failures.
+  }
+}
+
+async function closeVisibleChatNotifications() {
+  if (typeof self.registration?.getNotifications !== 'function') return;
+  try {
+    const notifications = await self.registration.getNotifications();
+    notifications.forEach((item) => {
+      const channel = String(item?.data?.channel || '').trim();
+      const messageId = String(item?.data?.message_id || '').trim();
+      if (channel === 'chat' || messageId) {
+        try {
+          item.close();
+        } catch {
+          // Ignore close failures.
+        }
+      }
+    });
+  } catch {
+    // Ignore lookup failures.
+  }
+}
+
+function enqueueChatBackgroundNotification(title, options, diagnosticContext = {}) {
+  chatBackgroundNotificationQueue.push({
+    title,
+    options,
+    diagnosticContext,
+  });
+  if (!chatBackgroundNotificationDrainPromise) {
+    chatBackgroundNotificationDrainPromise = drainChatBackgroundNotificationQueue()
+      .finally(() => {
+        chatBackgroundNotificationDrainPromise = null;
+      });
+  }
+  return chatBackgroundNotificationDrainPromise;
+}
+
+async function drainChatBackgroundNotificationQueue() {
+  while (chatBackgroundNotificationQueue.length > 0) {
+    const nextItem = chatBackgroundNotificationQueue.shift();
+    if (!nextItem) continue;
+    const { title, options, diagnosticContext } = nextItem;
+    const tag = String(options?.tag || '').trim();
+    try {
+      await closeVisibleChatNotifications();
+      await self.registration.showNotification(title, options);
+      await reportPushDiagnostic('sw_show_notification_success', {
+        channel: 'chat',
+        tag,
+        route: String(options?.data?.route || diagnosticContext?.route || '/').trim() || '/',
+        delivery_mode: 'background_serial',
+        visible_ms: CHAT_NOTIFICATION_VISIBLE_MS,
+        queue_remaining: chatBackgroundNotificationQueue.length,
+        require_interaction: options?.requireInteraction === true,
+        vibrate_count: Array.isArray(options?.vibrate) ? options.vibrate.length : 0,
+        actions_count: Array.isArray(options?.actions) ? options.actions.length : 0,
+        ...diagnosticContext,
+      });
+      await sleepMs(CHAT_NOTIFICATION_VISIBLE_MS);
+      await closeNotificationsByTag(tag);
+    } catch (error) {
+      await reportPushDiagnostic('sw_show_notification_failed', {
+        channel: 'chat',
+        tag,
+        route: String(options?.data?.route || diagnosticContext?.route || '/').trim() || '/',
+        error: String(error || 'show_notification_failed'),
+        delivery_mode: 'background_serial',
+        ...diagnosticContext,
+      });
+    }
+  }
+}
+
+function buildChatNotificationTag(messageId) {
+  const normalizedMessageId = String(messageId || '').trim();
+  if (!normalizedMessageId) return 'chat:unknown';
+  return `chat:msg:${normalizedMessageId}`;
+}
+
+function matchesChatNotificationMessageId(notification, messageId) {
+  const normalizedMessageId = String(messageId || '').trim();
+  if (!normalizedMessageId || !notification) return false;
+  const dataMessageId = String(notification?.data?.message_id || '').trim();
+  const itemTag = String(notification?.tag || '').trim();
+  return dataMessageId === normalizedMessageId
+    || itemTag === buildChatNotificationTag(normalizedMessageId)
+    || itemTag === `chat:${normalizedMessageId}`;
+}
+
+async function hasExistingChatNotification(messageId) {
+  const normalizedMessageId = String(messageId || '').trim();
+  if (!normalizedMessageId || typeof self.registration?.getNotifications !== 'function') return false;
+  try {
+    const notifications = await self.registration.getNotifications();
+    return notifications.some((item) => matchesChatNotificationMessageId(item, normalizedMessageId));
+  } catch {
+    return false;
+  }
+}
+
+function beginChatPushDelivery(messageId) {
+  const normalizedMessageId = String(messageId || '').trim();
+  if (!normalizedMessageId) return true;
+  const now = Date.now();
+  const previousAt = Number(recentChatPushMessageIds.get(normalizedMessageId) || 0);
+  if (previousAt > 0 && (now - previousAt) < CHAT_PUSH_DEDUPE_MS) {
+    return false;
+  }
+  if (inFlightChatPushMessageIds.has(normalizedMessageId)) {
+    return false;
+  }
+  inFlightChatPushMessageIds.add(normalizedMessageId);
+  recentChatPushMessageIds.set(normalizedMessageId, now);
+  if (recentChatPushMessageIds.size > 200) {
+    const staleBefore = now - CHAT_PUSH_DEDUPE_MS;
+    recentChatPushMessageIds.forEach((seenAt, key) => {
+      if (seenAt < staleBefore) recentChatPushMessageIds.delete(key);
+    });
+  }
+  return true;
+}
+
+function endChatPushDelivery(messageId) {
+  const normalizedMessageId = String(messageId || '').trim();
+  if (!normalizedMessageId) return;
+  inFlightChatPushMessageIds.delete(normalizedMessageId);
+}
+
+function shouldDeliverChatPush(messageId) {
+  return beginChatPushDelivery(messageId);
 }
 
 function normalizeRoute(route) {
@@ -708,13 +868,30 @@ self.addEventListener('push', (event) => {
     const body = String(payload?.body || 'Откройте приложение, чтобы посмотреть подробности.').trim() || 'Откройте приложение, чтобы посмотреть подробности.';
     const data = payload?.data || {};
     const route = normalizeRoute(data?.route || '/');
-    const tag = String(
-      payload?.tag
-      || `${String(payload?.channel || 'system').trim() || 'system'}:${String(data?.conversation_id || data?.message_id || data?.notification_id || '').trim()}`
-    ).trim() || 'system';
-    const clientSnapshot = await collectClientVisibilitySnapshot();
     const pushChannel = String(payload?.channel || 'system').trim() || 'system';
     const pushConversationId = String(data?.conversation_id || '').trim();
+    const pushMessageId = String(data?.message_id || '').trim();
+    const tag = String(
+      payload?.tag
+      || (pushChannel === 'chat' && pushMessageId
+        ? buildChatNotificationTag(pushMessageId)
+        : `${pushChannel}:${pushConversationId || pushMessageId || String(data?.notification_id || '').trim()}`)
+    ).trim() || 'system';
+    if (pushChannel === 'chat' && pushMessageId) {
+      if (!shouldDeliverChatPush(pushMessageId)) {
+        await reportPushDiagnostic('sw_push_duplicate_suppressed', {
+          channel: pushChannel,
+          tag,
+          message_id: pushMessageId,
+          conversation_id: pushConversationId,
+          reason: 'recent_memory',
+        });
+        return;
+      }
+    }
+    let chatPushDeliveryStarted = pushChannel === 'chat' && Boolean(pushMessageId);
+    try {
+    const clientSnapshot = await collectClientVisibilitySnapshot();
     const isVisibleConversationOpen = (
       pushChannel === 'chat'
       && hasVisibleClientViewingConversation(clientSnapshot, pushConversationId)
@@ -766,12 +943,26 @@ self.addEventListener('push', (event) => {
       return;
     }
 
+    if (pushChannel === 'chat' && pushMessageId && await hasExistingChatNotification(pushMessageId)) {
+      await reportPushDiagnostic('sw_push_duplicate_suppressed', {
+        channel: pushChannel,
+        tag,
+        message_id: pushMessageId,
+        conversation_id: pushConversationId,
+        reason: 'existing_notification',
+      });
+      return;
+    }
+
     try {
       const notificationActions = normalizeNotificationActions(payload?.actions, route);
       const vibratePattern = normalizeVibratePattern(payload?.vibrate);
+      const normalizedTag = pushChannel === 'chat' && pushMessageId
+        ? buildChatNotificationTag(pushMessageId)
+        : tag;
       const notificationOptions = {
         body,
-        tag,
+        tag: normalizedTag,
         renotify: Boolean(payload?.renotify),
         icon: String(payload?.icon || '/pwa-192.png').trim() || '/pwa-192.png',
         badge: String(payload?.badge || '/hubit-badge.svg').trim() || '/hubit-badge.svg',
@@ -787,7 +978,11 @@ self.addEventListener('push', (event) => {
       if (vibratePattern.length) {
         notificationOptions.vibrate = vibratePattern;
       }
-      if (payload?.require_interaction === true) {
+      if (pushChannel === 'chat') {
+        notificationOptions.requireInteraction = false;
+        notificationOptions.renotify = false;
+      }
+      if (payload?.require_interaction === true && pushChannel !== 'chat') {
         notificationOptions.requireInteraction = true;
       }
       if (typeof payload?.silent === 'boolean') {
@@ -798,13 +993,26 @@ self.addEventListener('push', (event) => {
         notificationOptions.timestamp = timestamp;
       }
       if (notificationActions.length) {
-        notificationOptions.actions = notificationActions.map(({ action, title }) => ({ action, title }));
+        notificationOptions.actions = notificationActions.map(({ action, title: actionTitle }) => ({
+          action,
+          title: actionTitle,
+        }));
+      }
+
+      if (pushChannel === 'chat') {
+        await enqueueChatBackgroundNotification(title, notificationOptions, {
+          client_count: clientSnapshot.client_count,
+          visible_client_count: clientSnapshot.visible_client_count,
+          focused_visible_client_count: clientSnapshot.focused_visible_client_count,
+          route,
+        });
+        return;
       }
 
       await self.registration.showNotification(title, notificationOptions);
       await reportPushDiagnostic('sw_show_notification_success', {
         channel: String(payload?.channel || 'system').trim() || 'system',
-        tag,
+        tag: normalizedTag,
         route,
         delivery_mode: shouldForwardToVisibleClientOnly ? 'foreground_focused' : 'background',
         client_count: clientSnapshot.client_count,
@@ -826,6 +1034,11 @@ self.addEventListener('push', (event) => {
         focused_visible_client_count: clientSnapshot.focused_visible_client_count,
       });
       throw error;
+    }
+    } finally {
+      if (chatPushDeliveryStarted) {
+        endChatPushDelivery(pushMessageId);
+      }
     }
   })());
 });

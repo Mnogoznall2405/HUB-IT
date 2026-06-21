@@ -7,6 +7,7 @@
 - [Основное руководство](user-guides/main-guide.md)
 - [Работы и обслуживание](user-guides/component-replacement-guide.md)
 - [Чистка ПК](user-guides/pc-cleaning-guide.md)
+- [Портал сбора документов при трудоустройстве (DOCX)](user-guides/hr-onboarding-portal-guide.docx) - правовая модель, процесс, макеты и интеграция в HUB-IT
 
 ## Техническая документация
 

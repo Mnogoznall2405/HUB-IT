@@ -299,7 +299,7 @@ describe('Dashboard announcement reads helpers', () => {
     expect(screen.getByTestId('dashboard-extra-action-create-announcement')).toBeInTheDocument();
   });
 
-  it('renders mobile dashboard with notifications-only header and the overview as default view', async () => {
+  it('renders mobile dashboard with local header and the overview as default view', async () => {
     installMatchMedia({ mobile: true });
 
     render(
@@ -309,7 +309,6 @@ describe('Dashboard announcement reads helpers', () => {
     );
 
     expect(await screen.findByTestId('dashboard-mobile-layout')).toBeInTheDocument();
-    expect(screen.getByTestId('main-layout')).toHaveAttribute('data-header-mode', 'notifications-only');
     expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
     expect(screen.getByTestId('dashboard-mobile-overview-section-urgent')).toBeInTheDocument();
     expect(screen.getByTestId('dashboard-mobile-overview-section-announcements')).toBeInTheDocument();

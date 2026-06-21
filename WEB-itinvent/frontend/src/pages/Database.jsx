@@ -140,9 +140,6 @@ function Database() {
   const isNarrowMobile = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
   const isTouchMobile = useMediaQuery('(hover: none) and (pointer: coarse)', { defaultMatches: true });
   const isMobile = isNarrowMobile || isTouchMobile;
-  const handleOpenMainDrawer = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('open-sidebar'));
-  }, []);
   const location = useLocation();
   const navigate = useNavigate();
   const initialLoadDoneRef = useRef(false);
@@ -895,16 +892,14 @@ function Database() {
 
   return (
     <MainLayout headerMode={isMobile ? 'hidden' : 'default'} showDatabaseSelector>
-      <PageShell sx={{ pb: isMobile ? 14 : 3 }}>
+      <PageShell sx={{ pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : 3 }}>
         {/* Встроенная шапка для мобильных */}
         {isMobile && (
           <DatabaseMobileHeader
-            theme={theme}
             databases={databases}
             dbName={db_name}
             currentDb={currentDb}
             selectedDatabaseName={selectedDatabaseName}
-            onOpenMainDrawer={handleOpenMainDrawer}
             onDatabaseSelectChange={handleDatabaseSelectChange}
           />
         )}

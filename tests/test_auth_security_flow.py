@@ -26,6 +26,11 @@ from backend.utils.request_network import build_request_network_context, classif
 auth_security_module = importlib.import_module("backend.services.auth_security_service")
 
 
+@pytest.fixture(autouse=True)
+def _disable_security_email_by_default(monkeypatch):
+    monkeypatch.setattr(auth_security_module.config.security, "new_login_email_enabled", False)
+
+
 def _clear_auth_runtime_store() -> None:
     lock = getattr(auth.auth_runtime_store_service, "_lock", None)
     memory = getattr(auth.auth_runtime_store_service, "_memory", None)
@@ -398,6 +403,62 @@ def test_twofa_policy_all_requires_internal_and_external_networks():
     assert is_twofa_required_for_zone("external", policy="external_only") is True
 
 
+def test_security_email_dispatch_is_scheduled_not_sent_inline(monkeypatch):
+    submitted = []
+    sent = []
+
+    class FakeExecutor:
+        def submit(self, func):
+            submitted.append(func)
+            return SimpleNamespace()
+
+    class FakeSlots:
+        def __init__(self):
+            self.acquired = 0
+            self.released = 0
+
+        def acquire(self, blocking=False):
+            self.acquired += 1
+            return True
+
+        def release(self):
+            self.released += 1
+
+    slots = FakeSlots()
+    monkeypatch.setattr(auth_security_module.config.security, "new_login_email_enabled", True)
+    monkeypatch.setattr(auth_security_module, "_SECURITY_EMAIL_EXECUTOR", FakeExecutor())
+    monkeypatch.setattr(auth_security_module, "_SECURITY_EMAIL_QUEUE_SLOTS", slots)
+    monkeypatch.setattr(
+        auth_security_module.security_email_service,
+        "send_new_login_alert",
+        lambda **kwargs: sent.append({"captured": True, **kwargs}),
+    )
+
+    auth_security_module._dispatch_new_login_alert(
+        recipient_email="ivanov@example.com",
+        username="ivanov",
+        ip_address="10.0.0.10",
+        device_label="Chrome",
+        auth_method="password_only",
+        login_at=datetime.now(timezone.utc),
+    )
+    monkeypatch.setattr(
+        auth_security_module.security_email_service,
+        "send_new_login_alert",
+        lambda **kwargs: sent.append({"captured": False, **kwargs}),
+    )
+
+    assert sent == []
+    assert len(submitted) == 1
+    assert slots.acquired == 1
+
+    submitted[0]()
+
+    assert sent[0]["captured"] is True
+    assert sent[0]["username"] == "ivanov"
+    assert slots.released == 1
+
+
 def test_login_returns_twofa_setup_required_for_user_without_twofa(monkeypatch):
     user_payload = _sample_public_user(is_2fa_enabled=False)
     monkeypatch.setattr(auth.user_service, "authenticate", lambda username, password: dict(user_payload))
@@ -666,6 +727,56 @@ def test_verify_twofa_login_consumes_challenge_on_invalid_totp(monkeypatch):
         auth.auth_security_service.verify_login_second_factor("challenge-1", totp_code="000000")
 
     assert stored == {}
+
+
+def test_start_totp_enrollment_uses_request_username_for_otpauth_account(monkeypatch):
+    challenge = {
+        "challenge_id": "challenge-1",
+        "user_id": 7,
+        "username": "ivanov",
+        "request_username": "ivanov",
+        "role": "viewer",
+    }
+    saved = {}
+
+    def _save_login_challenge(challenge_id, payload, ttl_seconds=None):
+        saved[challenge_id] = dict(payload)
+
+    monkeypatch.setattr(
+        auth_security_module.auth_runtime_store_service,
+        "get_login_challenge",
+        lambda challenge_id: dict(challenge),
+    )
+    monkeypatch.setattr(
+        auth_security_module.auth_runtime_store_service,
+        "save_login_challenge",
+        _save_login_challenge,
+    )
+    monkeypatch.setattr(
+        auth_security_module.user_service,
+        "get_by_id",
+        lambda user_id: {
+            "id": 7,
+            "username": "ivanov",
+            "email": "ivanov@zsgp.ru",
+        },
+    )
+    monkeypatch.setattr(
+        auth_security_module.twofa_service,
+        "build_provisioning",
+        lambda **kwargs: SimpleNamespace(
+            secret="ABC123",
+            otpauth_uri=f"otpauth://totp/HUB-IT:{kwargs['username']}?secret=ABC123&issuer=hubit.zsgp.ru",
+            qr_svg=None,
+        ),
+    )
+    monkeypatch.setattr(auth_security_module.twofa_service, "encrypt_secret", lambda secret: f"enc:{secret}")
+
+    result = auth_security_module.auth_security_service.start_totp_enrollment("challenge-1")
+
+    assert result["account_name"] == "ivanov"
+    assert "HUB-IT:ivanov" in result["otpauth_uri"]
+    assert "ivanov@zsgp.ru" not in result["otpauth_uri"]
 
 
 def test_enable_twofa_returns_manual_entry_key(monkeypatch):

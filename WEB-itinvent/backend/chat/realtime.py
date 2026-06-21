@@ -33,6 +33,7 @@ _PRESENCE_HASH_PREFIX = str(os.getenv("CHAT_PRESENCE_PREFIX", "itinvent:chat:pre
 _PRESENCE_TTL_SEC = max(10, int(str(os.getenv("CHAT_PRESENCE_TTL_SEC", "75") or "75").strip() or "75"))
 _PRESENCE_MAX_WATCH_USERS = max(1, int(str(os.getenv("CHAT_PRESENCE_WATCH_LIMIT", "50") or "50").strip() or "50"))
 _OUTBOUND_QUEUE_SIZE = max(32, int(str(os.getenv("CHAT_WS_OUTBOUND_QUEUE_SIZE", "256") or "256").strip() or "256"))
+_CHAT_WS_MAX_CONNECTIONS_PER_USER = max(1, int(str(os.getenv("CHAT_WS_MAX_CONNECTIONS_PER_USER", "4") or "4").strip() or "4"))
 _TYPING_STARTED_THROTTLE_SEC = max(1.0, float(str(os.getenv("CHAT_TYPING_STARTED_THROTTLE_SEC", "2") or "2").strip() or "2"))
 _TYPING_STATE_TTL_SEC = max(2.0, float(str(os.getenv("CHAT_TYPING_STATE_TTL_SEC", "5") or "5").strip() or "5"))
 _PRESENCE_TOUCH_THROTTLE_SEC = max(1.0, float(str(os.getenv("CHAT_PRESENCE_TOUCH_THROTTLE_SEC", "15") or "15").strip() or "15"))
@@ -324,6 +325,14 @@ class ChatRealtimeManager:
         await websocket.accept()
         connection_id = str(uuid4())
         normalized_user_id = int(user_id)
+        stale_connection_ids: list[str] = []
+        with self._lock:
+            existing = self._user_connection_ids.setdefault(normalized_user_id, set())
+            if len(existing) >= _CHAT_WS_MAX_CONNECTIONS_PER_USER:
+                overflow = len(existing) - _CHAT_WS_MAX_CONNECTIONS_PER_USER + 1
+                stale_connection_ids = list(existing)[:overflow]
+        for stale_connection_id in stale_connection_ids:
+            await self._evict_connection(stale_connection_id, reason="connection limit exceeded")
         connection = ChatRealtimeConnection(
             id=connection_id,
             user_id=normalized_user_id,
@@ -348,6 +357,20 @@ class ChatRealtimeManager:
             name=f"chat-presence-connect:{connection_id}",
         )
         return connection_id, first_connection
+
+    async def _evict_connection(self, connection_id: str, *, reason: str = "connection replaced") -> None:
+        normalized_connection_id = str(connection_id or "").strip()
+        if not normalized_connection_id:
+            return
+        with self._lock:
+            connection = self._connections.get(normalized_connection_id)
+        if connection is None:
+            return
+        try:
+            await connection.websocket.close(code=4000, reason=reason[:120])
+        except Exception:
+            pass
+        self.disconnect(normalized_connection_id)
 
     def disconnect(self, connection_id: str) -> dict:
         normalized_connection_id = str(connection_id or "").strip()

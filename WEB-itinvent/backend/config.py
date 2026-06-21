@@ -151,6 +151,7 @@ class ChatConfig:
     max_overflow: int = 10
     conversation_page_size: int = 50
     message_page_size: int = 100
+    task_discussion_enabled: bool = False
 
 
 @dataclass
@@ -394,6 +395,7 @@ class Config:
                 max_overflow=int(os.getenv("CHAT_DB_MAX_OVERFLOW", "10")),
                 conversation_page_size=int(os.getenv("CHAT_CONVERSATION_PAGE_SIZE", "50")),
                 message_page_size=int(os.getenv("CHAT_MESSAGE_PAGE_SIZE", "100")),
+                task_discussion_enabled=str(os.getenv("TASK_DISCUSSION_CHAT_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
             ),
             web_push=WebPushConfig(
                 public_key=(str(os.getenv("WEB_PUSH_PUBLIC_KEY", "") or "").strip() or None),

@@ -7,14 +7,12 @@ import DatabaseMobileHeader from './DatabaseMobileHeader';
 const renderHeader = (props = {}) => {
   const theme = createTheme();
   const handlers = {
-    onOpenMainDrawer: vi.fn(),
     onDatabaseSelectChange: vi.fn(),
   };
 
   render(
     <ThemeProvider theme={theme}>
       <DatabaseMobileHeader
-        theme={theme}
         databases={[
           { id: 'main', name: 'Основная база' },
           { id: 'archive', name: 'Архив' },
@@ -32,19 +30,16 @@ const renderHeader = (props = {}) => {
 };
 
 describe('DatabaseMobileHeader', () => {
-  it('renders brand and opens the main drawer', () => {
-    const handlers = renderHeader();
-
-    expect(screen.getByText('HUB-IT')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Открыть меню' }));
-
-    expect(handlers.onOpenMainDrawer).toHaveBeenCalledTimes(1);
-  });
-
-  it('renders selected database and current marker', () => {
+  it('renders brand and selected database', () => {
     renderHeader();
 
+    expect(screen.getByTestId('mobile-shell-page-header')).toBeInTheDocument();
+    expect(screen.getByText('HUB-IT')).toBeInTheDocument();
     expect(screen.getByText('Основная база')).toBeInTheDocument();
+  });
+
+  it('renders current database marker in the selector menu', () => {
+    renderHeader();
 
     fireEvent.mouseDown(screen.getByRole('combobox'));
 
@@ -63,12 +58,10 @@ describe('DatabaseMobileHeader', () => {
     expect(handlers.onDatabaseSelectChange.mock.calls[0][0].target.value).toBe('archive');
   });
 
-  it('keeps menu access when database list is empty', () => {
-    const handlers = renderHeader({ databases: [] });
+  it('renders brand without database selector when database list is empty', () => {
+    renderHeader({ databases: [] });
 
+    expect(screen.getByText('HUB-IT')).toBeInTheDocument();
     expect(screen.queryByRole('combobox')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Открыть меню' }));
-
-    expect(handlers.onOpenMainDrawer).toHaveBeenCalledTimes(1);
   });
 });

@@ -36,6 +36,7 @@ import PhoneRoundedIcon from '@mui/icons-material/PhoneRounded';
 import PhotoLibraryOutlinedIcon from '@mui/icons-material/PhotoLibraryOutlined';
 import PushPinOutlinedIcon from '@mui/icons-material/PushPinOutlined';
 import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
+import StickyNote2OutlinedIcon from '@mui/icons-material/StickyNote2Outlined';
 import TaskAltOutlinedIcon from '@mui/icons-material/TaskAltOutlined';
 import VideoLibraryOutlinedIcon from '@mui/icons-material/VideoLibraryOutlined';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
@@ -44,7 +45,7 @@ import CakeRoundedIcon from '@mui/icons-material/CakeRounded';
 
 import { chatAPI } from '../../api/client';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
-import { PresenceAvatar } from './ChatCommon';
+import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import {
   buildAttachmentUrl,
   formatFileSize,
@@ -58,6 +59,7 @@ import {
   normalizeChatAttachmentUrl,
   sortByName,
 } from './chatHelpers';
+import { isChatDocumentPreviewableAttachment } from './chatAttachmentPreview';
 
 // Вспомогательная функция для получения расширения файла
 const getFileExtension = (fileName) => {
@@ -588,7 +590,7 @@ function AttachmentListRow({ item, kind, onOpenAttachmentPreview }) {
   const fileUrl = buildAttachmentUrl(item.message_id, item.id, { inline: true });
 
   const handleOpen = () => {
-    if (kind === 'image') {
+    if (kind === 'image' || isChatDocumentPreviewableAttachment(item)) {
       onOpenAttachmentPreview?.(item.message_id, item);
       return;
     }
@@ -1008,9 +1010,9 @@ function CollapsedRail({ activeConversation, summary, summaryLoading, onToggleOp
         </IconButton>
       </Tooltip>
 
-      {subject ? (
-        <PresenceAvatar
-          item={subject}
+      {activeConversation ? (
+        <ConversationAvatar
+          conversation={activeConversation}
           online={Boolean(activeConversation?.kind === 'direct' && activeConversation?.direct_peer?.presence?.is_online)}
           size={44}
         />
@@ -1099,6 +1101,9 @@ export default function ChatContextPanel({
   const conversationId = String(activeConversation?.id || '').trim();
   const isDirect = activeConversation?.kind === 'direct';
   const isGroup = activeConversation?.kind === 'group';
+  const isNotes = activeConversation?.kind === 'notes';
+  const isTask = activeConversation?.kind === 'task' || Boolean(String(activeConversation?.task_id || '').trim());
+  const taskId = String(activeConversation?.task_id || '').trim();
   const subject = isDirect ? (activeConversation?.direct_peer || activeConversation) : activeConversation;
   const panelVisible = Boolean(open);
 
@@ -1153,7 +1158,7 @@ export default function ChatContextPanel({
     ),
     [activeConversation?.online_member_count, isDirect, participants],
   );
-  const participantsExpandable = !isDirect && participants.length > PARTICIPANTS_COLLAPSED_COUNT;
+  const participantsExpandable = !isDirect && !isNotes && participants.length > PARTICIPANTS_COLLAPSED_COUNT;
   const visibleParticipantMembers = useMemo(
     () => (
       participantsExpanded || !participantsExpandable
@@ -1207,7 +1212,7 @@ export default function ChatContextPanel({
   }), [activeConversation?.member_count, linkItems.length, participants.length, summary]);
 
   const mobileTabOptions = useMemo(() => (
-    isDirect
+    (isDirect || isNotes)
       ? [
           { key: 'image', label: 'Фото', count: assetCounts.image },
           { key: 'file', label: 'Файлы', count: assetCounts.file },
@@ -1222,7 +1227,7 @@ export default function ChatContextPanel({
           { key: 'member', label: 'Участники', count: assetCounts.member },
           { key: 'task', label: 'Задачи', count: assetCounts.task },
         ]
-  ), [assetCounts.file, assetCounts.image, assetCounts.link, assetCounts.member, assetCounts.task, assetCounts.video, isDirect]);
+  ), [assetCounts.file, assetCounts.image, assetCounts.link, assetCounts.member, assetCounts.task, assetCounts.video, isDirect, isNotes]);
 
   const attachmentItems = useMemo(() => {
     const items = Array.isArray(attachments) ? attachments : [];
@@ -1312,12 +1317,12 @@ export default function ChatContextPanel({
     }
 
     if (!mobileScreen) {
-      if (isDirect && assetKind === 'member') setAssetKind('image');
+      if ((isDirect || isNotes) && assetKind === 'member') setAssetKind('image');
       return;
     }
     if (mobileTabKeys.includes(assetKind)) return;
     setAssetKind(mobileTabKeys[0] || 'image');
-  }, [assetKind, conversationId, isDirect, mobileScreen, mobileTabKeys]);
+  }, [assetKind, conversationId, isDirect, isNotes, mobileScreen, mobileTabKeys]);
 
   useEffect(() => {
     setTaskVisibleCount(TASK_PAGE_SIZE);
@@ -1723,8 +1728,8 @@ export default function ChatContextPanel({
               textAlign: 'center',
             }}
           >
-            <PresenceAvatar
-              item={subject}
+            <ConversationAvatar
+              conversation={activeConversation}
               online={Boolean(isDirect && activeConversation?.direct_peer?.presence?.is_online)}
               size={152}
             />
@@ -1747,7 +1752,9 @@ export default function ChatContextPanel({
                 lineHeight: 1.2,
               }}
             >
-              {conversationHeaderSubtitle || 'был(а) недавно'}
+              {isNotes
+                ? 'Сохраняйте ссылки, файлы и напоминания для себя'
+                : (conversationHeaderSubtitle || 'был(а) недавно')}
             </Typography>
           </Box>
 
@@ -1776,6 +1783,12 @@ export default function ChatContextPanel({
                   />
                 ) : null}
               </>
+            ) : isNotes ? (
+              <MobileProfileInfoRow
+                icon={<StickyNote2OutlinedIcon sx={{ fontSize: 22 }} />}
+                label="Назначение"
+                value="Личный чат для заметок, файлов и напоминаний"
+              />
             ) : (
               <>
                 <MobileProfileInfoRow
@@ -2245,17 +2258,31 @@ export default function ChatContextPanel({
 
       {/* Профиль */}
       <Box sx={{ px: 2, py: 3, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1.5, borderBottom: 'var(--chat-sheet-panel-divider-width) solid var(--chat-sheet-panel-divider)' }}>
-        <PresenceAvatar
-          item={subject}
+        <ConversationAvatar
+          conversation={activeConversation}
           online={Boolean(isDirect && activeConversation?.direct_peer?.presence?.is_online)}
           size={120}
         />
         <Typography sx={{ fontWeight: 700, fontSize: '1.2rem' }}>
           {activeConversation?.title || 'Без имени'}
         </Typography>
-        <Typography sx={{ color: 'var(--chat-sheet-panel-muted)' }}>
-          {conversationHeaderSubtitle || 'был(а) недавно'}
+        <Typography sx={{ color: 'var(--chat-sheet-panel-muted)', textAlign: 'center', px: 1 }}>
+          {isNotes
+            ? 'Сохраняйте ссылки, файлы и напоминания для себя'
+            : isTask
+              ? 'Участники синхронизируются с карточкой задачи'
+              : (conversationHeaderSubtitle || 'был(а) недавно')}
         </Typography>
+        {isTask && taskId ? (
+          <Button
+            size="small"
+            variant="contained"
+            onClick={() => onOpenTask?.(taskId)}
+            sx={{ borderRadius: 999, textTransform: 'none', fontWeight: 700, boxShadow: 'none' }}
+          >
+            Открыть задачу
+          </Button>
+        ) : null}
         {isGroup && (canManageOwners || currentMemberRole !== 'owner') ? (
           <Stack direction="row" spacing={1} sx={{ width: '100%', justifyContent: 'center', flexWrap: 'wrap' }}>
             {canManageOwners ? (
@@ -2304,6 +2331,25 @@ export default function ChatContextPanel({
                 value={`@${subject.username}`}
               />
             ) : null}
+          </>
+        ) : isNotes ? (
+          <InfoRowTelegram
+            icon={<StickyNote2OutlinedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+            label="Назначение"
+            value="Личный чат для заметок, файлов и напоминаний"
+          />
+        ) : isTask ? (
+          <>
+            <InfoRowTelegram
+              icon={<TaskAltOutlinedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+              label="Статус задачи"
+              value={getStatusMeta(activeConversation?.task_status)[0] || 'Задача'}
+            />
+            <InfoRowTelegram
+              icon={<PersonOutlineRoundedIcon sx={{ fontSize: 20, color: 'var(--chat-sheet-panel-icon)' }} />}
+              label="Участники"
+              value={String(Number(activeConversation?.member_count || participants.length || 0))}
+            />
           </>
         ) : (
           <>
@@ -2361,7 +2407,7 @@ export default function ChatContextPanel({
               { key: 'file', label: 'Файлы', count: assetCounts.file },
               { key: 'link', label: 'Ссылки', count: linkItems.length },
               { key: 'task', label: 'Задачи', count: assetCounts.task },
-              ...(!isDirect ? [{ key: 'member', label: 'Участники', count: assetCounts.member }] : []),
+              ...(!isDirect && !isNotes ? [{ key: 'member', label: 'Участники', count: assetCounts.member }] : []),
             ].map((tab) => (
               <Box
                 key={tab.key}

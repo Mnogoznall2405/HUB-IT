@@ -14,11 +14,16 @@ class InventoryQueueStore:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._stats_cache_at = 0.0
+        self._stats_cache: Dict[str, Any] = {}
+        self._stats_cache_ttl_sec = 8.0
         self._initialize()
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path), timeout=30, check_same_thread=False)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
         return conn
 
     def _initialize(self) -> None:
@@ -46,6 +51,10 @@ class InventoryQueueStore:
             )
             conn.commit()
 
+    def _invalidate_stats_cache(self) -> None:
+        self._stats_cache_at = 0.0
+        self._stats_cache = {}
+
     def enqueue(self, payload: Dict[str, Any], dedupe_key: str) -> Dict[str, Any]:
         now_ts = int(time.time())
         queue_id = str(uuid.uuid4())
@@ -62,6 +71,7 @@ class InventoryQueueStore:
                     (queue_id, now_ts, dedupe_key, payload_json, now_ts),
                 )
                 conn.commit()
+                self._invalidate_stats_cache()
                 return {
                     "id": queue_id,
                     "created_at": now_ts,
@@ -103,6 +113,7 @@ class InventoryQueueStore:
                 [(row_id,) for row_id in ids],
             )
             conn.commit()
+            self._invalidate_stats_cache()
 
         claimed: List[Dict[str, Any]] = []
         for row in rows:
@@ -136,6 +147,7 @@ class InventoryQueueStore:
                 (processed_ts, queue_id),
             )
             conn.commit()
+        self._invalidate_stats_cache()
 
     def mark_retry(self, queue_id: str, *, error_text: str, next_attempt_at: int, attempt_count: int) -> None:
         with self._lock, self._connect() as conn:
@@ -148,6 +160,7 @@ class InventoryQueueStore:
                 (int(attempt_count), int(next_attempt_at), str(error_text or "")[:4000], queue_id),
             )
             conn.commit()
+        self._invalidate_stats_cache()
 
     def mark_dead(self, queue_id: str, *, error_text: str, processed_at: Optional[int], attempt_count: int) -> None:
         processed_ts = int(processed_at or time.time())
@@ -161,6 +174,7 @@ class InventoryQueueStore:
                 (int(attempt_count), processed_ts, str(error_text or "")[:4000], queue_id),
             )
             conn.commit()
+        self._invalidate_stats_cache()
 
     def cleanup_retention(self, *, done_retention_days: int, dead_retention_days: int) -> Dict[str, int]:
         now_ts = int(time.time())
@@ -189,7 +203,12 @@ class InventoryQueueStore:
         after_bytes = int(self.db_path.stat().st_size) if self.db_path.exists() else 0
         return {"before_bytes": before_bytes, "after_bytes": after_bytes, "saved_bytes": max(0, before_bytes - after_bytes)}
 
-    def queue_stats(self) -> Dict[str, Any]:
+    def queue_stats(self, *, use_cache: bool = True) -> Dict[str, Any]:
+        if use_cache:
+            now_mono = time.monotonic()
+            if self._stats_cache and (now_mono - self._stats_cache_at) < self._stats_cache_ttl_sec:
+                return dict(self._stats_cache)
+
         now_ts = int(time.time())
         with self._lock, self._connect() as conn:
             active_count = int(
@@ -213,8 +232,11 @@ class InventoryQueueStore:
             )
         oldest_created_at = int(oldest_row["created_at"]) if oldest_row is not None else None
         oldest_age = max(0, now_ts - oldest_created_at) if oldest_created_at is not None else None
-        return {
+        stats = {
             "queue_depth": active_count,
             "dead_letter_count": dead_count,
             "oldest_queued_age_sec": oldest_age,
         }
+        self._stats_cache_at = time.monotonic()
+        self._stats_cache = dict(stats)
+        return stats

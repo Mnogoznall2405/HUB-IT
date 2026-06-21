@@ -284,6 +284,8 @@ const ChatComposer = memo(function ChatComposer({
   selectedFilesSummary,
   replyMessage,
   onClearReply,
+  editingMessage,
+  onClearEditing,
   onOpenComposerMenu,
   composerRef,
   messageText,
@@ -668,6 +670,45 @@ const ChatComposer = memo(function ChatComposer({
           </Box>
         ) : null}
 
+        {editingMessage ? (
+          <div
+            className={joinClasses(
+              'mb-3 flex items-start justify-between gap-3 border px-4 py-3',
+              compactMobile ? 'rounded-[20px]' : 'rounded-[14px]',
+            )}
+            style={{
+              marginBottom: compactMobile ? undefined : density.composerReplyMarginBottom,
+              padding: compactMobile ? undefined : density.composerReplyPadding,
+              backgroundColor: alpha(ui.composerDockBg, 0.94),
+              borderColor: ui.borderSoft,
+              borderLeft: `3px solid ${theme.palette.warning.main}`,
+              boxShadow: ui.shadowSoft,
+            }}
+          >
+            <div className="min-w-0 flex-1">
+              <p className="truncate text-[12px] font-semibold" style={{ color: theme.palette.warning.main, fontFamily: CHAT_FONT_FAMILY, fontSize: composerAuxFontSize }}>
+                Редактирование
+              </p>
+              <p className="truncate text-[12px]" style={{ color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY, fontSize: composerAuxFontSize }}>
+                {getSearchResultPreview(editingMessage)}
+              </p>
+            </div>
+            <button
+              type="button"
+              aria-label="Отменить редактирование"
+              onClick={onClearEditing}
+              className="inline-flex h-8 w-8 items-center justify-center rounded-full transition duration-100 active:scale-[0.96] active:opacity-60"
+              style={{
+                width: compactMobile ? undefined : density.composerIconButton,
+                height: compactMobile ? undefined : density.composerIconButton,
+                color: composerDismissColor,
+              }}
+            >
+              <CloseRoundedIcon sx={{ fontSize: 16 }} />
+            </button>
+          </div>
+        ) : null}
+
         {replyMessage ? (
           <div
             className={joinClasses(
@@ -972,11 +1013,11 @@ const ChatComposer = memo(function ChatComposer({
           </Box>
 
           {canSendComposerMessage || voiceRecording ? (
-            <Tooltip title={voiceRecording ? 'Отправить' : 'Отправить'}>
+            <Tooltip title={voiceRecording ? 'Отправить' : (editingMessage ? 'Сохранить' : 'Отправить')}>
               <span>
                 <button
                   type="button"
-                  aria-label="Отправить"
+                  aria-label={editingMessage ? 'Сохранить' : 'Отправить'}
                   onClick={voiceRecording ? onStopVoiceRecording : () => void onSendMessage()}
                   onMouseDown={preserveComposerKeyboard}
                   onPointerDown={preserveComposerKeyboard}

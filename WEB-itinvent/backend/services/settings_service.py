@@ -20,12 +20,32 @@ class SettingsService:
 
     FILE_NAME = "web_user_settings.json"
     DASHBOARD_MOBILE_SECTION_KEYS = ("urgent", "announcements", "tasks")
+    MOBILE_BOTTOM_NAV_ITEM_PATHS = (
+        "/dashboard",
+        "/tasks",
+        "/tickets",
+        "/chat",
+        "/mail",
+        "/address-book",
+        "/passwords",
+        "/my-files",
+        "/database",
+        "/networks",
+        "/vcs",
+        "/mfu",
+        "/computers",
+        "/scan-center",
+        "/statistics",
+        "/kb",
+    )
+    DEFAULT_MOBILE_BOTTOM_NAV_ITEMS = ["/dashboard", "/tasks", "/chat", "/mail"]
     DEFAULTS = {
         "pinned_database": None,
         "theme_mode": "light",
         "font_family": "Aptos",
         "font_scale": 1.0,
         "dashboard_mobile_sections": ["urgent", "announcements", "tasks"],
+        "mobile_bottom_nav_items": DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
     }
     ALLOWED_FONT_FAMILIES = {"Aptos", "Inter", "Roboto", "Segoe UI"}
 
@@ -67,6 +87,28 @@ class SettingsService:
 
         return result or list(self.DEFAULTS["dashboard_mobile_sections"])
 
+    def _normalize_mobile_bottom_nav_items(self, value) -> list[str]:
+        if value is None:
+            return list(self.DEFAULT_MOBILE_BOTTOM_NAV_ITEMS)
+
+        raw_value = value
+        if isinstance(raw_value, str):
+            try:
+                raw_value = json.loads(raw_value)
+            except Exception:
+                return list(self.DEFAULT_MOBILE_BOTTOM_NAV_ITEMS)
+        if not isinstance(raw_value, (list, tuple)):
+            return list(self.DEFAULT_MOBILE_BOTTOM_NAV_ITEMS)
+
+        result: list[str] = []
+        for item in raw_value:
+            path = str(item or "").strip()
+            if path in self.MOBILE_BOTTOM_NAV_ITEM_PATHS and path not in result:
+                result.append(path)
+            if len(result) >= 4:
+                break
+        return result
+
     def _load_all(self) -> dict[str, dict]:
         if self._use_app_database:
             with app_session(self._database_url) as session:
@@ -78,6 +120,7 @@ class SettingsService:
                         "font_family": str(row.font_family or "Aptos"),
                         "font_scale": float(row.font_scale or 1.0),
                         "dashboard_mobile_sections": self._normalize_dashboard_mobile_sections(row.dashboard_mobile_sections_json),
+                        "mobile_bottom_nav_items": self._normalize_mobile_bottom_nav_items(row.mobile_bottom_nav_items_json),
                     }
                     for row in rows
                 }
@@ -107,6 +150,9 @@ class SettingsService:
                     row.dashboard_mobile_sections_json = json.dumps(
                         self._normalize_dashboard_mobile_sections(payload.get("dashboard_mobile_sections"))
                     )
+                    row.mobile_bottom_nav_items_json = json.dumps(
+                        self._normalize_mobile_bottom_nav_items(payload.get("mobile_bottom_nav_items"))
+                    )
                     row.updated_at = datetime.now(timezone.utc)
                 for user_id, row in existing_by_user_id.items():
                     if user_id not in incoming_ids:
@@ -129,6 +175,9 @@ class SettingsService:
         settings["font_scale"] = max(0.9, min(1.2, scale))
         settings["dashboard_mobile_sections"] = self._normalize_dashboard_mobile_sections(
             settings.get("dashboard_mobile_sections")
+        )
+        settings["mobile_bottom_nav_items"] = self._normalize_mobile_bottom_nav_items(
+            settings.get("mobile_bottom_nav_items")
         )
         return settings
 
@@ -153,6 +202,10 @@ class SettingsService:
         if "dashboard_mobile_sections" in patch:
             current["dashboard_mobile_sections"] = self._normalize_dashboard_mobile_sections(
                 patch.get("dashboard_mobile_sections")
+            )
+        if "mobile_bottom_nav_items" in patch:
+            current["mobile_bottom_nav_items"] = self._normalize_mobile_bottom_nav_items(
+                patch.get("mobile_bottom_nav_items")
             )
 
         data[key] = current

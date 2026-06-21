@@ -561,7 +561,79 @@ class TransferActReminderService:
         return item
 
     def enrich_tasks(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [self.enrich_task(task) for task in (tasks or [])]
+        normalized_tasks = list(tasks or [])
+        if not normalized_tasks:
+            return []
+        if len(normalized_tasks) == 1:
+            return [self.enrich_task(normalized_tasks[0])]
+        return self._enrich_tasks_batch(normalized_tasks)
+
+    def _enrich_tasks_batch(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        task_ids = [_normalize_text(task.get("id")) for task in tasks if _normalize_text(task.get("id"))]
+        if not task_ids:
+            return [dict(task) for task in tasks]
+        placeholders = ", ".join(["?"] * len(task_ids))
+        with self._lock, self._connect() as conn:
+            reminder_rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {self._REMINDERS_TABLE}
+                WHERE task_id IN ({placeholders})
+                """,
+                tuple(task_ids),
+            ).fetchall()
+            reminders_by_task = {
+                _normalize_text(row["task_id"]): dict(row)
+                for row in reminder_rows
+            }
+            reminder_ids = [
+                _normalize_text(row["reminder_id"])
+                for row in reminder_rows
+                if _normalize_text(row.get("reminder_id"))
+            ]
+            pending_counts: dict[str, int] = {}
+            completed_counts: dict[str, int] = {}
+            if reminder_ids:
+                group_placeholders = ", ".join(["?"] * len(reminder_ids))
+                group_rows = conn.execute(
+                    f"""
+                    SELECT reminder_id,
+                           SUM(CASE WHEN completed_at IS NULL OR completed_at = '' THEN 1 ELSE 0 END) AS pending_total,
+                           SUM(CASE WHEN completed_at IS NOT NULL AND completed_at <> '' THEN 1 ELSE 0 END) AS completed_total
+                    FROM {self._GROUPS_TABLE}
+                    WHERE reminder_id IN ({group_placeholders})
+                    GROUP BY reminder_id
+                    """,
+                    tuple(reminder_ids),
+                ).fetchall()
+                for row in group_rows:
+                    reminder_id = _normalize_text(row["reminder_id"])
+                    pending_counts[reminder_id] = int(row["pending_total"] or 0)
+                    completed_counts[reminder_id] = int(row["completed_total"] or 0)
+
+        enriched: list[dict[str, Any]] = []
+        for task in tasks:
+            item = dict(task or {})
+            reminder = reminders_by_task.get(_normalize_text(item.get("id")))
+            if not reminder:
+                item["integration_kind"] = None
+                item["integration_payload"] = None
+                enriched.append(item)
+                continue
+            reminder_id_value = _normalize_text(reminder.get("reminder_id"))
+            task_id_value = _normalize_text(reminder.get("task_id"))
+            db_id = _normalize_text(reminder.get("db_id")) or None
+            item["integration_kind"] = "transfer_act_upload"
+            item["integration_payload"] = {
+                "reminder_id": reminder_id_value,
+                "pending_groups_total": pending_counts.get(reminder_id_value, 0),
+                "completed_groups_total": completed_counts.get(reminder_id_value, 0),
+                "pending_groups": [],
+                "upload_url": self._build_upload_url(reminder_id=reminder_id_value, task_id=task_id_value, db_id=db_id),
+                "db_id": db_id,
+            }
+            enriched.append(item)
+        return enriched
 
     def _find_matching_groups(
         self,

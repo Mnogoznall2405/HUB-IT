@@ -21,6 +21,7 @@ import { chatMessageSendingAPI } from './chatMessageSending';
 import { chatAttachmentsAPI } from './chatAttachments';
 import { chatUploadSessionsAPI } from './chatUploadSessions';
 import { chatFileUploadsAPI } from './chatFileUploads';
+import { chatFoldersAPI } from './chatFolders';
 import { equipmentComputersAPI } from './equipmentComputers';
 import { equipmentConsumablesAPI } from './equipmentConsumables';
 import { equipmentDirectoriesAPI } from './equipmentDirectories';
@@ -33,6 +34,7 @@ import { hubDashboardAPI } from './hubDashboard';
 import { hubMarkdownAPI } from './hubMarkdown';
 import { hubNotificationsAPI } from './hubNotifications';
 import { hubTaskActivityAPI } from './hubTaskActivity';
+import { hubTaskDiscussionAPI } from './hubTaskDiscussion';
 import { hubTaskAnalyticsAPI } from './hubTaskAnalytics';
 import { hubTaskFilesAPI } from './hubTaskFiles';
 import { hubTaskSupportAPI } from './hubTaskSupport';
@@ -446,6 +448,10 @@ export const authAPI = {
     return authUserAdminAPI.getTaskDelegates;
   },
 
+  get getTaskDelegatesBulk() {
+    return authUserAdminAPI.getTaskDelegatesBulk;
+  },
+
   get updateTaskDelegates() {
     return authUserAdminAPI.updateTaskDelegates;
   },
@@ -554,6 +560,10 @@ export const chatAPI = {
     return chatConversationsAPI.createDirectConversation;
   },
 
+  get ensureNotesConversation() {
+    return chatConversationsAPI.ensureNotesConversation;
+  },
+
   get createGroupConversation() {
     return chatGroupsAPI.createGroupConversation;
   },
@@ -588,6 +598,10 @@ export const chatAPI = {
 
   get deleteChatMessage() {
     return chatThreadMessagesAPI.deleteChatMessage;
+  },
+
+  get editChatMessage() {
+    return chatThreadMessagesAPI.editChatMessage;
   },
 
   get getThreadBootstrap() {
@@ -664,6 +678,38 @@ export const chatAPI = {
 
   get toggleReaction() {
     return chatThreadMessagesAPI.toggleReaction;
+  },
+
+  get listChatFolders() {
+    return chatFoldersAPI.listFolders;
+  },
+
+  get createChatFolder() {
+    return chatFoldersAPI.createFolder;
+  },
+
+  get updateChatFolder() {
+    return chatFoldersAPI.updateFolder;
+  },
+
+  get deleteChatFolder() {
+    return chatFoldersAPI.deleteFolder;
+  },
+
+  get getChatFolder() {
+    return chatFoldersAPI.getFolder;
+  },
+
+  get setChatFolderConversations() {
+    return chatFoldersAPI.setFolderConversations;
+  },
+
+  get addChatFolderConversation() {
+    return chatFoldersAPI.addFolderConversation;
+  },
+
+  get removeChatFolderConversation() {
+    return chatFoldersAPI.removeFolderConversation;
   },
 };
 
@@ -834,6 +880,14 @@ export const hubAPI = {
     return hubTaskActivityAPI.getTaskStatusLog;
   },
 
+  get getTaskDiscussion() {
+    return hubTaskDiscussionAPI.getTaskDiscussion;
+  },
+
+  get openTaskDiscussion() {
+    return hubTaskDiscussionAPI.openTaskDiscussion;
+  },
+
 };
 
 export {
@@ -854,6 +908,7 @@ export {
   chatAttachmentsAPI,
   chatUploadSessionsAPI,
   chatFileUploadsAPI,
+  chatFoldersAPI,
   equipmentComputersAPI,
   equipmentConsumablesAPI,
   equipmentDirectoriesAPI,
@@ -866,6 +921,7 @@ export {
   hubMarkdownAPI,
   hubNotificationsAPI,
   hubTaskActivityAPI,
+  hubTaskDiscussionAPI,
   hubTaskAnalyticsAPI,
   hubTaskFilesAPI,
   hubTaskSupportAPI,

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Box,
+  CircularProgress,
   Dialog,
   DialogContent,
   DialogTitle,
@@ -52,8 +53,10 @@ export default function ChatMediaPreviewDialog({
   const [previewChromeVisible, setPreviewChromeVisible] = useState(true);
   const [previewMenuAnchorEl, setPreviewMenuAnchorEl] = useState(null);
   const [activePreviewUrl, setActivePreviewUrl] = useState('');
+  const [mediaLoadState, setMediaLoadState] = useState('idle');
   const previewMenuOpen = Boolean(previewMenuAnchorEl);
   const previewChromeActive = previewChromeVisible || previewMenuOpen;
+  const previewIsProcessing = Boolean(attachmentPreview?.isProcessing);
   const previewItems = useMemo(() => {
     const items = Array.isArray(attachmentPreview?.items) ? attachmentPreview.items : [];
     if (items.length > 0) return items;
@@ -91,6 +94,7 @@ export default function ChatMediaPreviewDialog({
     .join(' • ');
   const previewMediaUrl = activePreviewOriginalUrl || activePreviewUrl || activePreviewBaseUrl;
   const previewDownloadName = activePreviewItem?.file_name || attachmentPreview?.attachment?.file_name || undefined;
+  const previewLoadingLabel = previewIsProcessing ? 'Отправка фото…' : 'Загрузка изображения…';
 
   useEffect(() => {
     setPreviewIndex(clampPreviewIndex(attachmentPreview?.activeIndex, previewItems.length));
@@ -99,6 +103,7 @@ export default function ChatMediaPreviewDialog({
   useEffect(() => {
     const nextBaseUrl = activePreviewBaseUrl || activePreviewOriginalUrl;
     setActivePreviewUrl(nextBaseUrl);
+    setMediaLoadState(nextBaseUrl ? 'loading' : 'idle');
     if (!nextBaseUrl || !activePreviewOriginalUrl || nextBaseUrl === activePreviewOriginalUrl || activePreviewIsVideo) {
       return undefined;
     }
@@ -107,6 +112,7 @@ export default function ChatMediaPreviewDialog({
     image.onload = () => {
       if (!cancelled) {
         setActivePreviewUrl(activePreviewOriginalUrl);
+        setMediaLoadState('loading');
       }
     };
     image.onerror = () => {};
@@ -428,12 +434,14 @@ export default function ChatMediaPreviewDialog({
                 bumpPreviewChromeVisibility(true);
               }}
               sx={{
+                position: 'relative',
                 width: '100%',
                 display: 'flex',
                 alignItems: 'center',
                 justifyContent: 'center',
                 px: fullScreen ? 0 : { xs: 1.5, md: 4 },
                 cursor: canStepPreview && !activePreviewIsVideo ? 'grab' : 'default',
+                minHeight: fullScreen ? 'calc(100dvh - 96px)' : 'calc(100dvh - 120px)',
               }}
             >
               {activePreviewIsVideo ? (
@@ -463,17 +471,25 @@ export default function ChatMediaPreviewDialog({
                     }}
                     onPlay={() => bumpPreviewChromeVisibility()}
                     onPause={() => bumpPreviewChromeVisibility(true)}
+                    onLoadedData={() => setMediaLoadState('ready')}
+                    onWaiting={() => setMediaLoadState('loading')}
+                    onError={() => setMediaLoadState('error')}
                   />
                 </Box>
               ) : (
                 <Box
                   component="img"
                   src={activePreviewUrl}
-                  alt={activePreviewItem?.file_name || 'Изображение'}
+                  alt=""
+                  aria-hidden="true"
+                  onLoad={() => setMediaLoadState('ready')}
                   onError={() => {
                     if (activePreviewOriginalUrl && activePreviewUrl !== activePreviewOriginalUrl) {
                       setActivePreviewUrl(activePreviewOriginalUrl);
+                      setMediaLoadState('loading');
+                      return;
                     }
+                    setMediaLoadState('error');
                   }}
                   sx={{
                     display: 'block',
@@ -482,9 +498,67 @@ export default function ChatMediaPreviewDialog({
                     objectFit: 'contain',
                     borderRadius: 0,
                     boxShadow: 'none',
+                    opacity: mediaLoadState === 'ready' ? 1 : 0,
+                    transition: 'opacity 180ms ease',
                   }}
                 />
               )}
+              {mediaLoadState === 'loading' ? (
+                <Stack
+                  data-testid="chat-attachment-preview-loading"
+                  alignItems="center"
+                  justifyContent="center"
+                  spacing={1.5}
+                  sx={{
+                    position: 'absolute',
+                    inset: 0,
+                    pointerEvents: 'none',
+                  }}
+                >
+                  <CircularProgress size={44} thickness={3.5} sx={{ color: alpha('#fff', 0.92) }} />
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: alpha('#fff', 0.88),
+                      fontWeight: 600,
+                      textShadow: '0 1px 12px rgba(0,0,0,0.72)',
+                    }}
+                  >
+                    {previewLoadingLabel}
+                  </Typography>
+                </Stack>
+              ) : null}
+              {mediaLoadState === 'error' ? (
+                <Stack
+                  data-testid="chat-attachment-preview-error"
+                  alignItems="center"
+                  justifyContent="center"
+                  spacing={1}
+                  sx={{
+                    position: 'absolute',
+                    inset: 0,
+                    px: 3,
+                    textAlign: 'center',
+                  }}
+                >
+                  <Typography
+                    variant="body2"
+                    sx={{
+                      color: alpha('#fff', 0.88),
+                      fontWeight: 600,
+                      textShadow: '0 1px 12px rgba(0,0,0,0.72)',
+                    }}
+                  >
+                    {previewIsProcessing ? 'Фото ещё отправляется' : 'Не удалось загрузить изображение'}
+                  </Typography>
+                  <Typography
+                    variant="caption"
+                    sx={{ color: alpha('#fff', 0.68) }}
+                  >
+                    Подождите немного и попробуйте снова
+                  </Typography>
+                </Stack>
+              ) : null}
             </Box>
           ) : null}
         </AnimatePresence>

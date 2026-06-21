@@ -1,7 +1,10 @@
 param(
     [string]$BackendUrl = 'http://127.0.0.1:8001/health',
+    [string]$BackendReadyUrl = 'http://127.0.0.1:8001/health/ready',
     [string]$BackendSecondaryUrl = '',
+    [string]$BackendSecondaryReadyUrl = '',
     [string]$InventoryUrl = 'http://127.0.0.1:8012/health',
+    [string]$InventoryReadyUrl = 'http://127.0.0.1:8012/health/ready',
     [string]$ScanUrl = 'http://127.0.0.1:8011/health',
     [switch]$RepairBackend
 )
@@ -364,14 +367,17 @@ $healthRows = @(
     Test-HttpHealth -Name 'inventory-health' -Url $InventoryUrl
     Test-HttpHealth -Name 'scan-health' -Url $ScanUrl
 )
+$chatRuntimeRows = @(
+    Test-BackendChatRuntime -Name 'backend-chat-runtime' -Url $BackendReadyUrl
+)
 if ($BackendSecondaryUrl) {
     $healthRows += Test-HttpHealth -Name 'backend-secondary-health' -Url $BackendSecondaryUrl
 }
-$chatRuntimeRows = @(
-    Test-BackendChatRuntime -Name 'backend-chat-runtime' -Url $BackendUrl
-)
-if ($BackendSecondaryUrl) {
-    $chatRuntimeRows += Test-BackendChatRuntime -Name 'backend-secondary-chat-runtime' -Url $BackendSecondaryUrl
+if ($BackendSecondaryReadyUrl) {
+    $chatRuntimeRows += Test-BackendChatRuntime -Name 'backend-secondary-chat-runtime' -Url $BackendSecondaryReadyUrl
+} elseif ($BackendSecondaryUrl) {
+    $secondaryReadyUrl = ($BackendSecondaryUrl -replace '/health/?$', '/health/ready')
+    $chatRuntimeRows += Test-BackendChatRuntime -Name 'backend-secondary-chat-runtime' -Url $secondaryReadyUrl
 }
 $pm2RuntimeRows = @(
     Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-backend'

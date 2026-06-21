@@ -135,7 +135,10 @@ _DIRECT_DESCRIPTIONS = {
     "LDAP_BASE_DN": ("Active Directory", "Base DN для поиска пользователей в AD."),
     "LDAP_SYNC_USER": ("Active Directory", "Логин сервисной учётной записи для синхронизации AD."),
     "LDAP_SYNC_PASSWORD": ("Active Directory", "Пароль сервисной учётной записи для синхронизации AD."),
-    "LDAP_SYNC_INTERVAL_SECONDS": ("Active Directory", "Интервал фоновой синхронизации AD в секундах."),
+    "LDAP_SYNC_INTERVAL_SECONDS": ("Active Directory", "Интервал фоновой синхронизации AD в SQL OWNERS (секунды)."),
+    "LDAP_APP_USER_SYNC_ENABLED": ("Active Directory", "Фоновая синхронизация web-пользователей из AD (1/0)."),
+    "LDAP_APP_USER_SYNC_INTERVAL_SECONDS": ("Active Directory", "Интервал фоновой синхронизации web-пользователей из AD (секунды)."),
+    "LDAP_APP_USER_IMPORT_PERSON_ONLY": ("Active Directory", "Импортировать только учётки сотрудников, без сервисных и mailbox (1/0)."),
     "AD_PASSWORD_MAX_AGE_DAYS": ("Active Directory", "Срок действия пароля AD в днях для AI-проверки и отчёта."),
     "SCAN_AGENT_SCAN_ON_START": (
         "Scan backend",

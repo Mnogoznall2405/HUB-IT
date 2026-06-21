@@ -12,7 +12,7 @@ from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from starlette.websockets import WebSocketState
 
 from backend.api.deps import ensure_user_permission, get_current_database_id, get_current_user_from_websocket, require_permission
@@ -27,6 +27,12 @@ from backend.chat.schemas import (
     ChatConversationListResponse,
     ChatConversationMembersRequest,
     ChatConversationSummary,
+    ChatFolderCreateRequest,
+    ChatFolderListResponse,
+    ChatFolderMembershipUpdateRequest,
+    ChatFolderMutationResponse,
+    ChatFolderSummary,
+    ChatFolderUpdateRequest,
     ChatHealthResponse,
     ChatMessageSearchResponse,
     ChatThreadBootstrapResponse,
@@ -50,6 +56,7 @@ from backend.chat.schemas import (
     ChatReactionToggleRequest,
     ChatReactionToggleResponse,
     DirectConversationRequest,
+    EditMessageRequest,
     ForwardMessageRequest,
     GroupConversationRequest,
     MarkReadRequest,
@@ -452,12 +459,6 @@ async def _publish_message_created(
             conversation_id=conversation_id,
             payload=payload,
         )
-        await chat_realtime.publish_conversation_event(
-            user_id=int(member_user_id),
-            conversation_id=conversation_id,
-            event_type="chat.message.created",
-            payload=payload,
-        )
         if (conversation_payload := conversation_updates_by_user.get(int(member_user_id))) is not None:
             await chat_realtime.publish_inbox_event(
                 user_id=int(member_user_id),
@@ -629,6 +630,82 @@ async def _publish_message_deleted_after_soft_delete(*, conversation_id: str, me
     )
 
 
+async def _publish_message_updated(
+    *,
+    conversation_id: str,
+    message_id: str,
+    member_user_ids: list[int],
+) -> None:
+    member_ids = sorted({
+        int(item)
+        for item in list(member_user_ids or [])
+        if int(item) > 0
+    })
+    if not member_ids:
+        return
+
+    messages_by_user = await _run_chat_call(
+        chat_service.get_messages_for_users,
+        message_id=message_id,
+        user_ids=member_ids,
+    )
+    conversation_updates_by_user, unread_summaries_by_user = await asyncio.gather(
+        _get_conversation_updates_for_users(
+            conversation_id=conversation_id,
+            user_ids=member_ids,
+            reason="message_updated",
+        ),
+        _get_unread_summaries(member_ids),
+    )
+
+    async def _publish_for_member(member_user_id: int, payload: dict) -> None:
+        await chat_realtime.publish_inbox_event(
+            user_id=int(member_user_id),
+            event_type="chat.message.updated",
+            conversation_id=conversation_id,
+            payload=payload,
+        )
+        await chat_realtime.publish_conversation_event(
+            user_id=int(member_user_id),
+            conversation_id=conversation_id,
+            event_type="chat.message.updated",
+            payload=payload,
+        )
+        if (conversation_payload := conversation_updates_by_user.get(int(member_user_id))) is not None:
+            await chat_realtime.publish_inbox_event(
+                user_id=int(member_user_id),
+                event_type="chat.conversation.updated",
+                conversation_id=conversation_id,
+                payload=conversation_payload,
+            )
+        if (unread_payload := unread_summaries_by_user.get(int(member_user_id))) is not None:
+            await chat_realtime.publish_inbox_event(
+                user_id=int(member_user_id),
+                event_type="chat.unread.summary",
+                payload=unread_payload,
+            )
+
+    publish_tasks = [
+        _publish_for_member(int(member_user_id), payload)
+        for member_user_id in member_ids
+        if (payload := messages_by_user.get(member_user_id)) is not None
+    ]
+    if publish_tasks:
+        await asyncio.gather(*publish_tasks)
+
+
+async def _publish_message_updated_after_edit(*, conversation_id: str, message_id: str) -> None:
+    member_user_ids = await _run_chat_call(
+        chat_service.get_conversation_member_ids,
+        conversation_id=conversation_id,
+    )
+    await _publish_message_updated(
+        conversation_id=conversation_id,
+        message_id=message_id,
+        member_user_ids=member_user_ids,
+    )
+
+
 async def _publish_message_read(
     *,
     conversation_id: str,
@@ -764,6 +841,135 @@ async def get_chat_health(
     current_user: User = Depends(require_permission(PERM_CHAT_READ)),
 ):
     return await _run_chat_call(chat_service.get_health)
+
+
+@router.get("/folders", response_model=ChatFolderListResponse)
+async def list_chat_folders(
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        return await _run_chat_call(chat_service.list_chat_folders, current_user_id=int(current_user.id))
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.post("/folders", response_model=ChatFolderMutationResponse)
+async def create_chat_folder(
+    payload: ChatFolderCreateRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        item = await _run_chat_call(
+            chat_service.create_chat_folder,
+            current_user_id=int(current_user.id),
+            name=payload.name,
+        )
+        return {"ok": True, "item": item}
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.get("/folders/{folder_id}", response_model=ChatFolderSummary)
+async def get_chat_folder(
+    folder_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        return await _run_chat_call(
+            chat_service.get_chat_folder,
+            current_user_id=int(current_user.id),
+            folder_id=folder_id,
+        )
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.patch("/folders/{folder_id}", response_model=ChatFolderMutationResponse)
+async def update_chat_folder(
+    folder_id: str,
+    payload: ChatFolderUpdateRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        item = await _run_chat_call(
+            chat_service.update_chat_folder,
+            current_user_id=int(current_user.id),
+            folder_id=folder_id,
+            name=payload.name,
+            sort_order=payload.sort_order,
+        )
+        return {"ok": True, "item": item}
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.delete("/folders/{folder_id}")
+async def delete_chat_folder(
+    folder_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        return await _run_chat_call(
+            chat_service.delete_chat_folder,
+            current_user_id=int(current_user.id),
+            folder_id=folder_id,
+        )
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.put("/folders/{folder_id}/conversations", response_model=ChatFolderMutationResponse)
+async def set_chat_folder_conversations(
+    folder_id: str,
+    payload: ChatFolderMembershipUpdateRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        item = await _run_chat_call(
+            chat_service.set_chat_folder_conversations,
+            current_user_id=int(current_user.id),
+            folder_id=folder_id,
+            conversation_ids=list(payload.conversation_ids or []),
+        )
+        return {"ok": True, "item": item}
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.post("/folders/{folder_id}/conversations/{conversation_id}", response_model=ChatFolderMutationResponse)
+async def add_chat_folder_conversation(
+    folder_id: str,
+    conversation_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        item = await _run_chat_call(
+            chat_service.add_chat_folder_conversation,
+            current_user_id=int(current_user.id),
+            folder_id=folder_id,
+            conversation_id=conversation_id,
+        )
+        return {"ok": True, "item": item}
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.delete("/folders/{folder_id}/conversations/{conversation_id}", response_model=ChatFolderMutationResponse)
+async def remove_chat_folder_conversation(
+    folder_id: str,
+    conversation_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        item = await _run_chat_call(
+            chat_service.remove_chat_folder_conversation,
+            current_user_id=int(current_user.id),
+            folder_id=folder_id,
+            conversation_id=conversation_id,
+        )
+        return {"ok": True, "item": item}
+    except Exception as exc:
+        _raise_chat_http_error(exc)
 
 
 @router.get("/users", response_model=ChatUsersResponse)
@@ -944,6 +1150,26 @@ async def create_direct_conversation(
                 reason="created",
             )
             await _publish_unread_summary(int(member_user_id))
+        return conversation
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.post("/conversations/notes", response_model=ChatConversationSummary)
+async def ensure_notes_conversation(
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        conversation = await _run_chat_call(
+            chat_service.get_or_create_notes_conversation,
+            current_user_id=int(current_user.id),
+        )
+        await _publish_conversation_updated(
+            conversation_id=conversation["id"],
+            user_id=int(current_user.id),
+            reason="created",
+        )
+        await _publish_unread_summary(int(current_user.id))
         return conversation
     except Exception as exc:
         _raise_chat_http_error(exc)
@@ -1245,6 +1471,34 @@ async def delete_chat_message(
         _raise_chat_http_error(exc)
 
 
+@router.patch("/conversations/{conversation_id}/messages/{message_id}", response_model=ChatMessageResponse)
+async def edit_chat_message(
+    conversation_id: str,
+    message_id: str,
+    payload: EditMessageRequest,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        message = await _run_chat_call(
+            chat_service.edit_message,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+            message_id=message_id,
+            body=payload.body,
+            body_format=payload.body_format,
+        )
+        _schedule_chat_background_task(
+            _publish_message_updated_after_edit(
+                conversation_id=conversation_id,
+                message_id=message_id,
+            ),
+            label="publish_message_updated",
+        )
+        return message
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
 @router.post("/conversations/{conversation_id}/messages/{message_id}/reactions", response_model=ChatReactionToggleResponse)
 async def toggle_chat_message_reaction(
     conversation_id: str,
@@ -1256,6 +1510,7 @@ async def toggle_chat_message_reaction(
         result = await _run_chat_call(
             chat_service.toggle_reaction,
             current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
             message_id=message_id,
             emoji=payload.emoji,
         )
@@ -1869,6 +2124,50 @@ async def download_chat_attachment(
         media_type=attachment["mime_type"],
         content_disposition_type="inline" if inline else "attachment",
     )
+
+
+def _build_chat_attachment_content_disposition(filename: str, disposition: str = "attachment") -> str:
+    safe_name = str(filename or "attachment.bin").replace('"', "'")
+    return f'{disposition}; filename="{safe_name}"'
+
+
+@router.get("/messages/{message_id}/attachments/{attachment_id}/preview")
+async def get_chat_attachment_preview(
+    message_id: str,
+    attachment_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        return await _run_chat_call(
+            chat_service.get_attachment_preview,
+            current_user_id=int(current_user.id),
+            message_id=message_id,
+            attachment_id=attachment_id,
+        )
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.get("/messages/{message_id}/attachments/{attachment_id}/preview/pdf")
+async def download_chat_attachment_preview_pdf(
+    message_id: str,
+    attachment_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        filename, content = await _run_chat_call(
+            chat_service.download_attachment_preview_pdf,
+            current_user_id=int(current_user.id),
+            message_id=message_id,
+            attachment_id=attachment_id,
+        )
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+    headers = {
+        "Content-Disposition": _build_chat_attachment_content_disposition(filename, disposition="inline"),
+        "Cache-Control": "private, max-age=300",
+    }
+    return Response(content=content, media_type="application/pdf", headers=headers)
 
 
 @router.get("/messages/{message_id}/reads", response_model=ChatMessageReadsResponse)

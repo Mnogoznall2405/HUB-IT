@@ -36,6 +36,8 @@ from backend.chat.db import (
 from backend.chat.models import (
     ChatConversation,
     ChatConversationUserState,
+    ChatFolder,
+    ChatFolderConversation,
     ChatMember,
     ChatMessage,
     ChatMessageAttachment,
@@ -253,6 +255,13 @@ def _direct_key(user_a: int, user_b: int) -> str:
     return f"{first}:{second}"
 
 
+def _notes_key(user_id: int) -> str:
+    return f"notes:{int(user_id)}"
+
+
+NOTES_CONVERSATION_TITLE = "Заметки"
+
+
 CHAT_MAX_FILES_PER_MESSAGE = 5
 CHAT_MAX_TOTAL_FILE_BYTES = 1024 * 1024 * 1024
 CHAT_MAX_MESSAGE_BODY_LENGTH = 12000
@@ -428,6 +437,8 @@ class ChatService:
         self._cache_lock = RLock()
         self._runtime_cache: dict[str, tuple[datetime, Any]] = {}
         self._presence_cache: dict[str, tuple[datetime, dict]] = {}
+        self._health_cache: tuple[float, dict[str, Any]] | None = None
+        self._health_cache_ttl_sec = 10.0
         self._upload_cleanup_task: asyncio.Task | None = None
         self._upload_cleanup_stop_event: asyncio.Event | None = None
 
@@ -647,7 +658,14 @@ class ChatService:
                 continue
 
     def get_health(self) -> dict:
-        status = self.initialize_runtime(force=True)
+        now_mono = time.monotonic()
+        with self._cache_lock:
+            if self._health_cache is not None:
+                cached_at, cached_payload = self._health_cache
+                if (now_mono - cached_at) < self._health_cache_ttl_sec:
+                    return dict(cached_payload)
+
+        status = self.initialize_runtime(force=False)
         try:
             from backend.chat.push_outbox_service import chat_push_outbox_service
             push_outbox_snapshot = dict(chat_push_outbox_service.get_backlog_snapshot() or {})
@@ -683,7 +701,7 @@ class ChatService:
         except Exception:
             ai_worker_concurrency = 2
         realtime_mode = "redis" if (redis_available and pubsub_subscribed) else ("local_fallback" if redis_configured else "local")
-        return {
+        payload = {
             "enabled": bool(status.enabled),
             "configured": bool(status.configured),
             "available": bool(status.available),
@@ -714,6 +732,9 @@ class ChatService:
             "ai_kb_index_age_sec": float(ai_kb_metrics.get("index_age_sec", 0.0) or 0.0),
             "ai_last_run_duration_ms": float(ai_runtime_metrics.get("last_run_duration_ms", 0.0) or 0.0),
         }
+        with self._cache_lock:
+            self._health_cache = (time.monotonic(), dict(payload))
+        return payload
 
     def _get_upload_session_lock(self, session_id: str) -> RLock:
         return self._upload_sessions.lock_for(session_id)
@@ -2439,17 +2460,35 @@ class ChatService:
             items.sort(key=lambda item: item.get("read_at") or "", reverse=True)
             return {"items": items}
 
-    def toggle_reaction(self, *, current_user_id: int, message_id: str, emoji: str) -> dict:
+    def toggle_reaction(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        message_id: str,
+        emoji: str,
+    ) -> dict:
         self._ensure_available()
+        normalized_conversation_id = _normalize_text(conversation_id)
         normalized_message_id = _normalize_text(message_id)
         normalized_emoji = _normalize_text(emoji)
+        if not normalized_conversation_id:
+            raise ValueError("conversation_id is required")
         if not normalized_message_id or not normalized_emoji:
             raise ValueError("message_id and emoji are required")
         if len(normalized_emoji) > 32:
             raise ValueError("emoji too long")
         with chat_session() as session:
+            self._require_membership(
+                session=session,
+                conversation_id=normalized_conversation_id,
+                current_user_id=int(current_user_id),
+            )
             message = session.execute(
-                select(ChatMessage).where(ChatMessage.id == normalized_message_id)
+                select(ChatMessage).where(
+                    ChatMessage.id == normalized_message_id,
+                    ChatMessage.conversation_id == normalized_conversation_id,
+                )
             ).scalar_one_or_none()
             if message is None:
                 raise KeyError(f"Message {normalized_message_id!r} not found")
@@ -2987,6 +3026,96 @@ class ChatService:
                 "mime_type": _normalize_text(attachment.mime_type) or "application/octet-stream",
             }
 
+    def _read_attachment_content(
+        self,
+        *,
+        current_user_id: int,
+        message_id: str,
+        attachment_id: str,
+    ) -> tuple[str, str, bytes]:
+        meta = self.get_attachment_for_download(
+            current_user_id=int(current_user_id),
+            message_id=message_id,
+            attachment_id=attachment_id,
+        )
+        file_path = Path(str(meta.get("path") or ""))
+        if not file_path.exists() or not file_path.is_file():
+            raise LookupError("Attachment file not found")
+        return (
+            str(meta.get("file_name") or "attachment.bin"),
+            _normalize_text(meta.get("mime_type")) or "application/octet-stream",
+            file_path.read_bytes(),
+        )
+
+    def get_attachment_preview(
+        self,
+        *,
+        current_user_id: int,
+        message_id: str,
+        attachment_id: str,
+    ) -> dict:
+        from backend.services.mail_attachment_preview_service import (
+            MailAttachmentPreviewError,
+            build_office_preview_artifact,
+            build_preview_metadata,
+            classify_office_source,
+        )
+
+        filename, content_type, content = self._read_attachment_content(
+            current_user_id=int(current_user_id),
+            message_id=message_id,
+            attachment_id=attachment_id,
+        )
+        if not classify_office_source(filename=filename, content_type=content_type):
+            raise ValueError("Attachment type is not supported for Office preview.")
+        try:
+            artifact = build_office_preview_artifact(
+                filename=filename,
+                content_type=content_type,
+                content=content,
+            )
+        except MailAttachmentPreviewError as exc:
+            raise ValueError(str(exc)) from exc
+        preview_pdf_path = (
+            f"/api/v1/chat/messages/{message_id}/attachments/{attachment_id}/preview/pdf"
+        )
+        return build_preview_metadata(
+            filename=filename,
+            content_type=content_type,
+            artifact=artifact,
+            preview_pdf_path=preview_pdf_path,
+        )
+
+    def download_attachment_preview_pdf(
+        self,
+        *,
+        current_user_id: int,
+        message_id: str,
+        attachment_id: str,
+    ) -> tuple[str, bytes]:
+        from backend.services.mail_attachment_preview_service import (
+            MailAttachmentPreviewError,
+            build_office_preview_artifact,
+            classify_office_source,
+        )
+
+        filename, content_type, content = self._read_attachment_content(
+            current_user_id=int(current_user_id),
+            message_id=message_id,
+            attachment_id=attachment_id,
+        )
+        if not classify_office_source(filename=filename, content_type=content_type):
+            raise ValueError("Attachment type is not supported for Office preview.")
+        try:
+            artifact = build_office_preview_artifact(
+                filename=filename,
+                content_type=content_type,
+                content=content,
+            )
+        except MailAttachmentPreviewError as exc:
+            raise ValueError(str(exc)) from exc
+        return artifact.pdf_filename, artifact.pdf_bytes
+
     def create_direct_conversation(self, *, current_user_id: int, peer_user_id: int) -> dict:
         self._ensure_available()
         creator = self._require_active_user(int(current_user_id))
@@ -3064,6 +3193,62 @@ class ChatService:
         self._invalidate_user_cache(user_id=int(peer["id"]), bucket="conversations")
         return payload
 
+    def get_or_create_notes_conversation(self, *, current_user_id: int) -> dict:
+        self._ensure_available()
+        owner = self._require_active_user(int(current_user_id))
+        notes_key = _notes_key(int(current_user_id))
+        with chat_session() as session:
+            existing = session.execute(
+                select(ChatConversation).where(
+                    ChatConversation.kind == "notes",
+                    ChatConversation.direct_key == notes_key,
+                )
+            ).scalar_one_or_none()
+            if existing:
+                return self._build_conversation_payload(session, existing, int(current_user_id))
+
+            now = _utc_now()
+            conversation = ChatConversation(
+                id=str(uuid4()),
+                kind="notes",
+                direct_key=notes_key,
+                title=NOTES_CONVERSATION_TITLE,
+                created_by_user_id=int(current_user_id),
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(conversation)
+            session.flush()
+            session.add(
+                ChatMember(
+                    conversation_id=conversation.id,
+                    user_id=int(current_user_id),
+                    member_role="owner",
+                    joined_at=now,
+                )
+            )
+            session.add(
+                ChatConversationUserState(
+                    conversation_id=conversation.id,
+                    user_id=int(current_user_id),
+                    is_pinned=True,
+                    opened_at=now,
+                    updated_at=now,
+                )
+            )
+            session.flush()
+            presence_map = self._get_presence_map(user_ids={int(current_user_id)})
+            payload = self._build_conversation_payload(
+                session,
+                conversation,
+                int(current_user_id),
+                users_override={
+                    int(current_user_id): self._serialize_user(owner, presence_map=presence_map),
+                },
+            )
+        self._invalidate_user_cache(user_id=int(current_user_id), bucket="conversations")
+        return payload
+
     def create_group_conversation(self, *, current_user_id: int, title: str, member_user_ids: list[int]) -> dict:
         self._ensure_available()
         normalized_title = _normalize_text(title)
@@ -3135,6 +3320,8 @@ class ChatService:
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
             )
+            if _normalize_text(conversation.kind) == "task":
+                raise ValueError("Task discussion members are managed by Hub tasks")
             conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
             actor = self._require_active_user(int(current_user_id))
             active_member_ids = set(self._conversation_member_ids(session, conversation.id))
@@ -3773,7 +3960,7 @@ class ChatService:
         affected_user_ids: set[int] = {int(current_user_id)}
         system_message_id: str | None = None
         with chat_session() as session:
-            conversation, actor_member = self._require_group_membership(
+            conversation = self._require_membership(
                 session=session,
                 conversation_id=conversation_id,
                 current_user_id=int(current_user_id),
@@ -3785,9 +3972,18 @@ class ChatService:
             if self._normalize_message_kind(getattr(message, "kind", "text")) == "system":
                 raise ValueError("System messages cannot be deleted")
 
-            actor_role = _normalize_member_role(actor_member.member_role)
+            is_group = _normalize_text(conversation.kind) == "group"
+            actor_member = self._get_active_membership(
+                session=session,
+                conversation_id=conversation.id,
+                user_id=int(current_user_id),
+            ) if is_group else None
+            actor_role = _normalize_member_role(actor_member.member_role) if actor_member else "member"
             is_own_message = int(getattr(message, "sender_user_id", 0) or 0) == int(current_user_id)
-            if not is_own_message and actor_role not in CHAT_GROUP_MANAGER_ROLES:
+            if is_group:
+                if not is_own_message and actor_role not in CHAT_GROUP_MANAGER_ROLES:
+                    raise PermissionError("Message delete access denied")
+            elif not is_own_message:
                 raise PermissionError("Message delete access denied")
 
             now = _utc_now()
@@ -3797,18 +3993,22 @@ class ChatService:
                 message.deleted_by_user_id = int(current_user_id)
                 message.deleted_reason = "self" if is_own_message else "moderated"
 
-                actor = self._require_active_user(int(current_user_id))
-                member_user_ids = self._conversation_member_ids(session, conversation.id)
-                system_message = self._append_system_message(
-                    session=session,
-                    conversation=conversation,
-                    actor_user_id=int(current_user_id),
-                    body=f"{_display_user_name(actor)} удалил(а) сообщение",
-                    member_user_ids=member_user_ids,
-                    now=now,
-                )
-                system_message_id = system_message.id
-                affected_user_ids.update(member_user_ids)
+                if is_group:
+                    actor = self._require_active_user(int(current_user_id))
+                    member_user_ids = self._conversation_member_ids(session, conversation.id)
+                    system_message = self._append_system_message(
+                        session=session,
+                        conversation=conversation,
+                        actor_user_id=int(current_user_id),
+                        body=f"{_display_user_name(actor)} удалил(а) сообщение",
+                        member_user_ids=member_user_ids,
+                        now=now,
+                    )
+                    system_message_id = system_message.id
+                    affected_user_ids.update(member_user_ids)
+                else:
+                    member_user_ids = self._conversation_member_ids(session, conversation.id)
+                    affected_user_ids.update(member_user_ids)
             else:
                 member_user_ids = self._conversation_member_ids(session, conversation.id)
                 affected_user_ids.update(member_user_ids)
@@ -3828,6 +4028,64 @@ class ChatService:
         )
         if system_message_id:
             payload["_system_message_id"] = system_message_id
+        return payload
+
+    def edit_message(
+        self,
+        *,
+        current_user_id: int,
+        conversation_id: str,
+        message_id: str,
+        body: str,
+        body_format: str = "plain",
+    ) -> dict:
+        self._ensure_available()
+        normalized_message_id = _normalize_text(message_id)
+        normalized_body = _normalize_text(body)
+        normalized_body_format = _normalize_body_format(body_format)
+        if not normalized_message_id:
+            raise ValueError("message_id is required")
+        if not normalized_body:
+            raise ValueError("Message body is required")
+
+        affected_user_ids: set[int] = {int(current_user_id)}
+        with chat_session() as session:
+            conversation = self._require_membership(
+                session=session,
+                conversation_id=conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation = self._lock_conversation_for_write(session=session, conversation_id=conversation.id)
+            message = session.get(ChatMessage, normalized_message_id)
+            if message is None or message.conversation_id != conversation.id:
+                raise LookupError("Message not found")
+            if self._normalize_message_kind(getattr(message, "kind", "text")) != "text":
+                raise ValueError("Only text messages can be edited")
+            if bool(getattr(message, "is_deleted", False)):
+                raise ValueError("Deleted messages cannot be edited")
+            if int(getattr(message, "sender_user_id", 0) or 0) != int(current_user_id):
+                raise PermissionError("Message edit access denied")
+
+            member_user_ids = self._conversation_member_ids(session, conversation.id)
+            affected_user_ids.update(member_user_ids)
+            now = _utc_now()
+            message.body = normalized_body
+            message.body_format = normalized_body_format
+            message.edited_at = now
+            conversation.updated_at = now
+            session.flush()
+            payload = self._build_message_payload_for_members(
+                session=session,
+                conversation=conversation,
+                message=message,
+                current_user_id=int(current_user_id),
+                member_user_ids=member_user_ids,
+            )
+
+        self._invalidate_conversation_views_for_users(
+            conversation_id=_normalize_text(conversation_id),
+            user_ids=sorted(affected_user_ids),
+        )
         return payload
 
     def mark_read(self, *, current_user_id: int, conversation_id: str, message_id: str) -> dict:
@@ -4060,11 +4318,26 @@ class ChatService:
                 direct_peer = user_payload
 
         title = _normalize_text(conversation.title)
+        task_id_value = _normalize_text(getattr(conversation, "task_id", None)) or None
+        task_status = None
+        task_title = None
         if conversation.kind == "direct":
             peer_name = _normalize_text((direct_peer or {}).get("full_name")) or _normalize_text((direct_peer or {}).get("username"))
             title = peer_name or "Личный диалог"
+        elif conversation.kind == "notes":
+            title = NOTES_CONVERSATION_TITLE
         elif conversation.kind == "ai":
             title = title or "AI чат"
+        elif conversation.kind == "task" or task_id_value:
+            if task_id_value:
+                task_payload = self._get_hub_task_for_user(task_id=task_id_value, user_id=int(current_user_id))
+                if task_payload:
+                    task_status = _normalize_text(task_payload.get("status")) or None
+                    task_title = _normalize_text(task_payload.get("title")) or None
+                    if task_title and not title:
+                        title = f"Задача: {task_title}"
+            if not title:
+                title = "Чат по задаче"
         if not title:
             title = "Групповой чат"
 
@@ -4089,9 +4362,12 @@ class ChatService:
         )
         return {
             "id": conversation.id,
-            "kind": conversation.kind if conversation.kind in {"direct", "group", "ai"} else "group",
+            "kind": conversation.kind if conversation.kind in {"direct", "group", "ai", "notes", "task"} else "group",
             "title": title,
             "avatar_url": _normalize_text(getattr(conversation, "avatar_url", None)) or None,
+            "task_id": task_id_value,
+            "task_title": task_title,
+            "task_status": task_status,
             "created_at": _iso(conversation.created_at) or "",
             "updated_at": _iso(conversation.updated_at) or "",
             "last_message_at": _iso(conversation.last_message_at),
@@ -5652,6 +5928,378 @@ class ChatService:
                 user_part, _password = remainder.split(":", 1)
                 return f"{scheme}://{user_part}:***@{suffix}"
         return f"***@{suffix}"
+
+    def list_chat_folders(self, *, current_user_id: int) -> dict[str, Any]:
+        self._ensure_available()
+        user_id = int(current_user_id)
+        with chat_session() as session:
+            folders = list(
+                session.execute(
+                    select(ChatFolder)
+                    .where(ChatFolder.user_id == user_id)
+                    .order_by(ChatFolder.sort_order.asc(), ChatFolder.name.asc(), ChatFolder.created_at.asc())
+                ).scalars()
+            )
+            memberships = list(
+                session.execute(
+                    select(ChatFolderConversation).where(ChatFolderConversation.user_id == user_id)
+                ).scalars()
+            )
+            conversation_ids = sorted({row.conversation_id for row in memberships})
+            unread_by_conversation: dict[str, int] = {}
+            if conversation_ids:
+                states = list(
+                    session.execute(
+                        select(ChatConversationUserState).where(
+                            ChatConversationUserState.user_id == user_id,
+                            ChatConversationUserState.conversation_id.in_(conversation_ids),
+                        )
+                    ).scalars()
+                )
+                unread_by_conversation = {
+                    row.conversation_id: max(0, int(row.unread_count or 0))
+                    for row in states
+                }
+            by_folder: dict[str, list[str]] = {}
+            for row in memberships:
+                by_folder.setdefault(row.folder_id, []).append(row.conversation_id)
+            items = []
+            conversation_ids_by_folder: dict[str, list[str]] = {}
+            for folder in folders:
+                folder_conversation_ids = sorted(by_folder.get(folder.id, []))
+                conversation_ids_by_folder[folder.id] = folder_conversation_ids
+                items.append(
+                    self._serialize_chat_folder(
+                        folder,
+                        conversation_ids=folder_conversation_ids,
+                        conversation_count=len(folder_conversation_ids),
+                        unread_count=sum(unread_by_conversation.get(conv_id, 0) for conv_id in folder_conversation_ids),
+                    )
+                )
+            payload = {"items": items, "conversation_ids_by_folder": conversation_ids_by_folder}
+        self._cache_set(user_id=user_id, bucket="folders", extra="", value=payload)
+        return payload
+
+    def create_chat_folder(self, *, current_user_id: int, name: str) -> dict[str, Any]:
+        self._ensure_available()
+        user_id = int(current_user_id)
+        normalized_name = _normalize_text(name)
+        if len(normalized_name) < 1:
+            raise ValueError("Folder name is required")
+        if len(normalized_name) > 64:
+            raise ValueError("Folder name is too long")
+        now = _utc_now()
+        with chat_session() as session:
+            existing_count = int(
+                session.execute(
+                    select(func.count()).select_from(ChatFolder).where(ChatFolder.user_id == user_id)
+                ).scalar_one()
+                or 0
+            )
+            if existing_count >= 50:
+                raise ValueError("Folder limit reached")
+            folder = ChatFolder(
+                id=str(uuid4()),
+                user_id=user_id,
+                name=normalized_name,
+                sort_order=existing_count,
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(folder)
+            session.flush()
+            payload = self._serialize_chat_folder(folder)
+        self._invalidate_user_cache(user_id=user_id, bucket="folders")
+        return payload
+
+    def update_chat_folder(
+        self,
+        *,
+        current_user_id: int,
+        folder_id: str,
+        name: Optional[str] = None,
+        sort_order: Optional[int] = None,
+    ) -> dict[str, Any]:
+        self._ensure_available()
+        user_id = int(current_user_id)
+        with chat_session() as session:
+            folder = self._require_owned_chat_folder(session, user_id=user_id, folder_id=folder_id)
+            if name is not None:
+                normalized_name = _normalize_text(name)
+                if len(normalized_name) < 1:
+                    raise ValueError("Folder name is required")
+                if len(normalized_name) > 64:
+                    raise ValueError("Folder name is too long")
+                folder.name = normalized_name
+            if sort_order is not None:
+                folder.sort_order = int(sort_order)
+            folder.updated_at = _utc_now()
+            session.flush()
+            memberships = list(
+                session.execute(
+                    select(ChatFolderConversation.conversation_id).where(
+                        ChatFolderConversation.folder_id == folder.id,
+                        ChatFolderConversation.user_id == user_id,
+                    )
+                ).scalars()
+            )
+            conversation_ids = sorted(memberships)
+            unread_count = self._sum_unread_for_conversations(
+                session,
+                user_id=user_id,
+                conversation_ids=conversation_ids,
+            )
+            payload = self._serialize_chat_folder(
+                folder,
+                conversation_ids=conversation_ids,
+                conversation_count=len(conversation_ids),
+                unread_count=unread_count,
+            )
+        self._invalidate_user_cache(user_id=user_id, bucket="folders")
+        return payload
+
+    def delete_chat_folder(self, *, current_user_id: int, folder_id: str) -> dict[str, Any]:
+        self._ensure_available()
+        user_id = int(current_user_id)
+        with chat_session() as session:
+            folder = self._require_owned_chat_folder(session, user_id=user_id, folder_id=folder_id)
+            session.delete(folder)
+            session.flush()
+        self._invalidate_user_cache(user_id=user_id, bucket="folders")
+        return {"ok": True, "id": _normalize_text(folder_id)}
+
+    def get_chat_folder(self, *, current_user_id: int, folder_id: str) -> dict[str, Any]:
+        self._ensure_available()
+        user_id = int(current_user_id)
+        with chat_session() as session:
+            folder = self._require_owned_chat_folder(session, user_id=user_id, folder_id=folder_id)
+            conversation_ids = sorted(
+                session.execute(
+                    select(ChatFolderConversation.conversation_id).where(
+                        ChatFolderConversation.folder_id == folder.id,
+                        ChatFolderConversation.user_id == user_id,
+                    )
+                ).scalars()
+            )
+            unread_count = self._sum_unread_for_conversations(
+                session,
+                user_id=user_id,
+                conversation_ids=conversation_ids,
+            )
+            return self._serialize_chat_folder(
+                folder,
+                conversation_ids=conversation_ids,
+                conversation_count=len(conversation_ids),
+                unread_count=unread_count,
+            )
+
+    def set_chat_folder_conversations(
+        self,
+        *,
+        current_user_id: int,
+        folder_id: str,
+        conversation_ids: list[str],
+    ) -> dict[str, Any]:
+        self._ensure_available()
+        user_id = int(current_user_id)
+        normalized_ids = self._normalize_folder_conversation_ids(conversation_ids)
+        with chat_session() as session:
+            folder = self._require_owned_chat_folder(session, user_id=user_id, folder_id=folder_id)
+            for conversation_id in normalized_ids:
+                self._require_membership(session=session, conversation_id=conversation_id, current_user_id=user_id)
+            existing_rows = list(
+                session.execute(
+                    select(ChatFolderConversation).where(
+                        ChatFolderConversation.folder_id == folder.id,
+                        ChatFolderConversation.user_id == user_id,
+                    )
+                ).scalars()
+            )
+            existing_ids = {row.conversation_id for row in existing_rows}
+            target_ids = set(normalized_ids)
+            for row in existing_rows:
+                if row.conversation_id not in target_ids:
+                    session.delete(row)
+            now = _utc_now()
+            for conversation_id in normalized_ids:
+                if conversation_id in existing_ids:
+                    continue
+                session.add(
+                    ChatFolderConversation(
+                        folder_id=folder.id,
+                        conversation_id=conversation_id,
+                        user_id=user_id,
+                        added_at=now,
+                    )
+                )
+            folder.updated_at = now
+            session.flush()
+            unread_count = self._sum_unread_for_conversations(
+                session,
+                user_id=user_id,
+                conversation_ids=normalized_ids,
+            )
+            payload = self._serialize_chat_folder(
+                folder,
+                conversation_ids=normalized_ids,
+                conversation_count=len(normalized_ids),
+                unread_count=unread_count,
+            )
+        self._invalidate_user_cache(user_id=user_id, bucket="folders")
+        return payload
+
+    def add_chat_folder_conversation(
+        self,
+        *,
+        current_user_id: int,
+        folder_id: str,
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        self._ensure_available()
+        user_id = int(current_user_id)
+        normalized_conversation_id = _normalize_text(conversation_id)
+        if not normalized_conversation_id:
+            raise ValueError("conversation_id is required")
+        with chat_session() as session:
+            folder = self._require_owned_chat_folder(session, user_id=user_id, folder_id=folder_id)
+            self._require_membership(session=session, conversation_id=normalized_conversation_id, current_user_id=user_id)
+            existing = session.execute(
+                select(ChatFolderConversation).where(
+                    ChatFolderConversation.folder_id == folder.id,
+                    ChatFolderConversation.conversation_id == normalized_conversation_id,
+                )
+            ).scalar_one_or_none()
+            if existing is None:
+                session.add(
+                    ChatFolderConversation(
+                        folder_id=folder.id,
+                        conversation_id=normalized_conversation_id,
+                        user_id=user_id,
+                        added_at=_utc_now(),
+                    )
+                )
+            folder.updated_at = _utc_now()
+            session.flush()
+            conversation_ids = sorted(
+                session.execute(
+                    select(ChatFolderConversation.conversation_id).where(
+                        ChatFolderConversation.folder_id == folder.id,
+                        ChatFolderConversation.user_id == user_id,
+                    )
+                ).scalars()
+            )
+            payload = self._serialize_chat_folder(
+                folder,
+                conversation_ids=conversation_ids,
+                conversation_count=len(conversation_ids),
+                unread_count=self._sum_unread_for_conversations(
+                    session,
+                    user_id=user_id,
+                    conversation_ids=conversation_ids,
+                ),
+            )
+        self._invalidate_user_cache(user_id=user_id, bucket="folders")
+        return payload
+
+    def remove_chat_folder_conversation(
+        self,
+        *,
+        current_user_id: int,
+        folder_id: str,
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        self._ensure_available()
+        user_id = int(current_user_id)
+        normalized_conversation_id = _normalize_text(conversation_id)
+        if not normalized_conversation_id:
+            raise ValueError("conversation_id is required")
+        with chat_session() as session:
+            folder = self._require_owned_chat_folder(session, user_id=user_id, folder_id=folder_id)
+            row = session.execute(
+                select(ChatFolderConversation).where(
+                    ChatFolderConversation.folder_id == folder.id,
+                    ChatFolderConversation.conversation_id == normalized_conversation_id,
+                    ChatFolderConversation.user_id == user_id,
+                )
+            ).scalar_one_or_none()
+            if row is not None:
+                session.delete(row)
+            folder.updated_at = _utc_now()
+            session.flush()
+            conversation_ids = sorted(
+                session.execute(
+                    select(ChatFolderConversation.conversation_id).where(
+                        ChatFolderConversation.folder_id == folder.id,
+                        ChatFolderConversation.user_id == user_id,
+                    )
+                ).scalars()
+            )
+            payload = self._serialize_chat_folder(
+                folder,
+                conversation_ids=conversation_ids,
+                conversation_count=len(conversation_ids),
+                unread_count=self._sum_unread_for_conversations(
+                    session,
+                    user_id=user_id,
+                    conversation_ids=conversation_ids,
+                ),
+            )
+        self._invalidate_user_cache(user_id=user_id, bucket="folders")
+        return payload
+
+    def _serialize_chat_folder(
+        self,
+        folder: ChatFolder,
+        *,
+        conversation_ids: Optional[list[str]] = None,
+        conversation_count: int = 0,
+        unread_count: int = 0,
+    ) -> dict[str, Any]:
+        return {
+            "id": folder.id,
+            "name": folder.name,
+            "sort_order": int(folder.sort_order or 0),
+            "conversation_count": int(conversation_count),
+            "unread_count": int(unread_count),
+            "conversation_ids": list(conversation_ids or []),
+            "created_at": folder.created_at.isoformat() if folder.created_at else "",
+            "updated_at": folder.updated_at.isoformat() if folder.updated_at else "",
+        }
+
+    def _require_owned_chat_folder(self, session, *, user_id: int, folder_id: str) -> ChatFolder:
+        normalized_folder_id = _normalize_text(folder_id)
+        if not normalized_folder_id:
+            raise ValueError("folder_id is required")
+        folder = session.get(ChatFolder, normalized_folder_id)
+        if folder is None or int(folder.user_id) != int(user_id):
+            raise LookupError("Folder not found")
+        return folder
+
+    def _normalize_folder_conversation_ids(self, conversation_ids: list[str]) -> list[str]:
+        normalized: list[str] = []
+        seen: set[str] = set()
+        for raw in list(conversation_ids or []):
+            value = _normalize_text(raw)
+            if not value or value in seen:
+                continue
+            seen.add(value)
+            normalized.append(value)
+        if len(normalized) > 200:
+            raise ValueError("Folder cannot contain more than 200 chats")
+        return normalized
+
+    def _sum_unread_for_conversations(self, session, *, user_id: int, conversation_ids: list[str]) -> int:
+        if not conversation_ids:
+            return 0
+        states = list(
+            session.execute(
+                select(ChatConversationUserState).where(
+                    ChatConversationUserState.user_id == int(user_id),
+                    ChatConversationUserState.conversation_id.in_(conversation_ids),
+                )
+            ).scalars()
+        )
+        return sum(max(0, int(state.unread_count or 0)) for state in states)
 
     def _ensure_available(self) -> None:
         status = self.initialize_runtime(force=not bool(self._runtime_status and self._runtime_status.available))

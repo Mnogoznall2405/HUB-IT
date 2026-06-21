@@ -34,7 +34,7 @@ import {
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { isValidEmailRecipient } from '../components/mail/mailComposeState';
-import { addressBookAPI } from '../api/client';
+import { addressBookAPI } from '../api/addressBook';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { openAddressBookChat } from '../lib/addressBookChat';
@@ -66,6 +66,7 @@ const AddressBook = () => {
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
   const canUseChat = CHAT_FEATURE_ENABLED && hasPermission('chat.read') && hasPermission('chat.write');
   const searchInputRef = useRef(null);
+  const pageShellRef = useRef(null);
 
   const [query, setQuery] = useState('');
   const [items, setItems] = useState([]);
@@ -120,6 +121,92 @@ const AddressBook = () => {
   useEffect(() => {
     void loadStatus();
   }, [loadStatus]);
+
+  useEffect(() => {
+    if (!isMobile) return undefined;
+
+    const logLayout = (trigger) => {
+      const main = document.querySelector('[data-testid="main-layout-content"]');
+      const pageShell = pageShellRef.current;
+      const listScroll = document.querySelector('[data-testid="address-book-entry-list-scroll"]');
+      const bottomNav = document.querySelector('[data-testid="main-layout-mobile-bottom-nav"]');
+      const shellRoot = document.querySelector('[data-testid="main-layout-shell"]');
+      const mainStyles = main ? window.getComputedStyle(main) : null;
+      const pageShellStyles = pageShell ? window.getComputedStyle(pageShell) : null;
+      const listScrollStyles = listScroll ? window.getComputedStyle(listScroll) : null;
+      const mainRect = main?.getBoundingClientRect();
+      const pageShellRect = pageShell?.getBoundingClientRect();
+      const listScrollRect = listScroll?.getBoundingClientRect();
+      const bottomNavRect = bottomNav?.getBoundingClientRect();
+      const cssVarNavHeight = shellRoot
+        ? window.getComputedStyle(shellRoot).getPropertyValue('--app-shell-mobile-bottom-nav-height').trim()
+        : '';
+      const mainPbPx = mainStyles ? Number.parseFloat(mainStyles.paddingBottom) || 0 : 0;
+      const pageShellPbPx = pageShellStyles ? Number.parseFloat(pageShellStyles.paddingBottom) || 0 : 0;
+      const listBottom = listScrollRect?.bottom ?? 0;
+      const navTop = bottomNavRect?.top ?? window.innerHeight;
+      const gapPx = Math.round((navTop - listBottom) * 100) / 100;
+      const hasHorizontalOverflow = Boolean(
+        main && main.scrollWidth > main.clientWidth + 1,
+      ) || Boolean(
+        pageShell && pageShell.scrollWidth > pageShell.clientWidth + 1,
+      );
+
+      const hypotheses = [];
+      if (mainPbPx > 0 && pageShellPbPx > 0) hypotheses.push('A');
+      if (pageShellStyles?.height?.includes('calc(') && gapPx > 4) hypotheses.push('B');
+      if (hasHorizontalOverflow || listScrollStyles?.overflowX === 'scroll') hypotheses.push('C');
+      if (cssVarNavHeight && bottomNavRect && Math.abs(bottomNavRect.height - Number.parseFloat(cssVarNavHeight)) > 6) {
+        hypotheses.push('D');
+      }
+      if (gapPx > 4) hypotheses.push('E');
+
+      // #region agent log
+      fetch('http://127.0.0.1:7567/ingest/0dd98d48-9716-48e2-8a2d-050e49aa7cea', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Debug-Session-Id': '891634',
+        },
+        body: JSON.stringify({
+          sessionId: '891634',
+          runId: 'post-fix',
+          hypothesisId: hypotheses.join(',') || 'none',
+          location: 'AddressBook.jsx:layoutMeasure',
+          message: 'address-book mobile layout metrics',
+          data: {
+            trigger,
+            mainPb: mainStyles?.paddingBottom ?? null,
+            mainPbPx,
+            pageShellPb: pageShellStyles?.paddingBottom ?? null,
+            pageShellPbPx,
+            pageShellHeight: pageShellStyles?.height ?? null,
+            pageShellRectHeight: pageShellRect?.height ?? null,
+            mainClientHeight: main?.clientHeight ?? null,
+            mainContentHeight: mainRect ? mainRect.height - mainPbPx - (Number.parseFloat(mainStyles?.paddingTop) || 0) : null,
+            listScrollBottom: listBottom,
+            bottomNavTop: navTop,
+            gapPx,
+            cssVarNavHeight,
+            bottomNavHeight: bottomNavRect?.height ?? null,
+            viewportHeight: window.innerHeight,
+            hasHorizontalOverflow,
+            listFlex: listScroll?.parentElement ? window.getComputedStyle(listScroll.parentElement).flex : null,
+          },
+          timestamp: Date.now(),
+        }),
+      }).catch(() => {});
+      // #endregion
+    };
+
+    const handleMeasure = () => logLayout('measure');
+    const rafId = window.requestAnimationFrame(handleMeasure);
+    window.addEventListener('resize', handleMeasure);
+    return () => {
+      window.cancelAnimationFrame(rafId);
+      window.removeEventListener('resize', handleMeasure);
+    };
+  }, [isMobile, items.length, loading]);
 
   useEffect(() => {
     if (isMobile || items.length === 0) return;
@@ -239,7 +326,11 @@ const AddressBook = () => {
 
   return (
     <MainLayout showDatabaseSelector={false}>
-      <PageShell fullHeight sx={{ gap: { xs: 0.75, sm: 2 } }}>
+      <PageShell
+        ref={pageShellRef}
+        fullHeight
+        sx={{ gap: { xs: 0.75, sm: 2 } }}
+      >
         {isMobile ? (
           <AddressBookMobileToolbar
             total={total}

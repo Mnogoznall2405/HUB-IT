@@ -217,13 +217,24 @@ export const buildMobileTaskActionState = (task, options = {}) => {
     };
   }
 
-  if (status === 'review' || canReview) {
+  if (status === 'review') {
+    if (canReview) {
+      return {
+        key: 'review',
+        stepLabel: 'Проверить результат',
+        actionLabel: 'Проверить',
+        hint: 'Проверьте результат и примите или верните задачу.',
+        tone: 'review',
+      };
+    }
+
     return {
-      key: 'review',
-      stepLabel: 'Проверить результат',
-      actionLabel: canReview ? 'Проверить' : '',
-      hint: 'Проверьте результат и примите или верните задачу.',
+      key: 'waiting_review',
+      stepLabel: 'На проверке',
+      actionLabel: '',
+      hint: 'Результат отправлен на проверку. Ожидайте решения контролёра.',
       tone: 'review',
+      passive: true,
     };
   }
 

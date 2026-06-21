@@ -1,5 +1,5 @@
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import QRCode from 'qrcode';
 
 import { authAPI } from '../api/client';
@@ -9,6 +9,23 @@ import {
   getPasskeyAssertion,
   isPasskeySurfaceAvailable,
 } from '../lib/passkeyWebAuthn';
+import { emitAgentDebugLog } from '../lib/debugClientLog';
+import {
+  auditLoginPageOverlays,
+  resetLoginPagePresentation,
+  scheduleLoginPresentationRecovery,
+} from '../lib/loginPagePresentation';
+import {
+  persistTotpResumeState,
+  shouldOfferSafariPasswordSaveAfterLogin,
+  submitSafariPasswordSaveFullPage,
+  TOTP_RESUME_STORAGE_KEY,
+} from '../lib/passwordCredentialSave';
+import {
+  alignOtpAuthAccountName,
+  isAppleKeychainOtpSupported,
+  toAppleOtpAuthUri,
+} from '../lib/totpProvisioning';
 import {
   extractWebAuthnErrorMessage,
   normalizeWebAuthnErrorName,
@@ -128,6 +145,7 @@ function Field({
   value,
   onChange,
   type = 'text',
+  name,
   autoComplete,
   disabled = false,
   autoFocus = false,
@@ -138,11 +156,16 @@ function Field({
   endAdornment = null,
   placeholder = ' ',
   inputRef = null,
+  onFocus = null,
+  solidSurface = false,
 }) {
   const sharedInputClassName = cn(
-    'peer w-full rounded-[18px] border border-white/10 bg-white/[0.065] px-4 pb-3 pt-6 text-[16px] text-white outline-none transition',
-    'placeholder-transparent backdrop-blur-md',
-    'focus:border-white/25 focus:bg-white/10 focus:shadow-[0_0_0_1px_rgba(255,255,255,0.12)]',
+    'peer w-full rounded-[18px] border px-4 pb-3 pt-6 text-[16px] text-white outline-none transition',
+    solidSurface
+      ? 'border-white/20 bg-[#182028] focus:border-cyan-200/35 focus:bg-[#1d2833]'
+      : 'border-white/10 bg-white/[0.065] focus:border-white/25 focus:bg-white/10',
+    'placeholder-transparent',
+    'focus:shadow-[0_0_0_1px_rgba(255,255,255,0.12)]',
     'disabled:cursor-not-allowed disabled:opacity-60',
     endAdornment ? 'pr-12' : '',
     multiline ? 'min-h-[112px] resize-none' : 'h-16',
@@ -159,6 +182,7 @@ function Field({
       {multiline ? (
         <textarea
           id={id}
+          name={name}
           ref={inputRef}
           aria-label={label}
           className={sharedInputClassName}
@@ -171,10 +195,12 @@ function Field({
           readOnly={readOnly}
           rows={rows}
           placeholder={placeholder}
+          onFocus={onFocus}
         />
       ) : (
         <input
           id={id}
+          name={name}
           ref={inputRef}
           aria-label={label}
           className={sharedInputClassName}
@@ -187,6 +213,7 @@ function Field({
           inputMode={inputMode}
           readOnly={readOnly}
           placeholder={placeholder}
+          onFocus={onFocus}
         />
       )}
       <span className={labelClassName}>{label}</span>
@@ -199,20 +226,28 @@ function Field({
   );
 }
 
-function InfoBanner({ tone = 'info', children }) {
+function InfoBanner({ tone = 'info', children, variant = 'inline' }) {
   const toneClasses = {
     info: 'border-cyan-400/18 bg-cyan-400/10 text-cyan-50/92',
     success: 'border-emerald-400/18 bg-emerald-400/10 text-emerald-50/92',
     warning: 'border-amber-300/18 bg-amber-300/10 text-amber-50/92',
     error: 'border-rose-400/18 bg-rose-400/10 text-rose-50/92',
   };
+  const toastToneClasses = {
+    info: 'border-cyan-400/28 bg-[#0b1824] text-cyan-50',
+    success: 'border-emerald-400/28 bg-[#0a1712] text-emerald-50',
+    warning: 'border-amber-300/32 bg-[#1a1508] text-amber-50',
+    error: 'border-rose-400/28 bg-[#1a0b0f] text-rose-50',
+  };
 
   return (
     <div
       role="status"
       className={cn(
-        'rounded-[18px] border px-4 py-3 text-sm leading-6 backdrop-blur-md',
-        toneClasses[tone] || toneClasses.info,
+        'rounded-[18px] border px-4 py-3 text-sm leading-6',
+        variant === 'toast'
+          ? (toastToneClasses[tone] || toastToneClasses.info)
+          : cn('backdrop-blur-sm', toneClasses[tone] || toneClasses.info),
       )}
     >
       {children}
@@ -220,17 +255,65 @@ function InfoBanner({ tone = 'info', children }) {
   );
 }
 
+function LoginTopNotice({ notice, reducedMotion = false }) {
+  if (!notice?.message) {
+    return null;
+  }
+
+  const shellStyle = {
+    paddingTop: 'max(12px, calc(env(safe-area-inset-top, 0px) + 8px))',
+  };
+  const shellClassName = 'pointer-events-none fixed inset-x-0 top-0 z-50 px-4';
+  const content = (
+    <div
+      data-testid="login-top-notice"
+      className="pointer-events-auto mx-auto w-full max-w-[30rem]"
+    >
+      <InfoBanner tone={notice.tone} variant="toast">{notice.message}</InfoBanner>
+    </div>
+  );
+
+  if (reducedMotion) {
+    return (
+      <div
+        role="status"
+        aria-live="polite"
+        className={shellClassName}
+        style={shellStyle}
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <AnimatePresence>
+      <motion.div
+        key={notice.id}
+        role="status"
+        aria-live="polite"
+        initial={{ opacity: 0, y: -10 }}
+        animate={{ opacity: 1, y: 0 }}
+        exit={{ opacity: 0, y: -8 }}
+        transition={{ duration: 0.18, ease: 'easeOut' }}
+        className={shellClassName}
+        style={shellStyle}
+      >
+        {content}
+      </motion.div>
+    </AnimatePresence>
+  );
+}
+
 function HeroAction({
   title,
   subtitle,
-  detail,
   onClick,
   disabled = false,
   busy = false,
   compact = false,
   mode = 'face',
 }) {
-  const reducedMotion = useReducedMotion();
   return (
     <button
       type="button"
@@ -239,30 +322,20 @@ function HeroAction({
       data-testid="biometric-hero-button"
       className={cn(
         'group relative w-full overflow-hidden rounded-[24px] border border-cyan-200/18 bg-cyan-200/[0.08] p-4 text-left transition',
-        'backdrop-blur-xl hover:border-cyan-100/28 hover:bg-cyan-200/[0.12] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60',
+        'hover:border-cyan-100/28 hover:bg-cyan-200/[0.12] active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60',
         compact ? 'min-h-[124px]' : 'min-h-[148px]',
       )}
       style={{
         boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.12), 0 18px 48px rgba(8,47,73,0.22)',
       }}
     >
-      <motion.div
+      <div
         aria-hidden="true"
-        className="absolute right-[-40px] top-[-52px] h-36 w-36 rounded-full bg-cyan-300/18 blur-3xl"
-        animate={reducedMotion ? undefined : { scale: [0.96, 1.05, 0.98], opacity: [0.42, 0.78, 0.48] }}
-        transition={{ duration: 7, repeat: Infinity, ease: 'easeInOut' }}
+        className="absolute right-[-40px] top-[-52px] h-36 w-36 rounded-full bg-cyan-300/18 blur-3xl opacity-55"
       />
       <div className="relative z-10 flex h-full items-center gap-4">
-        <motion.div
-          className="relative flex h-16 w-16 shrink-0 items-center justify-center"
-          animate={reducedMotion ? undefined : { scale: busy ? 1 : [1, 1.03, 1] }}
-          transition={{ duration: 3.6, repeat: busy ? 0 : Infinity, ease: 'easeInOut' }}
-        >
-          <motion.div
-            className="absolute inset-0 rounded-[22px] border border-white/12 bg-white/[0.08]"
-            animate={reducedMotion ? undefined : { scale: [1, 1.06, 1], opacity: [0.5, 0.22, 0.5] }}
-            transition={{ duration: 2.8, repeat: Infinity, ease: 'easeInOut' }}
-          />
+        <div className="relative flex h-16 w-16 shrink-0 items-center justify-center">
+          <div className="absolute inset-0 rounded-[22px] border border-white/12 bg-white/[0.08]" />
           <div className="relative flex h-14 w-14 items-center justify-center rounded-[19px] border border-white/14 bg-white/[0.08] text-cyan-50 shadow-[inset_0_1px_0_rgba(255,255,255,0.16)]">
             {busy ? (
               <Spinner className="h-7 w-7 text-cyan-100" />
@@ -272,15 +345,21 @@ function HeroAction({
               <FaceIdGlyph className="h-9 w-9 text-cyan-50" />
             )}
           </div>
-        </motion.div>
+        </div>
         <div className="min-w-0 flex-1 space-y-1.5">
           <div className="text-[1.05rem] font-semibold tracking-[-0.02em] text-white">{title}</div>
-          <p className="text-sm leading-5 text-white/66">{subtitle}</p>
-          {detail ? <p className="text-xs leading-5 text-white/44">{detail}</p> : null}
+          {subtitle ? <p className="text-sm leading-5 text-white/66">{subtitle}</p> : null}
         </div>
       </div>
     </button>
   );
+}
+
+function readCompactViewport() {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return false;
+  }
+  return window.matchMedia('(max-width: 767px)').matches;
 }
 
 function Login() {
@@ -299,7 +378,7 @@ function Login() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState(null);
+  const [topNotice, setTopNotice] = useState(null);
   const [step, setStep] = useState('password');
   const [loginModeLoading, setLoginModeLoading] = useState(true);
   const [networkZone, setNetworkZone] = useState('external');
@@ -317,23 +396,21 @@ function Login() {
   const [backupCodes, setBackupCodes] = useState([]);
   const [deviceLabel, setDeviceLabel] = useState('');
   const [totpQrDataUrl, setTotpQrDataUrl] = useState('');
-  const [manualTotpOpen, setManualTotpOpen] = useState(false);
-  const [copiedTotpValue, setCopiedTotpValue] = useState('');
   const [rememberDeviceMode, setRememberDeviceMode] = useState('generic');
   const [rememberDeviceHint, setRememberDeviceHint] = useState('');
   const [rememberDeviceError, setRememberDeviceError] = useState('');
-  const [showPasswordForm, setShowPasswordForm] = useState(false);
-  const [passwordAssistMessage, setPasswordAssistMessage] = useState('');
   const [showVerifyFallback, setShowVerifyFallback] = useState(true);
   const [keyboardInset, setKeyboardInset] = useState(0);
-  const [inputFocused, setInputFocused] = useState(false);
-  const [isCompactViewport, setIsCompactViewport] = useState(false);
+  const [isCompactViewport, setIsCompactViewport] = useState(readCompactViewport);
 
   const usernameInputRef = useRef(null);
   const passkeyAttemptedRef = useRef(false);
   const authenticatedUserRef = useRef(null);
   const lastAutoSetupCodeRef = useRef('');
   const lastAutoVerifyCodeRef = useRef('');
+  const noticeTimerRef = useRef(null);
+  const keyboardInsetRef = useRef(0);
+  const keyboardInsetRafRef = useRef(null);
   const prefersReducedMotion = useReducedMotion();
   const {
     webAuthnReady,
@@ -348,14 +425,59 @@ function Login() {
   const canUseTrustedDeviceHero = step === 'password' && networkZone === 'external' && biometricLoginEnabled;
   const passkeyPrepPending = canUseTrustedDeviceHero && !webAuthnReady && !webAuthnTimedOut;
   const passkeyPrepFailed = canUseTrustedDeviceHero && !webAuthnReady && webAuthnTimedOut;
-  const keyboardOpen = keyboardInset > 120 || inputFocused;
+  const keyboardOpen = keyboardInset > 120;
   const heroCompact = keyboardOpen && step !== 'setup_complete';
-  const contentLift = keyboardOpen ? Math.min(Math.max(keyboardInset * 0.35, 56), 156) : 0;
   const shellPaddingBottom = keyboardOpen
     ? 'max(18px, calc(env(safe-area-inset-bottom, 0px) + 8px))'
     : 'max(24px, calc(env(safe-area-inset-bottom, 0px) + 18px))';
   const isMobileTwoFactorStep = isCompactViewport && ['totp_setup', 'totp_verify', 'setup_complete'].includes(step);
   const isMobileMinimalStep = isCompactViewport && ['password', 'totp_setup', 'totp_verify', 'setup_complete'].includes(step);
+
+  const dismissLoginNotice = useCallback(() => {
+    if (noticeTimerRef.current) {
+      window.clearTimeout(noticeTimerRef.current);
+      noticeTimerRef.current = null;
+    }
+    setTopNotice(null);
+  }, []);
+
+  const showLoginNotice = useCallback((tone, message, durationMs = 4200) => {
+    const text = String(message || '').trim();
+    if (!text) {
+      dismissLoginNotice();
+      return;
+    }
+    if (noticeTimerRef.current) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    const nextNotice = {
+      tone: tone || 'info',
+      message: text,
+      id: Date.now(),
+    };
+    setTopNotice(nextNotice);
+    noticeTimerRef.current = window.setTimeout(() => {
+      setTopNotice((current) => (current?.id === nextNotice.id ? null : current));
+      noticeTimerRef.current = null;
+    }, Math.max(1800, Number(durationMs) || 4200));
+  }, [dismissLoginNotice]);
+
+  const reportLoginError = useCallback((message) => {
+    showLoginNotice('error', message, 5200);
+  }, [showLoginNotice]);
+
+  const handleCompactFieldFocus = useCallback((event) => {
+    if (!isCompactViewport) {
+      return;
+    }
+    const target = event?.currentTarget || event?.target;
+    window.requestAnimationFrame(() => {
+      target?.scrollIntoView?.({
+        block: 'center',
+        behavior: prefersReducedMotion ? 'auto' : 'smooth',
+      });
+    });
+  }, [isCompactViewport, prefersReducedMotion]);
 
   const stepMeta = {
     password: {
@@ -432,7 +554,10 @@ function Login() {
       };
     }
 
-    QRCode.toDataURL(otpauthUri, {
+    const loginAccountName = username.trim() || String(setupData?.account_name || '').trim();
+    let qrUri = alignOtpAuthAccountName(otpauthUri, loginAccountName);
+
+    QRCode.toDataURL(qrUri, {
       errorCorrectionLevel: 'M',
       margin: 1,
       width: 220,
@@ -451,12 +576,104 @@ function Login() {
     return () => {
       cancelled = true;
     };
-  }, [setupData?.otpauth_uri]);
+  }, [setupData?.otpauth_uri, setupData?.account_name, username]);
 
   useEffect(() => {
-    setManualTotpOpen(false);
-    setCopiedTotpValue('');
-  }, [setupData?.otpauth_uri, setupData?.manual_entry_key]);
+    if (typeof window === 'undefined') {
+      return undefined;
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const resumeChallenge = String(params.get('resume_challenge') || '').trim();
+    if (!resumeChallenge) {
+      return undefined;
+    }
+
+    let cancelled = false;
+    let resumePayload = null;
+    try {
+      const raw = sessionStorage.getItem(TOTP_RESUME_STORAGE_KEY);
+      resumePayload = raw ? JSON.parse(raw) : null;
+    } catch {
+      resumePayload = null;
+    }
+    sessionStorage.removeItem(TOTP_RESUME_STORAGE_KEY);
+
+    const nextUrl = new URL(window.location.href);
+    nextUrl.searchParams.delete('resume_challenge');
+    window.history.replaceState({}, '', `${nextUrl.pathname}${nextUrl.search}${nextUrl.hash}`);
+
+    const resumeNextStep = String(resumePayload?.nextStep || 'totp_setup').trim();
+
+    (async () => {
+      dismissLoginNotice();
+      setLoginChallengeId(resumeChallenge);
+      if (resumePayload?.username) {
+        setUsername(String(resumePayload.username || '').trim());
+      }
+      setLoading(true);
+
+      if (resumeNextStep === 'totp_verify') {
+        if (cancelled) {
+          return;
+        }
+        setLoading(false);
+        setStep('totp_verify');
+        // #region agent log
+        emitAgentDebugLog({
+          location: 'Login.jsx:resumeTotpSetup',
+          message: 'totp verify resumed after password save page',
+          hypothesisId: 'H11',
+          data: {
+            resumeChallenge,
+            nextStep: resumeNextStep,
+            loginUsername: String(resumePayload?.username || ''),
+          },
+        });
+        // #endregion
+        return;
+      }
+
+      const setupResult = await startTwoFactorSetup(resumeChallenge);
+      if (cancelled) {
+        return;
+      }
+      setLoading(false);
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'Login.jsx:resumeTotpSetup',
+        message: 'totp setup resumed after password save page',
+        hypothesisId: 'H11',
+        data: {
+          resumeChallenge,
+          nextStep: resumeNextStep,
+          setupSuccess: Boolean(setupResult?.success),
+          loginUsername: String(resumePayload?.username || ''),
+        },
+      });
+      // #endregion
+      if (!setupResult.success) {
+        reportLoginError(setupResult.error);
+        setStep('password');
+        return;
+      }
+      setSetupData(setupResult);
+      setStep('totp_setup');
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [dismissLoginNotice, reportLoginError, startTwoFactorSetup]);
+
+  useEffect(() => () => {
+    if (noticeTimerRef.current) {
+      window.clearTimeout(noticeTimerRef.current);
+    }
+    if (keyboardInsetRafRef.current) {
+      window.cancelAnimationFrame(keyboardInsetRafRef.current);
+    }
+  }, []);
 
   useEffect(() => {
     if (!shouldForceCanonicalHost()) {
@@ -482,14 +699,12 @@ function Login() {
         const nextBiometric = Boolean(mode?.biometric_login_enabled);
         setNetworkZone(nextZone);
         setBiometricLoginEnabled(nextBiometric);
-        setShowPasswordForm(nextZone === 'internal' || !nextBiometric);
       } catch {
         if (cancelled) {
           return;
         }
         setNetworkZone('external');
         setBiometricLoginEnabled(false);
-        setShowPasswordForm(true);
       } finally {
         if (!cancelled) {
           setLoginModeLoading(false);
@@ -523,38 +738,27 @@ function Login() {
   }, []);
 
   useEffect(() => {
-    if (typeof document === 'undefined') {
-      return undefined;
-    }
-
-    const handleFocusIn = (event) => {
-      const tag = String(event?.target?.tagName || '').toLowerCase();
-      setInputFocused(tag === 'input' || tag === 'textarea');
-    };
-    const handleFocusOut = () => {
-      setTimeout(() => {
-        const activeTag = String(document.activeElement?.tagName || '').toLowerCase();
-        setInputFocused(activeTag === 'input' || activeTag === 'textarea');
-      }, 0);
-    };
-
-    document.addEventListener('focusin', handleFocusIn);
-    document.addEventListener('focusout', handleFocusOut);
-    return () => {
-      document.removeEventListener('focusin', handleFocusIn);
-      document.removeEventListener('focusout', handleFocusOut);
-    };
-  }, []);
-
-  useEffect(() => {
     if (typeof window === 'undefined' || !window.visualViewport) {
       return undefined;
     }
 
     const updateViewportInset = () => {
-      const viewport = window.visualViewport;
-      const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
-      setKeyboardInset(inset);
+      if (keyboardInsetRafRef.current) {
+        return;
+      }
+      keyboardInsetRafRef.current = window.requestAnimationFrame(() => {
+        keyboardInsetRafRef.current = null;
+        const viewport = window.visualViewport;
+        if (!viewport) {
+          return;
+        }
+        const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+        if (Math.abs(inset - keyboardInsetRef.current) < 12) {
+          return;
+        }
+        keyboardInsetRef.current = inset;
+        setKeyboardInset(inset);
+      });
     };
 
     updateViewportInset();
@@ -563,6 +767,10 @@ function Login() {
     return () => {
       window.visualViewport.removeEventListener('resize', updateViewportInset);
       window.visualViewport.removeEventListener('scroll', updateViewportInset);
+      if (keyboardInsetRafRef.current) {
+        window.cancelAnimationFrame(keyboardInsetRafRef.current);
+        keyboardInsetRafRef.current = null;
+      }
     };
   }, []);
 
@@ -571,23 +779,37 @@ function Login() {
   }, [step]);
 
   useEffect(() => {
-    if (!showPasswordForm || !usernameInputRef.current) {
+    if (loginModeLoading || step !== 'password' || !usernameInputRef.current) {
       return;
     }
     usernameInputRef.current.focus();
-  }, [showPasswordForm]);
+  }, [loginModeLoading, step]);
+
+  const clearPasskeyPresentationLock = useCallback(() => {
+    setRememberDeviceOpen(false);
+    resetLoginPagePresentation({
+      logContext: 'clearPasskeyPresentationLock',
+      hypothesisId: 'H4',
+    });
+  }, []);
 
   useEffect(() => {
     if (typeof document === 'undefined') {
       return undefined;
     }
-    const previousOverflow = document.body.style.overflow;
     if (rememberDeviceOpen) {
+      const previousOverflow = document.body.style.overflow;
       document.body.style.overflow = 'hidden';
+      return () => {
+        document.body.style.overflow = previousOverflow;
+      };
     }
-    return () => {
-      document.body.style.overflow = previousOverflow;
-    };
+
+    resetLoginPagePresentation({
+      logContext: 'rememberDeviceClosed',
+      hypothesisId: 'H1',
+    });
+    return undefined;
   }, [rememberDeviceOpen]);
 
   useEffect(() => {
@@ -597,14 +819,13 @@ function Login() {
       || networkZone !== 'external'
       || !biometricLoginEnabled
       || !webAuthnReady
-      || showPasswordForm
       || passkeyAttemptedRef.current
     ) {
       return;
     }
     passkeyAttemptedRef.current = true;
     void attemptPasskeyLogin({ auto: true });
-  }, [loginModeLoading, step, networkZone, biometricLoginEnabled, webAuthnReady, showPasswordForm]);
+  }, [loginModeLoading, step, networkZone, biometricLoginEnabled, webAuthnReady]);
 
   const redirectToDashboard = () => {
     if (shouldForceCanonicalHost()) {
@@ -681,25 +902,130 @@ function Login() {
   };
 
   const revealPasswordFallback = (message = '') => {
-    setShowPasswordForm(true);
-    setPasswordAssistMessage(String(message || ''));
+    const text = String(message || '').trim();
+    if (text) {
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'Login.jsx:revealPasswordFallback',
+        message: 'passkey fallback notice requested',
+        hypothesisId: 'H2',
+        data: {
+          noticeLength: text.length,
+          rememberDeviceOpen,
+          canUseTrustedDeviceHero,
+        },
+      });
+      // #endregion
+      showLoginNotice('warning', text, 5600);
+    }
+    if (typeof window === 'undefined' || !isCompactViewport) {
+      return;
+    }
+    window.requestAnimationFrame(() => {
+      const usernameField = document.getElementById('login-username');
+      usernameField?.scrollIntoView?.({
+        block: 'center',
+        behavior: prefersReducedMotion ? 'auto' : 'smooth',
+      });
+    });
   };
 
   useEffect(() => {
-    if (!passkeyPrepFailed || showPasswordForm) {
+    if (!passkeyPrepFailed) {
       return;
     }
-    revealPasswordFallback('Passkey в приложении не инициализировался. Войдите по логину и паролю ниже.');
-  }, [passkeyPrepFailed, showPasswordForm]);
+    showLoginNotice('warning', 'Passkey в приложении не инициализировался. Войдите по логину и паролю ниже.', 5600);
+  }, [passkeyPrepFailed, showLoginNotice]);
+
+  useEffect(() => {
+    if (!topNotice?.message) {
+      return;
+    }
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'Login.jsx:noticeOverlayState',
+      message: 'login notice visible overlay snapshot',
+      hypothesisId: 'H1',
+      data: {
+        topNoticeTone: topNotice.tone,
+        rememberDeviceOpen,
+        passwordFormVisible: step === 'password' && !loginModeLoading,
+        passkeyPrepFailed,
+        step,
+      },
+    });
+    // #endregion
+  }, [topNotice, rememberDeviceOpen, loginModeLoading, passkeyPrepFailed, step]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || step !== 'password' || loginModeLoading) {
+      return;
+    }
+    const form = document.querySelector('[data-testid="password-auth-form"]');
+    const usernameField = document.getElementById('login-username');
+    const root = document.querySelector('[data-testid="login-mobile-layout"]');
+    const formRect = form?.getBoundingClientRect?.();
+    const usernameRect = usernameField?.getBoundingClientRect?.();
+    const viewportHeight = window.innerHeight;
+    const formFullyVisible = Boolean(
+      formRect
+      && formRect.top >= 0
+      && formRect.bottom <= viewportHeight + 2,
+    );
+    const usernameFullyVisible = Boolean(
+      usernameRect
+      && usernameRect.top >= 0
+      && usernameRect.bottom <= viewportHeight + 2,
+    );
+    const loginCard = document.querySelector('[data-testid="login-form-card"]');
+    const usernameStyle = usernameField ? window.getComputedStyle(usernameField) : null;
+    const cardStyle = loginCard ? window.getComputedStyle(loginCard) : null;
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'Login.jsx:passwordFormLayout',
+      message: 'password form layout snapshot',
+      hypothesisId: 'H3',
+      data: {
+        step,
+        loginModeLoading,
+        trustedDeviceBusy,
+        rememberDeviceOpen,
+        hasTopNotice: Boolean(topNotice?.message),
+        isCompactViewport,
+        formInDom: Boolean(form),
+        usernameInDom: Boolean(usernameField),
+        formFullyVisible,
+        usernameFullyVisible,
+        formTop: formRect ? Math.round(formRect.top) : null,
+        formBottom: formRect ? Math.round(formRect.bottom) : null,
+        usernameTop: usernameRect ? Math.round(usernameRect.top) : null,
+        viewportHeight,
+        rootOverflowY: root ? window.getComputedStyle(root).overflowY : null,
+        scrollHeight: document.documentElement.scrollHeight,
+        overlayCount: auditLoginPageOverlays().overlays?.length || 0,
+        usernameOpacity: usernameStyle?.opacity || null,
+        usernameBackdropFilter: usernameStyle?.backdropFilter || usernameStyle?.webkitBackdropFilter || null,
+        cardOpacity: cardStyle?.opacity || null,
+        cardBackdropFilter: cardStyle?.backdropFilter || cardStyle?.webkitBackdropFilter || null,
+        cardBackgroundColor: cardStyle?.backgroundColor || null,
+      },
+    });
+    // #endregion
+  }, [
+    step,
+    loginModeLoading,
+    trustedDeviceBusy,
+    rememberDeviceOpen,
+    topNotice,
+    isCompactViewport,
+    keyboardInset,
+  ]);
 
   const attemptPasskeyLogin = async ({ auto = false } = {}) => {
     if (step !== 'password') {
       return false;
     }
-    setError(null);
-    if (!auto) {
-      setPasswordAssistMessage('');
-    }
+    dismissLoginNotice();
     const webAuthnAvailable = webAuthnReady || await waitForWebAuthnApi({
       delayMs: webAuthnReady ? 0 : 300,
       maxWaitMs: webAuthnReady ? 500 : 3000,
@@ -715,24 +1041,23 @@ function Login() {
       return false;
     }
     setTrustedDeviceBusy(true);
-    const optionsResult = await startPasskeyLogin();
-    if (!optionsResult.success) {
-      setTrustedDeviceBusy(false);
-      revealPasswordFallback(
-        auto
-          ? 'Автоматический вход по passkey не сработал. Продолжите вход по логину и паролю.'
-          : (optionsResult.error || 'Не удалось начать вход по биометрии. Продолжите по логину и паролю.'),
-      );
-      return false;
-    }
-
+    let presentationRecoveryCleanup = null;
     try {
+      const optionsResult = await startPasskeyLogin();
+      if (!optionsResult.success) {
+        revealPasswordFallback(
+          auto
+            ? 'Автоматический вход по passkey не сработал. Продолжите вход по логину и паролю.'
+            : (optionsResult.error || 'Не удалось начать вход по биометрии. Продолжите по логину и паролю.'),
+        );
+        return false;
+      }
+
       const credential = await getPasskeyAssertion(optionsResult.public_key);
       const verifyResult = await verifyPasskeyLogin(
         optionsResult.challenge_id,
         encodeCredential(credential),
       );
-      setTrustedDeviceBusy(false);
       if (!verifyResult.success) {
         revealPasswordFallback(
           auto
@@ -744,14 +1069,41 @@ function Login() {
       redirectToDashboard();
       return true;
     } catch (passkeyError) {
-      setTrustedDeviceBusy(false);
+      clearPasskeyPresentationLock();
       const friendlyMessage = extractWebAuthnErrorMessage(passkeyError, 'Не удалось подтвердить вход по биометрии');
+      const overlayAudit = auditLoginPageOverlays();
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'Login.jsx:attemptPasskeyLogin:catch',
+        message: 'passkey canceled or failed',
+        hypothesisId: 'H1',
+        data: {
+          errorName: normalizeWebAuthnErrorName(passkeyError),
+          rememberDeviceOpenAfterClear: false,
+          overlayCount: overlayAudit.overlays?.length || 0,
+          overlays: overlayAudit.overlays?.slice(0, 6) || [],
+          userAgent: overlayAudit.userAgent,
+        },
+      });
+      // #endregion
+      presentationRecoveryCleanup = scheduleLoginPresentationRecovery({
+        focusUsername: isCompactViewport,
+        logContext: 'attemptPasskeyLogin:catch',
+      });
       revealPasswordFallback(
         auto
           ? 'Если passkey на этом устройстве недоступен или не был подтверждён, продолжите вход по логину и паролю.'
           : friendlyMessage,
       );
       return false;
+    } finally {
+      setTrustedDeviceBusy(false);
+      if (!presentationRecoveryCleanup) {
+        presentationRecoveryCleanup = scheduleLoginPresentationRecovery({
+          focusUsername: isCompactViewport,
+          logContext: 'attemptPasskeyLogin:finally',
+        });
+      }
     }
   };
 
@@ -780,13 +1132,13 @@ function Login() {
 
   const handlePasswordSubmit = async (event) => {
     event.preventDefault();
-    setError(null);
+    dismissLoginNotice();
     setLoading(true);
     const result = await login(username.trim(), password);
     setLoading(false);
 
     if (!result.success) {
-      setError(result.error);
+      reportLoginError(result.error);
       return;
     }
 
@@ -800,14 +1152,31 @@ function Login() {
     setTotpCode('');
     setBackupCode('');
     setUseBackupCode(false);
-    setPasswordAssistMessage('');
+
+    const offerSafariPasswordSave = shouldOfferSafariPasswordSaveAfterLogin();
+    const redirectSafariPasswordSave = (nextStep) => {
+      persistTotpResumeState({
+        loginChallengeId: result.login_challenge_id,
+        username: username.trim(),
+        nextStep,
+      });
+      submitSafariPasswordSaveFullPage({
+        username: username.trim(),
+        password,
+        loginChallengeId: result.login_challenge_id,
+      });
+    };
 
     if (result.status === '2fa_setup_required') {
+      if (offerSafariPasswordSave) {
+        redirectSafariPasswordSave('totp_setup');
+        return;
+      }
       setLoading(true);
       const setupResult = await startTwoFactorSetup(result.login_challenge_id);
       setLoading(false);
       if (!setupResult.success) {
-        setError(setupResult.error);
+        reportLoginError(setupResult.error);
         return;
       }
       setSetupData(setupResult);
@@ -815,16 +1184,21 @@ function Login() {
       return;
     }
 
+    if (offerSafariPasswordSave) {
+      redirectSafariPasswordSave('totp_verify');
+      return;
+    }
+
     setStep('totp_verify');
   };
 
   const submitTwoFactorSetup = async ({ autoContinue = false } = {}) => {
-    setError(null);
+    dismissLoginNotice();
     setLoading(true);
     const result = await verifyTwoFactorSetup(loginChallengeId, totpCode.trim());
     setLoading(false);
     if (!result.success) {
-      setError(result.error);
+      reportLoginError(result.error);
       return;
     }
     authenticatedUserRef.current = result.user || null;
@@ -842,7 +1216,7 @@ function Login() {
   };
 
   const submitTwoFactorLogin = async () => {
-    setError(null);
+    dismissLoginNotice();
     setLoading(true);
     const result = await verifyTwoFactorLogin(
       loginChallengeId,
@@ -852,7 +1226,7 @@ function Login() {
     );
     setLoading(false);
     if (!result.success) {
-      setError(result.error);
+      reportLoginError(result.error);
       return;
     }
     await completeAuthenticatedRedirect(result.user || null);
@@ -926,19 +1300,19 @@ function Login() {
 
     try {
       await navigator.clipboard.writeText(text);
-      setCopiedTotpValue(kind);
+      showLoginNotice('success', 'Ключ скопирован', 2400);
     } catch {
-      setCopiedTotpValue('');
+      reportLoginError('Не удалось скопировать ключ');
     }
   };
 
   const handleTrustedDeviceAuth = async () => {
-    setError(null);
+    dismissLoginNotice();
     setTrustedDeviceBusy(true);
     const optionsResult = await refreshTrustedDeviceAuth(loginChallengeId);
     if (!optionsResult.success) {
       setTrustedDeviceBusy(false);
-      setError(optionsResult.error);
+      reportLoginError(optionsResult.error);
       return;
     }
 
@@ -951,19 +1325,19 @@ function Login() {
       );
       setTrustedDeviceBusy(false);
       if (!verifyResult.success) {
-        setError(verifyResult.error);
+        reportLoginError(verifyResult.error);
         return;
       }
       redirectToDashboard();
     } catch (authError) {
       setTrustedDeviceBusy(false);
-      setError(extractWebAuthnErrorMessage(authError, 'Не удалось подтвердить доверенное устройство'));
+      reportLoginError(extractWebAuthnErrorMessage(authError, 'Не удалось подтвердить доверенное устройство'));
     }
   };
 
   const handleRememberDevice = async () => {
     setRegisteringDevice(true);
-    setError(null);
+    dismissLoginNotice();
     setRememberDeviceError('');
     try {
       await registerTrustedDevice({
@@ -987,12 +1361,12 @@ function Login() {
     await completeAuthenticatedRedirect(authenticatedUserRef.current);
   };
 
-  const shellMotion = prefersReducedMotion
+  const shellMotion = prefersReducedMotion || isCompactViewport
     ? {}
     : {
-      initial: { opacity: 0, y: 18 },
+      initial: { opacity: 0, y: 12 },
       animate: { opacity: 1, y: 0 },
-      transition: { duration: 0.45, ease: 'easeOut' },
+      transition: { duration: 0.28, ease: 'easeOut' },
     };
 
   const primaryButtonClassName = 'flex min-h-14 w-full items-center justify-center gap-2 rounded-[18px] !bg-cyan-200 px-5 text-[15px] font-semibold !text-zinc-950 transition hover:!bg-cyan-100 disabled:cursor-not-allowed disabled:opacity-55';
@@ -1044,11 +1418,7 @@ function Login() {
   );
 
   const renderMobileHeader = () => (
-    <motion.div
-      className={cn('px-1 md:hidden', isMobileMinimalStep ? 'space-y-2' : 'space-y-4')}
-      animate={prefersReducedMotion ? undefined : { scale: heroCompact ? 0.97 : 1, y: heroCompact ? -6 : 0 }}
-      transition={{ duration: 0.28, ease: 'easeOut' }}
-    >
+    <div className={cn('px-1 md:hidden', isMobileMinimalStep ? 'space-y-2' : 'space-y-3')}>
       <div className="flex items-center justify-between gap-3">
         <div className="text-sm font-semibold tracking-[0.08em] text-white/72">HUB-IT</div>
         <div className="rounded-full border border-white/10 bg-white/[0.045] px-3 py-1 text-xs font-semibold text-white/58">
@@ -1068,7 +1438,7 @@ function Login() {
           </p>
         ) : null}
       </div>
-    </motion.div>
+    </div>
   );
 
   const renderNetworkAwarePasswordStep = () => {
@@ -1077,8 +1447,8 @@ function Login() {
         <div
           data-testid="login-mode-loading"
           className={cn(
-            'flex flex-col items-center justify-center gap-4 rounded-[24px] border border-white/10 bg-white/[0.04] text-center backdrop-blur-xl',
-            isCompactViewport ? 'min-h-[150px] p-5' : 'min-h-[220px] p-6',
+            'flex flex-col items-center justify-center gap-4 rounded-[24px] border border-white/10 bg-[#111820] text-center',
+            isCompactViewport ? 'min-h-[150px] p-5' : 'min-h-[220px] bg-white/[0.04] p-6 backdrop-blur-xl',
           )}
         >
           <Spinner className="h-8 w-8 text-sky-100" />
@@ -1116,7 +1486,6 @@ function Login() {
                     : 'Обновите Android System WebView или войдите по паролю ниже.')
                   : 'Инициализация входа по отпечатку в приложении…')
             }
-            detail={isCompactViewport ? '' : 'Пароль остается ниже как запасной путь.'}
             onClick={() => attemptPasskeyLogin({ auto: false })}
             disabled={trustedDeviceBusy || loading || passkeyPrepPending}
             busy={trustedDeviceBusy || passkeyPrepPending}
@@ -1141,50 +1510,35 @@ function Login() {
           </div>
         ) : null}
 
-        {passwordAssistMessage ? <InfoBanner tone="info">{passwordAssistMessage}</InfoBanner> : null}
-
-        {canUseTrustedDeviceHero && !showPasswordForm ? (
-          <button
-            type="button"
-            onClick={() => {
-              setPasswordAssistMessage('');
-              setShowPasswordForm(true);
-            }}
-            className={secondaryButtonClassName}
-          >
-            Войти по паролю
-          </button>
-        ) : null}
-
-        <AnimatePresence initial={false}>
-          {(showPasswordForm || !canUseTrustedDeviceHero) ? (
-            <motion.form
-              key="password-form"
-              onSubmit={handlePasswordSubmit}
-              data-testid="password-auth-form"
-              className={cn(isCompactViewport ? 'space-y-3' : 'space-y-4')}
-              initial={prefersReducedMotion ? undefined : { opacity: 0, y: 16 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={prefersReducedMotion ? undefined : { opacity: 0, y: 10 }}
-              transition={{ duration: 0.28, ease: 'easeOut' }}
-            >
+        <form
+          onSubmit={handlePasswordSubmit}
+          autoComplete="on"
+          data-testid="password-auth-form"
+          className={cn(isCompactViewport ? 'space-y-3' : 'space-y-4')}
+        >
               <Field
                 id="login-username"
+                name="username"
                 label="Логин"
                 inputRef={usernameInputRef}
                 value={username}
                 onChange={(event) => setUsername(event.target.value)}
                 autoComplete="username"
                 disabled={loading}
+                onFocus={handleCompactFieldFocus}
+                solidSurface={isCompactViewport}
               />
               <Field
                 id="login-password"
+                name="password"
                 label="Пароль"
                 type={showPassword ? 'text' : 'password'}
                 value={password}
                 onChange={(event) => setPassword(event.target.value)}
                 autoComplete="current-password"
                 disabled={loading}
+                onFocus={handleCompactFieldFocus}
+                solidSurface={isCompactViewport}
                 endAdornment={(
                   <button
                     type="button"
@@ -1204,9 +1558,7 @@ function Login() {
                 {loading ? <Spinner className="h-5 w-5" /> : null}
                 <span>Войти</span>
               </button>
-            </motion.form>
-          ) : null}
-        </AnimatePresence>
+            </form>
       </div>
     );
   };
@@ -1214,201 +1566,134 @@ function Login() {
   const renderSetupStep = () => {
     const totpSetupUri = String(setupData?.otpauth_uri || '').trim();
     const totpManualKey = String(setupData?.manual_entry_key || '').trim();
-    const setupSteps = ['Откройте приложение', 'Добавьте HUB-IT', 'Введите код'];
+    const appleOtpSupported = isAppleKeychainOtpSupported();
+    const loginAccountName = username.trim() || String(setupData?.account_name || '').trim();
+    const alignedTotpSetupUri = alignOtpAuthAccountName(totpSetupUri, loginAccountName);
 
-    const openAuthenticatorAction = totpSetupUri ? (
-      <a
-        href={totpSetupUri}
-        data-testid="totp-open-authenticator"
-        className={cn(
-          'flex w-full items-center justify-center !bg-cyan-200 px-5 text-center font-semibold !text-zinc-950 !no-underline transition hover:!bg-cyan-100 hover:!no-underline',
-          isCompactViewport ? 'min-h-12 rounded-[16px] text-sm' : 'min-h-14 rounded-[18px] text-[15px]',
-        )}
-      >
-        Открыть в приложении кодов
-      </a>
-    ) : null;
-
-    const qrSetupCard = (
-      <div className={cn(
-        'overflow-hidden border border-white/10 bg-white/5 backdrop-blur-xl',
-        isCompactViewport ? 'rounded-[18px] p-2.5' : 'rounded-[24px] p-4',
-      )}>
-        {totpQrDataUrl ? (
-          <div className={cn(
-            'flex justify-center border border-white/8 bg-white/[0.04]',
-            isCompactViewport ? 'rounded-[14px] p-2.5' : 'rounded-[18px] p-4',
-          )}>
-            <img
-              src={totpQrDataUrl}
-              alt="TOTP QR"
-              data-testid="totp-qr-image"
-              className={cn(
-                'h-auto w-full bg-white',
-                isCompactViewport ? 'max-w-[148px] rounded-[14px] p-2' : 'max-w-[220px] rounded-[18px] p-3',
-              )}
-            />
-          </div>
-        ) : (
-          <InfoBanner tone="warning">
-            <span>QR-код не удалось показать автоматически.</span>
-            <button
-              type="button"
-              onClick={() => setManualTotpOpen(true)}
-              className="ml-2 font-semibold text-amber-50 underline decoration-amber-100/45 underline-offset-4"
-            >
-              Добавить вручную
-            </button>
-          </InfoBanner>
-        )}
-      </div>
+    const totpActionButtonClassName = cn(
+      'flex w-full items-center justify-center !bg-cyan-200 px-5 text-center font-semibold !text-zinc-950 !no-underline transition hover:!bg-cyan-100 hover:!no-underline',
+      isCompactViewport ? 'min-h-12 rounded-[16px] text-sm' : 'min-h-14 rounded-[18px] text-[15px]',
     );
 
-    const manualSetupCard = (
-      <div className={cn(
-        'border border-white/10 bg-white/[0.04] backdrop-blur-xl',
-        isCompactViewport ? 'rounded-[18px] p-3' : 'rounded-[20px] p-4',
-      )}>
+    const openAuthenticatorAction = alignedTotpSetupUri ? (
+      appleOtpSupported ? (
         <button
           type="button"
-          data-testid="totp-manual-toggle"
-          aria-expanded={manualTotpOpen}
-          aria-controls="totp-manual-panel"
-          onClick={() => setManualTotpOpen((prev) => !prev)}
-          className="flex w-full items-center justify-between gap-3 text-left text-sm font-semibold text-white/82"
+          data-testid="totp-open-apple-passwords"
+          className={totpActionButtonClassName}
+          onClick={() => {
+            const appleHref = toAppleOtpAuthUri(alignedTotpSetupUri);
+            // #region agent log
+            emitAgentDebugLog({
+              location: 'Login.jsx:totp-open-apple-passwords',
+              message: 'apple-otpauth navigation',
+              hypothesisId: 'H5',
+              data: {
+                loginUsername: loginAccountName,
+                issuer: String(setupData?.issuer || ''),
+                hrefAccount: alignedTotpSetupUri.split('?')[0]?.split(':').slice(-1)[0] || '',
+              },
+            });
+            // #endregion
+            window.location.assign(appleHref);
+          }}
         >
-          <span>Ручной ключ</span>
-          <span className="text-xs font-semibold uppercase tracking-[0.16em] text-white/42">
-            {manualTotpOpen ? 'Скрыть' : 'Открыть'}
-          </span>
+          Добавить в Пароли
         </button>
+      ) : (
+        <a
+          href={alignedTotpSetupUri}
+          data-testid="totp-open-authenticator"
+          className={totpActionButtonClassName}
+        >
+          Открыть в приложении кодов
+        </a>
+      )
+    ) : null;
 
-        {manualTotpOpen ? (
-          <div id="totp-manual-panel" data-testid="totp-manual-panel" className="mt-4 space-y-4">
-            <div>
-              <div className="mb-2 text-xs font-semibold uppercase tracking-[0.22em] text-white/44">Ключ</div>
-              <div className="flex flex-col gap-2 sm:flex-row">
-                <div className="min-w-0 flex-1 break-all rounded-[18px] bg-black/20 px-4 py-3 font-mono text-[15px] text-white/88">
-                  {totpManualKey || '—'}
-                </div>
-                <button
-                  type="button"
-                  data-testid="totp-copy-manual-key"
-                  disabled={!totpManualKey}
-                  onClick={() => {
-                    void copyTotpSetupValue('manual', totpManualKey);
-                  }}
-                  className="min-h-12 rounded-[16px] border border-white/10 px-4 text-sm font-semibold text-white/76 transition hover:bg-white/8 disabled:cursor-not-allowed disabled:opacity-45"
-                >
-                  Скопировать
-                </button>
-              </div>
-              {copiedTotpValue === 'manual' ? (
-                <div className="mt-2 text-xs font-medium text-emerald-200/88">Ключ скопирован</div>
-              ) : null}
-            </div>
-
-            <div className="space-y-2">
-              <Field
-                id="login-otpauth-uri"
-                label="otpauth URI"
-                value={totpSetupUri}
-                readOnly
-                multiline
-                rows={3}
+    const alternateSetupPanel = (
+      <details
+        className={cn(
+          'border border-white/10 bg-white/[0.035] backdrop-blur-xl',
+          isCompactViewport ? 'rounded-[18px] p-3' : 'rounded-[20px] p-4',
+        )}
+      >
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-white/72 [&::-webkit-details-marker]:hidden">
+          <span>QR-код и ручной ключ</span>
+          <span className="text-xs font-semibold uppercase tracking-[0.16em] text-white/38">Показать</span>
+        </summary>
+        <div className="mt-3 space-y-3">
+          {totpQrDataUrl ? (
+            <div className="flex justify-center rounded-[14px] border border-white/8 bg-white/[0.04] p-2.5">
+              <img
+                src={totpQrDataUrl}
+                alt="TOTP QR"
+                data-testid="totp-qr-image"
+                className="h-auto w-full max-w-[148px] rounded-[12px] bg-white p-2"
               />
+            </div>
+          ) : (
+            <InfoBanner tone="warning">QR-код недоступен — используйте ручной ключ ниже.</InfoBanner>
+          )}
+          <div className="space-y-2">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-white/44">Ключ</div>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <div className="min-w-0 flex-1 break-all rounded-[14px] bg-black/20 px-3 py-2.5 font-mono text-sm text-white/88">
+                {totpManualKey || '—'}
+              </div>
               <button
                 type="button"
-                data-testid="totp-copy-uri"
-                disabled={!totpSetupUri}
+                data-testid="totp-copy-manual-key"
+                disabled={!totpManualKey}
                 onClick={() => {
-                  void copyTotpSetupValue('uri', totpSetupUri);
+                  void copyTotpSetupValue('manual', totpManualKey);
                 }}
-                className="min-h-12 w-full rounded-[16px] border border-white/10 px-4 text-sm font-semibold text-white/76 transition hover:bg-white/8 disabled:cursor-not-allowed disabled:opacity-45"
+                className="min-h-11 rounded-[14px] border border-white/10 px-3 text-sm font-semibold text-white/76 transition hover:bg-white/8 disabled:cursor-not-allowed disabled:opacity-45"
               >
-                Скопировать URI
+                Скопировать
               </button>
-              {copiedTotpValue === 'uri' ? (
-                <div className="text-xs font-medium text-emerald-200/88">URI скопирован</div>
-              ) : null}
             </div>
           </div>
-        ) : null}
-      </div>
+        </div>
+      </details>
     );
 
-    if (isCompactViewport) {
-      return (
-        <form onSubmit={handleVerifySetup} className="space-y-3">
-          {openAuthenticatorAction}
+    const setupHint = appleOtpSupported
+      ? 'Нажмите «Добавить в Пароли» и выберите сохранённую запись hubit.zsgp.ru.'
+      : 'Откройте приложение кодов и добавьте HUB-IT.';
 
-          <Field
-            id="login-totp-setup-code"
-            label="6-значный код"
-            value={totpCode}
-            onChange={(event) => setTotpCode(normalizeTotpInput(event.target.value))}
-            inputMode="numeric"
-            autoComplete="one-time-code"
-            disabled={loading}
-            endAdornment={loading ? <Spinner className="h-5 w-5 text-cyan-100" /> : null}
-          />
-
-          {manualSetupCard}
-
-          <details
-            open={!totpSetupUri}
-            className="rounded-[18px] border border-white/10 bg-white/[0.035] p-3 backdrop-blur-xl"
-          >
-            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-semibold text-white/70 [&::-webkit-details-marker]:hidden">
-              <span>QR-код</span>
-              <span className="text-xs uppercase tracking-[0.16em] text-white/38">Показать</span>
-            </summary>
-            <div className="mt-3">
-              {qrSetupCard}
-            </div>
-          </details>
-        </form>
-      );
-    }
-
-    return (
-      <form onSubmit={handleVerifySetup} className="space-y-4">
-        <InfoBanner tone="info">
-          Добавьте HUB-IT в приложение кодов и введите первый 6-значный код ниже.
-        </InfoBanner>
-
-        <div className="grid gap-2 sm:grid-cols-3">
-          {setupSteps.map((label, index) => (
-            <div key={label} className="rounded-[18px] border border-white/10 bg-white/[0.045] px-4 py-3 text-sm font-medium text-white/82">
-              <span className="mr-2 text-white/36">{index + 1}</span>
-              {label}
-            </div>
-          ))}
-        </div>
-
-        {qrSetupCard}
+    const setupBody = (
+      <>
+        <p className="text-sm leading-6 text-white/62">{setupHint}</p>
         {openAuthenticatorAction}
-
-        {manualSetupCard}
-
         <Field
           id="login-totp-setup-code"
-          label="Код из приложения"
+          label={isCompactViewport ? '6-значный код' : 'Код из приложения'}
           value={totpCode}
           onChange={(event) => setTotpCode(normalizeTotpInput(event.target.value))}
           inputMode="numeric"
           autoComplete="one-time-code"
           disabled={loading}
+          onFocus={handleCompactFieldFocus}
+          endAdornment={loading ? <Spinner className="h-5 w-5 text-cyan-100" /> : null}
         />
+        {alternateSetupPanel}
+        {!isCompactViewport ? (
+          <button
+            type="submit"
+            disabled={isTwofaSubmitDisabled}
+            className={primaryButtonClassName}
+          >
+            {loading ? <Spinner className="h-5 w-5" /> : null}
+            <span>Подтвердить код</span>
+          </button>
+        ) : null}
+      </>
+    );
 
-        <button
-          type="submit"
-          disabled={isTwofaSubmitDisabled}
-          className={primaryButtonClassName}
-        >
-          {loading ? <Spinner className="h-5 w-5" /> : null}
-          <span>Подтвердить код</span>
-        </button>
+    return (
+      <form onSubmit={handleVerifySetup} className={cn(isCompactViewport ? 'space-y-3' : 'space-y-4')}>
+        {setupBody}
       </form>
     );
   };
@@ -1418,8 +1703,7 @@ function Login() {
       {canUseTrustedDeviceHero ? (
         <HeroAction
           title={trustedDeviceBusy ? 'Подтверждаем passkey' : 'Доверенное устройство'}
-          subtitle="Подтвердите вход системным passkey."
-          detail="Код можно ввести вручную ниже."
+          subtitle={isCompactViewport ? 'Passkey без кода.' : 'Подтвердите вход системным passkey.'}
           onClick={handleTrustedDeviceAuth}
           disabled={trustedDeviceBusy || loading}
           busy={trustedDeviceBusy}
@@ -1469,47 +1753,41 @@ function Login() {
         ) : null}
       </div>
 
-      <AnimatePresence initial={false}>
-        {(showVerifyFallback || !canUseTrustedDeviceHero) ? (
-          <motion.form
-            key="verify-form"
-            onSubmit={handleVerifyLogin}
-            data-testid="verify-fallback-form"
-            className={cn(isCompactViewport ? 'space-y-3' : 'space-y-4')}
-            initial={prefersReducedMotion ? undefined : { opacity: 0, y: 14 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={prefersReducedMotion ? undefined : { opacity: 0, y: 10 }}
-            transition={{ duration: 0.24, ease: 'easeOut' }}
-          >
-            <Field
-              id="login-totp-verify"
-              label={useBackupCode ? 'Backup-код' : (isCompactViewport ? '6-значный код' : 'Код из приложения')}
-              value={useBackupCode ? backupCode : totpCode}
-              onChange={(event) => {
-                if (useBackupCode) {
-                  setBackupCode(event.target.value);
-                } else {
-                  setTotpCode(normalizeTotpInput(event.target.value));
-                }
-              }}
-              inputMode={useBackupCode ? 'text' : 'numeric'}
-              autoComplete={useBackupCode ? undefined : 'one-time-code'}
-              disabled={loading}
-              endAdornment={isCompactViewport && loading ? <Spinner className="h-5 w-5 text-cyan-100" /> : null}
-            />
-            {!isCompactViewport ? (
-              <button
-                type="submit"
-                disabled={isTwofaSubmitDisabled}
-                className={primaryButtonClassName}
-              >
-                {loading ? <Spinner className="h-5 w-5" /> : null}
-                <span>Подтвердить вход</span>
-              </button>
-            ) : null}
-          </motion.form>
-        ) : null}
-      </AnimatePresence>
+      {(showVerifyFallback || !canUseTrustedDeviceHero) ? (
+        <form
+          onSubmit={handleVerifyLogin}
+          data-testid="verify-fallback-form"
+          className={cn(isCompactViewport ? 'space-y-3' : 'space-y-4')}
+        >
+          <Field
+            id="login-totp-verify"
+            label={useBackupCode ? 'Backup-код' : (isCompactViewport ? '6-значный код' : 'Код из приложения')}
+            value={useBackupCode ? backupCode : totpCode}
+            onChange={(event) => {
+              if (useBackupCode) {
+                setBackupCode(event.target.value);
+              } else {
+                setTotpCode(normalizeTotpInput(event.target.value));
+              }
+            }}
+            inputMode={useBackupCode ? 'text' : 'numeric'}
+            autoComplete={useBackupCode ? undefined : 'one-time-code'}
+            disabled={loading}
+            onFocus={handleCompactFieldFocus}
+            endAdornment={isCompactViewport && loading ? <Spinner className="h-5 w-5 text-cyan-100" /> : null}
+          />
+          {!isCompactViewport ? (
+            <button
+              type="submit"
+              disabled={isTwofaSubmitDisabled}
+              className={primaryButtonClassName}
+            >
+              {loading ? <Spinner className="h-5 w-5" /> : null}
+              <span>Подтвердить вход</span>
+            </button>
+          ) : null}
+        </form>
+      ) : null}
     </div>
   );
 
@@ -1555,48 +1833,70 @@ function Login() {
   const rememberDialogTitle = rememberDeviceMode === 'platform'
     ? 'Запомнить ПК'
     : 'Запомнить устройство';
+  const mobileNoticeInset = topNotice?.message && isCompactViewport
+    ? 'max(88px, calc(env(safe-area-inset-top, 0px) + 72px))'
+    : undefined;
 
   return (
     <div
       data-testid={isCompactViewport ? 'login-mobile-layout' : 'login-desktop-layout'}
-      className="relative min-h-[100dvh] w-full max-w-full overflow-x-hidden bg-[#07090c] text-white"
+      className={cn(
+        'relative min-h-[100dvh] w-full max-w-full overflow-x-hidden bg-[#07090c] text-white',
+        isCompactViewport ? 'login-mobile-shell overflow-y-auto' : (keyboardOpen ? 'overflow-y-auto' : 'overflow-y-hidden'),
+      )}
       style={{
         paddingTop: 'max(16px, calc(env(safe-area-inset-top, 0px) + 12px))',
         paddingBottom: shellPaddingBottom,
         paddingLeft: 'max(16px, calc(env(safe-area-inset-left, 0px) + 12px))',
         paddingRight: 'max(16px, calc(env(safe-area-inset-right, 0px) + 12px))',
+        scrollPaddingBottom: keyboardOpen ? '24px' : undefined,
       }}
     >
-      <motion.div
-        aria-hidden="true"
-        className="absolute left-[-18%] top-[-18%] h-[38rem] w-[38rem] rounded-full bg-cyan-700/18 blur-[130px]"
-        animate={prefersReducedMotion ? undefined : { x: [0, 24, -18, 0], y: [0, 18, -12, 0] }}
-        transition={{ duration: 18, repeat: Infinity, ease: 'easeInOut' }}
+      {!isCompactViewport && !prefersReducedMotion ? (
+        <>
+          <div aria-hidden="true" className="login-ambient-blob login-ambient-blob--primary" />
+          <div aria-hidden="true" className="login-ambient-blob login-ambient-blob--secondary" />
+        </>
+      ) : !isCompactViewport ? (
+        <>
+          <div aria-hidden="true" className="login-ambient-blob login-ambient-blob--primary !animate-none" />
+          <div aria-hidden="true" className="login-ambient-blob login-ambient-blob--secondary !animate-none" />
+        </>
+      ) : null}
+      {!isCompactViewport ? (
+        <div
+          aria-hidden="true"
+          data-login-decorative="true"
+          className="pointer-events-none absolute inset-0 z-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_34%),linear-gradient(180deg,rgba(18,24,31,0.42),rgba(7,9,12,0.94))]"
+        />
+      ) : null}
+
+      <LoginTopNotice
+        notice={topNotice}
+        reducedMotion={prefersReducedMotion}
       />
-      <motion.div
-        aria-hidden="true"
-        className="absolute bottom-[-20%] right-[-14%] h-[32rem] w-[32rem] rounded-full bg-emerald-700/12 blur-[130px]"
-        animate={prefersReducedMotion ? undefined : { x: [0, -24, 18, 0], y: [0, -16, 8, 0] }}
-        transition={{ duration: 20, repeat: Infinity, ease: 'easeInOut' }}
-      />
-      <div className="absolute inset-0 bg-[radial-gradient(circle_at_top,rgba(255,255,255,0.06),transparent_34%),linear-gradient(180deg,rgba(18,24,31,0.42),rgba(7,9,12,0.94))]" />
 
       <motion.div
         {...shellMotion}
-        className="relative z-10 mx-auto grid min-h-[calc(100dvh-42px)] w-full max-w-[78rem] items-center gap-6 md:grid-cols-[minmax(0,1fr)_minmax(27rem,31rem)]"
-        style={{ transform: isCompactViewport && contentLift ? `translateY(-${contentLift}px)` : undefined }}
+        className={cn(
+          'relative z-10 mx-auto grid w-full max-w-[78rem] gap-6 md:grid-cols-[minmax(0,1fr)_minmax(27rem,31rem)]',
+          isCompactViewport ? 'items-start py-2' : 'min-h-[calc(100dvh-42px)] items-center',
+        )}
+        style={mobileNoticeInset ? { paddingTop: mobileNoticeInset } : undefined}
       >
         {renderStatusRail()}
 
         <div className="mx-auto flex w-full max-w-[30rem] flex-col justify-center gap-5 md:mx-0 md:justify-self-end">
           {renderMobileHeader()}
-          <motion.div
-            layout
+          <div
+            data-testid="login-form-card"
             className={cn(
-              'relative overflow-hidden border border-white/10 bg-white/[0.07] shadow-[0_24px_80px_rgba(2,6,23,0.48)] backdrop-blur-[26px]',
-              isMobileMinimalStep ? 'rounded-[24px] p-4' : 'rounded-[28px] p-5 sm:p-6',
+              'relative overflow-hidden border shadow-[0_24px_80px_rgba(2,6,23,0.48)]',
+              isMobileMinimalStep
+                ? 'login-mobile-card rounded-[24px] border border-white/10 bg-[#111820] p-4 shadow-none'
+                : 'rounded-[28px] border-white/10 bg-white/[0.07] p-5 backdrop-blur-xl sm:p-6',
             )}
-            style={{
+            style={isMobileMinimalStep ? undefined : {
               boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.12), 0 24px 72px rgba(2,6,23,0.52)',
             }}
           >
@@ -1613,20 +1913,25 @@ function Login() {
               </div>
             </div>
             <div className="space-y-4">
-              {error ? <InfoBanner tone="error">{error}</InfoBanner> : null}
-              <AnimatePresence mode="wait">
-                <motion.div
-                  key={step}
-                  initial={prefersReducedMotion ? undefined : { opacity: 0, y: 20 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  exit={prefersReducedMotion ? undefined : { opacity: 0, y: -12 }}
-                  transition={{ duration: 0.3, ease: 'easeOut' }}
-                >
+              {prefersReducedMotion || isCompactViewport ? (
+                <div key={step}>
                   {renderStepBody()}
-                </motion.div>
-              </AnimatePresence>
+                </div>
+              ) : (
+                <AnimatePresence mode="wait">
+                  <motion.div
+                    key={step}
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.22, ease: 'easeOut' }}
+                  >
+                    {renderStepBody()}
+                  </motion.div>
+                </AnimatePresence>
+              )}
             </div>
-          </motion.div>
+          </div>
 
           {!isMobileMinimalStep ? (
             <div className="px-1 text-center text-xs leading-5 text-white/34 md:text-left">
@@ -1638,22 +1943,12 @@ function Login() {
 
       <AnimatePresence>
         {rememberDeviceOpen ? (
-          <>
-            <motion.button
-              type="button"
-              aria-label="Закрыть окно запоминания устройства"
-              className="fixed inset-0 z-20 bg-black/58 backdrop-blur-sm"
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              exit={{ opacity: 0 }}
-              transition={{ duration: 0.22, ease: 'easeOut' }}
-              onClick={dismissRememberDevicePrompt}
-            />
-            <motion.div
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="remember-device-title"
-              className="fixed bottom-0 z-30 w-[calc(100vw-24px)] max-w-[31rem] overflow-hidden rounded-t-[28px] border border-white/10 bg-[#080b10]/94 px-5 pb-5 pt-4 text-white shadow-[0_-20px_60px_rgba(2,6,23,0.58)] backdrop-blur-[28px] md:bottom-6 md:rounded-[28px]"
+          <motion.div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="remember-device-title"
+            data-testid="login-remember-device-dialog"
+            className="fixed bottom-0 z-30 w-[calc(100vw-24px)] max-w-[31rem] overflow-hidden rounded-t-[28px] border border-white/10 bg-[#080b10] px-5 pb-5 pt-4 text-white shadow-[0_-20px_60px_rgba(2,6,23,0.58)] md:bottom-6 md:rounded-[28px]"
               style={{
                 paddingBottom: 'max(20px, calc(env(safe-area-inset-bottom, 0px) + 14px))',
                 right: 'max(12px, env(safe-area-inset-right, 0px))',
@@ -1705,7 +2000,6 @@ function Login() {
                 </div>
               </div>
             </motion.div>
-          </>
         ) : null}
       </AnimatePresence>
     </div>

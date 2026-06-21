@@ -7,6 +7,9 @@ import { Box } from '@mui/material';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { CHAT_FEATURE_ENABLED } from './lib/chatFeature';
 import BrandedRouteLoader from './components/layout/BrandedRouteLoader';
+import ScrollToTop from './components/layout/ScrollToTop';
+import { canAccessAdminArea } from './components/account/accountNavigationConfig';
+import { forceAppHardReload } from './lib/routeChunkRecovery';
 import {
   applyChatPushDiagnostic,
   disableChatPushSubscription,
@@ -15,21 +18,24 @@ import {
   requestChatPushSyncDrain,
   syncChatPushSubscription,
 } from './lib/chatNotifications';
+import ChatSocketBootstrap from './components/chat/ChatSocketBootstrap';
 import { hasAnyAppPushPermission } from './lib/appPushPermissions';
 import { syncAppBadge } from './lib/appBadge';
 import {
   loadAddressBookRoute,
-  loadAdUsersRoute,
   loadChatRoute,
   loadComputersRoute,
   loadDashboardRoute,
   loadDatabaseRoute,
   loadLoginRoute,
   loadMailRoute,
+  loadMobileMenuRoute,
   loadMfuRoute,
   loadMyFilesRoute,
   loadNetworksRoute,
   loadKnowledgeBaseRoute,
+  loadProfileRoute,
+  loadAdminRoute,
   loadScanCenterRoute,
   loadSettingsRoute,
   loadPasswordsRoute,
@@ -49,12 +55,14 @@ const Chat = lazy(loadChatRoute);
 const Database = lazy(loadDatabaseRoute);
 const Networks = lazy(loadNetworksRoute);
 const Settings = lazy(loadSettingsRoute);
+const Profile = lazy(loadProfileRoute);
+const Admin = lazy(loadAdminRoute);
 const Statistics = lazy(loadStatisticsRoute);
 const Computers = lazy(loadComputersRoute);
 const ScanCenter = lazy(loadScanCenterRoute);
 const Mfu = lazy(loadMfuRoute);
 const Mail = lazy(loadMailRoute);
-const AdUsers = lazy(loadAdUsersRoute);
+const MobileMenu = lazy(loadMobileMenuRoute);
 const Vcs = lazy(loadVcsRoute);
 const KnowledgeBase = lazy(loadKnowledgeBaseRoute);
 const AddressBook = lazy(loadAddressBookRoute);
@@ -69,13 +77,11 @@ const routePermissions = [
   ...(CHAT_FEATURE_ENABLED ? [{ path: '/chat', permissions: ['chat.read'] }] : []),
   { path: '/database', permissions: ['database.read'] },
   { path: '/networks', permissions: ['networks.read'] },
-  { path: '/mfu', permissions: ['database.read'] },
+  { path: '/mfu', permissions: ['mfu.read'] },
   { path: '/computers', permissions: ['computers.read'] },
   { path: '/scan-center', permissions: ['scan.read'] },
   { path: '/statistics', permissions: ['statistics.read'] },
   { path: '/kb', permissions: ['kb.read'] },
-  { path: '/settings', permissions: ['settings.read'] },
-  { path: '/ad-users', adminOnly: true },
   { path: '/vcs', permissions: ['vcs.read'] },
   { path: '/mail', permissions: ['mail.access'] },
   { path: '/address-book', permissions: ['address_book.read'] },
@@ -136,6 +142,14 @@ const PermissionRoute = ({ permission, permissions, adminOnly = false, children 
     return children || <Outlet />;
   }
 
+  return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
+};
+
+const AdminAreaRoute = ({ children }) => {
+  const { hasPermission, user } = useAuth();
+  if (canAccessAdminArea({ user, hasPermission })) {
+    return children || <Outlet />;
+  }
   return <Navigate to={resolveFirstAccessiblePath(hasPermission, user)} replace />;
 };
 
@@ -318,7 +332,7 @@ const PageFallback = () => (
 class RouteErrorBoundary extends Component {
   constructor(props) {
     super(props);
-    this.state = { hasError: false };
+    this.state = { hasError: false, reloading: false };
   }
 
   static getDerivedStateFromError() {
@@ -328,6 +342,11 @@ class RouteErrorBoundary extends Component {
   componentDidCatch(error) {
     console.error('Route render failed:', error);
   }
+
+  handleHardReload = async () => {
+    this.setState({ reloading: true });
+    await forceAppHardReload();
+  };
 
   render() {
     if (this.state.hasError) {
@@ -354,14 +373,15 @@ class RouteErrorBoundary extends Component {
           >
             <Box sx={{ fontSize: 22, fontWeight: 700, mb: 1 }}>Нужно обновить экран</Box>
             <Box sx={{ color: 'rgba(255,255,255,0.62)', fontSize: 14, lineHeight: 1.7, mb: 2 }}>
-              Страница была открыта долго, и раздел не удалось догрузить.
+              Страница была открыта долго, и раздел не удалось догрузить. Нажмите «Обновить» — подтянется новая версия интерфейса.
             </Box>
             <button
               type="button"
-              onClick={() => window.location.reload()}
-              className="min-h-12 rounded-[16px] !bg-cyan-200 px-5 text-sm font-semibold !text-zinc-950"
+              onClick={() => { void this.handleHardReload(); }}
+              disabled={this.state.reloading}
+              className="min-h-12 rounded-[16px] !bg-cyan-200 px-5 text-sm font-semibold !text-zinc-950 disabled:opacity-60"
             >
-              Обновить
+              {this.state.reloading ? 'Обновляем...' : 'Обновить'}
             </button>
           </Box>
         </Box>
@@ -385,7 +405,9 @@ function App() {
       future={{ v7_relativeSplatPath: true, v7_startTransition: true }}
     >
       <AuthProvider>
+        <ScrollToTop />
         <AppPushBootstrap />
+        <ChatSocketBootstrap />
         <Box sx={{ display: 'flex', flexDirection: 'column', minHeight: '100dvh' }}>
           <RouteErrorBoundary>
           <Suspense fallback={<PageFallback />}>
@@ -425,17 +447,14 @@ function App() {
                   path="/networks/:branchId"
                   element={<PermissionRoute permission="networks.read"><Networks /></PermissionRoute>}
                 />
-                <Route
-                  path="/ad-users"
-                  element={<PermissionRoute adminOnly><AdUsers /></PermissionRoute>}
-                />
+                <Route path="/ad-users" element={<Navigate to="/admin/ad-users" replace />} />
                 <Route
                   path="/vcs"
                   element={<PermissionRoute permission="vcs.read"><Vcs /></PermissionRoute>}
                 />
                 <Route
                   path="/mfu"
-                  element={<PermissionRoute permission="database.read"><Mfu /></PermissionRoute>}
+                  element={<PermissionRoute permission="mfu.read"><Mfu /></PermissionRoute>}
                 />
                 <Route
                   path="/computers"
@@ -454,6 +473,10 @@ function App() {
                   element={<PermissionRoute permission="mail.access"><Mail /></PermissionRoute>}
                 />
                 <Route
+                  path="/menu"
+                  element={<MobileMenu />}
+                />
+                <Route
                   path="/address-book"
                   element={<PermissionRoute permission="address_book.read"><AddressBook /></PermissionRoute>}
                 />
@@ -469,10 +492,9 @@ function App() {
                   path="/kb"
                   element={<PermissionRoute permission="kb.read"><KnowledgeBase /></PermissionRoute>}
                 />
-                <Route
-                  path="/settings"
-                  element={<PermissionRoute permission="settings.read"><Settings /></PermissionRoute>}
-                />
+                <Route path="/profile" element={<Profile />} />
+                <Route path="/settings/:section?" element={<Settings />} />
+                <Route path="/admin/:section?" element={<AdminAreaRoute><Admin /></AdminAreaRoute>} />
               </Route>
 
               <Route path="*" element={<HomeRedirect />} />

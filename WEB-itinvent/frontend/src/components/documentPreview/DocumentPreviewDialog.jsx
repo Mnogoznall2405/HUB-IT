@@ -112,7 +112,15 @@ export default function DocumentPreviewDialog({
 
     if (hasPdfPreview) {
       return (
-        <Box sx={{ minHeight: 0, flex: 1, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        <Box sx={{
+          minHeight: 0,
+          flex: 1,
+          height: '100%',
+          overflow: 'hidden',
+          display: 'flex',
+          flexDirection: 'column',
+        }}
+        >
           <Suspense fallback={surfaceFallback}>
             <MailPdfPreviewSurface
               objectUrl={objectUrl}
@@ -253,6 +261,8 @@ export default function DocumentPreviewDialog({
           p: 0,
           flex: 1,
           minHeight: 0,
+          display: 'flex',
+          flexDirection: 'column',
           overflow: resolvedMode === 'table' ? 'auto' : 'hidden',
           bgcolor: theme.palette.mode === 'dark' ? 'background.default' : '#f8fafc',
           pb: { xs: 'env(safe-area-inset-bottom)', sm: 0 },

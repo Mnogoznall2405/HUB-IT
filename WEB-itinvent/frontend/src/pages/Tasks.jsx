@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Accordion,
   AccordionDetails,
@@ -8,8 +8,6 @@ import {
   Avatar,
   Badge,
   Box,
-  BottomNavigation,
-  BottomNavigationAction,
   Button,
   Card,
   Checkbox,
@@ -71,7 +69,14 @@ import ChecklistOutlinedIcon from '@mui/icons-material/ChecklistOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
 import SupervisorAccountOutlinedIcon from '@mui/icons-material/SupervisorAccountOutlined';
 import TuneOutlinedIcon from '@mui/icons-material/TuneOutlined';
+import FormatBoldIcon from '@mui/icons-material/FormatBold';
+import FormatItalicIcon from '@mui/icons-material/FormatItalic';
+import StrikethroughSIcon from '@mui/icons-material/StrikethroughS';
+import FormatListBulletedIcon from '@mui/icons-material/FormatListBulleted';
+import FormatListNumberedIcon from '@mui/icons-material/FormatListNumbered';
+import AlternateEmailIcon from '@mui/icons-material/AlternateEmail';
 import MainLayout from '../components/layout/MainLayout';
+import ShellNotificationsButton from '../components/layout/ShellNotificationsButton';
 import PageShell from '../components/layout/PageShell';
 import { hubAPI } from '../api/client';
 import { departmentsAPI } from '../api/departments';
@@ -88,12 +93,15 @@ import {
   TaskPrimaryActions,
   normalizeTaskDetailTab,
 } from '../components/hub/TaskUi';
+import TaskRoleScopeSwitch from '../components/hub/TaskRoleScopeSwitch';
 import {
   canOpenTransferActUpload,
   getTransferActReminderLabel,
   getTransferActUploadUrl,
   isTransferActUploadTask,
 } from '../lib/hubTaskIntegrations';
+import { CHAT_FEATURE_ENABLED, TASK_DISCUSSION_CHAT_ENABLED } from '../lib/chatFeature';
+import { invalidateSWRCacheByPrefix } from '../lib/swrCache';
 import {
   TASK_MODE_OPTIONS,
   buildCalendarDays,
@@ -105,7 +113,7 @@ import {
   formatCreateDueLabel,
   normalizeTaskMode,
 } from './tasksViewModel';
-import { buildOfficeUiTokens, getOfficeDialogPaperSx, getOfficeEmptyStateSx, getOfficeHeaderBandSx, getOfficeMetricBlockSx, getOfficePanelSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
+import { buildOfficeUiTokens, getAppShellMobileFabBottomOffset, getOfficeDialogPaperSx, getOfficeEmptyStateSx, getOfficeHeaderBandSx, getOfficeMetricBlockSx, getOfficePanelSx, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
 import {
   Bar,
   BarChart,
@@ -260,9 +268,54 @@ const findTaskUserById = (options, value) => (
   (Array.isArray(options) ? options : []).find((item) => String(item?.id || '') === String(value || '')) || null
 );
 
+const formatHubTaskError = (error, fallback = 'Ошибка создания задачи') => {
+  const detail = String(error?.response?.data?.detail || error?.message || '').trim();
+  if (!detail) return fallback;
+  const normalized = detail.toLowerCase();
+  if (normalized.includes('task cannot be assigned in the selected department')) {
+    return 'Нельзя назначить задачу в выбранном отделе. Выберите исполнителя из своего отдела или укажите его отдел.';
+  }
+  if (normalized.includes('task cannot be moved to the selected department')) {
+    return 'Нельзя перенести задачу в выбранный отдел.';
+  }
+  return detail;
+};
+
 const areSameTaskUsers = (option, value) => String(option?.id || '') === String(value?.id || '');
 
 const TASK_MODE_STORAGE_KEY = 'hub.tasks.taskMode';
+const TASK_PERSONAL_ROLE_STORAGE_KEY = 'hub.tasks.personalRole';
+
+const safeReadStoredPersonalRole = () => {
+  if (typeof window === 'undefined' || !window.localStorage) return '';
+  try {
+    const value = String(window.localStorage.getItem(TASK_PERSONAL_ROLE_STORAGE_KEY) || '').trim().toLowerCase();
+    if (value === 'creator') return 'creator';
+    if (value === 'assignee') return 'assignee';
+    return '';
+  } catch {
+    return '';
+  }
+};
+
+const safeWriteStoredPersonalRole = (value) => {
+  if (typeof window === 'undefined' || !window.localStorage) return;
+  const normalized = value === 'creator' ? 'creator' : 'assignee';
+  try {
+    window.localStorage.setItem(TASK_PERSONAL_ROLE_STORAGE_KEY, normalized);
+  } catch {
+    // localStorage can be unavailable in private or locked-down browsers.
+  }
+};
+
+const resolveInitialViewMode = (search = '', canManageAll = false) => {
+  const fromUrl = readTaskFilters(search).viewMode;
+  if (fromUrl && ['all', 'assignee', 'creator', 'controller', 'department'].includes(fromUrl)) {
+    return fromUrl;
+  }
+  if (canManageAll) return 'all';
+  return safeReadStoredPersonalRole() || 'assignee';
+};
 
 const safeReadStoredTaskMode = () => {
   if (typeof window === 'undefined' || !window.localStorage) return '';
@@ -453,7 +506,7 @@ const createInitialTaskDraft = (projectId = '') => ({
   due_at: '',
   priority: 'normal',
   department_id: '',
-  visibility_scope: 'department',
+  visibility_scope: 'private',
 });
 
 const getFileIdentity = (file) => (
@@ -534,6 +587,433 @@ const LocalTaskDescriptionField = memo(function LocalTaskDescriptionField({
   );
 });
 
+const escapeEditorHtml = (value) => String(value || '')
+  .replace(/&/g, '&amp;')
+  .replace(/</g, '&lt;')
+  .replace(/>/g, '&gt;');
+
+const applyInlineMarkdownToHtml = (value) => {
+  let nextValue = escapeEditorHtml(value);
+  nextValue = nextValue.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+  nextValue = nextValue.replace(/~~([^~]+)~~/g, '<s>$1</s>');
+  nextValue = nextValue.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<em>$2</em>');
+  return nextValue;
+};
+
+const markdownToEditorHtml = (value) => {
+  const text = String(value || '').replace(/\r\n/g, '\n').trim();
+  if (!text) return '';
+  const lines = text.split('\n');
+  const blocks = [];
+  let index = 0;
+
+  while (index < lines.length) {
+    const line = lines[index];
+    const bulletMatch = line.match(/^\s*[-*]\s+(.*)$/);
+    const numberMatch = line.match(/^\s*\d+\.\s+(.*)$/);
+    if (bulletMatch) {
+      const items = [];
+      while (index < lines.length) {
+        const match = lines[index].match(/^\s*[-*]\s+(.*)$/);
+        if (!match) break;
+        items.push(`<li>${applyInlineMarkdownToHtml(match[1])}</li>`);
+        index += 1;
+      }
+      blocks.push(`<ul>${items.join('')}</ul>`);
+      continue;
+    }
+    if (numberMatch) {
+      const items = [];
+      while (index < lines.length) {
+        const match = lines[index].match(/^\s*\d+\.\s+(.*)$/);
+        if (!match) break;
+        items.push(`<li>${applyInlineMarkdownToHtml(match[1])}</li>`);
+        index += 1;
+      }
+      blocks.push(`<ol>${items.join('')}</ol>`);
+      continue;
+    }
+    blocks.push(line.trim() ? `<div>${applyInlineMarkdownToHtml(line)}</div>` : '<div><br></div>');
+    index += 1;
+  }
+
+  return blocks.join('');
+};
+
+const editorNodeToMarkdown = (node) => {
+  if (!node) return '';
+  if (node.nodeType === Node.TEXT_NODE) return node.textContent || '';
+  if (node.nodeType !== Node.ELEMENT_NODE) return '';
+
+  const tagName = String(node.tagName || '').toLowerCase();
+  if (tagName === 'br') return '\n';
+
+  const childText = () => Array.from(node.childNodes || []).map(editorNodeToMarkdown).join('');
+  if (tagName === 'strong' || tagName === 'b') return `**${childText()}**`;
+  if (tagName === 'em' || tagName === 'i') return `*${childText()}*`;
+  if (tagName === 's' || tagName === 'strike' || tagName === 'del') return `~~${childText()}~~`;
+  if (tagName === 'li') return childText().trim();
+  if (tagName === 'ul') {
+    return Array.from(node.children || [])
+      .filter((child) => String(child.tagName || '').toLowerCase() === 'li')
+      .map((child) => `- ${editorNodeToMarkdown(child).trim()}`)
+      .join('\n');
+  }
+  if (tagName === 'ol') {
+    return Array.from(node.children || [])
+      .filter((child) => String(child.tagName || '').toLowerCase() === 'li')
+      .map((child, index) => `${index + 1}. ${editorNodeToMarkdown(child).trim()}`)
+      .join('\n');
+  }
+  if (['div', 'p'].includes(tagName)) return childText();
+  return childText();
+};
+
+const editorHtmlToMarkdown = (html) => {
+  if (typeof document === 'undefined') return '';
+  const container = document.createElement('div');
+  container.innerHTML = String(html || '');
+  const parts = [];
+  let inlineBuffer = '';
+  Array.from(container.childNodes || []).forEach((node) => {
+    const tagName = node.nodeType === Node.ELEMENT_NODE ? String(node.tagName || '').toLowerCase() : '';
+    const isBlock = ['div', 'p', 'ul', 'ol'].includes(tagName);
+    const markdown = editorNodeToMarkdown(node);
+    if (isBlock) {
+      if (inlineBuffer.trim()) {
+        parts.push(inlineBuffer.trim());
+        inlineBuffer = '';
+      }
+      if (markdown.trim()) parts.push(markdown.trim());
+      return;
+    }
+    inlineBuffer += markdown;
+  });
+  if (inlineBuffer.trim()) parts.push(inlineBuffer.trim());
+  return parts.join('\n').replace(/\n{3,}/g, '\n\n').trim();
+};
+
+const stripMarkdownForPreview = (value) => String(value || '')
+  .replace(/\*\*([^*]+)\*\*/g, '$1')
+  .replace(/~~([^~]+)~~/g, '$1')
+  .replace(/(^|[^*])\*([^*\n]+)\*/g, '$1$2')
+  .replace(/^\s*[-*]\s+/gm, '')
+  .replace(/^\s*\d+\.\s+/gm, '')
+  .trim();
+
+const focusRichEditor = (editor) => {
+  if (!editor) return;
+  editor.focus();
+};
+
+const MobileCreateDescriptionEditor = memo(function MobileCreateDescriptionEditor({
+  initialValue = '',
+  onDraftChange,
+  onDone,
+  onAddFiles,
+  resetKey = '',
+  ui,
+  theme,
+}) {
+  const editorRef = useRef(null);
+  const fileInputRef = useRef(null);
+
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    editor.innerHTML = markdownToEditorHtml(initialValue);
+    onDraftChange?.(editorHtmlToMarkdown(editor.innerHTML));
+    window.requestAnimationFrame(() => focusRichEditor(editor));
+  }, [initialValue, onDraftChange, resetKey]);
+
+  const syncDraft = useCallback(() => {
+    const editor = editorRef.current;
+    onDraftChange?.(editorHtmlToMarkdown(editor?.innerHTML || ''));
+  }, [onDraftChange]);
+
+  const handleFormat = useCallback((type) => {
+    const commandByType = {
+      bold: 'bold',
+      italic: 'italic',
+      strike: 'strikeThrough',
+      bullet: 'insertUnorderedList',
+      numbered: 'insertOrderedList',
+      mention: 'insertText',
+    };
+    const command = commandByType[type];
+    if (!command || typeof document === 'undefined' || typeof document.execCommand !== 'function') return;
+    focusRichEditor(editorRef.current);
+    document.execCommand(command, false, type === 'mention' ? '@' : null);
+    syncDraft();
+  }, [syncDraft]);
+
+  const handleOpenFiles = useCallback(() => {
+    syncDraft();
+    fileInputRef.current?.click();
+  }, [syncDraft]);
+
+  const handleFileChange = useCallback((event) => {
+    syncDraft();
+    onAddFiles?.(event.target.files);
+    event.target.value = '';
+    window.requestAnimationFrame(() => {
+      focusRichEditor(editorRef.current);
+    });
+  }, [onAddFiles, syncDraft]);
+
+  const toolbarItems = [
+    { key: 'bold', label: 'Жирный', icon: <FormatBoldIcon /> },
+    { key: 'italic', label: 'Курсив', icon: <FormatItalicIcon /> },
+    { key: 'strike', label: 'Зачеркнуть', icon: <StrikethroughSIcon /> },
+    { key: 'bullet', label: 'Список', icon: <FormatListBulletedIcon /> },
+    { key: 'numbered', label: 'Нумерация', icon: <FormatListNumberedIcon /> },
+    { key: 'mention', label: 'Упоминание', icon: <AlternateEmailIcon /> },
+  ];
+
+  return (
+    <Stack spacing={0} sx={{ height: '100%', minHeight: 0 }}>
+      <Box
+        ref={editorRef}
+        component="div"
+        contentEditable
+        suppressContentEditableWarning
+        data-testid="create-description-mobile-input"
+        aria-label="Описание задачи"
+        role="textbox"
+        tabIndex={0}
+        data-placeholder="Опишите задачу, детали и ожидаемый результат"
+        onInput={syncDraft}
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          outline: 'none',
+          color: ui.text,
+          fontSize: '1.02rem',
+          lineHeight: 1.55,
+          whiteSpace: 'pre-wrap',
+          overflowWrap: 'anywhere',
+          ...hideMobileScrollbarSx,
+          '&:empty::before': {
+            content: 'attr(data-placeholder)',
+            color: ui.mutedText,
+            opacity: 0.75,
+            pointerEvents: 'none',
+          },
+          '& ul, & ol': { pl: 2.2, my: 0.65 },
+          '& li': { my: 0.25 },
+          '& b, & strong': { fontWeight: 900 },
+          '& i, & em': { fontStyle: 'italic' },
+        }}
+      />
+
+      <Box
+        sx={{
+          flexShrink: 0,
+          display: 'flex',
+          alignItems: 'center',
+          gap: 0.55,
+          pt: 0.9,
+          pb: 'calc(0.35rem + env(safe-area-inset-bottom, 0px))',
+          borderTop: '1px solid',
+          borderColor: alpha(ui.borderSoft, 0.75),
+        }}
+      >
+        <Box
+          data-testid="create-description-toolbar-scroll"
+          sx={{
+            flex: 1,
+            minWidth: 0,
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            ...hideMobileScrollbarSx,
+          }}
+        >
+          <Stack direction="row" alignItems="center" spacing={0.25} sx={{ minWidth: 'max-content' }}>
+            {toolbarItems.map((item) => (
+              <IconButton
+                key={item.key}
+                size="small"
+                data-testid={`create-description-format-${item.key}`}
+                aria-label={item.label}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => handleFormat(item.key)}
+                sx={{ width: 32, height: 32, color: ui.mutedText, flexShrink: 0, '& .MuiSvgIcon-root': { fontSize: 19 } }}
+              >
+                {item.icon}
+              </IconButton>
+            ))}
+            <IconButton
+              size="small"
+              data-testid="create-description-open-files"
+              aria-label="Прикрепить файл"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={handleOpenFiles}
+              sx={{ width: 32, height: 32, color: ui.mutedText, flexShrink: 0, '& .MuiSvgIcon-root': { fontSize: 19 } }}
+            >
+              <AttachFileIcon />
+            </IconButton>
+            <input
+              ref={fileInputRef}
+              data-testid="create-description-file-input"
+              type="file"
+              hidden
+              multiple
+              onChange={handleFileChange}
+            />
+          </Stack>
+        </Box>
+        <Button
+          variant="contained"
+          data-testid="create-description-mobile-done"
+          onClick={onDone}
+          aria-label="Готово"
+          sx={{
+            minWidth: 44,
+            width: 44,
+            height: 44,
+            flexShrink: 0,
+            borderRadius: '14px',
+            px: 0,
+            boxShadow: 'none',
+            bgcolor: theme.palette.primary.main,
+            '&:hover': { bgcolor: theme.palette.primary.dark || theme.palette.primary.main },
+          }}
+        >
+          <CheckIcon />
+        </Button>
+      </Box>
+    </Stack>
+  );
+});
+
+const MobileCreateAssigneePicker = memo(function MobileCreateAssigneePicker({
+  options = [],
+  selectedIds = [],
+  onChange,
+  onClear,
+  onDone,
+  ui,
+  theme,
+}) {
+  const [query, setQuery] = useState('');
+  const selectedSet = useMemo(() => new Set((Array.isArray(selectedIds) ? selectedIds : []).map((item) => String(item || ''))), [selectedIds]);
+  const filteredOptions = useMemo(() => {
+    const normalizedQuery = String(query || '').trim().toLowerCase();
+    const source = Array.isArray(options) ? options : [];
+    if (!normalizedQuery) return source;
+    return source.filter((item) => getTaskUserSearchText(item).includes(normalizedQuery));
+  }, [options, query]);
+
+  const handleToggle = useCallback((userItem) => {
+    const id = String(userItem?.id || '');
+    if (!id) return;
+    const next = new Set(selectedSet);
+    if (next.has(id)) next.delete(id);
+    else next.add(id);
+    onChange?.([...next]);
+  }, [onChange, selectedSet]);
+
+  return (
+    <Stack spacing={1} sx={{ height: '100%', minHeight: 0 }}>
+      <TextField
+        value={query}
+        onChange={(event) => setQuery(event.target.value)}
+        autoFocus
+        fullWidth
+        size="small"
+        placeholder="Фамилия или логин"
+        inputProps={{ 'data-testid': 'create-assignees-mobile-search', 'aria-label': 'Поиск исполнителей' }}
+        InputProps={{
+          startAdornment: <SearchIcon sx={{ fontSize: 18, color: ui.subtleText, mr: 0.75 }} />,
+        }}
+        sx={{
+          flexShrink: 0,
+          '& .MuiOutlinedInput-root': {
+            borderRadius: '14px',
+            bgcolor: ui.actionBg,
+            '& fieldset': { borderColor: 'transparent' },
+            '&:hover fieldset': { borderColor: 'transparent' },
+            '&.Mui-focused fieldset': { borderColor: 'transparent' },
+          },
+        }}
+      />
+
+      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', ...hideMobileScrollbarSx }}>
+        <Stack spacing={0.25}>
+          {filteredOptions.map((item) => {
+            const id = String(item?.id || '');
+            const selected = selectedSet.has(id);
+            const label = getTaskUserLabel(item);
+            return (
+              <Button
+                key={id || label}
+                type="button"
+                data-testid={`create-assignee-mobile-option-${id}`}
+                onClick={() => handleToggle(item)}
+                sx={{
+                  minHeight: 58,
+                  justifyContent: 'stretch',
+                  textTransform: 'none',
+                  borderRadius: '14px',
+                  px: 0.8,
+                  color: ui.text,
+                  bgcolor: selected ? alpha(theme.palette.primary.main, 0.13) : 'transparent',
+                  '&:hover': { bgcolor: selected ? alpha(theme.palette.primary.main, 0.17) : ui.actionHover },
+                }}
+              >
+                <Stack direction="row" alignItems="center" spacing={1} sx={{ width: '100%', minWidth: 0 }}>
+                  <Avatar sx={{ width: 34, height: 34, bgcolor: selected ? theme.palette.primary.main : ui.actionBg, color: selected ? theme.palette.primary.contrastText : ui.text, fontSize: '0.78rem', fontWeight: 900 }}>
+                    {getInitials(label)}
+                  </Avatar>
+                  <Box sx={{ minWidth: 0, flex: 1, textAlign: 'left' }}>
+                    <Typography sx={{ fontWeight: 900, fontSize: '0.94rem', lineHeight: 1.2 }} noWrap>
+                      {label}
+                    </Typography>
+                    {item?.username ? (
+                      <Typography variant="caption" sx={{ color: ui.subtleText }} noWrap>
+                        @{item.username}
+                      </Typography>
+                    ) : null}
+                  </Box>
+                  <Checkbox checked={selected} tabIndex={-1} sx={{ p: 0.3 }} />
+                </Stack>
+              </Button>
+            );
+          })}
+          {filteredOptions.length === 0 ? (
+            <Typography variant="body2" sx={{ color: ui.mutedText, py: 2, textAlign: 'center' }}>
+              Ничего не найдено
+            </Typography>
+          ) : null}
+        </Stack>
+      </Box>
+
+      <Stack direction="row" spacing={1} sx={{ flexShrink: 0, pt: 0.8, pb: 'calc(0.35rem + env(safe-area-inset-bottom, 0px))' }}>
+        <Button
+          fullWidth
+          variant="outlined"
+          data-testid="create-assignees-mobile-clear"
+          onClick={onClear}
+          disabled={selectedSet.size === 0}
+          sx={{ textTransform: 'none', fontWeight: 850, borderRadius: '12px' }}
+        >
+          Очистить
+        </Button>
+        <Button
+          fullWidth
+          variant="contained"
+          data-testid="create-assignees-mobile-done"
+          onClick={onDone}
+          sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px', boxShadow: 'none' }}
+        >
+          Готово
+        </Button>
+      </Stack>
+    </Stack>
+  );
+});
+
 const LocalTaskMarkdownEditor = memo(function LocalTaskMarkdownEditor({
   initialValue = '',
   onDraftChange,
@@ -578,6 +1058,7 @@ function Tasks() {
   const canCreateTasks = hasAnyPermission(['tasks.create', 'tasks.write']);
   const canWriteTasks = hasPermission('tasks.write');
   const canReviewTasks = hasPermission('tasks.review');
+  const taskDiscussionChatEnabled = CHAT_FEATURE_ENABLED && TASK_DISCUSSION_CHAT_ENABLED;
   const canUseCreatorTab = true;
   const canUseControllerTab = canReviewTasks;
   const initialFilters = readTaskFilters(location.search);
@@ -611,7 +1092,7 @@ function Tasks() {
     participant_user_id: '',
   }));
 
-  const [viewMode, setViewMode] = useState(() => initialFilters.viewMode || (canManageAllTasks ? 'all' : 'assignee'));
+  const [viewMode, setViewMode] = useState(() => resolveInitialViewMode(location.search, canManageAllTasks));
   const [q, setQ] = useState(initialFilters.q);
   const [debouncedQ, setDebouncedQ] = useState(initialFilters.q);
   const [statusFilter, setStatusFilter] = useState(initialFilters.status);
@@ -676,10 +1157,13 @@ function Tasks() {
   });
 
   const [uploadingAttachment, setUploadingAttachment] = useState(false);
+  const [discussionOpening, setDiscussionOpening] = useState(false);
 
   const searchInputRef = useRef(null);
   const createDescriptionRef = useRef('');
   const editDescriptionRef = useRef('');
+  const taskDetailHistorySeededRef = useRef(false);
+  const taskDetailHistoryPushedRef = useRef(false);
 
   const handleCreateDescriptionDraftChange = useCallback((value) => {
     createDescriptionRef.current = String(value || '');
@@ -728,7 +1212,7 @@ function Tasks() {
 
   useEffect(() => {
     const next = readTaskFilters(location.search);
-    const fallbackView = canManageAllTasks ? 'all' : 'assignee';
+    const fallbackView = canManageAllTasks ? 'all' : (safeReadStoredPersonalRole() || 'assignee');
     let nextView = next.viewMode || fallbackView;
     if (nextView === 'all' && !canManageAllTasks) nextView = fallbackView;
     if (nextView === 'controller' && !canUseControllerTab) nextView = fallbackView;
@@ -792,6 +1276,29 @@ function Tasks() {
     viewMode,
   ]);
 
+  useEffect(() => {
+    if (viewMode === 'assignee' || viewMode === 'creator') {
+      safeWriteStoredPersonalRole(viewMode);
+    }
+  }, [viewMode]);
+
+  const handlePersonalRoleChange = useCallback((role) => {
+    if (role !== 'assignee' && role !== 'creator') return;
+    safeWriteStoredPersonalRole(role);
+    setViewMode(role);
+  }, []);
+
+  const secondaryViewMode = ['all', 'department', 'controller'].includes(viewMode) ? viewMode : false;
+
+  const personalRoleCounts = useMemo(() => {
+    if (viewMode !== 'assignee' && viewMode !== 'creator') {
+      return {};
+    }
+    return {
+      [viewMode]: Number(tasksPayload?.total ?? 0),
+    };
+  }, [tasksPayload?.total, viewMode]);
+
   const loadTaskUsers = useCallback(async () => {
     const [assigneesResult, controllersResult, departmentsResult, projectsResult, objectsResult] = await Promise.allSettled([
       hubAPI.getAssignees(),
@@ -830,7 +1337,7 @@ function Tasks() {
         department_id: departmentFilter || undefined,
         sort_by: pageMode === 'board' ? 'status' : (deadlineMode ? 'due_at' : 'updated_at'),
         sort_dir: deadlineMode || pageMode === 'board' ? 'asc' : 'desc',
-        limit: 500,
+        limit: 150,
       });
       setTasksPayload(response || { items: [], total: 0 });
     } catch (err) {
@@ -969,7 +1476,13 @@ function Tasks() {
     () => formatCreateDueLabel(createData.due_at, new Date()),
     [createData.due_at],
   );
-  const createDescriptionSummary = String(createDescriptionPreview || createData.description || '').trim();
+  const createDescriptionSummary = stripMarkdownForPreview(createDescriptionPreview || createData.description);
+  const createAssigneeSummary = useMemo(() => {
+    if (selectedCreateAssignees.length === 0) return '';
+    const names = selectedCreateAssignees.map(getTaskUserLabel);
+    if (names.length <= 2) return names.join(', ');
+    return `${names.slice(0, 2).join(', ')} +${names.length - 2}`;
+  }, [selectedCreateAssignees]);
 
   const selectedEditAssignee = useMemo(
     () => findTaskUserById(assignees, editData.assignee_user_id),
@@ -1324,6 +1837,8 @@ function Tasks() {
 
   useEffect(() => {
     if (!selectedTaskId) {
+      taskDetailHistorySeededRef.current = false;
+      taskDetailHistoryPushedRef.current = false;
       setDetailsTask(null);
       setDetailsComments([]);
       setDetailsStatusLog([]);
@@ -1332,6 +1847,34 @@ function Tasks() {
     }
     void loadTaskDetails(selectedTaskId);
   }, [loadTaskDetails, selectedTaskId]);
+
+  useLayoutEffect(() => {
+    if (!isMobile || !selectedTaskId || taskDetailHistorySeededRef.current || typeof window === 'undefined') {
+      return;
+    }
+
+    const historyIdx = window.history.state?.idx;
+    if (typeof historyIdx === 'number' && historyIdx > 0) {
+      taskDetailHistorySeededRef.current = true;
+      return;
+    }
+
+    const listParams = new URLSearchParams(location.search || '');
+    listParams.delete('task');
+    listParams.delete('task_tab');
+    const listHref = `${location.pathname}${listParams.toString() ? `?${listParams.toString()}` : ''}`;
+    const taskHref = `${location.pathname}${location.search || ''}`;
+    if (listHref === taskHref) {
+      taskDetailHistorySeededRef.current = true;
+      return;
+    }
+
+    taskDetailHistorySeededRef.current = true;
+    taskDetailHistoryPushedRef.current = true;
+    const currentState = window.history.state;
+    window.history.replaceState(currentState, '', listHref);
+    window.history.pushState(currentState, '', taskHref);
+  }, [isMobile, location.pathname, location.search, selectedTaskId]);
 
   const transformTaskMarkdown = useCallback(async (text, context) => {
     try {
@@ -1463,11 +2006,21 @@ function Tasks() {
     setDetailsComments([]);
     setDetailsStatusLog([]);
     setDetailsCommentBody('');
-    updateSearch((params) => {
-      params.delete('task');
-      params.delete('task_tab');
-    });
-  }, [updateSearch]);
+
+    const params = new URLSearchParams(location.search || '');
+    const hasTaskInUrl = Boolean(String(params.get('task') || '').trim());
+
+    if (isMobile && hasTaskInUrl && taskDetailHistoryPushedRef.current) {
+      taskDetailHistoryPushedRef.current = false;
+      navigate(-1);
+      return;
+    }
+
+    updateSearch((nextParams) => {
+      nextParams.delete('task');
+      nextParams.delete('task_tab');
+    }, { replace: true });
+  }, [isMobile, location.search, navigate, updateSearch]);
 
   const openTaskDetails = useCallback((task) => {
     const id = String(task?.id || '').trim();
@@ -1476,11 +2029,14 @@ function Tasks() {
     setDetailsTask(null);
     setDetailsComments([]);
     setDetailsStatusLog([]);
+    if (isMobile) {
+      taskDetailHistoryPushedRef.current = true;
+    }
     updateSearch((params) => {
       params.set('task', id);
       params.set('task_tab', 'comments');
     }, { replace: false });
-  }, [updateSearch]);
+  }, [isMobile, updateSearch]);
 
   const setTaskDetailTab = useCallback((tab) => {
     const nextTab = normalizeTaskDetailTab(tab);
@@ -1596,6 +2152,19 @@ function Tasks() {
   const handleCloseCreateMobileSheet = useCallback(() => {
     setCreateDescriptionPreview(String(createDescriptionRef.current || '').trim());
     setCreateMobileSheet('');
+  }, []);
+
+  const handleChangeCreateAssigneeIds = useCallback((nextIds) => {
+    setCreateData((prev) => ({
+      ...prev,
+      assignee_user_ids: (Array.isArray(nextIds) ? nextIds : [])
+        .map((item) => String(item || ''))
+        .filter(Boolean),
+    }));
+  }, []);
+
+  const handleClearCreateAssignees = useCallback(() => {
+    setCreateData((prev) => ({ ...prev, assignee_user_ids: [] }));
   }, []);
 
   const handleAddChecklistItem = useCallback(() => {
@@ -1722,7 +2291,9 @@ function Tasks() {
         due_at: String(createData.due_at || '').trim() || null,
         priority: createData.priority || 'normal',
         department_id: String(createData.department_id || '').trim() || null,
-        visibility_scope: String(createData.visibility_scope || 'department').trim() || 'department',
+        visibility_scope: String(createData.department_id || '').trim()
+          ? (String(createData.visibility_scope || 'department').trim() || 'department')
+          : 'private',
       });
       const createdTasks = getCreatedTaskItems(createResponse);
       const uploadFailures = [];
@@ -1764,7 +2335,7 @@ function Tasks() {
         setError(`Задача создана, но часть файлов не загрузилась: ${visibleFailures}${suffix}`);
       }
     } catch (err) {
-      setError(err?.response?.data?.detail || err?.message || 'Ошибка создания задачи');
+      setError(formatHubTaskError(err));
     } finally {
       setCreateSaving(false);
     }
@@ -1988,6 +2559,26 @@ function Tasks() {
       setDetailsCommentSaving(false);
     }
   }, [detailsCommentBody, detailsTask?.id, refreshTasksAndDetails]);
+
+  const handleOpenTaskDiscussion = useCallback(async (task = detailsTask) => {
+    const taskId = String(task?.id || '').trim();
+    if (!taskId || !taskDiscussionChatEnabled) return;
+    setDiscussionOpening(true);
+    try {
+      const response = await hubAPI.openTaskDiscussion(taskId);
+      const conversationId = String(response?.conversation_id || '').trim();
+      if (!conversationId) {
+        throw new Error('Не удалось открыть чат по задаче');
+      }
+      invalidateSWRCacheByPrefix('chat', 'conversations', String(user?.id || 'guest'));
+      navigate(`/chat?conversation=${encodeURIComponent(conversationId)}`);
+      window.dispatchEvent(new CustomEvent('chat-unread-needs-refresh'));
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || 'Ошибка открытия чата по задаче');
+    } finally {
+      setDiscussionOpening(false);
+    }
+  }, [detailsTask, navigate, taskDiscussionChatEnabled, user?.id]);
 
   const handleCopyTaskLink = useCallback(async (taskId, taskTab = 'comments') => {
     const normalizedId = String(taskId || '').trim();
@@ -2572,7 +3163,7 @@ function Tasks() {
     overflowY: 'auto',
     overflowX: 'hidden',
     px: 0,
-    pb: 'calc(72px + env(safe-area-inset-bottom, 0px))',
+    pb: 'calc(58px + 16px + 8px)',
     ...hideMobileScrollbarSx,
   };
 
@@ -3348,6 +3939,9 @@ function Tasks() {
                 theme={theme}
                 mobile
                 hideFilesTab
+                taskDiscussionEnabled={taskDiscussionChatEnabled}
+                onOpenTaskDiscussion={() => void handleOpenTaskDiscussion(detailsTask)}
+                discussionOpening={discussionOpening}
               />
             </Stack>
           ) : (
@@ -3431,6 +4025,9 @@ function Tasks() {
                 statusMeta={statusMeta}
                 ui={ui}
                 theme={theme}
+                taskDiscussionEnabled={taskDiscussionChatEnabled}
+                onOpenTaskDiscussion={() => void handleOpenTaskDiscussion(detailsTask)}
+                discussionOpening={discussionOpening}
               />
             </Stack>
 
@@ -3841,6 +4438,11 @@ function Tasks() {
 
   const mobileModeLabel = pageMode === 'list' ? mobileTasksCopy.feedTitle : activeTaskModeMeta.label;
   const mobileBottomMode = ['list', 'deadlines', 'board'].includes(pageMode) ? pageMode : 'more';
+  const mobilePrimaryModeOptions = useMemo(() => [
+    { value: 'list', label: mobileTasksCopy.feedTitle, icon: AssignmentIcon },
+    { value: 'deadlines', label: 'Сроки', icon: CalendarMonthOutlinedIcon },
+    { value: 'board', label: 'Доска', icon: ChecklistOutlinedIcon },
+  ], [mobileTasksCopy.feedTitle]);
   const mobileMoreModeOptions = [
     { value: 'calendar', label: 'Календарь', icon: CalendarMonthOutlinedIcon },
     { value: 'gantt', label: 'Гант', icon: AssignmentIcon },
@@ -3964,10 +4566,11 @@ function Tasks() {
                 ) : null}
 
                 <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 0.75, borderRadius: '13px' }) }}>
-                  <Typography sx={{ fontWeight: 800, mb: 0.65 }}>{mobileTasksCopy.listView}</Typography>
+                  <Typography sx={{ fontWeight: 800, mb: 0.65 }}>Дополнительные роли</Typography>
                   <Tabs
-                    value={viewMode}
+                    value={secondaryViewMode || false}
                     onChange={(_, value) => {
+                      if (!value) return;
                       setViewMode(value);
                       setMobileBoardFiltersOpen(false);
                     }}
@@ -3980,9 +4583,7 @@ function Tasks() {
                     }}
                   >
                     {canManageAllTasks && <Tab value="all" label={mobileTasksCopy.all} />}
-                    <Tab value="assignee" label={mobileTasksCopy.assignee} />
                     <Tab value="department" label={mobileTasksCopy.department} />
-                    {canUseCreatorTab && <Tab value="creator" label={mobileTasksCopy.creator} />}
                     {canUseControllerTab && <Tab value="controller" label={mobileTasksCopy.controller} />}
                   </Tabs>
                 </Box>
@@ -4158,7 +4759,8 @@ function Tasks() {
   ) : null;
 
   const createMobileSheetTitle = ({
-    description: 'Описание',
+    description: 'Описание задачи',
+    assignees: 'Исполнители',
     priority: 'Приоритет',
     files: 'Файлы',
     checklist: 'Чек-лист',
@@ -4170,24 +4772,29 @@ function Tasks() {
   const createMobileSheetContent = (() => {
     if (createMobileSheet === 'description') {
       return (
-        <Stack spacing={1}>
-          <LocalTaskDescriptionField
-            initialValue={createDescriptionRef.current || createDescriptionPreview || createData.description}
-            onDraftChange={handleCreateDescriptionDraftChange}
-            resetKey={`${createOpen ? 'open' : 'closed'}:mobile-description:${createMobileSheet}`}
-            fullWidth
-            autoFocus
-            multiline
-            minRows={10}
-            maxRows={16}
-            label="Описание задачи"
-            placeholder="Что нужно сделать, какие детали важны, что приложить..."
-            inputProps={{ 'data-testid': 'create-description-mobile-input', 'aria-label': 'Описание задачи' }}
-          />
-          <Button variant="contained" onClick={handleCloseCreateMobileSheet} sx={{ textTransform: 'none', fontWeight: 900, borderRadius: '12px', boxShadow: 'none' }}>
-            Готово
-          </Button>
-        </Stack>
+        <MobileCreateDescriptionEditor
+          initialValue={createDescriptionRef.current || createDescriptionPreview || createData.description}
+          onDraftChange={handleCreateDescriptionDraftChange}
+          onDone={handleCloseCreateMobileSheet}
+          onAddFiles={handleAddCreateFiles}
+          resetKey={`${createOpen ? 'open' : 'closed'}:mobile-description:${createMobileSheet}`}
+          ui={ui}
+          theme={theme}
+        />
+      );
+    }
+
+    if (createMobileSheet === 'assignees') {
+      return (
+        <MobileCreateAssigneePicker
+          options={assignees}
+          selectedIds={createData.assignee_user_ids}
+          onChange={handleChangeCreateAssigneeIds}
+          onClear={handleClearCreateAssignees}
+          onDone={handleCloseCreateMobileSheet}
+          ui={ui}
+          theme={theme}
+        />
       );
     }
 
@@ -4417,20 +5024,23 @@ function Tasks() {
     return null;
   })();
 
+  const isCreateDescriptionMobileSheet = createMobileSheet === 'description';
+  const isCreateTallMobileSheet = createMobileSheet === 'description' || createMobileSheet === 'assignees';
+
   const mobileTasksHeaderInline = useMemo(() => {
     if (!isMobile || detailsOpen) return null;
     const headerLabel = `${mobileModeLabel} · ${visibleTaskItems.length}`;
     return (
       <Stack
         data-testid="tasks-mobile-header-inline"
-        direction="row"
-        spacing={0.45}
-        alignItems="center"
+        spacing={0.65}
         sx={{
-          width: 'calc(100vw - 118px)',
+          width: '100%',
           minWidth: 0,
+          py: 0.45,
         }}
       >
+        <Stack direction="row" spacing={0.45} alignItems="center" sx={{ minWidth: 0 }}>
         {mobileSearchOpen && isTaskDataMode ? (
           <TextField
             fullWidth
@@ -4536,15 +5146,98 @@ function Tasks() {
             <FilterListIcon fontSize="small" />
           </IconButton>
         </Badge>
+        <ShellNotificationsButton size="small" />
+        </Stack>
+
+        <Stack
+          direction="row"
+          spacing={0.45}
+          data-testid="tasks-mobile-mode-segmented"
+          sx={{
+            minWidth: 0,
+            overflowX: 'auto',
+            pb: 0.1,
+            ...hideMobileScrollbarSx,
+          }}
+        >
+          {mobilePrimaryModeOptions.map((option) => {
+            const IconComponent = option.icon;
+            const selected = mobileBottomMode === option.value;
+            return (
+              <Button
+                key={option.value}
+                size="small"
+                variant={selected ? 'contained' : 'outlined'}
+                startIcon={<IconComponent sx={{ fontSize: 15 }} />}
+                data-testid={`tasks-mobile-mode-${option.value}`}
+                onClick={() => setPageMode(option.value)}
+                sx={{
+                  flexShrink: 0,
+                  minWidth: 0,
+                  height: 30,
+                  px: 0.85,
+                  borderRadius: '999px',
+                  textTransform: 'none',
+                  fontWeight: 850,
+                  fontSize: '0.72rem',
+                  boxShadow: 'none',
+                }}
+              >
+                {option.label}
+              </Button>
+            );
+          })}
+          <Badge
+            color="primary"
+            badgeContent={activeFilterCount}
+            invisible={!isTaskDataMode || activeFilterCount <= 0}
+            overlap="circular"
+          >
+            <Button
+              size="small"
+              variant={mobileBottomMode === 'more' ? 'contained' : 'outlined'}
+              startIcon={<TuneOutlinedIcon sx={{ fontSize: 15 }} />}
+              data-testid="tasks-mobile-open-navigation-segment"
+              onClick={() => setMobileBoardFiltersOpen(true)}
+              sx={{
+                flexShrink: 0,
+                minWidth: 0,
+                height: 30,
+                px: 0.85,
+                borderRadius: '999px',
+                textTransform: 'none',
+                fontWeight: 850,
+                fontSize: '0.72rem',
+                boxShadow: 'none',
+              }}
+            >
+              Ещё
+            </Button>
+          </Badge>
+        </Stack>
+
+        {isTaskDataMode ? (
+          <TaskRoleScopeSwitch
+            value={viewMode}
+            onChange={handlePersonalRoleChange}
+            compact
+            fullWidth
+            counts={personalRoleCounts}
+          />
+        ) : null}
       </Stack>
     );
   }, [
+    handlePersonalRoleChange,
+    isTaskDataMode,
+    personalRoleCounts,
     activeFilterCount,
     detailsOpen,
     isMobile,
-    isTaskDataMode,
+    mobileBottomMode,
     mobileHeaderSubtitleSafe,
     mobileModeLabel,
+    mobilePrimaryModeOptions,
     mobileSearchOpen,
     mobileTasksCopy.openMenu,
     mobileTasksCopy.search,
@@ -4555,85 +5248,20 @@ function Tasks() {
     ui.mutedText,
     ui.subtleText,
     visibleTaskItems.length,
+    viewMode,
   ]);
-
-  const mobileBottomNavigationSafe = isMobile && !detailsOpen ? (
-    <Box
-      data-testid="tasks-mobile-bottom-nav"
-      sx={{
-        position: 'fixed',
-        left: 0,
-        right: 0,
-        bottom: 0,
-        zIndex: theme.zIndex.drawer + 1,
-        borderTop: '1px solid',
-        borderColor: alpha(theme.palette.divider, 0.55),
-        bgcolor: alpha(theme.palette.background.paper, theme.palette.mode === 'dark' ? 0.84 : 0.92),
-        backdropFilter: 'blur(18px)',
-        pb: 'env(safe-area-inset-bottom, 0px)',
-        boxShadow: '0 -8px 22px rgba(15, 23, 42, 0.08)',
-      }}
-    >
-      <BottomNavigation
-        showLabels
-        value={mobileBottomMode}
-        onChange={(_, value) => {
-          if (value === 'more') {
-            setMobileBoardFiltersOpen(true);
-            return;
-          }
-          if (value === 'create') {
-            setCreateOpen(true);
-            return;
-          }
-          setPageMode(value);
-        }}
-        sx={{
-          height: 60,
-          bgcolor: 'transparent',
-          '& .MuiBottomNavigationAction-root': { minWidth: 0, fontWeight: 800, px: 0.25 },
-          '& .MuiBottomNavigationAction-label': { fontSize: '0.68rem', fontWeight: 800 },
-        }}
-      >
-        <BottomNavigationAction label="Лента" value="list" icon={<AssignmentIcon />} />
-        <BottomNavigationAction label="Сроки" value="deadlines" icon={<CalendarMonthOutlinedIcon />} />
-        {canCreateTasks ? (
-          <BottomNavigationAction
-            label="Создать"
-            value="create"
-            data-testid="tasks-mobile-create-nav-button"
-            icon={(
-              <Box
-                sx={{
-                  width: 36,
-                  height: 36,
-                  borderRadius: '999px',
-                  display: 'grid',
-                  placeItems: 'center',
-                  bgcolor: theme.palette.primary.main,
-                  color: theme.palette.primary.contrastText,
-                  boxShadow: ui.dialogShadow,
-                  mt: -0.4,
-                }}
-              >
-                <AddIcon sx={{ fontSize: 22 }} />
-              </Box>
-            )}
-          />
-        ) : null}
-        <BottomNavigationAction label="Доска" value="board" icon={<ChecklistOutlinedIcon />} />
-        <BottomNavigationAction label="Ещё" value="more" icon={<TuneOutlinedIcon />} />
-      </BottomNavigation>
-    </Box>
-  ) : null;
 
   return (
     <MainLayout
-      headerMode={isMobile ? 'notifications-only' : 'default'}
+      mobileBottomNavMode={isMobile && (detailsOpen || createOpen) ? 'hidden' : 'auto'}
       contentMode={isMobile ? 'edge-to-edge-mobile' : 'default'}
-      headerInlineContent={mobileTasksHeaderInline}
     >
-      <PageShell fullHeight sx={{ bgcolor: ui.pageBg }}>
+      <PageShell
+        fullHeight
+        sx={{
+          bgcolor: ui.pageBg,
+        }}
+      >
         <Box
           sx={{
             px: { xs: 0, md: 1.25 },
@@ -4659,6 +5287,11 @@ function Tasks() {
             <>
           {isMobile ? (
             <>
+              {mobileTasksHeaderInline ? (
+                <Box sx={{ px: 1, pt: 0.75, pb: 0.35, flexShrink: 0 }}>
+                  {mobileTasksHeaderInline}
+                </Box>
+              ) : null}
               {false ? (
                 <>
               <Card data-testid="tasks-mobile-header-legacy" sx={{ ...getOfficePanelSx(ui, { mb: 1, p: 1, borderRadius: '16px', flexShrink: 0 }) }}>
@@ -4827,10 +5460,20 @@ function Tasks() {
                       </Typography>
                     </Stack>
 
+                    <TaskRoleScopeSwitch
+                      value={viewMode}
+                      onChange={handlePersonalRoleChange}
+                      compact
+                      fullWidth
+                      counts={personalRoleCounts}
+                    />
+
                     <Box sx={{ ...getOfficeSubtlePanelSx(ui, { borderRadius: '12px', px: 0.5 }) }}>
                       <Tabs
-                        value={viewMode}
-                        onChange={(_, value) => setViewMode(value)}
+                        value={secondaryViewMode || false}
+                        onChange={(_, value) => {
+                          if (value) setViewMode(value);
+                        }}
                         variant="scrollable"
                         allowScrollButtonsMobile
                         sx={{
@@ -4840,9 +5483,7 @@ function Tasks() {
                         }}
                       >
                         {canManageAllTasks && <Tab value="all" label="Все" />}
-                        <Tab value="assignee" label="Исполняю" />
                         <Tab value="department" label="Отдел" />
-                        {canUseCreatorTab && <Tab value="creator" label="Созданные" />}
                         {canUseControllerTab && <Tab value="controller" label="На контроле" />}
                       </Tabs>
                     </Box>
@@ -5054,25 +5695,32 @@ function Tasks() {
 
               {isTaskDataMode ? (
               <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={0.8} sx={{ minHeight: 32 }}>
-                <Box sx={{ ...getOfficeSubtlePanelSx(ui, { borderRadius: '10px', px: 0.35 }), minWidth: 0, flex: '1 1 auto' }}>
-                  <Tabs
+                <Stack direction="row" spacing={0.65} alignItems="center" sx={{ minWidth: 0, flex: '1 1 auto' }}>
+                  <TaskRoleScopeSwitch
                     value={viewMode}
-                    onChange={(_, value) => setViewMode(value)}
-                    variant="scrollable"
-                    allowScrollButtonsMobile
-                    sx={{
-                      minHeight: 32,
-                      '& .MuiTab-root': { textTransform: 'none', fontWeight: 750, minHeight: 32, px: 1.15, fontSize: '0.79rem' },
-                      '& .MuiTabs-indicator': { borderRadius: '2px', height: 2 },
-                    }}
-                  >
-                    {canManageAllTasks && <Tab value="all" label="Все" />}
-                    <Tab value="assignee" label="Исполняю" />
-                    <Tab value="department" label="Отдел" />
-                    {canUseCreatorTab && <Tab value="creator" label="Созданные" />}
-                    {canUseControllerTab && <Tab value="controller" label="На контроле" />}
-                  </Tabs>
-                </Box>
+                    onChange={handlePersonalRoleChange}
+                    counts={personalRoleCounts}
+                  />
+                  <Box sx={{ ...getOfficeSubtlePanelSx(ui, { borderRadius: '10px', px: 0.35 }), minWidth: 0 }}>
+                    <Tabs
+                      value={secondaryViewMode || false}
+                      onChange={(_, value) => {
+                        if (value) setViewMode(value);
+                      }}
+                      variant="scrollable"
+                      allowScrollButtonsMobile
+                      sx={{
+                        minHeight: 32,
+                        '& .MuiTab-root': { textTransform: 'none', fontWeight: 750, minHeight: 32, px: 1.15, fontSize: '0.79rem' },
+                        '& .MuiTabs-indicator': { borderRadius: '2px', height: 2 },
+                      }}
+                    >
+                      {canManageAllTasks && <Tab value="all" label="Все" />}
+                      <Tab value="department" label="Отдел" />
+                      {canUseControllerTab && <Tab value="controller" label="На контроле" />}
+                    </Tabs>
+                  </Box>
+                </Stack>
 
                 <Stack direction="row" spacing={0.45} alignItems="center" sx={{ flexShrink: 0, minWidth: 0 }}>
                   <Stack direction="row" spacing={0.45} sx={{ maxWidth: { md: 520, lg: 640 }, overflowX: 'auto' }}>
@@ -5881,7 +6529,6 @@ function Tasks() {
         </Box>
 
         {mobileNavigationDrawerSafe}
-        {mobileBottomNavigationSafe}
 
         {false ? (
         <>
@@ -6046,6 +6693,18 @@ function Tasks() {
                 )}
 
                 <Stack direction="row" spacing={0.8} flexWrap="wrap">
+                  {taskDiscussionChatEnabled && (
+                    <Button
+                      size="small"
+                      variant="contained"
+                      color="secondary"
+                      onClick={() => void handleOpenTaskDiscussion(detailsTask)}
+                      disabled={discussionOpening}
+                      sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
+                    >
+                      {discussionOpening ? 'Открываем чат…' : 'Чат по задаче'}
+                    </Button>
+                  )}
                   {canOpenTransferActUpload(detailsTask) && (
                     <Button size="small" variant="contained" onClick={() => openTransferActReminder(detailsTask)} sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}>
                       Загрузить подписанный акт
@@ -6361,45 +7020,73 @@ function Tasks() {
                     <Typography sx={{ width: { sm: 120 }, flexShrink: 0, color: ui.subtleText, fontSize: '0.86rem', fontWeight: 700 }}>
                       Исполнитель
                     </Typography>
-                    <Autocomplete
-                      multiple
-                      fullWidth
-                      size="small"
-                      options={assignees}
-                      value={selectedCreateAssignees}
-                      onChange={(_, value) => setCreateData((prev) => ({
-                        ...prev,
-                        assignee_user_ids: Array.isArray(value) ? value.map((item) => String(item?.id || '')).filter(Boolean) : [],
-                      }))}
-                      getOptionLabel={getTaskUserLabel}
-                      filterOptions={filterTaskUserOptions}
-                      isOptionEqualToValue={areSameTaskUsers}
-                      disableCloseOnSelect
-                      filterSelectedOptions
-                      noOptionsText="Ничего не найдено"
-                      renderOption={(props, option, { selected }) => {
-                        const { key, ...optionProps } = props;
-                        return (
-                          <Box component="li" key={key} {...optionProps}>
-                            <Checkbox checked={selected} sx={{ mr: 1 }} />
-                            <Typography>{getTaskUserLabel(option)}</Typography>
-                          </Box>
-                        );
-                      }}
-                      renderInput={(params) => (
-                        <TextField
-                          {...params}
-                          variant="standard"
-                          placeholder={selectedCreateAssignees.length === 0 ? 'Фамилия или логин' : ''}
-                          InputProps={{ ...params.InputProps, disableUnderline: true }}
-                          inputProps={{ ...params.inputProps, 'aria-label': 'Исполнители' }}
-                          sx={{
-                            '& .MuiInputBase-root': { minHeight: 34 },
-                            '& .MuiChip-root': { borderRadius: '999px', fontWeight: 800 },
-                          }}
-                        />
-                      )}
-                    />
+                    {isMobile ? (
+                      <Button
+                        type="button"
+                        fullWidth
+                        data-testid="create-assignees-mobile-open"
+                        onClick={() => handleOpenCreateMobileSheet('assignees')}
+                        sx={{
+                          justifyContent: 'flex-start',
+                          minHeight: 38,
+                          px: 0,
+                          textAlign: 'left',
+                          textTransform: 'none',
+                          color: createAssigneeSummary ? ui.text : ui.mutedText,
+                          borderRadius: '10px',
+                          outline: selectedCreateAssignees.length === 0 && createData.title.trim().length > 0 ? `1px solid ${alpha(theme.palette.error.main, 0.65)}` : 'none',
+                          outlineOffset: 2,
+                        }}
+                      >
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography sx={{ fontWeight: 900, fontSize: '0.95rem', lineHeight: 1.25 }} noWrap>
+                            {createAssigneeSummary || 'Выбрать исполнителя'}
+                          </Typography>
+                          {selectedCreateAssignees.length === 0 && createData.title.trim().length > 0 ? (
+                            <Typography variant="caption" sx={{ color: theme.palette.error.main, fontWeight: 800 }}>
+                              Выберите хотя бы одного исполнителя
+                            </Typography>
+                          ) : null}
+                        </Box>
+                      </Button>
+                    ) : (
+                      <Autocomplete
+                        multiple
+                        fullWidth
+                        size="small"
+                        options={assignees}
+                        value={selectedCreateAssignees}
+                        onChange={(_, value) => handleChangeCreateAssigneeIds(Array.isArray(value) ? value.map((item) => String(item?.id || '')).filter(Boolean) : [])}
+                        getOptionLabel={getTaskUserLabel}
+                        filterOptions={filterTaskUserOptions}
+                        isOptionEqualToValue={areSameTaskUsers}
+                        disableCloseOnSelect
+                        filterSelectedOptions
+                        noOptionsText="Ничего не найдено"
+                        renderOption={(props, option, { selected }) => {
+                          const { key, ...optionProps } = props;
+                          return (
+                            <Box component="li" key={key} {...optionProps}>
+                              <Checkbox checked={selected} sx={{ mr: 1 }} />
+                              <Typography>{getTaskUserLabel(option)}</Typography>
+                            </Box>
+                          );
+                        }}
+                        renderInput={(params) => (
+                          <TextField
+                            {...params}
+                            variant="standard"
+                            placeholder={selectedCreateAssignees.length === 0 ? 'Фамилия или логин' : ''}
+                            InputProps={{ ...params.InputProps, disableUnderline: true }}
+                            inputProps={{ ...params.inputProps, 'aria-label': 'Исполнители' }}
+                            sx={{
+                              '& .MuiInputBase-root': { minHeight: 34 },
+                              '& .MuiChip-root': { borderRadius: '999px', fontWeight: 800 },
+                            }}
+                          />
+                        )}
+                      />
+                    )}
                   </Stack>
 
                   <Stack direction={{ xs: 'column', sm: 'row' }} spacing={{ xs: 0.45, sm: 1.4 }} alignItems={{ xs: 'stretch', sm: 'center' }}>
@@ -6930,7 +7617,8 @@ function Tasks() {
               borderTop: '1px solid',
               borderColor: ui.borderSoft,
               boxShadow: ui.dialogShadow,
-              maxHeight: '88dvh',
+              height: isCreateTallMobileSheet ? '90dvh' : 'auto',
+              maxHeight: isCreateTallMobileSheet ? '92dvh' : '88dvh',
               overflow: 'hidden',
             },
           }}
@@ -6940,22 +7628,25 @@ function Tasks() {
             sx={{
               px: 2,
               pt: 1.1,
-              pb: 'calc(1.4rem + env(safe-area-inset-bottom, 0px))',
-              maxHeight: '88dvh',
-              overflowY: 'auto',
+              pb: isCreateTallMobileSheet ? 0 : 'calc(1.4rem + env(safe-area-inset-bottom, 0px))',
+              height: isCreateTallMobileSheet ? '100%' : 'auto',
+              maxHeight: isCreateTallMobileSheet ? 'none' : '88dvh',
+              overflowY: isCreateTallMobileSheet ? 'hidden' : 'auto',
               ...hideMobileScrollbarSx,
             }}
           >
             <Box sx={{ width: 54, height: 5, borderRadius: 999, bgcolor: alpha(ui.mutedText, 0.35), mx: 'auto', mb: 1.4 }} />
-            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: 1.2 }}>
-              <Typography sx={{ fontWeight: 950, fontSize: '1.16rem' }}>
+            <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1} sx={{ mb: isCreateDescriptionMobileSheet ? 1.8 : 1.2 }}>
+              <Typography sx={{ fontWeight: 950, fontSize: isCreateDescriptionMobileSheet ? '1.52rem' : '1.16rem', textAlign: isCreateDescriptionMobileSheet ? 'center' : 'left', flex: isCreateDescriptionMobileSheet ? 1 : 'initial' }}>
                 {createMobileSheetTitle}
               </Typography>
-              <IconButton size="small" aria-label="Закрыть плашку" onClick={handleCloseCreateMobileSheet}>
+              <IconButton size="small" aria-label="Закрыть плашку" onClick={handleCloseCreateMobileSheet} sx={{ visibility: isCreateDescriptionMobileSheet ? 'hidden' : 'visible' }}>
                 <CloseIcon fontSize="small" />
               </IconButton>
             </Stack>
-            {createMobileSheetContent}
+            <Box sx={{ height: isCreateTallMobileSheet ? 'calc(100% - 72px)' : 'auto', minHeight: 0 }}>
+              {createMobileSheetContent}
+            </Box>
           </Box>
         </Drawer>
 
@@ -7332,6 +8023,31 @@ function Tasks() {
             </Button>
           </DialogActions>
         </Dialog>
+
+        {isMobile && canCreateTasks && !detailsOpen && !createOpen ? (
+          <IconButton
+            data-testid="tasks-create-fab"
+            aria-label="Создать задачу"
+            onClick={() => setCreateOpen(true)}
+            sx={{
+              position: 'fixed',
+              right: 16,
+              bottom: getAppShellMobileFabBottomOffset(),
+              width: 58,
+              height: 58,
+              borderRadius: '999px',
+              bgcolor: theme.palette.primary.main,
+              color: theme.palette.primary.contrastText,
+              boxShadow: '0 18px 40px rgba(37, 99, 235, 0.28)',
+              zIndex: 14,
+              '&:hover': {
+                bgcolor: theme.palette.primary.dark,
+              },
+            }}
+          >
+            <AddIcon sx={{ fontSize: 28 }} />
+          </IconButton>
+        ) : null}
       </PageShell>
     </MainLayout>
   );

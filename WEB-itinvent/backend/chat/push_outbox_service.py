@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import or_, select
+from sqlalchemy import func, or_, select
 
 from backend.chat.db import chat_session
 from backend.chat.models import ChatConversationUserState, ChatMessage, ChatPushOutbox
@@ -374,19 +374,27 @@ class ChatPushOutboxService:
         terminal_failed = 0
         oldest_queued_age_sec = 0.0
         with chat_session() as session:
-            jobs = list(session.execute(select(ChatPushOutbox)).scalars())
-            for job in jobs:
-                status = _normalize_text(job.status)
-                if status == OUTBOX_STATUS_QUEUED:
-                    queued += 1
-                    next_attempt_at = _coerce_utc(job.next_attempt_at)
-                    if next_attempt_at is not None:
-                        age_sec = max(0.0, (now - next_attempt_at).total_seconds())
-                        oldest_queued_age_sec = max(oldest_queued_age_sec, age_sec)
-                elif status == OUTBOX_STATUS_PROCESSING:
-                    processing += 1
-                elif status == OUTBOX_STATUS_FAILED:
-                    terminal_failed += 1
+            status_rows = session.execute(
+                select(ChatPushOutbox.status, func.count())
+                .group_by(ChatPushOutbox.status)
+            ).all()
+            oldest_next_attempt = session.execute(
+                select(func.min(ChatPushOutbox.next_attempt_at)).where(
+                    ChatPushOutbox.status == OUTBOX_STATUS_QUEUED
+                )
+            ).scalar_one_or_none()
+        for status, count in status_rows:
+            normalized_status = _normalize_text(status)
+            count_value = int(count or 0)
+            if normalized_status == OUTBOX_STATUS_QUEUED:
+                queued = count_value
+            elif normalized_status == OUTBOX_STATUS_PROCESSING:
+                processing = count_value
+            elif normalized_status == OUTBOX_STATUS_FAILED:
+                terminal_failed = count_value
+        next_attempt_at = _coerce_utc(oldest_next_attempt)
+        if next_attempt_at is not None:
+            oldest_queued_age_sec = max(0.0, (now - next_attempt_at).total_seconds())
         return {
             "queued": queued,
             "processing": processing,

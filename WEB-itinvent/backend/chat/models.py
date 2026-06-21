@@ -56,6 +56,7 @@ class ChatConversation(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     avatar_url: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    task_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     last_message_id: Mapped[str | None] = mapped_column(String(36), nullable=True, index=True)
     last_message_seq: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0)
     last_message_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
@@ -329,3 +330,43 @@ class ChatEventOutbox(Base):
     last_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatFolder(Base):
+    __tablename__ = "chat_folders"
+    __table_args__ = _table_args(
+        Index("ix_chat_folders_user_id_sort_order", "user_id", "sort_order"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class ChatFolderConversation(Base):
+    __tablename__ = "chat_folder_conversations"
+    __table_args__ = _table_args(
+        UniqueConstraint("folder_id", "conversation_id", name="uq_chat_folder_conversations_folder_conversation"),
+        Index("ix_chat_folder_conversations_user_id_folder_id", "user_id", "folder_id"),
+        schema=CHAT_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    folder_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_folders"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    conversation_id: Mapped[str] = mapped_column(
+        String(36),
+        ForeignKey(_chat_fk("chat_conversations"), ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    added_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)

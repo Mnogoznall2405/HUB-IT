@@ -6,6 +6,7 @@ export const CHAT_SOCKET_ACTIVITY_EVENT = 'chat-ws-activity';
 export const CHAT_SOCKET_SNAPSHOT_EVENT = 'chat-ws-snapshot';
 export const CHAT_SOCKET_MESSAGE_CREATED_EVENT = 'chat-ws-message-created';
 export const CHAT_SOCKET_MESSAGE_DELETED_EVENT = 'chat-ws-message-deleted';
+export const CHAT_SOCKET_MESSAGE_UPDATED_EVENT = 'chat-ws-message-updated';
 export const CHAT_SOCKET_MESSAGE_READ_EVENT = 'chat-ws-message-read';
 export const CHAT_SOCKET_CONVERSATION_UPDATED_EVENT = 'chat-ws-conversation-updated';
 export const CHAT_SOCKET_CONVERSATION_REMOVED_EVENT = 'chat-ws-conversation-removed';
@@ -21,7 +22,7 @@ const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
 const RECONNECT_JITTER_RATIO = 0.25;
 const STABLE_CONNECTION_MS = 5_000;
 const MAX_QUEUED_MESSAGES = 100;
-const NON_RECONNECTABLE_CLOSE_CODES = new Set([4401, 4403]);
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([1008, 4400, 4401, 4403, 4404, 4503]);
 const VOLATILE_OFFLINE_COMMANDS = new Set(['chat.typing', 'chat.ping']);
 const CONVERSATION_SUBSCRIPTION_COMMANDS = new Set([
   'chat.subscribe_conversation',
@@ -82,6 +83,14 @@ class ChatSocketClient {
     this.missedPongs = 0;
     this.maxMissedPongs = 3;
     this.stableConnectionTimer = null;
+  }
+
+  hasActiveOrPendingSocket() {
+    if (!this.socket) return false;
+    const state = this.socket.readyState;
+    return state === WebSocket.CONNECTING
+      || state === WebSocket.OPEN
+      || state === WebSocket.CLOSING;
   }
 
   retain() {
@@ -208,9 +217,7 @@ class ChatSocketClient {
 
   connect() {
     if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) return;
-    if (this.socket && this.socket.readyState !== WebSocket.CLOSED) {
-      return;
-    }
+    if (this.hasActiveOrPendingSocket()) return;
     if (this.reconnectTimer) {
       window.clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -386,6 +393,10 @@ class ChatSocketClient {
       dispatchWindowEvent(CHAT_SOCKET_MESSAGE_DELETED_EVENT, envelope);
       return;
     }
+    if (eventType === 'chat.message.updated') {
+      dispatchWindowEvent(CHAT_SOCKET_MESSAGE_UPDATED_EVENT, envelope);
+      return;
+    }
     if (eventType === 'chat.message.read') {
       dispatchWindowEvent(CHAT_SOCKET_MESSAGE_READ_EVENT, envelope);
       return;
@@ -440,6 +451,9 @@ class ChatSocketClient {
       this.stableConnectionTimer = null;
     }, STABLE_CONNECTION_MS);
     this.heartbeatTimer = window.setInterval(() => {
+      if (!this.isOpen()) {
+        return;
+      }
       if (this.missedPongs >= this.maxMissedPongs) {
         // Connection is dead, force reconnect
         this.stopHeartbeat();
@@ -471,6 +485,10 @@ class ChatSocketClient {
       window.clearTimeout(this.stableConnectionTimer);
       this.stableConnectionTimer = null;
     }
+  }
+
+  getConnectionState() {
+    return String(this.connectionState || '').trim() || 'disconnected';
   }
 
   setStatus(status) {

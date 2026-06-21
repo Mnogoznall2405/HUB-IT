@@ -9,6 +9,7 @@ import {
   refreshPwaInstallState,
   storePwaInstallPrompt,
 } from './lib/pwaInstall'
+import { tryRecoverChunkLoad } from './lib/routeChunkRecovery'
 import './index.css'
 
 const MY_FILES_GRANT_DEPLOY_KEY = 'hubit:my-files:grant-download-v2';
@@ -23,29 +24,6 @@ const needsMyFilesGrantHardReload = () => {
   } catch {
     return false;
   }
-};
-
-const CHUNK_RELOAD_FINGERPRINT_KEY = 'itinvent_chunk_reload_fingerprint';
-
-const buildChunkReloadFingerprint = (reason = '') => {
-  const route = `${window.location.pathname}${window.location.search}`;
-  const normalizedReason = String(reason || '').trim().slice(0, 240);
-  return normalizedReason ? `${route}::${normalizedReason}` : route;
-};
-
-const tryRecoverChunkLoad = (reason = '') => {
-  try {
-    const fingerprint = buildChunkReloadFingerprint(reason);
-    const previousFingerprint = String(sessionStorage.getItem(CHUNK_RELOAD_FINGERPRINT_KEY) || '').trim();
-    if (previousFingerprint !== fingerprint) {
-      sessionStorage.setItem(CHUNK_RELOAD_FINGERPRINT_KEY, fingerprint);
-      window.location.reload();
-      return true;
-    }
-  } catch (error) {
-    console.error('Chunk reload recovery failed', error);
-  }
-  return false;
 };
 
 window.addEventListener('vite:preloadError', (event) => {

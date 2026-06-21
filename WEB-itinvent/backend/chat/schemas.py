@@ -86,9 +86,12 @@ class ChatMessageResponse(BaseModel):
 
 class ChatConversationSummary(BaseModel):
     id: str
-    kind: Literal["direct", "group", "ai"]
+    kind: Literal["direct", "group", "ai", "notes", "task"]
     title: str
     avatar_url: Optional[str] = None
+    task_id: Optional[str] = None
+    task_title: Optional[str] = None
+    task_status: Optional[str] = None
     created_at: str
     updated_at: str
     last_message_at: Optional[str] = None
@@ -229,6 +232,16 @@ class SendMessageRequest(BaseModel):
     def _normalize_optional_message_id(cls, value):
         text = str(value or "").strip()
         return text or None
+
+
+class EditMessageRequest(BaseModel):
+    body: str = Field(..., min_length=1, max_length=12000)
+    body_format: Literal["plain", "markdown"] = "plain"
+
+    @field_validator("body", mode="before")
+    @classmethod
+    def _normalize_body(cls, value):
+        return str(value or "").strip()
 
 
 class ForwardMessageRequest(BaseModel):
@@ -478,6 +491,53 @@ class ChatMessageReadReceipt(BaseModel):
 
 class ChatMessageReadsResponse(BaseModel):
     items: list[ChatMessageReadReceipt] = Field(default_factory=list)
+
+
+class ChatFolderSummary(BaseModel):
+    id: str
+    name: str
+    sort_order: int = 0
+    conversation_count: int = 0
+    unread_count: int = 0
+    conversation_ids: list[str] = Field(default_factory=list)
+    created_at: str
+    updated_at: str
+
+
+class ChatFolderListResponse(BaseModel):
+    items: list[ChatFolderSummary] = Field(default_factory=list)
+    conversation_ids_by_folder: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class ChatFolderCreateRequest(BaseModel):
+    name: str = Field(..., min_length=1, max_length=64)
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _normalize_name(cls, value):
+        return str(value or "").strip()
+
+
+class ChatFolderUpdateRequest(BaseModel):
+    name: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    sort_order: Optional[int] = None
+
+    @field_validator("name", mode="before")
+    @classmethod
+    def _normalize_name(cls, value):
+        if value is None:
+            return None
+        text = str(value or "").strip()
+        return text or None
+
+
+class ChatFolderMembershipUpdateRequest(BaseModel):
+    conversation_ids: list[str] = Field(default_factory=list)
+
+
+class ChatFolderMutationResponse(BaseModel):
+    ok: bool = True
+    item: ChatFolderSummary
 
 
 ChatMessageResponse.model_rebuild()

@@ -210,4 +210,35 @@ describe('TaskUi helpers', () => {
     fireEvent.click(screen.getByText('Сроки и состояние'));
     expect(screen.getByText('Срок')).toBeInTheDocument();
   });
+
+  it('renders passive mobile status for tasks waiting on review', () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <TaskContextSidebar
+          task={sampleTask}
+          ui={ui}
+          theme={theme}
+          statusMeta={{ label: 'На проверке', color: '#7c3aed', bg: 'rgba(124,58,237,0.14)' }}
+          priorityMeta={{ value: 'normal', label: 'Обычный', dotColor: '#64748b' }}
+          transferLabel="Осталось актов: 1"
+          isTransferReminder={false}
+          formatDateTime={(value) => value || '-'}
+          actionState={{
+            key: 'waiting_review',
+            stepLabel: 'На проверке',
+            actionLabel: '',
+            hint: 'Результат отправлен на проверку. Ожидайте решения контролёра.',
+            passive: true,
+          }}
+          mobile
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByTestId('task-context-mobile-status')).toHaveTextContent('Статус');
+    expect(screen.getByTestId('task-context-mobile-status')).toHaveTextContent('На проверке');
+    expect(screen.queryByTestId('task-context-mobile-action')).not.toBeInTheDocument();
+    expect(screen.queryByText('Что сделать')).not.toBeInTheDocument();
+    expect(screen.queryByText('Проверить результат')).not.toBeInTheDocument();
+  });
 });

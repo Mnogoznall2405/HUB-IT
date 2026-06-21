@@ -6,6 +6,24 @@ export const clampDocumentZoom = (value, minZoom = 1, maxZoom = 3) => {
   return Math.min(maxZoom, Math.max(minZoom, normalized));
 };
 
+export const buildDocumentContentSx = (transform, isZoomed) => {
+  if (!isZoomed) {
+    return {};
+  }
+  return {
+    transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`,
+    transformOrigin: '0 0',
+    willChange: 'transform',
+  };
+};
+
+export const buildDocumentViewportSx = (isZoomed) => ({
+  overflowY: isZoomed ? 'hidden' : 'auto',
+  overflowX: 'hidden',
+  touchAction: isZoomed ? 'none' : 'pan-y pinch-zoom',
+  WebkitOverflowScrolling: 'touch',
+});
+
 const distanceBetweenTouches = (touchA, touchB) => {
   const dx = touchA.clientX - touchB.clientX;
   const dy = touchA.clientY - touchB.clientY;
@@ -25,38 +43,30 @@ export default function useDocumentPinchPan({
 } = {}) {
   const viewportRef = useRef(null);
   const contentRef = useRef(null);
+  const transformRef = useRef({ scale: 1, x: 0, y: 0 });
   const gestureRef = useRef({
     mode: 'idle',
     startScale: 1,
     startDistance: 0,
     startTranslateX: 0,
     startTranslateY: 0,
-    startMidpoint: { x: 0, y: 0 },
     lastPanPoint: { x: 0, y: 0 },
     lastTapAt: 0,
   });
   const [transform, setTransform] = useState({ scale: 1, x: 0, y: 0 });
 
-  const resetTransform = useCallback(() => {
-    setTransform({ scale: 1, x: 0, y: 0 });
+  const applyTransform = useCallback((nextTransform) => {
+    transformRef.current = nextTransform;
+    setTransform(nextTransform);
   }, []);
 
-  const zoomIn = useCallback(() => {
-    setTransform((current) => ({
-      ...current,
-      scale: clampDocumentZoom(current.scale + zoomStep, minZoom, maxZoom),
-    }));
-  }, [maxZoom, minZoom, zoomStep]);
+  const resetTransform = useCallback(() => {
+    applyTransform({ scale: 1, x: 0, y: 0 });
+  }, [applyTransform]);
 
-  const zoomOut = useCallback(() => {
-    setTransform((current) => {
-      const nextScale = clampDocumentZoom(current.scale - zoomStep, minZoom, maxZoom);
-      if (nextScale <= minZoom + 0.001) {
-        return { scale: 1, x: 0, y: 0 };
-      }
-      return { ...current, scale: nextScale };
-    });
-  }, [maxZoom, minZoom, zoomStep]);
+  useEffect(() => {
+    transformRef.current = transform;
+  }, [transform]);
 
   const isZoomed = transform.scale > 1.001;
 
@@ -70,18 +80,18 @@ export default function useDocumentPinchPan({
       if (!event.ctrlKey) return;
       event.preventDefault();
       const delta = event.deltaY > 0 ? -zoomStep : zoomStep;
-      setTransform((current) => {
-        const nextScale = clampDocumentZoom(current.scale + delta, minZoom, maxZoom);
-        if (nextScale <= minZoom + 0.001) {
-          return { scale: 1, x: 0, y: 0 };
-        }
-        return { ...current, scale: nextScale };
-      });
+      const current = transformRef.current;
+      const nextScale = clampDocumentZoom(current.scale + delta, minZoom, maxZoom);
+      if (nextScale <= minZoom + 0.001) {
+        applyTransform({ scale: 1, x: 0, y: 0 });
+        return;
+      }
+      applyTransform({ ...current, scale: nextScale });
     };
 
     viewport.addEventListener('wheel', onWheel, { passive: false });
     return () => viewport.removeEventListener('wheel', onWheel);
-  }, [enabled, maxZoom, minZoom, zoomStep]);
+  }, [applyTransform, enabled, maxZoom, minZoom, zoomStep]);
 
   useEffect(() => {
     const viewport = viewportRef.current;
@@ -98,11 +108,12 @@ export default function useDocumentPinchPan({
       const dx = event.clientX - gesture.lastPanPoint.x;
       const dy = event.clientY - gesture.lastPanPoint.y;
       gesture.lastPanPoint = { x: event.clientX, y: event.clientY };
-      setTransform((current) => ({
+      const current = transformRef.current;
+      applyTransform({
         ...current,
         x: current.x + dx,
         y: current.y + dy,
-      }));
+      });
     };
     const onMouseUp = () => {
       gesture.mode = 'idle';
@@ -116,87 +127,104 @@ export default function useDocumentPinchPan({
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
     };
-  }, [minZoom, transform.scale]);
+  }, [applyTransform, minZoom, transform.scale]);
 
-  const handleTouchStart = useCallback((event) => {
-    if (!enabled) return;
-    const touches = event.touches;
+  useEffect(() => {
+    if (!enabled) return undefined;
+
+    const viewport = viewportRef.current;
+    if (!viewport) return undefined;
+
     const gesture = gestureRef.current;
 
-    if (touches.length === 2) {
-      gesture.mode = 'pinch';
-      gesture.startScale = transform.scale;
-      gesture.startDistance = distanceBetweenTouches(touches[0], touches[1]);
-      gesture.startMidpoint = midpointBetweenTouches(touches[0], touches[1]);
-      gesture.startTranslateX = transform.x;
-      gesture.startTranslateY = transform.y;
-      return;
-    }
+    const onTouchStart = (event) => {
+      const touches = event.touches;
+      const current = transformRef.current;
+      const zoomed = current.scale > minZoom + 0.001;
 
-    if (touches.length === 1 && isZoomed) {
-      gesture.mode = 'pan';
-      gesture.lastPanPoint = { x: touches[0].clientX, y: touches[0].clientY };
-      return;
-    }
+      if (touches.length === 2) {
+        gesture.mode = 'pinch';
+        gesture.startScale = current.scale;
+        gesture.startDistance = distanceBetweenTouches(touches[0], touches[1]);
+        gesture.startTranslateX = current.x;
+        gesture.startTranslateY = current.y;
+        return;
+      }
 
-    if (touches.length === 1 && !isZoomed) {
-      const now = Date.now();
-      if (now - gesture.lastTapAt < 300) {
+      if (touches.length === 1 && zoomed) {
+        gesture.mode = 'pan';
+        gesture.lastPanPoint = { x: touches[0].clientX, y: touches[0].clientY };
+        return;
+      }
+
+      if (touches.length === 1 && !zoomed) {
+        const now = Date.now();
+        if (now - gesture.lastTapAt < 300) {
+          resetTransform();
+        }
+        gesture.lastTapAt = now;
+        gesture.mode = 'idle';
+      }
+    };
+
+    const onTouchMove = (event) => {
+      const touches = event.touches;
+      const current = transformRef.current;
+      const zoomed = current.scale > minZoom + 0.001;
+
+      if (gesture.mode === 'pinch' && touches.length === 2) {
         event.preventDefault();
-        resetTransform();
+        const nextDistance = distanceBetweenTouches(touches[0], touches[1]);
+        if (!gesture.startDistance) return;
+        const scaleFactor = nextDistance / gesture.startDistance;
+        const nextScale = clampDocumentZoom(gesture.startScale * scaleFactor, minZoom, maxZoom);
+        const midpoint = midpointBetweenTouches(touches[0], touches[1]);
+        const viewportRect = viewport.getBoundingClientRect();
+        const originX = midpoint.x - viewportRect.left + viewport.scrollLeft;
+        const originY = midpoint.y - viewportRect.top + viewport.scrollTop;
+        const scaleRatio = nextScale / gesture.startScale;
+        applyTransform({
+          scale: nextScale,
+          x: originX - (originX - gesture.startTranslateX) * scaleRatio,
+          y: originY - (originY - gesture.startTranslateY) * scaleRatio,
+        });
+        return;
       }
-      gesture.lastTapAt = now;
-    }
-  }, [enabled, isZoomed, resetTransform, transform.scale, transform.x, transform.y]);
 
-  const handleTouchMove = useCallback((event) => {
-    if (!enabled) return;
-    const touches = event.touches;
-    const gesture = gestureRef.current;
+      if (gesture.mode === 'pan' && touches.length === 1 && zoomed) {
+        event.preventDefault();
+        const touch = touches[0];
+        const dx = touch.clientX - gesture.lastPanPoint.x;
+        const dy = touch.clientY - gesture.lastPanPoint.y;
+        gesture.lastPanPoint = { x: touch.clientX, y: touch.clientY };
+        applyTransform({
+          ...current,
+          x: current.x + dx,
+          y: current.y + dy,
+        });
+      }
+    };
 
-    if (gesture.mode === 'pinch' && touches.length === 2) {
-      event.preventDefault();
-      const nextDistance = distanceBetweenTouches(touches[0], touches[1]);
-      if (!gesture.startDistance) return;
-      const scaleFactor = nextDistance / gesture.startDistance;
-      const nextScale = clampDocumentZoom(gesture.startScale * scaleFactor, minZoom, maxZoom);
-      const midpoint = midpointBetweenTouches(touches[0], touches[1]);
-      const viewport = viewportRef.current;
-      const viewportRect = viewport?.getBoundingClientRect?.();
-      const originX = viewportRect ? midpoint.x - viewportRect.left + (viewport?.scrollLeft || 0) : midpoint.x;
-      const originY = viewportRect ? midpoint.y - viewportRect.top + (viewport?.scrollTop || 0) : midpoint.y;
-      const scaleRatio = nextScale / gesture.startScale;
-      setTransform({
-        scale: nextScale,
-        x: originX - (originX - gesture.startTranslateX) * scaleRatio,
-        y: originY - (originY - gesture.startTranslateY) * scaleRatio,
-      });
-      return;
-    }
-
-    if (gesture.mode === 'pan' && touches.length === 1 && isZoomed) {
-      event.preventDefault();
-      const touch = touches[0];
-      const dx = touch.clientX - gesture.lastPanPoint.x;
-      const dy = touch.clientY - gesture.lastPanPoint.y;
-      gesture.lastPanPoint = { x: touch.clientX, y: touch.clientY };
-      setTransform((current) => ({
-        ...current,
-        x: current.x + dx,
-        y: current.y + dy,
-      }));
-    }
-  }, [enabled, isZoomed, maxZoom, minZoom]);
-
-  const handleTouchEnd = useCallback(() => {
-    gestureRef.current.mode = 'idle';
-    setTransform((current) => {
+    const onTouchEnd = () => {
+      gesture.mode = 'idle';
+      const current = transformRef.current;
       if (current.scale <= minZoom + 0.001) {
-        return { scale: 1, x: 0, y: 0 };
+        applyTransform({ scale: 1, x: 0, y: 0 });
       }
-      return current;
-    });
-  }, [minZoom]);
+    };
+
+    viewport.addEventListener('touchstart', onTouchStart, { passive: true });
+    viewport.addEventListener('touchmove', onTouchMove, { passive: false });
+    viewport.addEventListener('touchend', onTouchEnd, { passive: true });
+    viewport.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+    return () => {
+      viewport.removeEventListener('touchstart', onTouchStart);
+      viewport.removeEventListener('touchmove', onTouchMove);
+      viewport.removeEventListener('touchend', onTouchEnd);
+      viewport.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [applyTransform, enabled, minZoom, maxZoom, resetTransform]);
 
   return {
     viewportRef,
@@ -204,23 +232,7 @@ export default function useDocumentPinchPan({
     transform,
     isZoomed,
     resetTransform,
-    zoomIn,
-    zoomOut,
-    viewportProps: enabled ? {
-      onTouchStart: handleTouchStart,
-      onTouchMove: handleTouchMove,
-      onTouchEnd: handleTouchEnd,
-      onTouchCancel: handleTouchEnd,
-    } : {},
-    viewportSx: {
-      overflow: isZoomed ? 'hidden' : 'auto',
-      touchAction: isZoomed ? 'none' : 'pan-y pinch-zoom',
-      WebkitOverflowScrolling: 'touch',
-    },
-    contentSx: {
-      transform: `translate3d(${transform.x}px, ${transform.y}px, 0) scale(${transform.scale})`,
-      transformOrigin: '0 0',
-      willChange: isZoomed ? 'transform' : 'auto',
-    },
+    viewportSx: buildDocumentViewportSx(isZoomed),
+    contentSx: buildDocumentContentSx(transform, isZoomed),
   };
 }

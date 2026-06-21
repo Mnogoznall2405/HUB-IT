@@ -27,6 +27,7 @@ import AttachFileIcon from '@mui/icons-material/AttachFile';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DownloadIcon from '@mui/icons-material/Download';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
+import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import FlagIcon from '@mui/icons-material/Flag';
 import ModeCommentOutlinedIcon from '@mui/icons-material/ModeCommentOutlined';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
@@ -625,12 +626,15 @@ export function TaskContextSidebar({
   ];
 
   if (mobile) {
+    const isPassive = Boolean(actionState?.passive);
     const nextActionLabel = actionState?.stepLabel || 'Открыть детали';
     const actionHint = actionState?.hint || 'Посмотрите описание, чек-лист и обсуждение ниже.';
+    const sectionLabel = isPassive ? 'Статус' : 'Что сделать';
+
     return (
       <Stack spacing={1} sx={{ alignSelf: 'stretch' }}>
         <Box
-          data-testid="task-context-mobile-action"
+          data-testid={isPassive ? 'task-context-mobile-status' : 'task-context-mobile-action'}
           sx={{
             p: 0.9,
             borderRadius: '14px',
@@ -642,7 +646,7 @@ export function TaskContextSidebar({
         >
           <Stack spacing={0.65}>
             <Typography variant="caption" sx={{ color: ui.subtleText, fontWeight: 900, textTransform: 'uppercase', letterSpacing: '0.04em' }}>
-              Что сделать
+              {sectionLabel}
             </Typography>
             <Typography sx={{ fontWeight: 950, fontSize: '0.98rem', lineHeight: 1.18 }}>
               {nextActionLabel}
@@ -650,7 +654,7 @@ export function TaskContextSidebar({
             <Typography variant="body2" sx={{ color: ui.mutedText, lineHeight: 1.35 }}>
               {actionHint}
             </Typography>
-            {actions ? (
+            {!isPassive && actions ? (
               <Box sx={{ pt: 0.15 }}>
                 {actions}
               </Box>
@@ -820,6 +824,9 @@ export function TaskActivityTabs({
   theme,
   mobile = false,
   hideFilesTab = false,
+  taskDiscussionEnabled = false,
+  onOpenTaskDiscussion,
+  discussionOpening = false,
 }) {
   const commentsRef = useRef(null);
   const effectiveActiveTab = hideFilesTab && activeTab === 'files' ? 'comments' : activeTab;
@@ -861,10 +868,44 @@ export function TaskActivityTabs({
       <Box sx={{ px: 1.2, py: 1.2 }}>
         {effectiveActiveTab === 'comments' && (
           <Stack spacing={1}>
+            {taskDiscussionEnabled ? (
+              <Box
+                sx={{
+                  p: 1,
+                  borderRadius: '12px',
+                  border: '1px solid',
+                  borderColor: ui.borderSoft,
+                  bgcolor: alpha(theme.palette.primary.main, 0.05),
+                }}
+              >
+                <Typography sx={{ fontWeight: 800, mb: 0.45 }}>
+                  Обсуждение в корпоративном чате
+                </Typography>
+                <Typography variant="body2" sx={{ color: ui.mutedText, mb: 1 }}>
+                  Новые сообщения по задаче отправляются в чат участников задачи.
+                </Typography>
+                <Button
+                  variant="contained"
+                  startIcon={<ForumOutlinedIcon />}
+                  onClick={() => onOpenTaskDiscussion?.()}
+                  disabled={discussionOpening}
+                  sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
+                >
+                  {discussionOpening ? 'Открываем чат…' : 'Открыть чат'}
+                </Button>
+              </Box>
+            ) : null}
+
+            {comments.length > 0 ? (
+              <Typography sx={{ fontWeight: 800, fontSize: '0.9rem' }}>
+                {taskDiscussionEnabled ? 'Архив комментариев' : 'Комментарии'}
+              </Typography>
+            ) : null}
+
             <Box ref={commentsRef} sx={{ maxHeight: mobile ? 'none' : 380, overflowY: mobile ? 'visible' : 'auto', pr: 0.4 }}>
               {comments.length === 0 ? (
                 <Typography variant="body2" sx={{ color: ui.mutedText }}>
-                  Комментариев пока нет.
+                  {taskDiscussionEnabled ? 'Архивных комментариев пока нет.' : 'Комментариев пока нет.'}
                 </Typography>
               ) : (
                 <List disablePadding dense>
@@ -902,28 +943,32 @@ export function TaskActivityTabs({
               )}
             </Box>
 
-            <Divider />
+            {!taskDiscussionEnabled ? (
+              <>
+                <Divider />
 
-            <Stack spacing={0.8}>
-              <TextField
-                label="Новый комментарий"
-                value={commentBody}
-                onChange={(event) => onCommentChange(event.target.value)}
-                multiline
-                minRows={3}
-                fullWidth
-              />
-              <Stack direction="row" justifyContent="flex-end">
-                <Button
-                  variant="contained"
-                  onClick={() => onAddComment()}
-                  disabled={commentSaving || String(commentBody || '').trim().length === 0}
-                  sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none', width: { xs: '100%', sm: 'auto' } }}
-                >
-                  {commentSaving ? 'Сохранение...' : 'Добавить комментарий'}
-                </Button>
-              </Stack>
-            </Stack>
+                <Stack spacing={0.8}>
+                  <TextField
+                    label="Новый комментарий"
+                    value={commentBody}
+                    onChange={(event) => onCommentChange(event.target.value)}
+                    multiline
+                    minRows={3}
+                    fullWidth
+                  />
+                  <Stack direction="row" justifyContent="flex-end">
+                    <Button
+                      variant="contained"
+                      onClick={() => onAddComment()}
+                      disabled={commentSaving || String(commentBody || '').trim().length === 0}
+                      sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none', width: { xs: '100%', sm: 'auto' } }}
+                    >
+                      {commentSaving ? 'Сохранение...' : 'Добавить комментарий'}
+                    </Button>
+                  </Stack>
+                </Stack>
+              </>
+            ) : null}
           </Stack>
         )}
 
@@ -1035,6 +1080,9 @@ export function TaskPreviewDrawer({
   onDownloadReport,
   formatDateTime,
   latestCommentPreview,
+  taskDiscussionEnabled = false,
+  onOpenTaskDiscussion,
+  discussionOpening = false,
 }) {
   const priority = priorityMeta;
   const latestReportComment = String(task?.latest_report?.comment || '').trim();
@@ -1100,6 +1148,18 @@ export function TaskPreviewDrawer({
               </Typography>
             </Box>
             <Stack direction="row" spacing={0.8}>
+              {task?.id && taskDiscussionEnabled && (
+                <Button
+                  variant="contained"
+                  size="small"
+                  startIcon={<ForumOutlinedIcon />}
+                  onClick={() => onOpenTaskDiscussion?.()}
+                  disabled={discussionOpening}
+                  sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px', boxShadow: 'none' }}
+                >
+                  {discussionOpening ? 'Открытие...' : 'Чат по задаче'}
+                </Button>
+              )}
               {task?.id && (
                 <Button
                   variant="outlined"

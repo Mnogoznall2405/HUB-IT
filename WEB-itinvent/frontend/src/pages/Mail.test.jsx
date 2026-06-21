@@ -106,8 +106,18 @@ function installMatchMedia({ mobile = false } = {}) {
 }
 
 vi.mock('../components/layout/MainLayout', () => ({
-  default: ({ children, headerMode = 'default', contentMode = 'default' }) => (
-    <div data-testid="layout" data-header-mode={headerMode} data-content-mode={contentMode}>
+  default: ({
+    children,
+    headerMode = 'default',
+    contentMode = 'default',
+    mobileBottomNavMode = 'auto',
+  }) => (
+    <div
+      data-testid="layout"
+      data-header-mode={headerMode}
+      data-content-mode={contentMode}
+      data-mobile-bottom-nav-mode={mobileBottomNavMode}
+    >
       {children}
     </div>
   ),
@@ -629,7 +639,9 @@ vi.mock('../hooks/useDebounce', () => ({
   default: (value) => value,
 }));
 
+import { createTheme } from '@mui/material/styles';
 import Mail from './Mail';
+import { buildMailUiTokens, getMailMobileFabBottomOffset } from '../components/mail/mailUiTokens';
 
 function buildMessage(overrides = {}) {
   return {
@@ -1623,7 +1635,6 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByTestId('mail-toolbar')).toHaveAttribute('data-mobile', 'true');
     });
 
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'notifications-only');
     expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
     expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
     expect(screen.getByTestId('mail-toolbar')).toBeTruthy();
@@ -1665,8 +1676,9 @@ describe('Mail read-state behavior', () => {
       expect(mockGetMessage).toHaveBeenCalledWith('msg-42', expect.any(Object));
     });
 
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'hidden');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
     expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
     expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
     expect(screen.queryByTestId('mail-toolbar')).toBeNull();
     expect(screen.getByTestId('mail-mobile-preview-screen')).toBeTruthy();
@@ -1687,7 +1699,6 @@ describe('Mail read-state behavior', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'notifications-only');
       expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
       expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
       expect(screen.queryByTestId('mail-mobile-preview-screen')).toBeNull();
@@ -1776,6 +1787,14 @@ describe('Mail read-state behavior', () => {
     });
     expect(screen.queryByTestId('mail-mobile-preview-screen')).toBeNull();
     expect(mockGetMessage).not.toHaveBeenCalledWith('msg-2', expect.any(Object));
+  });
+
+  it('positions mobile compose fab above bottom navigation when bulk selection is inactive', () => {
+    const theme = createTheme();
+    const tokens = buildMailUiTokens(theme);
+
+    expect(getMailMobileFabBottomOffset(tokens)).toContain('--app-shell-mobile-bottom-nav-height');
+    expect(getMailMobileFabBottomOffset(tokens, { bulkActive: true })).not.toContain('--app-shell-mobile-bottom-nav-height');
   });
 
   it('keeps vertical scrolling gestures on the mobile list from opening navigation', async () => {
@@ -1925,7 +1944,7 @@ describe('Mail read-state behavior', () => {
     });
 
     expect(screen.getByTestId('mail-mobile-preview-screen')).toBeTruthy();
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'hidden');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
   });
 
   it('keeps vertical scrolling gestures on the mobile preview from closing it', async () => {
@@ -1964,7 +1983,7 @@ describe('Mail read-state behavior', () => {
     });
 
     expect(screen.getByTestId('mail-mobile-preview-screen')).toBeTruthy();
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'hidden');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
   });
 
   it('does not close the mobile preview when the swipe starts inside a horizontal mail scroller', async () => {
@@ -2064,7 +2083,7 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByText('Follow-up body')).toBeTruthy();
     });
 
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'hidden');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
     expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
     expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
   });
@@ -2385,11 +2404,12 @@ describe('Mail read-state behavior', () => {
 
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
+    const previewPanel = await screen.findByTestId('mail-preview-panel');
     await waitFor(() => {
-      expect(screen.getByText(/report\.txt/i)).toBeTruthy();
+      expect(within(previewPanel).getByText(/report\.txt/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/report\.txt/i));
+    fireEvent.click(within(previewPanel).getByText(/report\.txt/i));
 
     await waitFor(() => {
       expect(mockDownloadAttachment).toHaveBeenCalledWith('msg-42', 'att2_ZGVtbw', expect.any(Object));
@@ -2428,11 +2448,12 @@ describe('Mail read-state behavior', () => {
 
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
+    const previewPanel = await screen.findByTestId('mail-preview-panel');
     await waitFor(() => {
-      expect(screen.getByText(/broken\.txt/i)).toBeTruthy();
+      expect(within(previewPanel).getByText(/broken\.txt/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/broken\.txt/i));
+    fireEvent.click(within(previewPanel).getByText(/broken\.txt/i));
 
     await waitFor(() => {
       expect(screen.getByText('Вложение "broken.txt" пришло без идентификатора для скачивания.')).toBeTruthy();
@@ -2486,11 +2507,12 @@ describe('Mail read-state behavior', () => {
 
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
+    const previewPanel = await screen.findByTestId('mail-preview-panel');
     await waitFor(() => {
-      expect(screen.getByText(/report\.txt/i)).toBeTruthy();
+      expect(within(previewPanel).getByText(/report\.txt/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/report\.txt/i));
+    fireEvent.click(within(previewPanel).getByText(/report\.txt/i));
 
     await waitFor(() => {
       expect(screen.getByText('Вложение недоступно для выбранного ящика.')).toBeTruthy();

@@ -29,6 +29,7 @@ import {
   getMailMetaTextSx,
   getMailSurfaceButtonSx,
 } from './mailUiTokens';
+import ShellNotificationsButton from '../layout/ShellNotificationsButton';
 
 const iconButtonSx = (tokens, overrides = {}) => ({
   ...getMailIconButtonSx(tokens, {
@@ -158,6 +159,8 @@ export default function MailToolbar({
   currentFolderLabel = '',
   hasActiveFilters = false,
   mobile = false,
+  sectionTabs = null,
+  mobileHeaderTabs = null,
   loading = false,
   searchPlaceholder = 'Поиск по теме, отправителю или письму',
   searchInputRef,
@@ -168,6 +171,7 @@ export default function MailToolbar({
   const [mobileMailboxSheetOpen, setMobileMailboxSheetOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(false);
 
+  const resolvedSectionTabs = sectionTabs ?? mobileHeaderTabs;
   const normalizedMailboxes = Array.isArray(mailboxes) ? mailboxes : [];
   const activeMailboxId = String(activeMailbox?.id || '').trim();
   const activeMailboxLabel = String(
@@ -232,7 +236,12 @@ export default function MailToolbar({
             borderColor: tokens.panelBorder,
           }}
         >
-          <Stack spacing={mobileSearchOpen ? 0.75 : 0}>
+          <Stack spacing={mobileSearchOpen ? 0.75 : 0.65}>
+            {resolvedSectionTabs ? (
+              <Box data-testid="mail-toolbar-mobile-header-tabs">
+                {resolvedSectionTabs}
+              </Box>
+            ) : null}
             <Stack direction="row" spacing={0.65} alignItems="center">
               <IconButton
                 aria-label="Открыть навигацию"
@@ -302,6 +311,11 @@ export default function MailToolbar({
               >
                 <MoreHorizRoundedIcon fontSize="small" />
               </IconButton>
+
+              <ShellNotificationsButton
+                size="small"
+                sx={iconButtonSx(tokens, { width: 38, height: 38 })}
+              />
             </Stack>
 
             {mobileSearchOpen ? searchField : null}
@@ -355,6 +369,11 @@ export default function MailToolbar({
       }}
     >
       <Stack spacing={1.1}>
+        {resolvedSectionTabs ? (
+          <Box data-testid="mail-toolbar-desktop-header-tabs">
+            {resolvedSectionTabs}
+          </Box>
+        ) : null}
         <Stack direction="row" spacing={1.2} alignItems="center" justifyContent="space-between">
           <Stack direction="row" spacing={1.1} alignItems="center" sx={{ minWidth: 0, flex: 1 }}>
             <Typography sx={{ fontWeight: 800, fontSize: '1.08rem', color: tokens.textPrimary, whiteSpace: 'nowrap' }}>

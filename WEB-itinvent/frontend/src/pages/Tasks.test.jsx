@@ -11,6 +11,11 @@ const authState = vi.hoisted(() => ({
   user: { id: 1, role: 'admin', username: 'admin', permissions: [] },
 }));
 
+const chatFeatureFlags = vi.hoisted(() => ({
+  chat: false,
+  taskDiscussion: false,
+}));
+
 function installMatchMedia({ mobile = false } = {}) {
   window.matchMedia = vi.fn().mockImplementation((query) => ({
     matches: mobile ? query.includes('max-width:599.95px') : false,
@@ -52,6 +57,19 @@ vi.mock('../api/client', () => ({
     updateTaskObject: vi.fn(),
     uploadTaskAttachment: vi.fn(),
     addTaskComment: vi.fn(),
+    openTaskDiscussion: vi.fn(),
+  },
+}));
+
+vi.mock('../lib/chatFeature', () => ({
+  get CHAT_FEATURE_ENABLED() {
+    return chatFeatureFlags.chat;
+  },
+  get TASK_DISCUSSION_CHAT_ENABLED() {
+    return chatFeatureFlags.taskDiscussion;
+  },
+  get CHAT_WS_ENABLED() {
+    return false;
   },
 }));
 
@@ -78,10 +96,21 @@ vi.mock('../contexts/AuthContext', () => ({
   },
 }));
 
+vi.mock('../components/layout/ShellNotificationsButton', () => ({
+  default: () => <button type="button" data-testid="shell-notifications-button">Уведомления</button>,
+}));
+
 vi.mock('../components/layout/MainLayout', () => ({
-  default: ({ children, contentMode = 'default', headerInlineContent = null }) => (
-    <div data-testid="main-layout" data-content-mode={contentMode}>
-      {headerInlineContent ? <div data-testid="main-layout-header-inline">{headerInlineContent}</div> : null}
+  default: ({
+    children,
+    contentMode = 'default',
+    mobileBottomNavMode = 'auto',
+  }) => (
+    <div
+      data-testid="main-layout"
+      data-content-mode={contentMode}
+      data-mobile-bottom-nav-mode={mobileBottomNavMode}
+    >
       {children}
     </div>
   ),
@@ -150,6 +179,11 @@ function toLocalDateTimeInput(value) {
   const parsed = new Date(value);
   const local = new Date(parsed.getTime() - (parsed.getTimezoneOffset() * 60000));
   return local.toISOString().slice(0, 16);
+}
+
+function setRichEditorHtml(editor, html) {
+  editor.innerHTML = html;
+  fireEvent.input(editor);
 }
 
 const taskSummary = {
@@ -454,6 +488,77 @@ describe('Tasks page detail workspace', () => {
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
   });
 
+  it('shows role scope switch on desktop and switches between assignee and creator', async () => {
+    hubAPI.getTasks.mockImplementation(async (params) => ({
+      items: [taskSummary],
+      total: params?.role_scope === 'creator' ? 3 : 2,
+    }));
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_view=assignee']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-role-scope-switch')).toBeInTheDocument();
+    expect(screen.getByTestId('tasks-role-assignee')).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByTestId('tasks-role-creator'));
+
+    await waitFor(() => {
+      expect(hubAPI.getTasks).toHaveBeenCalledWith(expect.objectContaining({
+        role_scope: 'creator',
+        scope: 'my',
+      }));
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('task_view=creator');
+      expect(window.localStorage.getItem('hub.tasks.personalRole')).toBe('creator');
+    });
+
+    fireEvent.click(screen.getByTestId('tasks-role-assignee'));
+
+    await waitFor(() => {
+      expect(hubAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
+        role_scope: 'assignee',
+        scope: 'my',
+      }));
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('task_view=assignee');
+    });
+  });
+
+  it('shows role scope switch on mobile and restores personal role from localStorage', async () => {
+    installMatchMedia({ mobile: true });
+    authState.user = { id: 5, role: 'user', username: 'user', permissions: ['tasks.write'] };
+    window.localStorage.setItem('hub.tasks.personalRole', 'creator');
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-header-inline')).toBeInTheDocument();
+    expect(await screen.findByTestId('tasks-role-scope-switch')).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(hubAPI.getTasks).toHaveBeenCalledWith(expect.objectContaining({
+        role_scope: 'creator',
+        scope: 'my',
+      }));
+    });
+  });
+
   it('opens the last stored task mode when URL has no task_mode', async () => {
     window.localStorage.setItem('hub.tasks.taskMode', 'gantt');
 
@@ -612,7 +717,7 @@ describe('Tasks page detail workspace', () => {
       target: { value: 'Проверить доступ' },
     });
 
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Создать/ }));
 
     await waitFor(() => {
       expect(hubAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
@@ -758,7 +863,7 @@ describe('Tasks page detail workspace', () => {
     });
   });
 
-  it('shows the compact mobile feed, bottom navigation, more drawer, and create nav button', async () => {
+  it('shows the compact mobile feed, segmented modes, more drawer, and create fab', async () => {
     installMatchMedia({ mobile: true });
 
     render(
@@ -782,7 +887,7 @@ describe('Tasks page detail workspace', () => {
     expect(screen.getByTestId('main-layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
     expect(screen.queryByTestId('tasks-mobile-header')).not.toBeInTheDocument();
     expect(screen.queryByTestId('tasks-list-view')).not.toBeInTheDocument();
-    const mobileHeader = screen.getByTestId('main-layout-header-inline');
+    const mobileHeader = screen.getByTestId('tasks-mobile-header-inline');
     expect(within(mobileHeader).getByTestId('tasks-mobile-header-mode')).toHaveTextContent('Лента · 1');
     expect(within(mobileHeader).getByTestId('tasks-mobile-open-search')).toBeInTheDocument();
     expect(within(mobileHeader).getByTestId('tasks-mobile-open-navigation')).toBeInTheDocument();
@@ -807,11 +912,14 @@ describe('Tasks page detail workspace', () => {
     expect(within(taskCard).getByTestId('mobile-task-card-description-task-1')).toHaveTextContent('Нужно загрузить');
     expect(within(taskCard).queryByTestId('mobile-task-card-action-task-1')).not.toBeInTheDocument();
 
-    fireEvent.click(within(screen.getByTestId('tasks-mobile-bottom-nav')).getAllByRole('button')[1]);
+    expect(screen.queryByTestId('tasks-mobile-bottom-nav')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tasks-mobile-mode-segmented')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('tasks-mobile-mode-deadlines'));
     expect(await screen.findByTestId('tasks-deadlines-view')).toBeInTheDocument();
     expect(window.localStorage.getItem('hub.tasks.taskMode')).toBe('deadlines');
 
-    fireEvent.click(within(screen.getByTestId('tasks-mobile-bottom-nav')).getAllByRole('button')[4]);
+    fireEvent.click(screen.getByTestId('tasks-mobile-open-navigation-segment'));
     const navigationDrawer = await screen.findByTestId('tasks-mobile-navigation-drawer');
     expect(within(navigationDrawer).getByRole('button', { name: /Календарь/i })).toBeInTheDocument();
     expect(within(navigationDrawer).getByRole('button', { name: /Гант/i })).toBeInTheDocument();
@@ -821,11 +929,12 @@ describe('Tasks page detail workspace', () => {
     expect(await screen.findByTestId('tasks-calendar-view')).toBeInTheDocument();
     expect(window.localStorage.getItem('hub.tasks.taskMode')).toBe('calendar');
 
-    fireEvent.click(within(screen.getByTestId('tasks-mobile-bottom-nav')).getAllByRole('button')[0]);
+    fireEvent.click(screen.getByTestId('tasks-mobile-mode-list'));
     expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
 
     fireEvent.click(await screen.findByTestId('mobile-task-card-task-1'));
     expect(await screen.findByTestId('task-detail-mobile-header')).toBeInTheDocument();
+    expect(screen.getByTestId('main-layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
     const mobileContent = screen.getByTestId('task-mobile-content');
     const mobileAction = screen.getByTestId('task-context-mobile-action');
     expect(mobileContent).toHaveTextContent('Проверить акт перемещения');
@@ -840,8 +949,9 @@ describe('Tasks page detail workspace', () => {
       expect(screen.queryByTestId('task-detail-mobile-header')).not.toBeInTheDocument();
     });
 
-    fireEvent.click(screen.getByTestId('tasks-mobile-create-nav-button'));
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('main-layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
     expect(screen.getByLabelText(/Что нужно сделать/i)).toBeInTheDocument();
   });
 
@@ -860,7 +970,7 @@ describe('Tasks page detail workspace', () => {
     );
 
     expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('tasks-mobile-create-nav-button'));
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
     const dialog = await screen.findByRole('dialog');
 
     fireEvent.click(within(dialog).getByTestId('create-due-mobile-open'));
@@ -875,7 +985,13 @@ describe('Tasks page detail workspace', () => {
     fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
       target: { value: 'Проверить мобильный срок' },
     });
-    await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
+    fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
+    const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
+    fireEvent.click(within(assigneeSheet).getByTestId('create-assignee-mobile-option-1'));
+    fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+    });
     fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
 
     await waitFor(() => {
@@ -898,7 +1014,7 @@ describe('Tasks page detail workspace', () => {
     );
 
     expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('tasks-mobile-create-nav-button'));
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
     const dialog = await screen.findByRole('dialog');
 
     fireEvent.click(within(dialog).getByTestId('create-due-mobile-open'));
@@ -940,16 +1056,14 @@ describe('Tasks page detail workspace', () => {
     );
 
     expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('tasks-mobile-create-nav-button'));
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
     const dialog = await screen.findByRole('dialog');
 
     fireEvent.click(within(dialog).getByTestId('create-description-mobile-open'));
     const sheet = await screen.findByTestId('create-mobile-sheet');
-    expect(within(sheet).getByText('Описание')).toBeInTheDocument();
-    fireEvent.change(within(sheet).getByTestId('create-description-mobile-input'), {
-      target: { value: 'Подробное описание для мобильной задачи' },
-    });
-    fireEvent.click(within(sheet).getByRole('button', { name: 'Готово' }));
+    expect(within(sheet).getByText('Описание задачи')).toBeInTheDocument();
+    setRichEditorHtml(within(sheet).getByTestId('create-description-mobile-input'), 'Подробное описание для мобильной задачи');
+    fireEvent.click(within(sheet).getByTestId('create-description-mobile-done'));
     await waitFor(() => {
       expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
     });
@@ -958,15 +1072,123 @@ describe('Tasks page detail workspace', () => {
     fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
       target: { value: 'Создать задачу с описанием' },
     });
-    await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
-    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
+    fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
+    const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
+    fireEvent.change(within(assigneeSheet).getByTestId('create-assignees-mobile-search'), {
+      target: { value: 'assignee' },
+    });
+    fireEvent.click(within(assigneeSheet).getByTestId('create-assignee-mobile-option-1'));
+    fireEvent.change(within(assigneeSheet).getByTestId('create-assignees-mobile-search'), {
+      target: { value: 'ivanov' },
+    });
+    fireEvent.click(within(assigneeSheet).getByTestId('create-assignee-mobile-option-4'));
+    fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+    });
+    expect(within(dialog).getByTestId('create-assignees-mobile-open')).toHaveTextContent('Исполнитель И.И., Иванов И.И.');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Создать/ }));
 
     await waitFor(() => {
       expect(hubAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
         title: 'Создать задачу с описанием',
         description: 'Подробное описание для мобильной задачи',
+        assignee_user_ids: [1, 4],
       }));
     });
+  });
+
+  it('formats mobile task description visually and attaches files from the editor', async () => {
+    installMatchMedia({ mobile: true });
+    hubAPI.createTask.mockResolvedValue({
+      items: [{ id: 'task-created' }],
+      created: 1,
+    });
+    hubAPI.uploadTaskAttachment.mockResolvedValue({ id: 'attachment-created' });
+    const originalExecCommand = document.execCommand;
+    document.execCommand = vi.fn((command) => {
+      const editor = screen.queryByTestId('create-description-mobile-input');
+      if (!editor) return true;
+      if (command === 'bold') editor.innerHTML = '<strong>важный</strong> текст';
+      if (command === 'insertUnorderedList') editor.innerHTML = '<ul><li><br></li></ul>';
+      if (command === 'insertOrderedList') editor.innerHTML = '<ol><li><br></li></ol>';
+      fireEvent.input(editor);
+      return true;
+    });
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+          <Routes>
+            <Route path="/tasks" element={<Tasks />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('tasks-create-fab'));
+      const dialog = await screen.findByRole('dialog');
+
+      fireEvent.click(within(dialog).getByTestId('create-description-mobile-open'));
+      const sheet = await screen.findByTestId('create-mobile-sheet');
+      expect(within(sheet).getByTestId('create-description-toolbar-scroll')).toBeInTheDocument();
+      expect(within(sheet).getByTestId('create-description-mobile-done')).toBeInTheDocument();
+      const input = within(sheet).getByTestId('create-description-mobile-input');
+
+      fireEvent.click(within(sheet).getByTestId('create-description-format-bold'));
+      await waitFor(() => {
+        expect(document.execCommand).toHaveBeenCalledWith('bold', false, null);
+      });
+      expect(input.innerHTML).toContain('<strong>');
+      expect(input.textContent).toBe('важный текст');
+
+      fireEvent.click(within(sheet).getByTestId('create-description-format-bullet'));
+      expect(document.execCommand).toHaveBeenCalledWith('insertUnorderedList', false, null);
+      expect(input.innerHTML).toContain('<ul>');
+      expect(input.textContent).not.toContain('- ');
+
+      fireEvent.click(within(sheet).getByTestId('create-description-format-numbered'));
+      expect(document.execCommand).toHaveBeenCalledWith('insertOrderedList', false, null);
+      expect(input.innerHTML).toContain('<ol>');
+      expect(input.textContent).not.toContain('1.');
+
+      const editorFileInput = within(sheet).getByTestId('create-description-file-input');
+      const file = new File(['from editor'], 'editor.txt', { type: 'text/plain' });
+      fireEvent.change(editorFileInput, { target: { files: [file] } });
+      setRichEditorHtml(input, '<strong>важный</strong> текст');
+      fireEvent.click(within(sheet).getByTestId('create-description-mobile-done'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+      });
+      expect(within(dialog).getByTestId('create-description-mobile-open')).toHaveTextContent('важный текст');
+      expect(within(dialog).getByTestId('create-description-mobile-open')).not.toHaveTextContent('**');
+      expect(within(dialog).getAllByText('Файлы: 1').length).toBeGreaterThan(0);
+
+      fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+        target: { value: 'Создать задачу с файлом из редактора' },
+      });
+      fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
+      const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
+      fireEvent.click(within(assigneeSheet).getByTestId('create-assignee-mobile-option-1'));
+      fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+      });
+      fireEvent.click(within(dialog).getByRole('button', { name: /^Создать/ }));
+
+      await waitFor(() => {
+        expect(hubAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+          description: '**важный** текст',
+        }));
+        expect(hubAPI.uploadTaskAttachment).toHaveBeenCalledWith({
+          taskId: 'task-created',
+          file,
+        });
+      });
+    } finally {
+      if (originalExecCommand) document.execCommand = originalExecCommand;
+      else delete document.execCommand;
+    }
   });
 
   it('opens mobile bottom sheets from task create chips', async () => {
@@ -981,7 +1203,7 @@ describe('Tasks page detail workspace', () => {
     );
 
     expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
-    fireEvent.click(screen.getByTestId('tasks-mobile-create-nav-button'));
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
     const dialog = await screen.findByRole('dialog');
 
     fireEvent.click(within(dialog).getByText('В приоритете'));
@@ -1012,7 +1234,7 @@ describe('Tasks page detail workspace', () => {
     }
   });
 
-  it('hides the mobile create nav button without create permission', async () => {
+  it('hides the mobile create fab without create permission', async () => {
     installMatchMedia({ mobile: true });
     authState.user = {
       id: 8,
@@ -1030,7 +1252,26 @@ describe('Tasks page detail workspace', () => {
     );
 
     expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
-    expect(screen.queryByTestId('tasks-mobile-create-nav-button')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tasks-create-fab')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tasks-create-fab')).not.toBeInTheDocument();
+  });
+
+  it('shows the mobile create fab above the bottom navigation', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+    expect(screen.getByTestId('tasks-create-fab')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.queryByTestId('tasks-create-fab')).not.toBeInTheDocument();
   });
 
   it('opens the submit dialog from the mobile detail primary action', async () => {
@@ -1074,7 +1315,7 @@ describe('Tasks page detail workspace', () => {
 
     expect(screen.getByTestId('main-layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
     expect(screen.queryByTestId('tasks-mobile-header')).not.toBeInTheDocument();
-    expect(await screen.findByTestId('main-layout-header-inline')).toBeInTheDocument();
+    expect(await screen.findByTestId('tasks-mobile-header-inline')).toBeInTheDocument();
     expect(await screen.findByTestId('tasks-mobile-board')).toBeInTheDocument();
     expect(screen.queryByTestId('tasks-desktop-kanban')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('tasks-mobile-open-navigation'));
@@ -1126,5 +1367,44 @@ describe('Tasks page detail workspace', () => {
     });
     expect(screen.getByTestId('tasks-mobile-board')).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/tasks');
+  });
+
+  it('opens task discussion chat from detail banner when feature flag is enabled', async () => {
+    chatFeatureFlags.chat = true;
+    chatFeatureFlags.taskDiscussion = true;
+    hubAPI.openTaskDiscussion.mockResolvedValue({
+      conversation_id: 'conv-task-1',
+      created: true,
+      kind: 'task',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-1&task_tab=comments']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+          <Route path="/chat" element={(<><div data-testid="chat-page" /><LocationProbe /></>)} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Открыть чат' }));
+
+    await waitFor(() => {
+      expect(hubAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('/chat?conversation=conv-task-1');
+    });
+
+    chatFeatureFlags.chat = false;
+    chatFeatureFlags.taskDiscussion = false;
   });
 });

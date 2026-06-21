@@ -8,6 +8,7 @@ import logging
 from typing import Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from pydantic import BaseModel, Field
 
 from backend.api.deps import get_current_active_user, get_current_admin_user
@@ -30,6 +31,9 @@ class UserSettingsResponse(BaseModel):
     font_family: str = "Aptos"
     font_scale: float = 1.0
     dashboard_mobile_sections: list[str] = Field(default_factory=lambda: ["urgent", "announcements", "tasks"])
+    mobile_bottom_nav_items: list[str] = Field(
+        default_factory=lambda: ["/dashboard", "/tasks", "/chat", "/mail"]
+    )
 
 
 class UserSettingsPatchRequest(BaseModel):
@@ -38,6 +42,7 @@ class UserSettingsPatchRequest(BaseModel):
     font_family: Optional[str] = None
     font_scale: Optional[float] = Field(default=None, ge=0.9, le=1.2)
     dashboard_mobile_sections: Optional[list[str]] = None
+    mobile_bottom_nav_items: Optional[list[str]] = None
 
 
 class EnvSettingItemPatch(BaseModel):
@@ -157,7 +162,7 @@ class NotificationPreferencesPatchRequest(BaseModel):
 async def get_my_settings(
     current_user: User = Depends(get_current_active_user),
 ):
-    settings = settings_service.get_user_settings(current_user.id)
+    settings = await run_in_threadpool(settings_service.get_user_settings, current_user.id)
     return UserSettingsResponse(**settings)
 
 
@@ -189,7 +194,8 @@ async def put_notification_push_subscription(
     current_user: User = Depends(get_current_active_user),
 ):
     user_agent = request.headers.get("user-agent") or None
-    data = app_push_service.upsert_subscription(
+    data = await run_in_threadpool(
+        app_push_service.upsert_subscription,
         current_user_id=int(current_user.id),
         endpoint=payload.endpoint,
         p256dh_key=payload.p256dh_key,
@@ -208,7 +214,8 @@ async def delete_notification_push_subscription(
     payload: NotificationPushDeletePayload,
     current_user: User = Depends(get_current_active_user),
 ):
-    data = app_push_service.delete_subscription(
+    data = await run_in_threadpool(
+        app_push_service.delete_subscription,
         current_user_id=int(current_user.id),
         endpoint=payload.endpoint,
     )
@@ -231,18 +238,6 @@ async def post_notification_push_debug(
         stage,
         json.dumps(detail, ensure_ascii=False, sort_keys=True, default=str),
         str(request.headers.get("user-agent") or "").strip(),
-    )
-    print(
-        "PUSH_DEBUG",
-        {
-            "user_id": int(current_user.id),
-            "username": str(current_user.username or "").strip(),
-            "ip": str(getattr(request.client, "host", "") or "").strip(),
-            "stage": stage,
-            "detail": detail,
-            "ua": str(request.headers.get("user-agent") or "").strip(),
-        },
-        flush=True,
     )
     return {"ok": True}
 
@@ -293,7 +288,8 @@ async def delete_native_push_token(
 async def get_notification_preferences(
     current_user: User = Depends(get_current_active_user),
 ):
-    return NotificationPreferencesResponse(**notification_preferences_service.get_preferences(user_id=int(current_user.id)))
+    data = await run_in_threadpool(notification_preferences_service.get_preferences, user_id=int(current_user.id))
+    return NotificationPreferencesResponse(**data)
 
 
 @router.patch("/notifications/preferences", response_model=NotificationPreferencesResponse)
@@ -302,10 +298,12 @@ async def patch_notification_preferences(
     current_user: User = Depends(get_current_active_user),
 ):
     payload_data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
-    return NotificationPreferencesResponse(**notification_preferences_service.update_preferences(
+    data = await run_in_threadpool(
+        notification_preferences_service.update_preferences,
         user_id=int(current_user.id),
         patch=payload_data or {},
-    ))
+    )
+    return NotificationPreferencesResponse(**data)
 
 
 @router.get("/app", response_model=AppSettingsResponse)

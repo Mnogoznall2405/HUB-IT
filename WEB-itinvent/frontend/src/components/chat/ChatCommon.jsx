@@ -4,6 +4,8 @@ import { alpha, useTheme } from '@mui/material/styles';
 import OpenInNewRoundedIcon from '@mui/icons-material/OpenInNewRounded';
 import PauseRoundedIcon from '@mui/icons-material/PauseRounded';
 import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
+import StickyNote2OutlinedIcon from '@mui/icons-material/StickyNote2Outlined';
+import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
 
 import {
@@ -16,8 +18,11 @@ import {
   getTaskAssignee,
   getAttachmentKind,
   isImageAttachment,
+  isTaskConversation,
   normalizeChatAttachmentUrl,
 } from './chatHelpers';
+import { isChatDocumentPreviewableAttachment } from './chatAttachmentPreview';
+import { TASK_DISCUSSION_CHAT_ENABLED } from '../../lib/chatFeature';
 
 const FILE_EXTENSION_COLORS = {
   pdf: '#e53935',
@@ -176,10 +181,158 @@ export function PresenceAvatar({ item, online = false, size = 48, sx = {} }) {
   );
 }
 
+export function NotesConversationAvatar({ size = 48, sx = {} }) {
+  return (
+    <Box
+      sx={{
+        position: 'relative',
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        flexShrink: 0,
+        ...sx,
+      }}
+    >
+      <Box
+        sx={(muiTheme) => ({
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '100%',
+          height: '100%',
+          borderRadius: '999px',
+          overflow: 'hidden',
+          bgcolor: muiTheme.palette.mode === 'dark' ? alpha('#fbbf24', 0.18) : alpha(muiTheme.palette.warning.main, 0.14),
+          color: muiTheme.palette.mode === 'dark' ? '#fcd34d' : muiTheme.palette.warning.dark,
+          boxShadow: muiTheme.palette.mode === 'dark'
+            ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
+            : 'inset 0 1px 0 rgba(255,255,255,0.72)',
+        })}
+      >
+        <StickyNote2OutlinedIcon sx={{ fontSize: Math.max(18, Math.round(size * 0.46)) }} />
+      </Box>
+    </Box>
+  );
+}
+
+export function AiConversationAvatar({ size = 48, sx = {} }) {
+  return (
+    <Box
+      sx={{
+        position: 'relative',
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        flexShrink: 0,
+        ...sx,
+      }}
+    >
+      <Box
+        sx={(muiTheme) => ({
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '100%',
+          height: '100%',
+          borderRadius: '999px',
+          overflow: 'hidden',
+          bgcolor: muiTheme.palette.mode === 'dark'
+            ? alpha(muiTheme.palette.primary.main, 0.22)
+            : alpha(muiTheme.palette.primary.main, 0.12),
+          color: muiTheme.palette.mode === 'dark'
+            ? muiTheme.palette.primary.light
+            : muiTheme.palette.primary.main,
+          boxShadow: muiTheme.palette.mode === 'dark'
+            ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
+            : 'inset 0 1px 0 rgba(255,255,255,0.72)',
+        })}
+      >
+        <SmartToyOutlinedIcon sx={{ fontSize: Math.max(18, Math.round(size * 0.46)) }} />
+      </Box>
+    </Box>
+  );
+}
+
+export function TaskConversationAvatar({ size = 48, sx = {} }) {
+  return (
+    <Box
+      sx={{
+        position: 'relative',
+        width: size,
+        height: size,
+        minWidth: size,
+        minHeight: size,
+        flexShrink: 0,
+        ...sx,
+      }}
+    >
+      <Box
+        sx={(muiTheme) => ({
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          width: '100%',
+          height: '100%',
+          borderRadius: '999px',
+          overflow: 'hidden',
+          bgcolor: muiTheme.palette.mode === 'dark'
+            ? alpha(muiTheme.palette.secondary.main, 0.24)
+            : alpha(muiTheme.palette.secondary.main, 0.12),
+          color: muiTheme.palette.mode === 'dark'
+            ? muiTheme.palette.secondary.light
+            : muiTheme.palette.secondary.main,
+          boxShadow: muiTheme.palette.mode === 'dark'
+            ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
+            : 'inset 0 1px 0 rgba(255,255,255,0.72)',
+        })}
+      >
+        <TaskAltRoundedIcon sx={{ fontSize: Math.max(18, Math.round(size * 0.46)) }} />
+      </Box>
+    </Box>
+  );
+}
+
+export function ConversationAvatar({
+  conversation,
+  online = false,
+  size = 48,
+  sx = {},
+}) {
+  const kind = String(conversation?.kind || '').trim();
+  if (kind === 'notes') {
+    return <NotesConversationAvatar size={size} sx={sx} />;
+  }
+  if (kind === 'ai') {
+    return <AiConversationAvatar size={size} sx={sx} />;
+  }
+  if (kind === 'task' || String(conversation?.task_id || '').trim()) {
+    return <TaskConversationAvatar size={size} sx={sx} />;
+  }
+
+  const item = conversation?.kind === 'direct'
+    ? (conversation?.direct_peer || conversation)
+    : conversation;
+
+  return (
+    <PresenceAvatar
+      item={item}
+      online={Boolean(conversation?.kind === 'direct' && online)}
+      size={size}
+      sx={sx}
+    />
+  );
+}
+
 export function TaskShareCard({ task, navigate, ui, theme }) {
   const statusMeta = getStatusMeta(task?.status);
   const priorityMeta = getPriorityMeta(task?.priority);
   const handleOpenTask = () => {
+    if (TASK_DISCUSSION_CHAT_ENABLED) {
+      navigate(`/tasks?task=${encodeURIComponent(task.id)}`);
+      return;
+    }
     navigate(`/tasks?task=${encodeURIComponent(task.id)}&task_tab=comments`);
   };
 
@@ -476,6 +629,12 @@ function VoiceMessagePlayer({ fileUrl, openUrl, fileName, fileSize, durationSeco
   );
 }
 
+const notifyThreadMediaLoaded = (target) => {
+  const scrollRoot = target?.closest?.('[data-testid="chat-thread-scroll"]');
+  if (!scrollRoot) return;
+  scrollRoot.dispatchEvent(new CustomEvent('chat-media-loaded', { bubbles: false }));
+};
+
 export function FileAttachment({
   fileName,
   fileSize,
@@ -583,6 +742,7 @@ export function FileAttachment({
         alt={String(fileName || 'image')}
         loading="lazy"
         decoding="async"
+        onLoad={(event) => notifyThreadMediaLoaded(event.currentTarget)}
         onError={handleImageError}
         style={{
           display: 'block',
@@ -906,6 +1066,12 @@ export function FileAttachment({
       rel="noreferrer"
       title={String(fileName || 'Файл')}
       aria-label={`Открыть файл ${fileName}`}
+      onClick={typeof onOpenPreview === 'function'
+        ? (event) => {
+          event.preventDefault();
+          onOpenPreview?.();
+        }
+        : undefined}
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       onFocus={() => setIsHovered(true)}
@@ -1028,7 +1194,8 @@ export function AttachmentCard({ messageId, attachment, theme, ui, onOpenPreview
       fileName: attachment?.file_name,
       mimeType: attachment?.mime_type,
       fileType: attachment?.kind || attachment?.media_kind || attachment?.file_type,
-    }) === 'video';
+    }) === 'video'
+    || isChatDocumentPreviewableAttachment(attachment);
   return (
     <FileAttachment
       fileName={attachment?.file_name}

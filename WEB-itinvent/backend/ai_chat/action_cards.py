@@ -1177,12 +1177,29 @@ def _execute_office_task_create(*, payload: dict[str, Any], current_user: Any) -
 
 def _execute_office_task_comment(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
     _require_permission(current_user, PERM_TASKS_READ)
+    task_id = _normalize_text(payload.get("task_id"))
+    body = _normalize_text(payload.get("body"))
+    user_payload = _user_dict(current_user)
+    from backend.chat.task_discussion import is_task_discussion_chat_enabled, send_task_discussion_message
+
+    if is_task_discussion_chat_enabled():
+        message = send_task_discussion_message(
+            task_id=task_id,
+            actor_user_id=int(user_payload.get("id") or 0),
+            body=body,
+        )
+        return {
+            "success": bool(message),
+            "message": message,
+            "task_id": task_id,
+            "conversation_id": _normalize_text(message.get("conversation_id")) or None,
+        }
     comment = hub_service.add_task_comment(
-        task_id=_normalize_text(payload.get("task_id")),
-        user=_user_dict(current_user),
-        body=_normalize_text(payload.get("body")),
+        task_id=task_id,
+        user=user_payload,
+        body=body,
     )
-    return {"success": bool(comment), "comment": comment, "task_id": _normalize_text(payload.get("task_id"))}
+    return {"success": bool(comment), "comment": comment, "task_id": task_id}
 
 
 def _execute_office_task_status(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:

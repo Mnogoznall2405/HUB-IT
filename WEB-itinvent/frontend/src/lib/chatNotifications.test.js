@@ -151,12 +151,21 @@ describe('chatNotifications', () => {
       onNavigate,
     });
 
-    expect(first).not.toBeNull();
+    expect(first).toEqual(expect.objectContaining({ queued: true, messageId: 'msg-1' }));
     expect(second).toBeNull();
     expect(notificationInstances).toHaveLength(1);
+    expect(notificationInstances[0].options.tag).toBe('chat:msg:msg-1');
 
-    first.onclick?.();
+    notificationInstances[0].onclick?.();
     expect(onNavigate).toHaveBeenCalledWith('/chat?conversation=conv-1&message=msg-1');
+  });
+
+  it('prefers external push delivery when subscribed or background-capable', async () => {
+    const { shouldDeliverExternalChatViaPushOnly } = await import('./chatNotifications');
+
+    expect(shouldDeliverExternalChatViaPushOnly({ pushSubscribed: false, backgroundCapable: false })).toBe(false);
+    expect(shouldDeliverExternalChatViaPushOnly({ pushSubscribed: true, backgroundCapable: false })).toBe(true);
+    expect(shouldDeliverExternalChatViaPushOnly({ pushSubscribed: false, backgroundCapable: true })).toBe(true);
   });
 
   it('subscribes the current browser for background chat push when supported', async () => {

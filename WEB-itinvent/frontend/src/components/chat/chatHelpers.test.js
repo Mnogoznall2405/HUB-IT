@@ -1,8 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import {
+  applyReadReceiptDeltaToMessages,
   buildTimelineItems,
   detectChatBodyFormat,
+  formatMessageTime,
+  getConversationHeaderSubtitle,
   getConversationStatusLine,
   getAttachmentKind,
   getMessagePreview,
@@ -12,7 +15,41 @@ import {
   isAudioAttachment,
   isVideoAttachment,
   normalizeChatText,
+  pickBlobAttachmentUrl,
+  sortSidebarConversations,
 } from './chatHelpers';
+
+describe('formatMessageTime', () => {
+  beforeEach(() => {
+    vi.setSystemTime(new Date('2026-06-18T12:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns empty string for empty or invalid values', () => {
+    expect(formatMessageTime('')).toBe('');
+    expect(formatMessageTime('   ')).toBe('');
+    expect(formatMessageTime('not-a-date')).toBe('');
+  });
+
+  it('returns time for today', () => {
+    expect(formatMessageTime('2026-06-18T14:30:00.000Z')).toMatch(/^\d{2}:\d{2}$/);
+  });
+
+  it('returns time for yesterday, not date', () => {
+    const result = formatMessageTime('2026-06-17T14:30:00.000Z');
+    expect(result).toMatch(/^\d{2}:\d{2}$/);
+    expect(result).not.toMatch(/\./);
+  });
+
+  it('returns time for older dates, not date', () => {
+    const result = formatMessageTime('2026-06-10T09:15:00.000Z');
+    expect(result).toMatch(/^\d{2}:\d{2}$/);
+    expect(result).not.toMatch(/\./);
+  });
+});
 
 describe('chatHelpers file caption previews', () => {
   it('prefers file caption over attachment fallback in previews', () => {
@@ -104,6 +141,30 @@ describe('chatHelpers mojibake recovery', () => {
 
     expect(getConversationStatusLine(conversation)).toBe('В сети • Сервак немного не вывозит');
   });
+
+  it('formats notes conversation preview without presence', () => {
+    const conversation = {
+      kind: 'notes',
+      title: 'Заметки',
+      last_message_preview: 'Вы: Купить кабель',
+    };
+
+    expect(getConversationHeaderSubtitle(conversation)).toBe('Личные заметки');
+    expect(getConversationStatusLine(conversation)).toBe('Личные заметки • Вы: Купить кабель');
+  });
+
+  it('formats task discussion conversation preview with status', () => {
+    const conversation = {
+      kind: 'task',
+      task_id: 'task-42',
+      task_status: 'review',
+      member_count: 3,
+      last_message_preview: 'Вы: Готово',
+    };
+
+    expect(getConversationHeaderSubtitle(conversation)).toBe('Статус: На проверке • 3 участников');
+    expect(getConversationStatusLine(conversation)).toBe('На проверке • Вы: Готово');
+  });
 });
 
 describe('chatHelpers timeline keys', () => {
@@ -123,5 +184,62 @@ describe('chatHelpers timeline keys', () => {
         key: 'message:optimistic:conv-1:123',
       }),
     ]));
+  });
+});
+
+describe('applyReadReceiptDeltaToMessages', () => {
+  const messages = [
+    { id: 'm1', is_own: true, delivery_status: 'sent', read_by_count: 0 },
+    { id: 'm2', is_own: false, delivery_status: null, read_by_count: 0 },
+    { id: 'm3', is_own: true, delivery_status: 'sent', read_by_count: 0 },
+    { id: 'm4', is_own: true, delivery_status: 'sent', read_by_count: 0 },
+  ];
+
+  it('marks all own messages up to the read marker as read', () => {
+    const next = applyReadReceiptDeltaToMessages(messages, {
+      message_id: 'm4',
+      delivery_status: 'read',
+      read_by_count: 1,
+    });
+
+    expect(next[0].delivery_status).toBe('read');
+    expect(next[2].delivery_status).toBe('read');
+    expect(next[3].delivery_status).toBe('read');
+    expect(next[1].delivery_status).toBeNull();
+  });
+
+  it('updates only the target message when read state is not confirmed', () => {
+    const next = applyReadReceiptDeltaToMessages(messages, {
+      message_id: 'm3',
+      delivery_status: 'sent',
+      read_by_count: 0,
+    });
+
+    expect(next[0].delivery_status).toBe('sent');
+    expect(next[2].delivery_status).toBe('sent');
+    expect(next[3].delivery_status).toBe('sent');
+  });
+});
+
+describe('pickBlobAttachmentUrl', () => {
+  it('returns the first blob url from candidates', () => {
+    expect(pickBlobAttachmentUrl('', '/api/v1/file', 'blob:https://example.test/abc')).toBe('blob:https://example.test/abc');
+    expect(pickBlobAttachmentUrl('/api/v1/file', null, undefined)).toBe('');
+  });
+});
+
+describe('sortSidebarConversations', () => {
+  it('keeps pinned chats above unpinned regardless of recent activity', () => {
+    const conversations = [
+      { id: 'active-1', kind: 'direct', is_pinned: false, is_archived: false, last_message_at: '2026-06-18T12:00:00.000Z' },
+      { id: 'notes-1', kind: 'notes', is_pinned: true, is_archived: false, last_message_at: '2026-06-17T10:00:00.000Z' },
+      { id: 'group-1', kind: 'group', is_pinned: false, is_archived: false, last_message_at: '2026-06-18T11:00:00.000Z' },
+    ];
+
+    expect(sortSidebarConversations(conversations).map((item) => item.id)).toEqual([
+      'notes-1',
+      'active-1',
+      'group-1',
+    ]);
   });
 });
