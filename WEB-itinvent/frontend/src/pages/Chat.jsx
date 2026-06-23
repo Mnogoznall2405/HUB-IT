@@ -2007,14 +2007,8 @@ export default function Chat() {
         attachmentId,
         attachment,
       });
-      // #region agent log
-      fetch('http://127.0.0.1:7567/ingest/0dd98d48-9716-48e2-8a2d-050e49aa7cea', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '891634' }, body: JSON.stringify({ sessionId: '891634', location: 'Chat.jsx:openDocumentPreview', message: 'chat document preview loaded', data: { messageId: normalizedMessageId, attachmentId, kind: previewState.kind, filename: previewState.filename }, timestamp: Date.now(), runId: 'doc-preview', hypothesisId: 'H-DOC-PREVIEW' }) }).catch(() => {});
-      // #endregion
       setDocumentPreview(previewState);
     } catch (error) {
-      // #region agent log
-      fetch('http://127.0.0.1:7567/ingest/0dd98d48-9716-48e2-8a2d-050e49aa7cea', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '891634' }, body: JSON.stringify({ sessionId: '891634', location: 'Chat.jsx:openDocumentPreview', message: 'chat document preview failed', data: { messageId: normalizedMessageId, attachmentId, error: String(error?.message || error || '') }, timestamp: Date.now(), runId: 'doc-preview', hypothesisId: 'H-DOC-PREVIEW' }) }).catch(() => {});
-      // #endregion
       setDocumentPreview({
         ...createEmptyAttachmentPreview(),
         open: true,
@@ -5940,9 +5934,6 @@ export default function Chat() {
     if (typeof window !== 'undefined' && !window.confirm('Удалить сообщение?')) return;
     try {
       const updated = await chatAPI.deleteChatMessage(conversationId, messageId);
-      // #region agent log
-      fetch('http://127.0.0.1:7567/ingest/0dd98d48-9716-48e2-8a2d-050e49aa7cea',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'891634'},body:JSON.stringify({sessionId:'891634',location:'Chat.jsx:handleDeleteMessageFromMenu',message:'message deleted',data:{conversationId,messageId,isDeleted:Boolean(updated?.is_deleted)},timestamp:Date.now(),runId:'edit-delete',hypothesisId:'MSG-DELETE'})}).catch(()=>{});
-      // #endregion
       mergeMessageIntoThread(updated);
     } catch (error) {
       notifyApiError(error, 'Не удалось удалить сообщение.');

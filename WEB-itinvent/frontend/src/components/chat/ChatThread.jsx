@@ -16,6 +16,7 @@ import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
+import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
@@ -264,9 +265,11 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
   selectionMode = false,
   selectedMessageCount = 0,
   canCopySelectedMessages = false,
+  canDeleteSelectedMessages = false,
   onClearMessageSelection,
   onCopySelectedMessages,
   onForwardSelectedMessages,
+  onDeleteSelectedMessages,
 }) {
   const density = ui.density || {};
   const taskId = String(activeConversation?.task_id || '').trim();
@@ -377,6 +380,15 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
             >
               <ForwardRoundedIcon sx={{ fontSize: 27 }} />
             </IconButton>
+            <IconButton
+              data-testid="chat-selection-header-delete-action"
+              aria-label="Удалить"
+              disabled={!canDeleteSelectedMessages || selectedMessageCount <= 0 || typeof onDeleteSelectedMessages !== 'function'}
+              onClick={onDeleteSelectedMessages}
+              sx={{ ...selectionIconButtonSx, color: theme.palette.error.main }}
+            >
+              <DeleteRoundedIcon sx={{ fontSize: 25 }} />
+            </IconButton>
           </Stack>
         </Stack>
       </Box>
@@ -401,8 +413,8 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
                 aria-label="Назад к чатам"
                 sx={{
                   ml: -0.2,
-                  width: compactMobile ? 34 : 38,
-                  height: compactMobile ? 34 : 38,
+                  width: compactMobile ? 44 : 38,
+                  height: compactMobile ? 44 : 38,
                   borderRadius: 0,
                   bgcolor: 'transparent',
                 }}
@@ -499,8 +511,8 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
               aria-label="Назад к чатам"
               sx={{
                 ml: -0.2,
-                width: compactMobile ? 34 : 38,
-                height: compactMobile ? 34 : 38,
+                width: compactMobile ? 44 : 38,
+                height: compactMobile ? 44 : 38,
                 borderRadius: 0,
                 bgcolor: 'transparent',
                 '&:active': compactMobile ? {
@@ -749,8 +761,8 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
           aria-label="Снять закрепленное сообщение"
           onClick={() => onUnpinPinnedMessage?.()}
           sx={{
-            width: compactMobile ? 34 : (density.threadPinnedClose || 32),
-            height: compactMobile ? 34 : (density.threadPinnedClose || 32),
+            width: compactMobile ? 44 : (density.threadPinnedClose || 32),
+            height: compactMobile ? 44 : (density.threadPinnedClose || 32),
             borderRadius: compactMobile ? 999 : 1.5,
             color: ui.textSecondary,
             bgcolor: ui.surfaceMuted || alpha(theme.palette.common.white, 0.03),
@@ -1344,6 +1356,7 @@ function ChatThread({
           const measuredComposerHeight = Math.round(
             Number(composerDockRef.current?.getBoundingClientRect?.().height || composerHeight || 0),
           );
+          const distanceFromBottom = Math.max(0, scrollHeight - scrollTop - clientHeight);
           const nextPadding = getChatThreadBottomPadding({
             compactMobile,
             keyboardInset: nextInset,
@@ -1359,7 +1372,7 @@ function ChatThread({
               layoutResizeDelta: Math.round(layoutResizeDelta),
               composerHeight: measuredComposerHeight,
               scrollBottomPadding: nextPadding,
-              distanceFromBottom: Math.round(Math.max(0, scrollHeight - scrollTop - clientHeight)),
+              distanceFromBottom: Math.round(distanceFromBottom),
               pinned: Boolean(threadPinnedToBottomRef.current),
             },
             hypothesisId: 'H2',
@@ -1680,9 +1693,11 @@ function ChatThread({
         selectionMode={selectionMode}
         selectedMessageCount={selectedMessageCount}
         canCopySelectedMessages={canCopySelectedMessages}
+        canDeleteSelectedMessages={canDeleteSelectedMessages}
         onClearMessageSelection={onClearMessageSelection}
         onCopySelectedMessages={onCopySelectedMessages}
         onForwardSelectedMessages={onForwardSelectedMessages}
+        onDeleteSelectedMessages={onDeleteSelectedMessages}
       />
 
       <TaskCompletedBanner
@@ -1838,7 +1853,7 @@ function ChatThread({
                 minWidth: compactMobile ? 0 : undefined,
                 bgcolor: jumpPillBg,
                 color: jumpPillText,
-                minHeight: compactMobile ? 30 : 34,
+                minHeight: compactMobile ? 40 : 34,
                 fontSize: compactMobile ? '12px' : '0.78rem',
                 fontWeight: 700,
                 '&:active': compactMobile ? {

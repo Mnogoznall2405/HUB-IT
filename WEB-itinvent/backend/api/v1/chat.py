@@ -2,12 +2,15 @@
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import json
 import logging
 import os
 import re
+import socket
 import time
 import urllib.request
+from urllib.parse import urlsplit
 from typing import Any, Optional
 
 from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, Request, UploadFile, WebSocket, WebSocketDisconnect
@@ -112,6 +115,43 @@ def _extract_og_meta(html: str) -> dict:
     return result
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Disable automatic redirects to prevent SSRF via a public-then-internal redirect."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: D401, ANN001
+        return None
+
+
+_LINK_PREVIEW_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
+def _assert_public_http_url(raw_url: str) -> None:
+    """Reject URLs that resolve to private/loopback/link-local addresses (SSRF guard)."""
+    parts = urlsplit(raw_url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise HTTPException(status_code=400, detail="Invalid URL")
+    port = parts.port or (443 if parts.scheme == "https" else 80)
+    try:
+        infos = socket.getaddrinfo(parts.hostname, port, proto=socket.IPPROTO_TCP)
+    except OSError as exc:
+        raise HTTPException(status_code=422, detail="Could not resolve URL") from exc
+    for info in infos:
+        ip_str = info[4][0]
+        try:
+            ip = ipaddress.ip_address(ip_str)
+        except ValueError:
+            continue
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            raise HTTPException(status_code=400, detail="URL host is not allowed")
+
+
 @router.get("/link-preview")
 async def get_link_preview(
     url: str = Query(...),
@@ -121,6 +161,7 @@ async def get_link_preview(
     normalized = url.strip()
     if not normalized.startswith(("http://", "https://")):
         raise HTTPException(status_code=400, detail="Invalid URL")
+    _assert_public_http_url(normalized)
     try:
         req = urllib.request.Request(
             normalized,
@@ -130,7 +171,7 @@ async def get_link_preview(
                 "Accept-Language": "ru,en;q=0.9",
             },
         )
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with _LINK_PREVIEW_OPENER.open(req, timeout=5) as resp:
             content_type = resp.headers.get("Content-Type", "")
             if "text/html" not in content_type:
                 return {"url": normalized, "title": None, "description": None, "image": None, "site_name": None}
@@ -1477,14 +1518,19 @@ async def upload_chat_group_avatar(
 
 
 @router.get("/group-avatars/{filename}")
-async def serve_group_avatar(filename: str):
-    from pathlib import Path
-    from backend.services.hub_service import hub_service
-    safe_name = "".join(c if c.isalnum() or c in "-_." else "_" for c in filename)
-    path = Path(hub_service.data_dir) / "group_avatars" / safe_name
-    if not path.exists():
-        raise HTTPException(status_code=404, detail="Avatar not found")
-    return FileResponse(str(path), media_type="image/jpeg")
+async def serve_group_avatar(
+    filename: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_READ)),
+):
+    try:
+        avatar_path = await _run_chat_call(
+            chat_service.get_group_avatar_file_path,
+            current_user_id=int(current_user.id),
+            filename=filename,
+        )
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+    return FileResponse(avatar_path, media_type="image/jpeg")
 
 
 @router.get("/conversations/{conversation_id}", response_model=ChatConversationDetailResponse)

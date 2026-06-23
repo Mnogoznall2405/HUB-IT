@@ -118,7 +118,7 @@ describe('useChatFileSending', () => {
       2,
       'conversation-1',
       expect.objectContaining({ id: 'server-file-1' }),
-      expect.objectContaining({ replaceId: 'optimistic-file-1', scroll: false }),
+      expect.objectContaining({ replaceId: 'optimistic-file-1', scroll: true, scrollSource: 'sendFiles:server' }),
     );
   });
 });

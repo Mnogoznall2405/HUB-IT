@@ -84,7 +84,7 @@ if ($remaining.Count -gt 0) {
 Write-Host "PM2: reloading $ProcessName with updated ecosystem..." -ForegroundColor Cyan
 & $pm2Cmd delete $ProcessName 2>$null | Out-Null
 & $pm2Cmd start $ecosystemBackend --only $ProcessName --update-env | Out-Null
-Start-Sleep -Seconds 8
+Start-Sleep -Seconds 12
 
 Write-Host ''
 Write-Host 'PM2 backend status:' -ForegroundColor Cyan

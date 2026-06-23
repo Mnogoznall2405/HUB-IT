@@ -59,9 +59,6 @@ export default function useChatComposerSending({
           body_format: bodyFormat,
         });
         if (updated?.id) {
-          // #region agent log
-          fetch('http://127.0.0.1:7567/ingest/0dd98d48-9716-48e2-8a2d-050e49aa7cea',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'891634'},body:JSON.stringify({sessionId:'891634',location:'useChatComposerSending.js:edit',message:'message edited',data:{conversationId,messageId,editedAt:updated?.edited_at||null},timestamp:Date.now(),runId:'edit-delete',hypothesisId:'MSG-EDIT'})}).catch(()=>{});
-          // #endregion
           mergeMessageIntoThread(updated);
         }
         return true;

@@ -324,20 +324,20 @@ function TaskWorkspacePanel({
           <Stack direction="row" spacing={0.1}>
             <Tooltip title="Обновить">
               <span>
-                <IconButton size="small" onClick={() => void loadTask()} disabled={loading}>
+                <IconButton size="small" onClick={() => void loadTask()} disabled={loading} sx={{ width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}>
                   <RefreshRoundedIcon fontSize="small" />
                 </IconButton>
               </span>
             </Tooltip>
             <Tooltip title="Открыть в задачах">
               <span>
-                <IconButton size="small" onClick={() => task?.id && onOpenInTasks?.(task.id)} disabled={!task?.id}>
+                <IconButton size="small" onClick={() => task?.id && onOpenInTasks?.(task.id)} disabled={!task?.id} sx={{ width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}>
                   <OpenInNewIcon fontSize="small" />
                 </IconButton>
               </span>
             </Tooltip>
             <Tooltip title="Закрыть карточку">
-              <IconButton size="small" onClick={onClose}>
+              <IconButton size="small" onClick={onClose} sx={{ width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}>
                 <CloseRoundedIcon fontSize="small" />
               </IconButton>
             </Tooltip>

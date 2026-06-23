@@ -881,6 +881,8 @@ async def list_financial_ops(
     include_deleted: Optional[bool] = Query(False),
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
+    from backend.services.tickets_service import _parse_date
+
     result = tickets_service.list_financial_ops(
         filters=FinOpFilters(
             request_id=request_id,

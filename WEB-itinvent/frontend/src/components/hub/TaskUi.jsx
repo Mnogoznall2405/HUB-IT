@@ -33,21 +33,26 @@ import DownloadIcon from '@mui/icons-material/Download';
 import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import FlagIcon from '@mui/icons-material/Flag';
+import LocalFireDepartmentOutlinedIcon from '@mui/icons-material/LocalFireDepartmentOutlined';
 import ModeCommentOutlinedIcon from '@mui/icons-material/ModeCommentOutlined';
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
-import PauseIcon from '@mui/icons-material/Pause';
 import ThumbUpOffAltIcon from '@mui/icons-material/ThumbUpOffAlt';
 import VisibilityOutlinedIcon from '@mui/icons-material/VisibilityOutlined';
 import MarkdownRenderer from './MarkdownRenderer';
 import OverflowMenu from '../common/OverflowMenu';
+import {
+  TASK_DETAIL_TABS,
+  getDefaultTaskDetailTab,
+  getTaskCommentsTabLabel,
+  getTaskUnreadBadgeLabel,
+  normalizeTaskDetailTab,
+} from '../../lib/taskNavigation';
 
-export const TASK_DETAIL_TABS = ['comments', 'files', 'history'];
-
-export const normalizeTaskDetailTab = (value) => (
-  TASK_DETAIL_TABS.includes(String(value || '').trim().toLowerCase())
-    ? String(value || '').trim().toLowerCase()
-    : 'comments'
-);
+export {
+  TASK_DETAIL_TABS,
+  getDefaultTaskDetailTab,
+  normalizeTaskDetailTab,
+} from '../../lib/taskNavigation';
 
 const clampTextSx = (lines) => ({
   display: '-webkit-box',
@@ -83,6 +88,9 @@ export function TaskDetailHeader({
   mobile = false,
   actionMenuItems = [],
   onActionMenuSelect,
+  taskDiscussionEnabled = false,
+  onOpenTaskDiscussion,
+  discussionOpening = false,
   ui,
   theme,
 }) {
@@ -124,7 +132,7 @@ export function TaskDetailHeader({
       {task?.has_unread_comments && (
         <Chip
           size="small"
-          label="Новый комментарий"
+          label={getTaskUnreadBadgeLabel(taskDiscussionEnabled)}
           sx={{ fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb' }}
         />
       )}
@@ -138,6 +146,7 @@ export function TaskDetailHeader({
   );
 
   if (mobile) {
+    const showMobileHeatIcon = priority?.value !== 'normal' || Boolean(task?.is_overdue);
     return (
       <Box
         data-testid="task-detail-mobile-header"
@@ -145,23 +154,26 @@ export function TaskDetailHeader({
           position: 'sticky',
           top: 0,
           zIndex: 2,
-          px: 1,
-          py: 0.95,
+          px: 1.5,
+          py: 0.55,
           borderBottom: '1px solid',
-          borderColor: ui.borderSoft,
+          borderColor: theme.palette.mode === 'dark' ? alpha('#fff', 0.08) : ui.borderSoft,
           bgcolor: alpha(ui.pageBg, 0.98),
           backdropFilter: 'blur(10px)',
         }}
       >
-        <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between" sx={{ position: 'relative', minHeight: 44 }}>
-          <Button
-            variant="text"
-            startIcon={<ArrowBackIcon />}
+        <Stack direction="row" spacing={0.8} alignItems="center" justifyContent="space-between" sx={{ position: 'relative', minHeight: 52 }}>
+          <IconButton
+            aria-label="Назад"
             onClick={onBack}
-            sx={{ textTransform: 'none', fontWeight: 800, minWidth: 0, px: 0.5 }}
+            sx={{
+              width: 44,
+              height: 44,
+              color: ui.textPrimary,
+            }}
           >
-            Назад
-          </Button>
+            <ArrowBackIcon sx={{ fontSize: 31 }} />
+          </IconButton>
           <Typography
             data-testid="task-detail-mobile-title"
             sx={{
@@ -171,8 +183,8 @@ export function TaskDetailHeader({
               transform: 'translate(-50%, -50%)',
               maxWidth: '52%',
               color: ui.mutedText,
-              fontWeight: 900,
-              fontSize: '1.05rem',
+              fontWeight: 850,
+              fontSize: '1rem',
               lineHeight: 1.1,
               textAlign: 'center',
               whiteSpace: 'nowrap',
@@ -183,16 +195,24 @@ export function TaskDetailHeader({
           >
             {mobileTitle}
           </Typography>
-          {Array.isArray(actionMenuItems) && actionMenuItems.length > 0 ? (
-            <Box data-testid="task-detail-mobile-actions">
-              <OverflowMenu
-                label="Действия задачи"
-                size="medium"
-                items={actionMenuItems}
-                onSelect={onActionMenuSelect}
+          <Stack direction="row" spacing={0.35} alignItems="center" justifyContent="flex-end" sx={{ minWidth: 88 }}>
+            {showMobileHeatIcon ? (
+              <LocalFireDepartmentOutlinedIcon
+                data-testid="task-detail-mobile-heat"
+                sx={{ fontSize: 31, color: '#f59e0b' }}
               />
-            </Box>
-          ) : null}
+            ) : null}
+            {Array.isArray(actionMenuItems) && actionMenuItems.length > 0 ? (
+              <Box data-testid="task-detail-mobile-actions">
+                <OverflowMenu
+                  label="Действия задачи"
+                  size="medium"
+                  items={actionMenuItems}
+                  onSelect={onActionMenuSelect}
+                />
+              </Box>
+            ) : <Box sx={{ width: 44, height: 44 }} />}
+          </Stack>
         </Stack>
       </Box>
     );
@@ -232,12 +252,24 @@ export function TaskDetailHeader({
               </Typography>
             </Box>
           </Stack>
-          <Stack direction="row" spacing={0.8} alignItems="center">
+          <Stack direction="row" spacing={0.8} alignItems="center" sx={{ flexShrink: 0, flexWrap: 'wrap' }}>
+            {taskDiscussionEnabled ? (
+              <Button
+                data-testid="task-detail-open-chat"
+                variant="contained"
+                startIcon={<ForumOutlinedIcon />}
+                onClick={() => onOpenTaskDiscussion?.()}
+                disabled={discussionOpening}
+                sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none', minHeight: 44 }}
+              >
+                {discussionOpening ? 'Открываем чат…' : 'Открыть чат'}
+              </Button>
+            ) : null}
             <Button
               variant="outlined"
               startIcon={<ContentCopyIcon />}
               onClick={onCopyLink}
-              sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}
+              sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px', minHeight: 44 }}
             >
               Копировать ссылку
             </Button>
@@ -280,7 +312,7 @@ export function TaskDetailHeader({
           {task?.has_unread_comments && (
             <Chip
               size="small"
-              label="Новый комментарий"
+              label={getTaskUnreadBadgeLabel(taskDiscussionEnabled)}
               sx={{ fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb' }}
             />
           )}
@@ -501,27 +533,56 @@ const getTaskLikeCount = (task) => {
   return value == null ? null : Number(value);
 };
 
+const formatMobileDueText = (value, fallbackFormatter) => {
+  if (!value) return 'Без срока';
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return fallbackFormatter?.(value) || String(value);
+  }
+  const months = [
+    'января',
+    'февраля',
+    'марта',
+    'апреля',
+    'мая',
+    'июня',
+    'июля',
+    'августа',
+    'сентября',
+    'октября',
+    'ноября',
+    'декабря',
+  ];
+  const day = parsed.getDate();
+  const month = months[parsed.getMonth()] || '';
+  const yearPart = parsed.getFullYear() === new Date().getFullYear() ? '' : ` ${parsed.getFullYear()}`;
+  const hours = String(parsed.getHours()).padStart(2, '0');
+  const minutes = String(parsed.getMinutes()).padStart(2, '0');
+  return `${day} ${month}${yearPart} в ${hours}:${minutes}`;
+};
+
 function TaskMobilePersonRow({ label, name, ui, theme }) {
   const isDark = theme.palette.mode === 'dark';
   const resolvedName = name || '-';
   return (
-    <Stack direction="row" spacing={1.25} alignItems="center" sx={{ minHeight: 58 }}>
+    <Stack direction="row" spacing={1.2} alignItems="center" sx={{ minHeight: 52 }}>
       <Avatar
         sx={{
-          width: 42,
-          height: 42,
+          width: 38,
+          height: 38,
           bgcolor: isDark ? '#7bbd22' : alpha(theme.palette.success.main, 0.16),
           color: isDark ? '#fff' : theme.palette.success.dark,
           fontWeight: 900,
+          fontSize: '1rem',
         }}
       >
         {getInitialsFromName(resolvedName)}
       </Avatar>
       <Box sx={{ minWidth: 0 }}>
-        <Typography sx={{ color: ui.subtleText, fontSize: '0.92rem', fontWeight: 700, lineHeight: 1.15 }}>
+        <Typography sx={{ color: ui.subtleText, fontSize: '0.76rem', fontWeight: 750, lineHeight: 1.15 }}>
           {label}
         </Typography>
-        <Typography sx={{ color: ui.textPrimary, fontSize: '1.08rem', fontWeight: 700, lineHeight: 1.22, overflowWrap: 'anywhere' }}>
+        <Typography sx={{ color: ui.textPrimary, fontSize: '0.9rem', fontWeight: 750, lineHeight: 1.2, overflowWrap: 'anywhere' }}>
           {resolvedName}
         </Typography>
       </Box>
@@ -549,11 +610,12 @@ function TaskMobileRailButton({
       disabled={disabled}
       sx={{
         flex: '0 0 auto',
-        minHeight: 42,
+        minHeight: 40,
         borderRadius: 999,
-        px: 1.55,
+        px: 1.45,
         textTransform: 'none',
-        fontWeight: 900,
+        fontWeight: 850,
+        fontSize: '0.86rem',
         whiteSpace: 'nowrap',
         color: active ? '#fff' : primary,
         bgcolor: active ? primary : 'transparent',
@@ -617,9 +679,11 @@ export function TaskMobileDetailScreen({
     ...(report ? [report] : []),
   ];
   const checklist = getChecklistStats(task);
+  const shouldShowFilesCard = fileItems.length > 0;
+  const shouldShowChecklistCard = checklist.total > 0;
   const likeCount = getTaskLikeCount(task);
   const viewCount = getTaskViewCount(task);
-  const dueText = task?.due_at ? formatDateTime?.(task.due_at) : 'Без срока';
+  const dueText = formatMobileDueText(task?.due_at, formatDateTime);
   const cardSx = {
     borderRadius: '22px',
     bgcolor: isDark ? '#101010' : ui.panelSolid,
@@ -638,30 +702,30 @@ export function TaskMobileDetailScreen({
   return (
     <Stack
       data-testid="task-mobile-detail-screen"
-      spacing={2}
+      spacing={1.75}
       sx={{
         minHeight: '100%',
         px: 2,
-        pt: 3.5,
-        pb: 3,
+        pt: 1.9,
+        pb: taskDiscussionEnabled ? 11 : 3,
         color: ui.textPrimary,
       }}
     >
       <Box data-testid="task-mobile-content">
-        <Typography sx={{ fontWeight: 950, fontSize: '2rem', lineHeight: 1.06, letterSpacing: '-0.04em', mb: 2.1, overflowWrap: 'anywhere' }}>
+        <Typography sx={{ fontWeight: 900, fontSize: '1.45rem', lineHeight: 1.08, letterSpacing: '-0.035em', mb: 1.35, overflowWrap: 'anywhere' }}>
           {task?.title || 'Задача'}
         </Typography>
         {description ? (
-          <Box data-testid="task-mobile-description" sx={{ color: muted, fontSize: '1.2rem', lineHeight: 1.35, mb: 2.6 }}>
+          <Box data-testid="task-mobile-description" sx={{ color: muted, fontSize: '0.92rem', lineHeight: 1.3, mb: 1.85 }}>
             <MarkdownRenderer value={description} />
           </Box>
         ) : (
-          <Typography data-testid="task-mobile-description" sx={{ color: muted, fontSize: '1.08rem', mb: 2.6 }}>
+          <Typography data-testid="task-mobile-description" sx={{ color: muted, fontSize: '0.92rem', mb: 1.85 }}>
             Описание задачи не заполнено.
           </Typography>
         )}
 
-        <Stack spacing={1.1}>
+        <Stack spacing={0.75}>
           <TaskMobilePersonRow label="Постановщик" name={getTaskUserLabel(task, 'created_by')} ui={ui} theme={theme} />
           <TaskMobilePersonRow label="Исполнитель" name={getTaskUserLabel(task, 'assignee')} ui={ui} theme={theme} />
           {getTaskUserLabel(task, 'controller') !== '-' ? (
@@ -669,10 +733,10 @@ export function TaskMobileDetailScreen({
           ) : null}
         </Stack>
 
-        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.5} sx={{ mt: 2.2, minHeight: 48 }}>
-          <Stack direction="row" spacing={1.2} alignItems="center" sx={{ minWidth: 0, color: task?.is_overdue ? theme.palette.error.main : ui.textPrimary }}>
-            <CalendarMonthOutlinedIcon sx={{ fontSize: 33, flexShrink: 0 }} />
-            <Typography sx={{ fontSize: '1.15rem', fontWeight: 800, lineHeight: 1.2, overflowWrap: 'anywhere' }}>
+        <Stack direction="row" alignItems="center" justifyContent="space-between" spacing={1.25} sx={{ mt: 1.65, minHeight: 42 }}>
+          <Stack direction="row" spacing={1.05} alignItems="center" sx={{ minWidth: 0, color: task?.is_overdue ? theme.palette.error.main : ui.textPrimary }}>
+            <CalendarMonthOutlinedIcon sx={{ fontSize: 27, flexShrink: 0 }} />
+            <Typography sx={{ fontSize: '0.96rem', fontWeight: 800, lineHeight: 1.2, overflowWrap: 'anywhere' }}>
               {dueText}
             </Typography>
           </Stack>
@@ -681,12 +745,13 @@ export function TaskMobileDetailScreen({
               data-testid="task-mobile-overdue-pill"
               sx={{
                 flexShrink: 0,
-                px: 1.45,
-                py: 0.7,
+                px: 1.2,
+                py: 0.55,
                 borderRadius: 999,
                 color: theme.palette.error.light,
                 bgcolor: alpha(theme.palette.error.main, isDark ? 0.22 : 0.12),
-                fontWeight: 900,
+                fontWeight: 850,
+                fontSize: '0.8rem',
               }}
             >
               Просрочена
@@ -702,30 +767,22 @@ export function TaskMobileDetailScreen({
           px: 2,
           overflowX: 'auto',
           display: 'flex',
-          gap: 1,
+          gap: 0.85,
           alignItems: 'center',
           scrollbarWidth: 'none',
           '&::-webkit-scrollbar': { display: 'none' },
         }}
       >
-        {actions ? <Box sx={{ flex: '0 0 auto', '& .MuiButton-root': { minHeight: 42 } }}>{actions}</Box> : null}
-        <IconButton
-          data-testid="task-mobile-pause-action"
-          disabled
-          sx={{
-            flex: '0 0 auto',
-            width: 42,
-            height: 42,
-            border: '1px solid',
-            borderColor: isDark ? alpha('#fff', 0.24) : ui.borderSoft,
-            color: muted,
-          }}
-        >
-          <PauseIcon />
-        </IconButton>
+        {actions ? <Box sx={{ flex: '0 0 auto', '& .MuiButton-root': { minHeight: 40 } }}>{actions}</Box> : null}
         <TaskMobileRailButton
           testId="task-mobile-files-chip"
-          icon={<AttachFileIcon />}
+          icon={<AttachFileIcon sx={{ fontSize: 22 }} />}
+          disabled={fileItems.length === 0}
+          onClick={() => {
+            if (typeof document !== 'undefined') {
+              document.querySelector('[data-testid="task-mobile-files"]')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+            }
+          }}
           ui={ui}
           theme={theme}
         >
@@ -733,26 +790,13 @@ export function TaskMobileDetailScreen({
         </TaskMobileRailButton>
         <TaskMobileRailButton
           testId="task-mobile-checklist-chip"
-          icon={<ChecklistOutlinedIcon />}
+          icon={<ChecklistOutlinedIcon sx={{ fontSize: 22 }} />}
           onClick={onOpenChecklist}
           ui={ui}
           theme={theme}
         >
           Чек-лист
         </TaskMobileRailButton>
-        {taskDiscussionEnabled ? (
-          <TaskMobileRailButton
-            testId="task-mobile-open-chat"
-            icon={<ForumOutlinedIcon />}
-            onClick={onOpenTaskDiscussion}
-            disabled={discussionOpening}
-            active
-            ui={ui}
-            theme={theme}
-          >
-            {discussionOpening ? 'Открываем...' : 'Чат задачи'}
-          </TaskMobileRailButton>
-        ) : null}
       </Box>
 
       {(likeCount != null || viewCount != null) ? (
@@ -773,11 +817,11 @@ export function TaskMobileDetailScreen({
         </Stack>
       ) : null}
 
-      <Box data-testid="task-mobile-files" sx={{ ...cardSx, p: 2 }}>
-        <Typography sx={{ color: muted, fontSize: '1rem', fontWeight: 800, mb: 1.1 }}>
-          {`Файлы: ${fileItems.length}`}
-        </Typography>
-        {fileItems.length > 0 ? (
+      {shouldShowFilesCard ? (
+        <Box data-testid="task-mobile-files" sx={{ ...cardSx, p: 2 }}>
+          <Typography sx={{ color: muted, fontSize: '0.82rem', fontWeight: 800, mb: 1 }}>
+            {`Файлы: ${fileItems.length}`}
+          </Typography>
           <Stack direction="row" spacing={1.15} sx={{ overflowX: 'auto', pb: 0.6, scrollbarWidth: 'none', '&::-webkit-scrollbar': { display: 'none' } }}>
             {fileItems.map((file) => (
               <Box
@@ -800,7 +844,7 @@ export function TaskMobileDetailScreen({
                   }
                 }}
                 sx={{
-                  width: 92,
+                  width: 84,
                   flex: '0 0 auto',
                   p: 1,
                   borderRadius: '14px',
@@ -810,71 +854,112 @@ export function TaskMobileDetailScreen({
                   cursor: 'pointer',
                 }}
               >
-                <Avatar sx={{ width: 46, height: 46, mx: 'auto', mb: 0.8, bgcolor: isDark ? '#eef2f7' : alpha(theme.palette.primary.main, 0.12), color: isDark ? '#111827' : theme.palette.primary.main }}>
+                <Avatar sx={{ width: 42, height: 42, mx: 'auto', mb: 0.75, bgcolor: isDark ? '#eef2f7' : alpha(theme.palette.primary.main, 0.12), color: isDark ? '#111827' : theme.palette.primary.main }}>
                   <AttachFileIcon />
                 </Avatar>
-                <Typography sx={{ color: muted, fontSize: '0.78rem', fontWeight: 800, textAlign: 'center', lineHeight: 1.15 }} noWrap>
+                <Typography sx={{ color: muted, fontSize: '0.72rem', fontWeight: 800, textAlign: 'center', lineHeight: 1.15 }} noWrap>
                   {file.file_name}
                 </Typography>
-                <Typography sx={{ color: muted, fontSize: '0.68rem', textAlign: 'center', mt: 0.3 }} noWrap>
+                <Typography sx={{ color: muted, fontSize: '0.64rem', textAlign: 'center', mt: 0.3 }} noWrap>
                   {file.type === 'report' ? 'Отчёт' : formatFileSize?.(file.file_size)}
                 </Typography>
               </Box>
             ))}
           </Stack>
-        ) : null}
-        {canUploadFiles ? (
+          {canUploadFiles ? (
+            <Button
+              component="label"
+              startIcon={<AddIcon />}
+              disabled={uploadingAttachment}
+              sx={{
+                mt: 1.2,
+                minHeight: 44,
+                px: 0,
+                color: muted,
+                textTransform: 'none',
+                fontWeight: 800,
+                fontSize: '0.94rem',
+                justifyContent: 'flex-start',
+              }}
+            >
+              {uploadingAttachment ? 'Загрузка...' : 'Добавить файлы'}
+              <input type="file" hidden onChange={handleUploadChange} />
+            </Button>
+          ) : null}
+        </Box>
+      ) : null}
+
+      {shouldShowChecklistCard ? (
+        <Box
+          data-testid="task-mobile-checklist-summary"
+          role="button"
+          tabIndex={0}
+          onClick={onOpenChecklist}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault();
+              onOpenChecklist?.();
+            }
+          }}
+          sx={{
+            ...cardSx,
+            position: 'relative',
+            minHeight: 126,
+            p: 2,
+            pb: 2.2,
+            cursor: 'pointer',
+            overflow: 'hidden',
+          }}
+        >
+          <Typography sx={{ color: muted, fontSize: '0.82rem', fontWeight: 800, mb: 1.15 }}>
+            {`Чек-листы: ${checklist.total}`}
+          </Typography>
+          <Stack direction="row" alignItems="center" spacing={1.1} sx={{ minHeight: 50 }}>
+            <ChecklistOutlinedIcon sx={{ color: theme.palette.primary.main, fontSize: 24 }} />
+            <Box sx={{ flex: 1, minWidth: 0 }}>
+              <Typography sx={{ fontSize: '0.94rem', fontWeight: 800 }}>Чек-лист</Typography>
+              <Typography sx={{ color: muted, fontSize: '0.84rem', fontWeight: 700, mt: 0.22 }}>
+                {`${checklist.done}/${checklist.total} выполнено`}
+              </Typography>
+            </Box>
+            <ExpandMoreIcon sx={{ transform: 'rotate(-90deg)', color: muted, flexShrink: 0 }} />
+          </Stack>
+        </Box>
+      ) : null}
+      {taskDiscussionEnabled ? (
+        <Box
+          data-testid="task-mobile-chat-floating"
+          sx={{
+            position: 'fixed',
+            left: '50%',
+            bottom: 'calc(env(safe-area-inset-bottom, 0px) + 18px)',
+            zIndex: theme.zIndex.drawer + 2,
+            transform: 'translateX(-50%)',
+            pointerEvents: 'none',
+          }}
+        >
           <Button
-            component="label"
-            startIcon={<AddIcon />}
-            disabled={uploadingAttachment}
+            data-testid="task-mobile-open-chat"
+            variant="contained"
+            startIcon={<ForumOutlinedIcon sx={{ fontSize: 20 }} />}
+            disabled={discussionOpening}
+            onClick={() => onOpenTaskDiscussion?.()}
             sx={{
-              mt: fileItems.length ? 1.2 : 0,
-              minHeight: 44,
-              px: 0,
-              color: muted,
+              minHeight: 42,
+              px: 1.7,
+              borderRadius: 3,
               textTransform: 'none',
-              fontWeight: 800,
-              fontSize: '1.25rem',
-              justifyContent: 'flex-start',
+              fontWeight: 850,
+              fontSize: '0.95rem',
+              boxShadow: isDark ? '0 12px 32px rgba(0,0,0,0.42)' : '0 12px 28px rgba(37,99,235,0.26)',
+              whiteSpace: 'nowrap',
+              pointerEvents: 'auto',
             }}
           >
-            {uploadingAttachment ? 'Загрузка...' : 'Добавить файлы'}
-            <input type="file" hidden onChange={handleUploadChange} />
+            {discussionOpening ? 'Открываем...' : 'Чат задачи'}
           </Button>
-        ) : null}
-        {!canUploadFiles && fileItems.length === 0 ? (
-          <Typography sx={{ color: muted }}>Файлов пока нет.</Typography>
-        ) : null}
-      </Box>
-
-      <Box
-        data-testid="task-mobile-checklist-summary"
-        role="button"
-        tabIndex={0}
-        onClick={onOpenChecklist}
-        onKeyDown={(event) => {
-          if (event.key === 'Enter' || event.key === ' ') {
-            event.preventDefault();
-            onOpenChecklist?.();
-          }
-        }}
-        sx={{ ...cardSx, p: 2, cursor: 'pointer' }}
-      >
-        <Typography sx={{ color: muted, fontSize: '1rem', fontWeight: 800, mb: 1.4 }}>
-          {`Чек-листы: ${checklist.total}`}
-        </Typography>
-        <Stack direction="row" alignItems="center" spacing={1.4}>
-          <ChecklistOutlinedIcon sx={{ color: theme.palette.primary.main, fontSize: 28 }} />
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <Typography sx={{ fontSize: '1.15rem', fontWeight: 800 }}>Чек-лист</Typography>
-            <Typography sx={{ color: muted, fontSize: '1rem', fontWeight: 700, mt: 0.35 }}>
-              {`${checklist.done}/${checklist.total} выполнено`}
-            </Typography>
-          </Box>
-          <ExpandMoreIcon sx={{ transform: 'rotate(-90deg)', color: muted }} />
-        </Stack>
-      </Box>
+        </Box>
+      ) : null}
     </Stack>
   );
 }
@@ -908,15 +993,15 @@ export function TaskMobileChecklistScreen({
       sx={{
         minHeight: '100%',
         px: 2,
-        pt: 3.5,
+        pt: 1.95,
         pb: 3,
         color: ui.textPrimary,
       }}
     >
-      <Typography sx={{ fontWeight: 950, fontSize: '2rem', lineHeight: 1.06, letterSpacing: '-0.04em' }}>
+      <Typography sx={{ fontWeight: 900, fontSize: '1.45rem', lineHeight: 1.08, letterSpacing: '-0.035em' }}>
         Чек-лист
       </Typography>
-      <Typography data-testid="task-mobile-checklist-progress" sx={{ color: muted, fontSize: '1.2rem', fontWeight: 800, mt: 1.1, mb: 3.4 }}>
+      <Typography data-testid="task-mobile-checklist-progress" sx={{ color: muted, fontSize: '0.92rem', fontWeight: 800, mt: 0.75, mb: 2.45 }}>
         {`${checklist.done}/${checklist.total} выполнено`}
       </Typography>
 
@@ -930,7 +1015,7 @@ export function TaskMobileChecklistScreen({
               alignItems="center"
               spacing={1.35}
               sx={{
-                minHeight: 68,
+                minHeight: 56,
                 borderBottom: index < checklist.items.length - 1 ? '1px solid' : 'none',
                 borderColor: dividerColor,
               }}
@@ -941,15 +1026,16 @@ export function TaskMobileChecklistScreen({
                 onChange={(event) => onToggleItem?.(itemId, event.target.checked)}
                 inputProps={{ 'aria-label': `Отметить пункт ${index + 1}` }}
                 sx={{
-                  p: 0,
+                  p: 1,
+                  m: -1,
                   color: muted,
-                  '& .MuiSvgIcon-root': { fontSize: 34 },
+                  '& .MuiSvgIcon-root': { fontSize: 28 },
                 }}
               />
               <Typography
                 sx={{
-                  fontSize: '1.25rem',
-                  fontWeight: 850,
+                  fontSize: '0.98rem',
+                  fontWeight: 800,
                   lineHeight: 1.18,
                   color: item?.done ? muted : ui.textPrimary,
                   textDecoration: item?.done ? 'line-through' : 'none',
@@ -1003,8 +1089,8 @@ export function TaskMobileChecklistScreen({
             px: 0,
             color: muted,
             textTransform: 'none',
-            fontWeight: 850,
-            fontSize: '1.35rem',
+            fontWeight: 800,
+            fontSize: '0.98rem',
           }}
         >
           Добавить пункт
@@ -1081,11 +1167,12 @@ export function TaskPrimaryActions({
         onClick={primaryAction.onClick}
         sx={{
           textTransform: 'none',
-          fontWeight: 900,
+          fontWeight: 850,
           borderRadius: mobileRail ? 999 : '10px',
           boxShadow: 'none',
-          minHeight: mobileRail ? 42 : undefined,
-          px: mobileRail ? 2.2 : undefined,
+          minHeight: mobileRail ? 40 : undefined,
+          px: mobileRail ? 1.7 : undefined,
+          fontSize: mobileRail ? '0.86rem' : undefined,
           whiteSpace: 'nowrap',
         }}
       >
@@ -1388,6 +1475,7 @@ export function TaskActivityTabs({
   activeTab,
   onTabChange,
   comments,
+  commentsCount,
   attachments,
   statusLog,
   commentBody,
@@ -1407,8 +1495,7 @@ export function TaskActivityTabs({
   mobile = false,
   hideFilesTab = false,
   taskDiscussionEnabled = false,
-  onOpenTaskDiscussion,
-  discussionOpening = false,
+  activityLoading = false,
 }) {
   const commentsRef = useRef(null);
   const effectiveActiveTab = hideFilesTab && activeTab === 'files' ? 'comments' : activeTab;
@@ -1441,9 +1528,15 @@ export function TaskActivityTabs({
             '& .MuiTabs-indicator': { borderRadius: '2px', height: 3 },
           }}
         >
-          <Tab value="comments" label={`Комментарии (${comments.length})`} />
+          <Tab
+            value="comments"
+            label={getTaskCommentsTabLabel({
+              taskDiscussionEnabled,
+              count: commentsCount ?? comments.length,
+            })}
+          />
           {!hideFilesTab && <Tab value="files" label={`Файлы (${attachments.length})`} />}
-          <Tab value="history" label={`История (${statusLog.length})`} />
+          <Tab value="history" label={statusLog.length ? `История (${statusLog.length})` : 'История'} />
         </Tabs>
       </Box>
 
@@ -1451,31 +1544,9 @@ export function TaskActivityTabs({
         {effectiveActiveTab === 'comments' && (
           <Stack spacing={1}>
             {taskDiscussionEnabled ? (
-              <Box
-                sx={{
-                  p: 1,
-                  borderRadius: '12px',
-                  border: '1px solid',
-                  borderColor: ui.borderSoft,
-                  bgcolor: alpha(theme.palette.primary.main, 0.05),
-                }}
-              >
-                <Typography sx={{ fontWeight: 800, mb: 0.45 }}>
-                  Обсуждение в корпоративном чате
-                </Typography>
-                <Typography variant="body2" sx={{ color: ui.mutedText, mb: 1 }}>
-                  Новые сообщения по задаче отправляются в чат участников задачи.
-                </Typography>
-                <Button
-                  variant="contained"
-                  startIcon={<ForumOutlinedIcon />}
-                  onClick={() => onOpenTaskDiscussion?.()}
-                  disabled={discussionOpening}
-                  sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
-                >
-                  {discussionOpening ? 'Открываем чат…' : 'Открыть чат'}
-                </Button>
-              </Box>
+              <Typography variant="body2" sx={{ color: ui.mutedText }}>
+                Новые сообщения по задаче — в корпоративном чате. Старые комментарии сохранены в архиве ниже.
+              </Typography>
             ) : null}
 
             {comments.length > 0 ? (
@@ -1487,7 +1558,9 @@ export function TaskActivityTabs({
             <Box ref={commentsRef} sx={{ maxHeight: mobile ? 'none' : 380, overflowY: mobile ? 'visible' : 'auto', pr: 0.4 }}>
               {comments.length === 0 ? (
                 <Typography variant="body2" sx={{ color: ui.mutedText }}>
-                  {taskDiscussionEnabled ? 'Архивных комментариев пока нет.' : 'Комментариев пока нет.'}
+                  {activityLoading
+                    ? 'Загрузка комментариев…'
+                    : (taskDiscussionEnabled ? 'Архивных комментариев пока нет.' : 'Комментариев пока нет.')}
                 </Typography>
               ) : (
                 <List disablePadding dense>
@@ -1614,7 +1687,7 @@ export function TaskActivityTabs({
           <Stack spacing={0.95}>
             {statusLog.length === 0 ? (
               <Typography variant="body2" sx={{ color: ui.mutedText }}>
-                Переходы статусов пока не зафиксированы.
+                {activityLoading ? 'Загрузка истории…' : 'Переходы статусов пока не зафиксированы.'}
               </Typography>
             ) : (
               statusLog.map((item, index) => (
@@ -1783,9 +1856,9 @@ export function TaskPreviewDrawer({
               {task?.is_overdue && (
                 <Chip size="small" label="Просрочено" sx={{ fontWeight: 800, bgcolor: 'rgba(220,38,38,0.12)', color: '#dc2626' }} />
               )}
-              {task?.has_unread_comments && (
-                <Chip size="small" label="Новый комментарий" sx={{ fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb' }} />
-              )}
+      {task?.has_unread_comments && (
+        <Chip size="small" label={getTaskUnreadBadgeLabel(taskDiscussionEnabled)} sx={{ fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb' }} />
+      )}
               {Number(task?.comments_count || 0) > 0 && (
                 <Chip size="small" label={`Комментарии: ${task.comments_count}`} sx={{ fontWeight: 700 }} />
               )}

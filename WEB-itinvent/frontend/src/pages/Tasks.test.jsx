@@ -236,6 +236,8 @@ beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
   installMatchMedia();
+  chatFeatureFlags.chat = false;
+  chatFeatureFlags.taskDiscussion = false;
   authState.user = { id: 1, role: 'admin', username: 'admin', permissions: [] };
   Object.defineProperty(window.URL, 'createObjectURL', {
     writable: true,
@@ -1377,6 +1379,45 @@ describe('Tasks page detail workspace', () => {
       expect(screen.getByTestId('task-mobile-detail-screen')).toBeInTheDocument();
       expect(screen.getByTestId('location-probe')).not.toHaveTextContent('task_mobile_view=checklist');
     });
+
+    fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('task-detail-mobile-header')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('task-mobile-checklist-screen')).not.toBeInTheDocument();
+    });
+  });
+
+  it('hides empty mobile file and checklist cards while keeping action chips', async () => {
+    installMatchMedia({ mobile: true });
+    chatFeatureFlags.chat = true;
+    chatFeatureFlags.taskDiscussion = true;
+    hubAPI.getTask.mockResolvedValueOnce({
+      ...taskSummary,
+      id: 'task-empty',
+      title: 'Пустая задача',
+      checklist_items: [],
+      checklist_total: 0,
+      checklist_done: 0,
+      attachments: [],
+      attachments_count: 0,
+      latest_report: null,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-empty']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('task-mobile-detail-screen')).toBeInTheDocument();
+    expect(screen.queryByTestId('task-mobile-files')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('task-mobile-checklist-summary')).not.toBeInTheDocument();
+    expect(screen.getByTestId('task-mobile-files-chip')).toHaveTextContent('Файлы: 0');
+    expect(screen.getByTestId('task-mobile-checklist-chip')).toHaveTextContent('Чек-лист');
+    expect(screen.getByTestId('task-mobile-chat-floating')).toBeInTheDocument();
+    expect(screen.getByTestId('task-mobile-open-chat')).toBeInTheDocument();
   });
 
   it('uses mobile list and compact detail flow on small screens', async () => {
@@ -1465,7 +1506,7 @@ describe('Tasks page detail workspace', () => {
     });
 
     render(
-      <MemoryRouter initialEntries={['/tasks?task=task-1&task_tab=comments']}>
+      <MemoryRouter initialEntries={['/tasks?task=task-1']}>
         <Routes>
           <Route
             path="/tasks"
@@ -1481,7 +1522,7 @@ describe('Tasks page detail workspace', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: 'Открыть чат' }));
+    fireEvent.click(await screen.findByTestId('task-detail-open-chat'));
 
     await waitFor(() => {
       expect(hubAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
@@ -1514,6 +1555,10 @@ describe('Tasks page detail workspace', () => {
     );
 
     expect(await screen.findByTestId('task-detail-mobile-header')).toBeInTheDocument();
+    const checklistSummary = screen.getByTestId('task-mobile-checklist-summary');
+    expect(screen.getByTestId('task-mobile-chat-floating')).toBeInTheDocument();
+    expect(within(checklistSummary).queryByTestId('task-mobile-open-chat')).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('task-mobile-action-rail')).queryByTestId('task-mobile-open-chat')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('task-mobile-open-chat'));
 
     await waitFor(() => {

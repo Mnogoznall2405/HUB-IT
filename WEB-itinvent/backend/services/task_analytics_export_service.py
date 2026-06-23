@@ -140,6 +140,7 @@ def build_task_analytics_excel(
     project_ids: list[str] | None = None,
     object_ids: list[str] | None = None,
     participant_user_ids: list[int] | None = None,
+    current_user=None,
 ) -> tuple[bytes, str]:
     analytics = hub_service_impl.get_task_analytics(
         start_date=start_date,
@@ -148,6 +149,7 @@ def build_task_analytics_excel(
         project_ids=project_ids,
         object_ids=object_ids,
         participant_user_ids=participant_user_ids,
+        current_user=current_user,
     )
 
     summary = analytics.get("summary") or {}

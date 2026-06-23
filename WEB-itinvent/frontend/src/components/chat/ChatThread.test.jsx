@@ -1607,6 +1607,7 @@ describe('ChatBubble', () => {
     const onCopySelectedMessages = vi.fn();
     const onReplySelectedMessage = vi.fn();
     const onForwardSelectedMessages = vi.fn();
+    const onDeleteSelectedMessages = vi.fn();
 
     renderWithTheme(
       <ChatThread
@@ -1635,11 +1636,13 @@ describe('ChatBubble', () => {
           selectedMessageCount: 1,
           canReplySelectedMessage: true,
           canCopySelectedMessages: true,
+          canDeleteSelectedMessages: true,
           onToggleMessageSelection,
           onClearMessageSelection,
           onCopySelectedMessages,
           onReplySelectedMessage,
           onForwardSelectedMessages,
+          onDeleteSelectedMessages,
         })}
       />,
     );
@@ -1650,7 +1653,10 @@ describe('ChatBubble', () => {
     expect(screen.getByTestId('chat-selection-reply-action')).toHaveTextContent('Ответить');
     expect(screen.getByTestId('chat-selection-forward-action')).toHaveTextContent('Переслать');
     expect(screen.queryByTestId('chat-selection-count-label')).not.toBeInTheDocument();
+    // Удаление на мобильном живёт в верхнем тулбаре (паритет с десктопом),
+    // а не в нижнем доке.
     expect(screen.queryByTestId('chat-selection-delete-action')).not.toBeInTheDocument();
+    expect(screen.getByTestId('chat-selection-header-delete-action')).toBeInTheDocument();
     expect(screen.queryByText('Task Assignee')).not.toBeInTheDocument();
     expect(getComputedStyle(screen.getByText('Selected message').closest('[data-chat-message-id]')).backgroundColor).toBe('rgba(0, 0, 0, 0)');
     expect(screen.getByText('Selected message').closest('[data-chat-bubble-surface="true"]')).toHaveStyle({
@@ -1672,6 +1678,9 @@ describe('ChatBubble', () => {
 
     fireEvent.click(screen.getByTestId('chat-selection-forward-action'));
     expect(onForwardSelectedMessages).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByTestId('chat-selection-header-delete-action'));
+    expect(onDeleteSelectedMessages).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByTestId('chat-selection-clear'));
     expect(onClearMessageSelection).toHaveBeenCalledTimes(1);
@@ -1810,7 +1819,7 @@ describe('ChatBubble', () => {
     expect(screen.getByText('+1')).toBeInTheDocument();
   });
 
-  it('uses smaller selection circles on phone and desktop layouts', () => {
+  it('uses an accessible 44px selection target on phone and a compact circle on desktop', () => {
     const { rerender } = renderWithTheme(
       <ChatBubble
         conversationKind="direct"
@@ -1833,8 +1842,8 @@ describe('ChatBubble', () => {
     );
 
     expect(screen.getByTestId('chat-message-select-msg-circle-size')).toHaveStyle({
-      width: '28px',
-      height: '28px',
+      width: '44px',
+      height: '44px',
       top: '50%',
     });
 

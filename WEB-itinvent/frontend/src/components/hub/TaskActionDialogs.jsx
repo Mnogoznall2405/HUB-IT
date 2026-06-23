@@ -14,6 +14,8 @@ import {
   Stack,
   TextField,
   Typography,
+  useMediaQuery,
+  useTheme,
 } from '@mui/material';
 import AttachFileIcon from '@mui/icons-material/AttachFile';
 import MarkdownEditor from './MarkdownEditor';
@@ -61,6 +63,8 @@ export function TaskEditDialog({
   onSave,
   ui,
 }) {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [draft, setDraft] = useState({});
 
   useEffect(() => {
@@ -109,7 +113,7 @@ export function TaskEditDialog({
   });
 
   return (
-    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="md" PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
+    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="md" fullScreen={fullScreen} PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
       <Box sx={getOfficeHeaderBandSx(ui, { px: 2.2, py: 1.7 })}>
         <Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>Редактирование задачи</Typography>
         <Typography variant="body2" sx={{ color: ui.mutedText, mt: 0.35 }}>
@@ -275,13 +279,15 @@ export function TaskEditDialog({
 }
 
 export function TaskReviewDialog({ task, open, saving = false, onClose, onSubmit, ui }) {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [comment, setComment] = useState('');
   useEffect(() => {
     if (open) setComment('');
   }, [open, task?.id]);
 
   return (
-    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm" PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
+    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
       <Box sx={getOfficeHeaderBandSx(ui, { px: 2.2, py: 1.7 })}>
         <Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>Проверка задачи</Typography>
       </Box>
@@ -301,6 +307,8 @@ export function TaskReviewDialog({ task, open, saving = false, onClose, onSubmit
 }
 
 export function TaskSubmitDialog({ task, open, saving = false, onClose, onSubmit, ui }) {
+  const theme = useTheme();
+  const fullScreen = useMediaQuery(theme.breakpoints.down('sm'));
   const [comment, setComment] = useState('');
   const [file, setFile] = useState(null);
 
@@ -313,7 +321,7 @@ export function TaskSubmitDialog({ task, open, saving = false, onClose, onSubmit
   const fileLabel = useMemo(() => file?.name || 'Прикрепить файл', [file]);
 
   return (
-    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm" PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
+    <Dialog open={open} onClose={saving ? undefined : onClose} fullWidth maxWidth="sm" fullScreen={fullScreen} PaperProps={{ sx: getOfficeDialogPaperSx(ui) }}>
       <Box sx={getOfficeHeaderBandSx(ui, { px: 2.2, py: 1.7 })}>
         <Typography sx={{ fontWeight: 900, fontSize: '1.05rem' }}>Сдать работу</Typography>
       </Box>

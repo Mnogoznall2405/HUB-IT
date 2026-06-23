@@ -1237,6 +1237,9 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
         row = session.get(AppAiPendingAction, normalized_action_id)
         if row is None:
             raise LookupError("Action was not found")
+        current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+        if int(row.requester_user_id or 0) != current_user_id:
+            raise PermissionError("Only the action initiator can confirm it")
         if _set_expired_if_needed(row):
             session.flush()
             return _action_to_card(row)
@@ -1313,6 +1316,9 @@ def cancel_action(*, action_id: str, current_user: Any) -> dict[str, Any]:
         row = session.get(AppAiPendingAction, normalized_action_id)
         if row is None:
             raise LookupError("Action was not found")
+        current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+        if int(row.requester_user_id or 0) != current_user_id and not _is_admin_user(current_user):
+            raise PermissionError("Only the action initiator can cancel it")
         _set_expired_if_needed(row)
         if row.status == ACTION_STATUS_PENDING:
             row.status = ACTION_STATUS_CANCELLED

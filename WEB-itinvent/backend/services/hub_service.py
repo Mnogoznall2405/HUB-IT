@@ -30,6 +30,7 @@ from backend.services.access_policy_service import (
     can_review_task,
     can_view_task,
     normalize_visibility_scope,
+    user_can_manage_tasks_all,
     user_is_department_manager,
     user_is_department_member,
 )
@@ -3290,8 +3291,7 @@ class HubService:
             return None
         with self._lock, self._connect() as conn:
             task = self._task_access_or_raise(conn, task_id=normalized_id, user_id=int(user_id), is_admin=is_admin)
-            row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
-            return self._task_with_latest_report(conn, row, viewer_user_id=int(user_id)) if row else task
+            return self._task_with_latest_report(conn, task, viewer_user_id=int(user_id))
 
     def delete_task(self, *, task_id: str, actor_user_id: int, is_admin: bool = False) -> bool:
         normalized_id = _normalize_text(task_id)
@@ -3387,6 +3387,7 @@ class HubService:
         project_ids: Optional[list[str]] = None,
         object_ids: Optional[list[str]] = None,
         participant_user_ids: Optional[list[int]] = None,
+        current_user: Any = None,
     ) -> dict[str, Any]:
         def _basis_date(item: dict[str, Any]) -> str | None:
             basis_value = item.get(basis)
@@ -3575,6 +3576,17 @@ class HubService:
             task_rows = conn.execute(f"SELECT * FROM {self._TASKS_TABLE}").fetchall()
             task_items = [self._task_with_latest_report(conn, row) for row in task_rows]
 
+        if current_user is not None and not user_can_manage_tasks_all(current_user):
+            task_items = [
+                item
+                for item in task_items
+                if can_view_task(
+                    current_user,
+                    item,
+                    participant_user_ids=self._task_participant_user_ids(item, include_delegates=True),
+                )
+            ]
+
         filtered_items: list[dict[str, Any]] = []
         for item in task_items:
             participant_id = self._as_int(item.get("assignee_user_id"))
@@ -3726,9 +3738,11 @@ class HubService:
             where_clauses.append("due_at IS NOT NULL AND due_at <> '' AND due_at < ? AND status <> 'done'")
             params.append(now_iso)
         elif normalized_due_state == "today":
-            where_clauses.append("due_at IS NOT NULL AND due_at <> '' AND date(due_at) = date('now', 'localtime')")
+            where_clauses.append("due_at IS NOT NULL AND due_at <> '' AND substr(due_at, 1, 10) = ?")
+            params.append(now_iso[:10])
         elif normalized_due_state == "upcoming":
-            where_clauses.append("due_at IS NOT NULL AND due_at <> '' AND date(due_at) > date('now', 'localtime')")
+            where_clauses.append("due_at IS NOT NULL AND due_at <> '' AND substr(due_at, 1, 10) > ?")
+            params.append(now_iso[:10])
         elif normalized_due_state == "none":
             where_clauses.append("(due_at IS NULL OR due_at = '')")
         where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
@@ -3833,6 +3847,16 @@ class HubService:
             },
         }
 
+    def _can_act_as_assignee(self, task: dict[str, Any], user_id: int) -> bool:
+        normalized_user_id = self._as_int(user_id)
+        if normalized_user_id <= 0:
+            return False
+        assignee_id = self._as_int(task.get("assignee_user_id"))
+        if assignee_id == normalized_user_id:
+            return True
+        delegate_owner_ids = user_service.get_delegate_owner_ids(normalized_user_id)
+        return assignee_id in {self._as_int(item) for item in (delegate_owner_ids or [])}
+
     def start_task(self, *, task_id: str, user: dict[str, Any]) -> Optional[dict[str, Any]]:
         normalized_id = _normalize_text(task_id)
         if not normalized_id:
@@ -3844,7 +3868,7 @@ class HubService:
             if row is None:
                 return None
             task = dict(row)
-            if self._as_int(task.get("assignee_user_id")) != user_id:
+            if not self._can_act_as_assignee(task, user_id):
                 raise PermissionError("Only assignee can start the task")
             if _normalize_text(task.get("status")).lower() == "done":
                 raise ValueError("Task is already completed")
@@ -3885,7 +3909,7 @@ class HubService:
             if row is None:
                 return None
             task = dict(row)
-            if self._as_int(task.get("assignee_user_id")) != user_id:
+            if not self._can_act_as_assignee(task, user_id):
                 raise PermissionError("Only assignee can submit the task")
             if _normalize_text(task.get("status")).lower() == "done":
                 raise ValueError("Task is already completed")

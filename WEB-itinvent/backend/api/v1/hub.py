@@ -677,7 +677,7 @@ async def get_task_analytics(
     project_id: list[str] = Query(default=[]),
     object_id: list[str] = Query(default=[]),
     participant_user_id: list[int] = Query(default=[]),
-    _: User = Depends(require_permission(PERM_TASKS_READ)),
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     return await run_in_threadpool(
         hub_service.get_task_analytics,
@@ -687,6 +687,7 @@ async def get_task_analytics(
         project_ids=project_id,
         object_ids=object_id,
         participant_user_ids=participant_user_id,
+        current_user=current_user,
     )
 
 
@@ -698,9 +699,10 @@ async def export_task_analytics(
     project_id: list[str] = Query(default=[]),
     object_id: list[str] = Query(default=[]),
     participant_user_id: list[int] = Query(default=[]),
-    _: User = Depends(require_permission(PERM_TASKS_READ)),
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    file_bytes, filename = build_task_analytics_excel(
+    file_bytes, filename = await run_in_threadpool(
+        build_task_analytics_excel,
         hub_service_impl=hub_service,
         start_date=_normalize_text(start_date) or None,
         end_date=_normalize_text(end_date) or None,
@@ -708,6 +710,7 @@ async def export_task_analytics(
         project_ids=project_id,
         object_ids=object_id,
         participant_user_ids=participant_user_id,
+        current_user=current_user,
     )
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
@@ -747,7 +750,8 @@ async def create_task(
         created_items = []
         for assignee_id in assignee_ids:
             created_items.append(
-                hub_service.create_task(
+                await run_in_threadpool(
+                    hub_service.create_task,
                     title=_normalize_text(payload.get("title")),
                     description=_normalize_text(payload.get("description")),
                     assignee_user_id=int(assignee_id),
@@ -806,7 +810,8 @@ async def patch_task(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        updated = hub_service.update_task(
+        updated = await run_in_threadpool(
+            hub_service.update_task,
             task_id,
             payload or {},
             actor_user_id=int(current_user.id),
@@ -829,7 +834,8 @@ async def delete_task(
 ):
     try:
         is_admin = _is_admin_user(current_user)
-        ok = hub_service.delete_task(
+        ok = await run_in_threadpool(
+            hub_service.delete_task,
             task_id=task_id,
             actor_user_id=int(current_user.id),
             is_admin=is_admin,
@@ -848,14 +854,19 @@ async def start_task(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        updated = hub_service.start_task(task_id=task_id, user=_actor_dict(current_user))
+        updated = await run_in_threadpool(
+            hub_service.start_task,
+            task_id=task_id,
+            user=_actor_dict(current_user),
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
-    hub_service.mark_task_notifications_read(
+    await run_in_threadpool(
+        hub_service.mark_task_notifications_read,
         task_id=task_id,
         user_id=int(current_user.id),
     )
@@ -885,7 +896,8 @@ async def submit_task(
         )
         file_bytes = payload
     try:
-        updated = hub_service.submit_task(
+        updated = await run_in_threadpool(
+            hub_service.submit_task,
             task_id=task_id,
             user=_actor_dict(current_user),
             comment=_normalize_text(comment),
@@ -919,7 +931,8 @@ async def upload_task_attachment(
         context="Task attachment",
     )
     try:
-        created = hub_service.add_task_attachment(
+        created = await run_in_threadpool(
+            hub_service.add_task_attachment,
             task_id=task_id,
             user=_actor_dict(current_user),
             file_name=file_name,
@@ -943,7 +956,8 @@ async def review_task(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        updated = hub_service.review_task(
+        updated = await run_in_threadpool(
+            hub_service.review_task,
             task_id=task_id,
             reviewer=_actor_dict(current_user),
             decision=_normalize_text(payload.get("decision")),
@@ -1069,13 +1083,13 @@ async def get_task_comments(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        return {
-            "items": hub_service.list_task_comments(
-                task_id,
-                user_id=int(current_user.id),
-                is_admin=_is_admin_user(current_user),
-            )
-        }
+        items = await run_in_threadpool(
+            hub_service.list_task_comments,
+            task_id,
+            user_id=int(current_user.id),
+            is_admin=_is_admin_user(current_user),
+        )
+        return {"items": items}
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -1116,12 +1130,14 @@ async def mark_task_comments_seen(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        result = hub_service.mark_task_comments_seen(
+        result = await run_in_threadpool(
+            hub_service.mark_task_comments_seen,
             task_id=task_id,
             user=_actor_dict(current_user),
             is_admin=_is_admin_user(current_user),
         )
-        hub_service.mark_task_notifications_read(
+        await run_in_threadpool(
+            hub_service.mark_task_notifications_read,
             task_id=task_id,
             user_id=int(current_user.id),
             event_types=["task.comment_added"],
@@ -1145,13 +1161,13 @@ async def get_task_status_log(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        return {
-            "items": hub_service.list_task_status_log(
-                task_id,
-                user_id=int(current_user.id),
-                is_admin=_is_admin_user(current_user),
-            )
-        }
+        items = await run_in_threadpool(
+            hub_service.list_task_status_log,
+            task_id,
+            user_id=int(current_user.id),
+            is_admin=_is_admin_user(current_user),
+        )
+        return {"items": items}
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:

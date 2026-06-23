@@ -1519,8 +1519,8 @@ export default function ChatContextPanel({
       <Box
         sx={{
           ...buildSheetVars(ui, theme),
-          width: PANEL_WIDTH,
-          minWidth: PANEL_WIDTH,
+          width: `min(${PANEL_WIDTH}px, 100vw)`,
+          minWidth: `min(${PANEL_WIDTH}px, 100vw)`,
           borderLeft: `1px solid ${SHEET_COLORS.border}`,
           bgcolor: SHEET_COLORS.bg,
           display: 'flex',
@@ -2236,8 +2236,8 @@ export default function ChatContextPanel({
     <Box
       sx={{
         ...buildSheetVars(ui, theme),
-        width: embedded ? '100%' : PANEL_WIDTH,
-        minWidth: embedded ? 0 : PANEL_WIDTH,
+        width: embedded ? '100%' : `min(${PANEL_WIDTH}px, 100vw)`,
+        minWidth: embedded ? 0 : `min(${PANEL_WIDTH}px, 100vw)`,
         height: '100%',
         minHeight: 0,
         display: 'flex',

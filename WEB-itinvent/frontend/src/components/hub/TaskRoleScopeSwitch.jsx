@@ -45,7 +45,7 @@ export default function TaskRoleScopeSwitch({
         '& .MuiToggleButton-root': {
           px: compact ? 1 : 1.35,
           py: compact ? 0.55 : 0.45,
-          minHeight: compact ? 44 : 32,
+          minHeight: compact ? 44 : 36,
           fontWeight: 800,
           textTransform: 'none',
           flex: fullWidth ? 1 : 'initial',

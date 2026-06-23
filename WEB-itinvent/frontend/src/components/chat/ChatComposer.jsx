@@ -914,6 +914,8 @@ const ChatComposer = memo(function ChatComposer({
                       style={{
                         width: compactMobile ? undefined : density.composerIconButton,
                         height: compactMobile ? undefined : density.composerIconButton,
+                        minWidth: compactMobile ? 44 : undefined,
+                        minHeight: compactMobile ? 44 : undefined,
                         backgroundColor: 'transparent',
                         color: composerIconColor,
                       }}
@@ -945,7 +947,7 @@ const ChatComposer = memo(function ChatComposer({
                     data-testid="chat-composer-textarea"
                     minRows={1}
                     maxRows={6}
-                    aria-label="Message"
+                    aria-label="Сообщение"
                     enterKeyHint={compactMobile ? 'enter' : 'send'}
                     placeholder="Сообщение..."
                     value={messageText}
@@ -993,6 +995,8 @@ const ChatComposer = memo(function ChatComposer({
                         style={{
                           width: compactMobile ? undefined : density.composerIconButton,
                           height: compactMobile ? undefined : density.composerIconButton,
+                          minWidth: compactMobile ? 44 : undefined,
+                          minHeight: compactMobile ? 44 : undefined,
                           backgroundColor: 'transparent',
                           color: composerIconColor,
                         }}

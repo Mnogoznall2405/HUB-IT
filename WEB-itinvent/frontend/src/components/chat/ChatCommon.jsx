@@ -23,7 +23,7 @@ import {
   normalizeChatAttachmentUrl,
 } from './chatHelpers';
 import { isChatDocumentPreviewableAttachment } from './chatAttachmentPreview';
-import { TASK_DISCUSSION_CHAT_ENABLED } from '../../lib/chatFeature';
+import { buildTaskDetailPath } from '../../lib/taskNavigation';
 
 const FILE_EXTENSION_COLORS = {
   pdf: '#e53935',
@@ -351,11 +351,7 @@ export function TaskShareCard({ task, navigate, ui, theme }) {
   const statusMeta = getStatusMeta(task?.status);
   const priorityMeta = getPriorityMeta(task?.priority);
   const handleOpenTask = () => {
-    if (TASK_DISCUSSION_CHAT_ENABLED) {
-      navigate(`/tasks?task=${encodeURIComponent(task.id)}`);
-      return;
-    }
-    navigate(`/tasks?task=${encodeURIComponent(task.id)}&task_tab=comments`);
+    navigate(buildTaskDetailPath(task.id));
   };
 
   const handleTaskKeyDown = (event) => {

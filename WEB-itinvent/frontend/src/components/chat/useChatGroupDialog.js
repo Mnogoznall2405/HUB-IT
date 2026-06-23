@@ -19,6 +19,12 @@ const normalizeGroupMemberIds = (values) => (
   )]
 );
 
+// Сброс module-level кеша для unit-тестов.
+export function resetChatGroupUsersCache() {
+  _cachedUsers = null;
+  _cacheTs = 0;
+}
+
 export default function useChatGroupDialog({
   isMobile,
   loadChatDialogsModule,

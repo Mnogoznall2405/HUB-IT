@@ -569,39 +569,6 @@ function ChatBubbleMeta({
         pointerEvents: isInlineLayout ? 'none' : 'auto',
       }}
     >
-      {false && !isInlineLayout && !isMediaLayout && isOwnGroup && readByCount > 0 ? (
-        <Typography
-          component="button"
-          type="button"
-          onClick={() => onOpenReads?.(message)}
-          sx={{
-            appearance: 'none',
-            border: 'none',
-            bgcolor: 'transparent',
-            p: 0,
-            mr: 0.3,
-            cursor: 'pointer',
-            fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta,
-            fontWeight: 700,
-            color: message?.is_own ? alpha('#fff', 0.92) : ui.accentText,
-            lineHeight: 1,
-            fontFamily: CHAT_FONT_FAMILY,
-          }}
-        >
-          {`Просмотрели: ${readByCount}`}
-        </Typography>
-      ) : null}
-
-      {false && !compactMobile && !isInlineLayout && !isMediaLayout ? (
-        <Tooltip title="Ответить">
-          <span>
-            <IconButton size="small" aria-label="Ответить" onClick={() => onReplyMessage?.(message)} sx={{ p: 0, width: 18, height: 18, color: receiptColor }}>
-              <ReplyRoundedIcon sx={{ fontSize: 15 }} />
-            </IconButton>
-          </span>
-        </Tooltip>
-      ) : null}
-
       <Typography
         variant="caption"
         title={message?.edited_at
@@ -1176,8 +1143,8 @@ export function ChatBubble({
             left: { xs: 6, md: 10 },
             top: '50%',
             transform: 'translateY(-50%)',
-            width: compactMobile ? 28 : 26,
-            height: compactMobile ? 28 : 26,
+            width: compactMobile ? 44 : 26,
+            height: compactMobile ? 44 : 26,
             p: 0,
             border: 'none',
             borderRadius: 999,

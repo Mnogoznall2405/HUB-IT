@@ -2599,7 +2599,7 @@ class ChatService:
                 )
             ).scalar_one_or_none()
             if message is None:
-                raise KeyError(f"Message {normalized_message_id!r} not found")
+                raise LookupError(f"Message {normalized_message_id!r} not found")
             existing = session.execute(
                 select(ChatMessageReaction).where(
                     ChatMessageReaction.message_id == normalized_message_id,
@@ -3754,6 +3754,41 @@ class ChatService:
             user_ids=sorted(affected_user_ids),
         )
         return payload
+
+    def get_group_avatar_file_path(self, *, current_user_id: int, filename: str) -> str:
+        self._ensure_available()
+        safe_name = "".join(
+            c if c.isalnum() or c in "-_." else "_" for c in str(filename or "").strip()
+        )
+        if not safe_name.lower().endswith(".jpg"):
+            raise LookupError("Avatar not found")
+
+        path = Path(hub_service.data_dir) / "group_avatars" / safe_name
+        if not path.is_file():
+            raise LookupError("Avatar not found")
+
+        avatar_fragment = f"/group-avatars/{safe_name}"
+        candidate_id = safe_name[:-4] if safe_name.lower().endswith(".jpg") else safe_name
+        with chat_session() as session:
+            conversation = session.get(ChatConversation, candidate_id)
+            if conversation is None or _normalize_text(conversation.kind) != "group":
+                conversation = session.execute(
+                    select(ChatConversation).where(
+                        ChatConversation.kind == "group",
+                        ChatConversation.avatar_url.contains(avatar_fragment),
+                    )
+                ).scalar_one_or_none()
+            if conversation is None:
+                raise LookupError("Avatar not found")
+            stored_avatar_url = _normalize_text(conversation.avatar_url) or ""
+            if avatar_fragment not in stored_avatar_url:
+                raise LookupError("Avatar not found")
+            self._require_membership(
+                session=session,
+                conversation_id=conversation.id,
+                current_user_id=int(current_user_id),
+            )
+        return str(path)
 
     def send_message(
         self,

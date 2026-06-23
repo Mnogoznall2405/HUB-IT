@@ -3,6 +3,10 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../lib/chatFeature', () => ({
+  TASK_DISCUSSION_CHAT_ENABLED: false,
+}));
+
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 import {
   normalizeTaskDetailTab,

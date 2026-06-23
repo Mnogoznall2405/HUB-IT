@@ -70,6 +70,7 @@ export default function useChatActiveThreadPolling({
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || CHAT_WS_ENABLED) return undefined;
     const intervalId = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       if (!sidebarSearchActive) void loadConversations({ silent: true, force: true });
     }, listPollMs);
     return () => window.clearInterval(intervalId);
@@ -78,6 +79,7 @@ export default function useChatActiveThreadPolling({
   useEffect(() => {
     if (!CHAT_FEATURE_ENABLED || CHAT_WS_ENABLED || !activeConversationId) return undefined;
     const intervalId = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       void loadMessages(activeConversationId, { silent: true, reason: 'poll:thread', force: true });
     }, threadPollMs);
     return () => window.clearInterval(intervalId);
@@ -95,6 +97,7 @@ export default function useChatActiveThreadPolling({
     let inFlight = false;
     const pollOnce = () => {
       if (cancelled || inFlight || messagesLoadingRef.current) return;
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
       const currentConversationId = String(activeConversationIdRef.current || normalizedConversationId).trim();
       if (!currentConversationId) return;
       inFlight = true;

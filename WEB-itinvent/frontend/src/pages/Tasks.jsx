@@ -93,7 +93,6 @@ import {
   TaskMobileChecklistScreen,
   TaskMobileDetailScreen,
   TaskPrimaryActions,
-  normalizeTaskDetailTab,
 } from '../components/hub/TaskUi';
 import TaskRoleScopeSwitch from '../components/hub/TaskRoleScopeSwitch';
 import {
@@ -103,6 +102,14 @@ import {
   isTransferActUploadTask,
 } from '../lib/hubTaskIntegrations';
 import { CHAT_FEATURE_ENABLED, TASK_DISCUSSION_CHAT_ENABLED } from '../lib/chatFeature';
+import {
+  buildTaskDetailPath,
+  getDefaultTaskDetailTab,
+  getTaskUnreadBoardLabel,
+  getTaskUnreadFilterLabel,
+  getTaskUnreadFocusLabel,
+  normalizeTaskDetailTab,
+} from '../lib/taskNavigation';
 import { invalidateSWRCacheByPrefix } from '../lib/swrCache';
 import {
   TASK_MODE_OPTIONS,
@@ -1117,6 +1124,8 @@ function Tasks() {
   const [detailsTask, setDetailsTask] = useState(null);
   const [detailsComments, setDetailsComments] = useState([]);
   const [detailsStatusLog, setDetailsStatusLog] = useState([]);
+  const [detailsActivityLoading, setDetailsActivityLoading] = useState(false);
+  const [detailsLoadNonce, setDetailsLoadNonce] = useState(0);
   const [detailsCommentBody, setDetailsCommentBody] = useState('');
   const [detailsCommentSaving, setDetailsCommentSaving] = useState(false);
 
@@ -1140,6 +1149,8 @@ function Tasks() {
 
   const [reviewTask, setReviewTask] = useState(null);
   const [reviewComment, setReviewComment] = useState('');
+  const [reviewSaving, setReviewSaving] = useState(false);
+  const [startingTaskId, setStartingTaskId] = useState('');
 
   const [editOpen, setEditOpen] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
@@ -1166,6 +1177,7 @@ function Tasks() {
   const editDescriptionRef = useRef('');
   const taskDetailHistorySeededRef = useRef(false);
   const taskDetailHistoryPushedRef = useRef(false);
+  const mobileChecklistHistoryPushedRef = useRef(false);
 
   const handleCreateDescriptionDraftChange = useCallback((value) => {
     createDescriptionRef.current = String(value || '');
@@ -1194,13 +1206,19 @@ function Tasks() {
 
   const selectedTaskTab = useMemo(() => {
     const params = new URLSearchParams(location.search || '');
-    return normalizeTaskDetailTab(params.get('task_tab'));
-  }, [location.search]);
+    return normalizeTaskDetailTab(params.get('task_tab'), taskDiscussionChatEnabled);
+  }, [location.search, taskDiscussionChatEnabled]);
 
   const selectedMobileTaskView = useMemo(() => {
     const params = new URLSearchParams(location.search || '');
     return String(params.get('task_mobile_view') || '').trim() === 'checklist' ? 'checklist' : 'details';
   }, [location.search]);
+
+  useEffect(() => {
+    if (selectedMobileTaskView !== 'checklist') {
+      mobileChecklistHistoryPushedRef.current = false;
+    }
+  }, [selectedMobileTaskView]);
 
   const detailsOpen = Boolean(selectedTaskId);
 
@@ -1326,7 +1344,11 @@ function Tasks() {
     setTaskObjects(Array.isArray(objectsPayload?.items) ? objectsPayload.items : []);
   }, []);
 
+  const loadTasksRequestRef = useRef(0);
+
   const loadTasks = useCallback(async () => {
+    const requestId = loadTasksRequestRef.current + 1;
+    loadTasksRequestRef.current = requestId;
     setLoading(true);
     setError('');
     try {
@@ -1346,11 +1368,15 @@ function Tasks() {
         sort_dir: deadlineMode || pageMode === 'board' ? 'asc' : 'desc',
         limit: 150,
       });
+      if (loadTasksRequestRef.current !== requestId) return;
       setTasksPayload(response || { items: [], total: 0 });
     } catch (err) {
+      if (loadTasksRequestRef.current !== requestId) return;
       setError(err?.response?.data?.detail || err?.message || 'Ошибка загрузки задач');
     } finally {
-      setLoading(false);
+      if (loadTasksRequestRef.current === requestId) {
+        setLoading(false);
+      }
     }
   }, [assigneeFilter, canManageAllTasks, debouncedQ, departmentFilter, dueState, hasAttachments, pageMode, statusFilter, viewMode]);
 
@@ -1783,72 +1809,131 @@ function Tasks() {
     }));
   }, []);
 
-  const chooseRoleViewForTask = useCallback((task) => {
-    if (!task) return canManageAllTasks ? 'all' : 'assignee';
-    if (canManageAllTasks) return 'all';
-    if (canUseControllerTab && Number(task?.controller_user_id) === Number(user?.id)) return 'controller';
-    if (canUseCreatorTab && Number(task?.created_by_user_id) === Number(user?.id)) return 'creator';
-    return 'assignee';
-  }, [canManageAllTasks, canUseControllerTab, canUseCreatorTab, user?.id]);
+  const loadTaskDetailsRequestRef = useRef(0);
+  const checklistMutationRef = useRef(new Map());
+  // Лента уже загруженной активности по вкладкам для текущей задачи (ленивая загрузка).
+  const loadedActivityRef = useRef({ taskId: '', comments: false, history: false });
+
+  // Ленивая загрузка активности вкладки. Обсуждение задачи ведётся в чате,
+  // поэтому «комментарии» (легаси-архив) и история статусов подгружаются только
+  // когда соответствующая вкладка реально открыта, а не на каждом открытии карточки.
+  const loadTaskActivity = useCallback(async (taskId, tab, options = {}) => {
+    const normalizedId = String(taskId || '').trim();
+    if (!normalizedId) return;
+    // Вкладка «Файлы» использует вложения из getTask — отдельная загрузка не нужна.
+    if (tab === 'files') return;
+    if (loadedActivityRef.current.taskId !== normalizedId) {
+      loadedActivityRef.current = { taskId: normalizedId, comments: false, history: false };
+    }
+    const ledger = loadedActivityRef.current;
+    const isHistory = tab === 'history';
+    if (isHistory ? ledger.history : ledger.comments) return;
+    if (isHistory) ledger.history = true; else ledger.comments = true;
+
+    const stillCurrent = () => loadedActivityRef.current.taskId === normalizedId;
+    setDetailsActivityLoading(true);
+    try {
+      if (isHistory) {
+        const res = await hubAPI.getTaskStatusLog(normalizedId);
+        if (!stillCurrent()) return;
+        setDetailsStatusLog(Array.isArray(res?.items) ? res.items : []);
+      } else {
+        const res = await hubAPI.getTaskComments(normalizedId);
+        if (!stillCurrent()) return;
+        setDetailsComments(Array.isArray(res?.items) ? res.items : []);
+        if (options.hasUnread) {
+          try {
+            await hubAPI.markTaskCommentsSeen(normalizedId);
+            if (!stillCurrent()) return;
+            patchTaskItem(normalizedId, { has_unread_comments: false });
+            setDetailsTask((prev) => (
+              prev && String(prev.id || '') === normalizedId
+                ? { ...prev, has_unread_comments: false }
+                : prev
+            ));
+            window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
+          } catch {
+            // ignore mark-seen failures
+          }
+        }
+      }
+    } catch {
+      // Разрешаем повторную попытку при следующем заходе на вкладку.
+      if (isHistory) ledger.history = false; else ledger.comments = false;
+    } finally {
+      if (stillCurrent()) setDetailsActivityLoading(false);
+    }
+  }, [patchTaskItem]);
 
   const loadTaskDetails = useCallback(async (taskId) => {
     const normalizedId = String(taskId || '').trim();
     if (!normalizedId) return;
+    const requestId = loadTaskDetailsRequestRef.current + 1;
+    loadTaskDetailsRequestRef.current = requestId;
+    const isStale = () => loadTaskDetailsRequestRef.current !== requestId;
+    // Новая задача — сбрасываем ленту загруженной активности.
+    loadedActivityRef.current = { taskId: normalizedId, comments: false, history: false };
     setDetailsLoading(true);
+    setDetailsActivityLoading(true);
     try {
       const task = await hubAPI.getTask(normalizedId);
-      window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
-      const [commentsResult, statusResult] = await Promise.allSettled([
-        hubAPI.getTaskComments(normalizedId),
-        hubAPI.getTaskStatusLog(normalizedId),
-      ]);
+      if (isStale()) return;
 
-      let nextTask = task || null;
-      setDetailsComments(
-        commentsResult.status === 'fulfilled' && Array.isArray(commentsResult.value?.items)
-          ? commentsResult.value.items
-          : [],
-      );
-      setDetailsStatusLog(
-        statusResult.status === 'fulfilled' && Array.isArray(statusResult.value?.items)
-          ? statusResult.value.items
-          : [],
-      );
+      // Прогрессивная отрисовка: карточка (описание/чеклист/вложения/статус)
+      // полностью содержится в ответе getTask — показываем её сразу. Активность
+      // активной вкладки догрузит отдельный эффект по selectedTaskTab.
+      patchTaskItem(normalizedId, task || {});
+      setDetailsTask(task || null);
+      setDetailsLoading(false);
+      // Триггерим (пере)загрузку активности активной вкладки, в т.ч. при refresh
+      // той же задачи после действий (добавление комментария, смена статуса).
+      setDetailsLoadNonce((prev) => prev + 1);
 
-      if (task?.has_unread_comments) {
-        try {
-          await hubAPI.markTaskCommentsSeen(normalizedId);
-          nextTask = { ...task, has_unread_comments: false };
-          patchTaskItem(normalizedId, { has_unread_comments: false });
-          window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
-        } catch {
-          // ignore
-        }
+      // Обновление бейджей уведомлений — вне горячего пути, чтобы тяжёлый
+      // пересчёт unread не конкурировал с загрузкой карточки.
+      if (typeof window !== 'undefined') {
+        const scheduleIdle = window.requestIdleCallback
+          ? (cb) => window.requestIdleCallback(cb, { timeout: 1000 })
+          : (cb) => window.setTimeout(cb, 400);
+        scheduleIdle(() => {
+          if (!isStale()) window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
+        });
       }
-
-      patchTaskItem(normalizedId, nextTask || task || {});
-      setDetailsTask(nextTask);
-      setViewMode((prev) => {
-        const suggested = chooseRoleViewForTask(nextTask);
-        return prev === suggested ? prev : suggested;
-      });
     } catch (err) {
+      if (isStale()) return;
       setDetailsTask(null);
       setDetailsComments([]);
       setDetailsStatusLog([]);
+      setDetailsActivityLoading(false);
       setError(err?.response?.data?.detail || err?.message || 'Ошибка загрузки карточки задачи');
     } finally {
-      setDetailsLoading(false);
+      if (loadTaskDetailsRequestRef.current === requestId) {
+        setDetailsLoading(false);
+      }
     }
-  }, [chooseRoleViewForTask, patchTaskItem]);
+  }, [patchTaskItem]);
+
+  // Догружаем активность активной вкладки карточки (ленивая загрузка по вкладке).
+  // На мобильном карточка (TaskMobileDetailScreen) не показывает комментарии/историю —
+  // обсуждение ведётся в чате, поэтому активность там не загружаем.
+  useEffect(() => {
+    if (isMobile || !detailsTask?.id) return;
+    const normalizedId = String(detailsTask.id || '').trim();
+    if (!normalizedId || normalizedId !== String(selectedTaskId || '').trim()) return;
+    void loadTaskActivity(normalizedId, selectedTaskTab, {
+      hasUnread: selectedTaskTab === 'comments' && Boolean(detailsTask.has_unread_comments),
+    });
+  }, [isMobile, detailsTask?.id, detailsTask?.has_unread_comments, selectedTaskId, selectedTaskTab, detailsLoadNonce, loadTaskActivity]);
 
   useEffect(() => {
     if (!selectedTaskId) {
       taskDetailHistorySeededRef.current = false;
       taskDetailHistoryPushedRef.current = false;
+      mobileChecklistHistoryPushedRef.current = false;
       setDetailsTask(null);
       setDetailsComments([]);
       setDetailsStatusLog([]);
+      setDetailsActivityLoading(false);
       setDetailsCommentBody('');
       return;
     }
@@ -1869,6 +1954,7 @@ function Tasks() {
     const listParams = new URLSearchParams(location.search || '');
     listParams.delete('task');
     listParams.delete('task_tab');
+    listParams.delete('task_mobile_view');
     const listHref = `${location.pathname}${listParams.toString() ? `?${listParams.toString()}` : ''}`;
     const taskHref = `${location.pathname}${location.search || ''}`;
     if (listHref === taskHref) {
@@ -2026,41 +2112,42 @@ function Tasks() {
     setDetailsStatusLog([]);
     setDetailsCommentBody('');
 
-    const params = new URLSearchParams(location.search || '');
-    const hasTaskInUrl = Boolean(String(params.get('task') || '').trim());
-
-    if (isMobile && hasTaskInUrl && taskDetailHistoryPushedRef.current) {
-      taskDetailHistoryPushedRef.current = false;
-      navigate(-1);
-      return;
-    }
+    mobileChecklistHistoryPushedRef.current = false;
+    taskDetailHistoryPushedRef.current = false;
 
     updateSearch((nextParams) => {
       nextParams.delete('task');
       nextParams.delete('task_tab');
       nextParams.delete('task_mobile_view');
     }, { replace: true });
-  }, [isMobile, location.search, navigate, updateSearch]);
+  }, [updateSearch]);
 
   const openTaskDetails = useCallback((task) => {
     const id = String(task?.id || '').trim();
     if (!id) return;
     setDetailsLoading(true);
+    setDetailsActivityLoading(true);
     setDetailsTask(null);
     setDetailsComments([]);
     setDetailsStatusLog([]);
+    mobileChecklistHistoryPushedRef.current = false;
     if (isMobile) {
       taskDetailHistoryPushedRef.current = true;
     }
     updateSearch((params) => {
       params.set('task', id);
-      params.set('task_tab', 'comments');
+      if (taskDiscussionChatEnabled) {
+        params.delete('task_tab');
+      } else {
+        params.set('task_tab', getDefaultTaskDetailTab(false));
+      }
       params.delete('task_mobile_view');
     }, { replace: false });
-  }, [isMobile, updateSearch]);
+  }, [isMobile, taskDiscussionChatEnabled, updateSearch]);
 
   const openMobileTaskChecklist = useCallback(() => {
     if (!selectedTaskId) return;
+    mobileChecklistHistoryPushedRef.current = true;
     updateSearch((params) => {
       params.set('task', selectedTaskId);
       params.set('task_mobile_view', 'checklist');
@@ -2068,19 +2155,24 @@ function Tasks() {
   }, [selectedTaskId, updateSearch]);
 
   const closeMobileTaskChecklist = useCallback(() => {
+    if (mobileChecklistHistoryPushedRef.current) {
+      mobileChecklistHistoryPushedRef.current = false;
+      navigate(-1);
+      return;
+    }
     updateSearch((params) => {
       params.delete('task_mobile_view');
-    }, { replace: false });
-  }, [updateSearch]);
+    }, { replace: true });
+  }, [navigate, updateSearch]);
 
   const setTaskDetailTab = useCallback((tab) => {
-    const nextTab = normalizeTaskDetailTab(tab);
+    const nextTab = normalizeTaskDetailTab(tab, taskDiscussionChatEnabled);
     updateSearch((params) => {
       if (selectedTaskId) {
         params.set('task_tab', nextTab);
       }
     }, { replace: false });
-  }, [selectedTaskId, updateSearch]);
+  }, [selectedTaskId, taskDiscussionChatEnabled, updateSearch]);
 
   const downloadBlob = useCallback((response, fileName) => {
     const blob = response?.data instanceof Blob
@@ -2377,25 +2469,34 @@ function Tasks() {
   };
 
   const handleReviewTask = async (decision) => {
-    if (!reviewTask?.id) return;
+    if (!reviewTask?.id || reviewSaving) return;
+    const reviewTaskId = reviewTask.id;
+    setReviewSaving(true);
     try {
-      await hubAPI.reviewTask(reviewTask.id, { decision, comment: reviewComment });
+      await hubAPI.reviewTask(reviewTaskId, { decision, comment: reviewComment });
       setReviewTask(null);
       setReviewComment('');
-      await refreshTasksAndDetails(reviewTask.id);
+      await refreshTasksAndDetails(reviewTaskId);
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка проверки задачи');
+    } finally {
+      setReviewSaving(false);
     }
   };
 
   const handleStartTask = async (taskId) => {
+    const normalizedId = String(taskId || '').trim();
+    if (!normalizedId || startingTaskId) return;
+    setStartingTaskId(normalizedId);
     try {
-      await hubAPI.startTask(taskId);
-      await refreshTasksAndDetails(taskId);
+      await hubAPI.startTask(normalizedId);
+      await refreshTasksAndDetails(normalizedId);
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка перевода задачи в работу');
+    } finally {
+      setStartingTaskId('');
     }
   };
 
@@ -2615,18 +2716,23 @@ function Tasks() {
     }
   }, [detailsTask, navigate, taskDiscussionChatEnabled, user?.id]);
 
-  const handleCopyTaskLink = useCallback(async (taskId, taskTab = 'comments') => {
+  const handleCopyTaskLink = useCallback(async (taskId, taskTab) => {
     const normalizedId = String(taskId || '').trim();
-    if (!normalizedId || !navigator?.clipboard?.writeText) return;
-    const url = new URL('/tasks', window.location.origin);
-    url.searchParams.set('task', normalizedId);
-    url.searchParams.set('task_tab', normalizeTaskDetailTab(taskTab));
+    if (!normalizedId) return;
+    const path = buildTaskDetailPath(normalizedId, {
+      tab: taskTab,
+      taskDiscussionEnabled: taskDiscussionChatEnabled,
+    });
+    const url = new URL(path, window.location.origin);
     try {
+      if (!navigator?.clipboard?.writeText) {
+        throw new Error('clipboard unavailable');
+      }
       await navigator.clipboard.writeText(url.toString());
     } catch {
-      // ignore clipboard failures
+      setError('Не удалось скопировать ссылку. Скопируйте адрес вручную.');
     }
-  }, []);
+  }, [taskDiscussionChatEnabled]);
 
   const openTransferActReminder = useCallback((task) => {
     if (!canOpenTransferActUpload(task)) return;
@@ -2698,20 +2804,45 @@ function Tasks() {
 
   const handleToggleTaskChecklistItem = useCallback(async (task, itemId, done) => {
     const taskId = String(task?.id || '').trim();
-    const items = Array.isArray(task?.checklist_items) ? task.checklist_items : [];
-    if (!taskId || !itemId || items.length === 0) return;
-    const nextItems = items.map((item) => (
+    const baseItems = Array.isArray(task?.checklist_items) ? task.checklist_items : [];
+    if (!taskId || !itemId) return;
+
+    const mutations = checklistMutationRef.current;
+    const existing = mutations.get(taskId);
+    const sourceItems = existing?.items || baseItems;
+    if (sourceItems.length === 0) return;
+    const nextItems = sourceItems.map((item) => (
       String(item?.id || '') === String(itemId)
         ? { ...item, done: Boolean(done) }
         : item
     ));
+
+    const runAfter = existing?.chain || Promise.resolve();
+    const chain = runAfter
+      .catch(() => {})
+      .then(() => hubAPI.updateTask(taskId, { checklist_items: nextItems }));
+    mutations.set(taskId, { items: nextItems, chain });
+
     try {
-      await hubAPI.updateTask(taskId, { checklist_items: nextItems });
-      await refreshTasksAndDetails(taskId);
+      const updatedTask = await chain;
+      if (mutations.get(taskId)?.chain === chain) {
+        mutations.delete(taskId);
+        const serverItems = Array.isArray(updatedTask?.checklist_items)
+          ? updatedTask.checklist_items
+          : nextItems;
+        const patch = { checklist_items: serverItems };
+        patchTaskItem(taskId, patch);
+        setDetailsTask((prev) => (
+          prev && String(prev.id || '') === taskId ? { ...prev, ...patch } : prev
+        ));
+      }
     } catch (err) {
+      if (mutations.get(taskId)?.chain === chain) {
+        mutations.delete(taskId);
+      }
       setError(err?.response?.data?.detail || err?.message || 'Ошибка обновления чек-листа');
     }
-  }, [refreshTasksAndDetails]);
+  }, [patchTaskItem]);
 
   const handleAddTaskChecklistItem = useCallback(async (task, text) => {
     const taskId = String(task?.id || '').trim();
@@ -3153,7 +3284,12 @@ function Tasks() {
       priority.value !== 'normal' ? { key: 'priority', label: priority.label, color: priority.dotColor, bg: alpha(priority.dotColor, 0.12) } : null,
       task?.is_overdue ? { key: 'overdue', label: 'Просрочено', color: '#dc2626', bg: 'rgba(220,38,38,0.12)' } : null,
       attachCount > 0 ? { key: 'files', label: `Файлы ${attachCount}`, color: ui.mutedText, bg: ui.actionBg } : null,
-      commentCount > 0 ? { key: 'comments', label: `Комментарии ${commentCount}`, color: task?.has_unread_comments ? '#2563eb' : ui.mutedText, bg: task?.has_unread_comments ? 'rgba(37,99,235,0.12)' : ui.actionBg } : null,
+      commentCount > 0 ? {
+        key: 'comments',
+        label: taskDiscussionChatEnabled ? `Архив ${commentCount}` : `Комментарии ${commentCount}`,
+        color: task?.has_unread_comments ? '#2563eb' : ui.mutedText,
+        bg: task?.has_unread_comments ? 'rgba(37,99,235,0.12)' : ui.actionBg,
+      } : null,
       checklistTotal > 0 ? { key: 'checklist', label: `Чек-лист ${checklistDone}/${checklistTotal}`, color: '#0f766e', bg: 'rgba(15,118,110,0.12)' } : null,
     ].filter(Boolean);
 
@@ -3893,6 +4029,9 @@ function Tasks() {
             void handleCopyTaskLink(detailsTask?.id, selectedTaskTab);
           }
         }}
+        taskDiscussionEnabled={taskDiscussionChatEnabled}
+        onOpenTaskDiscussion={() => void handleOpenTaskDiscussion(detailsTask)}
+        discussionOpening={discussionOpening}
         ui={ui}
         theme={theme}
       />
@@ -4005,8 +4144,10 @@ function Tasks() {
                 activeTab={selectedTaskTab}
                 onTabChange={setTaskDetailTab}
                 comments={detailsComments}
+                commentsCount={Number(detailsTask.comments_count) || detailsComments.length}
                 attachments={Array.isArray(detailsTask.attachments) ? detailsTask.attachments : []}
                 statusLog={detailsStatusLog}
+                activityLoading={detailsActivityLoading}
                 commentBody={detailsCommentBody}
                 onCommentChange={setDetailsCommentBody}
                 onAddComment={() => void handleAddTaskComment()}
@@ -4022,8 +4163,6 @@ function Tasks() {
                 ui={ui}
                 theme={theme}
                 taskDiscussionEnabled={taskDiscussionChatEnabled}
-                onOpenTaskDiscussion={() => void handleOpenTaskDiscussion(detailsTask)}
-                discussionOpening={discussionOpening}
               />
             </Stack>
 
@@ -4075,7 +4214,7 @@ function Tasks() {
     { key: 'open', label: 'Открыто', value: openTasksCount, color: '#2563eb' },
     { key: 'review', label: 'Проверка', value: focusCounts.review, color: '#7c3aed' },
     { key: 'overdue', label: 'Просрочено', value: focusCounts.overdue, color: '#dc2626' },
-    { key: 'comments', label: 'Комментарии', value: focusCounts.comments, color: '#059669' },
+    { key: 'comments', label: getTaskUnreadBoardLabel(taskDiscussionChatEnabled), value: focusCounts.comments, color: '#059669' },
   ];
 
   const boardFiltersContent = (
@@ -4175,7 +4314,7 @@ function Tasks() {
           <FormControlLabel control={<Checkbox checked={hasAttachments} onChange={(event) => setHasAttachments(event.target.checked)} />} label="С файлами" />
         </Grid>
         <Grid item xs={12} sm={6} md={2.6}>
-          <FormControlLabel control={<Checkbox checked={unreadCommentsOnly} onChange={(event) => setUnreadCommentsOnly(event.target.checked)} />} label="Есть новые комментарии" />
+          <FormControlLabel control={<Checkbox checked={unreadCommentsOnly} onChange={(event) => setUnreadCommentsOnly(event.target.checked)} />} label={getTaskUnreadFilterLabel(taskDiscussionChatEnabled)} />
         </Grid>
         <Grid item xs={12} md={7}>
           <Typography variant="caption" sx={{ color: ui.subtleText }}>
@@ -4634,7 +4773,7 @@ function Tasks() {
                       <Chip
                         key={option.value}
                         clickable
-                        label={`${option.label}: ${focusCounts[option.value] || 0}`}
+                        label={`${option.value === 'comments' ? getTaskUnreadFocusLabel(taskDiscussionChatEnabled) : option.label}: ${focusCounts[option.value] || 0}`}
                         onClick={() => {
                           setFocusMode(option.value);
                           setMobileBoardFiltersOpen(false);
@@ -5525,7 +5664,7 @@ function Tasks() {
                         <Chip
                           key={option.value}
                           clickable
-                          label={`${option.label}: ${focusCounts[option.value] || 0}`}
+                          label={`${option.value === 'comments' ? getTaskUnreadFocusLabel(taskDiscussionChatEnabled) : option.label}: ${focusCounts[option.value] || 0}`}
                           onClick={() => setFocusMode(option.value)}
                           sx={{
                             flexShrink: 0,
@@ -5724,7 +5863,7 @@ function Tasks() {
                       <Chip
                         key={option.value}
                         clickable
-                        label={`${option.label}: ${focusCounts[option.value] || 0}`}
+                        label={`${option.value === 'comments' ? getTaskUnreadFocusLabel(taskDiscussionChatEnabled) : option.label}: ${focusCounts[option.value] || 0}`}
                         onClick={() => setFocusMode(option.value)}
                         sx={{
                           flexShrink: 0,
@@ -5827,7 +5966,7 @@ function Tasks() {
                       />
                     </Grid>
                     <Grid item xs={12} sm={6} md={2.4}><FormControlLabel control={<Checkbox checked={hasAttachments} onChange={(event) => setHasAttachments(event.target.checked)} />} label="С файлами" /></Grid>
-                    <Grid item xs={12} sm={6} md={2.6}><FormControlLabel control={<Checkbox checked={unreadCommentsOnly} onChange={(event) => setUnreadCommentsOnly(event.target.checked)} />} label="Есть новые комментарии" /></Grid>
+                    <Grid item xs={12} sm={6} md={2.6}><FormControlLabel control={<Checkbox checked={unreadCommentsOnly} onChange={(event) => setUnreadCommentsOnly(event.target.checked)} />} label={getTaskUnreadFilterLabel(taskDiscussionChatEnabled)} /></Grid>
                     <Grid item xs={12} md={7}>
                       <Typography variant="caption" sx={{ color: ui.subtleText }}>
                         Фильтры и текущая карточка синхронизируются с URL, поэтому состояние страницы можно открыть по ссылке.
@@ -6612,294 +6751,6 @@ function Tasks() {
         </>
         ) : null}
 
-        {/*
-        <Drawer
-          anchor="right"
-          open={detailsOpen}
-          onClose={closeTaskDetails}
-          PaperProps={{
-            sx: {
-              width: { xs: '100%', sm: 560, lg: 620 },
-              maxWidth: '100%',
-              borderLeft: '1px solid',
-              display: 'flex',
-              flexDirection: 'column',
-              ...getOfficeDialogPaperSx(ui, { borderLeftColor: ui.borderSoft }),
-            },
-          }}
-        >
-          <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 2, py: 1.5 }) }}>
-            <Stack direction={{ xs: 'column', sm: 'row' }} justifyContent="space-between" spacing={1}>
-              <Box sx={{ minWidth: 0 }}>
-                <Typography sx={{ fontWeight: 900, fontSize: '1.05rem', lineHeight: 1.2 }}>
-                  {detailsTask?.title || 'Карточка задачи'}
-                </Typography>
-                <Typography variant="body2" sx={{ color: ui.mutedText, mt: 0.35 }}>
-                  Быстрый просмотр: контроль, обсуждение, файлы и история без отдельного экрана.
-                </Typography>
-              </Box>
-              <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.8}>
-                {detailsTask?.id && (
-                  <Button variant="outlined" size="small" startIcon={<ContentCopyIcon />} onClick={() => void handleCopyTaskLink(detailsTask.id)} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
-                    Копировать ссылку
-                  </Button>
-                )}
-                <Button onClick={closeTaskDetails} sx={{ textTransform: 'none', fontWeight: 700 }}>
-                  Закрыть
-                </Button>
-              </Stack>
-            </Stack>
-          </Box>
-
-          <Box sx={{ flex: 1, overflowY: 'auto', px: 2, py: 1.6 }}>
-            {detailsLoading && <LinearProgress sx={{ mb: 1.2, borderRadius: 999 }} />}
-            {detailsTask ? (
-              <Stack spacing={1.5}>
-                <Stack direction="row" spacing={0.6} sx={{ flexWrap: 'wrap', gap: 0.6 }}>
-                  <Chip size="small" label={statusMeta(detailsTask.status).label} sx={{ fontWeight: 800, bgcolor: statusMeta(detailsTask.status).bg, color: statusMeta(detailsTask.status).color }} />
-                  {isTransferActUploadTask(detailsTask) && (
-                    <Chip
-                      size="small"
-                      label={getTransferActReminderLabel(detailsTask)}
-                      sx={{ fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb' }}
-                    />
-                  )}
-                  {detailsTask.is_overdue && <Chip size="small" label="Просрочено" sx={{ fontWeight: 800, bgcolor: 'rgba(220,38,38,0.12)', color: '#dc2626' }} />}
-                  {detailsTask.has_unread_comments && <Chip size="small" label="Новый комментарий" sx={{ fontWeight: 800, bgcolor: 'rgba(37,99,235,0.12)', color: '#2563eb' }} />}
-                  {Number(detailsTask.comments_count || 0) > 0 && <Chip size="small" label={`Комментарии: ${detailsTask.comments_count}`} sx={{ fontWeight: 700 }} />}
-                  {Number(detailsTask.attachments_count || 0) > 0 && <Chip size="small" label={`Файлы: ${detailsTask.attachments_count}`} sx={{ fontWeight: 700 }} />}
-                </Stack>
-
-                <Grid container spacing={1.1}>
-                  <Grid item xs={12} sm={6}><Typography variant="caption" sx={{ color: ui.subtleText }}>Постановщик</Typography><Typography sx={{ fontWeight: 700 }}>{detailsTask.created_by_full_name || detailsTask.created_by_username || '-'}</Typography></Grid>
-                  <Grid item xs={12} sm={6}><Typography variant="caption" sx={{ color: ui.subtleText }}>Исполнитель</Typography><Typography sx={{ fontWeight: 700 }}>{detailsTask.assignee_full_name || detailsTask.assignee_username || '-'}</Typography></Grid>
-                  <Grid item xs={12} sm={6}><Typography variant="caption" sx={{ color: ui.subtleText }}>Контролёр</Typography><Typography sx={{ fontWeight: 700 }}>{detailsTask.controller_full_name || detailsTask.controller_username || '-'}</Typography></Grid>
-                  <Grid item xs={12} sm={6}><Typography variant="caption" sx={{ color: ui.subtleText }}>Проверил</Typography><Typography sx={{ fontWeight: 700 }}>{detailsTask.reviewer_full_name || '-'}</Typography></Grid>
-                  <Grid item xs={12} sm={6}><Typography variant="caption" sx={{ color: ui.subtleText }}>Срок</Typography><Typography sx={{ fontWeight: 700 }}>{detailsTask.due_at ? formatDateTime(detailsTask.due_at) : 'Без срока'}</Typography></Grid>
-                  <Grid item xs={12} sm={6}><Typography variant="caption" sx={{ color: ui.subtleText }}>Сдано</Typography><Typography sx={{ fontWeight: 700 }}>{formatDateTime(detailsTask.submitted_at)}</Typography></Grid>
-                  <Grid item xs={12} sm={6}><Typography variant="caption" sx={{ color: ui.subtleText }}>Проверено</Typography><Typography sx={{ fontWeight: 700 }}>{formatDateTime(detailsTask.reviewed_at)}</Typography></Grid>
-                  <Grid item xs={12} sm={6}><Typography variant="caption" sx={{ color: ui.subtleText }}>Обновлено</Typography><Typography sx={{ fontWeight: 700 }}>{formatDateTime(detailsTask.updated_at || detailsTask.created_at)}</Typography></Grid>
-                </Grid>
-
-                {String(detailsTask.review_comment || '').trim() && (
-                  <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '14px' }) }}>
-                    <Typography sx={{ fontWeight: 800, mb: 0.45 }}>Комментарий проверки</Typography>
-                    <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>{detailsTask.review_comment}</Typography>
-                  </Box>
-                )}
-
-                <Stack direction="row" spacing={0.8} flexWrap="wrap">
-                  {taskDiscussionChatEnabled && (
-                    <Button
-                      size="small"
-                      variant="contained"
-                      color="secondary"
-                      onClick={() => void handleOpenTaskDiscussion(detailsTask)}
-                      disabled={discussionOpening}
-                      sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
-                    >
-                      {discussionOpening ? 'Открываем чат…' : 'Чат по задаче'}
-                    </Button>
-                  )}
-                  {canOpenTransferActUpload(detailsTask) && (
-                    <Button size="small" variant="contained" onClick={() => openTransferActReminder(detailsTask)} sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}>
-                      Загрузить подписанный акт
-                    </Button>
-                  )}
-                  {canStartTask(detailsTask) && (
-                    <Button size="small" variant="outlined" onClick={() => void handleStartTask(detailsTask.id)} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
-                      В работу
-                    </Button>
-                  )}
-                  {canSubmitTask(detailsTask) && (
-                    <Button size="small" variant="contained" onClick={() => setSubmitTask(detailsTask)} sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}>
-                      Сдать работу
-                    </Button>
-                  )}
-                  {canReviewTask(detailsTask) && (
-                    <Button size="small" variant="contained" color="secondary" onClick={() => setReviewTask(detailsTask)} sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}>
-                      Проверить
-                    </Button>
-                  )}
-                  {canEditTask(detailsTask) && (
-                    <Button size="small" variant="outlined" startIcon={<EditIcon />} onClick={() => openEditTask(detailsTask)} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
-                      Редактировать
-                    </Button>
-                  )}
-                  {canDeleteTask(detailsTask) && (
-                    <Button size="small" color="error" startIcon={<DeleteOutlineIcon />} onClick={() => void handleDeleteTask(detailsTask)} sx={{ textTransform: 'none', borderRadius: '10px' }}>
-                      Удалить
-                    </Button>
-                  )}
-                  <Button size="small" variant="outlined" startIcon={<OpenInNewIcon />} onClick={() => navigate(`/tasks?task=${encodeURIComponent(detailsTask.id)}`)} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
-                    Открыть ссылкой
-                  </Button>
-                </Stack>
-
-                <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1.3, borderRadius: '14px' }) }}>
-                  {String(detailsTask.description || '').trim() ? (
-                    <MarkdownRenderer value={detailsTask.description} />
-                  ) : (
-                    <Typography variant="body2" sx={{ color: ui.mutedText }}>
-                      Описание задачи не заполнено.
-                    </Typography>
-                  )}
-                </Box>
-
-                {detailsTask.latest_report && (
-                  <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '14px' }) }}>
-                    <Stack direction="row" justifyContent="space-between" alignItems="center" spacing={1}>
-                      <Box>
-                        <Typography sx={{ fontWeight: 800 }}>Последний отчёт</Typography>
-                        <Typography variant="caption" sx={{ color: ui.subtleText }}>
-                          {formatDateTime(detailsTask.latest_report.uploaded_at)} · {detailsTask.latest_report.uploaded_by_username || '-'}
-                        </Typography>
-                      </Box>
-                      {detailsTask.latest_report.file_name && (
-                        <Button size="small" variant="outlined" startIcon={<DownloadIcon />} onClick={() => void handleDownloadReport(detailsTask.latest_report)} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
-                          Скачать
-                        </Button>
-                      )}
-                    </Stack>
-                    {detailsTask.latest_report.comment && (
-                      <Typography variant="body2" sx={{ mt: 0.8, whiteSpace: 'pre-wrap' }}>
-                        {detailsTask.latest_report.comment}
-                      </Typography>
-                    )}
-                  </Box>
-                )}
-
-                {Array.isArray(detailsTask.attachments) && detailsTask.attachments.length > 0 && (
-                  <Box sx={{ ...getOfficePanelSx(ui, { p: 1.2, borderRadius: '14px', boxShadow: 'none' }) }}>
-                    <Typography sx={{ fontWeight: 800, mb: 0.8 }}>Файлы задачи</Typography>
-                    <List disablePadding dense>
-                      {detailsTask.attachments.map((attachment) => (
-                        <ListItem
-                          key={attachment.id}
-                          disableGutters
-                          secondaryAction={<IconButton size="small" onClick={() => void handleDownloadAttachment(detailsTask, attachment)}><DownloadIcon fontSize="small" /></IconButton>}
-                        >
-                          <ListItemAvatar sx={{ minWidth: 36 }}>
-                            <Avatar sx={{ width: 24, height: 24, bgcolor: alpha(theme.palette.primary.main, 0.14), color: theme.palette.primary.main }}>
-                              <AttachFileIcon sx={{ fontSize: 14 }} />
-                            </Avatar>
-                          </ListItemAvatar>
-                          <ListItemText primary={attachment.file_name || 'file'} secondary={`${formatFileSize(attachment.file_size)} · ${formatDateTime(attachment.uploaded_at)}`} />
-                        </ListItem>
-                      ))}
-                    </List>
-                  </Box>
-                )}
-
-                {canUploadFiles(detailsTask) && (
-                  <Button size="small" variant="outlined" component="label" startIcon={<AttachFileIcon />} disabled={uploadingAttachment} sx={{ alignSelf: 'flex-start', textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
-                    {uploadingAttachment ? 'Загрузка...' : 'Прикрепить файл'}
-                    <input
-                      type="file"
-                      hidden
-                      onChange={(event) => {
-                        const file = event.target.files?.[0];
-                        if (file) {
-                          void handleUploadAttachment(detailsTask.id, file);
-                        }
-                        event.target.value = '';
-                      }}
-                    />
-                  </Button>
-                )}
-
-                <Box sx={{ ...getOfficePanelSx(ui, { borderRadius: '14px', overflow: 'hidden', boxShadow: 'none' }) }}>
-                  <Box sx={{ ...getOfficeHeaderBandSx(ui, { px: 1.2, py: 1 }) }}>
-                    <Stack direction="row" spacing={0.6} alignItems="center">
-                      <ModeCommentOutlinedIcon sx={{ fontSize: 18, color: theme.palette.primary.main }} />
-                      <Typography sx={{ fontWeight: 800 }}>Обсуждение</Typography>
-                    </Stack>
-                  </Box>
-                  <Box ref={detailsCommentsRef} sx={{ maxHeight: 280, overflowY: 'auto', px: 1.2, py: 0.8 }}>
-                    {detailsComments.length === 0 ? (
-                      <Typography variant="body2" sx={{ color: ui.mutedText, py: 0.8 }}>
-                        Комментариев пока нет.
-                      </Typography>
-                    ) : (
-                      <List disablePadding dense>
-                        {detailsComments.map((item) => (
-                          <ListItem key={item.id} disableGutters sx={{ alignItems: 'flex-start', py: 0.6 }}>
-                            <ListItemAvatar sx={{ minWidth: 36 }}>
-                              <Avatar sx={{ width: 24, height: 24, bgcolor: alpha(theme.palette.primary.main, 0.14), color: theme.palette.primary.main, fontSize: '0.62rem' }}>
-                                {getInitials(item.full_name || item.username)}
-                              </Avatar>
-                            </ListItemAvatar>
-                            <ListItemText
-                              primary={item.full_name || item.username || '-'}
-                              secondary={(
-                                <>
-                                  <Typography component="span" variant="caption" sx={{ display: 'block', color: ui.subtleText, mb: 0.25 }}>
-                                    {formatDateTime(item.created_at)}
-                                  </Typography>
-                                  <Typography component="span" variant="body2" sx={{ color: 'text.primary', whiteSpace: 'pre-wrap' }}>
-                                    {item.body || ''}
-                                  </Typography>
-                                </>
-                              )}
-                            />
-                          </ListItem>
-                        ))}
-                      </List>
-                    )}
-                  </Box>
-                  <Box sx={{ px: 1.2, py: 1, borderTop: '1px solid', borderColor: ui.borderSoft, bgcolor: ui.panelSolid }}>
-                    <Stack spacing={0.8}>
-                      <TextField label="Новый комментарий" value={detailsCommentBody} onChange={(event) => setDetailsCommentBody(event.target.value)} multiline minRows={3} fullWidth />
-                      <Stack direction="row" justifyContent="flex-end">
-                        <Button
-                          variant="contained"
-                          onClick={() => void handleAddTaskComment()}
-                          disabled={detailsCommentSaving || String(detailsCommentBody || '').trim().length === 0}
-                          sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}
-                        >
-                          {detailsCommentSaving ? 'Сохранение...' : 'Добавить комментарий'}
-                        </Button>
-                      </Stack>
-                    </Stack>
-                  </Box>
-                </Box>
-
-                <Box sx={{ ...getOfficePanelSx(ui, { p: 1.2, borderRadius: '14px', boxShadow: 'none' }) }}>
-                  <Typography sx={{ fontWeight: 800, mb: 1 }}>История статусов</Typography>
-                  {detailsStatusLog.length === 0 ? (
-                    <Typography variant="body2" sx={{ color: ui.mutedText }}>
-                      Переходы статусов пока не зафиксированы.
-                    </Typography>
-                  ) : (
-                    <Stack spacing={0.9}>
-                      {detailsStatusLog.map((item, index) => (
-                        <Stack key={item.id || `${item.changed_at}-${index}`} direction="row" spacing={1}>
-                          <Box sx={{ width: 16, display: 'flex', flexDirection: 'column', alignItems: 'center' }}>
-                            <Box sx={{ width: 10, height: 10, borderRadius: '999px', bgcolor: statusMeta(item.new_status).color, mt: 0.4 }} />
-                            {index < detailsStatusLog.length - 1 && <Box sx={{ width: 2, flex: 1, bgcolor: ui.border, minHeight: 18, borderRadius: '999px' }} />}
-                          </Box>
-                          <Box sx={{ flex: 1, pb: 0.4 }}>
-                            <Typography sx={{ fontWeight: 700, fontSize: '0.9rem' }}>
-                              {`${item.old_status ? statusMeta(item.old_status).label : 'Создано'} -> ${statusMeta(item.new_status).label}`}
-                            </Typography>
-                            <Typography variant="caption" sx={{ color: ui.subtleText }}>
-                              {item.changed_by_username || '-'} · {formatDateTime(item.changed_at)}
-                            </Typography>
-                          </Box>
-                        </Stack>
-                      ))}
-                    </Stack>
-                  )}
-                </Box>
-              </Stack>
-            ) : (
-              <Typography variant="body2" sx={{ color: ui.mutedText }}>
-                {detailsLoading ? 'Загрузка карточки задачи...' : 'Карточка задачи недоступна.'}
-              </Typography>
-            )}
-          </Box>
-        </Drawer>
-        */}
 
         <Dialog
           open={createOpen}
@@ -6946,7 +6797,7 @@ function Tasks() {
                         onClick={handleCloseCreateDialog}
                         disabled={createSaving}
                         aria-label="Закрыть создание задачи"
-                        sx={{ mt: 0.1 }}
+                        sx={{ mt: 0.1, width: { xs: 44, sm: 'auto' }, height: { xs: 44, sm: 'auto' } }}
                       >
                         <CloseIcon fontSize="small" />
                       </IconButton>
@@ -7955,7 +7806,7 @@ function Tasks() {
 
         <Dialog
           open={Boolean(reviewTask)}
-          onClose={() => setReviewTask(null)}
+          onClose={() => { if (!reviewSaving) setReviewTask(null); }}
           fullScreen={isMobile}
           fullWidth
           maxWidth="sm"
@@ -7974,14 +7825,14 @@ function Tasks() {
             </Stack>
           </DialogContent>
           <DialogActions sx={{ px: { xs: 1, sm: 2.2 }, py: 1.4, borderTop: '1px solid', borderColor: ui.borderSoft, position: { xs: 'sticky', sm: 'static' }, bottom: 0, bgcolor: ui.pageBg, flexDirection: { xs: 'column-reverse', sm: 'row' }, gap: { xs: 0.8, sm: 0 }, '& > :not(style)': { m: 0, width: { xs: '100%', sm: 'auto' } } }}>
-            <Button onClick={() => setReviewTask(null)} sx={{ textTransform: 'none', fontWeight: 700 }}>
+            <Button onClick={() => setReviewTask(null)} disabled={reviewSaving} sx={{ textTransform: 'none', fontWeight: 700 }}>
               Отмена
             </Button>
-            <Button variant="outlined" color="warning" onClick={() => void handleReviewTask('reject')} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
-              Вернуть
+            <Button variant="outlined" color="warning" disabled={reviewSaving} onClick={() => void handleReviewTask('reject')} sx={{ textTransform: 'none', fontWeight: 700, borderRadius: '10px' }}>
+              {reviewSaving ? 'Сохранение...' : 'Вернуть'}
             </Button>
-            <Button variant="contained" color="success" onClick={() => void handleReviewTask('approve')} sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}>
-              Принять
+            <Button variant="contained" color="success" disabled={reviewSaving} onClick={() => void handleReviewTask('approve')} sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px', boxShadow: 'none' }}>
+              {reviewSaving ? 'Сохранение...' : 'Принять'}
             </Button>
           </DialogActions>
         </Dialog>
