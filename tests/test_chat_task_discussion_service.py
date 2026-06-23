@@ -148,6 +148,114 @@ def test_ensure_task_discussion_creates_members_and_message_channel(task_discuss
     task_conversations = [item for item in listed if item.get("kind") == "task" or item.get("task_id") == task["id"]]
     assert len(task_conversations) == 1
     assert task_conversations[0]["task_title"] == "Проверить акт"
+    assert task_conversations[0]["task_assignee_full_name"] == "Task Assignee"
+    assert task_conversations[0]["task_due_at"] == "2026-03-22T10:00:00Z"
+    assert task_conversations[0]["task_completed_at"] is None
+
+
+@pytest.mark.asyncio
+async def test_task_update_publishes_fresh_conversation_metadata(task_discussion_env, monkeypatch):
+    task = task_discussion_env["task"]
+    hub_service = task_discussion_env["hub_service"]
+    chat_service = task_discussion_env["chat_service"]
+    created = task_discussion_module.ensure_task_discussion(task_id=task["id"], actor_user_id=1)
+    completed = hub_service.complete_task_direct(
+        task_id=task["id"],
+        actor={"id": 1, "username": "author", "full_name": "Task Author", "role": "operator"},
+    )
+    events = []
+
+    async def _publish_inbox_event(**payload):
+        events.append(payload)
+
+    realtime_module = importlib.import_module("backend.chat.realtime")
+    monkeypatch.setattr(chat_service_module, "chat_service", chat_service)
+    monkeypatch.setattr(realtime_module.chat_realtime, "publish_inbox_event", _publish_inbox_event)
+
+    await task_discussion_module.publish_task_discussion_updated(task_id=task["id"], task=completed)
+
+    assert {event["user_id"] for event in events} == {1, 2, 3}
+    assert all(event["event_type"] == "chat.conversation.updated" for event in events)
+    assert all(event["payload"]["reason"] == "task_updated" for event in events)
+    assert all(event["payload"]["conversation"]["task_status"] == "done" for event in events)
+    assert all(event["payload"]["conversation"]["task_completed_at"] for event in events)
+    assert all(event["conversation_id"] == created["conversation_id"] for event in events)
+
+
+@pytest.mark.asyncio
+async def test_deleting_task_deletes_owned_chat_and_notifies_members(task_discussion_env, monkeypatch):
+    task = task_discussion_env["task"]
+    hub_service = task_discussion_env["hub_service"]
+    chat_service = task_discussion_env["chat_service"]
+    created = task_discussion_module.ensure_task_discussion(task_id=task["id"], actor_user_id=1)
+    message = task_discussion_module.send_task_discussion_message(
+        task_id=task["id"],
+        actor_user_id=1,
+        body="This discussion must be deleted with the task",
+    )
+    conversation_id = created["conversation_id"]
+
+    attachment_dir = chat_service._attachments_root / conversation_id
+    attachment_dir.mkdir(parents=True, exist_ok=True)
+    (attachment_dir / "test.txt").write_text("payload", encoding="utf-8")
+    chat_service._write_upload_session_manifest({
+        "session_id": "task-delete-upload",
+        "conversation_id": conversation_id,
+    })
+    upload_session_dir = chat_service._upload_session_dir("task-delete-upload")
+
+    with chat_db_module.chat_session() as session:
+        session.add(chat_models_module.ChatPushOutbox(
+            message_id=message["id"],
+            conversation_id=conversation_id,
+            recipient_user_id=2,
+            title="Task chat",
+            body="Queued notification",
+        ))
+        session.add(chat_models_module.ChatEventOutbox(
+            event_type="chat.message.created",
+            target_user_id=2,
+            conversation_id=conversation_id,
+            message_id=message["id"],
+            payload_json="{}",
+        ))
+
+    events = []
+
+    async def _publish_inbox_event(**payload):
+        events.append(payload)
+
+    realtime_module = importlib.import_module("backend.chat.realtime")
+    monkeypatch.setattr(chat_service_module, "chat_service", chat_service)
+    monkeypatch.setattr(realtime_module.chat_realtime, "publish_inbox_event", _publish_inbox_event)
+    monkeypatch.setattr(task_discussion_module.config.chat, "task_discussion_enabled", False, raising=False)
+
+    assert hub_service.delete_task(task_id=task["id"], actor_user_id=1) is True
+    deleted = await task_discussion_module.delete_task_discussion(task_id=task["id"])
+
+    assert deleted == {
+        "conversation_id": conversation_id,
+        "member_user_ids": [1, 2, 3],
+    }
+    with chat_db_module.chat_session() as session:
+        assert session.get(chat_models_module.ChatConversation, conversation_id) is None
+        assert session.get(chat_models_module.ChatMessage, message["id"]) is None
+        assert session.execute(
+            select(chat_models_module.ChatPushOutbox).where(
+                chat_models_module.ChatPushOutbox.conversation_id == conversation_id,
+            )
+        ).scalars().all() == []
+        assert session.execute(
+            select(chat_models_module.ChatEventOutbox).where(
+                chat_models_module.ChatEventOutbox.conversation_id == conversation_id,
+            )
+        ).scalars().all() == []
+
+    removed_events = [event for event in events if event["event_type"] == "chat.conversation.removed"]
+    assert {event["user_id"] for event in removed_events} == {1, 2, 3}
+    assert all(event["payload"]["reason"] == "task_deleted" for event in removed_events)
+    assert not attachment_dir.exists()
+    assert not upload_session_dir.exists()
 
 
 def test_ensure_task_discussion_denies_outsider(task_discussion_env):

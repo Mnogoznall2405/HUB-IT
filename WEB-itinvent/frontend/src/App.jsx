@@ -26,6 +26,7 @@ import {
   loadChatRoute,
   loadComputersRoute,
   loadDashboardRoute,
+  loadDashboardNewsRoute,
   loadDatabaseRoute,
   loadLoginRoute,
   loadMailRoute,
@@ -49,6 +50,7 @@ import {
 // Pages
 const Login = lazy(loadLoginRoute);
 const Dashboard = lazy(loadDashboardRoute);
+const DashboardNews = lazy(loadDashboardNewsRoute);
 const Tasks = lazy(loadTasksRoute);
 const Tickets = lazy(loadTicketsRoute);
 const Chat = lazy(loadChatRoute);
@@ -420,6 +422,10 @@ function App() {
                 <Route
                   path="/dashboard"
                   element={<PermissionRoute permission="dashboard.read"><Dashboard /></PermissionRoute>}
+                />
+                <Route
+                  path="/dashboard/news"
+                  element={<PermissionRoute permission="dashboard.read"><DashboardNews newsOnly /></PermissionRoute>}
                 />
                 <Route
                   path="/tasks"

@@ -12,6 +12,7 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
@@ -31,6 +32,7 @@ import ChatSelectionActionDock from './ChatSelectionActionDock';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
 import {
   CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX,
+  getConversationDisplayTitle,
 } from './chatHelpers';
 import {
   buildChatThreadMessageBodyTypographySx,
@@ -268,6 +270,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
 }) {
   const density = ui.density || {};
   const taskId = String(activeConversation?.task_id || '').trim();
+  const headerTitle = getConversationDisplayTitle(activeConversation);
   const openHeaderPrimary = () => {
     if (taskId && typeof onOpenTask === 'function') {
       onOpenTask(taskId);
@@ -451,7 +454,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
               />
               <Box sx={{ minWidth: 0 }}>
                 <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary), letterSpacing: '-0.01em', fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                  {activeConversation.title}
+                  {headerTitle}
                 </Typography>
                 <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerSubtitleMobile : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: CHAT_FONT_FAMILY }} noWrap>
                   {typingLine || headerSubtitle}
@@ -538,7 +541,7 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
             />
             <Box sx={{ minWidth: 0 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary), letterSpacing: '-0.01em', fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                {activeConversation.title}
+                {headerTitle}
               </Typography>
               <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerSubtitleMobile : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: CHAT_FONT_FAMILY }} noWrap>
                 {typingLine || headerSubtitle}
@@ -561,6 +564,91 @@ const ChatThreadHeader = memo(function ChatThreadHeader({
             <MoreVertRoundedIcon fontSize="small" />
           </HeaderAction>
         </Stack>
+      </Stack>
+    </Box>
+  );
+});
+
+export const getTaskCompletedBannerText = (completedAt) => {
+  const raw = String(completedAt || '').trim();
+  if (!raw) return 'Задача выполнена. Обсуждение остаётся открытым';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return 'Задача выполнена. Обсуждение остаётся открытым';
+  const dateLabel = date.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+  const timeLabel = date.toLocaleTimeString('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `Задача выполнена ${dateLabel} в ${timeLabel}. Обсуждение остаётся открытым`;
+};
+
+const TaskCompletedBanner = memo(function TaskCompletedBanner({
+  activeConversation,
+  compactMobile,
+  onOpenTask,
+  theme,
+  ui,
+}) {
+  const taskId = String(activeConversation?.task_id || '').trim();
+  const completed = String(activeConversation?.task_status || '').trim().toLowerCase() === 'done';
+  if (!taskId || !completed) return null;
+
+  return (
+    <Box
+      data-testid="task-completed-banner"
+      sx={{
+        px: compactMobile ? 1 : 1.5,
+        py: compactMobile ? 0.7 : 0.8,
+        bgcolor: theme.palette.mode === 'dark' ? alpha('#059669', 0.18) : alpha('#10b981', 0.12),
+        borderBottom: `1px solid ${alpha('#059669', theme.palette.mode === 'dark' ? 0.38 : 0.22)}`,
+        color: theme.palette.mode === 'dark' ? '#a7f3d0' : '#065f46',
+        flexShrink: 0,
+      }}
+    >
+      <Stack
+        direction="row"
+        spacing={0.8}
+        alignItems="center"
+        justifyContent="space-between"
+        sx={{
+          maxWidth: compactMobile ? '100%' : `${Number(ui?.density?.contentMaxWidth || ui?.contentMaxWidth || 980) + 56}px`,
+          mx: 'auto',
+        }}
+      >
+        <Stack direction="row" spacing={0.7} alignItems="center" sx={{ minWidth: 0 }}>
+          <CheckCircleRoundedIcon sx={{ fontSize: compactMobile ? 18 : 20, flexShrink: 0 }} />
+          <Typography
+            variant="body2"
+            sx={{
+              minWidth: 0,
+              fontSize: compactMobile ? '0.75rem' : '0.8rem',
+              lineHeight: 1.25,
+              fontWeight: 700,
+              color: 'inherit',
+            }}
+          >
+            {getTaskCompletedBannerText(activeConversation?.task_completed_at)}
+          </Typography>
+        </Stack>
+        <Button
+          size="small"
+          onClick={() => onOpenTask?.(taskId)}
+          sx={{
+            minWidth: 'auto',
+            px: compactMobile ? 0.7 : 1,
+            flexShrink: 0,
+            textTransform: 'none',
+            fontSize: compactMobile ? '0.72rem' : '0.76rem',
+            fontWeight: 800,
+            color: 'inherit',
+          }}
+        >
+          Открыть задачу
+        </Button>
       </Stack>
     </Box>
   );
@@ -1595,6 +1683,14 @@ function ChatThread({
         onClearMessageSelection={onClearMessageSelection}
         onCopySelectedMessages={onCopySelectedMessages}
         onForwardSelectedMessages={onForwardSelectedMessages}
+      />
+
+      <TaskCompletedBanner
+        activeConversation={activeConversation}
+        compactMobile={compactMobile}
+        onOpenTask={onOpenTask}
+        theme={theme}
+        ui={ui}
       />
 
       <PinnedMessageBar

@@ -10,9 +10,10 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
   onKeyDown,
   onClear,
   theme,
+  compact = false,
 }) {
   return (
-    <Box sx={{ mb: 2 }}>
+    <Box sx={{ mb: compact ? 0.75 : 2 }}>
       <TextField
         placeholder={
           isConsumablesMode
@@ -48,7 +49,7 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
         }}
         sx={{
           '& .MuiOutlinedInput-root': {
-            borderRadius: 3,
+            borderRadius: compact ? 2 : 3,
             bgcolor: alpha(theme.palette.text.primary, 0.04),
             transition: theme.transitions.create(['background-color', 'box-shadow', 'border-color'], {
               duration: theme.transitions.duration.shorter,
@@ -69,7 +70,8 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
             },
           },
           '& .MuiOutlinedInput-input': {
-            py: 1.1,
+            py: compact ? 0.75 : 1.1,
+            fontSize: compact ? '0.85rem' : undefined,
           },
         }}
       />

@@ -63,6 +63,11 @@ const buildProps = (overrides = {}) => ({
   conversations: [baseConversation],
   onOpenGroup: vi.fn(),
   sidebarScrollRef: { current: null },
+  activeFolderKey: 'all',
+  onActiveFolderChange: vi.fn(),
+  customFolders: [],
+  folderUnreadCounts: {},
+  conversationIdsByFolder: {},
   conversationFilter: 'all',
   onConversationFilterChange: vi.fn(),
   conversationFilterCounts: {
@@ -78,6 +83,8 @@ const buildProps = (overrides = {}) => ({
   },
   showAiSection: false,
   onUpdateConversationSettings: vi.fn(),
+  onRequestDeleteConversation: vi.fn(),
+  onRequestLeaveConversation: vi.fn(),
   ...overrides,
 });
 
@@ -98,6 +105,92 @@ describe('ChatSidebar', () => {
     expect(screen.getByRole('button', { current: 'page' })).toHaveAttribute('data-chat-active', 'true');
   });
 
+  it('renders task chats with task identity metadata and a desktop message preview', () => {
+    renderWithTheme(buildProps({
+      activeFolderKey: 'all',
+      activeConversationId: 'task-conv',
+      conversations: [{
+        ...baseConversation,
+        id: 'task-conv',
+        kind: 'task',
+        title: 'Задача: Старый заголовок',
+        task_id: 'task-1',
+        task_title: 'Настроить рабочее место',
+        task_status: 'in_progress',
+        task_assignee_full_name: 'Пётр Исполнитель',
+        task_due_at: '2026-06-29T19:00:00',
+      }],
+      draftsByConversation: {},
+    }));
+
+    expect(screen.getByText('Настроить рабочее место')).toBeInTheDocument();
+    expect(screen.getByTestId('task-chat-status-task-conv')).toHaveTextContent('В работе');
+    expect(screen.getByTestId('task-chat-meta-task-conv')).toHaveTextContent('Пётр Исполнитель');
+    expect(screen.getByTestId('task-chat-preview-task-conv')).toHaveTextContent('Последнее сообщение');
+  });
+
+  it('uses a compact two-line task row on mobile', () => {
+    renderWithTheme(buildProps({
+      isMobile: true,
+      compactMobile: true,
+      activeConversationId: 'task-conv',
+      conversations: [{
+        ...baseConversation,
+        id: 'task-conv',
+        kind: 'task',
+        task_id: 'task-1',
+        task_title: 'Мобильная задача',
+        task_status: 'done',
+        task_assignee_full_name: 'Анна Исполнитель',
+        task_due_at: null,
+      }],
+      draftsByConversation: {},
+    }));
+
+    expect(screen.getByText('Мобильная задача')).toBeInTheDocument();
+    expect(screen.getByTestId('task-chat-meta-task-conv')).toHaveTextContent('Анна Исполнитель • Без срока');
+    expect(screen.queryByTestId('task-chat-preview-task-conv')).not.toBeInTheDocument();
+  });
+
+  it('groups task chats into active and collapsible completed sections', () => {
+    renderWithTheme(buildProps({
+      activeFolderKey: 'tasks',
+      activeConversationId: 'task-active',
+      conversations: [
+        {
+          ...baseConversation,
+          id: 'task-active',
+          kind: 'task',
+          task_id: 'task-1',
+          task_title: 'Активная задача',
+          task_status: 'review',
+          unread_count: 2,
+        },
+        {
+          ...baseConversation,
+          id: 'task-done',
+          kind: 'task',
+          task_id: 'task-2',
+          task_title: 'Завершённая задача',
+          task_status: 'done',
+          unread_count: 1,
+        },
+      ],
+      draftsByConversation: {},
+    }));
+
+    expect(screen.getByTestId('task-section-active')).toHaveTextContent('Активные');
+    expect(screen.getByTestId('task-section-completed-toggle')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Активная задача')).toBeInTheDocument();
+    expect(screen.getByText('Завершённая задача')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('task-section-completed-toggle'));
+
+    expect(screen.getByTestId('task-section-completed-toggle')).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByText('Завершённая задача')).not.toBeInTheDocument();
+    expect(screen.getByText('Активная задача')).toBeInTheDocument();
+  });
+
   it('renders compact desktop chat rows from density tokens', () => {
     const compactUi = buildChatUiTokens(theme, { compactDesktop: true });
 
@@ -111,15 +204,71 @@ describe('ChatSidebar', () => {
     });
   });
 
-  it('switches filter from the sidebar menu', () => {
-    const onConversationFilterChange = vi.fn();
+  it('switches to the task folder from the sidebar tabs', () => {
+    const onActiveFolderChange = vi.fn();
 
-    renderWithTheme(buildProps({ onConversationFilterChange }));
+    renderWithTheme(buildProps({ onActiveFolderChange }));
 
-    fireEvent.click(screen.getByRole('button', { name: /Фильтр списка/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: /Непрочитанные/i }));
+    fireEvent.click(screen.getByRole('button', { name: 'Задачи' }));
 
-    expect(onConversationFilterChange).toHaveBeenCalledWith('unread');
+    expect(onActiveFolderChange).toHaveBeenCalledWith('tasks');
+  });
+
+  it('opens chat actions on right click and forwards pin and delete actions', () => {
+    const onUpdateConversationSettings = vi.fn();
+    const onRequestDeleteConversation = vi.fn();
+    renderWithTheme(buildProps({
+      conversations: [{
+        ...baseConversation,
+        kind: 'direct',
+        viewer_member_role: 'member',
+      }],
+      onUpdateConversationSettings,
+      onRequestDeleteConversation,
+    }));
+
+    const row = screen.getByRole('button', { current: 'page' });
+    fireEvent.contextMenu(row, { clientX: 120, clientY: 80 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Закрепить чат' }));
+    expect(onUpdateConversationSettings).toHaveBeenCalledWith('conv-1', { is_pinned: true });
+
+    fireEvent.contextMenu(row, { clientX: 120, clientY: 80 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Удалить чат' }));
+    expect(onRequestDeleteConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'conv-1' }));
+  });
+
+  it('offers leaving to group members and protects task chats from direct deletion', () => {
+    const onRequestLeaveConversation = vi.fn();
+    const { rerender } = renderWithTheme(buildProps({
+      conversations: [{
+        ...baseConversation,
+        viewer_member_role: 'member',
+      }],
+      onRequestLeaveConversation,
+    }));
+
+    fireEvent.contextMenu(screen.getByRole('button', { current: 'page' }), { clientX: 80, clientY: 70 });
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Выйти из группы' }));
+    expect(onRequestLeaveConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'conv-1' }));
+
+    rerender(
+      <ThemeProvider theme={theme}>
+        <ChatSidebar
+          {...buildProps({
+            activeConversationId: 'task-conv',
+            conversations: [{
+              ...baseConversation,
+              id: 'task-conv',
+              kind: 'task',
+              task_id: 'task-1',
+              task_title: 'Protected task',
+            }],
+          })}
+        />
+      </ThemeProvider>,
+    );
+    fireEvent.contextMenu(screen.getByRole('button', { current: 'page' }), { clientX: 80, clientY: 70 });
+    expect(screen.getByRole('menuitem', { name: 'Удаляется вместе с задачей' })).toHaveAttribute('aria-disabled', 'true');
   });
 
   it('renders AI bots and opens the selected AI chat', () => {

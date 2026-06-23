@@ -26,10 +26,15 @@ const mockApi = vi.hoisted(() => ({
     getAvailableDatabases: vi.fn(),
     switchDatabase: vi.fn(),
   },
+  settingsAPI: {
+    getMySettings: vi.fn(),
+    updateMySettings: vi.fn(),
+  },
 }));
 
 vi.mock('../api/client', () => ({
   equipmentAPI: mockApi.equipmentAPI,
+  settingsAPI: mockApi.settingsAPI,
   API_V1_BASE: '/api/v1',
   UPLOADED_ACT_PARSE_TIMEOUT_MS: 180000,
 }));
@@ -136,11 +141,30 @@ async function openFirstEquipmentDetail() {
   return screen.findByRole('tab', { name: 'История перемещений' });
 }
 
+function installIntersectionObserverMock() {
+  class MockIntersectionObserver {
+    observe() {}
+
+    disconnect() {}
+  }
+
+  window.IntersectionObserver = MockIntersectionObserver;
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
   clearSWRCache();
   installMatchMedia({ mobile: false });
+  installIntersectionObserverMock();
   localStorage.clear();
+  localStorage.setItem('user', JSON.stringify({ id: 1, username: 'admin' }));
+
+  mockApi.settingsAPI.getMySettings.mockResolvedValue({
+    database_branch_filters: {},
+  });
+  mockApi.settingsAPI.updateMySettings.mockResolvedValue({
+    database_branch_filters: {},
+  });
 
   mockApi.databaseAPI.getCurrentDatabase.mockResolvedValue({
     id: 'main',
@@ -319,21 +343,25 @@ describe('Database equipment row helpers', () => {
     expect(screen.getByRole('button', { name: 'Добавить оборудование' })).toBeInTheDocument();
   });
 
-  it('renders the mobile action sheet controller without crashing', async () => {
+  it('renders the mobile control strip without the legacy FAB', async () => {
     installMatchMedia({ mobile: true });
 
     renderDatabase();
 
-    expect(await screen.findByRole('button', { name: 'Open actions' })).toBeInTheDocument();
+    expect(await screen.findByTestId('database-mobile-control-strip')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'QR' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Ещё' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Open actions' })).not.toBeInTheDocument();
     expect(screen.getByTestId('main-layout')).toHaveAttribute('data-header-mode', 'hidden');
   });
 
-  it('shows the remaining desktop toolbar actions from the mobile FAB', async () => {
+  it('shows the remaining desktop toolbar actions without manual load-more button', async () => {
     renderDatabase();
 
     expect(await screen.findByRole('button', { name: 'Определить ПК' })).toBeInTheDocument();
     expect((await screen.findAllByText('Филиал')).length).toBeGreaterThan(0);
-    expect(await screen.findByRole('button', { name: /Загрузить ещё/ })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /Загрузить ещё/ })).not.toBeInTheDocument();
+    expect(await screen.findByTestId('equipment-load-more-sentinel')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('HQ'));
 
@@ -487,6 +515,136 @@ describe('Database equipment row helpers', () => {
     expect(screen.queryByRole('button', { name: 'Загрузить акт' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Добавить оборудование' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'QR Сканер' })).not.toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Оборудование' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Расходники' })).toBeInTheDocument();
+  });
+
+  it('keeps tabs and search visible while switching modes', async () => {
+    renderDatabase();
+
+    expect(await screen.findByRole('tab', { name: 'Оборудование' })).toBeInTheDocument();
+    const searchInput = screen.getByRole('textbox');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Расходники' }));
+
+    await waitFor(() => {
+      expect(mockApi.equipmentAPI.getAllConsumablesGrouped).toHaveBeenCalled();
+    });
+
+    expect(screen.getByRole('tab', { name: 'Оборудование' })).toBeInTheDocument();
+    expect(screen.getByRole('tab', { name: 'Расходники' })).toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toBe(searchInput);
+    expect(screen.queryByText('Загрузка данных...')).not.toBeInTheDocument();
+  });
+
+  it('keeps the same branch filter when switching between equipment and consumables tabs', async () => {
+    renderDatabase();
+
+    await screen.findByRole('tab', { name: 'Оборудование' });
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.click(await screen.findByRole('option', { name: 'HQ' }));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Расходники' }));
+    await waitFor(() => {
+      expect(screen.getAllByRole('combobox')[0]).toHaveTextContent('HQ');
+    });
+
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.click(await screen.findByRole('option', { name: 'Remote' }));
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Оборудование' }));
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('combobox')[0]).toHaveTextContent('Remote');
+    });
+  });
+
+  it('persists branch filter in localStorage when a branch is selected', async () => {
+    renderDatabase();
+
+    await screen.findByRole('tab', { name: 'Оборудование' });
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.click(await screen.findByRole('option', { name: 'HQ' }));
+
+    expect(localStorage.getItem('database_branch_filters')).toBe(JSON.stringify({ main: 'HQ' }));
+  });
+
+  it('persists all-branches filter locally and on the server', async () => {
+    renderDatabase();
+
+    await screen.findByRole('tab', { name: 'Оборудование' });
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.click(await screen.findByRole('option', { name: 'HQ' }));
+    fireEvent.mouseDown(screen.getAllByRole('combobox')[0]);
+    fireEvent.click(await screen.findByRole('option', { name: 'Все филиалы' }));
+
+    expect(localStorage.getItem('database_branch_filters')).toBe(JSON.stringify({ main: '' }));
+
+    await waitFor(() => {
+      expect(mockApi.settingsAPI.updateMySettings).toHaveBeenCalledWith(
+        expect.objectContaining({ database_branch_filters: { main: '' } }),
+      );
+    }, { timeout: 1000 });
+  });
+
+  it('restores all-branches filter from server settings', async () => {
+    mockApi.settingsAPI.getMySettings.mockResolvedValue({
+      database_branch_filters: { main: '' },
+    });
+
+    renderDatabase();
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('combobox')[0]).toHaveTextContent('Все филиалы');
+    });
+    expect(localStorage.getItem('database_branch_filters')).toBe(JSON.stringify({ main: '' }));
+  });
+
+  it('restores branch filter from localStorage on remount', async () => {
+    localStorage.setItem('database_branch_filters', JSON.stringify({ main: 'HQ' }));
+    mockApi.settingsAPI.getMySettings.mockResolvedValue({
+      database_branch_filters: { main: 'HQ' },
+    });
+
+    renderDatabase();
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('combobox')[0]).toHaveTextContent('HQ');
+    });
+  });
+
+  it('merges database branch filters into localStorage when settings are loaded', async () => {
+    mockApi.settingsAPI.getMySettings.mockResolvedValue({
+      database_branch_filters: { main: 'Remote' },
+    });
+
+    renderDatabase();
+
+    await waitFor(() => {
+      expect(screen.getAllByRole('combobox')[0]).toHaveTextContent('Remote');
+    });
+    expect(localStorage.getItem('database_branch_filters')).toBe(JSON.stringify({ main: 'Remote' }));
+  });
+
+  it('does not refetch equipment grouped pages when returning to a cached tab', async () => {
+    renderDatabase();
+
+    await waitFor(() => {
+      expect(mockApi.equipmentAPI.getAllEquipmentGrouped).toHaveBeenCalled();
+    });
+    const equipmentCallsBeforeSwitch = mockApi.equipmentAPI.getAllEquipmentGrouped.mock.calls.length;
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Расходники' }));
+    await waitFor(() => {
+      expect(mockApi.equipmentAPI.getAllConsumablesGrouped).toHaveBeenCalled();
+    });
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Оборудование' }));
+
+    await waitFor(() => {
+      expect(screen.getByRole('tab', { name: 'Оборудование' })).toHaveAttribute('aria-selected', 'true');
+    });
+    expect(mockApi.equipmentAPI.getAllEquipmentGrouped.mock.calls.length).toBe(equipmentCallsBeforeSwitch);
   });
 
   it('lazy-loads equipment movement history from the detail tab', async () => {

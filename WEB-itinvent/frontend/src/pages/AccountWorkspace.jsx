@@ -442,6 +442,12 @@ const MAILBOX_AUTH_LABELS = {
   stored_credentials: '\u0421\u043e\u0445\u0440\u0430\u043d\u0435\u043d\u043d\u044b\u0439 \u043b\u043e\u0433\u0438\u043d/\u043f\u0430\u0440\u043e\u043b\u044c',
 };
 
+const MAILBOX_AUTH_SHORT_LABELS = {
+  primary_credentials: 'AD-учётка',
+  primary_session: 'Текущий вход',
+  stored_credentials: 'Личный вход',
+};
+
 function normalizeMailboxAuthMode(value, fallback = 'stored_credentials') {
   const normalized = String(value || '').trim();
   return ['primary_credentials', 'primary_session', 'stored_credentials'].includes(normalized)
@@ -684,63 +690,87 @@ function AvatarUploadBlock({ user }) {
   }, [notifyApiError, notifySuccess, refreshSession]);
 
   return (
-    <Stack direction="row" spacing={2} alignItems="center">
-      <Box sx={{ position: 'relative', flexShrink: 0 }}>
-        <PresenceAvatar item={user} size={72} />
-        {uploading && (
-          <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '999px', bgcolor: 'rgba(0,0,0,0.35)' }}>
-            <CircularProgress size={24} sx={{ color: '#fff' }} />
-          </Box>
-        )}
-      </Box>
-      <Stack spacing={0.75}>
-        <Typography variant="body2" sx={{ fontWeight: 600 }}>
-          {user?.full_name || user?.username || '—'}
-        </Typography>
-        <Stack direction="row" spacing={1}>
-          <input
-            ref={fileInputRef}
-            type="file"
-            accept="image/*"
-            style={{ display: 'none' }}
-            onChange={handleFileChange}
-          />
-          <Tooltip title="Загрузить фото (до 2 МБ)">
-            <span>
-              <Button
-                size="small"
-                variant="outlined"
-                startIcon={<CameraAltOutlinedIcon />}
-                onClick={() => fileInputRef.current?.click()}
-                disabled={uploading}
-              >
-                {user?.avatar_url ? 'Изменить' : 'Загрузить фото'}
-              </Button>
-            </span>
-          </Tooltip>
-          {user?.avatar_url && (
-            <Tooltip title="Удалить фото">
-              <span>
-                <Button
-                  size="small"
-                  variant="outlined"
-                  color="error"
-                  startIcon={<DeleteOutlinedIcon />}
-                  onClick={handleDelete}
-                  disabled={uploading}
-                >
-                  Удалить
-                </Button>
-              </span>
-            </Tooltip>
-          )}
-        </Stack>
-      </Stack>
-    </Stack>
+    <Box sx={{ position: 'relative', width: 78, height: 78, flexShrink: 0 }}>
+      <PresenceAvatar
+        item={user}
+        size={78}
+        sx={{
+          border: '2px solid',
+          borderColor: 'background.paper',
+          borderRadius: '999px',
+          boxShadow: '0 10px 24px rgba(0,0,0,0.18)',
+        }}
+      />
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="image/*"
+        style={{ display: 'none' }}
+        onChange={handleFileChange}
+      />
+      <Tooltip title="Изменить фото">
+        <span>
+          <IconButton
+            aria-label="Изменить фото профиля"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={uploading}
+            sx={{
+              position: 'absolute',
+              right: -5,
+              bottom: -5,
+              width: 38,
+              height: 38,
+              minWidth: '38px !important',
+              minHeight: '38px !important',
+              border: '2px solid',
+              borderColor: 'background.paper',
+              bgcolor: 'primary.main',
+              color: 'primary.contrastText',
+              boxShadow: '0 8px 18px rgba(0,0,0,0.24)',
+              '&:hover': { bgcolor: 'primary.dark' },
+            }}
+          >
+            <CameraAltOutlinedIcon sx={{ fontSize: 19 }} />
+          </IconButton>
+        </span>
+      </Tooltip>
+      {user?.avatar_url ? (
+        <Tooltip title="Удалить фото">
+          <span>
+            <IconButton
+              aria-label="Удалить фото профиля"
+              onClick={handleDelete}
+              disabled={uploading}
+              sx={{
+                position: 'absolute',
+                left: -5,
+                bottom: -5,
+                width: 34,
+                height: 34,
+                minWidth: '34px !important',
+                minHeight: '34px !important',
+                border: '2px solid',
+                borderColor: 'background.paper',
+                bgcolor: 'background.paper',
+                color: 'error.main',
+                boxShadow: '0 8px 18px rgba(0,0,0,0.2)',
+              }}
+            >
+              <DeleteOutlinedIcon sx={{ fontSize: 18 }} />
+            </IconButton>
+          </span>
+        </Tooltip>
+      ) : null}
+      {uploading ? (
+        <Box sx={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', borderRadius: '999px', bgcolor: 'rgba(0,0,0,0.45)' }}>
+          <CircularProgress size={24} sx={{ color: '#fff' }} />
+        </Box>
+      ) : null}
+    </Box>
   );
 }
 
-function ProfileTab({ user, dbOptions, canAccessMail }) {
+export function ProfileTab({ user, dbOptions, canAccessMail }) {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const { notifyApiError, notifySuccess } = useNotification();
@@ -882,12 +912,36 @@ function ProfileTab({ user, dbOptions, canAccessMail }) {
     }
   }, [loadMailboxes, notifyApiError, notifySuccess]);
 
+  const handleMailboxAction = useCallback((action, entry) => {
+    if (action === 'edit') {
+      openEditMailboxDialog(entry);
+      return;
+    }
+    if (action === 'primary') {
+      void handleMailboxPrimary(entry);
+      return;
+    }
+    if (action === 'toggle') {
+      void handleMailboxActiveToggle(entry);
+      return;
+    }
+    if (action === 'delete') {
+      void handleMailboxDelete(entry);
+    }
+  }, [
+    handleMailboxActiveToggle,
+    handleMailboxDelete,
+    handleMailboxPrimary,
+    openEditMailboxDialog,
+  ]);
+
   return (
     <Box sx={{ display: 'flex', flexDirection: 'column', gap: 1.1, minHeight: 0 }}>
       <Paper
+        data-testid="profile-hero"
         sx={{
-          p: { xs: 1.5, md: 2 },
-          borderRadius: '24px',
+          p: { xs: 1.25, sm: 1.6, md: 2 },
+          borderRadius: { xs: '18px', sm: '22px' },
           border: '1px solid',
           borderColor: alpha(theme.palette.divider, 0.62),
           bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.72 : 0.78),
@@ -895,31 +949,45 @@ function ProfileTab({ user, dbOptions, canAccessMail }) {
           backdropFilter: 'blur(22px) saturate(145%)',
           WebkitBackdropFilter: 'blur(22px) saturate(145%)',
           boxShadow: ui.dialogShadow,
+          overflow: 'hidden',
         }}
       >
-        <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ xs: 'flex-start', sm: 'center' }}>
+        <Stack direction="row" spacing={{ xs: 1.5, sm: 2 }} alignItems="center">
           <AvatarUploadBlock user={user} />
-          <Box sx={{ display: { xs: 'block', sm: 'none' } }} />
-          <Box sx={{ minWidth: 0, flex: 1, display: { xs: 'none', sm: 'block' } }}>
-            <Typography variant="h5" sx={{ fontWeight: 900 }} noWrap>
+          <Box sx={{ minWidth: 0, flex: 1 }}>
+            <Typography
+              sx={{
+                fontSize: { xs: '1.45rem', sm: '1.75rem' },
+                lineHeight: 1.12,
+                letterSpacing: '-0.025em',
+                fontWeight: 900,
+                overflowWrap: 'anywhere',
+              }}
+            >
               {getAccountDisplayName(user)}
             </Typography>
-            <Typography color="text.secondary" sx={{ mt: 0.25 }} noWrap>
+            <Typography
+              color="text.secondary"
+              sx={{
+                mt: 0.4,
+                fontSize: { xs: '0.92rem', sm: '1rem' },
+                lineHeight: 1.3,
+                overflowWrap: 'anywhere',
+              }}
+            >
               {getAccountSubtitle(user)}
             </Typography>
             {user?.email ? (
-              <Typography variant="body2" color="text.secondary" sx={{ mt: 0.35 }} noWrap>
+              <Typography
+                variant="body2"
+                color="text.secondary"
+                sx={{ mt: 0.35, fontSize: { xs: '0.82rem', sm: '0.875rem' }, overflowWrap: 'anywhere' }}
+              >
                 {user.email}
               </Typography>
             ) : null}
           </Box>
         </Stack>
-        <Grid container spacing={1.2} sx={{ mt: 0.8 }}>
-          <Grid item xs={12} sm={4}><ProfileField label="Полное имя" value={user?.full_name || user?.username} /></Grid>
-          <Grid item xs={12} sm={4}><ProfileField label="Должность" value={user?.job_title || 'не указана'} /></Grid>
-          <Grid item xs={12} sm={4}><ProfileField label="Отдел" value={user?.department || 'не указан'} /></Grid>
-          <Grid item xs={12} sm={4}><ProfileField label="Email" value={user?.email || 'не указан'} /></Grid>
-        </Grid>
       </Paper>
 
       <Accordion
@@ -928,18 +996,22 @@ function ProfileTab({ user, dbOptions, canAccessMail }) {
         sx={{
           border: '1px solid',
           borderColor: ui.borderSoft,
-          borderRadius: '16px !important',
+          borderRadius: '14px !important',
           bgcolor: ui.panelSolid,
+          overflow: 'hidden',
+          '&.Mui-expanded': { margin: '0 !important' },
           '&::before': { display: 'none' },
         }}
       >
-        <AccordionSummary expandIcon={<ExpandMoreOutlinedIcon />}>
-          <Box>
-            <Typography sx={{ fontWeight: 850 }}>Служебные данные</Typography>
-            <Typography variant="caption" color="text.secondary">
-              Данные входа, роль, база и права
-            </Typography>
-          </Box>
+        <AccordionSummary
+          expandIcon={<ExpandMoreOutlinedIcon />}
+          sx={{
+            minHeight: 52,
+            px: 1.4,
+            '& .MuiAccordionSummary-content': { my: 1 },
+          }}
+        >
+          <Typography sx={{ fontWeight: 850 }}>Служебные данные</Typography>
         </AccordionSummary>
         <AccordionDetails>
           <Grid container spacing={1.2}>
@@ -956,12 +1028,18 @@ function ProfileTab({ user, dbOptions, canAccessMail }) {
       {canAccessMail ? (
         <SectionCard
         title="Подключённые ящики"
-        description="Основной и общие Exchange-ящики."
         action={(
-          <Button size="small" startIcon={<AddOutlinedIcon />} onClick={openCreateMailboxDialog}>
+          <Button
+            size="small"
+            startIcon={<AddOutlinedIcon />}
+            onClick={openCreateMailboxDialog}
+            sx={{ borderRadius: '11px', px: 1 }}
+          >
             Добавить
           </Button>
         )}
+        headerSx={{ px: { xs: 1.15, sm: 1.35 }, py: { xs: 0.75, sm: 0.95 } }}
+        contentSx={{ p: { xs: 0.8, sm: 1.25 } }}
         >
         <Stack spacing={1}>
           {mailboxesLoading ? (
@@ -973,13 +1051,34 @@ function ProfileTab({ user, dbOptions, canAccessMail }) {
             <Alert severity="info" sx={{ borderRadius: '10px' }}>
               Дополнительные ящики пока не подключены.
             </Alert>
-          ) : mailboxes.map((entry) => (
-            <Paper key={String(entry.id)} variant="outlined" sx={{ p: 1.25, borderRadius: 2 }}>
-              <Stack spacing={1}>
-                <Stack direction={{ xs: 'column', md: 'row' }} spacing={1} justifyContent="space-between" alignItems={{ md: 'center' }}>
-                  <Box sx={{ minWidth: 0 }}>
+          ) : mailboxes.map((entry) => {
+            const displayName = entry.label || entry.mailbox_email || 'Без названия';
+            const authMode = String(entry.auth_mode || '').trim();
+            const unreadCount = Number(entry.unread_count || 0);
+            const actions = [
+              { key: 'edit', label: 'Редактировать' },
+              ...(!entry.is_primary ? [{ key: 'primary', label: 'Сделать основным' }] : []),
+              { key: 'toggle', label: entry.is_active ? 'Отключить' : 'Включить' },
+              { key: 'delete', label: 'Удалить', tone: 'danger' },
+            ];
+            return (
+            <Paper
+              key={String(entry.id)}
+              data-testid={`profile-mailbox-card-${String(entry.id)}`}
+              variant="outlined"
+              sx={{
+                p: { xs: 1, sm: 1.25 },
+                borderRadius: '13px',
+                borderColor: ui.borderSoft,
+                bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.54 : 0.72),
+                boxShadow: 'none',
+              }}
+            >
+              <Stack spacing={0.85}>
+                <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="flex-start">
+                  <Box sx={{ minWidth: 0, flex: 1 }}>
                     <Typography variant="body2" sx={{ fontWeight: 800, overflowWrap: 'anywhere' }}>
-                      {entry.label || entry.mailbox_email || 'Без названия'}
+                      {displayName}
                     </Typography>
                     <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.15, overflowWrap: 'anywhere' }}>
                       {entry.mailbox_email || 'Почта не указана'}
@@ -988,32 +1087,35 @@ function ProfileTab({ user, dbOptions, canAccessMail }) {
                       {entry.mailbox_login || entry.effective_mailbox_login || buildDefaultExchangeLoginPreview(user?.username)}
                     </Typography>
                   </Box>
-                  <Stack direction="row" spacing={0.7} flexWrap="wrap" useFlexGap>
-                    {entry.is_primary ? <Chip size="small" color="primary" label="Основной" /> : null}
-                    <Chip size="small" color={entry.is_active ? 'success' : 'default'} label={entry.is_active ? 'Активен' : 'Отключён'} />
-                    <Chip size="small" variant="outlined" label={MAILBOX_AUTH_LABELS[String(entry.auth_mode || '').trim()] || MAILBOX_AUTH_LABELS.stored_credentials} />
-                    <Chip size="small" variant="outlined" label={`Unread: ${Number(entry.unread_count || 0)}`} />
-                  </Stack>
+                  <OverflowMenu
+                    size="medium"
+                    label={`Действия для ящика ${displayName}`}
+                    items={actions}
+                    onSelect={(action) => handleMailboxAction(action, entry)}
+                  />
                 </Stack>
-                <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} flexWrap="wrap" useFlexGap>
-                  <Button size="small" variant="outlined" onClick={() => openEditMailboxDialog(entry)}>
-                    Редактировать
-                  </Button>
-                  {!entry.is_primary ? (
-                    <Button size="small" variant="outlined" onClick={() => handleMailboxPrimary(entry)}>
-                      Сделать основным
-                    </Button>
+                <Stack direction="row" spacing={0.65} flexWrap="wrap" useFlexGap>
+                  {entry.is_primary ? <Chip size="small" color="primary" label="Основной" sx={{ height: 26 }} /> : null}
+                  <Chip
+                    size="small"
+                    color={entry.is_active ? 'success' : 'default'}
+                    label={entry.is_active ? 'Активен' : 'Отключён'}
+                    sx={{ height: 26 }}
+                  />
+                  <Chip
+                    size="small"
+                    variant="outlined"
+                    label={MAILBOX_AUTH_SHORT_LABELS[authMode] || MAILBOX_AUTH_SHORT_LABELS.stored_credentials}
+                    sx={{ height: 26 }}
+                  />
+                  {unreadCount > 0 ? (
+                    <Chip size="small" variant="outlined" label={`Непрочитанных: ${unreadCount}`} sx={{ height: 26 }} />
                   ) : null}
-                  <Button size="small" variant="outlined" onClick={() => handleMailboxActiveToggle(entry)}>
-                    {entry.is_active ? 'Отключить' : 'Включить'}
-                  </Button>
-                  <Button size="small" color="error" variant="outlined" onClick={() => handleMailboxDelete(entry)}>
-                    Удалить
-                  </Button>
                 </Stack>
               </Stack>
             </Paper>
-          ))}
+            );
+          })}
         </Stack>
         </SectionCard>
       ) : null}
@@ -1626,7 +1728,7 @@ function HubItPwaSettingsCard() {
   return (
     <SectionCard
       title="Приложение HUB-IT"
-      description="Установите HUB-IT как приложение, чтобы запускать его быстрее, получать push-уведомления и открывать систему без лишней браузерной оболочки."
+      description="Установка, обновления и push-уведомления."
       contentSx={{ p: 1.5 }}
       action={<Chip size="small" label={statusLabel} color={installState.installed ? 'success' : 'default'} />}
     >
@@ -1657,17 +1759,17 @@ function HubItPwaSettingsCard() {
             </Box>
             <Stack spacing={0.45} sx={{ minWidth: 0 }}>
               <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
-                HUB-IT как нативное приложение
+                HUB-IT как приложение
               </Typography>
               <Typography variant="body2" color="text.secondary" sx={{ lineHeight: 1.4 }}>
                 {installState.installed
-                  ? 'Приложение уже установлено. Запускайте HUB-IT с ярлыка, чтобы работать в standalone-режиме с app shell, push и badge.'
+                  ? 'Приложение установлено. Запускайте HUB-IT с ярлыка.'
                   : installState.requiresManualInstall
                     ? 'На iPhone установка выполняется вручную через меню «Поделиться» и пункт «На экран Домой».'
                     : installState.canPrompt
                       ? 'Браузер готов открыть системное окно установки HUB-IT.'
                       : installState.secure
-                        ? 'Если кнопка пока недоступна, дайте странице несколько секунд: браузеру нужно подготовить install prompt и service worker.'
+                        ? 'Браузер ещё подготавливает установку. Повторите через несколько секунд.'
                         : 'Установка приложения работает только при открытии HUB-IT по HTTPS.'}
               </Typography>
             </Stack>
@@ -1684,12 +1786,9 @@ function HubItPwaSettingsCard() {
           direction={isMobile ? 'column' : 'row'}
           spacing={1}
           alignItems={isMobile ? 'stretch' : 'center'}
-          justifyContent="space-between"
+          justifyContent="flex-end"
           flexWrap="wrap"
         >
-          <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.35, maxWidth: 500 }}>
-            После установки HUB-IT запускается как отдельное приложение, держит offline-shell, обновляется через service worker и лучше ведёт себя для push на телефоне и desktop.
-          </Typography>
           <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
             <Button
               variant={installState.installed ? 'outlined' : 'contained'}

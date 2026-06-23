@@ -100,8 +100,10 @@ import { buildChatUiTokens } from '../components/chat/chatUiTokens';
 
 const loadChatContextPanelModule = () => import('../components/chat/ChatContextPanel');
 const loadChatDialogsModule = () => import('../components/chat/ChatDialogs');
+const loadTaskWorkspacePanelModule = () => import('../components/hub/TaskWorkspacePanel');
 const LazyChatContextPanel = lazy(loadChatContextPanelModule);
 const LazyChatDialogs = lazy(loadChatDialogsModule);
+const LazyTaskWorkspacePanel = lazy(loadTaskWorkspacePanelModule);
 
 const LIST_POLL_MS = 15_000;
 const THREAD_POLL_MS = 6_000;
@@ -154,6 +156,41 @@ export const shouldDeferChatUrlSyncForRequestedConversation = ({
   const applyingId = String(applyingRequestedConversationId || '').trim();
   if (!applyingId) return false;
   return String(activeConversationId || '').trim() !== applyingId;
+};
+export const getTaskConversationTaskId = (conversation) => (
+  String(conversation?.task_id || '').trim()
+);
+export const isOrphanedTaskConversation = (conversation) => (
+  Boolean(getTaskConversationTaskId(conversation))
+  && conversation?.task_missing === true
+);
+export const getConversationRemovalMode = (conversation) => (
+  String(conversation?.kind || '').trim() === 'group'
+  && String(conversation?.viewer_member_role || '').trim() !== 'owner'
+    ? 'leave'
+    : 'delete'
+);
+export const patchTaskConversationFromTask = (conversation, updatedTask) => {
+  const updatedTaskId = String(updatedTask?.id || '').trim();
+  if (!updatedTaskId || String(conversation?.task_id || '').trim() !== updatedTaskId) {
+    return conversation;
+  }
+
+  const hasTaskField = (field) => Object.prototype.hasOwnProperty.call(updatedTask || {}, field);
+  const updatedTitle = String(updatedTask?.title || '').trim();
+  return {
+    ...conversation,
+    title: updatedTitle ? `Задача: ${updatedTitle}` : conversation.title,
+    task_title: updatedTitle || conversation.task_title,
+    task_status: String(updatedTask?.status || '').trim() || conversation.task_status,
+    task_assignee_full_name: hasTaskField('assignee_full_name')
+      ? (String(updatedTask?.assignee_full_name || '').trim() || null)
+      : conversation.task_assignee_full_name,
+    task_due_at: hasTaskField('due_at') ? (updatedTask?.due_at || null) : conversation.task_due_at,
+    task_completed_at: hasTaskField('completed_at')
+      ? (updatedTask?.completed_at || null)
+      : conversation.task_completed_at,
+  };
 };
 const CHAT_MOBILE_HISTORY_FLAG = '__hubChatMobileShell';
 const CHAT_MOBILE_HISTORY_VIEW_KEY = '__hubChatMobileShellView';
@@ -982,6 +1019,7 @@ export default function Chat() {
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('md'));
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'));
+  const isWideDesktop = useMediaQuery('(min-width:1200px)');
   const compactDesktopMedia = useMediaQuery('(min-width:600px) and (max-width:1920px), (min-width:600px) and (max-height:960px)');
   const ui = useMemo(
     () => buildChatUiTokens(theme, {
@@ -1040,6 +1078,7 @@ export default function Chat() {
   const invalidConversationRef = useRef('');
   const activeConversationIdRef = useRef('');
   const conversationsRef = useRef([]);
+  const conversationDetailsByIdRef = useRef({});
   const messagesRef = useRef([]);
   const requestedConversationHandledRef = useRef('');
   const requestedConversationRetryRef = useRef('');
@@ -1241,12 +1280,16 @@ export default function Chat() {
   showJumpToLatestRef.current = showJumpToLatest;
   const [infoOpen, setInfoOpen] = useState(false);
   const [contextPanelOpen, setContextPanelOpen] = useState(false);
+  const [taskPanelOpen, setTaskPanelOpen] = useState(false);
+  const [taskPanelTaskId, setTaskPanelTaskId] = useState('');
   const [emojiAnchorEl, setEmojiAnchorEl] = useState(null);
   const [messageReadsOpen, setMessageReadsOpen] = useState(false);
   const [messageReadsLoading, setMessageReadsLoading] = useState(false);
   const [messageReadsItems, setMessageReadsItems] = useState([]);
   const [messageReadsMessage, setMessageReadsMessage] = useState(null);
   const [settingsUpdating, setSettingsUpdating] = useState(false);
+  const [conversationActionTarget, setConversationActionTarget] = useState(null);
+  const [conversationActionPendingId, setConversationActionPendingId] = useState('');
   const {
     closeSearchDialog,
     loadMoreSearchResults,
@@ -1516,7 +1559,7 @@ export default function Chat() {
     const normalizedConversationId = String(conversationId || '').trim();
     if (!normalizedConversationId) return null;
     if (typeof chatAPI.getConversation !== 'function') return null;
-    const existingDetail = conversationDetailsById[normalizedConversationId];
+    const existingDetail = conversationDetailsByIdRef.current[normalizedConversationId];
     if (!force && Array.isArray(existingDetail?.members) && existingDetail.members.length > 0) {
       return existingDetail;
     }
@@ -1525,7 +1568,7 @@ export default function Chat() {
       upsertConversationDetail(detail);
     }
     return detail;
-  }, [conversationDetailsById, upsertConversationDetail]);
+  }, [upsertConversationDetail]);
 
   const unreadTotal = useMemo(
     () => conversations.reduce((sum, item) => sum + Number(item?.unread_count || 0), 0),
@@ -1644,7 +1687,10 @@ export default function Chat() {
   );
 
   const showContextPanel = !isMobile && contextPanelOpen;
-  const renderDesktopContextPanel = !isMobile && Boolean(activeConversation) && showContextPanel;
+  const showTaskPanel = !isMobile && taskPanelOpen && Boolean(taskPanelTaskId);
+  const renderDesktopRightPanel = !isMobile && Boolean(activeConversation) && (showContextPanel || showTaskPanel);
+  const renderPersistentRightPanel = renderDesktopRightPanel && isWideDesktop;
+  const activeTaskConversationTaskId = getTaskConversationTaskId(activeConversation);
   const emojiPickerOpen = Boolean(emojiAnchorEl);
   const shouldRenderChatDialogs = Boolean(
     threadMenuAnchor
@@ -1684,6 +1730,16 @@ export default function Chat() {
           ? 'inbox'
           : mobileView
       );
+
+  useEffect(() => {
+    if (isMobile) return;
+    setTaskPanelTaskId(activeTaskConversationTaskId);
+    setTaskPanelOpen(Boolean(activeTaskConversationTaskId));
+    if (activeTaskConversationTaskId) {
+      setContextPanelOpen(false);
+      void loadTaskWorkspacePanelModule();
+    }
+  }, [activeConversationId, activeTaskConversationTaskId, isMobile]);
 
   useEffect(() => {
     if (!isMobile) {
@@ -2828,11 +2884,52 @@ export default function Chat() {
     });
   }, [openDocumentPreview]);
 
-  const openTaskFromChat = useCallback((taskId) => {
+  const openTaskInTasks = useCallback((taskId) => {
     const normalizedTaskId = String(taskId || '').trim();
     if (!normalizedTaskId) return;
     navigate(`/tasks?task=${encodeURIComponent(normalizedTaskId)}`);
   }, [navigate]);
+
+  const openTaskFromChat = useCallback((taskId) => {
+    const normalizedTaskId = String(taskId || '').trim();
+    if (!normalizedTaskId) return;
+    if (isMobile) {
+      openTaskInTasks(normalizedTaskId);
+      return;
+    }
+    void loadTaskWorkspacePanelModule();
+    setContextPanelOpen(false);
+    setTaskPanelTaskId(normalizedTaskId);
+    setTaskPanelOpen(true);
+  }, [isMobile, openTaskInTasks]);
+
+  const closeTaskPanel = useCallback(() => {
+    setTaskPanelOpen(false);
+  }, []);
+
+  const handleTaskPanelUpdated = useCallback((updatedTask) => {
+    const updatedTaskId = String(updatedTask?.id || '').trim();
+    if (!updatedTaskId) return;
+    setConversations((current) => current.map(
+      (conversation) => patchTaskConversationFromTask(conversation, updatedTask),
+    ));
+    setConversationDetailsById((current) => {
+      let changed = false;
+      const next = { ...current };
+      Object.entries(current).forEach(([conversationId, conversation]) => {
+        if (String(conversation?.task_id || '').trim() !== updatedTaskId) return;
+        next[conversationId] = patchTaskConversationFromTask(conversation, updatedTask);
+        changed = true;
+      });
+      return changed ? next : current;
+    });
+    invalidateSWRCacheByPrefix('chat', 'conversations', String(user?.id || 'guest'));
+    const activeId = String(activeConversationIdRef.current || '').trim();
+    if (activeId) {
+      void loadConversationDetail(activeId, { force: true }).catch(() => {});
+    }
+    void loadConversationsRef.current?.({ silent: true, force: true }).catch(() => {});
+  }, [loadConversationDetail, user?.id]);
 
   const emitChatUnreadRefresh = useCallback(() => {
     window.dispatchEvent(new CustomEvent('chat-unread-needs-refresh'));
@@ -2892,6 +2989,7 @@ export default function Chat() {
   }, [activeConversationId]);
 
   conversationsRef.current = conversations;
+  conversationDetailsByIdRef.current = conversationDetailsById;
   conversationsLoadingRef.current = conversationsLoading;
   aiBotsLoadingRef.current = aiBotsLoading;
   messagesRef.current = messages;
@@ -4512,6 +4610,8 @@ export default function Chat() {
       clearStoredConversationState({ conversationId: normalizedConversationId, invalidateThread: true });
       setInfoOpen(false);
       setContextPanelOpen(false);
+      setTaskPanelOpen(false);
+      setTaskPanelTaskId('');
       setActiveConversationId('');
       setMessages([]);
       setMessagesHasMore(false);
@@ -4521,6 +4621,67 @@ export default function Chat() {
       if (isMobile) openMobileInboxView();
     }
   }, [clearStoredConversationState, isMobile, openMobileInboxView]);
+
+  const requestDeleteConversation = useCallback((conversation) => {
+    const conversationId = String(conversation?.id || '').trim();
+    if (!conversationId) return;
+    const kind = String(conversation?.kind || '').trim();
+    if ((kind === 'task' || getTaskConversationTaskId(conversation)) && !isOrphanedTaskConversation(conversation)) {
+      notifyInfo('Чат задачи удаляется только вместе с самой задачей.', { title: 'Чат задачи' });
+      return;
+    }
+    if (kind === 'ai') {
+      notifyInfo('Удаление AI-чата пока недоступно.', { title: 'AI-чат' });
+      return;
+    }
+    setConversationActionTarget({
+      mode: 'delete',
+      conversation,
+    });
+  }, [notifyInfo]);
+
+  const requestLeaveConversation = useCallback((conversation) => {
+    const conversationId = String(conversation?.id || '').trim();
+    if (!conversationId) return;
+    setConversationActionTarget({
+      mode: 'leave',
+      conversation,
+    });
+  }, []);
+
+  const requestConversationRemoval = useCallback((conversation) => {
+    if (getConversationRemovalMode(conversation) === 'leave') {
+      requestLeaveConversation(conversation);
+      return;
+    }
+    requestDeleteConversation(conversation);
+  }, [requestDeleteConversation, requestLeaveConversation]);
+
+  const confirmConversationAction = useCallback(async () => {
+    const target = conversationActionTarget;
+    const conversation = target?.conversation;
+    const conversationId = String(conversation?.id || '').trim();
+    if (!conversationId || !target?.mode) return;
+    setConversationActionPendingId(conversationId);
+    try {
+      if (target.mode === 'leave') {
+        await chatAPI.leaveGroup(conversationId);
+      } else {
+        await chatAPI.deleteConversation(conversationId);
+      }
+      handleRemoteConversationRemoved(conversationId);
+      setConversationActionTarget(null);
+    } catch (error) {
+      notifyApiError(
+        error,
+        target.mode === 'leave'
+          ? 'Не удалось выйти из группы.'
+          : 'Не удалось удалить чат.',
+      );
+    } finally {
+      setConversationActionPendingId('');
+    }
+  }, [conversationActionTarget, handleRemoteConversationRemoved, notifyApiError]);
 
   const applyAiBotsPayload = useCallback((payload) => {
     const items = Array.isArray(payload?.items) ? payload.items : [];
@@ -4649,8 +4810,11 @@ export default function Chat() {
     if (typeof window === 'undefined') return undefined;
     const prefetchHeavyChatSurfaces = () => {
       void loadChatDialogsModule();
-      if (!isMobile && renderDesktopContextPanel) {
+      if (!isMobile && showContextPanel) {
         void loadChatContextPanelModule();
+      }
+      if (!isMobile && showTaskPanel) {
+        void loadTaskWorkspacePanelModule();
       }
     };
     if (typeof window.requestIdleCallback === 'function') {
@@ -4659,7 +4823,7 @@ export default function Chat() {
     }
     const timeoutId = window.setTimeout(prefetchHeavyChatSurfaces, 900);
     return () => window.clearTimeout(timeoutId);
-  }, [isMobile, renderDesktopContextPanel]);
+  }, [isMobile, showContextPanel, showTaskPanel]);
 
   useEffect(() => {
     logChatDebug('chat:init', {
@@ -6012,6 +6176,7 @@ export default function Chat() {
       return;
     }
     void loadChatContextPanelModule();
+    setTaskPanelOpen(false);
     setContextPanelOpen((current) => !current);
   }, [getCurrentBrowserConversationId, getMobileHistoryKey, isMobile, readMobileHistoryState, writeMobileHistoryState]);
 
@@ -6056,6 +6221,9 @@ export default function Chat() {
       onToggleConversationInFolder={handleToggleConversationInFolder}
       draftsByConversation={draftsByConversation}
       onUpdateConversationSettings={updateConversationSettings}
+      onRequestDeleteConversation={requestDeleteConversation}
+      onRequestLeaveConversation={requestLeaveConversation}
+      conversationActionPendingId={conversationActionPendingId}
       aiBots={aiSidebarRows}
       aiBotsLoading={aiBotsLoading}
       aiBotsError={aiBotsError}
@@ -6187,7 +6355,7 @@ export default function Chat() {
       highlightedMessageId={highlightedMessageId}
       headerSubtitle={conversationMetaSubtitle}
       typingLine={aiAwareTypingLine}
-      contextPanelOpen={showContextPanel}
+      contextPanelOpen={renderDesktopRightPanel}
       selectedFiles={selectedFiles}
       fileCaption={fileCaption}
       onOpenFileDialog={openFilePicker}
@@ -6213,6 +6381,54 @@ export default function Chat() {
       onBindPinnedScroll={bindPinnedScroll}
     />
   );
+
+  const desktopRightPanelContent = showTaskPanel ? (
+    <Suspense fallback={null}>
+      <LazyTaskWorkspacePanel
+        taskId={taskPanelTaskId}
+        onClose={closeTaskPanel}
+        onOpenInTasks={openTaskInTasks}
+        onNavigate={navigate}
+        onTaskUpdated={handleTaskPanelUpdated}
+      />
+    </Suspense>
+  ) : showContextPanel ? (
+    <Suspense fallback={null}>
+      <LazyChatContextPanel
+        theme={theme}
+        ui={ui}
+        activeConversation={activeConversation}
+        conversationHeaderSubtitle={conversationMetaSubtitle}
+        socketStatus={socketStatus}
+        currentUser={user}
+        messages={messages}
+        open={showContextPanel}
+        embedded
+        onClose={() => setContextPanelOpen(false)}
+        onOpenSearch={openSearchDialog}
+        onOpenShare={openShareDialog}
+        onOpenFilePicker={openFilePicker}
+        onUpdateConversationSettings={updateConversationSettings}
+        onAddGroupMembers={handleAddGroupMembers}
+        onRemoveGroupMember={handleRemoveGroupMember}
+        onUpdateGroupMemberRole={handleUpdateGroupMemberRole}
+        onTransferGroupOwnership={handleTransferGroupOwnership}
+        onLeaveGroup={handleLeaveGroup}
+        onUpdateGroupProfile={handleUpdateGroupProfile}
+        settingsUpdating={settingsUpdating}
+        onOpenAttachmentPreview={openMediaViewer}
+        onOpenTask={openTaskFromChat}
+      />
+    </Suspense>
+  ) : null;
+  const conversationActionConversation = conversationActionTarget?.conversation || null;
+  const conversationActionId = String(conversationActionConversation?.id || '').trim();
+  const conversationActionIsLeave = conversationActionTarget?.mode === 'leave';
+  const conversationActionTitle = String(
+    conversationActionConversation?.task_title
+    || conversationActionConversation?.title
+    || 'Этот чат',
+  ).trim();
 
   return (
     <MainLayout
@@ -6292,7 +6508,11 @@ export default function Chat() {
                 display: isMobile ? 'block' : 'grid',
                 gridTemplateColumns: isMobile
                   ? undefined
-                  : `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr)`,
+                  : (
+                    renderPersistentRightPanel
+                      ? `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr) clamp(460px, 38vw, 620px)`
+                      : `minmax(${ui.density.sidebarColumnMin}px, ${ui.density.sidebarColumnMax}px) minmax(0, 1fr)`
+                  ),
                 flex: 1,
                 minHeight: 0,
               }}
@@ -6371,10 +6591,10 @@ export default function Chat() {
                   <Box sx={{ position: 'relative', minWidth: 0, minHeight: 0, overflow: 'hidden', display: 'flex' }}>
                     {threadPane}
 
-                    {renderDesktopContextPanel ? (
+                    {renderDesktopRightPanel && !renderPersistentRightPanel ? (
                       <>
                         <Box
-                          onClick={() => setContextPanelOpen(false)}
+                          onClick={showTaskPanel ? closeTaskPanel : () => setContextPanelOpen(false)}
                           sx={{
                             position: 'absolute',
                             top: 0,
@@ -6383,60 +6603,48 @@ export default function Chat() {
                             right: 0,
                             zIndex: 6,
                             bgcolor: alpha(theme.palette.common.black, theme.palette.mode === 'dark' ? 0.16 : 0.08),
-                            opacity: showContextPanel ? 1 : 0,
-                            pointerEvents: showContextPanel ? 'auto' : 'none',
-                            transition: `opacity ${showContextPanel ? contextPanelEnterDuration : contextPanelExitDuration}ms ${showContextPanel ? 'ease-out' : 'ease-in'}`,
+                            opacity: renderDesktopRightPanel ? 1 : 0,
+                            pointerEvents: renderDesktopRightPanel ? 'auto' : 'none',
+                            transition: `opacity ${renderDesktopRightPanel ? contextPanelEnterDuration : contextPanelExitDuration}ms ${renderDesktopRightPanel ? 'ease-out' : 'ease-in'}`,
                           }}
                         />
                         <Box
+                          data-testid="chat-desktop-right-panel-overlay"
                           sx={{
                             position: 'absolute',
                             top: 0,
                             right: 0,
                             bottom: 0,
-                            width: { md: 340, lg: 360 },
-                            maxWidth: '100%',
+                            width: 'min(620px, calc(100% - 48px))',
                             zIndex: 7,
                             borderLeft: `1px solid ${ui.borderSoft}`,
                             boxShadow: ui.shadowStrong,
-                            opacity: showContextPanel ? 1 : 0,
-                            pointerEvents: showContextPanel ? 'auto' : 'none',
-                            transform: showContextPanel ? 'translateX(0)' : 'translateX(24px)',
-                            transition: `transform ${showContextPanel ? contextPanelEnterDuration : contextPanelExitDuration}ms ${showContextPanel ? 'cubic-bezier(0.22, 1, 0.36, 1)' : 'ease-in'}, opacity ${showContextPanel ? contextPanelEnterDuration : contextPanelExitDuration}ms ${showContextPanel ? 'ease-out' : 'ease-in'}`,
+                            opacity: renderDesktopRightPanel ? 1 : 0,
+                            pointerEvents: renderDesktopRightPanel ? 'auto' : 'none',
+                            transform: renderDesktopRightPanel ? 'translateX(0)' : 'translateX(24px)',
+                            transition: `transform ${renderDesktopRightPanel ? contextPanelEnterDuration : contextPanelExitDuration}ms ${renderDesktopRightPanel ? 'cubic-bezier(0.22, 1, 0.36, 1)' : 'ease-in'}, opacity ${renderDesktopRightPanel ? contextPanelEnterDuration : contextPanelExitDuration}ms ${renderDesktopRightPanel ? 'ease-out' : 'ease-in'}`,
                             willChange: 'transform, opacity',
                           }}
                         >
-                          <Suspense fallback={null}>
-                            <LazyChatContextPanel
-                              theme={theme}
-                              ui={ui}
-                              activeConversation={activeConversation}
-                              conversationHeaderSubtitle={conversationMetaSubtitle}
-                              socketStatus={socketStatus}
-                              currentUser={user}
-                              messages={messages}
-                              open={showContextPanel}
-                              embedded
-                              onClose={() => setContextPanelOpen(false)}
-                              onOpenSearch={openSearchDialog}
-                              onOpenShare={openShareDialog}
-                              onOpenFilePicker={openFilePicker}
-                              onUpdateConversationSettings={updateConversationSettings}
-                              onAddGroupMembers={handleAddGroupMembers}
-                              onRemoveGroupMember={handleRemoveGroupMember}
-                              onUpdateGroupMemberRole={handleUpdateGroupMemberRole}
-                              onTransferGroupOwnership={handleTransferGroupOwnership}
-                              onLeaveGroup={handleLeaveGroup}
-                              onUpdateGroupProfile={handleUpdateGroupProfile}
-                              settingsUpdating={settingsUpdating}
-                              onOpenAttachmentPreview={openMediaViewer}
-                              onOpenTask={openTaskFromChat}
-                            />
-                          </Suspense>
+                          {desktopRightPanelContent}
                         </Box>
                       </>
                     ) : null}
                   </Box>
+                  {renderPersistentRightPanel ? (
+                    <Box
+                      data-testid="chat-desktop-right-panel-persistent"
+                      sx={{
+                        minWidth: 0,
+                        minHeight: 0,
+                        overflow: 'hidden',
+                        borderLeft: `1px solid ${ui.borderSoft}`,
+                        bgcolor: ui.panelSolid,
+                      }}
+                    >
+                      {desktopRightPanelContent}
+                    </Box>
+                  ) : null}
                 </>
               )}
             </Box>
@@ -6546,6 +6754,7 @@ export default function Chat() {
                 conversationHeaderSubtitle={conversationMetaSubtitle}
                 settingsUpdating={settingsUpdating}
                 onUpdateConversationSettings={updateConversationSettings}
+                onRequestDeleteConversation={requestConversationRemoval}
                 onAddGroupMembers={handleAddGroupMembers}
                 onRemoveGroupParticipant={handleRemoveGroupMember}
                 onUpdateGroupMemberRole={handleUpdateGroupMemberRole}
@@ -6565,6 +6774,52 @@ export default function Chat() {
               />
             </Suspense>
           ) : null}
+
+          <Dialog
+            open={Boolean(conversationActionTarget)}
+            onClose={() => {
+              if (!conversationActionPendingId) setConversationActionTarget(null);
+            }}
+            maxWidth="xs"
+            fullWidth
+          >
+            <DialogTitle>
+              {conversationActionIsLeave ? 'Выйти из группы?' : 'Удалить чат?'}
+            </DialogTitle>
+            <DialogContent>
+              <Typography color="text.secondary">
+                {conversationActionIsLeave
+                  ? `Вы покинете группу «${conversationActionTitle}». История останется у других участников.`
+                  : (
+                    isOrphanedTaskConversation(conversationActionConversation)
+                      ? `Задача уже удалена. Чат «${conversationActionTitle}» и вся переписка будут удалены у всех участников.`
+                      : (
+                        String(conversationActionConversation?.kind || '').trim() === 'group'
+                          ? `Группа «${conversationActionTitle}» и вся переписка будут удалены у всех участников.`
+                          : `Чат «${conversationActionTitle}» и вся переписка будут удалены у всех участников.`
+                      )
+                  )}
+              </Typography>
+            </DialogContent>
+            <DialogActions>
+              <Button
+                onClick={() => setConversationActionTarget(null)}
+                disabled={Boolean(conversationActionPendingId)}
+              >
+                Отмена
+              </Button>
+              <Button
+                color="error"
+                variant="contained"
+                onClick={() => void confirmConversationAction()}
+                disabled={!conversationActionId || Boolean(conversationActionPendingId)}
+              >
+                {conversationActionPendingId
+                  ? 'Выполняется…'
+                  : (conversationActionIsLeave ? 'Выйти' : 'Удалить')}
+              </Button>
+            </DialogActions>
+          </Dialog>
 
           <ChatFolderDialogs
             open={folderManagerOpen}

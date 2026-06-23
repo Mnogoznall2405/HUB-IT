@@ -92,6 +92,9 @@ class ChatConversationSummary(BaseModel):
     task_id: Optional[str] = None
     task_title: Optional[str] = None
     task_status: Optional[str] = None
+    task_assignee_full_name: Optional[str] = None
+    task_due_at: Optional[str] = None
+    task_completed_at: Optional[str] = None
     created_at: str
     updated_at: str
     last_message_at: Optional[str] = None
@@ -102,6 +105,7 @@ class ChatConversationSummary(BaseModel):
     is_pinned: bool = False
     is_muted: bool = False
     is_archived: bool = False
+    viewer_member_role: Optional[str] = None
     member_preview: list[ChatMemberResponse] = Field(default_factory=list)
     direct_peer: Optional[ChatUserSummary] = None
 

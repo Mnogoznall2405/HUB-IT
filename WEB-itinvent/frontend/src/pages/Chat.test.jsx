@@ -12,9 +12,13 @@ import {
   canUseAiChatPermission,
   filterSidebarConversations,
   getLatestPersistedThreadMessageId,
+  getConversationRemovalMode,
+  getTaskConversationTaskId,
+  isOrphanedTaskConversation,
   isRegularSidebarConversation,
   mergeAiStatusPayload,
   normalizeForwardMessageQueue,
+  patchTaskConversationFromTask,
   resolveActiveAiBotRecord,
   resolveActiveThreadTransportState,
   resolveChatMobileBottomNavMode,
@@ -53,6 +57,56 @@ describe('Chat page AI helpers', () => {
   it('builds stable AI bots cache keys per user', () => {
     expect(buildChatAiBotsCacheKeyParts(7)).toEqual(['chat', 'ai-bots', '7']);
     expect(buildChatAiBotsCacheKeyParts()).toEqual(['chat', 'ai-bots', 'guest']);
+  });
+
+  it('reads the linked task id only from task conversation data', () => {
+    expect(getTaskConversationTaskId({ kind: 'task', task_id: 'task-42' })).toBe('task-42');
+    expect(getTaskConversationTaskId({ kind: 'direct' })).toBe('');
+    expect(getTaskConversationTaskId(null)).toBe('');
+  });
+
+  it('detects orphaned task conversations when the linked task is gone', () => {
+    expect(isOrphanedTaskConversation({ kind: 'task', task_id: 'task-42', task_missing: true })).toBe(true);
+    expect(isOrphanedTaskConversation({ kind: 'task', task_id: 'task-42', task_missing: false })).toBe(false);
+    expect(isOrphanedTaskConversation({ kind: 'task', task_id: 'task-42' })).toBe(false);
+    expect(isOrphanedTaskConversation({ kind: 'direct' })).toBe(false);
+  });
+
+  it('chooses leave for group members and delete for owners and regular chats', () => {
+    expect(getConversationRemovalMode({ kind: 'group', viewer_member_role: 'member' })).toBe('leave');
+    expect(getConversationRemovalMode({ kind: 'group', viewer_member_role: 'owner' })).toBe('delete');
+    expect(getConversationRemovalMode({ kind: 'direct', viewer_member_role: 'member' })).toBe('delete');
+  });
+
+  it('patches task-chat metadata immediately from the updated task payload', () => {
+    const conversation = {
+      id: 'conv-1',
+      kind: 'task',
+      task_id: 'task-42',
+      title: 'Задача: Старое название',
+      task_title: 'Старое название',
+      task_status: 'review',
+      task_assignee_full_name: 'Старый исполнитель',
+      task_due_at: '2026-06-20T10:00:00',
+      task_completed_at: null,
+    };
+
+    expect(patchTaskConversationFromTask(conversation, {
+      id: 'task-42',
+      title: 'Новое название',
+      status: 'done',
+      assignee_full_name: 'Новый исполнитель',
+      due_at: null,
+      completed_at: '2026-06-23T14:32:00',
+    })).toEqual({
+      ...conversation,
+      title: 'Задача: Новое название',
+      task_title: 'Новое название',
+      task_status: 'done',
+      task_assignee_full_name: 'Новый исполнитель',
+      task_due_at: null,
+      task_completed_at: '2026-06-23T14:32:00',
+    });
   });
 
   it('defers desktop URL sync while a notification deep-link conversation is being applied', () => {

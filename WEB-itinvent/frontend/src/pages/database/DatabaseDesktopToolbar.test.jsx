@@ -15,7 +15,6 @@ const renderToolbar = (props = {}) => {
     onOpenAddEquipment: vi.fn(),
     onOpenAddConsumable: vi.fn(),
     onBranchChange: vi.fn(),
-    onLoadMore: vi.fn(),
     onCollapseAll: vi.fn(),
   };
 
@@ -29,8 +28,6 @@ const renderToolbar = (props = {}) => {
           { BRANCH_NO: 2, BRANCH_NAME: 'Remote' },
         ]}
         selectedBranch=""
-        nextEquipmentPage={2}
-        equipmentPagesTotal={4}
         {...handlers}
         {...props}
       />
@@ -57,18 +54,6 @@ describe('DatabaseDesktopToolbar', () => {
 
     expect(screen.queryByRole('button', { name: 'Добавить расходник' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /QR/ })).not.toBeInTheDocument();
-  });
-
-  it('calls load-more handler from the controlled load button', () => {
-    const handlers = renderToolbar({
-      canLoadMore: true,
-      nextEquipmentPage: 3,
-      equipmentPagesTotal: 5,
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Загрузить ещё (3/5)' }));
-
-    expect(handlers.onLoadMore).toHaveBeenCalledTimes(1);
   });
 
   it('calls branch change handler from the branch select', () => {

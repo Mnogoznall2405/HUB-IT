@@ -361,6 +361,29 @@ beforeEach(() => {
 });
 
 describe('Tasks page detail workspace', () => {
+  it('opens the create dialog from the dashboard quick-action URL and consumes the flag', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks?create=1']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('textbox', { name: 'Что нужно сделать' })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('location-probe').textContent).not.toContain('create=1');
+    });
+  });
+
   it('opens full detail mode from URL and keeps active tab in search params', async () => {
     render(
       <MemoryRouter initialEntries={['/tasks?task=task-1&task_tab=history']}>
@@ -936,12 +959,14 @@ describe('Tasks page detail workspace', () => {
     expect(await screen.findByTestId('task-detail-mobile-header')).toBeInTheDocument();
     expect(screen.getByTestId('main-layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
     const mobileContent = screen.getByTestId('task-mobile-content');
-    const mobileAction = screen.getByTestId('task-context-mobile-action');
+    const mobileActionRail = screen.getByTestId('task-mobile-action-rail');
     expect(mobileContent).toHaveTextContent('Проверить акт перемещения');
     expect(screen.getByTestId('task-mobile-description')).toHaveTextContent('Нужно загрузить');
     expect(screen.getByTestId('task-mobile-files')).toHaveTextContent('акт-перемещения.pdf');
-    expect(mobileContent.compareDocumentPosition(mobileAction) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Сдать результат');
+    expect(mobileContent.compareDocumentPosition(mobileActionRail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId('task-mobile-checklist-summary')).toHaveTextContent('1/2 выполнено');
+    expect(screen.getByTestId('task-mobile-files-chip')).toHaveTextContent('Файлы: 2');
+    expect(mobileActionRail).toHaveTextContent('Сдать');
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
 
     fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
@@ -1288,10 +1313,70 @@ describe('Tasks page detail workspace', () => {
     const card = await screen.findByTestId('mobile-task-card-task-1');
     expect(within(card).queryByTestId('mobile-task-card-action-task-1')).not.toBeInTheDocument();
     fireEvent.click(card);
-    const actionBlock = await screen.findByTestId('task-context-mobile-action');
-    fireEvent.click(within(actionBlock).getByRole('button', { name: 'Сдать' }));
+    const actionRail = await screen.findByTestId('task-mobile-action-rail');
+    fireEvent.click(within(actionRail).getByRole('button', { name: 'Сдать' }));
 
     expect(await screen.findByText('Сдать работу')).toBeInTheDocument();
+  });
+
+  it('opens a dedicated mobile checklist screen, toggles and adds checklist items', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-1']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('task-mobile-detail-screen')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('task-mobile-checklist-summary'));
+
+    expect(await screen.findByTestId('task-mobile-checklist-screen')).toBeInTheDocument();
+    expect(screen.getByTestId('task-detail-mobile-title')).toHaveTextContent('Чек-лист');
+    expect(screen.getByTestId('task-mobile-checklist-progress')).toHaveTextContent('1/2 выполнено');
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('task_mobile_view=checklist');
+
+    fireEvent.click(screen.getByLabelText('Отметить пункт 1'));
+    await waitFor(() => {
+      expect(hubAPI.updateTask).toHaveBeenCalledWith('task-1', {
+        checklist_items: [
+          expect.objectContaining({ id: 'check-1', done: true }),
+          expect.objectContaining({ id: 'check-2', done: true }),
+        ],
+      });
+    });
+
+    fireEvent.click(screen.getByTestId('task-mobile-checklist-add'));
+    fireEvent.change(screen.getByTestId('task-mobile-checklist-new-input'), {
+      target: { value: 'Новый пункт' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить' }));
+
+    await waitFor(() => {
+      expect(hubAPI.updateTask).toHaveBeenLastCalledWith('task-1', {
+        checklist_items: [
+          expect.objectContaining({ id: 'check-1' }),
+          expect.objectContaining({ id: 'check-2' }),
+          expect.objectContaining({ text: 'Новый пункт', done: false }),
+        ],
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId('task-mobile-detail-screen')).toBeInTheDocument();
+      expect(screen.getByTestId('location-probe')).not.toHaveTextContent('task_mobile_view=checklist');
+    });
   });
 
   it('uses mobile list and compact detail flow on small screens', async () => {
@@ -1358,7 +1443,8 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(await screen.findByTestId('mobile-task-card-task-1'));
     expect(await screen.findByTestId('task-detail-mobile-header')).toBeInTheDocument();
     expect(screen.getByTestId('task-mobile-content')).toHaveTextContent('Проверить акт перемещения');
-    expect(screen.getByTestId('task-context-mobile-context')).toBeInTheDocument();
+    expect(screen.getByTestId('task-mobile-detail-screen')).toBeInTheDocument();
+    expect(screen.getByTestId('task-mobile-checklist-summary')).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
 
     fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
@@ -1406,5 +1492,33 @@ describe('Tasks page detail workspace', () => {
 
     chatFeatureFlags.chat = false;
     chatFeatureFlags.taskDiscussion = false;
+  });
+
+  it('keeps the mobile task layout and exposes a direct chat button', async () => {
+    installMatchMedia({ mobile: true });
+    chatFeatureFlags.chat = true;
+    chatFeatureFlags.taskDiscussion = true;
+    hubAPI.openTaskDiscussion.mockResolvedValue({
+      conversation_id: 'conv-task-mobile',
+      created: false,
+      kind: 'task',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-1']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+          <Route path="/chat" element={<div data-testid="chat-page" />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('task-detail-mobile-header')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('task-mobile-open-chat'));
+
+    await waitFor(() => {
+      expect(hubAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
+      expect(screen.getByTestId('chat-page')).toBeInTheDocument();
+    });
   });
 });

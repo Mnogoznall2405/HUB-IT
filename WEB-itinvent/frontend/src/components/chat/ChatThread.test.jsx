@@ -1553,6 +1553,54 @@ describe('ChatBubble', () => {
     expect(onUnpinPinnedMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps discussion available and opens the task from a completed-task banner', () => {
+    const onOpenTask = vi.fn();
+
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          activeConversation: {
+            id: 'task-conv',
+            kind: 'task',
+            title: 'Задача: Старое название',
+            task_id: 'task-1',
+            task_title: 'Закрытая задача',
+            task_status: 'done',
+            task_completed_at: '2026-06-23T09:32:00',
+          },
+          activeConversationId: 'task-conv',
+          onOpenTask,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('task-completed-banner')).toHaveTextContent('Задача выполнена 23.06.2026 в 09:32');
+    expect(screen.getByText('Закрытая задача')).toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toBeEnabled();
+
+    fireEvent.click(within(screen.getByTestId('task-completed-banner')).getByRole('button', { name: 'Открыть задачу' }));
+    expect(onOpenTask).toHaveBeenCalledWith('task-1');
+  });
+
+  it('does not show the completed-task banner for an active task', () => {
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          activeConversation: {
+            id: 'task-conv',
+            kind: 'task',
+            title: 'Активная задача',
+            task_id: 'task-1',
+            task_status: 'in_progress',
+          },
+          activeConversationId: 'task-conv',
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId('task-completed-banner')).not.toBeInTheDocument();
+  });
+
   it('renders Telegram-like message selection controls and actions', () => {
     const onToggleMessageSelection = vi.fn();
     const onClearMessageSelection = vi.fn();

@@ -3068,6 +3068,7 @@ describe('chatConversationDetailsAPI contract', () => {
   const conversationDetailMethods = [
     'getConversation',
     'updateConversationSettings',
+    'deleteConversation',
   ];
 
   beforeEach(() => {
@@ -3075,6 +3076,9 @@ describe('chatConversationDetailsAPI contract', () => {
     apiClientMock.get.mockResolvedValue({ data: { id: 'conv/1 A', title: 'Ops' } });
     apiClientMock.patch = vi.fn().mockResolvedValue({
       data: { id: 'conv/1 A', notifications_enabled: false },
+    });
+    apiClientMock.delete = vi.fn().mockResolvedValue({
+      data: { ok: true, conversation_id: 'conv/1 A' },
     });
   });
 
@@ -3092,6 +3096,8 @@ describe('chatConversationDetailsAPI contract', () => {
     })).resolves.toEqual({ id: 'conv/1 A', title: 'Ops' });
     await expect(chatConversationDetailsAPI.updateConversationSettings('conv/1 A', payload))
       .resolves.toEqual({ id: 'conv/1 A', notifications_enabled: false });
+    await expect(chatConversationDetailsAPI.deleteConversation('conv/1 A'))
+      .resolves.toEqual({ ok: true, conversation_id: 'conv/1 A' });
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/chat/conversations/conv%2F1%20A', {
       signal: controller.signal,
@@ -3101,6 +3107,7 @@ describe('chatConversationDetailsAPI contract', () => {
       payload,
     );
     expect(apiClientMock.patch.mock.calls[0][1]).toBe(payload);
+    expect(apiClientMock.delete).toHaveBeenCalledWith('/chat/conversations/conv%2F1%20A');
   });
 
   it('keeps client chat conversation detail methods compatible with the dedicated module and re-export', async () => {
@@ -3126,15 +3133,20 @@ describe('chatConversationDetailsAPI contract', () => {
       .mockResolvedValue({ id: 'conv-spy' });
     const settingsSpy = vi.spyOn(chatConversationDetailsAPI, 'updateConversationSettings')
       .mockResolvedValue({ id: 'settings-spy' });
+    const deleteSpy = vi.spyOn(chatConversationDetailsAPI, 'deleteConversation')
+      .mockResolvedValue({ ok: true });
 
     await expect(chatAPI.getConversation('conv-1', options)).resolves.toEqual({ id: 'conv-spy' });
     await expect(chatAPI.updateConversationSettings('conv-1', payload))
       .resolves.toEqual({ id: 'settings-spy' });
+    await expect(chatAPI.deleteConversation('conv-1')).resolves.toEqual({ ok: true });
 
     expect(detailSpy).toHaveBeenCalledWith('conv-1', options);
     expect(settingsSpy).toHaveBeenCalledWith('conv-1', payload);
+    expect(deleteSpy).toHaveBeenCalledWith('conv-1');
     detailSpy.mockRestore();
     settingsSpy.mockRestore();
+    deleteSpy.mockRestore();
   });
 });
 

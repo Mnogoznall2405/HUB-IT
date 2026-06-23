@@ -117,11 +117,18 @@ def test_settings_and_db_selection_work_with_app_db_backend(temp_dir):
         "/chat",
         "/mail",
     ]
+    assert settings_service.get_user_settings(15)["dashboard_sections"] == [
+        "attention",
+        "tasks",
+        "communication",
+        "news",
+    ]
     updated = settings_service.update_user_settings(15, {
         "theme_mode": "dark",
         "font_family": "Segoe UI",
         "font_scale": 1.1,
         "pinned_database": "ITINVENT",
+        "dashboard_sections": ["news", "tasks", "news", "invalid"],
         "mobile_bottom_nav_items": [
             "/mail",
             "invalid",
@@ -135,6 +142,8 @@ def test_settings_and_db_selection_work_with_app_db_backend(temp_dir):
     selection_service.set_assigned_database(123456, "ITINVENT")
 
     assert updated["theme_mode"] == "dark"
+    assert updated["dashboard_sections"] == ["attention", "news", "tasks"]
+    assert updated["dashboard_mobile_sections"] == ["urgent", "announcements", "tasks"]
     assert updated["mobile_bottom_nav_items"] == ["/mail", "/tasks", "/dashboard", "/database"]
     assert settings_service.get_user_settings(15)["pinned_database"] == "ITINVENT"
     assert settings_service.get_user_settings(15)["mobile_bottom_nav_items"] == [
@@ -157,6 +166,12 @@ def test_settings_mobile_bottom_nav_items_work_with_json_fallback(temp_dir, monk
         "/chat",
         "/mail",
     ]
+    assert service.get_user_settings(22)["dashboard_sections"] == [
+        "attention",
+        "tasks",
+        "communication",
+        "news",
+    ]
 
     updated = service.update_user_settings(22, {
         "mobile_bottom_nav_items": [
@@ -176,6 +191,21 @@ def test_settings_mobile_bottom_nav_items_work_with_json_fallback(temp_dir, monk
         "/tasks",
         "/mail",
         "/kb",
+    ]
+
+    legacy_updated = service.update_user_settings(22, {
+        "dashboard_mobile_sections": ["tasks", "announcements"],
+    })
+    assert legacy_updated["dashboard_sections"] == [
+        "attention",
+        "tasks",
+        "communication",
+        "news",
+    ]
+    assert legacy_updated["dashboard_mobile_sections"] == [
+        "urgent",
+        "tasks",
+        "announcements",
     ]
 
     assert service.update_user_settings(22, {"mobile_bottom_nav_items": []})[

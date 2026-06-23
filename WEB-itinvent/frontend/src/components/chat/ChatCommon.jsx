@@ -7,6 +7,7 @@ import PlayArrowRoundedIcon from '@mui/icons-material/PlayArrowRounded';
 import StickyNote2OutlinedIcon from '@mui/icons-material/StickyNote2Outlined';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import TaskAltRoundedIcon from '@mui/icons-material/TaskAltRounded';
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 
 import {
   avatarLabel,
@@ -255,7 +256,9 @@ export function AiConversationAvatar({ size = 48, sx = {} }) {
   );
 }
 
-export function TaskConversationAvatar({ size = 48, sx = {} }) {
+export function TaskConversationAvatar({ conversation, size = 48, sx = {} }) {
+  const [, statusColor] = getStatusMeta(conversation?.task_status);
+  const completed = String(conversation?.task_status || '').trim().toLowerCase() === 'done';
   return (
     <Box
       sx={{
@@ -286,10 +289,29 @@ export function TaskConversationAvatar({ size = 48, sx = {} }) {
           boxShadow: muiTheme.palette.mode === 'dark'
             ? 'inset 0 1px 0 rgba(255,255,255,0.08)'
             : 'inset 0 1px 0 rgba(255,255,255,0.72)',
+          border: `2px solid ${alpha(statusColor, muiTheme.palette.mode === 'dark' ? 0.82 : 0.68)}`,
         })}
       >
         <TaskAltRoundedIcon sx={{ fontSize: Math.max(18, Math.round(size * 0.46)) }} />
       </Box>
+      {completed ? (
+        <Box
+          sx={(muiTheme) => ({
+            position: 'absolute',
+            right: -1,
+            bottom: -1,
+            width: Math.max(17, Math.round(size * 0.36)),
+            height: Math.max(17, Math.round(size * 0.36)),
+            borderRadius: '50%',
+            display: 'grid',
+            placeItems: 'center',
+            bgcolor: muiTheme.palette.background.paper,
+            color: '#059669',
+          })}
+        >
+          <CheckCircleRoundedIcon sx={{ fontSize: '100%' }} />
+        </Box>
+      ) : null}
     </Box>
   );
 }
@@ -308,7 +330,7 @@ export function ConversationAvatar({
     return <AiConversationAvatar size={size} sx={sx} />;
   }
   if (kind === 'task' || String(conversation?.task_id || '').trim()) {
-    return <TaskConversationAvatar size={size} sx={sx} />;
+    return <TaskConversationAvatar conversation={conversation} size={size} sx={sx} />;
   }
 
   const item = conversation?.kind === 'direct'

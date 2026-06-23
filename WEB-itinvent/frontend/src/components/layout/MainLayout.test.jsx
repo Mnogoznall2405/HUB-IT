@@ -1483,6 +1483,29 @@ describe('MainLayout hub Windows notifications', () => {
     expect(shell.style.getPropertyValue('--app-shell-measured-header-offset')).toBe('0px');
   });
 
+  it('reserves a safe top inset for regular mobile pages with a hidden header', async () => {
+    const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
+
+    try {
+      render(
+        <MainLayout headerMode="hidden">
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId('main-layout-top-spacer')).toHaveStyle({
+        height: 'max(var(--app-shell-top-offset), 10px)',
+      });
+    } finally {
+      restoreMobileMatchMedia();
+    }
+  });
+
   it('uses edge-to-edge mobile content mode only on phones', async () => {
     mockLocation.pathname = '/mail';
     const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
@@ -1763,6 +1786,104 @@ describe('MainLayout mobile bottom navigation', () => {
       expect(screen.getByTestId('main-layout-mobile-bottom-nav-menu')).toHaveClass('Mui-selected');
     } finally {
       restoreMobileMatchMedia();
+    }
+  });
+});
+
+describe('MainLayout desktop account navigation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    window.localStorage.clear();
+    mockHasPermission.mockReset();
+    mockHasPermission.mockImplementation(() => true);
+    mockNavigate.mockReset();
+    mockApiGet.mockReset();
+    mockGetChatUnreadSummary.mockReset();
+    mockGetUnreadCount.mockReset();
+    mockLocation.pathname = '/dashboard';
+    mockLocation.search = '';
+    mockPreferences.mobile_bottom_nav_items = ['/dashboard', '/tasks', '/chat', '/mail'];
+    mockApiGet.mockImplementation(async (url) => {
+      if (url === '/database/list') return { data: [{ id: 'default', name: 'Основная БД' }] };
+      if (url === '/database/current') return { data: { id: 'default', name: 'Основная БД', locked: false } };
+      if (url === '/hub/notifications/unread-counts') return { data: { notifications_unread_total: 0 } };
+      return { data: {} };
+    });
+    mockGetChatUnreadSummary.mockResolvedValue({ messages_unread_total: 0, conversations_unread: 0 });
+    mockGetUnreadCount.mockResolvedValue({ unread_count: 0 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('persists the tools group state', async () => {
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+    try {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const toggle = screen.getByTestId('main-layout-sidebar-tools-toggle-desktop');
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      expect(window.localStorage.getItem('sidebar_tools_expanded')).toBe('false');
+    } finally {
+      restoreDesktopMatchMedia();
+    }
+  });
+
+  it('opens the account menu and navigates to profile', async () => {
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+    try {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      fireEvent.click(screen.getByTestId('main-layout-account-button-desktop'));
+      expect(screen.getByRole('menuitem', { name: 'Администрирование' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Профиль' }));
+      expect(mockNavigate).toHaveBeenCalledWith('/profile');
+    } finally {
+      restoreDesktopMatchMedia();
+    }
+  });
+
+  it('restores the compact icon rail from local storage', async () => {
+    window.localStorage.setItem('sidebar_collapsed', 'true');
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+    try {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByTestId('main-layout-account-button-mobile')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Развернуть боковое меню' })).toBeInTheDocument();
+      expect(screen.getByTestId('main-layout-account-button-desktop')).toHaveAttribute('aria-label', 'Открыть меню профиля');
+    } finally {
+      restoreDesktopMatchMedia();
     }
   });
 });

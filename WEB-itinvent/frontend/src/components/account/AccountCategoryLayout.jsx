@@ -13,6 +13,7 @@ function CategoryButton({ category, selected, onClick }) {
   return (
     <ButtonBase
       data-testid={`account-category-${category.key}`}
+      aria-current={selected ? 'page' : undefined}
       onClick={onClick}
       sx={{
         width: '100%',
@@ -125,10 +126,7 @@ export default function AccountCategoryLayout({
                   borderRadius: '18px',
                   border: '1px solid',
                   borderColor: ui.borderSoft,
-                  bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.78 : 0.82),
-                  backdropFilter: 'blur(18px)',
-                  WebkitBackdropFilter: 'blur(18px)',
-                  boxShadow: ui.shellShadow,
+                  bgcolor: ui.panelSolid,
                 }}
               >
                 <Stack spacing={0.35}>

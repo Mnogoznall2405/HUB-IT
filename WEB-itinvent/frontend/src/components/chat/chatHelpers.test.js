@@ -5,8 +5,11 @@ import {
   buildTimelineItems,
   detectChatBodyFormat,
   formatMessageTime,
+  formatTaskConversationDue,
+  getConversationDisplayTitle,
   getConversationHeaderSubtitle,
   getConversationStatusLine,
+  getTaskConversationMetaLine,
   getAttachmentKind,
   getMessagePreview,
   getReplyPreviewText,
@@ -48,6 +51,28 @@ describe('formatMessageTime', () => {
     const result = formatMessageTime('2026-06-10T09:15:00.000Z');
     expect(result).toMatch(/^\d{2}:\d{2}$/);
     expect(result).not.toMatch(/\./);
+  });
+});
+
+describe('task conversation display helpers', () => {
+  it('prefers task metadata over the compatibility conversation title', () => {
+    const conversation = {
+      kind: 'task',
+      title: 'Задача: Старое название',
+      task_title: 'Проверить новый сервер',
+      task_assignee_full_name: 'Иван Исполнитель',
+      task_due_at: '2026-06-29T19:00:00',
+    };
+
+    expect(getConversationDisplayTitle(conversation)).toBe('Проверить новый сервер');
+    expect(getTaskConversationMetaLine(conversation)).toContain('Иван Исполнитель');
+    expect(getTaskConversationMetaLine(conversation)).toContain('Срок:');
+  });
+
+  it('uses readable fallbacks when task assignment metadata is missing', () => {
+    expect(getConversationDisplayTitle({ kind: 'task', title: 'Задача: Без метаданных' })).toBe('Без метаданных');
+    expect(getTaskConversationMetaLine({ kind: 'task' })).toBe('Исполнитель не назначен • Без срока');
+    expect(formatTaskConversationDue('')).toBe('Без срока');
   });
 });
 

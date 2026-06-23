@@ -1,10 +1,14 @@
 import { memo, useMemo, useRef, useState } from 'react';
-import { Checkbox, CircularProgress, Menu, MenuItem, Skeleton, Tooltip } from '@mui/material';
+import { Checkbox, CircularProgress, Divider, Menu, MenuItem, Skeleton, Tooltip } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import CreateRoundedIcon from '@mui/icons-material/CreateRounded';
+import DeleteOutlineOutlinedIcon from '@mui/icons-material/DeleteOutlineOutlined';
+import ExitToAppRoundedIcon from '@mui/icons-material/ExitToAppRounded';
+import FolderOutlinedIcon from '@mui/icons-material/FolderOutlined';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import GroupAddOutlinedIcon from '@mui/icons-material/GroupAddOutlined';
+import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import NotificationsOffOutlinedIcon from '@mui/icons-material/NotificationsOffOutlined';
@@ -17,7 +21,16 @@ import { motion, useReducedMotion, AnimatePresence } from 'framer-motion';
 import { AiConversationAvatar, ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatFolderTabs from './ChatFolderTabs';
 import { getConversationFolderIds, shouldShowAiChatSection } from './chatFolderUtils';
-import { formatShortTime, getConversationStatusLine, getPersonStatusLine } from './chatHelpers';
+import {
+  formatShortTime,
+  getConversationDisplayTitle,
+  getConversationStatusLine,
+  getPersonStatusLine,
+  getStatusMeta,
+  getTaskConversationMetaLine,
+  isCompletedTaskConversation,
+  isTaskConversation,
+} from './chatHelpers';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
 
 export const CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION = false;
@@ -140,6 +153,72 @@ function SearchSectionHeader({ children, ui, compactMobile = false }) {
   );
 }
 
+function TaskSectionHeader({
+  label,
+  count,
+  unreadCount,
+  expanded = true,
+  collapsible = false,
+  onToggle,
+  compactMobile = false,
+}) {
+  const content = (
+    <>
+      <span>{label}</span>
+      <span className="ml-1 text-[color:var(--chat-text-secondary)]">{count}</span>
+      {unreadCount > 0 ? (
+        <span
+          className="ml-1.5 inline-flex min-w-[18px] items-center justify-center rounded-full px-1.5 text-[10px] font-bold"
+          style={{
+            height: 18,
+            backgroundColor: 'var(--chat-unread-bg)',
+            color: 'var(--chat-unread-text)',
+          }}
+        >
+          {unreadCount}
+        </span>
+      ) : null}
+    </>
+  );
+
+  if (!collapsible) {
+    return (
+      <div
+        data-testid={`task-section-${label === 'Активные' ? 'active' : 'completed'}`}
+        className={joinClasses(
+          'flex items-center px-3 font-semibold uppercase tracking-[0.1em] text-[color:var(--chat-sidebar-section-label)]',
+          compactMobile ? 'pb-1 pt-3 text-[10px]' : 'pb-1 pt-3.5 text-[11px]',
+        )}
+      >
+        {content}
+      </div>
+    );
+  }
+
+  return (
+    <button
+      type="button"
+      data-testid="task-section-completed-toggle"
+      aria-expanded={expanded}
+      onClick={onToggle}
+      className={joinClasses(
+        'flex w-full items-center px-3 text-left font-semibold uppercase tracking-[0.1em] text-[color:var(--chat-sidebar-section-label)]',
+        compactMobile ? 'pb-1 pt-3 text-[10px]' : 'pb-1 pt-3.5 text-[11px]',
+      )}
+    >
+      {content}
+      <KeyboardArrowDownRoundedIcon
+        sx={{
+          ml: 'auto',
+          fontSize: 18,
+          transform: expanded ? 'rotate(0deg)' : 'rotate(-90deg)',
+          transition: 'transform 140ms ease',
+        }}
+      />
+    </button>
+  );
+}
+
 function SidebarActionButton({
   title,
   children,
@@ -192,9 +271,38 @@ function ConversationRow({
   const longPressTimerRef = useRef(null);
   const unreadCount = Number(item?.unread_count || 0);
   const active = item.id === activeConversationId;
+  const taskConversation = isTaskConversation(item);
+  const taskTitle = getConversationDisplayTitle(item);
+  const taskMetaLine = getTaskConversationMetaLine(item);
+  const [taskStatusLabel, taskStatusColor, taskStatusBg] = getStatusMeta(item?.task_status);
   const previewText = draftPreview || (item?.kind === 'ai'
     ? `AI • ${String(item?.last_message_preview || '').trim() || 'Готов к диалогу'}`
     : getConversationStatusLine(item));
+  const taskPreviewText = draftPreview
+    ? `Черновик: ${draftPreview}`
+    : (String(item?.last_message_preview || '').trim() || 'Сообщений пока нет');
+
+  const rowIndicators = (
+    <>
+      {!compactMobile && item.is_pinned ? <PushPinOutlinedIcon sx={{ fontSize: 15, color: active ? 'var(--chat-row-active-subtle)' : 'var(--chat-text-secondary)' }} /> : null}
+      {!compactMobile && item.is_muted ? <NotificationsOffOutlinedIcon sx={{ fontSize: 15, color: active ? 'var(--chat-row-active-subtle)' : 'var(--chat-text-secondary)' }} /> : null}
+      {!compactMobile && item.is_archived ? <ArchiveOutlinedIcon sx={{ fontSize: 15, color: active ? 'var(--chat-row-active-subtle)' : 'var(--chat-text-secondary)' }} /> : null}
+
+      {unreadCount > 0 ? (
+        <span
+          className="inline-flex min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-semibold"
+          style={{
+            backgroundColor: active ? 'rgba(255,255,255,0.16)' : 'var(--chat-unread-bg)',
+            color: active ? '#ffffff' : 'var(--chat-unread-text)',
+            height: unreadCount > 9 ? 20 : 18,
+            boxShadow: active ? 'none' : '0 1px 4px rgba(51,144,236,0.25)',
+          }}
+        >
+          {unreadCount}
+        </span>
+      ) : null}
+    </>
+  );
 
   const clearLongPress = () => {
     if (longPressTimerRef.current) {
@@ -223,8 +331,13 @@ function ConversationRow({
         onTouchStart={(event) => {
           onPrefetchConversation?.(item.id);
           clearLongPress();
+          const touch = event.touches?.[0];
+          const menuPoint = {
+            clientX: Number(touch?.clientX || 0),
+            clientY: Number(touch?.clientY || 0),
+          };
           longPressTimerRef.current = window.setTimeout(() => {
-            onOpenFolderMenu?.(item, event);
+            onOpenFolderMenu?.(item, menuPoint);
           }, 520);
         }}
         onTouchEnd={clearLongPress}
@@ -264,14 +377,28 @@ function ConversationRow({
 
           <div className="min-w-0 flex-1">
             <div className="flex items-start justify-between gap-3">
-              <p className={joinClasses(
-                'truncate leading-[1.15] tracking-[-0.01em]',
-                compactMobile ? 'text-[16px] font-semibold' : 'text-[15px] font-semibold',
-              )}
-              style={compactMobile ? undefined : { fontSize: density.sidebarTitleFontSize }}
-              >
-                {item.title}
-              </p>
+              <div className="flex min-w-0 items-center gap-1.5">
+                <p className={joinClasses(
+                  'min-w-0 truncate leading-[1.15] tracking-[-0.01em]',
+                  compactMobile ? 'text-[16px] font-semibold' : 'text-[15px] font-semibold',
+                )}
+                style={compactMobile ? undefined : { fontSize: density.sidebarTitleFontSize }}
+                >
+                  {taskConversation ? taskTitle : item.title}
+                </p>
+                {taskConversation ? (
+                  <span
+                    data-testid={`task-chat-status-${item.id}`}
+                    className="shrink-0 rounded-full px-1.5 py-0.5 text-[10px] font-bold leading-none"
+                    style={{
+                      color: active ? '#ffffff' : taskStatusColor,
+                      backgroundColor: active ? 'rgba(255,255,255,0.16)' : taskStatusBg,
+                    }}
+                  >
+                    {taskStatusLabel}
+                  </span>
+                ) : null}
+              </div>
               <span className={joinClasses(
                 'shrink-0 pt-0.5 text-right',
                 compactMobile ? 'text-[12px]' : 'text-[12px]',
@@ -282,37 +409,51 @@ function ConversationRow({
               </span>
             </div>
 
-            <div className="mt-0.5 flex items-center gap-1.5">
-              <p className={joinClasses(
-                'min-w-0 flex-1 truncate',
-                compactMobile ? 'text-[13px] leading-[1.3]' : 'text-[12.5px] leading-[1.3]',
-                draftPreview
-                  ? (active ? 'font-semibold text-[color:var(--chat-row-active-subtle)]' : 'font-semibold text-[color:var(--chat-draft-text)]')
-                  : (active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]'),
-              )}
-              style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
-              >
-                {draftPreview ? `Черновик: ${draftPreview}` : previewText}
-              </p>
-
-              {!compactMobile && item.is_pinned ? <PushPinOutlinedIcon sx={{ fontSize: 15, color: active ? 'var(--chat-row-active-subtle)' : 'var(--chat-text-secondary)' }} /> : null}
-              {!compactMobile && item.is_muted ? <NotificationsOffOutlinedIcon sx={{ fontSize: 15, color: active ? 'var(--chat-row-active-subtle)' : 'var(--chat-text-secondary)' }} /> : null}
-              {!compactMobile && item.is_archived ? <ArchiveOutlinedIcon sx={{ fontSize: 15, color: active ? 'var(--chat-row-active-subtle)' : 'var(--chat-text-secondary)' }} /> : null}
-
-              {unreadCount > 0 ? (
-                <span
-                  className="inline-flex min-w-[20px] items-center justify-center rounded-full px-1.5 text-[11px] font-semibold"
-                  style={{
-                    backgroundColor: active ? 'rgba(255,255,255,0.16)' : 'var(--chat-unread-bg)',
-                    color: active ? '#ffffff' : 'var(--chat-unread-text)',
-                    height: unreadCount > 9 ? 20 : 18,
-                    boxShadow: active ? 'none' : '0 1px 4px rgba(51,144,236,0.25)',
-                  }}
+            {taskConversation ? (
+              <>
+                <div className="mt-0.5 flex items-center gap-1.5">
+                  <p
+                    data-testid={`task-chat-meta-${item.id}`}
+                    className={joinClasses(
+                      'min-w-0 flex-1 truncate',
+                      compactMobile ? 'text-[13px] leading-[1.3]' : 'text-[12px] leading-[1.3]',
+                      active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]',
+                    )}
+                  >
+                    {taskMetaLine}{compactMobile && draftPreview ? ' • Черновик' : ''}
+                  </p>
+                  {rowIndicators}
+                </div>
+                {!compactMobile ? (
+                  <p
+                    data-testid={`task-chat-preview-${item.id}`}
+                    className={joinClasses(
+                      'mt-0.5 truncate text-[12px] leading-[1.25]',
+                      draftPreview
+                        ? (active ? 'font-semibold text-[color:var(--chat-row-active-subtle)]' : 'font-semibold text-[color:var(--chat-draft-text)]')
+                        : (active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]'),
+                    )}
+                  >
+                    {taskPreviewText}
+                  </p>
+                ) : null}
+              </>
+            ) : (
+              <div className="mt-0.5 flex items-center gap-1.5">
+                <p className={joinClasses(
+                  'min-w-0 flex-1 truncate',
+                  compactMobile ? 'text-[13px] leading-[1.3]' : 'text-[12.5px] leading-[1.3]',
+                  draftPreview
+                    ? (active ? 'font-semibold text-[color:var(--chat-row-active-subtle)]' : 'font-semibold text-[color:var(--chat-draft-text)]')
+                    : (active ? 'text-[color:var(--chat-row-active-subtle)]' : 'text-[color:var(--chat-text-secondary)]'),
+                )}
+                style={compactMobile ? undefined : { fontSize: density.sidebarPreviewFontSize }}
                 >
-                  {unreadCount}
-                </span>
-              ) : null}
-            </div>
+                  {draftPreview ? `Черновик: ${draftPreview}` : previewText}
+                </p>
+                {rowIndicators}
+              </div>
+            )}
           </div>
         </div>
       </button>
@@ -408,6 +549,7 @@ function AiConversationRow({
   onPrefetchConversation,
   openingAiBotId,
   onOpenAiBot,
+  onOpenConversationMenu,
   compactMobile = false,
   index = 0,
   reducedMotion = false,
@@ -439,6 +581,17 @@ function AiConversationRow({
         }}
         onPointerDown={() => {
           if (conversationId) onPrefetchConversation?.(conversationId);
+        }}
+        onContextMenu={(event) => {
+          if (!conversationId) return;
+          event.preventDefault();
+          event.stopPropagation();
+          onOpenConversationMenu?.({
+            ...bot,
+            id: conversationId,
+            kind: 'ai',
+            title: bot?.title || 'AI',
+          }, event);
         }}
         onTouchStart={() => {
           if (conversationId) onPrefetchConversation?.(conversationId);
@@ -579,6 +732,10 @@ function ChatSidebar({
   onOpenFolderManager,
   onOpenArchive,
   onToggleConversationInFolder,
+  onUpdateConversationSettings,
+  onRequestDeleteConversation,
+  onRequestLeaveConversation,
+  conversationActionPendingId = '',
   draftsByConversation,
   aiBots = [],
   aiBotsLoading = false,
@@ -592,9 +749,10 @@ function ChatSidebar({
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = disableMotion || prefersReducedMotion;
   const [actionsAnchorEl, setActionsAnchorEl] = useState(null);
-  const [folderMenuAnchorEl, setFolderMenuAnchorEl] = useState(null);
+  const [folderMenuPosition, setFolderMenuPosition] = useState(null);
   const [folderMenuConversation, setFolderMenuConversation] = useState(null);
   const [searchFocused, setSearchFocused] = useState(false);
+  const [completedTasksOpen, setCompletedTasksOpen] = useState(true);
   const showEmbeddedMenuButton = false;
   const chatUnavailable = health?.available === false;
   const showAiSection = showAiSectionEnabled
@@ -607,15 +765,52 @@ function ChatSidebar({
     [conversationIdsByFolder, folderMenuConversationId],
   );
   const folderPanelMotion = getChatFolderPanelMotionProps(reducedMotion);
+  const taskSections = useMemo(() => {
+    if (String(activeFolderKey || '').trim() !== 'tasks') return null;
+    const active = [];
+    const completed = [];
+    (Array.isArray(conversations) ? conversations : []).forEach((conversation) => {
+      if (isCompletedTaskConversation(conversation)) completed.push(conversation);
+      else active.push(conversation);
+    });
+    const summarize = (items) => ({
+      items,
+      unreadCount: items.reduce((sum, item) => sum + Number(item?.unread_count || 0), 0),
+    });
+    return {
+      active: summarize(active),
+      completed: summarize(completed),
+    };
+  }, [activeFolderKey, conversations]);
 
   const handleOpenFolderMenu = (conversation, event) => {
     setFolderMenuConversation(conversation);
-    setFolderMenuAnchorEl(event?.currentTarget || event?.target || null);
+    const fallbackRect = event?.currentTarget?.getBoundingClientRect?.();
+    setFolderMenuPosition({
+      top: Math.round(Number(event?.clientY || fallbackRect?.bottom || 0)),
+      left: Math.round(Number(event?.clientX || fallbackRect?.left || 0)),
+    });
   };
 
   const handleCloseFolderMenu = () => {
-    setFolderMenuAnchorEl(null);
+    setFolderMenuPosition(null);
     setFolderMenuConversation(null);
+  };
+  const runConversationSetting = (payload) => {
+    const conversationId = folderMenuConversationId;
+    handleCloseFolderMenu();
+    if (!conversationId) return;
+    void onUpdateConversationSettings?.(conversationId, payload);
+  };
+  const requestConversationDelete = () => {
+    const conversation = folderMenuConversation;
+    handleCloseFolderMenu();
+    if (conversation) onRequestDeleteConversation?.(conversation);
+  };
+  const requestConversationLeave = () => {
+    const conversation = folderMenuConversation;
+    handleCloseFolderMenu();
+    if (conversation) onRequestLeaveConversation?.(conversation);
   };
   const aiSection = showAiSection ? (
     <>
@@ -642,6 +837,7 @@ function ChatSidebar({
               onPrefetchConversation={onPrefetchConversation}
               openingAiBotId={openingAiBotId}
               onOpenAiBot={onOpenAiBot}
+              onOpenConversationMenu={handleOpenFolderMenu}
               compactMobile={compactMobile}
               index={index}
               reducedMotion={reducedMotion}
@@ -860,8 +1056,9 @@ function ChatSidebar({
         </Menu>
 
         <Menu
-          anchorEl={folderMenuAnchorEl}
-          open={Boolean(folderMenuAnchorEl)}
+          anchorReference="anchorPosition"
+          anchorPosition={folderMenuPosition || undefined}
+          open={Boolean(folderMenuPosition)}
           onClose={handleCloseFolderMenu}
           PaperProps={{
             elevation: 12,
@@ -872,7 +1069,37 @@ function ChatSidebar({
             },
           }}
         >
+          <MenuItem disabled sx={{ opacity: 1, fontWeight: 700, maxWidth: 320 }}>
+            <span className="truncate">
+              {getConversationDisplayTitle(folderMenuConversation)}
+            </span>
+          </MenuItem>
+          <MenuItem
+            onClick={() => runConversationSetting({ is_pinned: !folderMenuConversation?.is_pinned })}
+            disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}
+          >
+            <PushPinOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
+            {folderMenuConversation?.is_pinned ? 'Открепить чат' : 'Закрепить чат'}
+          </MenuItem>
+          <MenuItem
+            onClick={() => runConversationSetting({ is_muted: !folderMenuConversation?.is_muted })}
+            disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}
+          >
+            <NotificationsOffOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
+            {folderMenuConversation?.is_muted ? 'Включить уведомления' : 'Отключить уведомления'}
+          </MenuItem>
+          <MenuItem
+            onClick={() => runConversationSetting({ is_archived: !folderMenuConversation?.is_archived })}
+            disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}
+          >
+            <ArchiveOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
+            {folderMenuConversation?.is_archived ? 'Вернуть из архива' : 'Переместить в архив'}
+          </MenuItem>
+
+          <Divider />
+
           <MenuItem disabled sx={{ opacity: 1, fontWeight: 700 }}>
+            <FolderOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
             Добавить в папку
           </MenuItem>
           {(Array.isArray(customFolders) ? customFolders : []).length === 0 ? (
@@ -893,6 +1120,42 @@ function ChatSidebar({
               </MenuItem>
             );
           })}
+
+          <Divider />
+
+          {isTaskConversation(folderMenuConversation) ? (
+            <MenuItem disabled>
+              <DeleteOutlineOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
+              Удаляется вместе с задачей
+            </MenuItem>
+          ) : String(folderMenuConversation?.kind || '').trim() === 'ai' ? (
+            <MenuItem disabled>
+              <DeleteOutlineOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
+              AI-чат нельзя удалить
+            </MenuItem>
+          ) : (
+            <MenuItem
+              onClick={
+                String(folderMenuConversation?.kind || '').trim() === 'group'
+                && String(folderMenuConversation?.viewer_member_role || '').trim() !== 'owner'
+                  ? requestConversationLeave
+                  : requestConversationDelete
+              }
+              disabled={!folderMenuConversationId || conversationActionPendingId === folderMenuConversationId}
+              sx={{ color: 'error.main' }}
+            >
+              {String(folderMenuConversation?.kind || '').trim() === 'group'
+              && String(folderMenuConversation?.viewer_member_role || '').trim() !== 'owner' ? (
+                <ExitToAppRoundedIcon fontSize="small" sx={{ mr: 1.5 }} />
+              ) : (
+                <DeleteOutlineOutlinedIcon fontSize="small" sx={{ mr: 1.5 }} />
+              )}
+              {String(folderMenuConversation?.kind || '').trim() === 'group'
+              && String(folderMenuConversation?.viewer_member_role || '').trim() !== 'owner'
+                ? 'Выйти из группы'
+                : 'Удалить чат'}
+            </MenuItem>
+          )}
         </Menu>
       </div>
 
@@ -980,7 +1243,62 @@ function ChatSidebar({
                 {...folderPanelMotion}
               >
                 {aiSection}
-                {conversations.map((item, index) => (
+                {taskSections ? (
+                  <>
+                    <TaskSectionHeader
+                      label="Активные"
+                      count={taskSections.active.items.length}
+                      unreadCount={taskSections.active.unreadCount}
+                      compactMobile={compactMobile}
+                    />
+                    {taskSections.active.items.length > 0 ? taskSections.active.items.map((item, index) => (
+                      <ConversationRow
+                        key={item.id}
+                        item={item}
+                        theme={theme}
+                        ui={ui}
+                        activeConversationId={activeConversationId}
+                        onOpenConversation={onOpenConversation}
+                        onPrefetchConversation={onPrefetchConversation}
+                        onOpenFolderMenu={handleOpenFolderMenu}
+                        draftPreview={draftsByConversation?.[item.id] || ''}
+                        compactMobile={compactMobile}
+                        index={index}
+                        reducedMotion={reducedMotion}
+                      />
+                    )) : (
+                      <div className="px-3 py-2 text-[12px] text-[color:var(--chat-text-secondary)]">
+                        Активных задач нет
+                      </div>
+                    )}
+
+                    <TaskSectionHeader
+                      label="Завершённые"
+                      count={taskSections.completed.items.length}
+                      unreadCount={taskSections.completed.unreadCount}
+                      expanded={completedTasksOpen}
+                      collapsible
+                      onToggle={() => setCompletedTasksOpen((current) => !current)}
+                      compactMobile={compactMobile}
+                    />
+                    {completedTasksOpen ? taskSections.completed.items.map((item, index) => (
+                      <ConversationRow
+                        key={item.id}
+                        item={item}
+                        theme={theme}
+                        ui={ui}
+                        activeConversationId={activeConversationId}
+                        onOpenConversation={onOpenConversation}
+                        onPrefetchConversation={onPrefetchConversation}
+                        onOpenFolderMenu={handleOpenFolderMenu}
+                        draftPreview={draftsByConversation?.[item.id] || ''}
+                        compactMobile={compactMobile}
+                        index={taskSections.active.items.length + index}
+                        reducedMotion={reducedMotion}
+                      />
+                    )) : null}
+                  </>
+                ) : conversations.map((item, index) => (
                   <ConversationRow
                     key={item.id}
                     item={item}

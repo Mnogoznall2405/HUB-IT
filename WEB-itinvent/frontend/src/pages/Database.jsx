@@ -13,7 +13,7 @@ import {
 } from '@mui/material';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
-import { equipmentAPI } from '../api/client';
+import { equipmentAPI, settingsAPI } from '../api/client';
 import jsonAPI from '../api/json_client';
 import { LoadingSpinner } from '../components/common';
 import { useAuth } from '../contexts/AuthContext';
@@ -21,7 +21,6 @@ import { useNotification } from '../contexts/NotificationContext';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
 import { buildOfficeUiTokens, getOfficeSubtlePanelSx } from '../theme/officeUiTokens';
-import { resolveDataModeRefreshBehavior } from './database/uploadAct';
 import {
   DATA_MODE_CONSUMABLES,
   DATA_MODE_EQUIPMENT,
@@ -82,10 +81,22 @@ import {
   DATABASE_SWR_STALE_TIME_MS,
   useDatabaseEquipmentData,
 } from './database/useDatabaseEquipmentData';
+import { useDatabaseEquipmentInfiniteScroll } from './database/useDatabaseEquipmentInfiniteScroll';
+import {
+  flushPersistBranchFilters,
+  getBranchForDatabase,
+  mergeServerBranchFilters,
+  resolveValidatedBranch,
+  schedulePersistBranchFilters,
+  setBranchForDatabase,
+} from './database/databaseBranchPreferences';
 import DatabaseSearchBar from './database/DatabaseSearchBar';
 import DatabaseDesktopToolbar from './database/DatabaseDesktopToolbar';
 import DatabaseMobileHeader from './database/DatabaseMobileHeader';
-import DatabaseMobileActions from './database/DatabaseMobileActions';
+import DatabaseMobileControlStrip from './database/DatabaseMobileControlStrip';
+import DatabaseMobileActionSheet from './database/DatabaseMobileActionSheet';
+import DatabaseBulkActionBar, { MOBILE_BAR_GAP, MOBILE_BAR_HEIGHT } from './database/DatabaseBulkActionBar';
+import DatabaseRecentCardsStrip from './database/DatabaseRecentCardsStrip';
 import DatabaseSelectionBar from './database/DatabaseSelectionBar';
 import { useDatabaseMaintenanceData } from './database/useDatabaseMaintenanceData';
 import {
@@ -125,6 +136,24 @@ export {
 const DEFAULT_TABLE_SORT = { field: 'employee', direction: 'asc' };
 const CONSUMABLES_DEFAULT_TABLE_SORT = { field: 'model', direction: 'asc' };
 
+const createDefaultUiSnapshot = (mode) => ({
+  searchQuery: '',
+  filteredData: null,
+  tableSort: mode === DATA_MODE_CONSUMABLES ? CONSUMABLES_DEFAULT_TABLE_SORT : DEFAULT_TABLE_SORT,
+  expandedBranches: new Set(),
+  expandedLocations: new Set(),
+  selectedItems: [],
+  mobileSelectionMode: false,
+});
+
+const cloneUiSnapshot = (snapshot) => ({
+  ...snapshot,
+  tableSort: { ...snapshot.tableSort },
+  expandedBranches: new Set(snapshot.expandedBranches),
+  expandedLocations: new Set(snapshot.expandedLocations),
+  selectedItems: [...snapshot.selectedItems],
+});
+
 function Database() {
   const { user, hasPermission } = useAuth();
   const {
@@ -142,8 +171,10 @@ function Database() {
   const isMobile = isNarrowMobile || isTouchMobile;
   const location = useLocation();
   const navigate = useNavigate();
-  const initialLoadDoneRef = useRef(false);
-  const dataModeRefreshEffectRef = useRef(false);
+  const uiSnapshotsRef = useRef({
+    [DATA_MODE_EQUIPMENT]: createDefaultUiSnapshot(DATA_MODE_EQUIPMENT),
+    [DATA_MODE_CONSUMABLES]: createDefaultUiSnapshot(DATA_MODE_CONSUMABLES),
+  });
   const databaseToastAction = useMemo(() => createNavigateToastAction('/database', 'Открыть базу'), []);
   const notifyDatabaseSuccess = useCallback((message, options = {}) => {
     const text = String(message || '').trim();
@@ -169,6 +200,8 @@ function Database() {
   const [dataMode, setDataMode] = useState(DATA_MODE_EQUIPMENT);
   const [selectedBranch, setSelectedBranch] = useState('');
   const [tableSort, setTableSort] = useState(DEFAULT_TABLE_SORT);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filteredData, setFilteredData] = useState(null);
 
   const [expandedBranches, setExpandedBranches] = useState(() => new Set());
   const [expandedLocations, setExpandedLocations] = useState(() => new Set());
@@ -266,7 +299,8 @@ function Database() {
     getEmailStatusItemSx: getUploadActEmailStatusItemSx,
   });
   const {
-    loading,
+    initialLoading,
+    modeLoading,
     equipmentTypes,
     branches,
     statuses,
@@ -275,6 +309,8 @@ function Database() {
     nextEquipmentPage,
     equipmentPagesTotal,
     loadingMoreEquipment,
+    loadedCount,
+    serverTotal,
     setAllEquipment,
     setLoadedCount,
     setServerTotal,
@@ -282,7 +318,8 @@ function Database() {
     loadMoreEquipmentPages,
     fetchAllEquipment,
     refreshCurrentDbData,
-    resetEquipmentData,
+    resetAllModeData,
+    switchDataMode,
   } = useDatabaseEquipmentData({
     dataMode,
     selectedBranch,
@@ -290,10 +327,6 @@ function Database() {
     staleTimeMs: DATABASE_SWR_STALE_TIME_MS,
   });
   const {
-    searchQuery,
-    filteredData,
-    setSearchQuery,
-    setFilteredData,
     handleSearchChange,
     handleSearchKeyDown,
     clearSearch,
@@ -303,6 +336,10 @@ function Database() {
     selectedBranch,
     setExpandedBranches,
     setExpandedLocations,
+    searchQuery,
+    setSearchQuery,
+    filteredData,
+    setFilteredData,
   });
   const {
     identifyPCLoading,
@@ -315,37 +352,65 @@ function Database() {
     notifyDatabaseError,
   });
 
-  useEffect(() => {
-    if (initialLoadDoneRef.current) return;
-    initialLoadDoneRef.current = true;
+  const captureUiSnapshot = useCallback(() => ({
+    searchQuery,
+    filteredData,
+    tableSort,
+    expandedBranches: new Set(expandedBranches),
+    expandedLocations: new Set(expandedLocations),
+    selectedItems: [...selectedItems],
+    mobileSelectionMode,
+  }), [
+    expandedBranches,
+    expandedLocations,
+    filteredData,
+    mobileSelectionMode,
+    searchQuery,
+    selectedItems,
+    tableSort,
+  ]);
+
+  const applyUiSnapshot = useCallback((snapshot) => {
+    setSearchQuery(snapshot.searchQuery);
+    setFilteredData(snapshot.filteredData);
+    setTableSort(snapshot.tableSort);
+    setExpandedBranches(new Set(snapshot.expandedBranches));
+    setExpandedLocations(new Set(snapshot.expandedLocations));
+    setSelectedItems([...snapshot.selectedItems]);
+    setMobileSelectionMode(snapshot.mobileSelectionMode);
   }, []);
 
-  useEffect(() => {
-    const { shouldRefresh, nextHasInitializedEffect } = resolveDataModeRefreshBehavior({
-      hasInitializedEffect: dataModeRefreshEffectRef.current,
-      isLifecycleReady: initialLoadDoneRef.current,
-    });
-    dataModeRefreshEffectRef.current = nextHasInitializedEffect;
-    if (!shouldRefresh) return;
-    setTableSort(dataMode === DATA_MODE_CONSUMABLES ? CONSUMABLES_DEFAULT_TABLE_SORT : DEFAULT_TABLE_SORT);
-    setSearchQuery('');
-    setFilteredData(null);
-    setSelectedItems([]);
-    setExpandedBranches(new Set());
-    setExpandedLocations(new Set());
-    resetEquipmentData();
-    void refreshCurrentDbData({ force: true });
-  }, [dataMode]);
+  const applyPersistedBranchForDatabase = useCallback((databaseId, availableBranches = branches) => {
+    const dbId = normalizeDbId(databaseId);
+    if (!dbId) {
+      setSelectedBranch('');
+      return;
+    }
+    const persistedBranch = getBranchForDatabase(dbId);
+    setSelectedBranch(resolveValidatedBranch(persistedBranch, availableBranches));
+  }, [branches]);
+
+  const handleDataModeChange = useCallback((_, nextMode) => {
+    if (nextMode === dataMode) return;
+
+    uiSnapshotsRef.current[dataMode] = captureUiSnapshot();
+    const nextUi = cloneUiSnapshot(
+      uiSnapshotsRef.current[nextMode] ?? createDefaultUiSnapshot(nextMode)
+    );
+    applyUiSnapshot(nextUi);
+    setDataMode(nextMode);
+    void switchDataMode(nextMode);
+  }, [applyUiSnapshot, captureUiSnapshot, dataMode, switchDataMode]);
 
   useEffect(() => {
     const handleDatabaseChanged = () => {
-      setSelectedBranch('');
-      setSearchQuery('');
-      setFilteredData(null);
-      setSelectedItems([]);
-      setExpandedBranches(new Set());
-      setExpandedLocations(new Set());
-      resetEquipmentData();
+      uiSnapshotsRef.current = {
+        [DATA_MODE_EQUIPMENT]: createDefaultUiSnapshot(DATA_MODE_EQUIPMENT),
+        [DATA_MODE_CONSUMABLES]: createDefaultUiSnapshot(DATA_MODE_CONSUMABLES),
+      };
+      const defaultUi = createDefaultUiSnapshot(dataMode);
+      applyUiSnapshot(defaultUi);
+      resetAllModeData();
       void refreshCurrentDbData({ force: true });
     };
 
@@ -353,9 +418,49 @@ function Database() {
     return () => {
       window.removeEventListener('database-changed', handleDatabaseChanged);
     };
-  }, [refreshCurrentDbData, resetEquipmentData]);
+  }, [applyUiSnapshot, dataMode, refreshCurrentDbData, resetAllModeData]);
+
+  useEffect(() => {
+    if (!db_name) return;
+    applyPersistedBranchForDatabase(db_name, branches);
+  }, [applyPersistedBranchForDatabase, branches, db_name]);
+
+  useEffect(() => {
+    const syncBranchFiltersFromServer = async () => {
+      if (!localStorage.getItem('user')) return;
+      try {
+        const data = await settingsAPI.getMySettings({ suppressAuthRequired: true });
+        mergeServerBranchFilters(data?.database_branch_filters);
+        if (db_name) {
+          applyPersistedBranchForDatabase(db_name, branches);
+        }
+      } catch (error) {
+        console.error('Failed to sync database branch filters:', error);
+      }
+    };
+
+    void syncBranchFiltersFromServer();
+    const handleAuthChanged = () => {
+      void syncBranchFiltersFromServer();
+    };
+    window.addEventListener('auth-changed', handleAuthChanged);
+    return () => {
+      window.removeEventListener('auth-changed', handleAuthChanged);
+      flushPersistBranchFilters();
+    };
+  }, [applyPersistedBranchForDatabase, branches, db_name]);
 
   const displayData = filteredData !== null ? filteredData : equipment;
+  const canAutoLoadMoreEquipment = filteredData === null && Boolean(nextEquipmentPage) && !modeLoading;
+  const equipmentLoadMoreSentinelRef = useDatabaseEquipmentInfiniteScroll({
+    enabled: canAutoLoadMoreEquipment,
+    hasMore: Boolean(nextEquipmentPage),
+    loading: loadingMoreEquipment,
+    nextPage: nextEquipmentPage,
+    loadedCount,
+    serverTotal,
+    onLoadMore: () => loadMoreEquipmentPages({ maxPages: 1 }),
+  });
   const visibleBranchNames = useMemo(() => getVisibleBranchNames(displayData), [displayData]);
 
   // Create index Map for O(1) search instead of O(n)
@@ -685,10 +790,17 @@ function Database() {
   });
 
   const handleBranchChange = useCallback((branch) => {
-    setSelectedBranch(branch);
+    const nextBranch = String(branch || '').trim();
+    setSelectedBranch(nextBranch);
     setFilteredData(null);
     setSelectedItems([]);
-  }, []);
+
+    const dbId = normalizeDbId(db_name);
+    if (!dbId) return;
+
+    setBranchForDatabase(dbId, nextBranch);
+    schedulePersistBranchFilters(settingsAPI.updateMySettings, { [dbId]: nextBranch });
+  }, [db_name, setFilteredData]);
 
   const handleTableSort = useCallback((field) => {
     setTableSort((prev) => {
@@ -833,6 +945,43 @@ function Database() {
     selectedWorkConsumable,
   ]);
 
+  const handleClearSelection = useCallback(() => {
+    setSelectedItems([]);
+    setMobileSelectionMode(false);
+  }, []);
+
+  const handleOpenLocationTransferForSelection = useCallback(() => {
+    resetTransferState();
+    setTransferOperationMode(TRANSFER_OPERATION_LOCATION_ONLY);
+    setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
+  }, [resetTransferState, setTransferOperationMode]);
+
+  const handleOpenTransferForSelection = useCallback(() => {
+    resetTransferState();
+    setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
+  }, [resetTransferState]);
+
+  const handleOpenTransferActForSelection = useCallback(() => {
+    resetTransferState();
+    setTransferOperationMode(TRANSFER_OPERATION_ACT_ONLY);
+    setNewEmployee('Без владельца');
+    setTransferEmployeeInput('Без владельца');
+    setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
+  }, [resetTransferState, setNewEmployee, setTransferEmployeeInput, setTransferOperationMode]);
+
+  const handleOpenCartridgeForSelection = useCallback(() => {
+    setActionModal({ open: true, type: 'cartridge', invNo: null, componentKind: null });
+  }, []);
+
+  const handleOpenBatteryForSelection = useCallback(() => {
+    setActionModal({ open: true, type: 'battery', invNo: null, componentKind: null });
+  }, []);
+
+  const handleOpenComponentForSelection = useCallback(({ componentKind, componentType: nextComponentType }) => {
+    setComponentType(nextComponentType);
+    setActionModal({ open: true, type: 'component', invNo: null, componentKind });
+  }, []);
+
   const dataSections = useMemo(() => {
     if (Object.keys(displayData).length === 0) return null;
     return (
@@ -880,7 +1029,7 @@ function Database() {
     toggleLocation,
   ]);
 
-  if (loading && filteredData === null) {
+  if (initialLoading) {
     return (
       <MainLayout headerMode={isMobile ? 'hidden' : 'default'} showDatabaseSelector>
         <PageShell>
@@ -892,8 +1041,11 @@ function Database() {
 
   return (
     <MainLayout headerMode={isMobile ? 'hidden' : 'default'} showDatabaseSelector>
-      <PageShell sx={{ pb: isMobile ? 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' : 3 }}>
-        {/* Встроенная шапка для мобильных */}
+      <PageShell sx={{
+        pb: isMobile
+          ? `calc(var(--app-shell-mobile-bottom-nav-height, 64px) + ${!isConsumablesMode && canDatabaseWrite && selectedItems.length > 0 ? `${MOBILE_BAR_HEIGHT + MOBILE_BAR_GAP + 4}px` : '8px'})`
+          : 3,
+      }}>
         {isMobile && (
           <DatabaseMobileHeader
             databases={databases}
@@ -904,27 +1056,42 @@ function Database() {
           />
         )}
 
-        {/* Экран загрузки */}
-        {loading ? (
-          <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: '60vh' }}>
-            <CircularProgress />
-          </Box>
-        ) : (
-        <>
-        {/* Табы */}
-        <Paper variant="outlined" sx={{ mb: isMobile ? 1.5 : 2, p: 0.5 }}>
+        <Paper variant="outlined" sx={{ mb: isMobile ? 0.75 : 2, p: isMobile ? 0.25 : 0.5 }}>
           <Tabs
             value={dataMode}
-            onChange={(_, value) => setDataMode(value)}
+            onChange={handleDataModeChange}
             variant="fullWidth"
+            sx={isMobile ? {
+              minHeight: 36,
+              '& .MuiTab-root': { minHeight: 36, py: 0.5, fontSize: '0.8rem' },
+            } : undefined}
           >
             <Tab value={DATA_MODE_EQUIPMENT} label="Оборудование" />
             <Tab value={DATA_MODE_CONSUMABLES} label="Расходники" />
           </Tabs>
         </Paper>
 
+        {isMobile && (
+          <DatabaseMobileControlStrip
+            theme={theme}
+            isConsumablesMode={isConsumablesMode}
+            canDatabaseWrite={canDatabaseWrite}
+            branches={branches}
+            selectedBranch={selectedBranch}
+            onBranchChange={handleBranchChange}
+            hasExpandedVisible={hasExpandedVisible}
+            onCollapseAll={handleCollapseAll}
+            onOpenQrScanner={handleQrScannerOpen}
+            onOpenUploadAct={openUploadActModal}
+            onOpenAddEquipment={openAddEquipmentModal}
+            onOpenAddConsumable={openAddConsumableModal}
+            onOpenMore={() => setFabSheetOpen(true)}
+          />
+        )}
+
         <DatabaseSearchBar
           theme={theme}
+          compact={isMobile}
           isConsumablesMode={isConsumablesMode}
           value={searchQuery}
           onChange={handleSearchChange}
@@ -933,14 +1100,24 @@ function Database() {
         />
 
         {!isConsumablesMode && (
-          <DatabaseRecentCards
-            items={recentCards}
-            loading={recentCardsLoading}
-            theme={theme}
-            onOpen={handleRecentCardOpen}
-            onRemove={removeRecentCard}
-            onClear={clearRecentCards}
-          />
+          isMobile ? (
+            <DatabaseRecentCardsStrip
+              items={recentCards}
+              loading={recentCardsLoading}
+              theme={theme}
+              onOpen={handleRecentCardOpen}
+              onClear={clearRecentCards}
+            />
+          ) : (
+            <DatabaseRecentCards
+              items={recentCards}
+              loading={recentCardsLoading}
+              theme={theme}
+              onOpen={handleRecentCardOpen}
+              onRemove={removeRecentCard}
+              onClear={clearRecentCards}
+            />
+          )
         )}
 
         {!isMobile && (
@@ -958,75 +1135,44 @@ function Database() {
             branches={branches}
             selectedBranch={selectedBranch}
             onBranchChange={handleBranchChange}
-            canLoadMore={filteredData === null && Boolean(nextEquipmentPage)}
-            nextEquipmentPage={nextEquipmentPage}
-            equipmentPagesTotal={equipmentPagesTotal}
-            loadingMoreEquipment={loadingMoreEquipment}
-            onLoadMore={() => loadMoreEquipmentPages({ maxPages: 1 })}
             hasExpandedVisible={hasExpandedVisible}
             onCollapseAll={handleCollapseAll}
           />
         )}
 
-        {/* FAB кнопка для мобильных действий */}
         {isMobile && (
-          <DatabaseMobileActions
+          <DatabaseMobileActionSheet
+            theme={theme}
+            open={fabSheetOpen}
+            onClose={() => setFabSheetOpen(false)}
+            isConsumablesMode={isConsumablesMode}
+            identifyWorkspaceLoading={identifyPCLoading}
+            hasExpandedVisible={hasExpandedVisible}
+            onIdentifyWorkspace={handleIdentifyWorkspace}
+            onCollapseAll={handleCollapseAll}
+            onEnterSelectionMode={() => setMobileSelectionMode(true)}
+          />
+        )}
+
+        {isMobile && !isConsumablesMode && canDatabaseWrite && selectedItems.length > 0 && (
+          <DatabaseBulkActionBar
             theme={theme}
             ui={ui}
-            isConsumablesMode={isConsumablesMode}
-            canDatabaseWrite={canDatabaseWrite}
+            variant="mobile"
             selectedItemsCount={selectedItems.length}
             selectedVisibleCount={selectedVisibleCount}
             selectedHiddenCount={selectedHiddenCount}
-            mobileSelectionMode={mobileSelectionMode}
-            fabSheetOpen={fabSheetOpen}
-            onFabSheetOpenChange={setFabSheetOpen}
-            onClearSelection={() => {
-              setSelectedItems([]);
-              setMobileSelectionMode(false);
-            }}
-            onOpenQrScanner={handleQrScannerOpen}
-            onIdentifyWorkspace={handleIdentifyWorkspace}
-            identifyWorkspaceLoading={identifyPCLoading}
-            onOpenUploadAct={openUploadActModal}
-            onOpenAddEquipment={openAddEquipmentModal}
-            onOpenAddConsumable={openAddConsumableModal}
-            branches={branches}
-            selectedBranch={selectedBranch}
-            onBranchChange={handleBranchChange}
-            canLoadMore={filteredData === null && Boolean(nextEquipmentPage)}
-            nextEquipmentPage={nextEquipmentPage}
-            equipmentPagesTotal={equipmentPagesTotal}
-            loadingMoreEquipment={loadingMoreEquipment}
-            onLoadMore={() => loadMoreEquipmentPages({ maxPages: 1 })}
-            hasExpandedVisible={hasExpandedVisible}
-            onCollapseAll={handleCollapseAll}
-            onEnterSelectionMode={() => setMobileSelectionMode(true)}
             selectedItemsCapabilities={selectedItemsCapabilities}
-            onOpenLocationTransferForSelection={() => {
-              resetTransferState();
-              setTransferOperationMode(TRANSFER_OPERATION_LOCATION_ONLY);
-              setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
-            }}
-            onOpenTransferForSelection={() => {
-              resetTransferState();
-              setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
-            }}
-            onOpenTransferActForSelection={() => {
-              resetTransferState();
-              setTransferOperationMode(TRANSFER_OPERATION_ACT_ONLY);
-              setNewEmployee('Без владельца');
-              setTransferEmployeeInput('Без владельца');
-              setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
-            }}
-            onOpenCartridgeForSelection={() => setActionModal({ open: true, type: 'cartridge', invNo: null, componentKind: null })}
-            onOpenBatteryForSelection={() => setActionModal({ open: true, type: 'battery', invNo: null, componentKind: null })}
-            onOpenComponentForSelection={({ componentKind, componentType }) => {
-              setComponentType(componentType);
-              setActionModal({ open: true, type: 'component', invNo: null, componentKind });
-            }}
+            onClearSelection={handleClearSelection}
+            onOpenLocationTransfer={handleOpenLocationTransferForSelection}
+            onOpenTransfer={handleOpenTransferForSelection}
+            onOpenTransferAct={handleOpenTransferActForSelection}
+            onOpenCartridge={handleOpenCartridgeForSelection}
+            onOpenBattery={handleOpenBatteryForSelection}
+            onOpenComponent={handleOpenComponentForSelection}
           />
         )}
+
         {!isMobile && !isConsumablesMode && canDatabaseWrite && selectedItems.length > 0 && (
           <DatabaseSelectionBar
             theme={theme}
@@ -1035,32 +1181,13 @@ function Database() {
             selectedVisibleCount={selectedVisibleCount}
             selectedHiddenCount={selectedHiddenCount}
             selectedItemsCapabilities={selectedItemsCapabilities}
-            onClearSelection={() => {
-              setSelectedItems([]);
-              setMobileSelectionMode(false);
-            }}
-            onOpenLocationTransfer={() => {
-              resetTransferState();
-              setTransferOperationMode(TRANSFER_OPERATION_LOCATION_ONLY);
-              setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
-            }}
-            onOpenTransfer={() => {
-              resetTransferState();
-              setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
-            }}
-            onOpenTransferAct={() => {
-              resetTransferState();
-              setTransferOperationMode(TRANSFER_OPERATION_ACT_ONLY);
-              setNewEmployee('Без владельца');
-              setTransferEmployeeInput('Без владельца');
-              setActionModal({ open: true, type: 'transfer', invNo: null, componentKind: null });
-            }}
-            onOpenCartridge={() => setActionModal({ open: true, type: 'cartridge', invNo: null, componentKind: null })}
-            onOpenBattery={() => setActionModal({ open: true, type: 'battery', invNo: null, componentKind: null })}
-            onOpenComponent={({ componentKind, componentType }) => {
-              setComponentType(componentType);
-              setActionModal({ open: true, type: 'component', invNo: null, componentKind });
-            }}
+            onClearSelection={handleClearSelection}
+            onOpenLocationTransfer={handleOpenLocationTransferForSelection}
+            onOpenTransfer={handleOpenTransferForSelection}
+            onOpenTransferAct={handleOpenTransferActForSelection}
+            onOpenCartridge={handleOpenCartridgeForSelection}
+            onOpenBattery={handleOpenBatteryForSelection}
+            onOpenComponent={handleOpenComponentForSelection}
           />
         )}
 
@@ -1074,6 +1201,12 @@ function Database() {
               },
             }}
           >
+            {modeLoading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', minHeight: 240, py: 6 }}>
+                <CircularProgress />
+              </Box>
+            ) : (
+              <>
             {dataSections || (
               !selectedBranch ? (
                 <Box sx={{ textAlign: 'center', py: 8 }}>
@@ -1084,6 +1217,34 @@ function Database() {
                   <Typography color="text.secondary">Нет данных</Typography>
                 </Box>
               )
+            )}
+            {canAutoLoadMoreEquipment && (
+              <Box
+                ref={equipmentLoadMoreSentinelRef}
+                data-testid="equipment-load-more-sentinel"
+                sx={{
+                  display: 'flex',
+                  flexDirection: 'column',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                  gap: 1,
+                  py: 3,
+                  minHeight: 56,
+                }}
+              >
+                {loadingMoreEquipment ? (
+                  <CircularProgress size={24} />
+                ) : (
+                  <Typography variant="caption" color="text.secondary">
+                    Загружено {loadedCount} из {serverTotal || loadedCount}
+                    {nextEquipmentPage && equipmentPagesTotal > 1
+                      ? ` · стр. ${Math.max(1, nextEquipmentPage - 1)}/${equipmentPagesTotal}`
+                      : ''}
+                  </Typography>
+                )}
+              </Box>
+            )}
+              </>
             )}
           </Box>
         </Fade>
@@ -1366,8 +1527,6 @@ function Database() {
           }}
           onConfirm={() => void handleActionConfirm()}
         />
-        </>
-        )}
       </PageShell>
     </MainLayout>
   );

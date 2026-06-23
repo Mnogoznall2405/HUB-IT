@@ -20,11 +20,16 @@ def test_chat_conversation_summary_accepts_task_kind():
         task_id="task-42",
         task_title="Проверить акт",
         task_status="in_progress",
+        task_assignee_full_name="Task Assignee",
+        task_due_at="2026-06-20T12:00:00+00:00",
+        task_completed_at=None,
         created_at="2026-06-18T10:00:00+00:00",
         updated_at="2026-06-18T10:00:00+00:00",
     )
     assert payload.kind == "task"
     assert payload.task_id == "task-42"
+    assert payload.task_assignee_full_name == "Task Assignee"
+    assert payload.task_due_at == "2026-06-20T12:00:00+00:00"
 
 
 def test_chat_conversation_list_response_accepts_task_items():

@@ -28,36 +28,16 @@ import {
   Stack,
   CircularProgress,
   Collapse,
-  Menu,
   Tooltip,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import useMediaQuery from '@mui/material/useMediaQuery';
 import MenuIcon from '@mui/icons-material/Menu';
-import StorageIcon from '@mui/icons-material/Storage';
-import SettingsIcon from '@mui/icons-material/Settings';
-import LogoutIcon from '@mui/icons-material/Logout';
-import BarChartIcon from '@mui/icons-material/BarChart';
-import LanIcon from '@mui/icons-material/Lan';
-import ComputerIcon from '@mui/icons-material/Computer';
-import PrintIcon from '@mui/icons-material/Print';
-import ShieldIcon from '@mui/icons-material/Policy';
-import MenuBookIcon from '@mui/icons-material/MenuBook';
-import DashboardIcon from '@mui/icons-material/Dashboard';
-import TaskAltIcon from '@mui/icons-material/TaskAlt';
-import ConfirmationNumberIcon from '@mui/icons-material/ConfirmationNumber';
 import NotificationsIcon from '@mui/icons-material/Notifications';
 import NotificationsNoneIcon from '@mui/icons-material/NotificationsNone';
 import AssignmentIcon from '@mui/icons-material/Assignment';
 import MailOutlineIcon from '@mui/icons-material/MailOutline';
 import GroupIcon from '@mui/icons-material/Group';
-import ContactPhoneIcon from '@mui/icons-material/ContactPhone';
-import VideocamIcon from '@mui/icons-material/Videocam';
-import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
-import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
-import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
-import PersonOutlineRoundedIcon from '@mui/icons-material/PersonOutlineRounded';
-import AdminPanelSettingsOutlinedIcon from '@mui/icons-material/AdminPanelSettingsOutlined';
 import ExpandMoreRoundedIcon from '@mui/icons-material/ExpandMoreRounded';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNotification } from '../../contexts/NotificationContext';
@@ -114,12 +94,12 @@ import { getMessagePreview } from '../chat/chatHelpers';
 import { MainLayoutShellContext } from './MainLayoutShellContext';
 import { APP_BRAND_NAME, buildDocumentTitle } from '../../lib/appBranding';
 import { AccountAvatar, AccountIdentity } from '../account/AccountIdentity';
+import AccountMenu from '../account/AccountMenu';
 import { canAccessAdminArea } from '../account/accountNavigationConfig';
 import {
   getNavigationBadgeCount,
   getVisibleNavigationItems,
   isNavigationItemActive,
-  navigationItems,
   resolveMobileNavigationItems,
 } from './navigationConfig';
 
@@ -172,6 +152,7 @@ function MainLayout({
 }) {
   const theme = useTheme();
   const isPhone = useMediaQuery(theme.breakpoints.down('sm'), { defaultMatches: true });
+  const prefersReducedMotion = useMediaQuery('(prefers-reduced-motion: reduce)', { defaultMatches: false });
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [pendingNavigation, setPendingNavigation] = useState(null);
@@ -1390,9 +1371,9 @@ useEffect(() => {
     navigate,
   ]);
 
-  const handleLogout = () => {
+  const handleLogout = async () => {
     setAccountMenuAnchorEl(null);
-    logout();
+    await logout();
     navigate('/login');
   };
 
@@ -1529,11 +1510,17 @@ useEffect(() => {
     }, 10_000);
   };
 
-  const handleOpenNotifications = () => {
+  const handleOpenNotifications = useCallback(() => {
     setNotificationsOpen(true);
     refreshBellInboxRef.current?.();
     fetchUnreadCountsRef.current?.();
-  };
+  }, []);
+
+  useEffect(() => {
+    const openNotifications = () => handleOpenNotifications();
+    window.addEventListener('hub-open-notifications', openNotifications);
+    return () => window.removeEventListener('hub-open-notifications', openNotifications);
+  }, [handleOpenNotifications]);
 
   const handleDatabaseChange = async (event) => {
     if (dbLocked) return;
@@ -1563,6 +1550,7 @@ useEffect(() => {
   const activeNavigationPath = String(pendingNavigation?.path || '').trim() || location.pathname;
   const shouldHideHeaderContext = false;
   const getCurrentTitle = () => {
+    if (activeNavigationPath.startsWith('/dashboard/news')) return 'Новости';
     const item = visibleNavigationItems.find((item) => isItemActive(item.path, activeNavigationPath));
     if (item) return item.label;
     if (activeNavigationPath.startsWith('/profile')) return 'Профиль';
@@ -1707,7 +1695,7 @@ useEffect(() => {
     );
   };
 
-  const renderDrawerContent = ({ compact = false } = {}) => (
+  const renderDrawerContent = ({ compact = false, instanceKey = 'desktop' } = {}) => (
     <Box
       sx={{
         height: '100%',
@@ -1740,7 +1728,9 @@ useEffect(() => {
             {compact ? <Divider sx={{ my: 0.7, borderColor: ui.borderSoft }} /> : (
               <ListItem disablePadding sx={{ mt: 0.5 }}>
                 <ListItemButton
-                  data-testid="main-layout-sidebar-tools-toggle"
+                  data-testid={`main-layout-sidebar-tools-toggle-${instanceKey}`}
+                  aria-expanded={sidebarToolsExpanded}
+                  aria-controls={`main-layout-sidebar-tools-list-${instanceKey}`}
                   onClick={toggleToolsGroup}
                   sx={{ minHeight: 34, px: 1, borderRadius: '10px', color: ui.mutedText }}
                 >
@@ -1755,7 +1745,12 @@ useEffect(() => {
                 </ListItemButton>
               </ListItem>
             )}
-            <Collapse in={compact || sidebarToolsExpanded} timeout="auto" unmountOnExit={false}>
+            <Collapse
+              id={`main-layout-sidebar-tools-list-${instanceKey}`}
+              in={compact || sidebarToolsExpanded}
+              timeout={prefersReducedMotion ? 0 : 'auto'}
+              unmountOnExit={false}
+            >
               <List disablePadding>
                 {toolNavigationItems.map((item) => renderNavigationItem(item, compact))}
               </List>
@@ -1764,20 +1759,44 @@ useEffect(() => {
         ) : null}
       </Box>
 
-      <Box sx={{ flexShrink: 0, p: compact ? 0.75 : 1, borderTop: '1px solid', borderColor: ui.borderSoft }}>
+      <Box
+        data-testid={`main-layout-account-footer-${instanceKey}`}
+        sx={{
+          flexShrink: 0,
+          p: compact ? 0.75 : 1,
+          borderTop: '1px solid',
+          borderColor: ui.borderSoft,
+          ...(compact ? {
+            display: 'grid',
+            placeItems: 'center',
+          } : {}),
+        }}
+      >
         {compact ? (
           <Tooltip title="Профиль и настройки" placement="right">
             <IconButton
-              data-testid="main-layout-account-button"
+              data-testid={`main-layout-account-button-${instanceKey}`}
+              aria-label="Открыть меню профиля"
+              aria-haspopup="menu"
+              aria-expanded={Boolean(accountMenuAnchorEl)}
               onClick={(event) => setAccountMenuAnchorEl(event.currentTarget)}
-              sx={{ width: 50, height: 50, borderRadius: '16px' }}
+              sx={{
+                width: 52,
+                height: 52,
+                p: 0,
+                borderRadius: '16px',
+                justifySelf: 'center',
+              }}
             >
               <AccountAvatar user={user} size={38} />
             </IconButton>
           </Tooltip>
         ) : (
           <ListItemButton
-            data-testid="main-layout-account-button"
+            data-testid={`main-layout-account-button-${instanceKey}`}
+            aria-label="Открыть меню профиля"
+            aria-haspopup="menu"
+            aria-expanded={Boolean(accountMenuAnchorEl)}
             onClick={(event) => setAccountMenuAnchorEl(event.currentTarget)}
             sx={{
               minHeight: 58,
@@ -1825,7 +1844,16 @@ useEffect(() => {
     showDatabaseSelector,
     showNotificationsButton,
   ]);
-  const shouldRenderTopSpacer = !hiddenHeader || topBannerOffset > 0;
+  const shouldReserveMobileSafeArea = (
+    isPhone
+    && hiddenHeader
+    && !isMobileChatRoute
+    && !isEdgeToEdgeMobileContent
+  );
+  const shouldRenderTopSpacer = !hiddenHeader || topBannerOffset > 0 || shouldReserveMobileSafeArea;
+  const topSpacerHeight = shouldReserveMobileSafeArea
+    ? 'max(var(--app-shell-top-offset), 10px)'
+    : 'var(--app-shell-top-offset)';
 
   return (
     <MainLayoutShellContext.Provider value={shellValue}>
@@ -2005,6 +2033,7 @@ useEffect(() => {
                   {!isPhone ? (
                     <IconButton
                       edge="start"
+                      aria-label={sidebarCollapsed ? 'Развернуть боковое меню' : 'Свернуть боковое меню'}
                       onClick={() => {
                         toggleSidebar();
                       }}
@@ -2212,81 +2241,50 @@ useEffect(() => {
           }),
         }}
       >
-        <Drawer
-          variant="temporary"
-          open={drawerOpen}
-          onClose={() => setDrawerOpen(false)}
-          ModalProps={{ keepMounted: true }}
-          sx={{
-            display: { xs: 'block', sm: 'none' },
-            '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH_CSS_VAR, bgcolor: ui.navBg, borderRightColor: ui.borderSoft },
-          }}
-        >
-          {renderDrawerContent({ compact: false })}
-        </Drawer>
-        <Drawer
-          variant="permanent"
-          sx={{
-            display: { xs: 'none', sm: 'block' },
-            '& .MuiDrawer-paper': {
-              boxSizing: 'border-box',
-              width: sidebarCollapsed ? DRAWER_RAIL_WIDTH : DRAWER_WIDTH_CSS_VAR,
-              overflowX: 'hidden',
-              bgcolor: ui.navBg,
-              borderRightColor: ui.borderSoft,
-              transition: (theme) => theme.transitions.create('width', {
-                duration: theme.transitions.duration.standard,
-              }),
-            },
-          }}
-          open
-        >
-          {renderDrawerContent({ compact: sidebarCollapsed })}
-        </Drawer>
+        {isPhone ? (
+          <Drawer
+            variant="temporary"
+            open={drawerOpen}
+            onClose={() => setDrawerOpen(false)}
+            ModalProps={{ keepMounted: true }}
+            sx={{
+              display: { xs: 'block', sm: 'none' },
+              '& .MuiDrawer-paper': { boxSizing: 'border-box', width: DRAWER_WIDTH_CSS_VAR, bgcolor: ui.navBg, borderRightColor: ui.borderSoft },
+            }}
+          >
+            {renderDrawerContent({ compact: false, instanceKey: 'mobile' })}
+          </Drawer>
+        ) : (
+          <Drawer
+            variant="permanent"
+            sx={{
+              display: { xs: 'none', sm: 'block' },
+              '& .MuiDrawer-paper': {
+                boxSizing: 'border-box',
+                width: sidebarCollapsed ? DRAWER_RAIL_WIDTH : DRAWER_WIDTH_CSS_VAR,
+                overflowX: 'hidden',
+                bgcolor: ui.navBg,
+                borderRightColor: ui.borderSoft,
+                transition: (theme) => theme.transitions.create('width', {
+                  duration: theme.transitions.duration.standard,
+                }),
+              },
+            }}
+            open
+          >
+            {renderDrawerContent({ compact: sidebarCollapsed, instanceKey: 'desktop' })}
+          </Drawer>
+        )}
       </Box>
 
-      <Menu
+      <AccountMenu
         anchorEl={accountMenuAnchorEl}
-        open={Boolean(accountMenuAnchorEl)}
         onClose={() => setAccountMenuAnchorEl(null)}
-        anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
-        transformOrigin={{ vertical: 'bottom', horizontal: 'left' }}
-        slotProps={{
-          paper: {
-            sx: {
-              minWidth: 220,
-              mb: 1,
-              borderRadius: '16px',
-              border: '1px solid',
-              borderColor: ui.borderSoft,
-              bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.9 : 0.94),
-              backdropFilter: 'blur(20px)',
-              WebkitBackdropFilter: 'blur(20px)',
-              boxShadow: ui.dialogShadow,
-            },
-          },
-        }}
-      >
-        <MenuItem onClick={() => openAccountRoute('/profile')}>
-          <PersonOutlineRoundedIcon sx={{ mr: 1.2, color: ui.iconMuted }} />
-          Профиль
-        </MenuItem>
-        <MenuItem onClick={() => openAccountRoute('/settings')}>
-          <SettingsIcon sx={{ mr: 1.2, color: ui.iconMuted }} />
-          Настройки
-        </MenuItem>
-        {showAdminArea ? (
-          <MenuItem onClick={() => openAccountRoute('/admin')}>
-            <AdminPanelSettingsOutlinedIcon sx={{ mr: 1.2, color: ui.iconMuted }} />
-            Администрирование
-          </MenuItem>
-        ) : null}
-        <Divider />
-        <MenuItem onClick={handleLogout} sx={{ color: 'error.main' }}>
-          <LogoutIcon sx={{ mr: 1.2 }} />
-          Выход
-        </MenuItem>
-      </Menu>
+        onNavigate={openAccountRoute}
+        onLogout={() => { void handleLogout(); }}
+        showAdministration={showAdminArea}
+        reducedMotion={prefersReducedMotion}
+      />
 
       {/* Main Content */}
       <Box
@@ -2331,7 +2329,7 @@ useEffect(() => {
           <Box
             aria-hidden="true"
             data-testid="main-layout-top-spacer"
-            style={{ height: 'var(--app-shell-top-offset)' }}
+            style={{ height: topSpacerHeight }}
             sx={{ flexShrink: 0 }}
           />
         ) : null}

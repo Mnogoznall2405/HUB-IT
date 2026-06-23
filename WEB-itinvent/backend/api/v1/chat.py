@@ -554,6 +554,47 @@ async def _publish_group_conversation_change(
         await asyncio.gather(*publish_tasks)
 
 
+async def _publish_deleted_conversation(
+    *,
+    conversation_id: str,
+    member_user_ids: list[int],
+    reason: str = "deleted",
+) -> None:
+    normalized_conversation_id = str(conversation_id or "").strip()
+    member_ids_set: set[int] = set()
+    for item in list(member_user_ids or []):
+        try:
+            user_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if user_id > 0:
+            member_ids_set.add(user_id)
+    member_ids = sorted(member_ids_set)
+    if not normalized_conversation_id or not member_ids:
+        return
+    unread_summaries = await _get_unread_summaries(member_ids)
+
+    async def _publish_for_user(user_id: int) -> None:
+        await chat_realtime.publish_inbox_event(
+            user_id=user_id,
+            event_type="chat.conversation.removed",
+            conversation_id=normalized_conversation_id,
+            payload={
+                "conversation_id": normalized_conversation_id,
+                "reason": str(reason or "").strip() or "deleted",
+            },
+        )
+        unread_payload = unread_summaries.get(user_id)
+        if isinstance(unread_payload, dict):
+            await chat_realtime.publish_inbox_event(
+                user_id=user_id,
+                event_type="chat.unread.summary",
+                payload=unread_payload,
+            )
+
+    await asyncio.gather(*(_publish_for_user(user_id) for user_id in member_ids))
+
+
 async def _publish_message_deleted(
     *,
     conversation_id: str,
@@ -1124,6 +1165,30 @@ async def update_chat_conversation_settings(
         )
         await _publish_unread_summary(int(current_user.id))
         return conversation
+    except Exception as exc:
+        _raise_chat_http_error(exc)
+
+
+@router.delete("/conversations/{conversation_id}")
+async def delete_chat_conversation(
+    conversation_id: str,
+    current_user: User = Depends(require_permission(PERM_CHAT_WRITE)),
+):
+    try:
+        deleted = await _run_chat_call(
+            chat_service.delete_conversation,
+            current_user_id=int(current_user.id),
+            conversation_id=conversation_id,
+        )
+        await _publish_deleted_conversation(
+            conversation_id=deleted["conversation_id"],
+            member_user_ids=deleted["member_user_ids"],
+            reason="deleted",
+        )
+        return {
+            "ok": True,
+            "conversation_id": deleted["conversation_id"],
+        }
     except Exception as exc:
         _raise_chat_http_error(exc)
 

@@ -85,11 +85,13 @@ import { useAuth } from '../contexts/AuthContext';
 import { useLocation, useNavigate } from 'react-router-dom';
 import MarkdownRenderer from '../components/hub/MarkdownRenderer';
 import MarkdownEditor from '../components/hub/MarkdownEditor';
+import TaskChecklist from '../components/hub/TaskChecklist';
 import {
   TaskActivityTabs,
   TaskContextSidebar,
   TaskDetailHeader,
-  TaskMobileContentSummary,
+  TaskMobileChecklistScreen,
+  TaskMobileDetailScreen,
   TaskPrimaryActions,
   normalizeTaskDetailTab,
 } from '../components/hub/TaskUi';
@@ -1195,6 +1197,11 @@ function Tasks() {
     return normalizeTaskDetailTab(params.get('task_tab'));
   }, [location.search]);
 
+  const selectedMobileTaskView = useMemo(() => {
+    const params = new URLSearchParams(location.search || '');
+    return String(params.get('task_mobile_view') || '').trim() === 'checklist' ? 'checklist' : 'details';
+  }, [location.search]);
+
   const detailsOpen = Boolean(selectedTaskId);
 
   useEffect(() => {
@@ -2001,6 +2008,18 @@ function Tasks() {
     setCreateOpen(true);
   }, []);
 
+  useEffect(() => {
+    const params = new URLSearchParams(location.search || '');
+    if (params.get('create') !== '1' || !canCreateTasks) return;
+    openCreateTaskWithPreset();
+    params.delete('create');
+    const nextSearch = params.toString();
+    navigate(
+      { pathname: location.pathname, search: nextSearch ? `?${nextSearch}` : '' },
+      { replace: true },
+    );
+  }, [canCreateTasks, location.pathname, location.search, navigate, openCreateTaskWithPreset]);
+
   const closeTaskDetails = useCallback(() => {
     setDetailsTask(null);
     setDetailsComments([]);
@@ -2019,6 +2038,7 @@ function Tasks() {
     updateSearch((nextParams) => {
       nextParams.delete('task');
       nextParams.delete('task_tab');
+      nextParams.delete('task_mobile_view');
     }, { replace: true });
   }, [isMobile, location.search, navigate, updateSearch]);
 
@@ -2035,8 +2055,23 @@ function Tasks() {
     updateSearch((params) => {
       params.set('task', id);
       params.set('task_tab', 'comments');
+      params.delete('task_mobile_view');
     }, { replace: false });
   }, [isMobile, updateSearch]);
+
+  const openMobileTaskChecklist = useCallback(() => {
+    if (!selectedTaskId) return;
+    updateSearch((params) => {
+      params.set('task', selectedTaskId);
+      params.set('task_mobile_view', 'checklist');
+    }, { replace: false });
+  }, [selectedTaskId, updateSearch]);
+
+  const closeMobileTaskChecklist = useCallback(() => {
+    updateSearch((params) => {
+      params.delete('task_mobile_view');
+    }, { replace: false });
+  }, [updateSearch]);
 
   const setTaskDetailTab = useCallback((tab) => {
     const nextTab = normalizeTaskDetailTab(tab);
@@ -2678,44 +2713,31 @@ function Tasks() {
     }
   }, [refreshTasksAndDetails]);
 
-  const renderTaskChecklist = useCallback((task) => {
+  const handleAddTaskChecklistItem = useCallback(async (task, text) => {
+    const taskId = String(task?.id || '').trim();
+    const itemText = String(text || '').trim();
+    if (!taskId || !itemText || !canUpdateTaskChecklist(task)) return;
     const items = Array.isArray(task?.checklist_items) ? task.checklist_items : [];
-    if (items.length === 0) return null;
-    const doneCount = items.filter((item) => Boolean(item?.done)).length;
-    const totalCount = items.length;
-    const progress = totalCount > 0 ? Math.round((doneCount / totalCount) * 100) : 0;
-    const canUpdate = canUpdateTaskChecklist(task);
+    const nextItems = [
+      ...items,
+      { id: createChecklistItemId(), text: itemText, done: false },
+    ];
+    try {
+      await hubAPI.updateTask(taskId, { checklist_items: nextItems });
+      await refreshTasksAndDetails(taskId);
+    } catch (err) {
+      setError(err?.response?.data?.detail || err?.message || 'Ошибка добавления пункта чек-листа');
+    }
+  }, [canUpdateTaskChecklist, refreshTasksAndDetails]);
+
+  const renderTaskChecklist = useCallback((task) => {
     return (
-      <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '14px' }) }}>
-        <Stack direction="row" justifyContent="space-between" spacing={1} alignItems="center" sx={{ mb: 0.8 }}>
-          <Typography sx={{ fontWeight: 900 }}>Чек-лист</Typography>
-          <Chip size="small" label={`${doneCount}/${totalCount}`} sx={{ fontWeight: 800 }} />
-        </Stack>
-        <LinearProgress variant="determinate" value={progress} sx={{ height: 6, borderRadius: 999, mb: 0.8 }} />
-        <Stack spacing={0.45}>
-          {items.map((item, index) => (
-            <Stack key={item.id || `${item.text}-${index}`} direction="row" spacing={0.7} alignItems="center">
-              <Checkbox
-                checked={Boolean(item.done)}
-                disabled={!canUpdate}
-                onChange={(event) => void handleToggleTaskChecklistItem(task, item.id, event.target.checked)}
-                inputProps={{ 'aria-label': `Отметить пункт ${index + 1}` }}
-                sx={{ p: 0.45 }}
-              />
-              <Typography
-                variant="body2"
-                sx={{
-                  color: item.done ? ui.subtleText : ui.text,
-                  textDecoration: item.done ? 'line-through' : 'none',
-                  overflowWrap: 'anywhere',
-                }}
-              >
-                {item.text}
-              </Typography>
-            </Stack>
-          ))}
-        </Stack>
-      </Box>
+      <TaskChecklist
+        task={task}
+        canUpdate={canUpdateTaskChecklist(task)}
+        onToggle={(itemId, done) => void handleToggleTaskChecklistItem(task, itemId, done)}
+        ui={ui}
+      />
     );
   }, [canUpdateTaskChecklist, handleToggleTaskChecklistItem, ui]);
 
@@ -3786,6 +3808,7 @@ function Tasks() {
       onOpenEditTask={openEditTask}
       onDeleteTask={(task) => void handleDeleteTask(task)}
       onCopyLink={() => void handleCopyTaskLink(detailsTask?.id, selectedTaskTab)}
+      mobileRail={isMobile}
     />
   ) : null;
 
@@ -3852,7 +3875,8 @@ function Tasks() {
         priorityMeta={priorityMeta(detailsTask?.priority)}
         transferLabel={getTransferActReminderLabel(detailsTask)}
         isTransferReminder={isTransferActUploadTask(detailsTask)}
-        onBack={closeTaskDetails}
+        mobileTitle={selectedMobileTaskView === 'checklist' ? 'Чек-лист' : 'Задача'}
+        onBack={isMobile && selectedMobileTaskView === 'checklist' ? closeMobileTaskChecklist : closeTaskDetails}
         onCopyLink={() => void handleCopyTaskLink(detailsTask?.id, selectedTaskTab)}
         mobile={isMobile}
         actionMenuItems={detailActionMenuItems}
@@ -3873,12 +3897,31 @@ function Tasks() {
         theme={theme}
       />
 
-      <Box sx={{ flex: 1, minHeight: 0, overflowY: 'auto', px: { xs: 1, md: 1.25 }, py: 1.1, ...(isMobile ? hideMobileScrollbarSx : {}) }}>
+      <Box
+        sx={{
+          flex: 1,
+          minHeight: 0,
+          overflowY: 'auto',
+          px: isMobile ? 0 : { xs: 1, md: 1.25 },
+          py: isMobile ? 0 : 1.1,
+          bgcolor: isMobile && theme.palette.mode === 'dark' ? '#0b0b0c' : undefined,
+          ...(isMobile ? hideMobileScrollbarSx : {}),
+        }}
+      >
         {detailsLoading && <LinearProgress sx={{ mb: 1.2, borderRadius: 999 }} />}
         {detailsTask ? (
           isMobile ? (
-            <Stack spacing={1.1} sx={{ minWidth: 0 }}>
-              <TaskMobileContentSummary
+            selectedMobileTaskView === 'checklist' ? (
+              <TaskMobileChecklistScreen
+                task={detailsTask}
+                canUpdate={canUpdateTaskChecklist(detailsTask)}
+                onToggleItem={(itemId, done) => void handleToggleTaskChecklistItem(detailsTask, itemId, done)}
+                onAddItem={(text) => void handleAddTaskChecklistItem(detailsTask, text)}
+                ui={ui}
+                theme={theme}
+              />
+            ) : (
+              <TaskMobileDetailScreen
                 task={detailsTask}
                 attachments={Array.isArray(detailsTask.attachments) ? detailsTask.attachments : []}
                 canUploadFiles={canUploadFiles(detailsTask)}
@@ -3886,64 +3929,17 @@ function Tasks() {
                 onUploadAttachment={(file) => void handleUploadAttachment(detailsTask.id, file)}
                 onDownloadAttachment={(attachment) => void handleDownloadAttachment(detailsTask, attachment)}
                 onDownloadReport={(report) => void handleDownloadReport(report)}
-                formatDateTime={formatDateTime}
-                formatFileSize={formatFileSize}
-                ui={ui}
-                theme={theme}
-              />
-
-              <TaskContextSidebar
-                task={detailsTask}
-                ui={ui}
-                theme={theme}
-                statusMeta={statusMeta(detailsTask?.status)}
-                priorityMeta={priorityMeta(detailsTask?.priority)}
-                transferLabel={getTransferActReminderLabel(detailsTask)}
-                isTransferReminder={isTransferActUploadTask(detailsTask)}
-                formatDateTime={formatDateTime}
-                actionState={detailMobileActionState}
-                actions={detailPrimaryActions}
-                mobile
-              />
-
-              {String(detailsTask.review_comment || '').trim() && (
-                <Box sx={{ ...getOfficeSubtlePanelSx(ui, { p: 1.2, borderRadius: '14px' }) }}>
-                  <Typography sx={{ fontWeight: 800, mb: 0.45 }}>Комментарий проверки</Typography>
-                  <Typography variant="body2" sx={{ whiteSpace: 'pre-wrap' }}>
-                    {detailsTask.review_comment}
-                  </Typography>
-                </Box>
-              )}
-
-              {renderTaskChecklist(detailsTask)}
-
-              <TaskActivityTabs
-                activeTab={selectedTaskTab}
-                onTabChange={setTaskDetailTab}
-                comments={detailsComments}
-                attachments={Array.isArray(detailsTask.attachments) ? detailsTask.attachments : []}
-                statusLog={detailsStatusLog}
-                commentBody={detailsCommentBody}
-                onCommentChange={setDetailsCommentBody}
-                onAddComment={() => void handleAddTaskComment()}
-                commentSaving={detailsCommentSaving}
-                canUploadFiles={canUploadFiles(detailsTask)}
-                onUploadAttachment={(file) => void handleUploadAttachment(detailsTask.id, file)}
-                uploadingAttachment={uploadingAttachment}
-                onDownloadAttachment={(attachment) => void handleDownloadAttachment(detailsTask, attachment)}
-                formatDateTime={formatDateTime}
-                formatFileSize={formatFileSize}
-                getInitials={getInitials}
-                statusMeta={statusMeta}
-                ui={ui}
-                theme={theme}
-                mobile
-                hideFilesTab
+                onOpenChecklist={openMobileTaskChecklist}
                 taskDiscussionEnabled={taskDiscussionChatEnabled}
                 onOpenTaskDiscussion={() => void handleOpenTaskDiscussion(detailsTask)}
                 discussionOpening={discussionOpening}
+                formatDateTime={formatDateTime}
+                formatFileSize={formatFileSize}
+                ui={ui}
+                theme={theme}
+                actions={detailPrimaryActions}
               />
-            </Stack>
+            )
           ) : (
           <Box
             sx={{

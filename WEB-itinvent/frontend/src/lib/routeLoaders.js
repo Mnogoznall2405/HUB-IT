@@ -49,6 +49,7 @@ const defineRouteLoader = (loader) => () => loadRouteWithReloadFallback(loader);
 
 export const loadLoginRoute = defineRouteLoader(() => import('../pages/Login'));
 export const loadDashboardRoute = defineRouteLoader(() => import('../pages/Dashboard'));
+export const loadDashboardNewsRoute = defineRouteLoader(() => import('../pages/DashboardNews'));
 export const loadTasksRoute = defineRouteLoader(() => import('../pages/Tasks'));
 export const loadTicketsRoute = defineRouteLoader(() => import('../pages/Tickets'));
 export const loadChatRoute = defineRouteLoader(() => import('../pages/Chat'));
@@ -78,6 +79,7 @@ export const loadSharedFileRoute = defineRouteLoader(() => import('../pages/Shar
 const ROUTE_LOADERS = new Map([
   ['/login', loadLoginRoute],
   ['/dashboard', loadDashboardRoute],
+  ['/dashboard/news', loadDashboardNewsRoute],
   ['/tasks', loadTasksRoute],
   ['/tickets', loadTicketsRoute],
   ['/chat', loadChatRoute],
@@ -112,6 +114,9 @@ export const normalizeRouteLoaderPath = (path) => {
   }
   if (normalized === '/networks' || normalized.startsWith('/networks/')) {
     return '/networks';
+  }
+  if (normalized === '/dashboard/news' || normalized.startsWith('/dashboard/news/')) {
+    return '/dashboard/news';
   }
   if (normalized === '/shared-files' || normalized.startsWith('/shared-files/')) {
     return '/shared-files';

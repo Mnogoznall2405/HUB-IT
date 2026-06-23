@@ -1851,6 +1851,13 @@ function Mail() {
 
   useEffect(() => {
     const searchParams = new URLSearchParams(location.search || '');
+    if (searchParams.get('compose') === 'new') {
+      openCompose();
+      searchParams.delete('compose');
+      const nextQuery = searchParams.toString();
+      navigate(nextQuery ? `/mail?${nextQuery}` : '/mail', { replace: true });
+      return;
+    }
     const composeTo = normalizeMailRecipient(searchParams.get('compose_to'));
     if (!composeTo || !isValidEmailRecipient(composeTo)) return;
     openComposeSession({
@@ -1861,7 +1868,7 @@ function Mail() {
     searchParams.delete('compose_to');
     const nextQuery = searchParams.toString();
     navigate(nextQuery ? `/mail?${nextQuery}` : '/mail', { replace: true });
-  }, [location.search, navigate, openComposeSession, resolveComposeMailboxId]);
+  }, [location.search, navigate, openCompose, openComposeSession, resolveComposeMailboxId]);
 
   const openComposeFromMessage = useCallback((mode) => {
     if (!selectedMessage) return;

@@ -16,6 +16,13 @@ export const chatConversationDetailsAPI = {
     );
     return response.data;
   },
+
+  deleteConversation: async (conversationId) => {
+    const response = await apiClient.delete(
+      `/chat/conversations/${encodeURIComponent(conversationId)}`,
+    );
+    return response.data;
+  },
 };
 
 export default chatConversationDetailsAPI;

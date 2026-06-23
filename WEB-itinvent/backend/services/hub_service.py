@@ -3267,6 +3267,17 @@ class HubService:
             pass
         return updated_task
 
+    def task_exists(self, task_id: str) -> bool:
+        normalized_id = _normalize_text(task_id)
+        if not normalized_id:
+            return False
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                f"SELECT 1 FROM {self._TASKS_TABLE} WHERE id = ? LIMIT 1",
+                (normalized_id,),
+            ).fetchone()
+            return row is not None
+
     def get_task(
         self,
         task_id: str,
@@ -3338,6 +3349,34 @@ class HubService:
         self._remove_relative_files(file_paths)
         self._remove_dir_quiet(self.task_attachments_root / normalized_id)
         return True
+
+    def delete_notifications_for_entity(self, *, entity_type: str, entity_id: str) -> int:
+        normalized_type = _normalize_text(entity_type)
+        normalized_id = _normalize_text(entity_id)
+        if not normalized_type or not normalized_id:
+            return 0
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM {self._NOTIF_TABLE} WHERE entity_type = ? AND entity_id = ?",
+                (normalized_type, normalized_id),
+            ).fetchall()
+            notification_ids = [
+                _normalize_text(item["id"])
+                for item in rows
+                if _normalize_text(item["id"])
+            ]
+            if notification_ids:
+                placeholders = ", ".join(["?"] * len(notification_ids))
+                conn.execute(
+                    f"DELETE FROM {self._NOTIF_READS_TABLE} WHERE notification_id IN ({placeholders})",
+                    tuple(notification_ids),
+                )
+            conn.execute(
+                f"DELETE FROM {self._NOTIF_TABLE} WHERE entity_type = ? AND entity_id = ?",
+                (normalized_type, normalized_id),
+            )
+            conn.commit()
+        return len(notification_ids)
 
     def get_task_analytics(
         self,

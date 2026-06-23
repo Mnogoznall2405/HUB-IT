@@ -6,6 +6,7 @@ import {
   DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
   normalizeMobileBottomNavItems,
 } from '../lib/mobileNavigationPreferences';
+import { mergeServerBranchFilters, normalizeDatabaseBranchFilters } from '../pages/database/databaseBranchPreferences';
 
 export {
   DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
@@ -14,6 +15,8 @@ export {
 
 const PreferencesContext = createContext(null);
 const CACHE_KEY = 'web_preferences_cache';
+export const DASHBOARD_SECTION_KEYS = ['attention', 'tasks', 'communication', 'news'];
+export const DEFAULT_DASHBOARD_SECTIONS = ['attention', 'tasks', 'communication', 'news'];
 export const DASHBOARD_MOBILE_SECTION_KEYS = ['urgent', 'announcements', 'tasks'];
 export const DEFAULT_DASHBOARD_MOBILE_SECTIONS = ['urgent', 'announcements', 'tasks'];
 
@@ -22,8 +25,10 @@ const DEFAULT_PREFERENCES = {
   theme_mode: 'light',
   font_family: 'Aptos',
   font_scale: 1.0,
+  dashboard_sections: DEFAULT_DASHBOARD_SECTIONS,
   dashboard_mobile_sections: DEFAULT_DASHBOARD_MOBILE_SECTIONS,
   mobile_bottom_nav_items: DEFAULT_MOBILE_BOTTOM_NAV_ITEMS,
+  database_branch_filters: {},
 };
 
 const FONT_MAP = {
@@ -47,17 +52,70 @@ export function normalizeDashboardMobileSections(value) {
   return result.length ? result : [...DEFAULT_DASHBOARD_MOBILE_SECTIONS];
 }
 
+export function dashboardSectionsToLegacy(value) {
+  const reverseMap = {
+    attention: 'urgent',
+    tasks: 'tasks',
+    news: 'announcements',
+  };
+  const result = normalizeDashboardSections(value)
+    .map((item) => reverseMap[item])
+    .filter(Boolean);
+  return result.length ? result : [...DEFAULT_DASHBOARD_MOBILE_SECTIONS];
+}
+
+export function normalizeDashboardSections(value, legacyValue) {
+  if (value === undefined || value === null) {
+    if (legacyValue === undefined || legacyValue === null) {
+      return [...DEFAULT_DASHBOARD_SECTIONS];
+    }
+    const legacyMap = {
+      urgent: 'attention',
+      tasks: 'tasks',
+      announcements: 'news',
+    };
+    const mapped = normalizeDashboardMobileSections(legacyValue)
+      .map((item) => legacyMap[item])
+      .filter(Boolean);
+    if (!mapped.includes('communication')) {
+      const newsIndex = mapped.indexOf('news');
+      mapped.splice(newsIndex >= 0 ? newsIndex : mapped.length, 0, 'communication');
+    }
+    value = mapped;
+  }
+
+  const source = Array.isArray(value) ? value : [];
+  const result = ['attention'];
+  source.forEach((item) => {
+    const token = String(item || '').trim().toLowerCase();
+    if (DASHBOARD_SECTION_KEYS.includes(token) && !result.includes(token)) {
+      result.push(token);
+    }
+  });
+  return result;
+}
+
+function normalizePreferencePayload(value = {}) {
+  const dashboardSections = normalizeDashboardSections(
+    value?.dashboard_sections,
+    value?.dashboard_mobile_sections,
+  );
+  return {
+    ...DEFAULT_PREFERENCES,
+    ...value,
+    dashboard_sections: dashboardSections,
+    dashboard_mobile_sections: dashboardSectionsToLegacy(dashboardSections),
+    mobile_bottom_nav_items: normalizeMobileBottomNavItems(value?.mobile_bottom_nav_items),
+    database_branch_filters: normalizeDatabaseBranchFilters(value?.database_branch_filters),
+  };
+}
+
 function readCachedPreferences() {
   try {
     const raw = localStorage.getItem(CACHE_KEY);
     if (!raw) return DEFAULT_PREFERENCES;
     const parsed = JSON.parse(raw);
-    return {
-      ...DEFAULT_PREFERENCES,
-      ...parsed,
-      dashboard_mobile_sections: normalizeDashboardMobileSections(parsed?.dashboard_mobile_sections),
-      mobile_bottom_nav_items: normalizeMobileBottomNavItems(parsed?.mobile_bottom_nav_items),
-    };
+    return normalizePreferencePayload(parsed);
   } catch {
     return DEFAULT_PREFERENCES;
   }
@@ -85,15 +143,11 @@ export function PreferencesProvider({ children }) {
     setLoading(true);
     try {
       const data = await settingsAPI.getMySettings({ suppressAuthRequired: true });
-      const next = {
-        ...DEFAULT_PREFERENCES,
-        ...data,
-        dashboard_mobile_sections: normalizeDashboardMobileSections(data?.dashboard_mobile_sections),
-        mobile_bottom_nav_items: normalizeMobileBottomNavItems(data?.mobile_bottom_nav_items),
-      };
+      const next = normalizePreferencePayload(data);
       setPreferences(next);
       cachePreferences(next);
       syncSelectedDatabase(next.pinned_database);
+      mergeServerBranchFilters(next.database_branch_filters);
     } catch (error) {
       console.error('Failed to load preferences:', error);
     } finally {
@@ -138,8 +192,17 @@ export function PreferencesProvider({ children }) {
     const previousPreferences = preferences;
     const normalizedPatch = {
       ...patch,
+      ...(patch?.dashboard_sections !== undefined
+        ? {
+          dashboard_sections: normalizeDashboardSections(patch.dashboard_sections),
+          dashboard_mobile_sections: dashboardSectionsToLegacy(patch.dashboard_sections),
+        }
+        : {}),
       ...(patch?.dashboard_mobile_sections !== undefined
-        ? { dashboard_mobile_sections: normalizeDashboardMobileSections(patch.dashboard_mobile_sections) }
+        ? {
+          dashboard_sections: normalizeDashboardSections(undefined, patch.dashboard_mobile_sections),
+          dashboard_mobile_sections: normalizeDashboardMobileSections(patch.dashboard_mobile_sections),
+        }
         : {}),
       ...(patch?.mobile_bottom_nav_items !== undefined
         ? { mobile_bottom_nav_items: normalizeMobileBottomNavItems(patch.mobile_bottom_nav_items, []) }
@@ -155,12 +218,7 @@ export function PreferencesProvider({ children }) {
 
     try {
       const saved = await settingsAPI.updateMySettings(normalizedPatch);
-      const next = {
-        ...DEFAULT_PREFERENCES,
-        ...saved,
-        dashboard_mobile_sections: normalizeDashboardMobileSections(saved?.dashboard_mobile_sections),
-        mobile_bottom_nav_items: normalizeMobileBottomNavItems(saved?.mobile_bottom_nav_items),
-      };
+      const next = normalizePreferencePayload(saved);
       setPreferences(next);
       cachePreferences(next);
       if (normalizedPatch.pinned_database !== undefined) {

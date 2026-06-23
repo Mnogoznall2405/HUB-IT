@@ -24,11 +24,17 @@ from backend.services.authorization_service import (
     PERM_TASKS_REVIEW,
     PERM_TASKS_WRITE,
 )
+from backend.services.access_policy_service import (
+    can_review_task,
+    user_is_department_manager,
+)
 from backend.services.hub_service import hub_service
 from backend.chat.task_discussion import (
+    delete_task_discussion,
     ensure_task_discussion,
     get_task_discussion,
     is_task_discussion_chat_enabled,
+    publish_task_discussion_updated,
 )
 from backend.services.task_analytics_export_service import build_task_analytics_excel
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
@@ -128,6 +134,54 @@ def _enrich_task_payload(item: Optional[dict]) -> Optional[dict]:
     if not isinstance(item, dict):
         return item
     return transfer_act_reminder_service.enrich_task(item)
+
+
+def _enrich_task_payload_for_user(item: Optional[dict], current_user: User) -> Optional[dict]:
+    enriched = _enrich_task_payload(item)
+    if not isinstance(enriched, dict):
+        return enriched
+
+    actor = _actor_dict(current_user)
+    actor_id = int(current_user.id)
+    status = _normalize_text(enriched.get("status")).lower()
+    is_admin = _is_admin_user(current_user)
+    is_transfer_reminder = _normalize_text(enriched.get("integration_kind")).lower() == "transfer_act_upload"
+    is_creator = int(enriched.get("created_by_user_id") or 0) == actor_id
+    is_assignee = int(enriched.get("assignee_user_id") or 0) == actor_id
+    is_controller = int(enriched.get("controller_user_id") or 0) == actor_id
+    controller_missing = int(enriched.get("controller_user_id") or 0) <= 0
+    is_department_manager = user_is_department_manager(actor, enriched.get("department_id"))
+    participant_ids = hub_service._task_participant_user_ids(enriched, include_delegates=True)
+
+    enriched["capabilities"] = {
+        "can_edit": bool(is_admin or (not is_transfer_reminder and (is_creator or is_department_manager))),
+        "can_start": bool(not is_transfer_reminder and is_assignee and status == "new"),
+        "can_submit": bool(not is_transfer_reminder and is_assignee and status in {"new", "in_progress"}),
+        "can_review": bool(
+            not is_transfer_reminder
+            and status == "review"
+            and (is_admin or can_review_task(actor, enriched))
+        ),
+        "can_upload_files": bool(
+            not is_transfer_reminder
+            and status != "done"
+            and (
+                is_assignee
+                or is_creator
+                or is_controller
+                or (_has_permission(current_user, PERM_TASKS_REVIEW) and controller_missing)
+            )
+        ),
+        "can_update_checklist": bool(
+            status != "done"
+            and (
+                is_admin
+                or actor_id in participant_ids
+                or is_department_manager
+            )
+        ),
+    }
+    return enriched
 
 
 def _enrich_task_collection(payload: dict) -> dict:
@@ -742,7 +796,7 @@ async def get_task(
         task_id=task_id,
         user_id=int(current_user.id),
     )
-    return _enrich_task_payload(item)
+    return _enrich_task_payload_for_user(item, current_user)
 
 
 @router.patch("/tasks/{task_id}")
@@ -764,6 +818,7 @@ async def patch_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
+    await publish_task_discussion_updated(task_id=task_id, task=updated)
     return _enrich_task_payload(updated)
 
 
@@ -783,6 +838,7 @@ async def delete_task(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail="Task not found")
+    await delete_task_discussion(task_id=task_id)
     return {"ok": True, "task_id": task_id}
 
 
@@ -803,6 +859,7 @@ async def start_task(
         task_id=task_id,
         user_id=int(current_user.id),
     )
+    await publish_task_discussion_updated(task_id=task_id, task=updated)
     return _enrich_task_payload(updated)
 
 
@@ -842,6 +899,7 @@ async def submit_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
+    await publish_task_discussion_updated(task_id=task_id, task=updated)
     return _enrich_task_payload(updated)
 
 
@@ -898,6 +956,7 @@ async def review_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
+    await publish_task_discussion_updated(task_id=task_id, task=updated)
     return _enrich_task_payload(updated)
 
 

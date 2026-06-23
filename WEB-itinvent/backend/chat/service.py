@@ -36,6 +36,7 @@ from backend.chat.db import (
 from backend.chat.models import (
     ChatConversation,
     ChatConversationUserState,
+    ChatEventOutbox,
     ChatFolder,
     ChatFolderConversation,
     ChatMember,
@@ -43,6 +44,7 @@ from backend.chat.models import (
     ChatMessageAttachment,
     ChatMessageRead,
     ChatMessageReaction,
+    ChatPushOutbox,
 )
 from backend.chat.message_persistence import (
     ChatFileMessagePersistence,
@@ -1387,6 +1389,112 @@ class ChatService:
             return []
         with chat_session() as session:
             return self._conversation_member_ids(session, normalized_conversation_id)
+
+    def _delete_conversation_rows(self, *, session, conversation: ChatConversation) -> dict[str, Any]:
+        conversation_id = _normalize_text(conversation.id)
+        member_user_ids = self._conversation_member_ids(session, conversation_id)
+        session.query(ChatPushOutbox).filter(
+            ChatPushOutbox.conversation_id == conversation_id,
+        ).delete(synchronize_session=False)
+        session.query(ChatEventOutbox).filter(
+            ChatEventOutbox.conversation_id == conversation_id,
+        ).delete(synchronize_session=False)
+        for model in (
+            ChatMessageReaction,
+            ChatMessageRead,
+            ChatMessageAttachment,
+            ChatFolderConversation,
+            ChatConversationUserState,
+            ChatMember,
+            ChatMessage,
+        ):
+            session.query(model).filter(
+                model.conversation_id == conversation_id,
+            ).delete(synchronize_session=False)
+        session.query(ChatConversation).filter(
+            ChatConversation.id == conversation_id,
+        ).delete(synchronize_session=False)
+        return {
+            "conversation_id": conversation_id,
+            "member_user_ids": member_user_ids,
+        }
+
+    def _cleanup_deleted_conversation_storage(self, *, conversation_id: str, member_user_ids: list[int]) -> None:
+        self._invalidate_conversation_views_for_users(
+            conversation_id=conversation_id,
+            user_ids=member_user_ids,
+        )
+        shutil.rmtree(self._attachments_root / conversation_id, ignore_errors=True)
+        self._upload_sessions.delete_for_conversation(conversation_id)
+        try:
+            hub_service.delete_notifications_for_entity(
+                entity_type="chat",
+                entity_id=conversation_id,
+            )
+        except Exception:
+            logger.warning(
+                "chat.delete_conversation notification cleanup failed conversation_id=%s",
+                conversation_id,
+                exc_info=True,
+            )
+
+    def delete_conversation(self, *, current_user_id: int, conversation_id: str) -> dict[str, Any]:
+        self._ensure_available()
+        normalized_conversation_id = _normalize_text(conversation_id)
+        if not normalized_conversation_id:
+            raise ValueError("conversation_id is required")
+
+        with chat_session() as session:
+            conversation = self._require_membership(
+                session=session,
+                conversation_id=normalized_conversation_id,
+                current_user_id=int(current_user_id),
+            )
+            conversation_kind = _normalize_text(conversation.kind).lower()
+            linked_task_id = _normalize_text(conversation.task_id)
+            if conversation_kind == "task" or linked_task_id:
+                if linked_task_id and hub_service.task_exists(linked_task_id):
+                    raise ValueError("Task discussion can only be deleted together with the task")
+            elif conversation_kind == "ai":
+                raise ValueError("AI conversations cannot be deleted from the chat list")
+            if conversation_kind == "group":
+                membership = self._get_active_membership(
+                    session=session,
+                    conversation_id=conversation.id,
+                    user_id=int(current_user_id),
+                )
+                if membership is None or _normalize_member_role(membership.member_role) != "owner":
+                    raise PermissionError("Only group owner can delete the conversation")
+            deleted = self._delete_conversation_rows(session=session, conversation=conversation)
+
+        self._cleanup_deleted_conversation_storage(
+            conversation_id=deleted["conversation_id"],
+            member_user_ids=deleted["member_user_ids"],
+        )
+        return deleted
+
+    def delete_task_conversation(self, *, task_id: str) -> Optional[dict[str, Any]]:
+        self._ensure_available()
+        normalized_task_id = _normalize_text(task_id)
+        if not normalized_task_id:
+            return None
+
+        with chat_session() as session:
+            conversation = session.execute(
+                select(ChatConversation).where(
+                    ChatConversation.kind == "task",
+                    ChatConversation.task_id == normalized_task_id,
+                ).limit(1)
+            ).scalar_one_or_none()
+            if conversation is None:
+                return None
+            deleted = self._delete_conversation_rows(session=session, conversation=conversation)
+
+        self._cleanup_deleted_conversation_storage(
+            conversation_id=deleted["conversation_id"],
+            member_user_ids=deleted["member_user_ids"],
+        )
+        return deleted
 
     def _extract_mention_handles(self, body: object) -> set[str]:
         text = _normalize_text(body)
@@ -4299,7 +4407,10 @@ class ChatService:
         member_count = 0
         online_member_count = 0
         member_preview: list[dict[str, Any]] = []
+        viewer_member_role = None
         for member in members:
+            if int(member.user_id) == int(current_user_id):
+                viewer_member_role = _normalize_member_role(member.member_role)
             user_payload = users_by_id.get(int(member.user_id))
             if user_payload is None:
                 continue
@@ -4321,6 +4432,10 @@ class ChatService:
         task_id_value = _normalize_text(getattr(conversation, "task_id", None)) or None
         task_status = None
         task_title = None
+        task_assignee_full_name = None
+        task_due_at = None
+        task_completed_at = None
+        task_missing = bool(task_id_value and not hub_service.task_exists(task_id_value))
         if conversation.kind == "direct":
             peer_name = _normalize_text((direct_peer or {}).get("full_name")) or _normalize_text((direct_peer or {}).get("username"))
             title = peer_name or "Личный диалог"
@@ -4334,6 +4449,9 @@ class ChatService:
                 if task_payload:
                     task_status = _normalize_text(task_payload.get("status")) or None
                     task_title = _normalize_text(task_payload.get("title")) or None
+                    task_assignee_full_name = _normalize_text(task_payload.get("assignee_full_name")) or None
+                    task_due_at = _normalize_text(task_payload.get("due_at")) or None
+                    task_completed_at = _normalize_text(task_payload.get("completed_at")) or None
                     if task_title and not title:
                         title = f"Задача: {task_title}"
             if not title:
@@ -4366,8 +4484,12 @@ class ChatService:
             "title": title,
             "avatar_url": _normalize_text(getattr(conversation, "avatar_url", None)) or None,
             "task_id": task_id_value,
+            "task_missing": task_missing,
             "task_title": task_title,
             "task_status": task_status,
+            "task_assignee_full_name": task_assignee_full_name,
+            "task_due_at": task_due_at,
+            "task_completed_at": task_completed_at,
             "created_at": _iso(conversation.created_at) or "",
             "updated_at": _iso(conversation.updated_at) or "",
             "last_message_at": _iso(conversation.last_message_at),
@@ -4378,6 +4500,7 @@ class ChatService:
             "is_pinned": bool(getattr(state, "is_pinned", False)),
             "is_muted": bool(getattr(state, "is_muted", False)),
             "is_archived": bool(getattr(state, "is_archived", False)),
+            "viewer_member_role": viewer_member_role,
             "member_preview": member_preview,
             "direct_peer": direct_peer,
         }

@@ -613,6 +613,7 @@ describe('ChatDialogs attachment preview', () => {
     document.body.appendChild(anchor);
     const onOpenInfo = vi.fn();
     const onUpdateConversationSettings = vi.fn();
+    const onRequestDeleteConversation = vi.fn();
 
     renderWithTheme(buildProps({
       activeConversationId: 'conv-1',
@@ -620,6 +621,7 @@ describe('ChatDialogs attachment preview', () => {
         id: 'conv-1',
         title: 'Проект',
         kind: 'group',
+        viewer_member_role: 'owner',
         is_pinned: false,
         is_muted: false,
         is_archived: false,
@@ -627,6 +629,7 @@ describe('ChatDialogs attachment preview', () => {
       threadMenuAnchor: anchor,
       onOpenInfo,
       onUpdateConversationSettings,
+      onRequestDeleteConversation,
     }));
 
     const threadMenuItems = screen.getAllByRole('menuitem');
@@ -635,6 +638,9 @@ describe('ChatDialogs attachment preview', () => {
 
     fireEvent.click(screen.getAllByRole('menuitem')[2]);
     expect(onUpdateConversationSettings).toHaveBeenCalledWith({ is_pinned: true });
+
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Удалить чат' }));
+    expect(onRequestDeleteConversation).toHaveBeenCalledWith(expect.objectContaining({ id: 'conv-1' }));
   });
 
   it('shows Telegram-like message actions and forwards reply/share/report actions', () => {

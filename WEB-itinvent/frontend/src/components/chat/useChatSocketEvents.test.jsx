@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import useChatSocketEvents from './useChatSocketEvents';
 import {
+  CHAT_SOCKET_CONVERSATION_UPDATED_EVENT,
   CHAT_SOCKET_MESSAGE_CREATED_EVENT,
   CHAT_SOCKET_STATUS_EVENT,
 } from '../../lib/chatSocket';
@@ -17,9 +18,11 @@ function Harness({
   activeConversationId = '',
   hasPersistedThreadMessageEquivalent = () => false,
   loadConversations = vi.fn(),
+  loadMessages = vi.fn(),
   mergeMessageIntoThread = vi.fn(),
   queueAutoScroll = vi.fn(),
   threadNearBottom = true,
+  upsertConversation = vi.fn(),
 }) {
   const [socketStatus, setSocketStatus] = useState('connecting');
   const activeConversationIdRef = useRef(activeConversationId);
@@ -27,7 +30,7 @@ function Harness({
   const conversationsLoadingRef = useRef(false);
   const lastConversationsLoadAtRef = useRef(0);
   const latestActiveThreadSocketMessageRef = useRef(null);
-  const loadMessagesRef = useRef(vi.fn());
+  const loadMessagesRef = useRef(loadMessages);
   const logChatDebugRef = useRef(vi.fn());
   const messagesLoadingRef = useRef(false);
   const messagesRef = useRef([]);
@@ -49,7 +52,7 @@ function Harness({
     lastConversationsLoadAtRef,
     latestActiveThreadSocketMessageRef,
     loadConversations,
-    loadMessages: vi.fn(),
+    loadMessages,
     loadMessagesRef,
     logChatDebug: vi.fn(),
     logChatDebugRef,
@@ -73,7 +76,7 @@ function Harness({
     threadNearBottomRef,
     typingParticipantsTimeoutsRef,
     updatePresenceInCollections: vi.fn(),
-    upsertConversation: vi.fn(),
+    upsertConversation,
     userId: 1,
   });
 
@@ -160,5 +163,46 @@ describe('useChatSocketEvents', () => {
     });
 
     expect(queueAutoScroll).toHaveBeenCalledWith(false, 'socket:message_created');
+  });
+
+  it('applies task metadata updates without reloading the message thread', () => {
+    const loadMessages = vi.fn();
+    const upsertConversation = vi.fn();
+    render(
+      <Harness
+        activeConversationId="conv-task"
+        loadMessages={loadMessages}
+        upsertConversation={upsertConversation}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CHAT_SOCKET_CONVERSATION_UPDATED_EVENT, {
+        detail: {
+          conversation_id: 'conv-task',
+          payload: {
+            reason: 'task_updated',
+            conversation: {
+              id: 'conv-task',
+              kind: 'task',
+              task_id: 'task-1',
+              task_title: 'Закрытая задача',
+              task_status: 'done',
+              task_completed_at: '2026-06-23T14:32:00',
+            },
+          },
+        },
+      }));
+    });
+
+    expect(upsertConversation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'conv-task',
+        task_status: 'done',
+        task_completed_at: '2026-06-23T14:32:00',
+      }),
+      { promote: false },
+    );
+    expect(loadMessages).not.toHaveBeenCalled();
   });
 });

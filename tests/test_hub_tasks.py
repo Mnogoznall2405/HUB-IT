@@ -198,6 +198,14 @@ def test_create_task_detail_access_and_role_scopes(task_env):
     assert detail_payload["controller_user_id"] == 3
     assert detail_payload["created_by_user_id"] == 1
     assert "attachments_count" in detail_payload
+    assert detail_payload["capabilities"] == {
+        "can_edit": False,
+        "can_start": False,
+        "can_submit": False,
+        "can_review": False,
+        "can_upload_files": True,
+        "can_update_checklist": True,
+    }
 
     set_user(4)
     denied = client.get(f"/hub/tasks/{task_id}")

@@ -486,6 +486,45 @@ export const isTaskConversation = (conversation) => {
   return kind === 'task' || Boolean(String(conversation?.task_id || '').trim());
 };
 
+export const isCompletedTaskConversation = (conversation) => (
+  isTaskConversation(conversation) && String(conversation?.task_status || '').trim().toLowerCase() === 'done'
+);
+
+export const getConversationDisplayTitle = (conversation) => {
+  if (!conversation) return '';
+  if (!isTaskConversation(conversation)) {
+    return normalizeTrimmedChatText(conversation?.title);
+  }
+  const taskTitle = normalizeTrimmedChatText(conversation?.task_title);
+  if (taskTitle) return taskTitle;
+  return normalizeTrimmedChatText(conversation?.title).replace(/^Задача:\s*/i, '') || 'Задача';
+};
+
+export const formatTaskConversationDue = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Без срока';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return 'Без срока';
+  const now = new Date();
+  const includeYear = date.getFullYear() !== now.getFullYear();
+  return date.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    ...(includeYear ? { year: 'numeric' } : {}),
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+export const getTaskConversationMetaLine = (conversation) => {
+  const assignee = normalizeTrimmedChatText(
+    conversation?.task_assignee_full_name,
+    'Исполнитель не назначен',
+  );
+  const due = formatTaskConversationDue(conversation?.task_due_at);
+  return `${assignee} • ${due === 'Без срока' ? due : `Срок: ${due}`}`;
+};
+
 const formatTaskStatusLabel = (status) => {
   const [label] = getStatusMeta(status);
   return label || 'Задача';

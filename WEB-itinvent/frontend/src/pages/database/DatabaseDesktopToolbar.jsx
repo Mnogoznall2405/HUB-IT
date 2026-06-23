@@ -2,7 +2,6 @@ import { memo } from 'react';
 import {
   Box,
   Button,
-  CircularProgress,
   FormControl,
   InputLabel,
   MenuItem,
@@ -36,15 +35,10 @@ function DatabaseDesktopToolbar({
   branches = [],
   selectedBranch = '',
   onBranchChange = noop,
-  canLoadMore = false,
-  nextEquipmentPage = null,
-  equipmentPagesTotal = 1,
-  loadingMoreEquipment = false,
-  onLoadMore = noop,
   hasExpandedVisible = false,
   onCollapseAll = noop,
 }) {
-  const showManagementRow = branches.length > 0 || canLoadMore || hasExpandedVisible;
+  const showManagementRow = branches.length > 0 || hasExpandedVisible;
   const buttonSx = (color) => getOfficeQuietActionSx(ui, theme, color, {
     whiteSpace: 'nowrap',
     borderRadius: '12px',
@@ -151,6 +145,8 @@ function DatabaseDesktopToolbar({
                 value={selectedBranch}
                 onChange={(event) => onBranchChange(event.target.value)}
                 label="Филиал"
+                displayEmpty
+                renderValue={(value) => (value ? value : 'Все филиалы')}
               >
                 <MenuItem value="">Все филиалы</MenuItem>
                 {branches.map((branch) => (
@@ -160,21 +156,6 @@ function DatabaseDesktopToolbar({
                 ))}
               </Select>
             </FormControl>
-          )}
-
-          {canLoadMore && (
-            <Button
-              size="small"
-              variant="outlined"
-              startIcon={loadingMoreEquipment ? <CircularProgress size={16} /> : undefined}
-              onClick={onLoadMore}
-              disabled={loadingMoreEquipment}
-              sx={buttonSx('neutral')}
-            >
-              {loadingMoreEquipment
-                ? 'Загрузка...'
-                : `Загрузить ещё (${nextEquipmentPage}/${equipmentPagesTotal})`}
-            </Button>
           )}
 
           {hasExpandedVisible && (

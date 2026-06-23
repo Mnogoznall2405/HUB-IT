@@ -14,7 +14,7 @@ const hoisted = vi.hoisted(() => ({
   authUser: { role: 'operator' },
 }));
 
-vi.mock('../api/client', () => ({
+vi.mock('../api/adUsers', () => ({
   adUsersAPI: hoisted.adUsersAPI,
 }));
 

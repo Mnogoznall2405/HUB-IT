@@ -30,10 +30,14 @@ class UserSettingsResponse(BaseModel):
     theme_mode: str = "light"
     font_family: str = "Aptos"
     font_scale: float = 1.0
+    dashboard_sections: list[str] = Field(
+        default_factory=lambda: ["attention", "tasks", "communication", "news"]
+    )
     dashboard_mobile_sections: list[str] = Field(default_factory=lambda: ["urgent", "announcements", "tasks"])
     mobile_bottom_nav_items: list[str] = Field(
         default_factory=lambda: ["/dashboard", "/tasks", "/chat", "/mail"]
     )
+    database_branch_filters: dict[str, str] = Field(default_factory=dict)
 
 
 class UserSettingsPatchRequest(BaseModel):
@@ -41,8 +45,10 @@ class UserSettingsPatchRequest(BaseModel):
     theme_mode: Optional[str] = None
     font_family: Optional[str] = None
     font_scale: Optional[float] = Field(default=None, ge=0.9, le=1.2)
+    dashboard_sections: Optional[list[str]] = None
     dashboard_mobile_sections: Optional[list[str]] = None
     mobile_bottom_nav_items: Optional[list[str]] = None
+    database_branch_filters: Optional[dict[str, str]] = None
 
 
 class EnvSettingItemPatch(BaseModel):

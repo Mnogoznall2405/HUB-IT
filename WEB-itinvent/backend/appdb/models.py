@@ -224,6 +224,7 @@ class AppUserSetting(AppBase):
     font_scale: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     dashboard_mobile_sections_json: Mapped[str | None] = mapped_column("dashboard_mobile_sections", Text, nullable=True)
     mobile_bottom_nav_items_json: Mapped[str | None] = mapped_column("mobile_bottom_nav_items", Text, nullable=True)
+    database_branch_filters_json: Mapped[str | None] = mapped_column("database_branch_filters", Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 

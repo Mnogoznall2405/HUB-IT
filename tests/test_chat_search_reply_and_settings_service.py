@@ -335,3 +335,102 @@ def test_conversation_settings_update_flags_and_muted_chat_skips_notifications(c
     polled = hub_service.poll_notifications(user_id=1, limit=50)
     chat_items = [item for item in polled["items"] if item.get("entity_type") == "chat"]
     assert chat_items == []
+
+
+def test_delete_direct_conversation_removes_history_for_all_members(chat_env):
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+    conversation = chat_env["direct"]
+    message = service.send_message(
+        current_user_id=1,
+        conversation_id=conversation["id"],
+        body="Delete this conversation",
+    )
+
+    deleted = service.delete_conversation(
+        current_user_id=2,
+        conversation_id=conversation["id"],
+    )
+
+    assert deleted["conversation_id"] == conversation["id"]
+    assert deleted["member_user_ids"] == [1, 2]
+    with chat_db_module.chat_session() as session:
+        assert session.get(chat_models_module.ChatConversation, conversation["id"]) is None
+        assert session.get(chat_models_module.ChatMessage, message["id"]) is None
+    assert service.list_conversations(current_user_id=1, limit=20) == []
+    assert service.list_conversations(current_user_id=2, limit=20) == []
+    remaining_notifications = hub_service.poll_notifications(user_id=2, limit=50)["items"]
+    assert all(
+        not (
+            item.get("entity_type") == "chat"
+            and item.get("entity_id") == conversation["id"]
+        )
+        for item in remaining_notifications
+    )
+
+    recreated = service.create_direct_conversation(current_user_id=1, peer_user_id=2)
+    assert recreated["id"] != conversation["id"]
+
+
+def test_only_group_owner_can_delete_group_conversation(chat_env):
+    service = chat_env["service"]
+    group = service.create_group_conversation(
+        current_user_id=1,
+        title="Owned group",
+        member_user_ids=[2, 3],
+    )
+
+    assert group["viewer_member_role"] == "owner"
+    member_summary = service.get_conversation_summary(
+        current_user_id=2,
+        conversation_id=group["id"],
+    )
+    assert member_summary["viewer_member_role"] == "member"
+
+    with pytest.raises(PermissionError, match="Only group owner"):
+        service.delete_conversation(
+            current_user_id=2,
+            conversation_id=group["id"],
+        )
+
+    deleted = service.delete_conversation(
+        current_user_id=1,
+        conversation_id=group["id"],
+    )
+    assert deleted["member_user_ids"] == [1, 2, 3]
+
+
+def test_task_and_ai_conversations_cannot_be_deleted_directly(chat_env):
+    service = chat_env["service"]
+    task_conversation = chat_models_module.ChatConversation(
+        id="task-conversation",
+        kind="task",
+        title="Task",
+        task_id="task-1",
+        created_by_user_id=1,
+    )
+    ai_conversation = chat_models_module.ChatConversation(
+        id="ai-conversation",
+        kind="ai",
+        title="AI",
+        created_by_user_id=1,
+    )
+    with chat_db_module.chat_session() as session:
+        session.add_all([task_conversation, ai_conversation])
+        session.add_all([
+            chat_models_module.ChatMember(
+                conversation_id=task_conversation.id,
+                user_id=1,
+                member_role="owner",
+            ),
+            chat_models_module.ChatMember(
+                conversation_id=ai_conversation.id,
+                user_id=1,
+                member_role="owner",
+            ),
+        ])
+
+    with pytest.raises(ValueError, match="together with the task"):
+        service.delete_conversation(current_user_id=1, conversation_id=task_conversation.id)
+    with pytest.raises(ValueError, match="AI conversations"):
+        service.delete_conversation(current_user_id=1, conversation_id=ai_conversation.id)

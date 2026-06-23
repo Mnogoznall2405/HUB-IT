@@ -556,6 +556,10 @@ export const chatAPI = {
     return chatConversationDetailsAPI.updateConversationSettings;
   },
 
+  get deleteConversation() {
+    return chatConversationDetailsAPI.deleteConversation;
+  },
+
   get createDirectConversation() {
     return chatConversationsAPI.createDirectConversation;
   },

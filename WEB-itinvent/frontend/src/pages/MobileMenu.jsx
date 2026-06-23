@@ -31,9 +31,9 @@ function AccountAction({ icon, label, onClick, danger = false, testId }) {
       onClick={onClick}
       sx={{
         width: '100%',
-        minHeight: 50,
-        px: 1,
-        borderRadius: '13px',
+        minHeight: 48,
+        px: 0.9,
+        borderRadius: '10px',
         justifyContent: 'flex-start',
         color: danger ? theme.palette.error.main : ui.iconMuted,
         '&:hover': { bgcolor: ui.actionHover },
@@ -75,14 +75,15 @@ export default function MobileMenu() {
   return (
     <MainLayout contentMode="default">
       <PageShell sx={{ pb: 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 10px)' }}>
-        <Stack spacing={1.15} sx={{ maxWidth: 720, mx: 'auto', width: '100%' }}>
+        <Stack spacing={1} sx={{ maxWidth: 720, mx: 'auto', width: '100%' }}>
           <ButtonBase
             data-testid="mobile-menu-profile-card"
+            aria-label={`Открыть профиль: ${user?.full_name || user?.username || 'пользователь'}`}
             onClick={() => navigate('/profile')}
             sx={{
               width: '100%',
-              p: 1.25,
-              borderRadius: '20px',
+              p: 1.1,
+              borderRadius: '17px',
               justifyContent: 'flex-start',
               textAlign: 'left',
               border: '1px solid',
@@ -91,7 +92,9 @@ export default function MobileMenu() {
               backgroundImage: `linear-gradient(135deg, ${alpha(theme.palette.primary.main, 0.2)}, transparent 72%)`,
               backdropFilter: 'blur(20px) saturate(145%)',
               WebkitBackdropFilter: 'blur(20px) saturate(145%)',
-              boxShadow: ui.shellShadow,
+              boxShadow: theme.palette.mode === 'dark'
+                ? '0 10px 24px rgba(0,0,0,0.2)'
+                : '0 10px 24px rgba(15,23,42,0.08)',
             }}
           >
             <Box sx={{ flex: 1, minWidth: 0 }}>
@@ -105,7 +108,8 @@ export default function MobileMenu() {
             sx={{
               display: 'grid',
               gridTemplateColumns: 'repeat(3, minmax(0, 1fr))',
-              gap: 0.75,
+              columnGap: 0.35,
+              rowGap: 0.55,
             }}
           >
             {visibleItems.map((item) => (
@@ -116,26 +120,23 @@ export default function MobileMenu() {
                 onTouchStart={() => { void prefetchRouteByPath(item.path).catch(() => {}); }}
                 sx={{
                   minWidth: 0,
-                  minHeight: 88,
-                  p: 0.8,
-                  borderRadius: '17px',
-                  border: '1px solid',
-                  borderColor: ui.borderSoft,
-                  bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.68 : 0.78),
-                  backdropFilter: 'blur(14px)',
-                  WebkitBackdropFilter: 'blur(14px)',
+                  minHeight: 82,
+                  p: 0.55,
+                  borderRadius: '14px',
+                  border: '1px solid transparent',
+                  bgcolor: 'transparent',
                   '&:hover': {
                     bgcolor: ui.actionHover,
-                    borderColor: ui.actionBorder,
+                    borderColor: ui.borderSoft,
                   },
                 }}
               >
                 <Stack spacing={0.55} alignItems="center" sx={{ minWidth: 0, width: '100%' }}>
                   <Box
                     sx={{
-                      width: 42,
-                      height: 42,
-                      borderRadius: '14px',
+                      width: 40,
+                      height: 40,
+                      borderRadius: '12px',
                       display: 'grid',
                       placeItems: 'center',
                       color: theme.palette.primary.main,
@@ -148,7 +149,7 @@ export default function MobileMenu() {
                   <Typography
                     sx={{
                       width: '100%',
-                      fontSize: '0.72rem',
+                      fontSize: '0.7rem',
                       lineHeight: 1.12,
                       fontWeight: 800,
                       textAlign: 'center',
@@ -164,13 +165,11 @@ export default function MobileMenu() {
 
           <Box
             sx={{
-              p: 0.6,
-              borderRadius: '18px',
+              p: 0.45,
+              borderRadius: '14px',
               border: '1px solid',
               borderColor: ui.borderSoft,
-              bgcolor: alpha(ui.panelSolid, theme.palette.mode === 'dark' ? 0.66 : 0.76),
-              backdropFilter: 'blur(16px)',
-              WebkitBackdropFilter: 'blur(16px)',
+              bgcolor: ui.panelSolid,
             }}
           >
             <Stack divider={<Divider sx={{ borderColor: ui.borderSoft }} />}>

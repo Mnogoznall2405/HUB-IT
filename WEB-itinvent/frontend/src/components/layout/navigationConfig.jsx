@@ -20,8 +20,8 @@ import { INVENTORY_SECTION_LABEL } from '../../lib/appBranding';
 import { DEFAULT_MOBILE_BOTTOM_NAV_ITEMS } from '../../lib/mobileNavigationPreferences';
 
 export const navigationItems = [
-  { path: '/dashboard', label: 'Главная', shortLabel: 'Главная', icon: <DashboardIcon />, permission: 'dashboard.read', group: 'main', quick: true },
-  { path: '/tasks', label: 'Задачи', shortLabel: 'Задачи', icon: <TaskAltIcon />, permission: 'tasks.read', group: 'main', mobilePrimary: true, quick: true },
+  { path: '/dashboard', label: 'Главная', shortLabel: 'Главная', icon: <DashboardIcon />, permission: 'dashboard.read', group: 'main' },
+  { path: '/tasks', label: 'Задачи', shortLabel: 'Задачи', icon: <TaskAltIcon />, permission: 'tasks.read', group: 'main' },
   { path: '/tickets', label: 'Билеты', shortLabel: 'Билеты', icon: <ConfirmationNumberIcon />, permission: 'tickets.read', group: 'main' },
   ...(CHAT_FEATURE_ENABLED ? [{
     path: '/chat',
@@ -30,14 +30,12 @@ export const navigationItems = [
     icon: <ForumOutlinedIcon />,
     permission: 'chat.read',
     group: 'main',
-    mobilePrimary: true,
-    quick: true,
   }] : []),
-  { path: '/mail', label: 'Почта', shortLabel: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access', group: 'main', mobilePrimary: true, quick: true },
+  { path: '/mail', label: 'Почта', shortLabel: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access', group: 'main' },
   { path: '/address-book', label: 'Адресная книга', shortLabel: 'Адреса', icon: <ContactPhoneIcon />, permission: 'address_book.read', group: 'tools' },
   { path: '/passwords', label: 'Пароли', shortLabel: 'Пароли', icon: <VpnKeyOutlinedIcon />, permission: 'passwords.read', group: 'tools' },
-  { path: '/my-files', label: 'Мои файлы', shortLabel: 'Файлы', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read', group: 'tools', quick: true },
-  { path: '/database', label: INVENTORY_SECTION_LABEL, shortLabel: 'Учёт', icon: <StorageIcon />, permission: 'database.read', group: 'tools', quick: true },
+  { path: '/my-files', label: 'Мои файлы', shortLabel: 'Файлы', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read', group: 'tools' },
+  { path: '/database', label: INVENTORY_SECTION_LABEL, shortLabel: 'Учёт', icon: <StorageIcon />, permission: 'database.read', group: 'tools' },
   { path: '/networks', label: 'Сети', shortLabel: 'Сети', icon: <LanIcon />, permission: 'networks.read', group: 'tools' },
   { path: '/vcs', label: 'ВКС терминалы', shortLabel: 'ВКС', icon: <VideocamIcon />, permission: 'vcs.read', group: 'tools' },
   { path: '/mfu', label: 'МФУ', shortLabel: 'МФУ', icon: <PrintIcon />, permission: 'mfu.read', group: 'tools' },
@@ -53,11 +51,6 @@ export const mobileMenuNavigationItem = {
   shortLabel: 'Меню',
   icon: <MenuRoundedIcon />,
 };
-
-export const mobileMenuGroups = [
-  { key: 'main', label: 'Основное' },
-  { key: 'tools', label: 'Инструменты' },
-];
 
 export function isAdminUser(user) {
   return String(user?.role || '').trim().toLowerCase() === 'admin';

@@ -14,6 +14,50 @@ if str(WEB_ROOT) not in sys.path:
 chat_api_module = importlib.import_module("backend.api.v1.chat")
 
 
+def test_publish_deleted_conversation_notifies_every_former_member(monkeypatch):
+    inbox_events = []
+
+    async def fake_run_in_threadpool(func, *args, **kwargs):
+        return func(*args, **kwargs)
+
+    async def fake_publish_inbox_event(**kwargs):
+        inbox_events.append(kwargs)
+
+    def fake_get_unread_summaries(*, user_ids):
+        return {
+            int(user_id): {
+                "messages_unread_total": 0,
+                "conversations_unread": 0,
+            }
+            for user_id in list(user_ids or [])
+        }
+
+    monkeypatch.setattr(chat_api_module, "run_in_threadpool", fake_run_in_threadpool)
+    monkeypatch.setattr(chat_api_module.chat_service, "get_unread_summaries", fake_get_unread_summaries)
+    monkeypatch.setattr(chat_api_module.chat_realtime, "publish_inbox_event", fake_publish_inbox_event)
+
+    asyncio.run(
+        chat_api_module._publish_deleted_conversation(
+            conversation_id="conv-delete",
+            member_user_ids=[1, 2],
+            reason="deleted",
+        )
+    )
+
+    removed_events = [
+        item for item in inbox_events
+        if item["event_type"] == "chat.conversation.removed"
+    ]
+    unread_events = [
+        item for item in inbox_events
+        if item["event_type"] == "chat.unread.summary"
+    ]
+    assert {item["user_id"] for item in removed_events} == {1, 2}
+    assert all(item["conversation_id"] == "conv-delete" for item in removed_events)
+    assert all(item["payload"]["reason"] == "deleted" for item in removed_events)
+    assert {item["user_id"] for item in unread_events} == {1, 2}
+
+
 def test_publish_message_created_notifies_inbox_only_for_message_created(monkeypatch):
     inbox_events = []
     conversation_events = []

@@ -480,8 +480,7 @@ export default function ChatMediaPreviewDialog({
                 <Box
                   component="img"
                   src={activePreviewUrl}
-                  alt=""
-                  aria-hidden="true"
+                  alt={previewDownloadName || previewKindLabel}
                   onLoad={() => setMediaLoadState('ready')}
                   onError={() => {
                     if (activePreviewOriginalUrl && activePreviewUrl !== activePreviewOriginalUrl) {

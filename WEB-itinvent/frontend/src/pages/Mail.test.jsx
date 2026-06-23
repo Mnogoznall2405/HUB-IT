@@ -2667,6 +2667,20 @@ describe('Mail read-state behavior', () => {
     });
   });
 
+  it('opens desktop compose from the dashboard quick-action URL', async () => {
+    render(
+      <MemoryRouter initialEntries={['/mail?compose=new']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-inline-pane')).toBeTruthy();
+    });
+  });
+
   it('saves the active mailbox signature from the compose flow', async () => {
     mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
       mailboxInfo: {

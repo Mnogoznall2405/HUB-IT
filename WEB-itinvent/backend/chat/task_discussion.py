@@ -1,18 +1,23 @@
 """Task-linked corporate chat discussions."""
 from __future__ import annotations
 
+import asyncio
+import logging
 from datetime import datetime, timezone
 from typing import Any, Optional
 from uuid import uuid4
 
 from sqlalchemy import select
 
-from backend.chat.db import chat_session, is_chat_enabled
+from backend.chat.db import ChatConfigurationError, chat_session, get_chat_database_url, is_chat_enabled
 from backend.chat.models import ChatConversation, ChatConversationUserState, ChatMember
 from backend.chat.utils import normalize_text as _normalize_text
 from backend.config import config
 from backend.services.hub_service import hub_service
 from backend.services.user_service import user_service
+
+
+logger = logging.getLogger(__name__)
 
 
 def _utc_now() -> datetime:
@@ -245,6 +250,134 @@ def sync_task_discussion_members(
     with chat_session() as owned_session:
         _sync(owned_session)
         owned_session.commit()
+
+
+async def publish_task_discussion_updated(
+    *,
+    task_id: str,
+    task: Optional[dict[str, Any]] = None,
+) -> None:
+    """Refresh task-chat metadata for every participant without failing the task mutation."""
+    if not is_task_discussion_chat_enabled():
+        return
+    normalized_task_id = _normalize_text(task_id)
+    if not normalized_task_id:
+        return
+
+    try:
+        sync_task_discussion_members(task_id=normalized_task_id, task=task)
+        with chat_session() as session:
+            conversation = session.execute(
+                select(ChatConversation).where(ChatConversation.task_id == normalized_task_id).limit(1)
+            ).scalar_one_or_none()
+            if conversation is None:
+                return
+            conversation_id = str(conversation.id)
+            member_ids = sorted({
+                int(item)
+                for item in session.execute(
+                    select(ChatMember.user_id).where(
+                        ChatMember.conversation_id == conversation_id,
+                        ChatMember.left_at.is_(None),
+                    )
+                ).scalars()
+                if int(item) > 0
+            })
+        if not member_ids:
+            return
+
+        from backend.chat.realtime import chat_realtime
+        from backend.chat.service import chat_service
+
+        chat_service._invalidate_conversation_views_for_users(
+            conversation_id=conversation_id,
+            user_ids=member_ids,
+        )
+        summaries = chat_service.get_conversation_summaries_for_users(
+            conversation_id=conversation_id,
+            user_ids=member_ids,
+        )
+        await asyncio.gather(*(
+            chat_realtime.publish_inbox_event(
+                user_id=int(user_id),
+                event_type="chat.conversation.updated",
+                conversation_id=conversation_id,
+                payload={
+                    "conversation": summary,
+                    "reason": "task_updated",
+                },
+            )
+            for user_id, summary in summaries.items()
+        ))
+    except Exception:
+        logger.warning(
+            "Failed to publish task discussion update task_id=%s",
+            normalized_task_id,
+            exc_info=True,
+        )
+
+
+async def delete_task_discussion(*, task_id: str) -> Optional[dict[str, Any]]:
+    """Delete the task-owned conversation and notify every former participant."""
+    try:
+        if not get_chat_database_url():
+            return None
+    except ChatConfigurationError:
+        return None
+    normalized_task_id = _normalize_text(task_id)
+    if not normalized_task_id:
+        return None
+
+    from backend.chat.realtime import chat_realtime
+    from backend.chat.service import chat_service
+
+    deleted = chat_service.delete_task_conversation(task_id=normalized_task_id)
+    if not deleted:
+        return None
+
+    conversation_id = _normalize_text(deleted.get("conversation_id"))
+    member_user_ids_set: set[int] = set()
+    for item in list(deleted.get("member_user_ids") or []):
+        try:
+            user_id = int(item)
+        except (TypeError, ValueError):
+            continue
+        if user_id > 0:
+            member_user_ids_set.add(user_id)
+    member_user_ids = sorted(member_user_ids_set)
+    if not conversation_id or not member_user_ids:
+        return deleted
+
+    unread_summaries = chat_service.get_unread_summaries(user_ids=member_user_ids)
+
+    async def _publish_removed(user_id: int) -> None:
+        await chat_realtime.publish_inbox_event(
+            user_id=user_id,
+            event_type="chat.conversation.removed",
+            conversation_id=conversation_id,
+            payload={
+                "conversation_id": conversation_id,
+                "reason": "task_deleted",
+            },
+        )
+        unread_payload = unread_summaries.get(user_id)
+        if isinstance(unread_payload, dict):
+            await chat_realtime.publish_inbox_event(
+                user_id=user_id,
+                event_type="chat.unread.summary",
+                payload=unread_payload,
+            )
+
+    try:
+        await asyncio.gather(*(_publish_removed(user_id) for user_id in member_user_ids))
+    except Exception:
+        logger.warning(
+            "Task discussion deleted but realtime removal publish failed task_id=%s conversation_id=%s",
+            normalized_task_id,
+            conversation_id,
+            exc_info=True,
+        )
+    return deleted
 
 
 def send_task_discussion_message(*, task_id: str, actor_user_id: int, body: str) -> dict[str, Any]:

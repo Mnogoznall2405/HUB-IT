@@ -414,6 +414,7 @@ export default function ChatDialogs({
   conversationHeaderSubtitle,
   settingsUpdating,
   onUpdateConversationSettings,
+  onRequestDeleteConversation,
   onAddGroupMembers,
   onRemoveGroupParticipant,
   onUpdateGroupMemberRole,
@@ -763,14 +764,23 @@ export default function ChatDialogs({
         <Divider sx={{ bgcolor: popupBorderColor }} />
 
         <MenuItem
-          onClick={runThreadMenuAction(() => {})}
+          onClick={runThreadMenuAction(() => onRequestDeleteConversation?.(activeConversation))}
+          disabled={
+            !activeConversationId
+            || activeConversationKind === 'task'
+            || Boolean(String(activeConversation?.task_id || '').trim())
+            || activeConversationKind === 'ai'
+          }
           sx={{
             color: popupDangerColor,
             '&:active': { bgcolor: alpha(popupDangerColor, 0.12) },
           }}
         >
           <DeleteOutlineIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupDangerColor, flexShrink: 0 }} />
-          Удалить чат
+          {activeConversationKind === 'group'
+          && String(activeConversation?.viewer_member_role || '').trim() !== 'owner'
+            ? 'Выйти из группы'
+            : 'Удалить чат'}
         </MenuItem>
       </Menu>
 
