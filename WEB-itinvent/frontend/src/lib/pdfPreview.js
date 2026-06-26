@@ -1,9 +1,21 @@
-import * as pdfjs from 'pdfjs-dist';
-import { WorkerMessageHandler } from 'pdfjs-dist/build/pdf.worker.min.mjs';
-
 const MAX_PDF_OUTPUT_SCALE = 3;
 
 let workerReady = false;
+let pdfjsModulePromise = null;
+
+async function getPdfjsRuntime() {
+  if (!pdfjsModulePromise) {
+    pdfjsModulePromise = (async () => {
+      const pdfjs = await import('pdfjs-dist/legacy/build/pdf.mjs');
+      const worker = await import('pdfjs-dist/legacy/build/pdf.worker.min.mjs');
+      return {
+        pdfjs,
+        WorkerMessageHandler: worker.WorkerMessageHandler,
+      };
+    })();
+  }
+  return pdfjsModulePromise;
+}
 
 export const clampPdfDisplayScale = (value) => {
   const normalized = Number(value || 1);
@@ -33,6 +45,7 @@ export const resolveInitialPdfFitZoom = ({
 
 export const ensurePdfWorker = async () => {
   if (workerReady) return;
+  const { pdfjs, WorkerMessageHandler } = await getPdfjsRuntime();
   globalThis.pdfjsWorker = { WorkerMessageHandler };
   // workerSrc is still read before fake-worker fallback; keep a harmless placeholder.
   pdfjs.GlobalWorkerOptions.workerSrc ||= 'data:text/javascript,export{}';
@@ -43,6 +56,7 @@ export const loadPdfDocumentFromUrl = async (objectUrl) => {
   if (!objectUrl) {
     throw new Error('PDF preview URL is missing.');
   }
+  const { pdfjs } = await getPdfjsRuntime();
   await ensurePdfWorker();
   const response = await fetch(objectUrl);
   if (!response.ok) {

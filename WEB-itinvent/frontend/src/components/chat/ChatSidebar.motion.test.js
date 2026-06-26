@@ -20,4 +20,19 @@ describe('ChatSidebar motion helpers', () => {
       transition: { duration: 0, ease: 'easeOut' },
     });
   });
+
+  it('uses horizontal motion when swipe direction is provided', () => {
+    expect(getChatFolderPanelMotionProps(false, 1)).toEqual({
+      initial: { opacity: 0, x: -24 },
+      animate: { opacity: 1, x: 0 },
+      exit: { opacity: 0, x: 24 },
+      transition: { duration: 0.24, ease: 'easeOut' },
+    });
+    expect(getChatFolderPanelMotionProps(false, -1)).toEqual({
+      initial: { opacity: 0, x: 24 },
+      animate: { opacity: 1, x: 0 },
+      exit: { opacity: 0, x: -24 },
+      transition: { duration: 0.24, ease: 'easeOut' },
+    });
+  });
 });

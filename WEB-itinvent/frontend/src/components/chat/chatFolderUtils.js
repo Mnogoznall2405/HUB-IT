@@ -19,6 +19,50 @@ export const buildChatFolderTabList = (customFolders = []) => {
   return [...SYSTEM_CHAT_FOLDERS, ...custom, ALL_CHAT_FOLDER_TAB].filter((item) => item.key);
 };
 
+/** Swipe/tab navigation order (excludes archive). */
+export const getChatFolderNavigationList = (customFolders = []) => (
+  buildChatFolderTabList(customFolders)
+);
+
+export const resolveAdjacentFolderKey = ({ tabs, activeKey, direction }) => {
+  const normalizedDirection = String(direction || '').trim().toLowerCase();
+  if (normalizedDirection !== 'prev' && normalizedDirection !== 'next') return null;
+
+  const navigationTabs = (Array.isArray(tabs) ? tabs : [])
+    .map((item) => String(item?.key || '').trim())
+    .filter(Boolean);
+  if (!navigationTabs.length) return null;
+
+  const normalizedActiveKey = String(activeKey || 'all').trim() || 'all';
+  const currentIndex = navigationTabs.indexOf(normalizedActiveKey);
+  const resolvedIndex = currentIndex >= 0
+    ? currentIndex
+    : navigationTabs.indexOf('all');
+
+  if (resolvedIndex < 0) return null;
+
+  const nextIndex = normalizedDirection === 'next'
+    ? resolvedIndex + 1
+    : resolvedIndex - 1;
+
+  if (nextIndex < 0 || nextIndex >= navigationTabs.length) return null;
+  return navigationTabs[nextIndex];
+};
+
+export const resolveFolderSwipeTarget = (activeKey, direction, customFolders = []) => {
+  const normalizedActiveKey = String(activeKey || 'all').trim() || 'all';
+  if (normalizedActiveKey === 'archived') {
+    return 'all';
+  }
+
+  const tabs = getChatFolderNavigationList(customFolders);
+  return resolveAdjacentFolderKey({
+    tabs,
+    activeKey: normalizedActiveKey,
+    direction,
+  });
+};
+
 export const isRegularSidebarConversation = (item) => (
   Boolean(item) && String(item?.kind || '').trim() !== 'ai'
 );

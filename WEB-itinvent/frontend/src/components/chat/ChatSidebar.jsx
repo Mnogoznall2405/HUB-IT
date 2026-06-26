@@ -1,4 +1,4 @@
-import { memo, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useMemo, useRef, useState } from 'react';
 import { Checkbox, CircularProgress, Divider, Menu, MenuItem, Skeleton, Tooltip } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
@@ -21,6 +21,7 @@ import { motion, useReducedMotion, AnimatePresence } from 'framer-motion';
 import { AiConversationAvatar, ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatFolderTabs from './ChatFolderTabs';
 import { getConversationFolderIds, shouldShowAiChatSection } from './chatFolderUtils';
+import { useChatFolderSwipe } from './useChatFolderSwipe';
 import {
   formatShortTime,
   getConversationDisplayTitle,
@@ -35,12 +36,25 @@ import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
 
 export const CHAT_SIDEBAR_ROW_USES_LAYOUT_ANIMATION = false;
 
-export const getChatFolderPanelMotionProps = (reducedMotion = false) => ({
-  initial: reducedMotion ? false : { opacity: 0, y: 10 },
-  animate: { opacity: 1, y: 0 },
-  exit: reducedMotion ? undefined : { opacity: 0, y: -8 },
-  transition: { duration: reducedMotion ? 0 : 0.24, ease: 'easeOut' },
-});
+export const getChatFolderPanelMotionProps = (reducedMotion = false, direction = 0) => {
+  if (reducedMotion || !direction) {
+    return {
+      initial: reducedMotion ? false : { opacity: 0, y: 10 },
+      animate: { opacity: 1, y: 0 },
+      exit: reducedMotion ? undefined : { opacity: 0, y: -8 },
+      transition: { duration: reducedMotion ? 0 : 0.24, ease: 'easeOut' },
+    };
+  }
+
+  const enterX = direction > 0 ? -24 : 24;
+  const exitX = direction > 0 ? 24 : -24;
+  return {
+    initial: { opacity: 0, x: enterX },
+    animate: { opacity: 1, x: 0 },
+    exit: { opacity: 0, x: exitX },
+    transition: { duration: 0.24, ease: 'easeOut' },
+  };
+};
 
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
 const FALLBACK_DENSITY = {
@@ -764,7 +778,28 @@ function ChatSidebar({
     () => new Set(getConversationFolderIds(folderMenuConversationId, conversationIdsByFolder)),
     [conversationIdsByFolder, folderMenuConversationId],
   );
-  const folderPanelMotion = getChatFolderPanelMotionProps(reducedMotion);
+  const {
+    folderSwipeOffset,
+    folderSwipeDirection,
+    setScrollElement,
+    shouldSuppressListClick,
+  } = useChatFolderSwipe({
+    enabled: isMobile && !sidebarSearchActive,
+    activeFolderKey,
+    customFolders,
+    onFolderChange: onActiveFolderChange,
+  });
+  const folderPanelMotion = getChatFolderPanelMotionProps(reducedMotion, folderSwipeDirection);
+  const handleOpenConversation = useCallback((conversationId) => {
+    if (shouldSuppressListClick()) return;
+    onOpenConversation?.(conversationId);
+  }, [onOpenConversation, shouldSuppressListClick]);
+  const handleSidebarScrollRef = useCallback((node) => {
+    setScrollElement(node);
+    if (!sidebarScrollRef) return;
+    if (typeof sidebarScrollRef === 'function') sidebarScrollRef(node);
+    else sidebarScrollRef.current = node;
+  }, [setScrollElement, sidebarScrollRef]);
   const taskSections = useMemo(() => {
     if (String(activeFolderKey || '').trim() !== 'tasks') return null;
     const active = [];
@@ -833,7 +868,7 @@ function ChatSidebar({
               theme={theme}
               ui={ui}
               activeConversationId={activeConversationId}
-              onOpenConversation={onOpenConversation}
+              onOpenConversation={handleOpenConversation}
               onPrefetchConversation={onPrefetchConversation}
               openingAiBotId={openingAiBotId}
               onOpenAiBot={onOpenAiBot}
@@ -1160,9 +1195,17 @@ function ChatSidebar({
       </div>
 
       <div
-        ref={sidebarScrollRef}
+        ref={handleSidebarScrollRef}
         className="chat-scroll-hidden flex-1 overflow-y-auto pb-4"
+        data-testid="chat-sidebar-list-scroll"
+        style={{ touchAction: isMobile ? 'pan-y' : undefined }}
       >
+        <div
+          style={{
+            transform: folderSwipeOffset ? `translateX(${folderSwipeOffset}px)` : undefined,
+            transition: folderSwipeOffset ? 'none' : 'transform 170ms ease-out',
+          }}
+        >
         {sidebarSearchActive ? (
           <>
             {searchingSidebar ? (
@@ -1198,7 +1241,7 @@ function ChatSidebar({
                       theme={theme}
                       ui={ui}
                       activeConversationId={activeConversationId}
-                      onOpenConversation={onOpenConversation}
+                      onOpenConversation={handleOpenConversation}
                       onPrefetchConversation={onPrefetchConversation}
                       onOpenFolderMenu={handleOpenFolderMenu}
                       draftPreview={draftsByConversation?.[item.id] || ''}
@@ -1258,7 +1301,7 @@ function ChatSidebar({
                         theme={theme}
                         ui={ui}
                         activeConversationId={activeConversationId}
-                        onOpenConversation={onOpenConversation}
+                        onOpenConversation={handleOpenConversation}
                         onPrefetchConversation={onPrefetchConversation}
                         onOpenFolderMenu={handleOpenFolderMenu}
                         draftPreview={draftsByConversation?.[item.id] || ''}
@@ -1288,7 +1331,7 @@ function ChatSidebar({
                         theme={theme}
                         ui={ui}
                         activeConversationId={activeConversationId}
-                        onOpenConversation={onOpenConversation}
+                        onOpenConversation={handleOpenConversation}
                         onPrefetchConversation={onPrefetchConversation}
                         onOpenFolderMenu={handleOpenFolderMenu}
                         draftPreview={draftsByConversation?.[item.id] || ''}
@@ -1305,7 +1348,7 @@ function ChatSidebar({
                     theme={theme}
                     ui={ui}
                     activeConversationId={activeConversationId}
-                    onOpenConversation={onOpenConversation}
+                    onOpenConversation={handleOpenConversation}
                     onPrefetchConversation={onPrefetchConversation}
                     onOpenFolderMenu={handleOpenFolderMenu}
                     draftPreview={draftsByConversation?.[item.id] || ''}
@@ -1318,6 +1361,7 @@ function ChatSidebar({
             )}
           </AnimatePresence>
         )}
+        </div>
       </div>
     </div>
   );

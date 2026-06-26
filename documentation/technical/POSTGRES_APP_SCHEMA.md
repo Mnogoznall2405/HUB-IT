@@ -14,11 +14,11 @@
 
 ## Снимок БД (авто)
 
-_Обновлено: 2026-06-23 17:15 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
+_Обновлено: 2026-06-26 04:02 UTC_ · инстанс `127.0.0.1:5432/hubit_chat` · скрипт `scripts/pg_schema_docs.py`
 
 | Схема | Таблиц | Кратко |
 |-------|--------|--------|
-| **`app`** | **85** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
+| **`app`** | **86** | Auth, Hub, tickets, inventory, почта, сети, AI, JSON-store |
 | **`chat`** | **1** | Мессенджер, outbox, push |
 | **`system`** | **8** | Alembic, auth runtime, MFU, session Exchange, чекпоинты |
 
@@ -28,7 +28,7 @@ _Обновлено: 2026-06-23 17:15 UTC_ · инстанс `127.0.0.1:5432/hub
 
 > **Chat:** на инстансе 1 табл.; в коде ещё ожидаются: `chat_conversations, chat_members, chat_messages, chat_message_attachments, chat_message_reads, chat_message_reactions, chat_conversation_user_state, chat_push_subscriptions, chat_push_outbox, migration_checkpoints`.
 
-## Схема `app` (85 таблиц)
+## Схема `app` (86 таблиц)
 
 ### Auth и пользователи
 
@@ -58,6 +58,7 @@ _Обновлено: 2026-06-23 17:15 UTC_ · инстанс `127.0.0.1:5432/hub
 | `hub_task_attachments` | Вложения к задаче |
 | `hub_task_comment_reads` | Прочитанность комментариев |
 | `hub_task_comments` | Комментарии |
+| `hub_task_email_outbox` | — |
 | `hub_task_objects` | Объекты (привязка к задачам) |
 | `hub_task_projects` | Проекты задач |
 | `hub_task_reports` | Отчёты исполнителя |
@@ -271,7 +272,7 @@ chat.chat_event_outbox ── доставка событий подписчик
 
 <!-- pg-schema-docs:history:begin -->
 
-- **2026-06-23:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 85, `chat` 1, `system` 8).
+- **2026-06-26:** авто-синхронизация с `127.0.0.1:5432/hubit_chat` (`app` 86, `chat` 1, `system` 8).
 
 <!-- pg-schema-docs:history:end -->
 

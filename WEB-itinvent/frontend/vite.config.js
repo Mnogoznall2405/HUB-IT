@@ -33,6 +33,7 @@ export default defineConfig(({ mode }) => {
       globals: true,
       setupFiles: './src/test/setup.js',
       css: true,
+      testTimeout: 15_000,
     },
     server: {
       port: 5173,
@@ -49,6 +50,18 @@ export default defineConfig(({ mode }) => {
     },
     optimizeDeps: {
       include: ['react', 'react-dom', '@emotion/react', '@emotion/styled'],
+    },
+    build: {
+      rollupOptions: {
+        output: {
+          manualChunks(id) {
+            if (id.includes('node_modules/recharts')) {
+              return 'recharts';
+            }
+            return undefined;
+          },
+        },
+      },
     },
   };
 });

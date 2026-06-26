@@ -8,6 +8,7 @@
     "test": "vitest",
     "test:run": "vitest run",
     "build": "vite build",
+    "generate:icons": "python scripts/generate-pwa-icons.py",
     "preview": "vite preview"
   },
   "dependencies": {

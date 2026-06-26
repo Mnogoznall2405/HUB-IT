@@ -74,7 +74,7 @@ def _get_task_for_actor(*, task_id: str, actor_user_id: int) -> dict[str, Any]:
 
 
 def _participant_user_ids(task: dict[str, Any]) -> list[int]:
-    return sorted(hub_service._task_participant_user_ids(task, include_delegates=True))
+    return sorted(hub_service._task_discussion_user_ids(task, include_delegates=True))
 
 
 def get_task_discussion(*, task_id: str, actor_user_id: int) -> Optional[dict[str, Any]]:
@@ -211,15 +211,20 @@ def sync_task_discussion_members(
         participant_ids = set(_participant_user_ids(resolved_task))
         owner_user_id = int(resolved_task.get("created_by_user_id") or conversation.created_by_user_id or 0)
         now = _utc_now()
-        existing_members = active_session.execute(
-            select(ChatMember).where(
-                ChatMember.conversation_id == conversation.id,
-                ChatMember.left_at.is_(None),
-            )
+        all_members = active_session.execute(
+            select(ChatMember).where(ChatMember.conversation_id == conversation.id)
         ).scalars().all()
-        existing_ids = {int(item.user_id) for item in existing_members}
+        active_members = [item for item in all_members if item.left_at is None]
+        active_ids = {int(item.user_id) for item in active_members}
+        members_by_user_id = {int(item.user_id): item for item in all_members}
         for user_id in participant_ids:
-            if user_id in existing_ids:
+            if user_id in active_ids:
+                continue
+            left_member = members_by_user_id.get(int(user_id))
+            if left_member is not None and left_member.left_at is not None:
+                left_member.left_at = None
+                left_member.joined_at = now
+                active_ids.add(int(user_id))
                 continue
             member = user_service.get_by_id(int(user_id))
             if not member or not bool(member.get("is_active", True)):
@@ -240,6 +245,10 @@ def sync_task_discussion_members(
                     updated_at=now,
                 )
             )
+            active_ids.add(int(user_id))
+        for member in active_members:
+            if int(member.user_id) not in participant_ids:
+                member.left_at = now
         conversation.updated_at = now
         conversation.title = _task_discussion_title(resolved_task)
 

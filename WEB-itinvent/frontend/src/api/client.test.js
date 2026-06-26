@@ -1230,12 +1230,14 @@ describe('adUsersAPI', () => {
 });
 
 describe('departmentsAPI', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     apiClientMock.get.mockReset();
     apiClientMock.get.mockResolvedValue({ data: { items: [] } });
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { items: [] } });
     apiClientMock.put = vi.fn().mockResolvedValue({ data: { ok: true } });
     window.localStorage.clear();
+    const { invalidateDepartmentsListCache } = await import('./departments');
+    invalidateDepartmentsListCache();
   });
 
   it('loads departments through the dedicated departments module', async () => {
@@ -1245,6 +1247,40 @@ describe('departmentsAPI', () => {
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/departments', {
       params: { search: 'ops' },
+    });
+  });
+
+  it('reuses cached departments list within ttl for repeated default requests', async () => {
+    const { departmentsAPI } = await import('./departments');
+    apiClientMock.get.mockResolvedValue({ data: { items: [{ id: 'dept-1', name: 'Ops' }] } });
+
+    const first = await departmentsAPI.list();
+    const second = await departmentsAPI.list();
+
+    expect(first).toEqual({ items: [{ id: 'dept-1', name: 'Ops' }] });
+    expect(second).toEqual(first);
+    expect(apiClientMock.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('bypasses departments cache when force refresh is requested', async () => {
+    const { departmentsAPI } = await import('./departments');
+
+    await departmentsAPI.list();
+    await departmentsAPI.list({ force: true });
+
+    expect(apiClientMock.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('invalidates departments cache after manager updates and sync actions', async () => {
+    const { departmentsAPI } = await import('./departments');
+
+    await departmentsAPI.list();
+    await departmentsAPI.setManagers('ops team', [1, 2]);
+    await departmentsAPI.list();
+
+    expect(apiClientMock.get).toHaveBeenCalledTimes(2);
+    expect(apiClientMock.put).toHaveBeenCalledWith('/departments/ops%20team/managers', {
+      manager_user_ids: [1, 2],
     });
   });
 

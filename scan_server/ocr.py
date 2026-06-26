@@ -8,7 +8,10 @@ from typing import List
 
 logger = logging.getLogger(__name__)
 
-MAX_RENDERED_PAGE_PIXELS = 40_000_000
+# ~16M pixels ~= 48-64 MB raw RGB per rendered page before PNG/Tesseract copies.
+MAX_RENDERED_PAGE_PIXELS = 16_000_000
+# Skip OCR for absurd page boxes (malformed PDFs can report thousands of cm).
+MAX_PAGE_DIMENSION_POINTS = 5_000.0
 
 try:
     import fitz  # type: ignore
@@ -75,6 +78,17 @@ def _render_pdf_pages(pdf_bytes: bytes, max_pages: int, dpi: int) -> List[bytes]
             for idx in range(total):
                 page = doc.load_page(idx)
                 rect = page.rect
+                if (
+                    float(rect.width) > MAX_PAGE_DIMENSION_POINTS
+                    or float(rect.height) > MAX_PAGE_DIMENSION_POINTS
+                ):
+                    logger.warning(
+                        "PDF page %d skipped for OCR: page box too large (%.1f x %.1f pt)",
+                        idx,
+                        float(rect.width),
+                        float(rect.height),
+                    )
+                    continue
                 effective_zoom = _cap_zoom_for_max_pixels(
                     width_points=float(rect.width),
                     height_points=float(rect.height),

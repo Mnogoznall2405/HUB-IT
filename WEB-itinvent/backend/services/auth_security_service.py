@@ -528,6 +528,10 @@ class AuthSecurityService:
     ) -> dict[str, Any]:
         session_id = uuid.uuid4().hex
         session_expires = _now_utc() + self._refresh_ttl()
+        trusted_device_id: str | None = None
+        raw_device_id = str(device_id or "").strip()
+        if raw_device_id.startswith("trusted:"):
+            trusted_device_id = raw_device_id.split(":", 1)[1].strip() or None
         session_service.create_session(
             session_id=session_id,
             user_id=int(user.get("id") or 0),
@@ -536,6 +540,7 @@ class AuthSecurityService:
             ip_address=str(challenge.get("ip_address") or ""),
             user_agent=str(challenge.get("user_agent") or ""),
             expires_at=session_expires.isoformat(),
+            trusted_device_id=trusted_device_id,
         )
         auth_source = str(user.get("auth_source") or "local").strip().lower() or "local"
         password_enc = str(challenge.get("password_enc") or "").strip()

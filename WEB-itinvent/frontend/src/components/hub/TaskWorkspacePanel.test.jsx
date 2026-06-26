@@ -62,6 +62,7 @@ const task = {
     can_review: false,
     can_upload_files: true,
     can_update_checklist: true,
+    can_reopen: false,
   },
 };
 
@@ -158,7 +159,7 @@ describe('TaskWorkspacePanel', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Изменить' }));
 
     await waitFor(() => {
-      expect(hubAPI.getAssignees).toHaveBeenCalledTimes(1);
+      expect(hubAPI.getAssignees).toHaveBeenCalledWith({ ids: '2' });
       expect(hubAPI.getControllers).toHaveBeenCalledTimes(1);
       expect(departmentsAPI.list).toHaveBeenCalledTimes(1);
       expect(hubAPI.getTaskProjects).toHaveBeenCalledWith({ include_inactive: true });

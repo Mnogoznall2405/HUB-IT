@@ -159,6 +159,7 @@ class AppSessionRecord(AppBase):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    trusted_device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     device_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 

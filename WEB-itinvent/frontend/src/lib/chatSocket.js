@@ -22,7 +22,7 @@ const RECONNECT_DELAYS_MS = [1_000, 2_000, 5_000, 10_000, 20_000, 30_000];
 const RECONNECT_JITTER_RATIO = 0.25;
 const STABLE_CONNECTION_MS = 5_000;
 const MAX_QUEUED_MESSAGES = 100;
-const NON_RECONNECTABLE_CLOSE_CODES = new Set([1008, 4400, 4401, 4403, 4404, 4503]);
+const NON_RECONNECTABLE_CLOSE_CODES = new Set([1008, 4000, 4400, 4401, 4403, 4404, 4503]);
 const VOLATILE_OFFLINE_COMMANDS = new Set(['chat.typing', 'chat.ping']);
 const CONVERSATION_SUBSCRIPTION_COMMANDS = new Set([
   'chat.subscribe_conversation',
@@ -83,6 +83,7 @@ class ChatSocketClient {
     this.missedPongs = 0;
     this.maxMissedPongs = 3;
     this.stableConnectionTimer = null;
+    this.authBlocked = false;
   }
 
   hasActiveOrPendingSocket() {
@@ -217,6 +218,7 @@ class ChatSocketClient {
 
   connect() {
     if (!CHAT_WS_ENABLED || !canUseBrowserSocket()) return;
+    if (this.authBlocked) return;
     if (this.hasActiveOrPendingSocket()) return;
     if (this.reconnectTimer) {
       window.clearTimeout(this.reconnectTimer);
@@ -267,6 +269,9 @@ class ChatSocketClient {
       const closeCode = Number(event?.code || 0);
       const authBlocked = NON_RECONNECTABLE_CLOSE_CODES.has(closeCode);
       const nextStatus = closeCode === 4401 ? 'unauthorized' : closeCode === 4403 ? 'forbidden' : 'disconnected';
+      if (authBlocked) {
+        this.authBlocked = true;
+      }
       this.rejectPendingRequests(new Error(authBlocked ? 'Chat websocket access denied' : 'Chat websocket disconnected'));
       this.setStatus(nextStatus);
       if (!this.manualClose && !authBlocked && this.retainCount > 0) {
@@ -277,6 +282,9 @@ class ChatSocketClient {
 
   close(manual = false) {
     this.manualClose = Boolean(manual);
+    if (manual) {
+      this.authBlocked = false;
+    }
     this.messageQueue = [];
     this.pendingConversationSubscriptions.clear();
     if (this.reconnectTimer) {
@@ -484,6 +492,14 @@ class ChatSocketClient {
     if (this.stableConnectionTimer) {
       window.clearTimeout(this.stableConnectionTimer);
       this.stableConnectionTimer = null;
+    }
+  }
+
+  resetAuthBlock() {
+    this.authBlocked = false;
+    this.reconnectAttempt = 0;
+    if (this.retainCount > 0) {
+      this.connect();
     }
   }
 

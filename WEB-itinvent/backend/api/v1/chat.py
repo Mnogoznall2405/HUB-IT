@@ -18,10 +18,17 @@ from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, Response
 from starlette.websockets import WebSocketState
 
-from backend.api.deps import ensure_user_permission, get_current_database_id, get_current_user_from_websocket, require_permission
+from backend.api.deps import (
+    assert_access_token_still_valid,
+    ensure_user_permission,
+    extract_websocket_access_token,
+    get_current_database_id,
+    get_current_user_from_websocket,
+    require_permission,
+)
+from backend.chat.realtime import ChatWsCommandRateLimiter, chat_realtime
 from backend.ai_chat.schemas import AiBotListResponse, AiConversationStatusResponse
 from backend.chat.db import ChatConfigurationError
-from backend.chat.realtime import chat_realtime
 from backend.chat.realtime_side_effects import publish_message_created_after_send as publish_message_created_after_send_side_effects
 from backend.chat.schemas import (
     ChatConversationAssetsSummaryResponse,
@@ -202,29 +209,11 @@ def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
 CHAT_WS_COMMANDS_PER_SEC = _env_int("CHAT_WS_COMMANDS_PER_SEC", 20, 1, 1000)
 CHAT_WS_COMMAND_BURST = _env_int("CHAT_WS_COMMAND_BURST", 40, 1, 5000)
 CHAT_WS_RATE_LIMIT_MAX_VIOLATIONS = _env_int("CHAT_WS_RATE_LIMIT_MAX_VIOLATIONS", 3, 1, 20)
-CHAT_WS_RATE_LIMIT_RETRY_AFTER_MS = 1000
+CHAT_WS_SESSION_REVALIDATE_COMMAND_INTERVAL = _env_int("CHAT_WS_SESSION_REVALIDATE_COMMAND_INTERVAL", 30, 1, 1000)
+CHAT_WS_SESSION_REVALIDATE_SEC = _env_int("CHAT_WS_SESSION_REVALIDATE_SEC", 60, 5, 3600)
 
-
-class _ChatWsCommandRateLimiter:
-    def __init__(self, *, rate_per_sec: int, burst: int) -> None:
-        self.rate_per_sec = max(1.0, float(rate_per_sec))
-        self.capacity = max(1.0, float(burst))
-        self.tokens = self.capacity
-        self.updated_at = time.monotonic()
-        self.violations = 0
-
-    def allow(self) -> tuple[bool, int]:
-        now = time.monotonic()
-        elapsed = max(0.0, now - self.updated_at)
-        self.updated_at = now
-        self.tokens = min(self.capacity, self.tokens + (elapsed * self.rate_per_sec))
-        if self.tokens >= 1.0:
-            self.tokens -= 1.0
-            return True, 0
-        self.violations += 1
-        missing = max(0.0, 1.0 - self.tokens)
-        retry_after_ms = max(CHAT_WS_RATE_LIMIT_RETRY_AFTER_MS, int((missing / self.rate_per_sec) * 1000.0))
-        return False, retry_after_ms
+# Backward-compatible alias for tests and internal imports.
+_ChatWsCommandRateLimiter = ChatWsCommandRateLimiter
 
 
 def _normalize_text(value: object, default: str = "") -> str:
@@ -2330,37 +2319,22 @@ async def chat_websocket(websocket: WebSocket):
         if first_connection:
             await _publish_presence_updated(int(current_user.id))
 
-        rate_limiter = _ChatWsCommandRateLimiter(
-            rate_per_sec=CHAT_WS_COMMANDS_PER_SEC,
-            burst=CHAT_WS_COMMAND_BURST,
-        )
+        ws_access_token = extract_websocket_access_token(websocket)
+        ws_token_check_counter = 0
+        last_token_check_at = time.monotonic()
         while True:
-            if not _ws_is_connected(websocket):
+            if not _ws_is_connected(websocket) or not chat_realtime.is_connection_registered(connection_id):
                 break
             try:
-                envelope = await websocket.receive_json()
+                raw_message = await websocket.receive_text()
             except WebSocketDisconnect:
                 break
             except RuntimeError as exc:
                 if "WebSocket is not connected" in str(exc):
                     break
                 raise
-            except ValueError:
-                await chat_realtime.send_error(
-                    connection_id,
-                    detail="Invalid websocket payload",
-                    code="invalid_payload",
-                )
-                continue
 
-            message_type = str((envelope or {}).get("type") or "").strip()
-            request_id = str((envelope or {}).get("request_id") or "").strip() or None
-            conversation_id = str((envelope or {}).get("conversation_id") or "").strip() or None
-            payload = (envelope or {}).get("payload")
-            if not isinstance(payload, dict):
-                payload = {}
-
-            allowed, retry_after_ms = rate_limiter.allow()
+            allowed, retry_after_ms, rate_limiter = chat_realtime.allow_ws_command(int(current_user.id))
             if not allowed:
                 chat_realtime.record_rate_limited(connection_id)
                 await chat_realtime.send_to_connection(
@@ -2370,20 +2344,60 @@ async def chat_websocket(websocket: WebSocket):
                         "code": "rate_limited",
                         "retry_after_ms": int(retry_after_ms),
                     },
-                    request_id=request_id,
-                    conversation_id=conversation_id,
                 )
                 logger.warning(
-                    "Chat websocket rate limited: user_id=%s connection_id=%s message_type=%s violations=%s",
+                    "Chat websocket rate limited: user_id=%s connection_id=%s violations=%s",
                     int(current_user.id),
                     connection_id,
-                    message_type or "-",
                     int(rate_limiter.violations),
                 )
                 if int(rate_limiter.violations) >= CHAT_WS_RATE_LIMIT_MAX_VIOLATIONS:
                     await websocket.close(code=1008, reason="chat websocket rate limit exceeded")
                     break
                 continue
+
+            try:
+                envelope = json.loads(raw_message)
+            except (TypeError, ValueError, json.JSONDecodeError):
+                await chat_realtime.send_error(
+                    connection_id,
+                    detail="Invalid websocket payload",
+                    code="invalid_payload",
+                )
+                continue
+
+            if not isinstance(envelope, dict):
+                await chat_realtime.send_error(
+                    connection_id,
+                    detail="Invalid websocket payload",
+                    code="invalid_payload",
+                )
+                continue
+
+            ws_token_check_counter += 1
+            now_monotonic = time.monotonic()
+            if (
+                ws_token_check_counter >= CHAT_WS_SESSION_REVALIDATE_COMMAND_INTERVAL
+                or (now_monotonic - last_token_check_at) >= float(CHAT_WS_SESSION_REVALIDATE_SEC)
+            ):
+                ws_token_check_counter = 0
+                last_token_check_at = now_monotonic
+                try:
+                    await run_in_threadpool(assert_access_token_still_valid, ws_access_token)
+                except HTTPException:
+                    await websocket.close(code=4401, reason="session expired")
+                    break
+                if not current_user.is_active:
+                    await websocket.close(code=4400, reason="inactive user")
+                    break
+
+            message_type = str((envelope or {}).get("type") or "").strip()
+            request_id = str((envelope or {}).get("request_id") or "").strip() or None
+            conversation_id = str((envelope or {}).get("conversation_id") or "").strip() or None
+            payload = (envelope or {}).get("payload")
+            if not isinstance(payload, dict):
+                payload = {}
+
             if message_type not in {"chat.typing", "chat.ping"}:
                 chat_realtime.touch_presence(connection_id)
 
@@ -2590,9 +2604,13 @@ async def chat_websocket(websocket: WebSocket):
                     conversation_id=conversation_id,
                 )
             except Exception as exc:
+                if isinstance(exc, HTTPException):
+                    detail = str(exc.detail or "Command failed")
+                else:
+                    detail = "Command failed"
                 await chat_realtime.send_error(
                     connection_id,
-                    detail=str(getattr(exc, "detail", None) or exc),
+                    detail=detail,
                     code="command_failed",
                     request_id=request_id,
                     conversation_id=conversation_id,

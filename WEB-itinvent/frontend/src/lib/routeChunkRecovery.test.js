@@ -27,4 +27,10 @@ describe('routeChunkRecovery', () => {
     expect(removeItem).toHaveBeenCalledWith(CHUNK_RELOAD_FINGERPRINT_KEY);
     vi.unstubAllGlobals();
   });
+
+  it('detects analytics lazy chunk load failures for F030 recovery', async () => {
+    expect(isRouteChunkLoadError(new Error('Loading chunk recharts failed'))).toBe(true);
+    const { preloadTasksAnalyticsView } = await import('../components/hub/tasks/TasksDataModeRouter');
+    await expect(preloadTasksAnalyticsView()).resolves.toBeTruthy();
+  });
 });

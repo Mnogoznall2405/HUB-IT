@@ -18,6 +18,8 @@ vi.mock('../../lib/chatFeature', () => ({
 
 vi.mock('../../lib/chatSocket', () => ({
   chatSocket: {
+    close: vi.fn(),
+    isOpen: vi.fn(() => true),
     sendMessage: vi.fn(),
   },
 }));
@@ -99,6 +101,7 @@ describe('useChatComposerSending', () => {
       database_id: 'main',
       body_format: 'plain',
     }));
+    expect(chatSocket.close).toHaveBeenCalledTimes(1);
     expect(setSocketStatus).toHaveBeenCalledWith('disconnected');
     expect(applyOutgoingThreadMessage).toHaveBeenNthCalledWith(
       1,

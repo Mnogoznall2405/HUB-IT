@@ -129,6 +129,7 @@ vi.mock('../../api/database', () => ({
 vi.mock('../../lib/chatFeature', () => ({
   CHAT_FEATURE_ENABLED: true,
   CHAT_WS_ENABLED: true,
+  TASK_DISCUSSION_CHAT_ENABLED: false,
 }));
 
 vi.mock('../../lib/chatSocket', () => ({
@@ -170,6 +171,90 @@ vi.mock('./ToastHistoryList', () => ({
 }));
 
 import MainLayout from './MainLayout';
+
+const HUB_POLL_UNREAD_COUNTS = {
+  notifications_unread_total: 1,
+  announcements_unread: 0,
+  announcements_ack_pending: 0,
+  tasks_open_total: 1,
+  tasks_open: 1,
+  tasks_new: 1,
+  tasks_assignee_open: 1,
+  tasks_created_open: 0,
+  tasks_controller_open: 0,
+  tasks_review_required: 0,
+  tasks_overdue: 0,
+  tasks_with_unread_comments: 0,
+};
+
+const HUB_POLL_NEW_ITEM = {
+  id: 'hub-1',
+  title: 'Новая задача',
+  body: 'Добавление данных',
+  entity_type: 'task',
+  entity_id: 'task-1',
+  created_at: '2026-03-21T10:00:02Z',
+  unread: 1,
+};
+
+const HUB_POLL_LEGACY_ITEM = {
+  id: 'hub-read-legacy',
+  title: 'Read legacy item',
+  body: 'Should not stay in bell inbox',
+  entity_type: 'task',
+  entity_id: 'task-read',
+  created_at: '2026-03-21T09:55:00Z',
+  unread: 0,
+};
+
+function installHubPollSequenceMock() {
+  let pollCalls = 0;
+
+  mockApiGet.mockImplementation(async (url, options = {}) => {
+    const params = options?.params || {};
+    if (url === '/database/list') {
+      return { data: [{ id: 'default', name: 'Основная БД' }] };
+    }
+    if (url === '/database/current') {
+      return { data: { id: 'default', name: 'Основная БД', locked: false } };
+    }
+    if (url === '/hub/notifications/unread-counts') {
+      return {
+        data: {
+          ...HUB_POLL_UNREAD_COUNTS,
+          notifications_unread_total: 0,
+        },
+      };
+    }
+    if (url === '/hub/notifications/poll') {
+      if (params.unread_only) {
+        return {
+          data: {
+            items: [HUB_POLL_NEW_ITEM],
+            unread_counts: HUB_POLL_UNREAD_COUNTS,
+          },
+        };
+      }
+      pollCalls += 1;
+      return {
+        data: {
+          items: pollCalls >= 2 ? [HUB_POLL_NEW_ITEM] : [HUB_POLL_LEGACY_ITEM],
+          unread_counts: HUB_POLL_UNREAD_COUNTS,
+        },
+      };
+    }
+    return { data: {} };
+  });
+}
+
+async function advanceHubPollInterval() {
+  await act(async () => {
+    vi.advanceTimersByTime(20_000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
 
 function installMatchMedia({ mobile = false, windowControlsOverlay = false } = {}) {
   const previousMatchMedia = window.matchMedia;
@@ -218,7 +303,6 @@ function mockElementHeightsByTestId(heightsByTestId) {
 
 describe('MainLayout hub Windows notifications', () => {
   let visibilityState = 'visible';
-  let pollCallCount = 0;
   let notificationPermission = 'granted';
   let notificationInstances = [];
 
@@ -228,7 +312,6 @@ describe('MainLayout hub Windows notifications', () => {
     window.localStorage.setItem(WINDOWS_NOTIFICATIONS_ENABLED_KEY, '1');
     window.localStorage.setItem(WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY, '1');
     visibilityState = 'hidden';
-    pollCallCount = 0;
     notificationPermission = 'granted';
     notificationInstances = [];
     mockHasPermission.mockReset();
@@ -297,6 +380,9 @@ describe('MainLayout hub Windows notifications', () => {
     });
 
     window.HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+    window.Audio = vi.fn().mockImplementation(() => ({
+      play: vi.fn().mockResolvedValue(undefined),
+    }));
 
     class MockNotification {
       constructor(title, options) {
@@ -388,32 +474,50 @@ describe('MainLayout hub Windows notifications', () => {
             },
           };
         }
-        pollCallCount += 1;
-        return {
-          data: {
-            items: pollCallCount === 1
-              ? [
-                {
-                  id: 'hub-read-legacy',
-                  title: 'Read legacy item',
-                  body: 'Should not stay in bell inbox',
-                  entity_type: 'task',
-                  entity_id: 'task-read',
-                  created_at: '2026-03-21T09:55:00Z',
-                  unread: 0,
-                },
-              ]
-              : [
+        if (params.since) {
+          return {
+            data: {
+              items: [
                 {
                   id: 'hub-1',
                   title: 'Новая задача',
                   body: 'Добавление данных',
                   entity_type: 'task',
                   entity_id: 'task-1',
-                  created_at: `2026-03-21T10:00:0${pollCallCount}Z`,
+                  created_at: '2026-03-21T10:00:02Z',
                   unread: 1,
                 },
               ],
+              unread_counts: {
+                notifications_unread_total: 1,
+                announcements_unread: 0,
+                announcements_ack_pending: 0,
+                tasks_open_total: 1,
+                tasks_open: 1,
+                tasks_new: 1,
+                tasks_assignee_open: 1,
+                tasks_created_open: 0,
+                tasks_controller_open: 0,
+                tasks_review_required: 0,
+                tasks_overdue: 0,
+                tasks_with_unread_comments: 0,
+              },
+            },
+          };
+        }
+        return {
+          data: {
+            items: [
+              {
+                id: 'hub-read-legacy',
+                title: 'Read legacy item',
+                body: 'Should not stay in bell inbox',
+                entity_type: 'task',
+                entity_id: 'task-read',
+                created_at: '2026-03-21T09:55:00Z',
+                unread: 0,
+              },
+            ],
             unread_counts: {
               notifications_unread_total: 1,
               announcements_unread: 0,
@@ -440,6 +544,8 @@ describe('MainLayout hub Windows notifications', () => {
   });
 
   it('keeps polling in a hidden tab and opens a deep-linked system notification for new hub items', async () => {
+    installHubPollSequenceMock();
+
     render(
       <MainLayout>
         <div>Child content</div>
@@ -458,11 +564,7 @@ describe('MainLayout hub Windows notifications', () => {
       },
     });
 
-    await act(async () => {
-      vi.advanceTimersByTime(20_000);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await advanceHubPollInterval();
 
     expect(notificationInstances).toHaveLength(1);
     expect(mockMarkHubNotificationsSeen).toHaveBeenCalledWith(['hub-1']);
@@ -543,6 +645,7 @@ describe('MainLayout hub Windows notifications', () => {
 
   it('keeps polling task notifications for users with tasks access but without dashboard access', async () => {
     mockHasPermission.mockImplementation((permission) => permission === 'tasks.read');
+    installHubPollSequenceMock();
 
     render(
       <MainLayout>
@@ -555,11 +658,7 @@ describe('MainLayout hub Windows notifications', () => {
       await Promise.resolve();
     });
 
-    await act(async () => {
-      vi.advanceTimersByTime(20_000);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await advanceHubPollInterval();
 
     const requestedUrls = mockApiGet.mock.calls.map(([url]) => url);
     expect(requestedUrls).toContain('/hub/notifications/poll');

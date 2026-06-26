@@ -37,6 +37,34 @@ _CHAT_WS_MAX_CONNECTIONS_PER_USER = max(1, int(str(os.getenv("CHAT_WS_MAX_CONNEC
 _TYPING_STARTED_THROTTLE_SEC = max(1.0, float(str(os.getenv("CHAT_TYPING_STARTED_THROTTLE_SEC", "2") or "2").strip() or "2"))
 _TYPING_STATE_TTL_SEC = max(2.0, float(str(os.getenv("CHAT_TYPING_STATE_TTL_SEC", "5") or "5").strip() or "5"))
 _PRESENCE_TOUCH_THROTTLE_SEC = max(1.0, float(str(os.getenv("CHAT_PRESENCE_TOUCH_THROTTLE_SEC", "15") or "15").strip() or "15"))
+_CHAT_WS_COMMANDS_PER_SEC = max(1, int(str(os.getenv("CHAT_WS_COMMANDS_PER_SEC", "20") or "20").strip() or "20"))
+_CHAT_WS_COMMAND_BURST = max(1, int(str(os.getenv("CHAT_WS_COMMAND_BURST", "40") or "40").strip() or "40"))
+CHAT_WS_RATE_LIMIT_RETRY_AFTER_MS = 1000
+
+
+class ChatWsCommandRateLimiter:
+    def __init__(self, *, rate_per_sec: int, burst: int) -> None:
+        self.rate_per_sec = max(1.0, float(rate_per_sec))
+        self.capacity = max(1.0, float(burst))
+        self.tokens = self.capacity
+        self.updated_at = time.monotonic()
+        self.violations = 0
+
+    def allow(self) -> tuple[bool, int]:
+        now = time.monotonic()
+        elapsed = max(0.0, now - self.updated_at)
+        self.updated_at = now
+        self.tokens = min(self.capacity, self.tokens + (elapsed * self.rate_per_sec))
+        if self.tokens >= 1.0:
+            self.tokens -= 1.0
+            return True, 0
+        self.violations += 1
+        missing = max(0.0, 1.0 - self.tokens)
+        retry_after_ms = max(
+            CHAT_WS_RATE_LIMIT_RETRY_AFTER_MS,
+            int((missing / self.rate_per_sec) * 1000.0),
+        )
+        return False, retry_after_ms
 
 
 def _utc_now() -> datetime:
@@ -288,6 +316,7 @@ class ChatRealtimeManager:
         self._ws_rate_limited_count = 0
         self._ws_rate_limited_connection_ids: set[str] = set()
         self._typing_started_sent_at: dict[tuple[int, str], float] = {}
+        self._ws_rate_limiters_by_user: dict[int, ChatWsCommandRateLimiter] = {}
         self._redis_bus = ChatRealtimeRedisBus(self)
 
     @property
@@ -359,18 +388,54 @@ class ChatRealtimeManager:
         return connection_id, first_connection
 
     async def _evict_connection(self, connection_id: str, *, reason: str = "connection replaced") -> None:
+        await self.disconnect_connection(
+            connection_id,
+            close_code=4000,
+            close_reason=reason,
+        )
+
+    def is_connection_registered(self, connection_id: str) -> bool:
         normalized_connection_id = str(connection_id or "").strip()
         if not normalized_connection_id:
-            return
+            return False
+        with self._lock:
+            return normalized_connection_id in self._connections
+
+    def allow_ws_command(self, user_id: int) -> tuple[bool, int, ChatWsCommandRateLimiter]:
+        normalized_user_id = int(user_id)
+        with self._lock:
+            limiter = self._ws_rate_limiters_by_user.get(normalized_user_id)
+            if limiter is None:
+                limiter = ChatWsCommandRateLimiter(
+                    rate_per_sec=_CHAT_WS_COMMANDS_PER_SEC,
+                    burst=_CHAT_WS_COMMAND_BURST,
+                )
+                self._ws_rate_limiters_by_user[normalized_user_id] = limiter
+        allowed, retry_after_ms = limiter.allow()
+        return allowed, retry_after_ms, limiter
+
+    async def disconnect_connection(
+        self,
+        connection_id: str,
+        *,
+        close_code: int = 1000,
+        close_reason: str = "",
+    ) -> dict:
+        normalized_connection_id = str(connection_id or "").strip()
+        websocket_to_close = None
         with self._lock:
             connection = self._connections.get(normalized_connection_id)
-        if connection is None:
-            return
-        try:
-            await connection.websocket.close(code=4000, reason=reason[:120])
-        except Exception:
-            pass
-        self.disconnect(normalized_connection_id)
+            if connection is not None:
+                websocket_to_close = connection.websocket
+        if websocket_to_close is not None:
+            try:
+                await websocket_to_close.close(
+                    code=int(close_code),
+                    reason=str(close_reason or "")[:120],
+                )
+            except Exception:
+                pass
+        return self.disconnect(normalized_connection_id)
 
     def disconnect(self, connection_id: str) -> dict:
         normalized_connection_id = str(connection_id or "").strip()
@@ -393,6 +458,7 @@ class ChatRealtimeManager:
             if last_connection:
                 self._user_connection_ids.pop(int(connection.user_id), None)
                 self._last_seen_by_user_id[int(connection.user_id)] = _utc_now()
+                self._ws_rate_limiters_by_user.pop(int(connection.user_id), None)
         if connection.sender_task is not None:
             connection.sender_task.cancel()
         asyncio.create_task(
@@ -547,7 +613,11 @@ class ChatRealtimeManager:
         )
         if not await self._enqueue_envelope(connection, envelope, durable=durable, volatile_key=volatile_key):
             self._slow_consumer_disconnects += 1
-            self.disconnect(normalized_connection_id)
+            await self.disconnect_connection(
+                normalized_connection_id,
+                close_code=1008,
+                close_reason="slow consumer",
+            )
 
     async def send_command_ok(
         self,
@@ -860,7 +930,11 @@ class ChatRealtimeManager:
             failed_connection_ids.append(connection.id)
         for connection_id in failed_connection_ids:
             self._slow_consumer_disconnects += 1
-            self.disconnect(connection_id)
+            await self.disconnect_connection(
+                connection_id,
+                close_code=1008,
+                close_reason="slow consumer",
+            )
 
     async def _enqueue_envelope(
         self,
@@ -905,7 +979,11 @@ class ChatRealtimeManager:
                     str((envelope or {}).get("type") or "").strip() if isinstance(envelope, dict) else "-",
                     exc.__class__.__name__,
                 )
-                self.disconnect(connection.id)
+                await self.disconnect_connection(
+                    connection.id,
+                    close_code=1011,
+                    close_reason="send failed",
+                )
                 return
             finally:
                 if volatile_key:

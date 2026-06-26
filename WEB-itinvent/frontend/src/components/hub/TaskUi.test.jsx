@@ -245,4 +245,47 @@ describe('TaskUi helpers', () => {
     expect(screen.queryByText('Что сделать')).not.toBeInTheDocument();
     expect(screen.queryByText('Проверить результат')).not.toBeInTheDocument();
   });
+
+  it('renders observer badge and observer chips in task context', () => {
+    const { unmount: unmountHeader } = render(
+      <ThemeProvider theme={theme}>
+        <TaskDetailHeader
+          task={{ ...sampleTask, is_observer: true }}
+          statusMeta={{ label: 'В работе', color: '#d97706', bg: 'rgba(217,119,6,0.16)' }}
+          priorityMeta={{ value: 'normal', label: 'Обычный', dotColor: '#64748b' }}
+          transferLabel=""
+          isTransferReminder={false}
+          ui={ui}
+          theme={theme}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText('Наблюдатель')).toBeInTheDocument();
+    unmountHeader();
+
+    render(
+      <ThemeProvider theme={theme}>
+        <TaskContextSidebar
+          task={{
+            ...sampleTask,
+            observers: [
+              { user_id: 4, full_name: 'Наблюдатель Н.Н.', username: 'observer' },
+            ],
+          }}
+          ui={ui}
+          theme={theme}
+          statusMeta={{ label: 'В работе', color: '#d97706', bg: 'rgba(217,119,6,0.16)' }}
+          priorityMeta={{ value: 'normal', label: 'Обычный', dotColor: '#64748b' }}
+          transferLabel=""
+          isTransferReminder={false}
+          formatDateTime={(value) => value || '-'}
+          actionState={{ passive: true, stepLabel: 'Просмотр', hint: 'Только просмотр' }}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText('Наблюдатели')).toBeInTheDocument();
+    expect(screen.getByText('Наблюдатель Н.Н.')).toBeInTheDocument();
+  });
 });

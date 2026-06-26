@@ -11,11 +11,19 @@ export const hubTasksAPI = {
     return response.data;
   },
 
+  /**
+   * @param {object} payload
+   * @param {number[]} [payload.observer_user_ids]
+   */
   createTask: async (payload) => {
     const response = await apiClient.post('/hub/tasks', payload);
     return response.data;
   },
 
+  /**
+   * @param {object} payload
+   * @param {number[]} [payload.observer_user_ids]
+   */
   updateTask: async (taskId, payload) => {
     const response = await apiClient.patch(`/hub/tasks/${encodeURIComponent(taskId)}`, payload);
     return response.data;
@@ -47,6 +55,11 @@ export const hubTasksAPI = {
 
   reviewTask: async (taskId, payload) => {
     const response = await apiClient.post(`/hub/tasks/${encodeURIComponent(taskId)}/review`, payload);
+    return response.data;
+  },
+
+  reopenTask: async (taskId, payload = {}) => {
+    const response = await apiClient.post(`/hub/tasks/${encodeURIComponent(taskId)}/reopen`, payload);
     return response.data;
   },
 };

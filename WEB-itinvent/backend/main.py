@@ -36,6 +36,10 @@ from backend.services.auth_runtime_store_service import auth_runtime_store_servi
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
 from backend.services.my_files_service import my_files_worker
+from backend.services.task_due_notification_worker import (
+    background_enabled as task_due_notification_background_enabled,
+    background_task_due_notification_loop,
+)
 from backend.services.request_metrics_service import request_metrics_middleware
 from backend.json_db.manager import validate_json_runtime_storage
 from backend.rate_limit import limiter, rate_limit_exception, rate_limit_exception_handler, internal_ip_bypass_middleware
@@ -60,6 +64,7 @@ LDAP_SYNC_BACKGROUND_ENABLED = _env_flag("LDAP_SYNC_BACKGROUND_ENABLED", "1")
 LDAP_APP_USER_SYNC_ENABLED = _env_flag("LDAP_APP_USER_SYNC_ENABLED", "1")
 MFU_RUNTIME_MONITOR_ENABLED = _env_flag("MFU_RUNTIME_MONITOR_ENABLED", "1")
 ADDRESS_BOOK_SYNC_ENABLED = _env_flag("ADDRESS_BOOK_SYNC_ENABLED", "0")
+TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED", "1")
 SUPPRESS_NOISY_ACCESS_LOGS = _env_flag("SUPPRESS_NOISY_ACCESS_LOGS", "1")
 ANYIO_THREAD_TOKENS = _env_positive_int("ANYIO_THREAD_TOKENS", 200, 40)
 
@@ -160,12 +165,15 @@ async def lifespan(app: FastAPI):
     sync_task: asyncio.Task | None = None
     ad_app_user_sync_task: asyncio.Task | None = None
     address_book_sync_task: asyncio.Task | None = None
+    task_due_notification_task: asyncio.Task | None = None
     if LDAP_SYNC_BACKGROUND_ENABLED:
         sync_task = asyncio.create_task(background_ad_sync_loop())
     if LDAP_APP_USER_SYNC_ENABLED:
         ad_app_user_sync_task = asyncio.create_task(background_ad_app_user_sync_loop())
     if ADDRESS_BOOK_SYNC_ENABLED:
         address_book_sync_task = asyncio.create_task(background_address_book_sync_loop())
+    if TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled():
+        task_due_notification_task = asyncio.create_task(background_task_due_notification_loop())
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.start()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
@@ -180,6 +188,7 @@ async def lifespan(app: FastAPI):
         f" address_book_sync={ADDRESS_BOOK_SYNC_ENABLED}"
         f" mfu_monitor={MFU_RUNTIME_MONITOR_ENABLED}"
         f" mail_notifications={MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED}"
+        f" task_due_notifications={TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled()}"
     )
     print(f"AnyIO thread tokens: {thread_tokens}")
     print(
@@ -251,6 +260,8 @@ async def lifespan(app: FastAPI):
         ad_app_user_sync_task.cancel()
     if address_book_sync_task is not None:
         address_book_sync_task.cancel()
+    if task_due_notification_task is not None:
+        task_due_notification_task.cancel()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.stop()
     await my_files_worker.stop()
@@ -278,6 +289,11 @@ async def lifespan(app: FastAPI):
     if address_book_sync_task is not None:
         try:
             await address_book_sync_task
+        except asyncio.CancelledError:
+            pass
+    if task_due_notification_task is not None:
+        try:
+            await task_due_notification_task
         except asyncio.CancelledError:
             pass
 

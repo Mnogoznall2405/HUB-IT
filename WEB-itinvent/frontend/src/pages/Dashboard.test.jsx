@@ -217,6 +217,8 @@ describe('Dashboard today page', () => {
     expect(screen.getByTestId('dashboard-primary-action')).toHaveTextContent('Создать задачу');
     expect(screen.getByRole('button', { name: 'Открыть чат' })).toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Написать письмо' })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('dashboard-primary-action'));
+    expect(await screen.findByTestId('location')).toHaveTextContent('/tasks?create=1');
   });
 
   it('collapses attention into a calm status bar when no action is required', async () => {

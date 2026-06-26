@@ -9,11 +9,14 @@ import re
 import shutil
 import sqlite3
 import uuid
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import time
+from urllib.parse import quote
 
-from threading import Lock, RLock
+from threading import BoundedSemaphore, Lock, RLock
 from typing import Any, Callable, Optional
 
 from sqlalchemy import inspect
@@ -35,11 +38,17 @@ from backend.services.access_policy_service import (
     user_is_department_member,
 )
 from backend.services.authorization_service import PERM_TASKS_REVIEW, authorization_service
-from backend.services.department_service import DEPARTMENT_MANAGER_ROLE, department_service
+from backend.services.department_service import DEPARTMENT_MANAGER_ROLE, DEPARTMENT_MEMBER_ROLE, department_service
 from backend.services.notification_preferences_service import notification_preferences_service
+from backend.services.task_email_service import task_email_service
+from backend.services.task_email_templates import build_overdue_digest_email, build_task_email_content
 from backend.services.user_service import user_service
 
 logger = logging.getLogger(__name__)
+
+
+_TASK_EMAIL_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="task-email")
+_TASK_EMAIL_DISPATCH_SLOT = BoundedSemaphore(1)
 
 
 def _utc_now_iso() -> str:
@@ -55,6 +64,35 @@ def _safe_file_name(value: str) -> str:
     base = Path(str(value or "").strip()).name
     base = re.sub(r"[^A-Za-z0-9._\-\u0400-\u04FF ]+", "_", base)
     return base.strip() or "file.bin"
+
+
+def _normalize_email_deadline_remind_hours(value: Any) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
+        return None
+    try:
+        hours = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("email_deadline_remind_hours must be an integer between 0 and 168") from exc
+    if hours == 0:
+        return 0
+    if 1 <= hours <= 168:
+        return hours
+    raise ValueError("email_deadline_remind_hours must be between 0 and 168")
+
+
+def _resolve_email_deadline_remind_hours(task: dict[str, Any]) -> float | None:
+    raw = task.get("email_deadline_remind_hours")
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        return task_email_service.deadline_soon_hours()
+    try:
+        hours = int(raw)
+    except (TypeError, ValueError):
+        return task_email_service.deadline_soon_hours()
+    if hours <= 0:
+        return None
+    return float(hours)
 
 
 _HUB_REQUIRED_COLUMNS = {
@@ -107,6 +145,7 @@ _HUB_REQUIRED_COLUMNS = {
         "description",
         "status",
         "due_at",
+        "email_deadline_remind_hours",
         "assignee_user_id",
         "assignee_username",
         "assignee_full_name",
@@ -133,6 +172,7 @@ _HUB_REQUIRED_COLUMNS = {
         "completed_at_source",
         "department_id",
         "visibility_scope",
+        "observer_user_ids",
     },
     "hub_task_projects": {"id", "name", "code", "description", "is_active", "created_at", "updated_at"},
     "hub_task_objects": {"id", "project_id", "name", "code", "description", "is_active", "created_at", "updated_at"},
@@ -182,13 +222,79 @@ _HUB_REQUIRED_COLUMNS = {
         "created_at",
     },
     "hub_notification_reads": {"notification_id", "user_id", "read_at"},
+    "hub_task_email_outbox": {
+        "id",
+        "dedupe_key",
+        "task_id",
+        "recipient_user_id",
+        "recipient_email",
+        "event_type",
+        "subject",
+        "body_text",
+        "body_html",
+        "status",
+        "attempt_count",
+        "available_at",
+        "created_at",
+        "updated_at",
+        "sent_at",
+        "last_error",
+    },
 }
+_TASK_LIST_SELECT_COLUMNS = (
+    "id",
+    "title",
+    "description",
+    "status",
+    "due_at",
+    "email_deadline_remind_hours",
+    "priority",
+    "checklist_items",
+    "assignee_user_id",
+    "assignee_username",
+    "assignee_full_name",
+    "controller_user_id",
+    "controller_username",
+    "controller_full_name",
+    "created_by_user_id",
+    "created_by_username",
+    "created_by_full_name",
+    "created_at",
+    "updated_at",
+    "submitted_at",
+    "reviewed_at",
+    "reviewer_user_id",
+    "reviewer_username",
+    "reviewer_full_name",
+    "review_comment",
+    "project_id",
+    "object_id",
+    "protocol_date",
+    "completed_at",
+    "completed_at_source",
+    "department_id",
+    "visibility_scope",
+    "observer_user_ids",
+)
+_TASK_VISIBILITY_SELECT_COLUMNS = (
+    "id",
+    "assignee_user_id",
+    "created_by_user_id",
+    "controller_user_id",
+    "observer_user_ids",
+    "department_id",
+    "visibility_scope",
+)
+_DEPARTMENT_SCOPE_SQL_SCAN_CAP = 2000
+_DEPARTMENT_SCOPE_FETCH_BATCH = 100
 _HUB_REQUIRED_INDEXES = {
     "hub_announcements": {"idx_hub_announcements_published"},
     "hub_announcement_attachments": {"idx_hub_announcement_attachments_announcement"},
     "hub_tasks": {
         "idx_hub_tasks_assignee",
         "idx_hub_tasks_controller",
+        "idx_hub_tasks_created_by",
+        "idx_hub_tasks_due_at",
         "idx_hub_tasks_project",
         "idx_hub_tasks_object",
         "idx_hub_tasks_protocol_date",
@@ -202,6 +308,7 @@ _HUB_REQUIRED_INDEXES = {
     "hub_task_comments": {"idx_hub_task_comments_task"},
     "hub_task_status_log": {"idx_hub_task_status_log_task"},
     "hub_notifications": {"idx_hub_notifications_recipient"},
+    "hub_task_email_outbox": {"idx_hub_task_email_outbox_status", "uq_hub_task_email_outbox_dedupe"},
 }
 
 
@@ -231,8 +338,20 @@ class HubService:
     _TASK_STATUS_LOG_TABLE = "hub_task_status_log"
     _NOTIF_TABLE = "hub_notifications"
     _NOTIF_READS_TABLE = "hub_notification_reads"
+    _TASK_EMAIL_OUTBOX_TABLE = "hub_task_email_outbox"
     _TASK_STATUSES = {"new", "in_progress", "review", "done"}
     _COMPLETED_AT_SOURCE_VALUES = {"explicit", "reviewed_at", "submitted_at", "updated_at", "backfill"}
+    _TASK_EMAIL_EVENT_TYPES = {
+        "task.assigned",
+        "task.controller_assigned",
+        "task.deadline_changed",
+        "task.submitted",
+        "task.review_required",
+        "task.reviewed",
+        "task.reopened",
+        "task.deadline_soon",
+        "task.observer_added",
+    }
 
     def __init__(self, *, database_url: str | None = None) -> None:
         explicit_database_url = str(database_url or "").strip() or None
@@ -264,6 +383,133 @@ class HubService:
             initialize_app_schema(self._database_url)
         self._ensure_schema()
 
+    @contextmanager
+    def _db_conn(self, *, write: bool = False):
+        if self._use_app_db and not write:
+            with self._connect() as conn:
+                yield conn
+        else:
+            with self._lock, self._connect() as conn:
+                yield conn
+
+    def _task_list_select_sql(self) -> str:
+        columns = ", ".join(_TASK_LIST_SELECT_COLUMNS)
+        return f"SELECT {columns} FROM {self._TASKS_TABLE}"
+
+    def _append_department_scope_visibility_clause(
+        self,
+        *,
+        user: dict[str, Any],
+        where_clauses: list[str],
+        params: list[Any],
+        user_id: int,
+        delegate_owner_ids: list[int],
+    ) -> None:
+        if user_can_manage_tasks_all(user):
+            return
+        normalized_user_id = int(user_id)
+        observer_clause, observer_params = self._observer_membership_clause(normalized_user_id)
+        participant_parts = [
+            "created_by_user_id = ?",
+            "controller_user_id = ?",
+            observer_clause,
+        ]
+        participant_params: list[Any] = [normalized_user_id, normalized_user_id, *observer_params]
+        if delegate_owner_ids:
+            assignee_placeholders = ", ".join(["?"] * (len(delegate_owner_ids) + 1))
+            participant_parts.append(f"assignee_user_id IN ({assignee_placeholders})")
+            participant_params.extend([normalized_user_id, *delegate_owner_ids])
+        else:
+            participant_parts.append("assignee_user_id = ?")
+            participant_params.append(normalized_user_id)
+        participant_sql = "(" + " OR ".join(participant_parts) + ")"
+        department_ids = sorted(
+            department_service.get_user_department_ids(
+                user,
+                roles=[DEPARTMENT_MEMBER_ROLE, DEPARTMENT_MANAGER_ROLE],
+            )
+        )
+        if department_ids:
+            department_placeholders = ", ".join(["?"] * len(department_ids))
+            visibility_sql = (
+                f"(department_id IN ({department_placeholders}) "
+                "AND visibility_scope IN ('department', 'department_managers', 'global'))"
+            )
+            where_clauses.append(f"({participant_sql} OR {visibility_sql})")
+            params.extend([*participant_params, *department_ids])
+        else:
+            where_clauses.append(participant_sql)
+            params.extend(participant_params)
+
+    def _task_visibility_select_sql(self) -> str:
+        columns = ", ".join(_TASK_VISIBILITY_SELECT_COLUMNS)
+        return f"SELECT {columns} FROM {self._TASKS_TABLE}"
+
+    def _task_row_is_viewable_in_department_scope(self, viewer: dict[str, Any], row_dict: dict[str, Any]) -> bool:
+        return can_view_task(
+            viewer,
+            row_dict,
+            participant_user_ids=self._task_viewer_user_ids(row_dict, include_delegates=True),
+        )
+
+    def _collect_department_scope_visible_task_ids(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        viewer: dict[str, Any],
+        where_sql: str,
+        params: list[Any],
+        sort_expr: str,
+        normalized_sort_dir: str,
+        tie_breaker: str,
+    ) -> tuple[list[str], bool]:
+        visible_ids: list[str] = []
+        sql_offset = 0
+        sql_rows_scanned = 0
+        truncated = False
+        while sql_rows_scanned < _DEPARTMENT_SCOPE_SQL_SCAN_CAP:
+            rows = conn.execute(
+                f"""
+                {self._task_visibility_select_sql()}
+                {where_sql}
+                ORDER BY
+                  {sort_expr} {normalized_sort_dir},
+                  {tie_breaker}
+                LIMIT ? OFFSET ?
+                """,
+                tuple([*params, _DEPARTMENT_SCOPE_FETCH_BATCH, sql_offset]),
+            ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                row_dict = dict(row)
+                if self._task_row_is_viewable_in_department_scope(viewer, row_dict):
+                    visible_ids.append(_normalize_text(row_dict["id"]))
+            fetched = len(rows)
+            sql_rows_scanned += fetched
+            sql_offset += fetched
+            if fetched < _DEPARTMENT_SCOPE_FETCH_BATCH:
+                break
+        else:
+            truncated = True
+        return visible_ids, truncated
+
+    def _fetch_task_list_rows_by_ids(self, conn: sqlite3.Connection, task_ids: list[str]) -> list[sqlite3.Row]:
+        normalized_ids = [_normalize_text(item) for item in task_ids if _normalize_text(item)]
+        if not normalized_ids:
+            return []
+        placeholders = ", ".join(["?"] * len(normalized_ids))
+        order_parts = " ".join(f"WHEN ? THEN {index}" for index in range(len(normalized_ids)))
+        rows = conn.execute(
+            f"""
+            {self._task_list_select_sql()}
+            WHERE id IN ({placeholders})
+            ORDER BY CASE id {order_parts} END
+            """,
+            tuple([*normalized_ids, *normalized_ids]),
+        ).fetchall()
+        return list(rows)
+
     def _connect(self):
         if self._use_app_db and self._database_url:
             return SqlAlchemyCompatConnection(
@@ -290,6 +536,7 @@ class HubService:
             self._TASK_STATUS_LOG_TABLE,
             self._NOTIF_TABLE,
             self._NOTIF_READS_TABLE,
+            self._TASK_EMAIL_OUTBOX_TABLE,
         }
 
     def _table_columns(self, conn: sqlite3.Connection, table_name: str) -> set[str]:
@@ -449,6 +696,13 @@ class HubService:
         if "checklist_items" not in cols:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN checklist_items TEXT NOT NULL DEFAULT '[]'")
 
+    def _ensure_task_email_outbox_body_html_column(self, conn: sqlite3.Connection) -> None:
+        cols = self._table_columns(conn, self._TASK_EMAIL_OUTBOX_TABLE)
+        if "body_html" not in cols:
+            conn.execute(
+                f"ALTER TABLE {self._TASK_EMAIL_OUTBOX_TABLE} ADD COLUMN body_html TEXT NOT NULL DEFAULT ''"
+            )
+
     def _ensure_task_extended_columns(self, conn: sqlite3.Connection) -> None:
         columns = self._table_columns(conn, self._TASKS_TABLE)
         if "project_id" not in columns:
@@ -465,6 +719,10 @@ class HubService:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN department_id TEXT NULL")
         if "visibility_scope" not in columns:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN visibility_scope TEXT NOT NULL DEFAULT 'private'")
+        if "email_deadline_remind_hours" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN email_deadline_remind_hours INTEGER NULL")
+        if "observer_user_ids" not in columns:
+            conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN observer_user_ids TEXT NOT NULL DEFAULT '[]'")
         conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_project ON {self._TASKS_TABLE}(project_id, updated_at DESC)"
         )
@@ -479,6 +737,12 @@ class HubService:
         )
         conn.execute(
             f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_department ON {self._TASKS_TABLE}(department_id, updated_at DESC)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_created_by ON {self._TASKS_TABLE}(created_by_user_id, status, updated_at DESC)"
+        )
+        conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{self._TASKS_TABLE}_due_at ON {self._TASKS_TABLE}(due_at)"
         )
         self._backfill_task_completed_tracking(conn)
 
@@ -791,6 +1055,9 @@ class HubService:
                 task_id=normalized_id,
             )
             conn.commit()
+            for participant_id in self._task_participant_user_ids(task, include_delegates=False):
+                if participant_id != user_id:
+                    self._invalidate_unread_counts_cache(participant_id)
             created = conn.execute(f"SELECT * FROM {self._TASK_COMMENTS_TABLE} WHERE id = ?", (comment_id,)).fetchone()
             return dict(created) if created else None
 
@@ -826,6 +1093,7 @@ class HubService:
                 last_seen_at=seen_at,
             )
             conn.commit()
+            self._invalidate_unread_counts_cache(user_id)
             task_row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             if task_row is None:
                 return None
@@ -968,6 +1236,24 @@ class HubService:
                     read_at TEXT NOT NULL,
                     PRIMARY KEY (notification_id, user_id)
                 );
+                CREATE TABLE IF NOT EXISTS {self._TASK_EMAIL_OUTBOX_TABLE} (
+                    id TEXT PRIMARY KEY,
+                    dedupe_key TEXT NOT NULL,
+                    task_id TEXT NULL,
+                    recipient_user_id INTEGER NOT NULL,
+                    recipient_email TEXT NOT NULL,
+                    event_type TEXT NOT NULL,
+                    subject TEXT NOT NULL,
+                    body_text TEXT NOT NULL,
+                    body_html TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    attempt_count INTEGER NOT NULL DEFAULT 0,
+                    available_at TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    sent_at TEXT NULL,
+                    last_error TEXT NOT NULL DEFAULT ''
+                );
                 CREATE INDEX IF NOT EXISTS idx_{self._ANN_TABLE}_published
                     ON {self._ANN_TABLE}(is_active, published_at DESC);
                 CREATE INDEX IF NOT EXISTS idx_{self._ANN_ATTACH_TABLE}_announcement
@@ -980,6 +1266,10 @@ class HubService:
                     ON {self._TASK_COMMENT_READS_TABLE}(task_id, user_id);
                 CREATE INDEX IF NOT EXISTS idx_{self._NOTIF_TABLE}_recipient
                     ON {self._NOTIF_TABLE}(recipient_user_id, created_at DESC);
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_{self._TASK_EMAIL_OUTBOX_TABLE}_dedupe
+                    ON {self._TASK_EMAIL_OUTBOX_TABLE}(dedupe_key);
+                CREATE INDEX IF NOT EXISTS idx_{self._TASK_EMAIL_OUTBOX_TABLE}_status
+                    ON {self._TASK_EMAIL_OUTBOX_TABLE}(status, available_at, created_at);
                 """
             )
             self._ensure_announcement_columns(conn)
@@ -993,6 +1283,7 @@ class HubService:
             self._ensure_task_reviewer_full_name_column(conn)
             self._ensure_task_comments_table(conn)
             self._ensure_task_comment_reads_table(conn)
+            self._ensure_task_email_outbox_body_html_column(conn)
             conn.commit()
 
     @staticmethod
@@ -1205,7 +1496,8 @@ class HubService:
         return [row for row in user_service.list_users() if bool(row.get("is_active", True))]
 
     def _users_by_id(self) -> dict[int, dict[str, Any]]:
-        return {self._as_int(row.get("id")): row for row in self._active_users()}
+        users = self._get_cached_user_directory("active_users", self._active_users)
+        return {self._as_int(row.get("id")): row for row in users}
 
     def _task_delegate_user_ids(self, assignee_user_id: Any) -> list[int]:
         return user_service.get_delegate_user_ids(self._as_int(assignee_user_id))
@@ -1219,6 +1511,96 @@ class HubService:
         if include_delegates:
             participant_ids.update(self._task_delegate_user_ids(task.get("assignee_user_id")))
         return {item for item in participant_ids if item > 0}
+
+    def _task_observer_user_ids(self, task: dict[str, Any]) -> set[int]:
+        raw = task.get("observer_user_ids")
+        if isinstance(raw, str) or raw is None:
+            values = self._json_load_list(raw)
+        elif isinstance(raw, list):
+            values = raw
+        else:
+            values = []
+        return {item for item in self._unique_ints(values)}
+
+    def _task_viewer_user_ids(self, task: dict[str, Any], *, include_delegates: bool = True) -> set[int]:
+        return self._task_participant_user_ids(task, include_delegates=include_delegates) | self._task_observer_user_ids(task)
+
+    def _task_discussion_user_ids(self, task: dict[str, Any], *, include_delegates: bool = True) -> set[int]:
+        return self._task_viewer_user_ids(task, include_delegates=include_delegates)
+
+    def _uses_postgresql(self) -> bool:
+        if not self._use_app_db or not self._database_url:
+            return False
+        try:
+            return str(get_app_engine(self._database_url).dialect.name).lower() == "postgresql"
+        except Exception:
+            return False
+
+    def _observer_membership_clause(self, user_id: int) -> tuple[str, list[Any]]:
+        uid = int(user_id)
+        if self._uses_postgresql():
+            return (
+                "EXISTS (SELECT 1 FROM json_array_elements_text(COALESCE(NULLIF(observer_user_ids, ''), '[]')::json) je WHERE CAST(je AS INTEGER) = ?)",
+                [uid],
+            )
+        return (
+            "EXISTS (SELECT 1 FROM json_each(COALESCE(observer_user_ids, '[]')) je WHERE CAST(je.value AS INTEGER) = ?)",
+            [uid],
+        )
+
+    def _normalize_observer_user_ids(
+        self,
+        values: Any,
+        *,
+        creator_user_id: int = 0,
+        assignee_user_id: int = 0,
+        controller_user_id: int = 0,
+    ) -> list[int]:
+        if isinstance(values, str) or values is None:
+            source = self._json_load_list(values)
+        elif isinstance(values, list):
+            source = values
+        else:
+            source = []
+        exclude = {
+            self._as_int(creator_user_id),
+            self._as_int(assignee_user_id),
+            self._as_int(controller_user_id),
+        }
+        out: list[int] = []
+        for item in self._unique_ints(source):
+            if item in exclude:
+                continue
+            user = user_service.get_by_id(item)
+            if not user or not bool(user.get("is_active", True)):
+                continue
+            out.append(item)
+        return out
+
+    def _serialize_observer_user_ids(self, values: Any, **kwargs: Any) -> str:
+        return self._serialize_json_list(self._normalize_observer_user_ids(values, **kwargs))
+
+    def _enrich_task_observer_fields(
+        self,
+        item: dict[str, Any],
+        *,
+        users_by_id: Optional[dict[int, dict[str, Any]]] = None,
+    ) -> dict[str, Any]:
+        observer_ids = self._normalize_observer_user_ids(item.get("observer_user_ids"))
+        item["observer_user_ids"] = observer_ids
+        directory = users_by_id if users_by_id is not None else self._users_by_id()
+        observers: list[dict[str, Any]] = []
+        for observer_id in observer_ids:
+            user = directory.get(observer_id) or user_service.get_by_id(observer_id) or {}
+            observers.append(
+                {
+                    "user_id": observer_id,
+                    "username": _normalize_text(user.get("username")),
+                    "full_name": _normalize_text(user.get("full_name")) or _normalize_text(user.get("username")),
+                }
+            )
+        item["observers"] = observers
+        return item
 
     def _get_task_project(self, conn: sqlite3.Connection, project_id: Any) -> Optional[dict[str, Any]]:
         normalized_id = _normalize_text(project_id)
@@ -1274,7 +1656,7 @@ class HubService:
         return can_view_task(
             user,
             task,
-            participant_user_ids=self._task_participant_user_ids(task, include_delegates=True),
+            participant_user_ids=self._task_viewer_user_ids(task, include_delegates=True),
         )
 
     def _task_access_or_raise(
@@ -1489,6 +1871,7 @@ class HubService:
             and bool(completed_at)
             and self._parse_iso_datetime(item.get("due_at")) is None
         )
+        item["observer_user_ids"] = self._normalize_observer_user_ids(item.get("observer_user_ids"))
         return item
 
     def _task_to_list_item(
@@ -1624,7 +2007,8 @@ class HubService:
             and bool(completed_at)
             and self._parse_iso_datetime(item.get("due_at")) is None
         )
-        return item
+        item["observer_user_ids"] = self._normalize_observer_user_ids(item.get("observer_user_ids"))
+        return self._enrich_task_observer_fields(item)
 
     def _announcement_users_for_roles(self, roles: list[str]) -> list[dict[str, Any]]:
         allowed_roles = {item for item in self._unique_texts(roles) if item}
@@ -1848,6 +2232,333 @@ class HubService:
         )
         return normalized_attachment_id
 
+    @staticmethod
+    def _task_email_recipient_email(user: dict[str, Any] | None) -> str:
+        if not isinstance(user, dict):
+            return ""
+        return _normalize_text(user.get("mailbox_email")) or _normalize_text(user.get("email"))
+
+    def _task_email_url(self, task_id: Any) -> str:
+        normalized_id = _normalize_text(task_id)
+        if not normalized_id:
+            return ""
+        path = f"/tasks?task={quote(normalized_id)}"
+        base_url = _normalize_text(task_email_service.app_url()).rstrip("/")
+        return f"{base_url}{path}" if base_url else path
+
+    def _format_task_email_due(self, due_at: Any) -> str:
+        parsed = self._parse_iso_datetime(due_at)
+        if parsed is None:
+            return "Без срока"
+        return parsed.astimezone().strftime("%d.%m.%Y %H:%M")
+
+    def _build_task_email_content(
+        self,
+        *,
+        event_type: str,
+        task: dict[str, Any],
+        notification_title: str = "",
+        notification_body: str = "",
+    ) -> tuple[str, str, str]:
+        task_id = _normalize_text(task.get("id"))
+        link = self._task_email_url(task_id)
+        return build_task_email_content(
+            event_type=event_type,
+            task=task,
+            link=link,
+            notification_title=notification_title,
+            notification_body=notification_body,
+            format_due=self._format_task_email_due,
+        )
+
+    def _enqueue_task_email(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        dedupe_key: str,
+        task_id: str,
+        recipient_user_id: int,
+        recipient_email: str,
+        event_type: str,
+        subject: str,
+        body_text: str,
+        body_html: str = "",
+        available_at: str | None = None,
+    ) -> bool:
+        if not task_email_service.is_enabled():
+            return False
+        normalized_email = _normalize_text(recipient_email)
+        if not task_email_service.is_valid_recipient(normalized_email):
+            return False
+        normalized_dedupe = _normalize_text(dedupe_key)
+        if not normalized_dedupe:
+            return False
+        now_iso = _utc_now_iso()
+        conn.execute(
+            f"""
+            INSERT OR IGNORE INTO {self._TASK_EMAIL_OUTBOX_TABLE}
+            (id, dedupe_key, task_id, recipient_user_id, recipient_email, event_type, subject, body_text, body_html, status, attempt_count, available_at, created_at, updated_at, sent_at, last_error)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, NULL, '')
+            """,
+            (
+                str(uuid.uuid4()),
+                normalized_dedupe,
+                _normalize_text(task_id) or None,
+                self._as_int(recipient_user_id),
+                normalized_email,
+                _normalize_text(event_type),
+                _normalize_text(subject),
+                _normalize_text(body_text),
+                _normalize_text(body_html),
+                _normalize_text(available_at) or now_iso,
+                now_iso,
+                now_iso,
+            ),
+        )
+        return True
+
+    def _queue_task_email_event(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        recipient_user_id: int,
+        event_type: str,
+        task_id: str,
+        notification_title: str = "",
+        notification_body: str = "",
+        dedupe_hint: str = "",
+    ) -> bool:
+        normalized_event = _normalize_text(event_type).lower()
+        normalized_task_id = _normalize_text(task_id)
+        normalized_recipient_id = self._as_int(recipient_user_id)
+        if (
+            not task_email_service.is_enabled()
+            or normalized_event not in self._TASK_EMAIL_EVENT_TYPES
+            or normalized_recipient_id <= 0
+            or not normalized_task_id
+        ):
+            return False
+        if not notification_preferences_service.is_enabled(user_id=normalized_recipient_id, channel="task_email"):
+            return False
+
+        user = user_service.get_by_id(normalized_recipient_id)
+        recipient_email = self._task_email_recipient_email(user)
+        if not task_email_service.is_valid_recipient(recipient_email):
+            return False
+
+        row = conn.execute(
+            f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?",
+            (normalized_task_id,),
+        ).fetchone()
+        if row is None:
+            return False
+        task = self._task_with_latest_report(conn, row, viewer_user_id=normalized_recipient_id)
+        subject, body_text, body_html = self._build_task_email_content(
+            event_type=normalized_event,
+            task=task,
+            notification_title=notification_title,
+            notification_body=notification_body,
+        )
+        dedupe_tail = _normalize_text(dedupe_hint) or _normalize_text(task.get("updated_at")) or _normalize_text(task.get("created_at"))
+        dedupe_key = f"{normalized_event}:{normalized_task_id}:{normalized_recipient_id}:{dedupe_tail}"
+        if normalized_event == "task.deadline_soon":
+            dedupe_key = f"{normalized_event}:{normalized_task_id}:{normalized_recipient_id}"
+        return self._enqueue_task_email(
+            conn,
+            dedupe_key=dedupe_key,
+            task_id=normalized_task_id,
+            recipient_user_id=normalized_recipient_id,
+            recipient_email=recipient_email,
+            event_type=normalized_event,
+            subject=subject,
+            body_text=body_text,
+            body_html=body_html,
+        )
+
+    def _queue_task_email_notifications(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        recipient_user_ids: set[int],
+        skip_user_ids: set[int] | None = None,
+        event_type: str,
+        title: str,
+        body: str,
+        task_id: str,
+        dedupe_hint: str = "",
+    ) -> None:
+        skipped = {self._as_int(item) for item in (skip_user_ids or set()) if self._as_int(item) > 0}
+        queued = False
+        for recipient_user_id in {self._as_int(item) for item in recipient_user_ids if self._as_int(item) > 0}:
+            if recipient_user_id in skipped:
+                continue
+            queued = self._queue_task_email_event(
+                conn,
+                recipient_user_id=recipient_user_id,
+                event_type=event_type,
+                task_id=task_id,
+                notification_title=title,
+                notification_body=body,
+                dedupe_hint=dedupe_hint,
+            ) or queued
+        if queued:
+            self._schedule_task_email_outbox_dispatch()
+
+    def _queue_overdue_digest_email(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        recipient_user_id: int,
+        tasks: list[dict[str, Any]],
+        digest_date: str,
+    ) -> bool:
+        normalized_recipient_id = self._as_int(recipient_user_id)
+        if (
+            not task_email_service.is_enabled()
+            or normalized_recipient_id <= 0
+            or not tasks
+            or not notification_preferences_service.is_enabled(user_id=normalized_recipient_id, channel="task_email")
+        ):
+            return False
+        user = user_service.get_by_id(normalized_recipient_id)
+        recipient_email = self._task_email_recipient_email(user)
+        if not task_email_service.is_valid_recipient(recipient_email):
+            return False
+
+        count = len(tasks)
+        tasks_page_url = f"{_normalize_text(task_email_service.app_url()).rstrip('/')}/tasks" if task_email_service.app_url() else ""
+        subject, body_text, body_html = build_overdue_digest_email(
+            tasks=tasks,
+            task_url=self._task_email_url,
+            format_due=self._format_task_email_due,
+            tasks_page_url=tasks_page_url,
+        )
+        queued = self._enqueue_task_email(
+            conn,
+            dedupe_key=f"task.overdue_digest:{normalized_recipient_id}:{digest_date}",
+            task_id="",
+            recipient_user_id=normalized_recipient_id,
+            recipient_email=recipient_email,
+            event_type="task.overdue_digest",
+            subject=subject,
+            body_text=body_text,
+            body_html=body_html,
+        )
+        if queued:
+            self._schedule_task_email_outbox_dispatch()
+        return queued
+
+    def _schedule_task_email_outbox_dispatch(self) -> None:
+        if not task_email_service.is_enabled() or not task_email_service.auto_dispatch_enabled():
+            return
+        if not _TASK_EMAIL_DISPATCH_SLOT.acquire(blocking=False):
+            return
+
+        def _run() -> None:
+            try:
+                self.dispatch_task_email_outbox()
+            finally:
+                try:
+                    _TASK_EMAIL_DISPATCH_SLOT.release()
+                except ValueError:
+                    pass
+
+        try:
+            _TASK_EMAIL_EXECUTOR.submit(_run)
+        except Exception:
+            try:
+                _TASK_EMAIL_DISPATCH_SLOT.release()
+            except ValueError:
+                pass
+
+    def dispatch_task_email_outbox(self, *, limit: int = 20) -> dict[str, int]:
+        if not task_email_service.is_enabled():
+            return {"claimed": 0, "sent": 0, "failed": 0}
+        safe_limit = self._coerce_limit(limit, default=20, minimum=1, maximum=100)
+        now_iso = _utc_now_iso()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {self._TASK_EMAIL_OUTBOX_TABLE}
+                WHERE status = 'pending' AND available_at <= ?
+                ORDER BY created_at ASC
+                LIMIT ?
+                """,
+                (now_iso, safe_limit),
+            ).fetchall()
+            claimed = [dict(row) for row in rows]
+            for row in claimed:
+                conn.execute(
+                    f"""
+                    UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
+                    SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ?
+                    WHERE id = ? AND status = 'pending'
+                    """,
+                    (now_iso, _normalize_text(row.get("id"))),
+                )
+            conn.commit()
+
+        sent = 0
+        failed = 0
+        for row in claimed:
+            outbox_id = _normalize_text(row.get("id"))
+            try:
+                ok = task_email_service.send_task_email(
+                    recipient_email=_normalize_text(row.get("recipient_email")),
+                    subject=_normalize_text(row.get("subject")),
+                    body_text=_normalize_text(row.get("body_text")),
+                    body_html=_normalize_text(row.get("body_html")),
+                )
+                if ok:
+                    sent += 1
+                    self._mark_task_email_sent(outbox_id)
+                else:
+                    failed += 1
+                    self._mark_task_email_failed(row, "Task email sender returned false")
+            except Exception as exc:
+                failed += 1
+                self._mark_task_email_failed(row, str(exc))
+        return {"claimed": len(claimed), "sent": sent, "failed": failed}
+
+    def _mark_task_email_sent(self, outbox_id: str) -> None:
+        normalized_id = _normalize_text(outbox_id)
+        if not normalized_id:
+            return
+        now_iso = _utc_now_iso()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
+                SET status = 'sent', sent_at = ?, updated_at = ?, last_error = ''
+                WHERE id = ?
+                """,
+                (now_iso, now_iso, normalized_id),
+            )
+            conn.commit()
+
+    def _mark_task_email_failed(self, row: dict[str, Any], error: str) -> None:
+        outbox_id = _normalize_text(row.get("id"))
+        if not outbox_id:
+            return
+        attempt_count = self._as_int(row.get("attempt_count")) + 1
+        max_attempts = task_email_service.max_attempts()
+        now = datetime.now(timezone.utc)
+        status = "failed" if attempt_count >= max_attempts else "pending"
+        delay_minutes = 0 if status == "failed" else min(60, 2 ** max(0, attempt_count - 1))
+        available_at = (now + timedelta(minutes=delay_minutes)).isoformat()
+        now_iso = now.isoformat()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                f"""
+                UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
+                SET status = ?, available_at = ?, updated_at = ?, last_error = ?
+                WHERE id = ?
+                """,
+                (status, available_at, now_iso, _normalize_text(error)[:1000], outbox_id),
+            )
+            conn.commit()
+
     def _create_notification(
         self,
         *,
@@ -1960,6 +2671,7 @@ class HubService:
         title: str,
         body: str,
         task_id: str,
+        dedupe_hint: str = "",
     ) -> None:
         skipped = {self._as_int(item) for item in (skip_user_ids or set()) if self._as_int(item) > 0}
         for recipient_user_id in {self._as_int(item) for item in recipient_user_ids if self._as_int(item) > 0}:
@@ -1974,12 +2686,37 @@ class HubService:
                 entity_id=task_id,
                 conn=conn,
             )
+        self._queue_task_email_notifications(
+            conn,
+            recipient_user_ids=recipient_user_ids,
+            skip_user_ids=skip_user_ids,
+            event_type=event_type,
+            title=title,
+            body=body,
+            task_id=task_id,
+            dedupe_hint=dedupe_hint,
+        )
 
-    def _build_assignees_list(self, *, department_id: Optional[str] = None) -> list[dict[str, Any]]:
+    def _build_assignee_directory_row(
+        self,
+        row: dict[str, Any],
+        *,
+        include_department_id: bool = True,
+    ) -> dict[str, Any]:
+        return {
+            "id": self._as_int(row.get("id")),
+            "username": _normalize_text(row.get("username")),
+            "full_name": _normalize_text(row.get("full_name")) or _normalize_text(row.get("username")),
+            "role": _normalize_text(row.get("role"), "viewer"),
+            "department": _normalize_text(row.get("department")),
+            "department_id": (
+                department_service.get_user_primary_department_id(row) or ""
+            ) if include_department_id else "",
+        }
+
+    def _iter_assignee_source_rows(self, *, department_id: Optional[str] = None):
         normalized_department_id = _normalize_text(department_id)
-        users = user_service.list_users()
-        out: list[dict[str, Any]] = []
-        for row in users:
+        for row in user_service.list_users():
             if not bool(row.get("is_active", True)):
                 continue
             if normalized_department_id and not (
@@ -1987,16 +2724,24 @@ class HubService:
                 or user_is_department_manager(row, normalized_department_id)
             ):
                 continue
-            out.append(
-                {
-                    "id": self._as_int(row.get("id")),
-                    "username": _normalize_text(row.get("username")),
-                    "full_name": _normalize_text(row.get("full_name")) or _normalize_text(row.get("username")),
-                    "role": _normalize_text(row.get("role"), "viewer"),
-                    "department": _normalize_text(row.get("department")),
-                    "department_id": department_service.get_user_primary_department_id(row) or "",
-                }
+            yield row
+
+    @staticmethod
+    def _user_row_search_text(row: dict[str, Any]) -> str:
+        return " ".join(
+            part
+            for part in (
+                _normalize_text(row.get("full_name")),
+                _normalize_text(row.get("username")),
             )
+            if part
+        ).lower()
+
+    def _build_assignees_list(self, *, department_id: Optional[str] = None) -> list[dict[str, Any]]:
+        out: list[dict[str, Any]] = [
+            self._build_assignee_directory_row(row, include_department_id=True)
+            for row in self._iter_assignee_source_rows(department_id=department_id)
+        ]
         out.sort(key=lambda item: (item.get("full_name") or "", item.get("username") or ""))
         return out
 
@@ -2042,6 +2787,75 @@ class HubService:
             cache_key,
             lambda: self._build_controllers_list(department_id=normalized_department_id or None),
         )
+
+    @staticmethod
+    def _user_directory_search_text(row: dict[str, Any]) -> str:
+        return " ".join(
+            part
+            for part in (
+                _normalize_text(row.get("full_name")),
+                _normalize_text(row.get("username")),
+            )
+            if part
+        ).lower()
+
+    def _filter_user_directory(
+        self,
+        items: list[dict[str, Any]],
+        *,
+        q: str = "",
+        limit: int = 30,
+    ) -> tuple[list[dict[str, Any]], int]:
+        normalized_q = _normalize_text(q).lower()
+        if not normalized_q:
+            return [], len(items)
+        tokens = [token for token in normalized_q.split() if token]
+        if not tokens:
+            return [], len(items)
+        filtered: list[dict[str, Any]] = []
+        for row in items:
+            haystack = self._user_directory_search_text(row)
+            if all(token in haystack for token in tokens):
+                filtered.append(row)
+        limited = max(1, min(int(limit or 30), 200))
+        return filtered[:limited], len(filtered)
+
+    def search_assignees(
+        self,
+        *,
+        department_id: Optional[str] = None,
+        q: str = "",
+        limit: int = 30,
+        ids: Optional[list[int]] = None,
+    ) -> dict[str, Any]:
+        limited = max(1, min(int(limit or 30), 200))
+        if ids:
+            id_set = {int(item) for item in ids if int(item) > 0}
+            matched = [
+                self._build_assignee_directory_row(row, include_department_id=False)
+                for row in self._iter_assignee_source_rows(department_id=department_id)
+                if int(row.get("id") or 0) in id_set
+            ]
+            matched.sort(key=lambda item: (item.get("full_name") or "", item.get("username") or ""))
+            return {"items": matched, "total": len(matched), "limit": len(matched)}
+
+        normalized_q = _normalize_text(q).lower()
+        tokens = [token for token in normalized_q.split() if token]
+        if not tokens:
+            return {"items": [], "total": 0, "limit": limited}
+
+        matched: list[dict[str, Any]] = []
+        total = 0
+        for row in self._iter_assignee_source_rows(department_id=department_id):
+            haystack = self._user_row_search_text(row)
+            if not all(token in haystack for token in tokens):
+                continue
+            total += 1
+            if len(matched) < limited:
+                matched.append(self._build_assignee_directory_row(row, include_department_id=False))
+
+        matched.sort(key=lambda item: (item.get("full_name") or "", item.get("username") or ""))
+        return {"items": matched, "total": total, "limit": limited}
 
     def list_announcement_recipients(self) -> dict[str, Any]:
         users = self.list_assignees()
@@ -2974,6 +3788,8 @@ class HubService:
         checklist_items: Optional[list[dict[str, Any]]] = None,
         department_id: Optional[str] = None,
         visibility_scope: Optional[str] = None,
+        email_deadline_remind_hours: int | None = None,
+        observer_user_ids: Optional[list[int]] = None,
         actor: dict[str, Any],
         initial_status: str = "new",
     ) -> dict[str, Any]:
@@ -3023,22 +3839,35 @@ class HubService:
                 raise ValueError("project_id is required")
             normalized_protocol_date = self._normalize_protocol_date(protocol_date) or self._normalize_protocol_date(now_iso)
             serialized_checklist_items = self._serialize_checklist_items(checklist_items)
+            normalized_due_at = _normalize_text(due_at) or None
+            normalized_email_deadline_remind_hours = None
+            if normalized_due_at and email_deadline_remind_hours is not None:
+                normalized_email_deadline_remind_hours = _normalize_email_deadline_remind_hours(email_deadline_remind_hours)
+            creator_id = self._as_int(actor.get("id"))
+            normalized_observer_ids = self._normalize_observer_user_ids(
+                observer_user_ids,
+                creator_user_id=creator_id,
+                assignee_user_id=self._as_int(assignee.get("id")),
+                controller_user_id=controller_id,
+            )
+            serialized_observer_user_ids = self._serialize_json_list(normalized_observer_ids)
             conn.execute(
                 f"""
                 INSERT INTO {self._TASKS_TABLE}
-                (id, title, description, status, due_at, priority, checklist_items, project_id, object_id, protocol_date, completed_at, completed_at_source,
-                 department_id, visibility_scope,
+                (id, title, description, status, due_at, email_deadline_remind_hours, priority, checklist_items, project_id, object_id, protocol_date, completed_at, completed_at_source,
+                 department_id, visibility_scope, observer_user_ids,
                  assignee_user_id, assignee_username, assignee_full_name,
                  controller_user_id, controller_username, controller_full_name,
                  created_by_user_id, created_by_username, created_by_full_name, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     task_id,
                     title_text,
                     _normalize_text(description),
                     initial_status_text,
-                    _normalize_text(due_at) or None,
+                    normalized_due_at,
+                    normalized_email_deadline_remind_hours,
                     priority_text,
                     serialized_checklist_items,
                     validated_project_id,
@@ -3048,13 +3877,14 @@ class HubService:
                     "explicit" if initial_status_text == "done" else None,
                     normalized_department_id or None,
                     visibility_scope_text,
+                    serialized_observer_user_ids,
                     self._as_int(assignee.get("id")),
                     _normalize_text(assignee.get("username")),
                     _normalize_text(assignee.get("full_name")) or _normalize_text(assignee.get("username")),
                     controller_id if controller else 0,
                     _normalize_text(controller.get("username")) if controller else "",
                     (_normalize_text(controller.get("full_name")) or _normalize_text(controller.get("username"))) if controller else "",
-                    self._as_int(actor.get("id")),
+                    creator_id,
                     _normalize_text(actor.get("username")),
                     _normalize_text(actor.get("full_name")) or _normalize_text(actor.get("username")),
                     now_iso,
@@ -3088,6 +3918,16 @@ class HubService:
                     skip_user_ids={actor_id, assignee_id},
                     event_type="task.controller_assigned",
                     title="Вы назначены контролером задачи",
+                    body=title_text,
+                    task_id=task_id,
+                )
+            if normalized_observer_ids:
+                self._create_task_notifications(
+                    conn,
+                    recipient_user_ids=set(normalized_observer_ids),
+                    skip_user_ids={actor_id, assignee_id, controller_id},
+                    event_type="task.observer_added",
+                    title="Вас добавили наблюдателем задачи",
                     body=title_text,
                     task_id=task_id,
                 )
@@ -3151,6 +3991,38 @@ class HubService:
             if "checklist_items" in payload:
                 updates.append("checklist_items = ?")
                 params.append(self._serialize_checklist_items(payload.get("checklist_items")))
+            if "observer_user_ids" in payload:
+                effective_assignee_id = (
+                    self._as_int(payload.get("assignee_user_id"))
+                    if "assignee_user_id" in payload
+                    else self._as_int(task.get("assignee_user_id"))
+                )
+                effective_controller_id = (
+                    self._as_int(payload.get("controller_user_id"))
+                    if "controller_user_id" in payload
+                    else self._as_int(task.get("controller_user_id"))
+                )
+                updates.append("observer_user_ids = ?")
+                params.append(
+                    self._serialize_observer_user_ids(
+                        payload.get("observer_user_ids"),
+                        creator_user_id=self._as_int(task.get("created_by_user_id")),
+                        assignee_user_id=effective_assignee_id,
+                        controller_user_id=effective_controller_id,
+                    )
+                )
+            if "email_deadline_remind_hours" in payload:
+                effective_due_at = (
+                    _normalize_text(payload.get("due_at"))
+                    if "due_at" in payload
+                    else (_normalize_text(task.get("due_at")) or None)
+                )
+                if effective_due_at:
+                    updates.append("email_deadline_remind_hours = ?")
+                    params.append(_normalize_email_deadline_remind_hours(payload.get("email_deadline_remind_hours")))
+                else:
+                    updates.append("email_deadline_remind_hours = ?")
+                    params.append(None)
             for key in ("title", "description", "due_at", "priority", "assignee_user_id", "controller_user_id", "protocol_date"):
                 if key not in payload:
                     continue
@@ -3190,8 +4062,12 @@ class HubService:
                         ]
                     )
                 elif key == "due_at":
+                    next_due_at_value = _normalize_text(payload.get(key)) or None
                     updates.append("due_at = ?")
-                    params.append(_normalize_text(payload.get(key)) or None)
+                    params.append(next_due_at_value)
+                    if not next_due_at_value:
+                        updates.append("email_deadline_remind_hours = ?")
+                        params.append(None)
                 elif key == "priority":
                     pval = _normalize_text(payload.get(key), "normal").lower()
                     if pval not in {"low", "normal", "high", "urgent"}:
@@ -3218,6 +4094,7 @@ class HubService:
             previous_assignee_id = self._as_int(task.get("assignee_user_id"))
             previous_controller_id = self._as_int(task.get("controller_user_id"))
             previous_due_at = _normalize_text(task.get("due_at")) or None
+            previous_observer_ids = set(self._task_observer_user_ids(task))
             conn.execute(f"UPDATE {self._TASKS_TABLE} SET {', '.join(updates)} WHERE id = ?", tuple(params))
             row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             if row is None:
@@ -3257,12 +4134,24 @@ class HubService:
                     body=title_text,
                     task_id=normalized_id,
                 )
+            next_observer_ids = set(self._task_observer_user_ids(updated))
+            added_observer_ids = next_observer_ids - previous_observer_ids
+            if added_observer_ids:
+                self._create_task_notifications(
+                    conn,
+                    recipient_user_ids=added_observer_ids,
+                    skip_user_ids={actor_id, next_assignee_id, next_controller_id},
+                    event_type="task.observer_added",
+                    title="Вас добавили наблюдателем задачи",
+                    body=title_text,
+                    task_id=normalized_id,
+                )
             conn.commit()
             updated_task = self._task_with_latest_report(conn, row, viewer_user_id=actor_id)
         try:
             from backend.chat.task_discussion import sync_task_discussion_members
 
-            if any(key in (payload or {}) for key in ("assignee_user_id", "controller_user_id", "title")):
+            if any(key in (payload or {}) for key in ("assignee_user_id", "controller_user_id", "title", "observer_user_ids")):
                 sync_task_discussion_members(task_id=normalized_id, task=updated_task)
         except Exception:
             pass
@@ -3289,7 +4178,7 @@ class HubService:
         normalized_id = _normalize_text(task_id)
         if not normalized_id:
             return None
-        with self._lock, self._connect() as conn:
+        with self._db_conn(write=False) as conn:
             task = self._task_access_or_raise(conn, task_id=normalized_id, user_id=int(user_id), is_admin=is_admin)
             return self._task_with_latest_report(conn, task, viewer_user_id=int(user_id))
 
@@ -3691,6 +4580,7 @@ class HubService:
         where_clauses: list[str] = []
         params: list[Any] = []
         delegate_owner_ids = user_service.get_delegate_owner_ids(int(user_id))
+        observer_clause, observer_params = self._observer_membership_clause(int(user_id))
         if normalized_scope == "my":
             if normalized_role_scope == "assignee":
                 if delegate_owner_ids:
@@ -3710,12 +4600,14 @@ class HubService:
                 if delegate_owner_ids:
                     delegate_placeholders = ", ".join(["?"] * len(delegate_owner_ids))
                     where_clauses.append(
-                        f"(assignee_user_id = ? OR assignee_user_id IN ({delegate_placeholders}) OR created_by_user_id = ? OR controller_user_id = ?)"
+                        f"(assignee_user_id = ? OR assignee_user_id IN ({delegate_placeholders}) OR created_by_user_id = ? OR controller_user_id = ? OR {observer_clause})"
                     )
-                    params.extend([int(user_id), *delegate_owner_ids, int(user_id), int(user_id)])
+                    params.extend([int(user_id), *delegate_owner_ids, int(user_id), int(user_id), *observer_params])
                 else:
-                    where_clauses.append("(assignee_user_id = ? OR created_by_user_id = ? OR controller_user_id = ?)")
-                    params.extend([int(user_id), int(user_id), int(user_id)])
+                    where_clauses.append(
+                        f"(assignee_user_id = ? OR created_by_user_id = ? OR controller_user_id = ? OR {observer_clause})"
+                    )
+                    params.extend([int(user_id), int(user_id), int(user_id), *observer_params])
         elif assignee_user_id is not None:
             where_clauses.append("assignee_user_id = ?")
             params.append(self._as_int(assignee_user_id))
@@ -3745,6 +4637,15 @@ class HubService:
             params.append(now_iso[:10])
         elif normalized_due_state == "none":
             where_clauses.append("(due_at IS NULL OR due_at = '')")
+        if normalized_scope == "department":
+            viewer = user_service.get_by_id(int(user_id)) or {"id": int(user_id), "role": "viewer"}
+            self._append_department_scope_visibility_clause(
+                user=viewer,
+                where_clauses=where_clauses,
+                params=params,
+                user_id=int(user_id),
+                delegate_owner_ids=delegate_owner_ids,
+            )
         where_sql = (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
         sort_map = {
@@ -3764,32 +4665,39 @@ class HubService:
         if normalized_sort_by == "updated_at":
             tie_breaker = "id DESC"
 
-        with self._lock, self._connect() as conn:
-            query_limit = safe_limit
-            query_offset = safe_offset
+        with self._db_conn(write=False) as conn:
             if normalized_scope == "department":
-                query_limit = 2000
-                query_offset = 0
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM {self._TASKS_TABLE}
-                {where_sql}
-                ORDER BY
-                  {sort_expr} {normalized_sort_dir},
-                  {tie_breaker}
-                LIMIT ? OFFSET ?
-                """,
-                tuple([*params, query_limit, query_offset]),
-            ).fetchall()
-            visible_rows: list[sqlite3.Row] = []
-            for row in rows:
-                if normalized_scope == "department":
-                    row_dict = dict(row)
-                    user = user_service.get_by_id(int(user_id)) or {"id": int(user_id), "role": "viewer"}
-                    if not can_view_task(user, row_dict, participant_user_ids=self._task_participant_user_ids(row_dict, include_delegates=True)):
-                        continue
-                visible_rows.append(row)
+                viewer = user_service.get_by_id(int(user_id)) or {"id": int(user_id), "role": "viewer"}
+                visible_ids, _scan_truncated = self._collect_department_scope_visible_task_ids(
+                    conn,
+                    viewer=viewer,
+                    where_sql=where_sql,
+                    params=params,
+                    sort_expr=sort_expr,
+                    normalized_sort_dir=normalized_sort_dir,
+                    tie_breaker=tie_breaker,
+                )
+                total_count = len(visible_ids)
+                page_ids = visible_ids[safe_offset:safe_offset + safe_limit]
+                visible_rows = self._fetch_task_list_rows_by_ids(conn, page_ids)
+            else:
+                rows = conn.execute(
+                    f"""
+                    {self._task_list_select_sql()}
+                    {where_sql}
+                    ORDER BY
+                      {sort_expr} {normalized_sort_dir},
+                      {tie_breaker}
+                    LIMIT ? OFFSET ?
+                    """,
+                    tuple([*params, safe_limit, safe_offset]),
+                ).fetchall()
+                visible_rows = list(rows)
+                total = conn.execute(
+                    f"SELECT COUNT(*) AS c FROM {self._TASKS_TABLE}{where_sql}",
+                    tuple(params),
+                ).fetchone()
+                total_count = self._as_int(total["c"] if total else 0)
 
             task_ids = [_normalize_text(row["id"]) for row in visible_rows]
             batch_ctx = self._build_task_list_batch_context(conn, task_ids, viewer_user_id=int(user_id))
@@ -3808,25 +4716,20 @@ class HubService:
                 department_id: department_service.get_department(department_id)
                 for department_id in department_ids
             }
+            users_by_id = self._users_by_id()
             items = [
-                self._task_to_list_item(
-                    row,
-                    batch_ctx,
-                    projects_by_id=projects_by_id,
-                    objects_by_id=objects_by_id,
-                    departments_by_id=departments_by_id,
+                self._enrich_task_observer_fields(
+                    self._task_to_list_item(
+                        row,
+                        batch_ctx,
+                        projects_by_id=projects_by_id,
+                        objects_by_id=objects_by_id,
+                        departments_by_id=departments_by_id,
+                    ),
+                    users_by_id=users_by_id,
                 )
                 for row in visible_rows
             ]
-            if normalized_scope == "department":
-                total_count = len(items)
-                items = items[safe_offset:safe_offset + safe_limit]
-            else:
-                total = conn.execute(
-                    f"SELECT COUNT(*) AS c FROM {self._TASKS_TABLE}{where_sql}",
-                    tuple(params),
-                ).fetchone()
-                total_count = self._as_int(total["c"] if total else 0)
 
         return {
             "items": items,
@@ -3885,6 +4788,97 @@ class HubService:
             )
             self._ensure_task_status_log_table(conn)
             self._log_status_change(conn, task_id=normalized_id, old_status=old_status, new_status="in_progress", user_id=user_id, username=_normalize_text(user.get("username")))
+            conn.commit()
+            updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+            return self._task_with_latest_report(conn, updated, viewer_user_id=user_id) if updated else None
+
+    def _can_reopen_task(self, task: dict[str, Any], user: dict[str, Any], *, is_admin: bool = False) -> bool:
+        if _normalize_text(task.get("integration_kind")).lower() == "transfer_act_upload":
+            return False
+        if _normalize_text(task.get("status")).lower() != "done":
+            return False
+        user_id = self._as_int(user.get("id"))
+        if user_id <= 0:
+            return False
+        if is_admin or self._is_admin_role(user.get("role")):
+            return True
+        if user_is_department_manager(user, task.get("department_id")):
+            return True
+        return user_id in self._task_participant_user_ids(task, include_delegates=True)
+
+    def reopen_task(
+        self,
+        *,
+        task_id: str,
+        user: dict[str, Any],
+        is_admin: bool = False,
+        due_at: Any = None,
+        due_at_provided: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        normalized_id = _normalize_text(task_id)
+        if not normalized_id:
+            return None
+        user_id = self._as_int(user.get("id"))
+        now_iso = _utc_now_iso()
+        with self._lock, self._connect() as conn:
+            row = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
+            if row is None:
+                return None
+            task = dict(row)
+            if _normalize_text(task.get("status")).lower() != "done":
+                raise ValueError("Task is not completed")
+            if not self._can_reopen_task(task, user, is_admin=is_admin):
+                raise PermissionError("Only task participants can reopen the task")
+            old_status = _normalize_text(task.get("status"))
+            if due_at_provided:
+                next_due_at = _normalize_text(due_at) or None
+            else:
+                next_due_at = _normalize_text(task.get("due_at")) or None
+            if due_at_provided:
+                conn.execute(
+                    f"""
+                    UPDATE {self._TASKS_TABLE}
+                    SET status = 'in_progress', completed_at = NULL, completed_at_source = NULL, due_at = ?, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (next_due_at, now_iso, normalized_id),
+                )
+            else:
+                conn.execute(
+                    f"""
+                    UPDATE {self._TASKS_TABLE}
+                    SET status = 'in_progress', completed_at = NULL, completed_at_source = NULL, updated_at = ?
+                    WHERE id = ?
+                    """,
+                    (now_iso, normalized_id),
+                )
+            self._ensure_task_status_log_table(conn)
+            self._log_status_change(
+                conn,
+                task_id=normalized_id,
+                old_status=old_status,
+                new_status="in_progress",
+                user_id=user_id,
+                username=_normalize_text(user.get("username")),
+            )
+            title_text = _normalize_text(task.get("title"))
+            due_label = self._format_task_email_due(next_due_at)
+            if due_label and due_label != "Без срока":
+                notification_body = f"{title_text}: возвращено в работу. Новый срок: {due_label}"
+            else:
+                notification_body = f"{title_text}: возвращено в работу"
+            participant_ids = self._task_participant_user_ids(task, include_delegates=True)
+            notify_ids = {item for item in participant_ids if item > 0 and item != user_id}
+            if notify_ids:
+                self._create_task_notifications(
+                    conn,
+                    recipient_user_ids=notify_ids,
+                    skip_user_ids={user_id},
+                    event_type="task.reopened",
+                    title="Задача возвращена в работу",
+                    body=notification_body,
+                    task_id=normalized_id,
+                )
             conn.commit()
             updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             return self._task_with_latest_report(conn, updated, viewer_user_id=user_id) if updated else None
@@ -3991,6 +4985,15 @@ class HubService:
                     entity_id=normalized_id,
                     conn=conn,
                 )
+                self._queue_task_email_event(
+                    conn,
+                    recipient_user_id=creator_user_id,
+                    event_type="task.submitted",
+                    task_id=normalized_id,
+                    notification_title="Задача отправлена на проверку",
+                    notification_body=title_text,
+                    dedupe_hint=now_iso,
+                )
             if controller_user_id > 0 and controller_user_id not in {user_id, creator_user_id}:
                 self._create_notification(
                     recipient_user_id=controller_user_id,
@@ -4001,6 +5004,16 @@ class HubService:
                     entity_id=normalized_id,
                     conn=conn,
                 )
+                self._queue_task_email_event(
+                    conn,
+                    recipient_user_id=controller_user_id,
+                    event_type="task.review_required",
+                    task_id=normalized_id,
+                    notification_title="Требуется проверка задачи",
+                    notification_body=title_text,
+                    dedupe_hint=now_iso,
+                )
+            self._schedule_task_email_outbox_dispatch()
             conn.commit()
             updated = conn.execute(f"SELECT * FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_id,)).fetchone()
             return self._task_with_latest_report(conn, updated, viewer_user_id=user_id) if updated else None
@@ -4324,7 +5337,7 @@ class HubService:
         placeholders = ", ".join(["?"] * len(assignee_filters))
         rows = conn.execute(
             f"""
-            SELECT *
+            SELECT id, title, due_at, status, email_deadline_remind_hours
             FROM {self._TASKS_TABLE}
             WHERE status <> 'done'
               AND due_at IS NOT NULL
@@ -4335,14 +5348,18 @@ class HubService:
         ).fetchall()
         now_utc = datetime.now(timezone.utc)
         today_iso = now_utc.date().isoformat()
+        overdue_tasks_for_digest: list[dict[str, Any]] = []
+        queued_email = False
         for row in rows:
-            item = self._task_with_latest_report(conn, row, viewer_user_id=normalized_user_id)
+            item = dict(row)
             due_at = self._parse_iso_datetime(item.get("due_at"))
             if due_at is None:
                 continue
             title_text = _normalize_text(item.get("title"))
+            email_deadline_hours = _resolve_email_deadline_remind_hours(item)
             if due_at < now_utc:
-                if self._notification_exists(
+                overdue_tasks_for_digest.append(item)
+                if not self._notification_exists(
                     conn,
                     recipient_user_id=normalized_user_id,
                     event_type="task.overdue_reminder",
@@ -4350,37 +5367,97 @@ class HubService:
                     entity_id=_normalize_text(item.get("id")),
                     created_on_date=today_iso,
                 ):
-                    continue
+                    self._create_notification(
+                        recipient_user_id=normalized_user_id,
+                        event_type="task.overdue_reminder",
+                        title="Просроченная задача",
+                        body=title_text,
+                        entity_type="task",
+                        entity_id=_normalize_text(item.get("id")),
+                        conn=conn,
+                    )
+                continue
+            hours_left = (due_at - now_utc).total_seconds() / 3600.0
+            if hours_left > 72:
+                continue
+            if not self._notification_exists(
+                    conn,
+                    recipient_user_id=normalized_user_id,
+                    event_type="task.deadline_soon",
+                    entity_type="task",
+                    entity_id=_normalize_text(item.get("id")),
+            ):
                 self._create_notification(
                     recipient_user_id=normalized_user_id,
-                    event_type="task.overdue_reminder",
-                    title="Просроченная задача",
+                    event_type="task.deadline_soon",
+                    title="Срок задачи приближается",
                     body=title_text,
                     entity_type="task",
                     entity_id=_normalize_text(item.get("id")),
                     conn=conn,
                 )
-                continue
-            hours_left = (due_at - now_utc).total_seconds() / 3600.0
-            if hours_left > 72:
-                continue
-            if self._notification_exists(
+            if email_deadline_hours is not None and hours_left <= email_deadline_hours:
+                queued_email = self._queue_task_email_event(
+                    conn,
+                    recipient_user_id=normalized_user_id,
+                    event_type="task.deadline_soon",
+                    task_id=_normalize_text(item.get("id")),
+                    notification_title="Срок задачи приближается",
+                    notification_body=title_text,
+                ) or queued_email
+        if overdue_tasks_for_digest:
+            queued_email = self._queue_overdue_digest_email(
                 conn,
                 recipient_user_id=normalized_user_id,
-                event_type="task.deadline_soon",
-                entity_type="task",
-                entity_id=_normalize_text(item.get("id")),
-            ):
-                continue
-            self._create_notification(
-                recipient_user_id=normalized_user_id,
-                event_type="task.deadline_soon",
-                title="Срок задачи приближается",
-                body=title_text,
-                entity_type="task",
-                entity_id=_normalize_text(item.get("id")),
-                conn=conn,
-            )
+                tasks=overdue_tasks_for_digest,
+                digest_date=today_iso,
+            ) or queued_email
+        if queued_email:
+            self._schedule_task_email_outbox_dispatch()
+
+    def _collect_task_due_notification_user_ids(self, conn: sqlite3.Connection) -> list[int]:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT assignee_user_id
+            FROM {self._TASKS_TABLE}
+            WHERE status <> 'done'
+              AND due_at IS NOT NULL
+              AND due_at <> ''
+              AND assignee_user_id IS NOT NULL
+            """
+        ).fetchall()
+        assignee_ids = {
+            self._as_int(row["assignee_user_id"])
+            for row in rows
+            if self._as_int(row["assignee_user_id"]) > 0
+        }
+        candidates = set(assignee_ids)
+        for assignee_id in assignee_ids:
+            for delegate_id in user_service.get_delegate_user_ids(assignee_id):
+                normalized_delegate_id = self._as_int(delegate_id)
+                if normalized_delegate_id > 0:
+                    candidates.add(normalized_delegate_id)
+        return sorted(candidates)
+
+    def run_task_due_notifications_for_user(self, user_id: int, *, force: bool = False) -> None:
+        normalized_user_id = self._as_int(user_id)
+        if normalized_user_id <= 0:
+            return
+        with self._lock, self._connect() as conn:
+            if force:
+                self._ensure_task_due_notifications_for_user(conn, user_id=normalized_user_id)
+            else:
+                self._maybe_ensure_task_due_notifications_for_user(conn, user_id=normalized_user_id)
+
+    def run_task_due_notification_cycle(self) -> int:
+        with self._lock, self._connect() as conn:
+            user_ids = self._collect_task_due_notification_user_ids(conn)
+        processed = 0
+        for user_id in user_ids:
+            with self._lock, self._connect() as conn:
+                self._maybe_ensure_task_due_notifications_for_user(conn, user_id=user_id)
+            processed += 1
+        return processed
 
     def _invalidate_unread_counts_cache(self, user_id: int | None = None) -> None:
         with self._unread_counts_cache_lock:
@@ -4419,6 +5496,110 @@ class HubService:
             self._task_due_ensure_last[normalized_user_id] = now_mono
         self._ensure_task_due_notifications_for_user(conn, user_id=normalized_user_id)
 
+    def _compute_task_hub_unread_metrics(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: int,
+    ) -> dict[str, int]:
+        normalized_user_id = int(user_id)
+        now_iso = datetime.now(timezone.utc).isoformat()
+        participant_where = "(assignee_user_id = ? OR created_by_user_id = ? OR controller_user_id = ?)"
+        metrics_row = conn.execute(
+            f"""
+            SELECT
+              SUM(CASE WHEN status IN ('new', 'in_progress', 'review') THEN 1 ELSE 0 END) AS tasks_open_total,
+              SUM(CASE WHEN status IN ('new', 'in_progress', 'review') AND assignee_user_id = ? THEN 1 ELSE 0 END) AS tasks_assignee_open,
+              SUM(CASE WHEN status IN ('new', 'in_progress', 'review') AND created_by_user_id = ? THEN 1 ELSE 0 END) AS tasks_created_open,
+              SUM(CASE WHEN status IN ('new', 'in_progress', 'review') AND controller_user_id = ? THEN 1 ELSE 0 END) AS tasks_controller_open,
+              SUM(CASE WHEN status = 'review' AND (created_by_user_id = ? OR controller_user_id = ?) THEN 1 ELSE 0 END) AS tasks_review_required,
+              SUM(
+                CASE
+                  WHEN status <> 'done'
+                    AND due_at IS NOT NULL
+                    AND due_at <> ''
+                    AND due_at < ?
+                  THEN 1
+                  ELSE 0
+                END
+              ) AS tasks_overdue
+            FROM {self._TASKS_TABLE}
+            WHERE {participant_where}
+            """,
+            (
+                normalized_user_id,
+                normalized_user_id,
+                normalized_user_id,
+                normalized_user_id,
+                normalized_user_id,
+                now_iso,
+                normalized_user_id,
+                normalized_user_id,
+                normalized_user_id,
+            ),
+        ).fetchone()
+        tasks_with_unread_comments = self._count_tasks_with_unread_comments(conn, user_id=normalized_user_id)
+        new_tasks = conn.execute(
+            f"""
+            SELECT COUNT(*) AS c
+            FROM {self._TASKS_TABLE}
+            WHERE assignee_user_id = ? AND status = 'new'
+            """,
+            (normalized_user_id,),
+        ).fetchone()
+        open_total = self._as_int(metrics_row["tasks_open_total"] if metrics_row else 0)
+        return {
+            "tasks_open_total": open_total,
+            "tasks_open": open_total,
+            "tasks_new": self._as_int(new_tasks["c"] if new_tasks else 0),
+            "tasks_assignee_open": self._as_int(metrics_row["tasks_assignee_open"] if metrics_row else 0),
+            "tasks_created_open": self._as_int(metrics_row["tasks_created_open"] if metrics_row else 0),
+            "tasks_controller_open": self._as_int(metrics_row["tasks_controller_open"] if metrics_row else 0),
+            "tasks_review_required": self._as_int(metrics_row["tasks_review_required"] if metrics_row else 0),
+            "tasks_overdue": self._as_int(metrics_row["tasks_overdue"] if metrics_row else 0),
+            "tasks_with_unread_comments": tasks_with_unread_comments,
+        }
+
+    def _count_tasks_with_unread_comments(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        user_id: int,
+    ) -> int:
+        normalized_user_id = int(user_id)
+        if normalized_user_id <= 0:
+            return 0
+        row = conn.execute(
+            f"""
+            SELECT COUNT(DISTINCT t.id) AS c
+            FROM {self._TASKS_TABLE} t
+            INNER JOIN (
+                SELECT task_id, MAX(created_at) AS max_created_at
+                FROM {self._TASK_COMMENTS_TABLE}
+                GROUP BY task_id
+            ) latest ON latest.task_id = t.id
+            INNER JOIN {self._TASK_COMMENTS_TABLE} c
+                ON c.task_id = t.id AND c.created_at = latest.max_created_at
+            LEFT JOIN {self._TASK_COMMENT_READS_TABLE} r
+                ON r.task_id = t.id AND r.user_id = ?
+            WHERE (t.assignee_user_id = ? OR t.created_by_user_id = ? OR t.controller_user_id = ?)
+              AND c.user_id <> ?
+              AND (
+                r.last_seen_at IS NULL
+                OR TRIM(r.last_seen_at) = ''
+                OR c.created_at > r.last_seen_at
+              )
+            """,
+            (
+                normalized_user_id,
+                normalized_user_id,
+                normalized_user_id,
+                normalized_user_id,
+                normalized_user_id,
+            ),
+        ).fetchone()
+        return self._as_int(row["c"] if row else 0)
+
     def _compute_unread_counts(self, conn: sqlite3.Connection, *, user_id: int) -> dict[str, int]:
         unread_notifications = conn.execute(
             f"""
@@ -4447,60 +5628,12 @@ class HubService:
             announcements_unread += 1 if bool(item.get("is_unread")) else 0
             announcements_ack_pending += 1 if bool(item.get("is_ack_pending")) else 0
 
-        task_rows = conn.execute(
-            f"""
-            SELECT *
-            FROM {self._TASKS_TABLE}
-            WHERE assignee_user_id = ? OR created_by_user_id = ? OR controller_user_id = ?
-            """,
-            (int(user_id), int(user_id), int(user_id)),
-        ).fetchall()
-        tasks_assignee_open = 0
-        tasks_created_open = 0
-        tasks_controller_open = 0
-        tasks_review_required = 0
-        tasks_overdue = 0
-        tasks_with_unread_comments = 0
-        tasks_open_ids: set[str] = set()
-        for row in task_rows:
-            item = self._task_with_latest_report(conn, row, viewer_user_id=int(user_id))
-            status = _normalize_text(item.get("status")).lower()
-            is_open = status in {"new", "in_progress", "review"}
-            if is_open:
-                tasks_open_ids.add(_normalize_text(item.get("id")))
-            if self._as_int(item.get("assignee_user_id")) == int(user_id) and is_open:
-                tasks_assignee_open += 1
-            if self._as_int(item.get("created_by_user_id")) == int(user_id) and is_open:
-                tasks_created_open += 1
-            if self._as_int(item.get("controller_user_id")) == int(user_id) and is_open:
-                tasks_controller_open += 1
-            if status == "review" and int(user_id) in {self._as_int(item.get("created_by_user_id")), self._as_int(item.get("controller_user_id"))}:
-                tasks_review_required += 1
-            if bool(item.get("is_overdue")):
-                tasks_overdue += 1
-            if bool(item.get("has_unread_comments")):
-                tasks_with_unread_comments += 1
-        new_tasks = conn.execute(
-            f"""
-            SELECT COUNT(*) AS c
-            FROM {self._TASKS_TABLE}
-            WHERE assignee_user_id = ? AND status = 'new'
-            """,
-            (int(user_id),),
-        ).fetchone()
+        task_metrics = self._compute_task_hub_unread_metrics(conn, user_id=int(user_id))
         return {
             "notifications_unread_total": self._as_int(unread_notifications["c"] if unread_notifications else 0),
             "announcements_unread": announcements_unread,
             "announcements_ack_pending": announcements_ack_pending,
-            "tasks_open_total": len(tasks_open_ids),
-            "tasks_open": len(tasks_open_ids),
-            "tasks_new": self._as_int(new_tasks["c"] if new_tasks else 0),
-            "tasks_assignee_open": tasks_assignee_open,
-            "tasks_created_open": tasks_created_open,
-            "tasks_controller_open": tasks_controller_open,
-            "tasks_review_required": tasks_review_required,
-            "tasks_overdue": tasks_overdue,
-            "tasks_with_unread_comments": tasks_with_unread_comments,
+            **task_metrics,
         }
 
     def get_unread_counts(self, *, user_id: int) -> dict[str, int]:
@@ -4509,8 +5642,7 @@ class HubService:
         if cached_counts is not None:
             return cached_counts
 
-        with self._lock, self._connect() as conn:
-            self._maybe_ensure_task_due_notifications_for_user(conn, user_id=normalized_user_id)
+        with self._db_conn(write=False) as conn:
             counts = self._compute_unread_counts(conn, user_id=normalized_user_id)
 
         self._store_unread_counts_cache(normalized_user_id, counts)
@@ -4535,8 +5667,7 @@ class HubService:
             extra_where += " AND r.user_id IS NULL"
         normalized_user_id = int(user_id)
         cached_counts = self._get_cached_unread_counts(normalized_user_id)
-        with self._lock, self._connect() as conn:
-            self._maybe_ensure_task_due_notifications_for_user(conn, user_id=normalized_user_id)
+        with self._db_conn(write=False) as conn:
             rows = conn.execute(
                 f"""
                 SELECT n.*,

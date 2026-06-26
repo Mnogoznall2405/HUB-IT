@@ -51,6 +51,7 @@ vi.mock('../api/client', () => ({
     reviewTask: vi.fn(),
     startTask: vi.fn(),
     submitTask: vi.fn(),
+    reopenTask: vi.fn(),
     deleteTask: vi.fn(),
     updateTask: vi.fn(),
     updateTaskProject: vi.fn(),
@@ -165,12 +166,14 @@ async function selectAutocompleteOption(label, query, optionText, scope = screen
   await waitFor(() => {
     expect(input.getAttribute('aria-controls')).toBeTruthy();
   });
+  await waitFor(() => {
+    const listboxId = input.getAttribute('aria-controls');
+    const listbox = document.getElementById(listboxId);
+    expect(listbox).toBeTruthy();
+    expect(within(listbox).getByText(optionText)).toBeInTheDocument();
+  }, { timeout: 3000 });
   const listboxId = input.getAttribute('aria-controls');
-  const listbox = await waitFor(() => {
-    const nextListbox = document.getElementById(listboxId);
-    expect(nextListbox).toBeTruthy();
-    return nextListbox;
-  });
+  const listbox = document.getElementById(listboxId);
   fireEvent.click(within(listbox).getByText(optionText));
   return input;
 }
@@ -184,6 +187,16 @@ function toLocalDateTimeInput(value) {
 function setRichEditorHtml(editor, html) {
   editor.innerHTML = html;
   fireEvent.input(editor);
+}
+
+async function selectMobileAssignee(assigneeSheet, query, optionId) {
+  fireEvent.change(within(assigneeSheet).getByTestId('create-assignees-mobile-search'), {
+    target: { value: query },
+  });
+  await waitFor(() => {
+    expect(within(assigneeSheet).getByTestId(`create-assignee-mobile-option-${optionId}`)).toBeInTheDocument();
+  }, { timeout: 2000 });
+  fireEvent.click(within(assigneeSheet).getByTestId(`create-assignee-mobile-option-${optionId}`));
 }
 
 const taskSummary = {
@@ -235,6 +248,7 @@ const taskSummary = {
 beforeEach(() => {
   vi.clearAllMocks();
   window.localStorage.clear();
+  window.sessionStorage.clear();
   installMatchMedia();
   chatFeatureFlags.chat = false;
   chatFeatureFlags.taskDiscussion = false;
@@ -252,11 +266,28 @@ beforeEach(() => {
     value: vi.fn(),
   });
 
-  hubAPI.getAssignees.mockResolvedValue({
-    items: [
+  hubAPI.getAssignees.mockImplementation(async (params = {}) => {
+    const fixtures = [
       { id: 1, username: 'assignee', full_name: 'Исполнитель И.И.' },
       { id: 4, username: 'ivanov', full_name: 'Иванов И.И.' },
-    ],
+    ];
+    const ids = String(params.ids || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (ids.length) {
+      const items = fixtures.filter((item) => ids.includes(String(item.id)));
+      return { items, total: items.length, limit: items.length };
+    }
+    const query = String(params.q || '').trim().toLowerCase();
+    if (!query) {
+      return { items: [], total: fixtures.length, limit: 0 };
+    }
+    const items = fixtures.filter((item) => (
+      String(item.username || '').toLowerCase().includes(query)
+      || String(item.full_name || '').toLowerCase().includes(query)
+    ));
+    return { items, total: items.length, limit: 30 };
   });
   hubAPI.getControllers.mockResolvedValue({
     items: [{ id: 2, username: 'controller', full_name: 'Контролер К.К.' }],
@@ -386,6 +417,29 @@ describe('Tasks page detail workspace', () => {
     });
   });
 
+  it('opens the create dialog from a pending create flag stored during navigation', async () => {
+    window.sessionStorage.setItem('hub.tasks.pendingCreate', '1');
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('textbox', { name: 'Что нужно сделать' })).toBeInTheDocument();
+    expect(window.sessionStorage.getItem('hub.tasks.pendingCreate')).toBeNull();
+  });
+
   it('opens full detail mode from URL and keeps active tab in search params', async () => {
     render(
       <MemoryRouter initialEntries={['/tasks?task=task-1&task_tab=history']}>
@@ -511,6 +565,78 @@ describe('Tasks page detail workspace', () => {
 
     expect(await screen.findByRole('button', { name: 'Назад к доске' })).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
+  });
+
+  it('splits list view into active and completed sections and toggles completed rows', async () => {
+    hubAPI.getTasks.mockResolvedValue({
+      items: [
+        { ...taskSummary, id: 'task-open', status: 'in_progress', title: 'Активная задача' },
+        { ...taskSummary, id: 'task-done', status: 'done', title: 'Завершённая задача' },
+      ],
+      total: 2,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const listView = await screen.findByTestId('tasks-list-view');
+    expect(within(listView).getByTestId('task-section-active')).toHaveTextContent('Активные');
+    expect(within(listView).getByTestId('task-section-active')).toHaveTextContent('1');
+    expect(within(listView).getByTestId('task-section-completed-toggle')).toHaveTextContent('Завершённые');
+    expect(within(listView).getByTestId('task-section-completed-toggle')).toHaveTextContent('1');
+
+    expect(await screen.findByTestId('tasks-list-row-task-open')).toBeInTheDocument();
+    expect(screen.getByTestId('tasks-list-row-task-done')).toBeInTheDocument();
+
+    fireEvent.click(within(listView).getByTestId('task-section-completed-toggle'));
+    expect(screen.queryByTestId('tasks-list-row-task-done')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tasks-list-row-task-open')).toBeInTheDocument();
+  });
+
+  it('defers task support metadata until filters or create dialog need it', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(hubAPI.getTasks).toHaveBeenCalled();
+      expect(departmentsAPI.list).toHaveBeenCalled();
+    });
+    expect(hubAPI.getTaskProjects).not.toHaveBeenCalled();
+    expect(hubAPI.getTaskObjects).not.toHaveBeenCalled();
+    expect(hubAPI.getControllers).not.toHaveBeenCalled();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Развернуть фильтры/i }));
+    await waitFor(() => {
+      expect(hubAPI.getTaskProjects).toHaveBeenCalled();
+      expect(hubAPI.getControllers).toHaveBeenCalled();
+    });
+  });
+
+  it('prefetches project metadata when create dialog opens from dashboard shortcut', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks?create=1']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(hubAPI.getTaskProjects).toHaveBeenCalled();
+      expect(hubAPI.getTaskObjects).toHaveBeenCalled();
+      expect(hubAPI.getControllers).toHaveBeenCalled();
+    });
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
   });
 
   it('shows role scope switch on desktop and switches between assignee and creator', async () => {
@@ -729,7 +855,7 @@ describe('Tasks page detail workspace', () => {
 
     fireEvent.click(await screen.findByRole('button', { name: 'Новая задача' }));
     const dialog = await screen.findByRole('dialog');
-    expect(within(dialog).getByLabelText('Крайний срок')).toHaveAttribute('type', 'datetime-local');
+    expect(within(dialog).getByTestId('create-due-open')).toBeInTheDocument();
 
     fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
       target: { value: 'Проверить доступ сотрудника' },
@@ -753,6 +879,57 @@ describe('Tasks page detail workspace', () => {
           text: 'Проверить доступ',
           done: false,
         })],
+      }));
+    });
+  });
+
+  it('sends observer_user_ids from the quick task dialog', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+      target: { value: 'Задача с наблюдателем' },
+    });
+    fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
+    const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
+    await selectMobileAssignee(assigneeSheet, 'исполн', 1);
+    fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(within(dialog).getByText('Наблюдатели'));
+    const observerSheet = await screen.findByTestId('create-mobile-sheet');
+    fireEvent.change(within(observerSheet).getByTestId('create-observers-mobile-search'), {
+      target: { value: 'ivanov' },
+    });
+    await waitFor(() => {
+      expect(within(observerSheet).getByTestId('create-observers-mobile-option-4')).toBeInTheDocument();
+    });
+    fireEvent.click(within(observerSheet).getByTestId('create-observers-mobile-option-4'));
+    fireEvent.click(within(observerSheet).getByTestId('create-observers-mobile-done'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
+
+    await waitFor(() => {
+      expect(hubAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Задача с наблюдателем',
+        assignee_user_ids: [1],
+        observer_user_ids: [4],
       }));
     });
   });
@@ -1000,21 +1177,21 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(screen.getByTestId('tasks-create-fab'));
     const dialog = await screen.findByRole('dialog');
 
-    fireEvent.click(within(dialog).getByTestId('create-due-mobile-open'));
-    const sheet = await screen.findByTestId('create-due-mobile-sheet');
+    fireEvent.click(within(dialog).getByTestId('create-due-open'));
+    const sheet = await screen.findByTestId('create-due-mobile-panel');
     expect(sheet.closest('.MuiPaper-root')).toHaveStyle({ zIndex: '1303' });
-    fireEvent.click(within(sheet).getByTestId('create-due-preset-tomorrow'));
+    fireEvent.click(within(sheet).getByTestId('create-due-mobile-preset-tomorrow'));
     await waitFor(() => {
-      expect(screen.queryByTestId('create-due-mobile-sheet')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('create-due-mobile-panel')).not.toBeInTheDocument();
     });
-    expect(within(dialog).getByTestId('create-due-mobile-open')).toHaveTextContent('завтра в 19:00');
+    expect(within(dialog).getByTestId('create-due-open')).toHaveTextContent('завтра в 19:00');
 
     fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
       target: { value: 'Проверить мобильный срок' },
     });
     fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
     const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
-    fireEvent.click(within(assigneeSheet).getByTestId('create-assignee-mobile-option-1'));
+    await selectMobileAssignee(assigneeSheet, 'исполн', 1);
     fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
     await waitFor(() => {
       expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
@@ -1044,31 +1221,31 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(screen.getByTestId('tasks-create-fab'));
     const dialog = await screen.findByRole('dialog');
 
-    fireEvent.click(within(dialog).getByTestId('create-due-mobile-open'));
-    let sheet = await screen.findByTestId('create-due-mobile-sheet');
-    fireEvent.click(within(sheet).getByTestId('create-due-preset-tomorrow'));
+    fireEvent.click(within(dialog).getByTestId('create-due-open'));
+    let sheet = await screen.findByTestId('create-due-mobile-panel');
+    fireEvent.click(within(sheet).getByTestId('create-due-mobile-preset-tomorrow'));
     await waitFor(() => {
-      expect(screen.queryByTestId('create-due-mobile-sheet')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('create-due-mobile-panel')).not.toBeInTheDocument();
     });
 
-    fireEvent.click(within(dialog).getByTestId('create-due-mobile-open'));
-    sheet = await screen.findByTestId('create-due-mobile-sheet');
-    fireEvent.click(within(sheet).getByTestId('create-due-preset-none'));
+    fireEvent.click(within(dialog).getByTestId('create-due-open'));
+    sheet = await screen.findByTestId('create-due-mobile-panel');
+    fireEvent.click(within(sheet).getByTestId('create-due-mobile-preset-none'));
     await waitFor(() => {
-      expect(screen.queryByTestId('create-due-mobile-sheet')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('create-due-mobile-panel')).not.toBeInTheDocument();
     });
-    expect(within(dialog).getByTestId('create-due-mobile-open')).toHaveTextContent('Без срока');
+    expect(within(dialog).getByTestId('create-due-open')).toHaveTextContent('Без срока');
 
-    fireEvent.click(within(dialog).getByTestId('create-due-mobile-open'));
-    sheet = await screen.findByTestId('create-due-mobile-sheet');
-    fireEvent.click(within(sheet).getByTestId('create-due-custom-open'));
-    const customInput = await within(sheet).findByTestId('create-due-custom-input');
-    fireEvent.change(customInput.querySelector('input'), { target: { value: '2026-06-20T19:00' } });
+    fireEvent.click(within(dialog).getByTestId('create-due-open'));
+    sheet = await screen.findByTestId('create-due-mobile-panel');
+    fireEvent.click(within(sheet).getByTestId('create-due-mobile-custom-open'));
+    const customDate = await within(sheet).findByTestId('create-due-mobile-custom-date');
+    fireEvent.change(customDate.querySelector('input'), { target: { value: '2026-06-20' } });
     fireEvent.click(within(sheet).getByRole('button', { name: 'Готово' }));
     await waitFor(() => {
-      expect(screen.queryByTestId('create-due-mobile-sheet')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('create-due-mobile-panel')).not.toBeInTheDocument();
     });
-    expect(within(dialog).getByTestId('create-due-mobile-open')).toHaveTextContent('20.06 в 19:00');
+    expect(within(dialog).getByTestId('create-due-open')).toHaveTextContent('20.06 в 19:00');
   });
 
   it('edits task description in a mobile bottom sheet and submits it', async () => {
@@ -1101,14 +1278,8 @@ describe('Tasks page detail workspace', () => {
     });
     fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
     const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
-    fireEvent.change(within(assigneeSheet).getByTestId('create-assignees-mobile-search'), {
-      target: { value: 'assignee' },
-    });
-    fireEvent.click(within(assigneeSheet).getByTestId('create-assignee-mobile-option-1'));
-    fireEvent.change(within(assigneeSheet).getByTestId('create-assignees-mobile-search'), {
-      target: { value: 'ivanov' },
-    });
-    fireEvent.click(within(assigneeSheet).getByTestId('create-assignee-mobile-option-4'));
+    await selectMobileAssignee(assigneeSheet, 'assignee', 1);
+    await selectMobileAssignee(assigneeSheet, 'ivanov', 4);
     fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
     await waitFor(() => {
       expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
@@ -1196,7 +1367,7 @@ describe('Tasks page detail workspace', () => {
       });
       fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
       const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
-      fireEvent.click(within(assigneeSheet).getByTestId('create-assignee-mobile-option-1'));
+      await selectMobileAssignee(assigneeSheet, 'исполн', 1);
       fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
       await waitFor(() => {
         expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
@@ -1254,6 +1425,9 @@ describe('Tasks page detail workspace', () => {
       fireEvent.click(within(dialog).getByText(chipLabel));
       sheet = await screen.findByTestId('create-mobile-sheet');
       expect(within(sheet).getAllByText(sheetTitle).length).toBeGreaterThan(0);
+      if (chipLabel === 'Контролёр') {
+        expect(within(sheet).getByTestId('create-controller-mobile-option-2')).toBeInTheDocument();
+      }
       fireEvent.click(within(sheet).getByRole('button', { name: 'Закрыть плашку' }));
       await waitFor(() => {
         expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();

@@ -258,6 +258,52 @@ async def test_deleting_task_deletes_owned_chat_and_notifies_members(task_discus
     assert not upload_session_dir.exists()
 
 
+def test_task_discussion_syncs_observers_and_removes_left_members(task_discussion_env):
+    hub_service = task_discussion_env["hub_service"]
+    task = task_discussion_env["task"]
+    task_id = task["id"]
+
+    updated = hub_service.update_task(
+        task_id,
+        {"observer_user_ids": [4]},
+        actor_user_id=1,
+        is_admin=False,
+    )
+    assert updated is not None
+    assert updated["observer_user_ids"] == [4]
+
+    created = task_discussion_module.ensure_task_discussion(task_id=task_id, actor_user_id=4)
+    assert created["created"] is True
+
+    with chat_db_module.chat_session() as session:
+        members = session.execute(
+            select(chat_models_module.ChatMember).where(
+                chat_models_module.ChatMember.conversation_id == created["conversation_id"],
+                chat_models_module.ChatMember.left_at.is_(None),
+            )
+        ).scalars().all()
+    assert {int(item.user_id) for item in members} == {1, 2, 3, 4}
+
+    hub_service.update_task(
+        task_id,
+        {"observer_user_ids": []},
+        actor_user_id=1,
+        is_admin=False,
+    )
+    task_discussion_module.sync_task_discussion_members(task_id=task_id)
+
+    with chat_db_module.chat_session() as session:
+        members = session.execute(
+            select(chat_models_module.ChatMember).where(
+                chat_models_module.ChatMember.conversation_id == created["conversation_id"],
+            )
+        ).scalars().all()
+    active_ids = {int(item.user_id) for item in members if item.left_at is None}
+    left_observer = next(item for item in members if int(item.user_id) == 4)
+    assert active_ids == {1, 2, 3}
+    assert left_observer.left_at is not None
+
+
 def test_ensure_task_discussion_denies_outsider(task_discussion_env):
     task = task_discussion_env["task"]
     with pytest.raises(PermissionError):

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, lazy, Suspense } from 'react';
 import {
   Alert,
   Avatar,
@@ -70,7 +70,7 @@ import { DEFAULT_DASHBOARD_MOBILE_SECTIONS, normalizeDashboardMobileSections, us
 import { useLocation, useNavigate } from 'react-router-dom';
 import MarkdownRenderer from '../components/hub/MarkdownRenderer';
 import MarkdownEditor from '../components/hub/MarkdownEditor';
-import { TaskPreviewDrawer } from '../components/hub/TaskUi';
+const TaskPreviewDrawer = lazy(() => import('../components/hub/tasks/detail/TaskPreviewDrawer.jsx').then((module) => ({ default: module.TaskPreviewDrawer })));
 import OverflowMenu from '../components/common/OverflowMenu';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
 import {
@@ -3121,37 +3121,39 @@ function DashboardNews({ newsOnly = false }) {
             </DialogActions>
           </Dialog>
 
-        <TaskPreviewDrawer
-          open={taskOpen}
-          onClose={closeTaskDetails}
-          loading={taskLoading}
-          task={taskDetails}
-          mobile={isMobile}
-          ui={ui}
-          theme={theme}
-          paperSx={getOfficeDialogPaperSx(ui, { borderLeftColor: ui.borderSoft })}
-          statusMeta={taskStatusMeta(taskDetails?.status)}
-          priorityMeta={taskPriorityMeta(taskDetails?.priority)}
-          transferLabel={getTransferActReminderLabel(taskDetails)}
-          isTransferReminder={isTransferActUploadTask(taskDetails)}
-          canOpenTransferActUpload={canOpenTransferActUpload(taskDetails)}
-          onOpenTransferActReminder={openTransferActReminder}
-          onOpenInTasks={() => {
-            if (!taskDetails?.id) return;
-            const url = new URL('/tasks', window.location.origin);
-            url.searchParams.set('task', taskDetails.id);
-            if (!taskDiscussionChatEnabled) {
-              url.searchParams.set('task_tab', 'comments');
-            }
-            navigate(`${url.pathname}${url.search}`);
-          }}
-          onDownloadReport={(report) => void downloadTaskReport(report)}
-          formatDateTime={fmtDateTime}
-          latestCommentPreview={getTaskCommentPreview(taskDetails)}
-          taskDiscussionEnabled={taskDiscussionChatEnabled}
-          onOpenTaskDiscussion={() => void handleOpenTaskDiscussion(taskDetails)}
-          discussionOpening={discussionOpening}
-        />
+        <Suspense fallback={null}>
+          <TaskPreviewDrawer
+            open={taskOpen}
+            onClose={closeTaskDetails}
+            loading={taskLoading}
+            task={taskDetails}
+            mobile={isMobile}
+            ui={ui}
+            theme={theme}
+            paperSx={getOfficeDialogPaperSx(ui, { borderLeftColor: ui.borderSoft })}
+            statusMeta={taskStatusMeta(taskDetails?.status)}
+            priorityMeta={taskPriorityMeta(taskDetails?.priority)}
+            transferLabel={getTransferActReminderLabel(taskDetails)}
+            isTransferReminder={isTransferActUploadTask(taskDetails)}
+            canOpenTransferActUpload={canOpenTransferActUpload(taskDetails)}
+            onOpenTransferActReminder={openTransferActReminder}
+            onOpenInTasks={() => {
+              if (!taskDetails?.id) return;
+              const url = new URL('/tasks', window.location.origin);
+              url.searchParams.set('task', taskDetails.id);
+              if (!taskDiscussionChatEnabled) {
+                url.searchParams.set('task_tab', 'comments');
+              }
+              navigate(`${url.pathname}${url.search}`);
+            }}
+            onDownloadReport={(report) => void downloadTaskReport(report)}
+            formatDateTime={fmtDateTime}
+            latestCommentPreview={getTaskCommentPreview(taskDetails)}
+            taskDiscussionEnabled={taskDiscussionChatEnabled}
+            onOpenTaskDiscussion={() => void handleOpenTaskDiscussion(taskDetails)}
+            discussionOpening={discussionOpening}
+          />
+        </Suspense>
       </Box>
       </PageShell>
     </MainLayout>

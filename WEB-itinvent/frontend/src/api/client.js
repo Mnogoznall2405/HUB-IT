@@ -860,6 +860,10 @@ export const hubAPI = {
     return hubTasksAPI.reviewTask;
   },
 
+  get reopenTask() {
+    return hubTasksAPI.reopenTask;
+  },
+
   get downloadTaskAttachment() {
     return hubTaskFilesAPI.downloadTaskAttachment;
   },

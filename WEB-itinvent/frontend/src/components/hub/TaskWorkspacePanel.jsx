@@ -33,7 +33,7 @@ import {
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 import MarkdownRenderer from './MarkdownRenderer';
 import TaskChecklist from './TaskChecklist';
-import { TaskEditDialog, TaskReviewDialog, TaskSubmitDialog } from './TaskActionDialogs';
+import { TaskEditDialog, TaskReopenDialog, TaskReviewDialog, TaskSubmitDialog } from './TaskActionDialogs';
 
 const EMPTY_REFERENCES = {
   assignees: [],
@@ -130,6 +130,7 @@ function TaskWorkspacePanel({
   const [editOpen, setEditOpen] = useState(false);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [reopenOpen, setReopenOpen] = useState(false);
   const [references, setReferences] = useState(EMPTY_REFERENCES);
   const [referencesLoading, setReferencesLoading] = useState(false);
   const loadRequestIdRef = useRef(0);
@@ -191,7 +192,6 @@ function TaskWorkspacePanel({
     setError('');
     try {
       const results = await Promise.allSettled([
-        hubAPI.getAssignees(),
         hubAPI.getControllers(),
         departmentsAPI.list(),
         hubAPI.getTaskProjects({ include_inactive: true }),
@@ -206,11 +206,11 @@ function TaskWorkspacePanel({
           : []
       );
       setReferences({
-        assignees: items(0),
-        controllers: items(1),
-        departments: items(2),
-        projects: items(3),
-        objects: items(4),
+        assignees: [],
+        controllers: items(0),
+        departments: items(1),
+        projects: items(2),
+        objects: items(3),
       });
       setEditOpen(true);
     } catch (requestError) {
@@ -272,7 +272,7 @@ function TaskWorkspacePanel({
   const priority = taskWorkspacePriorityMeta(task?.priority);
   const attachments = Array.isArray(task?.attachments) ? task.attachments : [];
   const transferReminder = isTransferActUploadTask(task);
-  const hasPrimaryAction = capabilities.can_start || capabilities.can_submit || capabilities.can_review || canOpenTransferActUpload(task);
+  const hasPrimaryAction = capabilities.can_start || capabilities.can_submit || capabilities.can_review || capabilities.can_reopen || canOpenTransferActUpload(task);
 
   const openTransferUpload = () => {
     const href = getTransferActUploadUrl(task);
@@ -484,6 +484,11 @@ function TaskWorkspacePanel({
                 Проверить
               </Button>
             ) : null}
+            {capabilities.can_reopen ? (
+              <Button variant="outlined" onClick={() => setReopenOpen(true)} disabled={Boolean(busyAction)} sx={{ fontWeight: 800, boxShadow: 'none' }}>
+                Вернуть в работу
+              </Button>
+            ) : null}
             {!hasPrimaryAction && capabilities.can_edit ? (
               <Button variant="outlined" startIcon={<EditOutlinedIcon />} onClick={() => void loadEditReferences()} disabled={referencesLoading}>
                 Изменить
@@ -529,6 +534,17 @@ function TaskWorkspacePanel({
         onSubmit={({ comment, file }) => void runAction('submit', async () => {
           await hubAPI.submitTask({ taskId: task.id, comment, file });
           setSubmitOpen(false);
+        })}
+        ui={ui}
+      />
+      <TaskReopenDialog
+        open={reopenOpen}
+        task={task}
+        saving={busyAction === 'reopen'}
+        onClose={() => setReopenOpen(false)}
+        onSubmit={({ due_at: dueAt }) => void runAction('reopen', async () => {
+          await hubAPI.reopenTask(task.id, { due_at: dueAt });
+          setReopenOpen(false);
         })}
         ui={ui}
       />

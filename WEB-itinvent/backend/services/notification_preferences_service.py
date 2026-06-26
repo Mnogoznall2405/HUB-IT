@@ -11,6 +11,7 @@ class NotificationPreferencesService:
     DEFAULTS = {
         "mail": True,
         "tasks": True,
+        "task_email": True,
         "announcements": True,
         "chat": True,
     }

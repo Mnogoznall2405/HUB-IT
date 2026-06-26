@@ -1118,7 +1118,7 @@ export default function Dashboard() {
                       data-testid="dashboard-primary-action"
                       variant="contained"
                       startIcon={primaryQuickAction.icon}
-                      onClick={() => navigate(primaryQuickAction.path)}
+                      onClick={() => navigate('/tasks?create=1', { state: { openCreate: true } })}
                       sx={{
                         minHeight: 48,
                         px: 1.5,

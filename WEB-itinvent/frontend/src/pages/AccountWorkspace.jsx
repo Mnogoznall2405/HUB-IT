@@ -2159,6 +2159,7 @@ export function NotificationChannelsSettingsCard() {
   const [channels, setChannels] = useState({
     mail: true,
     tasks: true,
+    task_email: true,
     announcements: true,
     chat: true,
   });
@@ -2172,6 +2173,7 @@ export function NotificationChannelsSettingsCard() {
       setChannels({
         mail: Boolean(data?.channels?.mail ?? true),
         tasks: Boolean(data?.channels?.tasks ?? true),
+        task_email: Boolean(data?.channels?.task_email ?? true),
         announcements: Boolean(data?.channels?.announcements ?? true),
         chat: Boolean(data?.channels?.chat ?? true),
       });
@@ -2192,6 +2194,7 @@ export function NotificationChannelsSettingsCard() {
       setChannels({
         mail: Boolean(data?.channels?.mail ?? true),
         tasks: Boolean(data?.channels?.tasks ?? true),
+        task_email: Boolean(data?.channels?.task_email ?? true),
         announcements: Boolean(data?.channels?.announcements ?? true),
         chat: Boolean(data?.channels?.chat ?? true),
       });
@@ -2219,6 +2222,7 @@ export function NotificationChannelsSettingsCard() {
             {[
               ['mail', 'Почта'],
               ['tasks', 'Задачи'],
+              ['task_email', 'Email по задачам'],
               ['announcements', 'Объявления'],
               ['chat', 'Chat'],
             ].map(([key, label]) => (

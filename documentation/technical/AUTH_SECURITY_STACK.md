@@ -6,7 +6,8 @@
 - Access token lifetime: `JWT_ACCESS_EXPIRE_MINUTES=15`.
 - Refresh token lifetime: `JWT_REFRESH_EXPIRE_DAYS=7`.
 - 2FA challenge lifetime: `AUTH_2FA_CHALLENGE_TTL_SEC=300`.
-- Session idle timeout: `SESSION_IDLE_TIMEOUT_MINUTES=30`.
+- Session idle timeout: `SESSION_IDLE_TIMEOUT_MINUTES=30` (password/TOTP sessions).
+- Trusted-device session idle timeout: `SESSION_IDLE_TIMEOUT_TRUSTED_DAYS=7` (passkey / WebAuthn login).
 - Session history retention: `SESSION_HISTORY_RETENTION_DAYS=14`.
 - Trusted device/passkey lifetime: `AUTH_TRUSTED_DEVICE_TTL_DAYS=90`.
 
@@ -31,6 +32,7 @@
 - `WEBAUTHN_ORIGIN`
 - `AUTH_PASSKEY_ALLOW_INTERNAL=0` (keep `0` so passkey stays external-only; corp `10.x` stays password-only)
 - `AUTH_TRUSTED_DEVICE_TTL_DAYS=90`
+- `SESSION_IDLE_TIMEOUT_TRUSTED_DAYS=7`
 
 ## Runtime Storage
 Auth does not require Redis.

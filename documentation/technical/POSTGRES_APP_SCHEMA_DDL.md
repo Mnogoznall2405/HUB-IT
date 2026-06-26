@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-06-23 17:15 UTC_  
+_Сгенерировано: 2026-06-26 04:02 UTC_  
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (85 tables)
+## Schema `app` (86 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -460,6 +460,34 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.hub_task_email_outbox`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `dedupe_key` | text | no | `` |
+| `task_id` | text | yes | `` |
+| `recipient_user_id` | integer | no | `` |
+| `recipient_email` | text | no | `` |
+| `event_type` | text | no | `` |
+| `subject` | text | no | `` |
+| `body_text` | text | no | `` |
+| `status` | text | no | `'pending'::text` |
+| `attempt_count` | integer | no | `0` |
+| `available_at` | text | no | `` |
+| `created_at` | text | no | `` |
+| `updated_at` | text | no | `` |
+| `sent_at` | text | yes | `` |
+| `last_error` | text | no | `''::text` |
+| `body_html` | text | no | `''::text` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_hub_task_email_outbox_status`: (status, available_at, created_at)
+  - `uq_hub_task_email_outbox_dedupe` UNIQUE: (dedupe_key)
+
+---
+
 ### `app.hub_task_objects`
 
 | Column | Type | Nullable | Default |
@@ -569,13 +597,17 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `department_id` | text | yes | `` |
 | `visibility_scope` | text | no | `'private'::text` |
 | `checklist_items` | text | no | `'[]'::text` |
+| `email_deadline_remind_hours` | integer | yes | `` |
+| `observer_user_ids` | text | no | `'[]'::text` |
 
 - **Primary key:** `id`
 - **Indexes:**
   - `idx_hub_tasks_assignee`: (assignee_user_id, status, updated_at)
   - `idx_hub_tasks_completed_at`: (completed_at)
   - `idx_hub_tasks_controller`: (controller_user_id, status, updated_at)
+  - `idx_hub_tasks_created_by`: (created_by_user_id, status, updated_at)
   - `idx_hub_tasks_department`: (department_id, updated_at)
+  - `idx_hub_tasks_due_at`: (due_at)
   - `idx_hub_tasks_object`: (object_id, updated_at)
   - `idx_hub_tasks_project`: (project_id, updated_at)
   - `idx_hub_tasks_protocol_date`: (protocol_date)

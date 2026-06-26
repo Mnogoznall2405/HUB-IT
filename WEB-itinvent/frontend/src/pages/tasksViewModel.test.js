@@ -7,8 +7,11 @@ import {
   buildGanttRows,
   buildMobileTaskActionState,
   buildMobileTaskFeed,
+  buildTaskListSections,
   formatCreateDueLabel,
+  joinLocalDateTimeInput,
   normalizeTaskMode,
+  splitLocalDateTimeInput,
   toLocalDateTimeInput,
   toLocalDateKey,
 } from './tasksViewModel';
@@ -129,6 +132,27 @@ describe('tasks view model', () => {
       stepLabel: 'Завершено',
       actionLabel: '',
     }));
+
+    expect(buildMobileTaskActionState(makeTask({ id: 'done-reopen', status: 'done' }), {
+      canReopen: true,
+    })).toEqual(expect.objectContaining({
+      key: 'reopen',
+      stepLabel: 'Вернуть в работу',
+      actionLabel: 'Вернуть в работу',
+    }));
+  });
+
+  it('builds list sections into active and completed groups', () => {
+    const tasks = [
+      makeTask({ id: 'open-1', status: 'new' }),
+      makeTask({ id: 'open-2', status: 'in_progress' }),
+      makeTask({ id: 'done-1', status: 'done' }),
+      makeTask({ id: 'done-2', status: 'done', due_at: new Date(2026, 5, 10, 18).toISOString() }),
+    ];
+    const sections = buildTaskListSections(tasks, now);
+
+    expect(sections.active.items.map((task) => task.id).sort()).toEqual(['open-1', 'open-2']);
+    expect(sections.completed.items.map((task) => task.id).sort()).toEqual(['done-1', 'done-2']);
   });
 
   it('builds quick create due presets at 19:00', () => {
@@ -149,6 +173,13 @@ describe('tasks view model', () => {
     expect(formatCreateDueLabel('2026-06-15T19:00', reference)).toBe('завтра в 19:00');
     expect(formatCreateDueLabel('2026-06-19T19:00', reference)).toBe('19.06 в 19:00');
     expect(toLocalDateTimeInput(new Date(2026, 5, 15, 19, 0, 0))).toBe('2026-06-15T19:00');
+  });
+
+  it('splits and joins local datetime input in 24h format', () => {
+    expect(splitLocalDateTimeInput('')).toEqual({ date: '', time: '19:00' });
+    expect(splitLocalDateTimeInput('2026-06-15T19:00')).toEqual({ date: '2026-06-15', time: '19:00' });
+    expect(joinLocalDateTimeInput('2026-06-15', '09:30')).toBe('2026-06-15T09:30');
+    expect(joinLocalDateTimeInput('', '09:30')).toBe('');
   });
 
   it('places due tasks into the calendar grid and counts open tasks without due date', () => {

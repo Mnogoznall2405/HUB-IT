@@ -1,5 +1,6 @@
 import React from 'react';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Computers from './Computers';
 import { equipmentAPI } from '../api/client';
@@ -25,6 +26,14 @@ vi.mock('../components/layout/MainLayout', () => ({
 vi.mock('../components/layout/PageShell', () => ({
   default: ({ children }) => <div data-testid="page-shell">{children}</div>,
 }));
+
+function renderComputers(initialEntry = '/computers') {
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <Computers />
+    </MemoryRouter>,
+  );
+}
 
 const sampleComputer = {
   hostname: 'PC-01',
@@ -175,7 +184,7 @@ describe('Computers page', () => {
   });
 
   it('renders computers data from the backend contract and opens details drawer', async () => {
-    render(<Computers />);
+    renderComputers();
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(1);
@@ -208,7 +217,7 @@ describe('Computers page', () => {
   }, 15000);
 
   it('sends server-side filter options when search, changedOnly, and scope change', async () => {
-    render(<Computers />);
+    renderComputers();
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
@@ -280,7 +289,7 @@ describe('Computers page', () => {
         next_offset: null,
       });
 
-    render(<Computers />);
+    renderComputers();
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
@@ -342,7 +351,7 @@ describe('Computers page', () => {
         },
       });
 
-    render(<Computers />);
+    renderComputers();
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(

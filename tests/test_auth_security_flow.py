@@ -695,6 +695,96 @@ def test_auth_security_complete_login_saves_ldap_password_to_primary_mailbox(mon
     ]
 
 
+def test_complete_login_passes_trusted_device_id_for_webauthn(monkeypatch):
+    service = auth_security_module.AuthSecurityService()
+    user_payload = _sample_public_user(id=7, username="ivanov")
+    challenge = {
+        "challenge_id": "challenge-trusted",
+        "user_id": 7,
+        "username": "ivanov",
+        "request_username": "ivanov",
+        "role": "viewer",
+        "auth_source": "local",
+        "ip_address": "203.0.113.10",
+        "user_agent": "pytest",
+        "network_zone": "external",
+        "twofa_policy": "all",
+        "twofa_required_for_current_request": True,
+    }
+    captured: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        auth_security_module.session_service,
+        "create_session",
+        lambda **kwargs: captured.append(kwargs) or {"status": "active"},
+    )
+    monkeypatch.setattr(auth_security_module.session_service, "close_session", lambda session_id: None)
+    monkeypatch.setattr(auth_security_module.security_email_service, "send_new_login_alert", lambda **kwargs: None)
+    monkeypatch.setattr(auth_security_module.auth_runtime_store_service, "delete_login_challenge", lambda challenge_id: None)
+    monkeypatch.setattr(service, "issue_tokens", lambda **kwargs: {
+        "access_token": "access-token",
+        "refresh_token": "refresh-token",
+        "access_ttl_seconds": 900,
+        "refresh_ttl_seconds": 86400,
+    })
+    monkeypatch.setattr(service, "_build_public_user", lambda user, **kwargs: dict(user))
+
+    service._complete_login(
+        challenge=challenge,
+        user=user_payload,
+        auth_method="passkey",
+        device_id="trusted:device-uuid-1",
+    )
+
+    assert captured
+    assert captured[0]["trusted_device_id"] == "device-uuid-1"
+
+
+def test_complete_login_without_trusted_device_id_for_password(monkeypatch):
+    service = auth_security_module.AuthSecurityService()
+    user_payload = _sample_public_user(id=7, username="ivanov")
+    challenge = {
+        "challenge_id": "challenge-password",
+        "user_id": 7,
+        "username": "ivanov",
+        "request_username": "ivanov",
+        "role": "viewer",
+        "auth_source": "local",
+        "ip_address": "203.0.113.10",
+        "user_agent": "pytest",
+        "network_zone": "external",
+        "twofa_policy": "all",
+        "twofa_required_for_current_request": True,
+    }
+    captured: list[dict[str, object]] = []
+
+    monkeypatch.setattr(
+        auth_security_module.session_service,
+        "create_session",
+        lambda **kwargs: captured.append(kwargs) or {"status": "active"},
+    )
+    monkeypatch.setattr(auth_security_module.session_service, "close_session", lambda session_id: None)
+    monkeypatch.setattr(auth_security_module.security_email_service, "send_new_login_alert", lambda **kwargs: None)
+    monkeypatch.setattr(auth_security_module.auth_runtime_store_service, "delete_login_challenge", lambda challenge_id: None)
+    monkeypatch.setattr(service, "issue_tokens", lambda **kwargs: {
+        "access_token": "access-token",
+        "refresh_token": "refresh-token",
+        "access_ttl_seconds": 900,
+        "refresh_ttl_seconds": 86400,
+    })
+    monkeypatch.setattr(service, "_build_public_user", lambda user, **kwargs: dict(user))
+
+    service._complete_login(
+        challenge=challenge,
+        user=user_payload,
+        auth_method="totp",
+        device_id=None,
+    )
+
+    assert captured
+    assert captured[0].get("trusted_device_id") is None
+
+
 def test_verify_twofa_login_consumes_challenge_on_invalid_totp(monkeypatch):
     challenge = {
         "challenge_id": "challenge-1",

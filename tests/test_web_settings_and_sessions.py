@@ -54,10 +54,12 @@ def isolated_session_service(tmp_path, monkeypatch):
     session_service_module = importlib.import_module("backend.services.session_service")
 
     monkeypatch.setattr(backend_config_module.config.session, "idle_timeout_minutes", 30)
+    monkeypatch.setattr(backend_config_module.config.session, "idle_timeout_trusted_days", 7)
     monkeypatch.setattr(backend_config_module.config.session, "history_retention_days", 14)
     monkeypatch.setattr(backend_config_module.config.session, "cleanup_min_interval_seconds", 0)
     monkeypatch.setattr(backend_config_module.config.jwt, "access_token_expire_minutes", 480)
     monkeypatch.setattr(session_service_module.config.session, "idle_timeout_minutes", 30)
+    monkeypatch.setattr(session_service_module.config.session, "idle_timeout_trusted_days", 7)
     monkeypatch.setattr(session_service_module.config.session, "history_retention_days", 14)
     monkeypatch.setattr(session_service_module.config.session, "cleanup_min_interval_seconds", 0)
     monkeypatch.setattr(session_service_module.config.jwt, "access_token_expire_minutes", 480)
@@ -361,3 +363,90 @@ def test_logout_deletes_session_auth_context(monkeypatch):
 
     assert response.status_code == 200
     assert deleted_session_ids == ["logout-session"]
+
+
+def test_trusted_session_idle_expires_in_seven_days(isolated_session_service, monkeypatch):
+    session_service_module = importlib.import_module("backend.services.session_service")
+
+    monkeypatch.setattr(
+        session_service_module.trusted_device_service,
+        "get_device",
+        lambda device_id: {
+            "id": device_id,
+            "is_active": True,
+            "is_expired": False,
+        },
+    )
+
+    created = isolated_session_service.create_session(
+        session_id="session-trusted",
+        user_id=1,
+        username="admin",
+        role="admin",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0",
+        expires_at=_utc_now_iso(timedelta(days=7)),
+        trusted_device_id="trusted-device-1",
+    )
+
+    idle_expires_at = datetime.fromisoformat(created["idle_expires_at"])
+    expected = datetime.now(timezone.utc) + timedelta(days=7)
+    assert abs((idle_expires_at - expected).total_seconds()) < 5
+
+
+def test_password_session_idle_expires_in_thirty_minutes(isolated_session_service):
+    created = isolated_session_service.create_session(
+        session_id="session-password",
+        user_id=1,
+        username="admin",
+        role="admin",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0",
+        expires_at=_utc_now_iso(timedelta(days=7)),
+    )
+
+    idle_expires_at = datetime.fromisoformat(created["idle_expires_at"])
+    expected = datetime.now(timezone.utc) + timedelta(minutes=30)
+    assert abs((idle_expires_at - expected).total_seconds()) < 5
+
+
+def test_revoked_trusted_device_recalculates_idle_to_thirty_minutes(isolated_session_service, monkeypatch):
+    session_service_module = importlib.import_module("backend.services.session_service")
+    active_device = {
+        "id": "trusted-device-1",
+        "is_active": True,
+        "is_expired": False,
+    }
+
+    def get_device(device_id):
+        if device_id != "trusted-device-1":
+            return None
+        return active_device
+
+    monkeypatch.setattr(session_service_module.trusted_device_service, "get_device", get_device)
+
+    isolated_session_service.create_session(
+        session_id="session-revoked-trusted",
+        user_id=1,
+        username="admin",
+        role="admin",
+        ip_address="127.0.0.1",
+        user_agent="Mozilla/5.0",
+        expires_at=_utc_now_iso(timedelta(days=7)),
+        trusted_device_id="trusted-device-1",
+    )
+
+    sessions = isolated_session_service._load_sessions()
+    sessions[0]["last_seen_at"] = _utc_now_iso(timedelta(minutes=-45))
+    isolated_session_service._save_sessions(sessions)
+
+    active_device["is_active"] = False
+    assert isolated_session_service.is_session_active("session-revoked-trusted") is False
+
+    session = next(
+        item
+        for item in isolated_session_service.list_sessions(active_only=False)
+        if item["session_id"] == "session-revoked-trusted"
+    )
+    assert session.get("trusted_device_id") is None
+    assert session["status"] == "expired_idle"

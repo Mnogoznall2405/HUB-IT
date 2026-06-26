@@ -17,6 +17,7 @@ const APP_SHELL_URLS = [
   '/apple-touch-icon.png',
   '/pwa-192.png',
   '/pwa-512.png',
+  '/pwa-512-maskable.png',
   '/hubit-badge.svg',
   '/hubit-screenshot-wide.svg',
   '/hubit-screenshot-narrow.svg',

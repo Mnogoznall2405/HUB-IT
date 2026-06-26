@@ -32,7 +32,7 @@ describe('excelPreview', () => {
     ]);
     XLSX.utils.book_append_sheet(workbook, sheet, 'Data');
     const bytes = XLSX.write(workbook, { type: 'array', bookType: 'xlsx' });
-    const parsed = await parseExcelWorkbookFromBlob(new Blob([bytes]));
+    const parsed = await parseExcelWorkbookFromBlob(new Uint8Array(bytes));
 
     expect(parsed.sheetNames).toHaveLength(1);
     expect(parsed.sheets[0].name).toBeTruthy();

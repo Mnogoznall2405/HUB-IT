@@ -107,6 +107,7 @@ def mock_config(monkeypatch):
     monkeypatch.setenv("SQL_SERVER_USERNAME", "test_user")
     monkeypatch.setenv("SQL_SERVER_PASSWORD", "test_pass")
     monkeypatch.setenv("ALLOWED_USERS", "123456")
+    monkeypatch.setenv("TASK_EMAIL_AUTODISPATCH_ENABLED", "0")
 
 
 @pytest.fixture

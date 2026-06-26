@@ -242,6 +242,37 @@ async def get_current_user_from_websocket(websocket: WebSocket) -> User:
     return current_user
 
 
+def extract_websocket_access_token(websocket: WebSocket) -> Optional[str]:
+    authorization_header = str(websocket.headers.get("authorization") or "").strip()
+    credentials = None
+    if authorization_header.lower().startswith("bearer "):
+        credentials = authorization_header[7:].strip() or None
+    access_token_cookie = websocket.cookies.get(config.app.auth_cookie_name)
+    return _resolve_access_token(
+        HTTPAuthorizationCredentials(scheme="Bearer", credentials=credentials) if credentials else None,
+        access_token_cookie,
+    )
+
+
+def assert_access_token_still_valid(token: Optional[str]) -> None:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate credentials",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    normalized_token = str(token or "").strip()
+    if not normalized_token:
+        raise credentials_exception
+    token_data = decode_access_token(normalized_token, expected_token_type="access")
+    if token_data is None:
+        raise credentials_exception
+    if token_data.jti and auth_runtime_store_service.is_jti_revoked(token_data.jti):
+        raise credentials_exception
+    if token_data.session_id and not session_service.is_session_active(token_data.session_id):
+        session_auth_context_service.delete_session_context(token_data.session_id)
+        raise credentials_exception
+
+
 async def get_current_active_user(
     current_user: User = Depends(get_current_user)
 ) -> User:

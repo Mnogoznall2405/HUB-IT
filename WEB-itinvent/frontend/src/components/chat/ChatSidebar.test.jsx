@@ -214,6 +214,30 @@ describe('ChatSidebar', () => {
     expect(onActiveFolderChange).toHaveBeenCalledWith('tasks');
   });
 
+  it('switches folders on mobile list swipe', () => {
+    const onActiveFolderChange = vi.fn();
+    const onOpenConversation = vi.fn();
+    renderWithTheme(buildProps({
+      compactMobile: true,
+      isMobile: true,
+      activeFolderKey: 'personal',
+      onActiveFolderChange,
+      onOpenConversation,
+      conversations: [{
+        ...baseConversation,
+        kind: 'direct',
+      }],
+    }));
+
+    const row = screen.getByRole('button', { current: 'page' });
+    fireEvent.touchStart(row, { touches: [{ clientX: 220, clientY: 300 }] });
+    fireEvent.touchMove(row, { touches: [{ clientX: 120, clientY: 302 }] });
+    fireEvent.touchEnd(row);
+
+    expect(onActiveFolderChange).toHaveBeenCalledWith('tasks');
+    expect(onOpenConversation).not.toHaveBeenCalled();
+  });
+
   it('opens chat actions on right click and forwards pin and delete actions', () => {
     const onUpdateConversationSettings = vi.fn();
     const onRequestDeleteConversation = vi.fn();

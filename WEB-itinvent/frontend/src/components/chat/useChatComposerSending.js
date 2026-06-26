@@ -101,7 +101,9 @@ export default function useChatComposerSending({
     focusComposer({ forceMobile: true });
     try {
       let serverMessage = null;
-      const canSendViaSocket = CHAT_WS_ENABLED && socketStatusRef.current === 'connected';
+      const canSendViaSocket = CHAT_WS_ENABLED
+        && chatSocket.isOpen()
+        && socketStatusRef.current === 'connected';
       if (canSendViaSocket) {
         try {
           const response = await chatSocket.sendMessage(conversationId, body, {
@@ -116,6 +118,7 @@ export default function useChatComposerSending({
             conversationId,
             error: String(socketError?.message || socketError),
           });
+          chatSocket.close();
           socketStatusRef.current = 'disconnected';
           setSocketStatus('disconnected');
         }

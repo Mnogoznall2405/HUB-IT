@@ -5311,7 +5311,16 @@ export default function Chat() {
       typingStartedRef.current = false;
       typingStopTimeoutRef.current = null;
     }, 1800);
-    return undefined;
+    return () => {
+      if (typingStopTimeoutRef.current) {
+        window.clearTimeout(typingStopTimeoutRef.current);
+        typingStopTimeoutRef.current = null;
+      }
+      if (typingStartedRef.current) {
+        chatSocket.sendTyping(activeConversationId, false);
+        typingStartedRef.current = false;
+      }
+    };
   }, [activeConversationId, deferredMessageText]);
 
   useLayoutEffect(() => {
