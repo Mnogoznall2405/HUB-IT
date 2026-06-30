@@ -1,4 +1,4 @@
-﻿"""
+"""
 Hub service for dashboard announcements, tasks, and notifications.
 """
 from __future__ import annotations
@@ -9,14 +9,13 @@ import re
 import shutil
 import sqlite3
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import time
 from urllib.parse import quote
 
-from threading import BoundedSemaphore, Lock, RLock
+from threading import Lock, RLock
 from typing import Any, Callable, Optional
 
 from sqlalchemy import inspect
@@ -29,6 +28,7 @@ from local_store import get_local_store
 from backend.services.app_push_service import app_push_service
 from backend.services.access_policy_service import (
     VISIBILITY_PRIVATE,
+    _assignee_cannot_review_as_non_creator,
     can_create_task_for_department,
     can_review_task,
     can_view_task,
@@ -40,15 +40,17 @@ from backend.services.access_policy_service import (
 from backend.services.authorization_service import PERM_TASKS_REVIEW, authorization_service
 from backend.services.department_service import DEPARTMENT_MANAGER_ROLE, DEPARTMENT_MEMBER_ROLE, department_service
 from backend.services.notification_preferences_service import notification_preferences_service
+from backend.services.task_email_outbox_service import (
+    TaskEmailOutboxMixin,
+    _normalize_email_deadline_remind_hours,
+    _resolve_email_deadline_remind_hours,
+)
 from backend.services.task_email_service import task_email_service
 from backend.services.task_email_templates import build_overdue_digest_email, build_task_email_content
+from backend.services.task_participant_service import TaskParticipantMixin
 from backend.services.user_service import user_service
 
 logger = logging.getLogger(__name__)
-
-
-_TASK_EMAIL_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="task-email")
-_TASK_EMAIL_DISPATCH_SLOT = BoundedSemaphore(1)
 
 
 def _utc_now_iso() -> str:
@@ -64,35 +66,6 @@ def _safe_file_name(value: str) -> str:
     base = Path(str(value or "").strip()).name
     base = re.sub(r"[^A-Za-z0-9._\-\u0400-\u04FF ]+", "_", base)
     return base.strip() or "file.bin"
-
-
-def _normalize_email_deadline_remind_hours(value: Any) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, str) and not value.strip():
-        return None
-    try:
-        hours = int(value)
-    except (TypeError, ValueError) as exc:
-        raise ValueError("email_deadline_remind_hours must be an integer between 0 and 168") from exc
-    if hours == 0:
-        return 0
-    if 1 <= hours <= 168:
-        return hours
-    raise ValueError("email_deadline_remind_hours must be between 0 and 168")
-
-
-def _resolve_email_deadline_remind_hours(task: dict[str, Any]) -> float | None:
-    raw = task.get("email_deadline_remind_hours")
-    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
-        return task_email_service.deadline_soon_hours()
-    try:
-        hours = int(raw)
-    except (TypeError, ValueError):
-        return task_email_service.deadline_soon_hours()
-    if hours <= 0:
-        return None
-    return float(hours)
 
 
 _HUB_REQUIRED_COLUMNS = {
@@ -285,6 +258,28 @@ _TASK_VISIBILITY_SELECT_COLUMNS = (
     "department_id",
     "visibility_scope",
 )
+_TASK_ANALYTICS_SELECT_COLUMNS = (
+    "id",
+    "status",
+    "assignee_user_id",
+    "assignee_username",
+    "assignee_full_name",
+    "project_id",
+    "object_id",
+    "protocol_date",
+    "created_at",
+    "completed_at",
+    "completed_at_source",
+    "due_at",
+    "updated_at",
+    "submitted_at",
+    "reviewed_at",
+    "department_id",
+    "visibility_scope",
+    "created_by_user_id",
+    "controller_user_id",
+    "observer_user_ids",
+)
 _DEPARTMENT_SCOPE_SQL_SCAN_CAP = 2000
 _DEPARTMENT_SCOPE_FETCH_BATCH = 100
 _HUB_REQUIRED_INDEXES = {
@@ -316,7 +311,7 @@ class HubSchemaConfigurationError(RuntimeError):
     """Raised when production hub schema is not migration-ready."""
 
 
-class HubService:
+class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
     _DEFAULT_TASK_PROJECT_ID = "general-tasks"
     _DEFAULT_TASK_PROJECT_NAME = "Общие задачи"
     _DEFAULT_TASK_PROJECT_CODE = "GENERAL"
@@ -379,6 +374,9 @@ class HubService:
         self._user_directory_cache: dict[str, tuple[float, list[dict[str, Any]]]] = {}
         self._user_directory_cache_lock = Lock()
         self._user_directory_cache_ttl_sec = 300.0
+        self._task_analytics_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+        self._task_analytics_cache_lock = Lock()
+        self._task_analytics_cache_ttl_sec = 90.0
         if self._use_app_db and self._database_url:
             initialize_app_schema(self._database_url)
         self._ensure_schema()
@@ -695,13 +693,6 @@ class HubService:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
         if "checklist_items" not in cols:
             conn.execute(f"ALTER TABLE {self._TASKS_TABLE} ADD COLUMN checklist_items TEXT NOT NULL DEFAULT '[]'")
-
-    def _ensure_task_email_outbox_body_html_column(self, conn: sqlite3.Connection) -> None:
-        cols = self._table_columns(conn, self._TASK_EMAIL_OUTBOX_TABLE)
-        if "body_html" not in cols:
-            conn.execute(
-                f"ALTER TABLE {self._TASK_EMAIL_OUTBOX_TABLE} ADD COLUMN body_html TEXT NOT NULL DEFAULT ''"
-            )
 
     def _ensure_task_extended_columns(self, conn: sqlite3.Connection) -> None:
         columns = self._table_columns(conn, self._TASKS_TABLE)
@@ -1499,35 +1490,6 @@ class HubService:
         users = self._get_cached_user_directory("active_users", self._active_users)
         return {self._as_int(row.get("id")): row for row in users}
 
-    def _task_delegate_user_ids(self, assignee_user_id: Any) -> list[int]:
-        return user_service.get_delegate_user_ids(self._as_int(assignee_user_id))
-
-    def _task_participant_user_ids(self, task: dict[str, Any], *, include_delegates: bool = True) -> set[int]:
-        participant_ids = {
-            self._as_int(task.get("assignee_user_id")),
-            self._as_int(task.get("created_by_user_id")),
-            self._as_int(task.get("controller_user_id")),
-        }
-        if include_delegates:
-            participant_ids.update(self._task_delegate_user_ids(task.get("assignee_user_id")))
-        return {item for item in participant_ids if item > 0}
-
-    def _task_observer_user_ids(self, task: dict[str, Any]) -> set[int]:
-        raw = task.get("observer_user_ids")
-        if isinstance(raw, str) or raw is None:
-            values = self._json_load_list(raw)
-        elif isinstance(raw, list):
-            values = raw
-        else:
-            values = []
-        return {item for item in self._unique_ints(values)}
-
-    def _task_viewer_user_ids(self, task: dict[str, Any], *, include_delegates: bool = True) -> set[int]:
-        return self._task_participant_user_ids(task, include_delegates=include_delegates) | self._task_observer_user_ids(task)
-
-    def _task_discussion_user_ids(self, task: dict[str, Any], *, include_delegates: bool = True) -> set[int]:
-        return self._task_viewer_user_ids(task, include_delegates=include_delegates)
-
     def _uses_postgresql(self) -> bool:
         if not self._use_app_db or not self._database_url:
             return False
@@ -1535,72 +1497,6 @@ class HubService:
             return str(get_app_engine(self._database_url).dialect.name).lower() == "postgresql"
         except Exception:
             return False
-
-    def _observer_membership_clause(self, user_id: int) -> tuple[str, list[Any]]:
-        uid = int(user_id)
-        if self._uses_postgresql():
-            return (
-                "EXISTS (SELECT 1 FROM json_array_elements_text(COALESCE(NULLIF(observer_user_ids, ''), '[]')::json) je WHERE CAST(je AS INTEGER) = ?)",
-                [uid],
-            )
-        return (
-            "EXISTS (SELECT 1 FROM json_each(COALESCE(observer_user_ids, '[]')) je WHERE CAST(je.value AS INTEGER) = ?)",
-            [uid],
-        )
-
-    def _normalize_observer_user_ids(
-        self,
-        values: Any,
-        *,
-        creator_user_id: int = 0,
-        assignee_user_id: int = 0,
-        controller_user_id: int = 0,
-    ) -> list[int]:
-        if isinstance(values, str) or values is None:
-            source = self._json_load_list(values)
-        elif isinstance(values, list):
-            source = values
-        else:
-            source = []
-        exclude = {
-            self._as_int(creator_user_id),
-            self._as_int(assignee_user_id),
-            self._as_int(controller_user_id),
-        }
-        out: list[int] = []
-        for item in self._unique_ints(source):
-            if item in exclude:
-                continue
-            user = user_service.get_by_id(item)
-            if not user or not bool(user.get("is_active", True)):
-                continue
-            out.append(item)
-        return out
-
-    def _serialize_observer_user_ids(self, values: Any, **kwargs: Any) -> str:
-        return self._serialize_json_list(self._normalize_observer_user_ids(values, **kwargs))
-
-    def _enrich_task_observer_fields(
-        self,
-        item: dict[str, Any],
-        *,
-        users_by_id: Optional[dict[int, dict[str, Any]]] = None,
-    ) -> dict[str, Any]:
-        observer_ids = self._normalize_observer_user_ids(item.get("observer_user_ids"))
-        item["observer_user_ids"] = observer_ids
-        directory = users_by_id if users_by_id is not None else self._users_by_id()
-        observers: list[dict[str, Any]] = []
-        for observer_id in observer_ids:
-            user = directory.get(observer_id) or user_service.get_by_id(observer_id) or {}
-            observers.append(
-                {
-                    "user_id": observer_id,
-                    "username": _normalize_text(user.get("username")),
-                    "full_name": _normalize_text(user.get("full_name")) or _normalize_text(user.get("username")),
-                }
-            )
-        item["observers"] = observers
-        return item
 
     def _get_task_project(self, conn: sqlite3.Connection, project_id: Any) -> Optional[dict[str, Any]]:
         normalized_id = _normalize_text(project_id)
@@ -1873,6 +1769,49 @@ class HubService:
         )
         item["observer_user_ids"] = self._normalize_observer_user_ids(item.get("observer_user_ids"))
         return item
+
+    def _enrich_analytics_task_row(
+        self,
+        item: dict[str, Any],
+        *,
+        projects_by_id: dict[str, dict[str, Any]],
+        objects_by_id: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        enriched = dict(item)
+        enriched["is_overdue"] = self._is_task_overdue(enriched.get("due_at"), enriched.get("status"))
+        project_id = _normalize_text(enriched.get("project_id"))
+        object_id = _normalize_text(enriched.get("object_id"))
+        return self._apply_task_derived_fields(
+            enriched,
+            project=projects_by_id.get(project_id) if project_id else None,
+            task_object=objects_by_id.get(object_id) if object_id else None,
+            department=None,
+        )
+
+    def _unread_comments_exists_sql(self, *, user_id: int, table_alias: str = "") -> tuple[str, list[Any]]:
+        normalized_user_id = self._as_int(user_id)
+        task_ref = f"{table_alias}." if table_alias else ""
+        clause = f"""
+            EXISTS (
+                SELECT 1
+                FROM {self._TASK_COMMENTS_TABLE} c
+                INNER JOIN (
+                    SELECT task_id, MAX(created_at) AS max_created_at
+                    FROM {self._TASK_COMMENTS_TABLE}
+                    GROUP BY task_id
+                ) latest ON latest.task_id = c.task_id AND c.created_at = latest.max_created_at
+                LEFT JOIN {self._TASK_COMMENT_READS_TABLE} r
+                    ON r.task_id = c.task_id AND r.user_id = ?
+                WHERE c.task_id = {task_ref}id
+                  AND c.user_id <> ?
+                  AND (
+                    r.last_seen_at IS NULL
+                    OR TRIM(r.last_seen_at) = ''
+                    OR c.created_at > r.last_seen_at
+                  )
+            )
+        """
+        return clause, [normalized_user_id, normalized_user_id]
 
     def _task_to_list_item(
         self,
@@ -2271,52 +2210,6 @@ class HubService:
             format_due=self._format_task_email_due,
         )
 
-    def _enqueue_task_email(
-        self,
-        conn: sqlite3.Connection,
-        *,
-        dedupe_key: str,
-        task_id: str,
-        recipient_user_id: int,
-        recipient_email: str,
-        event_type: str,
-        subject: str,
-        body_text: str,
-        body_html: str = "",
-        available_at: str | None = None,
-    ) -> bool:
-        if not task_email_service.is_enabled():
-            return False
-        normalized_email = _normalize_text(recipient_email)
-        if not task_email_service.is_valid_recipient(normalized_email):
-            return False
-        normalized_dedupe = _normalize_text(dedupe_key)
-        if not normalized_dedupe:
-            return False
-        now_iso = _utc_now_iso()
-        conn.execute(
-            f"""
-            INSERT OR IGNORE INTO {self._TASK_EMAIL_OUTBOX_TABLE}
-            (id, dedupe_key, task_id, recipient_user_id, recipient_email, event_type, subject, body_text, body_html, status, attempt_count, available_at, created_at, updated_at, sent_at, last_error)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, NULL, '')
-            """,
-            (
-                str(uuid.uuid4()),
-                normalized_dedupe,
-                _normalize_text(task_id) or None,
-                self._as_int(recipient_user_id),
-                normalized_email,
-                _normalize_text(event_type),
-                _normalize_text(subject),
-                _normalize_text(body_text),
-                _normalize_text(body_html),
-                _normalize_text(available_at) or now_iso,
-                now_iso,
-                now_iso,
-            ),
-        )
-        return True
-
     def _queue_task_email_event(
         self,
         conn: sqlite3.Connection,
@@ -2447,117 +2340,6 @@ class HubService:
         if queued:
             self._schedule_task_email_outbox_dispatch()
         return queued
-
-    def _schedule_task_email_outbox_dispatch(self) -> None:
-        if not task_email_service.is_enabled() or not task_email_service.auto_dispatch_enabled():
-            return
-        if not _TASK_EMAIL_DISPATCH_SLOT.acquire(blocking=False):
-            return
-
-        def _run() -> None:
-            try:
-                self.dispatch_task_email_outbox()
-            finally:
-                try:
-                    _TASK_EMAIL_DISPATCH_SLOT.release()
-                except ValueError:
-                    pass
-
-        try:
-            _TASK_EMAIL_EXECUTOR.submit(_run)
-        except Exception:
-            try:
-                _TASK_EMAIL_DISPATCH_SLOT.release()
-            except ValueError:
-                pass
-
-    def dispatch_task_email_outbox(self, *, limit: int = 20) -> dict[str, int]:
-        if not task_email_service.is_enabled():
-            return {"claimed": 0, "sent": 0, "failed": 0}
-        safe_limit = self._coerce_limit(limit, default=20, minimum=1, maximum=100)
-        now_iso = _utc_now_iso()
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                f"""
-                SELECT *
-                FROM {self._TASK_EMAIL_OUTBOX_TABLE}
-                WHERE status = 'pending' AND available_at <= ?
-                ORDER BY created_at ASC
-                LIMIT ?
-                """,
-                (now_iso, safe_limit),
-            ).fetchall()
-            claimed = [dict(row) for row in rows]
-            for row in claimed:
-                conn.execute(
-                    f"""
-                    UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
-                    SET status = 'sending', attempt_count = attempt_count + 1, updated_at = ?
-                    WHERE id = ? AND status = 'pending'
-                    """,
-                    (now_iso, _normalize_text(row.get("id"))),
-                )
-            conn.commit()
-
-        sent = 0
-        failed = 0
-        for row in claimed:
-            outbox_id = _normalize_text(row.get("id"))
-            try:
-                ok = task_email_service.send_task_email(
-                    recipient_email=_normalize_text(row.get("recipient_email")),
-                    subject=_normalize_text(row.get("subject")),
-                    body_text=_normalize_text(row.get("body_text")),
-                    body_html=_normalize_text(row.get("body_html")),
-                )
-                if ok:
-                    sent += 1
-                    self._mark_task_email_sent(outbox_id)
-                else:
-                    failed += 1
-                    self._mark_task_email_failed(row, "Task email sender returned false")
-            except Exception as exc:
-                failed += 1
-                self._mark_task_email_failed(row, str(exc))
-        return {"claimed": len(claimed), "sent": sent, "failed": failed}
-
-    def _mark_task_email_sent(self, outbox_id: str) -> None:
-        normalized_id = _normalize_text(outbox_id)
-        if not normalized_id:
-            return
-        now_iso = _utc_now_iso()
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"""
-                UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
-                SET status = 'sent', sent_at = ?, updated_at = ?, last_error = ''
-                WHERE id = ?
-                """,
-                (now_iso, now_iso, normalized_id),
-            )
-            conn.commit()
-
-    def _mark_task_email_failed(self, row: dict[str, Any], error: str) -> None:
-        outbox_id = _normalize_text(row.get("id"))
-        if not outbox_id:
-            return
-        attempt_count = self._as_int(row.get("attempt_count")) + 1
-        max_attempts = task_email_service.max_attempts()
-        now = datetime.now(timezone.utc)
-        status = "failed" if attempt_count >= max_attempts else "pending"
-        delay_minutes = 0 if status == "failed" else min(60, 2 ** max(0, attempt_count - 1))
-        available_at = (now + timedelta(minutes=delay_minutes)).isoformat()
-        now_iso = now.isoformat()
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                f"""
-                UPDATE {self._TASK_EMAIL_OUTBOX_TABLE}
-                SET status = ?, available_at = ?, updated_at = ?, last_error = ?
-                WHERE id = ?
-                """,
-                (status, available_at, now_iso, _normalize_text(error)[:1000], outbox_id),
-            )
-            conn.commit()
 
     def _create_notification(
         self,
@@ -3751,6 +3533,73 @@ class HubService:
             ).fetchone()
             return self._attachment_row_to_dict(created_row) if created_row else None
 
+    def add_task_attachment_from_path(
+        self,
+        *,
+        task_id: str,
+        source_path: str | Path,
+        file_name: Optional[str] = None,
+        file_mime: Optional[str] = None,
+        scope: str = "transfer_act_generated",
+        uploaded_by_user_id: int = 0,
+        uploaded_by_username: str = "system",
+    ) -> Optional[dict[str, Any]]:
+        """Attach an existing file to a task (internal/system use, no permission gate)."""
+        normalized_task_id = _normalize_text(task_id)
+        if not normalized_task_id:
+            return None
+        abs_path = Path(source_path).expanduser().resolve()
+        if not abs_path.is_file():
+            raise FileNotFoundError(f"Attachment source not found: {abs_path}")
+        payload = abs_path.read_bytes()
+        if not payload:
+            raise ValueError("Attachment payload is empty")
+
+        safe_name = _normalize_text(file_name) or abs_path.name or "file.bin"
+        normalized_mime = _normalize_text(file_mime) or None
+        user_id = self._as_int(uploaded_by_user_id)
+        username = _normalize_text(uploaded_by_username, "system")
+        now_iso = _utc_now_iso()
+        with self._lock, self._connect() as conn:
+            row = conn.execute(f"SELECT id FROM {self._TASKS_TABLE} WHERE id = ?", (normalized_task_id,)).fetchone()
+            if row is None:
+                return None
+            attachment_id = str(uuid.uuid4())
+            stored_name, rel_path, file_size = self._store_attachment_file(
+                root=self.task_attachments_root,
+                parent_id=normalized_task_id,
+                attachment_id=attachment_id,
+                file_name=safe_name,
+                file_bytes=payload,
+            )
+            self._insert_task_attachment(
+                conn=conn,
+                attachment_id=attachment_id,
+                task_id=normalized_task_id,
+                scope=_normalize_text(scope, "transfer_act_generated"),
+                file_name=stored_name,
+                file_path=rel_path,
+                file_mime=normalized_mime,
+                file_size=file_size,
+                user_id=user_id,
+                username=username,
+                uploaded_at=now_iso,
+            )
+            conn.execute(
+                f"UPDATE {self._TASKS_TABLE} SET updated_at = ? WHERE id = ?",
+                (now_iso, normalized_task_id),
+            )
+            conn.commit()
+            created_row = conn.execute(
+                f"""
+                SELECT id, task_id, scope, file_name, file_path, file_mime, file_size, uploaded_by_user_id, uploaded_by_username, uploaded_at
+                FROM {self._TASK_ATTACH_TABLE}
+                WHERE id = ?
+                """,
+                (attachment_id,),
+            ).fetchone()
+            return self._attachment_row_to_dict(created_row) if created_row else None
+
     def get_task_attachment(self, *, task_id: str, attachment_id: str) -> Optional[dict[str, Any]]:
         normalized_task_id = _normalize_text(task_id)
         normalized_attachment_id = _normalize_text(attachment_id)
@@ -4168,6 +4017,60 @@ class HubService:
             ).fetchone()
             return row is not None
 
+    def tasks_exist_batch(self, task_ids: list[str]) -> dict[str, bool]:
+        normalized_ids: list[str] = []
+        seen: set[str] = set()
+        for raw_id in list(task_ids or []):
+            normalized_id = _normalize_text(raw_id)
+            if not normalized_id or normalized_id in seen:
+                continue
+            seen.add(normalized_id)
+            normalized_ids.append(normalized_id)
+        if not normalized_ids:
+            return {}
+        placeholders = ", ".join(["?"] * len(normalized_ids))
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT id FROM {self._TASKS_TABLE} WHERE id IN ({placeholders})",
+                tuple(normalized_ids),
+            ).fetchall()
+        existing = {_normalize_text(row["id"]) for row in rows if _normalize_text(row["id"])}
+        return {task_id: task_id in existing for task_id in normalized_ids}
+
+    def get_tasks_for_user_batch(
+        self,
+        task_ids: list[str],
+        *,
+        user_id: int,
+        is_admin: bool = False,
+    ) -> dict[str, dict[str, Any]]:
+        normalized_ids: list[str] = []
+        seen: set[str] = set()
+        for raw_id in list(task_ids or []):
+            normalized_id = _normalize_text(raw_id)
+            if not normalized_id or normalized_id in seen:
+                continue
+            seen.add(normalized_id)
+            normalized_ids.append(normalized_id)
+        if not normalized_ids:
+            return {}
+        placeholders = ", ".join(["?"] * len(normalized_ids))
+        result: dict[str, dict[str, Any]] = {}
+        with self._db_conn(write=False) as conn:
+            rows = conn.execute(
+                f"SELECT * FROM {self._TASKS_TABLE} WHERE id IN ({placeholders})",
+                tuple(normalized_ids),
+            ).fetchall()
+            for row in rows:
+                task = dict(row)
+                task_id = _normalize_text(task.get("id"))
+                if not task_id:
+                    continue
+                if not self._task_user_can_view(task, user_id=int(user_id), is_admin=bool(is_admin)):
+                    continue
+                result[task_id] = self._task_with_latest_report(conn, task, viewer_user_id=int(user_id))
+        return result
+
     def get_task(
         self,
         task_id: str,
@@ -4267,87 +4170,215 @@ class HubService:
             conn.commit()
         return len(notification_ids)
 
-    def get_task_analytics(
+    @staticmethod
+    def _analytics_protocol_basis_expr() -> str:
+        return "COALESCE(NULLIF(TRIM(protocol_date), ''), substr(created_at, 1, 10))"
+
+    def _analytics_basis_date_expr(self, basis: str) -> str:
+        normalized_basis = _normalize_text(basis, "protocol_date").lower()
+        if normalized_basis == "completed_at":
+            return (
+                "CASE WHEN completed_at IS NOT NULL AND TRIM(completed_at) <> '' "
+                "THEN substr(completed_at, 1, 10) ELSE NULL END"
+            )
+        if normalized_basis == "due_at":
+            return "CASE WHEN due_at IS NOT NULL AND TRIM(due_at) <> '' THEN substr(due_at, 1, 10) ELSE NULL END"
+        return self._analytics_protocol_basis_expr()
+
+    def _build_analytics_filter_clauses(
         self,
         *,
-        start_date: str | None = None,
-        end_date: str | None = None,
-        date_basis: str = "protocol_date",
-        project_ids: Optional[list[str]] = None,
-        object_ids: Optional[list[str]] = None,
-        participant_user_ids: Optional[list[int]] = None,
-        current_user: Any = None,
+        basis: str,
+        start_iso: str | None,
+        end_iso: str | None,
+        normalized_project_ids: set[str],
+        normalized_object_ids: set[str],
+        normalized_participants: set[int],
+    ) -> tuple[list[str], list[Any]]:
+        analytics_where: list[str] = []
+        analytics_params: list[Any] = []
+        if normalized_project_ids:
+            placeholders = ", ".join(["?"] * len(normalized_project_ids))
+            analytics_where.append(f"project_id IN ({placeholders})")
+            analytics_params.extend(sorted(normalized_project_ids))
+        if normalized_object_ids:
+            placeholders = ", ".join(["?"] * len(normalized_object_ids))
+            analytics_where.append(f"object_id IN ({placeholders})")
+            analytics_params.extend(sorted(normalized_object_ids))
+        if normalized_participants:
+            placeholders = ", ".join(["?"] * len(normalized_participants))
+            analytics_where.append(f"assignee_user_id IN ({placeholders})")
+            analytics_params.extend(sorted(normalized_participants))
+        basis_date_expr = self._analytics_basis_date_expr(basis)
+        if start_iso:
+            analytics_where.append(f"({basis_date_expr} IS NOT NULL AND {basis_date_expr} >= ?)")
+            analytics_params.append(start_iso)
+        if end_iso:
+            analytics_where.append(f"({basis_date_expr} IS NOT NULL AND {basis_date_expr} <= ?)")
+            analytics_params.append(end_iso)
+        return analytics_where, analytics_params
+
+    @staticmethod
+    def _analytics_metrics_select_sql(now_iso: str) -> str:
+        return f"""
+            COUNT(*) AS total,
+            SUM(CASE WHEN status = 'new' THEN 1 ELSE 0 END) AS new,
+            SUM(CASE WHEN status = 'in_progress' THEN 1 ELSE 0 END) AS in_progress,
+            SUM(CASE WHEN status = 'review' THEN 1 ELSE 0 END) AS review,
+            SUM(CASE WHEN status = 'done' THEN 1 ELSE 0 END) AS done,
+            SUM(CASE WHEN status IN ('new', 'in_progress', 'review') THEN 1 ELSE 0 END) AS open,
+            SUM(CASE WHEN status = 'done'
+                AND completed_at IS NOT NULL AND TRIM(completed_at) <> ''
+                AND due_at IS NOT NULL AND TRIM(due_at) <> ''
+                AND completed_at <= due_at THEN 1 ELSE 0 END) AS done_on_time,
+            SUM(CASE WHEN status = 'done'
+                AND (due_at IS NULL OR TRIM(due_at) = '') THEN 1 ELSE 0 END) AS done_without_due,
+            SUM(CASE WHEN due_at IS NOT NULL AND TRIM(due_at) <> ''
+                AND due_at < '{now_iso}' AND status <> 'done' THEN 1 ELSE 0 END) AS overdue,
+            SUM(CASE WHEN due_at IS NOT NULL AND TRIM(due_at) <> '' THEN 1 ELSE 0 END) AS with_due_total
+        """
+
+    def _summary_metrics_from_row(self, row: dict[str, Any]) -> dict[str, Any]:
+        metrics = {
+            "total": self._as_int(row.get("total")),
+            "new": self._as_int(row.get("new")),
+            "in_progress": self._as_int(row.get("in_progress")),
+            "review": self._as_int(row.get("review")),
+            "done": self._as_int(row.get("done")),
+            "open": self._as_int(row.get("open")),
+            "done_on_time": self._as_int(row.get("done_on_time")),
+            "done_without_due": self._as_int(row.get("done_without_due")),
+            "overdue": self._as_int(row.get("overdue")),
+            "with_due_total": self._as_int(row.get("with_due_total")),
+        }
+        total = metrics["total"]
+        with_due_total = metrics["with_due_total"]
+        metrics["completion_percent"] = round((metrics["done"] / total) * 100, 2) if total else 0.0
+        metrics["completion_on_time_percent"] = (
+            round((metrics["done_on_time"] / with_due_total) * 100, 2) if with_due_total else 0.0
+        )
+        return metrics
+
+    def _group_metrics_from_row(
+        self,
+        row: dict[str, Any],
+        *,
+        id_field: str,
+        label_field: str,
+        id_value: Any,
+        label_value: str,
     ) -> dict[str, Any]:
-        def _basis_date(item: dict[str, Any]) -> str | None:
-            basis_value = item.get(basis)
-            if basis == "protocol_date":
-                return self._normalize_protocol_date(basis_value)
-            basis_dt = self._parse_iso_datetime(basis_value)
-            return basis_dt.date().isoformat() if basis_dt else None
+        return {
+            id_field: id_value,
+            label_field: label_value,
+            **self._summary_metrics_from_row(row),
+        }
 
-        def _row_bucket_metrics(rows: list[dict[str, Any]]) -> dict[str, Any]:
-            metrics = {
-                "total": len(rows),
-                "new": 0,
-                "in_progress": 0,
-                "review": 0,
-                "done": 0,
-                "open": 0,
-                "done_on_time": 0,
-                "done_without_due": 0,
-                "overdue": 0,
-                "with_due_total": 0,
+    def _analytics_where_sql(self, where_clauses: list[str]) -> str:
+        return (" WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
+
+    def _fetch_analytics_summary_sql(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        where_sql: str,
+        params: list[Any],
+        now_iso: str,
+    ) -> dict[str, Any]:
+        metrics_sql = self._analytics_metrics_select_sql(now_iso)
+        row = conn.execute(
+            f"SELECT {metrics_sql} FROM {self._TASKS_TABLE}{where_sql}",
+            tuple(params),
+        ).fetchone()
+        return self._summary_metrics_from_row(dict(row) if row else {})
+
+    def _fetch_analytics_grouped_sql(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        where_sql: str,
+        params: list[Any],
+        now_iso: str,
+        group_field: str,
+    ) -> list[dict[str, Any]]:
+        metrics_sql = self._analytics_metrics_select_sql(now_iso)
+        if group_field == "assignee_user_id":
+            select_fields = (
+                "assignee_user_id, "
+                "MAX(assignee_full_name) AS assignee_full_name, "
+                "MAX(assignee_username) AS assignee_username"
+            )
+        else:
+            select_fields = group_field
+        rows = conn.execute(
+            f"""
+            SELECT {select_fields}, {metrics_sql}
+            FROM {self._TASKS_TABLE}{where_sql}
+            GROUP BY {group_field}
+            """,
+            tuple(params),
+        ).fetchall()
+        return [dict(row) for row in rows]
+
+    def _fetch_analytics_trend_daily_sql(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        where_sql: str,
+        params: list[Any],
+    ) -> tuple[dict[str, int], dict[str, dict[str, int]]]:
+        protocol_basis = self._analytics_protocol_basis_expr()
+        created_rows = conn.execute(
+            f"""
+            SELECT {protocol_basis} AS bucket_date, COUNT(*) AS created
+            FROM {self._TASKS_TABLE}{where_sql}
+            GROUP BY {protocol_basis}
+            HAVING bucket_date IS NOT NULL AND TRIM(bucket_date) <> ''
+            """,
+            tuple(params),
+        ).fetchall()
+        completed_where = (
+            f"{where_sql} AND completed_at IS NOT NULL AND TRIM(completed_at) <> ''"
+            if where_sql
+            else " WHERE completed_at IS NOT NULL AND TRIM(completed_at) <> ''"
+        )
+        completed_rows = conn.execute(
+            f"""
+            SELECT substr(completed_at, 1, 10) AS bucket_date,
+                   COUNT(*) AS completed,
+                   SUM(CASE WHEN status = 'done'
+                       AND due_at IS NOT NULL AND TRIM(due_at) <> ''
+                       AND completed_at <= due_at THEN 1 ELSE 0 END) AS completed_on_time
+            FROM {self._TASKS_TABLE}{completed_where}
+            GROUP BY substr(completed_at, 1, 10)
+            HAVING bucket_date IS NOT NULL AND TRIM(bucket_date) <> ''
+            """,
+            tuple(params),
+        ).fetchall()
+        created_by_day = {
+            _normalize_text(row["bucket_date"]): self._as_int(row["created"])
+            for row in created_rows
+            if _normalize_text(row["bucket_date"])
+        }
+        completed_by_day: dict[str, dict[str, int]] = {}
+        for row in completed_rows:
+            bucket_date = _normalize_text(row["bucket_date"])
+            if not bucket_date:
+                continue
+            completed_by_day[bucket_date] = {
+                "completed": self._as_int(row["completed"]),
+                "completed_on_time": self._as_int(row["completed_on_time"]),
             }
-            for item in rows:
-                status_key = _normalize_text(item.get("status")).lower()
-                if status_key in {"new", "in_progress", "review", "done"}:
-                    metrics[status_key] += 1
-                if status_key in {"new", "in_progress", "review"}:
-                    metrics["open"] += 1
-                if bool(item.get("completed_on_time")):
-                    metrics["done_on_time"] += 1
-                if bool(item.get("done_without_due")):
-                    metrics["done_without_due"] += 1
-                if bool(item.get("is_overdue")):
-                    metrics["overdue"] += 1
-                if self._parse_iso_datetime(item.get("due_at")) is not None:
-                    metrics["with_due_total"] += 1
-            total = metrics["total"]
-            with_due_total = metrics["with_due_total"]
-            metrics["completion_percent"] = round((metrics["done"] / total) * 100, 2) if total else 0.0
-            metrics["completion_on_time_percent"] = round((metrics["done_on_time"] / with_due_total) * 100, 2) if with_due_total else 0.0
-            return metrics
+        return created_by_day, completed_by_day
 
-        def _group_rows(
-            rows: list[dict[str, Any]],
-            *,
-            key_fn,
-            label_fn,
-            id_field: str,
-            label_field: str,
-        ) -> list[dict[str, Any]]:
-            grouped: dict[str, list[dict[str, Any]]] = {}
-            labels: dict[str, str] = {}
-            raw_ids: dict[str, Any] = {}
-            for row in rows:
-                raw_key = key_fn(row)
-                group_key = str(raw_key)
-                grouped.setdefault(group_key, []).append(row)
-                labels[group_key] = label_fn(row)
-                raw_ids[group_key] = raw_key
-            items: list[dict[str, Any]] = []
-            for group_key, group_rows in grouped.items():
-                metrics = _row_bucket_metrics(group_rows)
-                items.append(
-                    {
-                        id_field: raw_ids[group_key],
-                        label_field: labels[group_key],
-                        **metrics,
-                    }
-                )
-            items.sort(key=lambda row: (-int(row.get("total", 0)), str(row.get(label_field) or "")))
-            return items
-
+    def _build_analytics_trend_payload(
+        self,
+        *,
+        created_by_day: dict[str, int],
+        completed_by_day: dict[str, dict[str, int]],
+        start_iso: str | None,
+        end_iso: str | None,
+    ) -> dict[str, Any]:
         def _bucket_start(value: date, granularity: str) -> date:
             if granularity == "day":
                 return value
@@ -4382,76 +4413,136 @@ class HubService:
                 return value.strftime("%m.%Y")
             return f"Q{((value.month - 1) // 3) + 1} {value.year}"
 
-        def _trend_payload(rows: list[dict[str, Any]]) -> dict[str, Any]:
-            range_candidates: list[date] = []
-            if start_iso:
-                range_candidates.append(date.fromisoformat(start_iso))
-            if end_iso:
-                range_candidates.append(date.fromisoformat(end_iso))
-            for item in rows:
-                protocol_basis = self._normalize_protocol_date(item.get("protocol_date")) or self._normalize_protocol_date(item.get("created_at"))
-                if protocol_basis:
-                    range_candidates.append(date.fromisoformat(protocol_basis))
-                completed_dt = self._parse_iso_datetime(item.get("completed_at"))
-                if completed_dt is not None:
-                    range_candidates.append(completed_dt.date())
-                basis_date = _basis_date(item)
-                if basis_date:
-                    range_candidates.append(date.fromisoformat(basis_date))
+        range_candidates: list[date] = []
+        if start_iso:
+            range_candidates.append(date.fromisoformat(start_iso))
+        if end_iso:
+            range_candidates.append(date.fromisoformat(end_iso))
+        for bucket_date in {*created_by_day.keys(), *completed_by_day.keys()}:
+            try:
+                range_candidates.append(date.fromisoformat(bucket_date))
+            except ValueError:
+                continue
+        if not range_candidates:
+            return {"granularity": "day", "items": []}
 
-            if not range_candidates:
-                return {"granularity": "day", "items": []}
+        range_start = min(range_candidates)
+        range_end = max(range_candidates)
+        range_days = max(1, (range_end - range_start).days + 1)
+        if range_days <= 45:
+            granularity = "day"
+        elif range_days <= 180:
+            granularity = "week"
+        elif range_days <= 730:
+            granularity = "month"
+        else:
+            granularity = "quarter"
 
-            range_start = min(range_candidates)
-            range_end = max(range_candidates)
-            range_days = max(1, (range_end - range_start).days + 1)
-            if range_days <= 45:
-                granularity = "day"
-            elif range_days <= 180:
-                granularity = "week"
-            elif range_days <= 730:
-                granularity = "month"
-            else:
-                granularity = "quarter"
+        items_map: dict[str, dict[str, Any]] = {}
 
-            items_map: dict[str, dict[str, Any]] = {}
+        def _ensure_bucket(target_date: date) -> dict[str, Any]:
+            bucket_date = _bucket_start(target_date, granularity)
+            bucket_key = bucket_date.isoformat()
+            payload = items_map.get(bucket_key)
+            if payload is None:
+                payload = {
+                    "bucket_key": bucket_key,
+                    "bucket_label": _bucket_label(bucket_date, granularity),
+                    "created": 0,
+                    "completed": 0,
+                    "completed_on_time": 0,
+                }
+                items_map[bucket_key] = payload
+            return payload
 
-            def _ensure_bucket(target_date: date) -> dict[str, Any]:
-                bucket_date = _bucket_start(target_date, granularity)
-                bucket_key = bucket_date.isoformat()
-                payload = items_map.get(bucket_key)
-                if payload is None:
-                    payload = {
-                        "bucket_key": bucket_key,
-                        "bucket_label": _bucket_label(bucket_date, granularity),
-                        "created": 0,
-                        "completed": 0,
-                        "completed_on_time": 0,
-                    }
-                    items_map[bucket_key] = payload
-                return payload
+        for bucket_date, created_count in created_by_day.items():
+            try:
+                _ensure_bucket(date.fromisoformat(bucket_date))["created"] += int(created_count)
+            except ValueError:
+                continue
+        for bucket_date, completed_metrics in completed_by_day.items():
+            try:
+                bucket = _ensure_bucket(date.fromisoformat(bucket_date))
+            except ValueError:
+                continue
+            bucket["completed"] += int(completed_metrics.get("completed", 0))
+            bucket["completed_on_time"] += int(completed_metrics.get("completed_on_time", 0))
 
-            for item in rows:
-                protocol_basis = self._normalize_protocol_date(item.get("protocol_date")) or self._normalize_protocol_date(item.get("created_at"))
-                if protocol_basis:
-                    _ensure_bucket(date.fromisoformat(protocol_basis))["created"] += 1
-                completed_dt = self._parse_iso_datetime(item.get("completed_at"))
-                if completed_dt is not None:
-                    bucket = _ensure_bucket(completed_dt.date())
-                    bucket["completed"] += 1
-                    if bool(item.get("completed_on_time")):
-                        bucket["completed_on_time"] += 1
+        cursor = _bucket_start(range_start, granularity)
+        end_bucket = _bucket_start(range_end, granularity)
+        ordered_items: list[dict[str, Any]] = []
+        while cursor <= end_bucket:
+            ordered_items.append(_ensure_bucket(cursor))
+            cursor = _next_bucket_start(cursor, granularity)
+        ordered_items.sort(key=lambda item: item["bucket_key"])
+        return {"granularity": granularity, "items": ordered_items}
 
-            cursor = _bucket_start(range_start, granularity)
-            end_bucket = _bucket_start(range_end, granularity)
-            ordered_items: list[dict[str, Any]] = []
-            while cursor <= end_bucket:
-                ordered_items.append(_ensure_bucket(cursor))
-                cursor = _next_bucket_start(cursor, granularity)
+    def _collect_analytics_acl_visible_task_ids(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        viewer: dict[str, Any],
+        where_sql: str,
+        params: list[Any],
+    ) -> tuple[list[str], bool]:
+        visible_ids: list[str] = []
+        sql_offset = 0
+        sql_rows_scanned = 0
+        truncated = False
+        while sql_rows_scanned < _DEPARTMENT_SCOPE_SQL_SCAN_CAP:
+            rows = conn.execute(
+                f"""
+                {self._task_visibility_select_sql()}
+                {where_sql}
+                ORDER BY updated_at DESC, id DESC
+                LIMIT ? OFFSET ?
+                """,
+                tuple([*params, _DEPARTMENT_SCOPE_FETCH_BATCH, sql_offset]),
+            ).fetchall()
+            if not rows:
+                break
+            for row in rows:
+                row_dict = dict(row)
+                if self._task_row_is_viewable_in_department_scope(viewer, row_dict):
+                    visible_ids.append(_normalize_text(row_dict["id"]))
+            fetched = len(rows)
+            sql_rows_scanned += fetched
+            sql_offset += fetched
+            if fetched < _DEPARTMENT_SCOPE_FETCH_BATCH:
+                break
+        else:
+            truncated = True
+        return visible_ids, truncated
 
-            ordered_items.sort(key=lambda item: item["bucket_key"])
-            return {"granularity": granularity, "items": ordered_items}
+    def _task_analytics_cache_key(self, *, current_user: Any, payload: dict[str, Any]) -> str:
+        user_id = 0
+        if current_user is not None:
+            user_id = self._as_int(getattr(current_user, "id", None) or current_user.get("id"))
+        return json.dumps({"user_id": user_id, **payload}, sort_keys=True, ensure_ascii=False)
 
+    def _get_cached_task_analytics(self, cache_key: str) -> dict[str, Any] | None:
+        now_mono = time.monotonic()
+        with self._task_analytics_cache_lock:
+            cached = self._task_analytics_cache.get(cache_key)
+            if cached is not None and (now_mono - cached[0]) < self._task_analytics_cache_ttl_sec:
+                return dict(cached[1])
+        return None
+
+    def _store_task_analytics_cache(self, cache_key: str, payload: dict[str, Any]) -> None:
+        with self._task_analytics_cache_lock:
+            self._task_analytics_cache[cache_key] = (time.monotonic(), dict(payload))
+
+    def get_task_analytics(
+        self,
+        *,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        date_basis: str = "protocol_date",
+        project_ids: Optional[list[str]] = None,
+        object_ids: Optional[list[str]] = None,
+        participant_user_ids: Optional[list[int]] = None,
+        current_user: Any = None,
+    ) -> dict[str, Any]:
         basis = _normalize_text(date_basis, "protocol_date").lower()
         if basis not in {"protocol_date", "completed_at", "due_at"}:
             basis = "protocol_date"
@@ -4460,82 +4551,205 @@ class HubService:
         normalized_project_ids = {_normalize_text(item) for item in (project_ids or []) if _normalize_text(item)}
         normalized_object_ids = {_normalize_text(item) for item in (object_ids or []) if _normalize_text(item)}
         normalized_participants = {self._as_int(item) for item in (participant_user_ids or []) if self._as_int(item) > 0}
+        cache_key = self._task_analytics_cache_key(
+            current_user=current_user,
+            payload={
+                "start_date": start_iso,
+                "end_date": end_iso,
+                "date_basis": basis,
+                "project_ids": sorted(normalized_project_ids),
+                "object_ids": sorted(normalized_object_ids),
+                "participant_user_ids": sorted(normalized_participants),
+            },
+        )
+        cached_payload = self._get_cached_task_analytics(cache_key)
+        if cached_payload is not None:
+            return cached_payload
 
-        with self._lock, self._connect() as conn:
-            task_rows = conn.execute(f"SELECT * FROM {self._TASKS_TABLE}").fetchall()
-            task_items = [self._task_with_latest_report(conn, row) for row in task_rows]
-
+        analytics_where, analytics_params = self._build_analytics_filter_clauses(
+            basis=basis,
+            start_iso=start_iso,
+            end_iso=end_iso,
+            normalized_project_ids=normalized_project_ids,
+            normalized_object_ids=normalized_object_ids,
+            normalized_participants=normalized_participants,
+        )
+        truncated = False
+        viewer = None
         if current_user is not None and not user_can_manage_tasks_all(current_user):
-            task_items = [
-                item
-                for item in task_items
-                if can_view_task(
-                    current_user,
-                    item,
-                    participant_user_ids=self._task_participant_user_ids(item, include_delegates=True),
+            user_id = self._as_int(getattr(current_user, "id", None) or current_user.get("id"))
+            viewer = user_service.get_by_id(user_id) or {"id": user_id, "role": "viewer"}
+
+        now_iso = _utc_now_iso()
+        with self._db_conn(write=False) as conn:
+            where_clauses = list(analytics_where)
+            where_params = list(analytics_params)
+            if viewer is not None:
+                visible_ids, truncated = self._collect_analytics_acl_visible_task_ids(
+                    conn,
+                    viewer=viewer,
+                    where_sql=self._analytics_where_sql(where_clauses),
+                    params=where_params,
                 )
-            ]
+                if not visible_ids:
+                    empty_payload = {
+                        "summary": self._summary_metrics_from_row({}),
+                        "by_participant": [],
+                        "by_project": [],
+                        "by_object": [],
+                        "status_breakdown": [
+                            {"status": "new", "label": "Новые", "value": 0},
+                            {"status": "in_progress", "label": "В работе", "value": 0},
+                            {"status": "review", "label": "На проверке", "value": 0},
+                            {"status": "done", "label": "Выполнено", "value": 0},
+                        ],
+                        "trend": {"granularity": "day", "items": []},
+                        "truncated": truncated,
+                        "filters": {
+                            "start_date": start_iso,
+                            "end_date": end_iso,
+                            "date_basis": basis,
+                            "project_ids": sorted(normalized_project_ids),
+                            "object_ids": sorted(normalized_object_ids),
+                            "participant_user_ids": sorted(normalized_participants),
+                        },
+                    }
+                    self._store_task_analytics_cache(cache_key, empty_payload)
+                    return empty_payload
+                id_placeholders = ", ".join(["?"] * len(visible_ids))
+                where_clauses.append(f"id IN ({id_placeholders})")
+                where_params.extend(visible_ids)
 
-        filtered_items: list[dict[str, Any]] = []
-        for item in task_items:
-            participant_id = self._as_int(item.get("assignee_user_id"))
-            if normalized_project_ids and (_normalize_text(item.get("project_id")) or None) not in normalized_project_ids:
-                continue
-            if normalized_object_ids and (_normalize_text(item.get("object_id")) or None) not in normalized_object_ids:
-                continue
-            if normalized_participants and participant_id not in normalized_participants:
-                continue
-
-            basis_date = _basis_date(item)
-            if start_iso and (not basis_date or basis_date < start_iso):
-                continue
-            if end_iso and (not basis_date or basis_date > end_iso):
-                continue
-            filtered_items.append(item)
+            where_sql = self._analytics_where_sql(where_clauses)
+            summary = self._fetch_analytics_summary_sql(
+                conn,
+                where_sql=where_sql,
+                params=where_params,
+                now_iso=now_iso,
+            )
+            participant_rows = self._fetch_analytics_grouped_sql(
+                conn,
+                where_sql=where_sql,
+                params=where_params,
+                now_iso=now_iso,
+                group_field="assignee_user_id",
+            )
+            project_rows = self._fetch_analytics_grouped_sql(
+                conn,
+                where_sql=where_sql,
+                params=where_params,
+                now_iso=now_iso,
+                group_field="project_id",
+            )
+            object_rows = self._fetch_analytics_grouped_sql(
+                conn,
+                where_sql=where_sql,
+                params=where_params,
+                now_iso=now_iso,
+                group_field="object_id",
+            )
+            created_by_day, completed_by_day = self._fetch_analytics_trend_daily_sql(
+                conn,
+                where_sql=where_sql,
+                params=where_params,
+            )
+            project_ids_for_labels = {
+                _normalize_text(row.get("project_id"))
+                for row in project_rows
+                if _normalize_text(row.get("project_id"))
+            }
+            object_ids_for_labels = {
+                _normalize_text(row.get("object_id"))
+                for row in object_rows
+                if _normalize_text(row.get("object_id"))
+            }
+            projects_by_id = self._load_records_by_ids(
+                conn,
+                table=self._TASK_PROJECTS_TABLE,
+                ids=list(project_ids_for_labels),
+            )
+            objects_by_id = self._load_records_by_ids(
+                conn,
+                table=self._TASK_OBJECTS_TABLE,
+                ids=list(object_ids_for_labels),
+            )
 
         users_by_id = self._users_by_id()
-
-        by_participant = _group_rows(
-            filtered_items,
-            key_fn=lambda row: self._as_int(row.get("assignee_user_id")) or 0,
-            label_fn=lambda row: (
-                _normalize_text(users_by_id.get(self._as_int(row.get("assignee_user_id")), {}).get("full_name"))
+        by_participant: list[dict[str, Any]] = []
+        for row in participant_rows:
+            participant_id = self._as_int(row.get("assignee_user_id"))
+            participant_name = (
+                _normalize_text(users_by_id.get(participant_id, {}).get("full_name"))
                 or _normalize_text(row.get("assignee_full_name"))
                 or _normalize_text(row.get("assignee_username"))
                 or "Не назначен"
-            ),
-            id_field="participant_user_id",
-            label_field="participant_name",
-        )
-        by_project = _group_rows(
-            filtered_items,
-            key_fn=lambda row: _normalize_text(row.get("project_id")) or None,
-            label_fn=lambda row: _normalize_text(row.get("project_name")) or "Без проекта",
-            id_field="project_id",
-            label_field="project_name",
-        )
-        by_object = _group_rows(
-            filtered_items,
-            key_fn=lambda row: _normalize_text(row.get("object_id")) or None,
-            label_fn=lambda row: _normalize_text(row.get("object_name")) or "Без объекта",
-            id_field="object_id",
-            label_field="object_name",
-        )
-        summary = _row_bucket_metrics(filtered_items)
+            )
+            by_participant.append(
+                self._group_metrics_from_row(
+                    row,
+                    id_field="participant_user_id",
+                    label_field="participant_name",
+                    id_value=participant_id or 0,
+                    label_value=participant_name,
+                )
+            )
+        by_participant.sort(key=lambda item: (-int(item.get("total", 0)), str(item.get("participant_name") or "")))
+
+        by_project: list[dict[str, Any]] = []
+        for row in project_rows:
+            project_id = _normalize_text(row.get("project_id")) or None
+            project_name = (
+                _normalize_text((projects_by_id.get(project_id or "") or {}).get("name"))
+                or "Без проекта"
+            )
+            by_project.append(
+                self._group_metrics_from_row(
+                    row,
+                    id_field="project_id",
+                    label_field="project_name",
+                    id_value=project_id,
+                    label_value=project_name,
+                )
+            )
+        by_project.sort(key=lambda item: (-int(item.get("total", 0)), str(item.get("project_name") or "")))
+
+        by_object: list[dict[str, Any]] = []
+        for row in object_rows:
+            object_id = _normalize_text(row.get("object_id")) or None
+            object_name = (
+                _normalize_text((objects_by_id.get(object_id or "") or {}).get("name"))
+                or "Без объекта"
+            )
+            by_object.append(
+                self._group_metrics_from_row(
+                    row,
+                    id_field="object_id",
+                    label_field="object_name",
+                    id_value=object_id,
+                    label_value=object_name,
+                )
+            )
+        by_object.sort(key=lambda item: (-int(item.get("total", 0)), str(item.get("object_name") or "")))
+
         status_breakdown = [
             {"status": "new", "label": "Новые", "value": int(summary.get("new", 0))},
             {"status": "in_progress", "label": "В работе", "value": int(summary.get("in_progress", 0))},
             {"status": "review", "label": "На проверке", "value": int(summary.get("review", 0))},
             {"status": "done", "label": "Выполнено", "value": int(summary.get("done", 0))},
         ]
-
-        return {
+        payload = {
             "summary": summary,
             "by_participant": by_participant,
             "by_project": by_project,
             "by_object": by_object,
             "status_breakdown": status_breakdown,
-            "trend": _trend_payload(filtered_items),
+            "trend": self._build_analytics_trend_payload(
+                created_by_day=created_by_day,
+                completed_by_day=completed_by_day,
+                start_iso=start_iso,
+                end_iso=end_iso,
+            ),
+            "truncated": truncated,
             "filters": {
                 "start_date": start_iso,
                 "end_date": end_iso,
@@ -4545,6 +4759,8 @@ class HubService:
                 "participant_user_ids": sorted(normalized_participants),
             },
         }
+        self._store_task_analytics_cache(cache_key, payload)
+        return payload
 
     def list_tasks(
         self,
@@ -4555,9 +4771,12 @@ class HubService:
         status_filter: str = "",
         q: str = "",
         assignee_user_id: Optional[int] = None,
+        controller_user_id: Optional[int] = None,
         department_id: Optional[str] = None,
         has_attachments: bool = False,
         due_state: str = "",
+        unread_comments_only: bool = False,
+        focus_mode: str = "",
         sort_by: str = "status",
         sort_dir: str = "asc",
         limit: int = 100,
@@ -4611,6 +4830,9 @@ class HubService:
         elif assignee_user_id is not None:
             where_clauses.append("assignee_user_id = ?")
             params.append(self._as_int(assignee_user_id))
+        if controller_user_id is not None:
+            where_clauses.append("controller_user_id = ?")
+            params.append(self._as_int(controller_user_id))
         if normalized_department_id:
             where_clauses.append("department_id = ?")
             params.append(normalized_department_id)
@@ -4619,6 +4841,7 @@ class HubService:
             where_clauses.append("status = ?")
             params.append(normalized_status)
         if normalized_query:
+            # Leading-wildcard LIKE; PostgreSQL can use idx_hub_tasks_title_trgm (pg_trgm) when present.
             where_clauses.append("(LOWER(title) LIKE ? OR LOWER(description) LIKE ?)")
             like = f"%{normalized_query}%"
             params.extend([like, like])
@@ -4637,6 +4860,17 @@ class HubService:
             params.append(now_iso[:10])
         elif normalized_due_state == "none":
             where_clauses.append("(due_at IS NULL OR due_at = '')")
+        normalized_focus_mode = _normalize_text(focus_mode).lower()
+        if unread_comments_only or normalized_focus_mode == "comments":
+            unread_clause, unread_params = self._unread_comments_exists_sql(user_id=int(user_id))
+            where_clauses.append(unread_clause)
+            params.extend(unread_params)
+        if normalized_focus_mode == "review":
+            where_clauses.append("status = ?")
+            params.append("review")
+        elif normalized_focus_mode == "overdue":
+            where_clauses.append("due_at IS NOT NULL AND due_at <> '' AND due_at < ? AND status <> 'done'")
+            params.append(now_iso)
         if normalized_scope == "department":
             viewer = user_service.get_by_id(int(user_id)) or {"id": int(user_id), "role": "viewer"}
             self._append_department_scope_visibility_clause(
@@ -4666,9 +4900,10 @@ class HubService:
             tie_breaker = "id DESC"
 
         with self._db_conn(write=False) as conn:
+            scan_truncated = False
             if normalized_scope == "department":
                 viewer = user_service.get_by_id(int(user_id)) or {"id": int(user_id), "role": "viewer"}
-                visible_ids, _scan_truncated = self._collect_department_scope_visible_task_ids(
+                visible_ids, scan_truncated = self._collect_department_scope_visible_task_ids(
                     conn,
                     viewer=viewer,
                     where_sql=where_sql,
@@ -4737,14 +4972,18 @@ class HubService:
             "limit": safe_limit,
             "offset": safe_offset,
             "scope": normalized_scope,
+            "truncated": bool(scan_truncated) if normalized_scope == "department" else False,
             "filters": {
                 "role_scope": normalized_role_scope,
                 "status": normalized_status,
                 "q": normalized_query,
                 "assignee_user_id": self._as_int(assignee_user_id) if assignee_user_id is not None else None,
+                "controller_user_id": self._as_int(controller_user_id) if controller_user_id is not None else None,
                 "department_id": normalized_department_id or None,
                 "has_attachments": bool(has_attachments),
                 "due_state": normalized_due_state,
+                "unread_comments_only": bool(unread_comments_only),
+                "focus_mode": normalized_focus_mode or None,
                 "sort_by": normalized_sort_by,
                 "sort_dir": normalized_sort_dir,
             },
@@ -5043,7 +5282,9 @@ class HubService:
             reviewer_id = self._as_int(reviewer.get("id"))
             creator_id = self._as_int(task.get("created_by_user_id"))
             controller_id = self._as_int(task.get("controller_user_id"))
-            if not (is_admin or can_review_task(reviewer, task)):
+            if _assignee_cannot_review_as_non_creator(reviewer, task):
+                raise PermissionError("Assignee cannot review a task they did not assign to themselves")
+            if not can_review_task(reviewer, task):
                 raise PermissionError("Only task creator, controller, or admin can review this task")
             if _normalize_text(task.get("status")).lower() != "review":
                 raise ValueError("Task is not waiting for review")

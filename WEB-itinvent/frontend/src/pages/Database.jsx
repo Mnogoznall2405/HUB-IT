@@ -36,6 +36,7 @@ import ActionDialog from './database/ActionDialog';
 import DatabaseDataSections from './database/DatabaseDataSections';
 import DetailQrDialog from './database/DetailQrDialog';
 import DeleteEquipmentDialog from './database/DeleteEquipmentDialog';
+import DeleteConsumableDialog from './database/DeleteConsumableDialog';
 import EditConsumableQtyDialog from './database/EditConsumableQtyDialog';
 import QrScannerDialog from './database/QrScannerDialog';
 import EquipmentActFieldsDialog from './database/EquipmentActFieldsDialog';
@@ -70,6 +71,7 @@ import { useDatabaseSelection } from './database/useDatabaseSelection';
 import { useDatabaseAddWorkflows } from './database/useDatabaseAddWorkflows';
 import { useDatabaseConsumableQty } from './database/useDatabaseConsumableQty';
 import { useDatabaseDeleteEquipment } from './database/useDatabaseDeleteEquipment';
+import { useDatabaseConsumableDelete } from './database/useDatabaseConsumableDelete';
 import { useDatabaseDetailRuntime } from './database/useDatabaseDetailRuntime';
 import { useDatabaseListNavigation } from './database/useDatabaseListNavigation';
 import { useDatabaseQrScanner } from './database/useDatabaseQrScanner';
@@ -163,6 +165,7 @@ function Database() {
     notifyError: pushErrorToast,
   } = useNotification();
   const canDatabaseWrite = hasPermission('database.write');
+  const canDatabaseDelete = hasPermission('database.delete');
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -729,6 +732,18 @@ function Database() {
     notifyDatabaseSuccess,
   });
   const {
+    deleteConsumableTarget,
+    deleteConsumableLoading,
+    deleteConsumableError,
+    openDeleteConsumableModal,
+    closeDeleteConsumableModal,
+    confirmDeleteConsumable,
+  } = useDatabaseConsumableDelete({
+    canDatabaseDelete,
+    fetchAllEquipment,
+    notifyDatabaseSuccess,
+  });
+  const {
     qrScannerOpen,
     qrScannerResult,
     qrScannerError,
@@ -998,8 +1013,10 @@ function Database() {
         onSelect={handleCheckboxChange}
         onAction={handleAction}
         onEditConsumableQty={canDatabaseWrite ? openEditConsumableQtyModal : null}
+        onDeleteConsumable={canDatabaseDelete ? openDeleteConsumableModal : null}
         dataMode={dataMode}
         canWrite={canDatabaseWrite}
+        canDelete={canDatabaseDelete}
         isAdmin={isAdmin}
         mobileSelectionMode={mobileSelectionMode}
         onMobileCardSelect={handleMobileCardSelect}
@@ -1009,6 +1026,7 @@ function Database() {
     );
   }, [
     canDatabaseWrite,
+    canDatabaseDelete,
     dataMode,
     displayData,
     expandedBranches,
@@ -1022,6 +1040,7 @@ function Database() {
     isMobile,
     mobileSelectionMode,
     openEditConsumableQtyModal,
+    openDeleteConsumableModal,
     selectedItemsSet,
     tableSort,
     theme,
@@ -1457,6 +1476,14 @@ function Database() {
           loading={deleteLoading}
           onClose={closeDeleteEquipmentDialog}
           onConfirm={() => void confirmDeleteEquipment()}
+        />
+
+        <DeleteConsumableDialog
+          target={deleteConsumableTarget}
+          error={deleteConsumableError}
+          loading={deleteConsumableLoading}
+          onClose={closeDeleteConsumableModal}
+          onConfirm={() => void confirmDeleteConsumable()}
         />
 
         <ActionDialog

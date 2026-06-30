@@ -23,7 +23,9 @@ function ConsumableMobileList({
   displayData,
   showBranchHeaders = true,
   onEditConsumableQty,
+  onDeleteConsumable,
   canWrite = false,
+  canDelete = false,
 }) {
   const groups = useMemo(() => flattenConsumableDisplayData(displayData), [displayData]);
 
@@ -55,7 +57,9 @@ function ConsumableMobileList({
               key={`${branchName}-${item?.ID || item?.INV_NO || index}`}
               item={item}
               onEditQty={onEditConsumableQty}
+              onDelete={onDeleteConsumable}
               canWrite={canWrite}
+              canDelete={canDelete}
             />
           ))}
         </Box>

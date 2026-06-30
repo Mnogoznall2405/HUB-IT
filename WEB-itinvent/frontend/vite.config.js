@@ -58,6 +58,15 @@ export default defineConfig(({ mode }) => {
             if (id.includes('node_modules/recharts')) {
               return 'recharts';
             }
+            if (id.includes('node_modules/emoji-picker-react')) {
+              return 'emoji-picker';
+            }
+            if (id.includes('/pages/chat/ChatPageContent')) {
+              return 'chat-page-content';
+            }
+            if (id.includes('/components/chat/ChatDialogs')) {
+              return 'chat-dialogs';
+            }
             return undefined;
           },
         },

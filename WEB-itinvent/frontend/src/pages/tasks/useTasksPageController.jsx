@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useMediaQuery } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
-import { hubAPI } from '../../api/client';
+import hubTaskAnalyticsAPI from '../../api/hubTaskAnalytics';
+import hubTaskSupportAPI from '../../api/hubTaskSupport';
+import hubMarkdownAPI from '../../api/hubMarkdown';
 import useDebounce from '../../hooks/useDebounce';
 import useTaskAssigneeDirectory, { TASK_ASSIGNEE_SEARCH_MIN_CHARS, TASK_ASSIGNEE_SEARCH_LIMIT } from '../../hooks/useTaskAssigneeDirectory';
 import { useAuth } from '../../contexts/AuthContext';
@@ -87,7 +89,9 @@ export default function useTasksPageController() {
   const [editOpen, setEditOpen] = useState(false);
 
   const [assigneeSearchInput, setAssigneeSearchInput] = useState('');
+  const [observerSearchInput, setObserverSearchInput] = useState('');
   const debouncedAssigneeSearchInput = useDebounce(assigneeSearchInput, 300);
+  const debouncedObserverSearchInput = useDebounce(observerSearchInput, 300);
   const {
     search: searchAssignees,
     resolveByIds: resolveAssigneesByIds,
@@ -108,7 +112,7 @@ export default function useTasksPageController() {
         setAssigneeSearchInput(value);
         return;
       }
-      if (reason === 'clear') {
+      if (reason === 'reset' || reason === 'clear') {
         setAssigneeSearchInput('');
         clearAssigneeSearchResults();
       }
@@ -118,6 +122,32 @@ export default function useTasksPageController() {
       ? 'Введите фамилию или логин'
       : (assigneeSearchError || 'Ничего не найдено'),
   }), [assigneeSearchError, assigneeSearchInput, assigneeSearchLoading, clearAssigneeSearchResults]);
+
+  const observerAutocompleteProps = useMemo(() => ({
+    filterOptions: (options) => options,
+    inputValue: observerSearchInput,
+    clearOnBlur: false,
+    onInputChange: (_, value, reason) => {
+      if (reason === 'input') {
+        setObserverSearchInput(value);
+        return;
+      }
+      if (reason === 'reset' || reason === 'clear') {
+        setObserverSearchInput('');
+        clearAssigneeSearchResults();
+      }
+    },
+    loading: assigneeSearchLoading,
+    noOptionsText: String(observerSearchInput || '').trim().length < TASK_ASSIGNEE_SEARCH_MIN_CHARS
+      ? 'Введите фамилию или логин'
+      : (assigneeSearchError || 'Ничего не найдено'),
+  }), [assigneeSearchError, assigneeSearchLoading, clearAssigneeSearchResults, observerSearchInput]);
+
+  const resetTaskUserSearchInputs = useCallback(() => {
+    setAssigneeSearchInput('');
+    setObserverSearchInput('');
+    clearAssigneeSearchResults();
+  }, [clearAssigneeSearchResults]);
 
   const handleSingleAssigneeAutocompleteChange = useCallback((onSelect) => (_, value) => {
     onSelect(value);
@@ -197,6 +227,12 @@ export default function useTasksPageController() {
     void searchAssignees(normalized);
   }, [debouncedAssigneeSearchInput, searchAssignees]);
 
+  useEffect(() => {
+    const normalized = String(debouncedObserverSearchInput || '').trim();
+    if (normalized.length < TASK_ASSIGNEE_SEARCH_MIN_CHARS) return;
+    void searchAssignees(normalized);
+  }, [debouncedObserverSearchInput, searchAssignees]);
+
   const details = useTaskDetails({
     user,
     canManageAllTasks,
@@ -228,6 +264,8 @@ export default function useTasksPageController() {
     mergeAssigneesIntoCache,
     clearAssigneeSearchResults,
     setAssigneeSearchInput,
+    setObserverSearchInput,
+    resetTaskUserSearchInputs,
     refreshTasksAndDetails: details.refreshTasksAndDetails,
     closeTaskDetails: details.closeTaskDetails,
     selectedTaskId: details.selectedTaskId,
@@ -295,7 +333,7 @@ export default function useTasksPageController() {
   const handleExportTaskAnalytics = useCallback(async () => {
     analytics.setAnalyticsExporting(true);
     try {
-      const response = await hubAPI.exportTaskAnalyticsExcel(analytics.analyticsRequestParams);
+      const response = await hubTaskAnalyticsAPI.exportTaskAnalyticsExcel(analytics.analyticsRequestParams);
       const filename = parseFilename(response?.headers?.['content-disposition']) || 'task_analytics.xlsx';
       downloadBlob(response, filename);
     } catch (err) {
@@ -308,7 +346,7 @@ export default function useTasksPageController() {
   const searchCreateAssignees = useCallback(async (query) => {
     const normalizedQuery = String(query || '').trim();
     if (normalizedQuery.length < TASK_ASSIGNEE_SEARCH_MIN_CHARS) return [];
-    const payload = await hubAPI.getAssignees({ q: normalizedQuery, limit: TASK_ASSIGNEE_SEARCH_LIMIT });
+    const payload = await hubTaskSupportAPI.getAssignees({ q: normalizedQuery, limit: TASK_ASSIGNEE_SEARCH_LIMIT });
     return Array.isArray(payload?.items) ? payload.items : [];
   }, []);
 
@@ -319,7 +357,7 @@ export default function useTasksPageController() {
 
   const transformTaskMarkdown = useCallback(async (text, context) => {
     try {
-      return await hubAPI.transformMarkdown({ text, context });
+      return await hubMarkdownAPI.transformMarkdown({ text, context });
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка');
       throw err;
@@ -351,10 +389,10 @@ export default function useTasksPageController() {
 
   const renderTaskCard = useCallback((task, column) => (
     <TaskCard
-      task={task}
+        task={task}
       column={column}
       isMobile={isMobile}
-      ui={ui}
+        ui={ui}
       canEdit={details.canEditTask(task)}
       canDelete={details.canDeleteTask(task)}
       onOpen={onOpenTaskDetails}
@@ -382,7 +420,7 @@ export default function useTasksPageController() {
       const isTyping = Boolean(target?.isContentEditable) || tagName === 'input' || tagName === 'textarea';
 
       if (event.key === 'Escape') {
-        if (editOpen) { setEditOpen(false); return; }
+        if (editOpen) { setEditOpen(false); resetTaskUserSearchInputs(); return; }
         if (createOpen) { setCreateOpen(false); return; }
         if (create.reviewTask) { create.setReviewTask(null); return; }
         if (create.reopenTargetTask && !create.reopeningTaskId) { create.setReopenTargetTask(null); return; }
@@ -538,6 +576,7 @@ export default function useTasksPageController() {
     renderTaskObserverTags,
     taskUserAutocompleteSlotProps,
     assigneeAutocompleteProps,
+    observerAutocompleteProps,
     analyticsAccentColor,
     analyticsGridStroke,
     loading: list.loading,
@@ -615,6 +654,9 @@ export default function useTasksPageController() {
     canCreateTasks,
     loadTaskAnalytics: analytics.loadTaskAnalytics,
     loadTasks: list.loadTasks,
+    loadMoreTasks: list.loadMoreTasks,
+    hasMoreTasks: list.hasMoreTasks,
+    tasksTotal: list.tasksTotal,
     setTaxonomyOpen: create.setTaxonomyOpen,
     setCreateOpen,
     secondaryViewMode: filters.secondaryViewMode,
@@ -725,11 +767,13 @@ export default function useTasksPageController() {
     setCreateDueCustomOpen: create.setCreateDueCustomOpen,
     editOpen,
     setEditOpen,
+    handleCloseEdit: create.handleCloseEdit,
     editData: create.editData,
     setEditData: create.setEditData,
     editSaving: create.editSaving,
     handleSaveEdit: create.handleSaveEdit,
     handleEditDescriptionDraftChange: create.handleEditDescriptionDraftChange,
+    handleEditObserversChange: create.handleEditObserversChange,
     transformTaskMarkdown,
     selectedEditAssignee: create.selectedEditAssignee,
     selectedEditController: create.selectedEditController,

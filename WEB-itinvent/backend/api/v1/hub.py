@@ -187,7 +187,7 @@ def _enrich_task_payload_for_user(item: Optional[dict], current_user: User) -> O
         "can_review": bool(
             not is_transfer_reminder
             and status == "review"
-            and (is_admin or can_review_task(actor, enriched))
+            and can_review_task(actor, enriched)
         ),
         "can_reopen": can_reopen,
         "can_upload_files": bool(
@@ -685,9 +685,12 @@ async def get_tasks(
     status_filter: str = Query("", alias="status"),
     q: str = Query("", min_length=0),
     assignee_user_id: Optional[int] = Query(None, ge=1),
+    controller_user_id: Optional[int] = Query(None, ge=1),
     department_id: str = Query("", min_length=0),
     has_attachments: bool = Query(False),
     due_state: str = Query("", pattern="^(|overdue|today|upcoming|none)$"),
+    unread_comments_only: bool = Query(False),
+    focus_mode: str = Query("", pattern="^(|review|overdue|comments)$"),
     sort_by: str = Query("status", pattern="^(status|updated_at|due_at)$"),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     limit: int = Query(100, ge=1, le=500),
@@ -705,9 +708,12 @@ async def get_tasks(
         status_filter=_normalize_text(status_filter).lower(),
         q=_normalize_text(q),
         assignee_user_id=assignee_user_id,
+        controller_user_id=controller_user_id,
         department_id=_normalize_text(department_id) or None,
         has_attachments=bool(has_attachments),
         due_state=_normalize_text(due_state).lower(),
+        unread_comments_only=bool(unread_comments_only),
+        focus_mode=_normalize_text(focus_mode).lower(),
         sort_by=_normalize_text(sort_by).lower(),
         sort_dir=_normalize_text(sort_dir).lower(),
         limit=int(limit),

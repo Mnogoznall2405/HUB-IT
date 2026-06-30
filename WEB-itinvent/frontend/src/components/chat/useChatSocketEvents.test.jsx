@@ -17,10 +17,13 @@ vi.mock('../../lib/chatFeature', () => ({
 function Harness({
   activeConversationId = '',
   hasPersistedThreadMessageEquivalent = () => false,
+  initialMessages = [],
   loadConversations = vi.fn(),
   loadMessages = vi.fn(),
   mergeMessageIntoThread = vi.fn(),
+  promoteConversationToTop = vi.fn(),
   queueAutoScroll = vi.fn(),
+  syncConversationPreview = vi.fn(),
   threadNearBottom = true,
   upsertConversation = vi.fn(),
 }) {
@@ -33,7 +36,7 @@ function Harness({
   const loadMessagesRef = useRef(loadMessages);
   const logChatDebugRef = useRef(vi.fn());
   const messagesLoadingRef = useRef(false);
-  const messagesRef = useRef([]);
+  const messagesRef = useRef(initialMessages);
   const skippedInitialSnapshotRefreshRef = useRef(true);
   const skippedInitialSocketRefreshRef = useRef(true);
   const socketStatusRef = useRef(socketStatus);
@@ -61,7 +64,7 @@ function Harness({
     mergeMessageIntoThread,
     messagesLoadingRef,
     messagesRef,
-    promoteConversationToTop: vi.fn(),
+    promoteConversationToTop,
     queueAutoScroll,
     setAiStatusByConversation: vi.fn(),
     setSocketStatus,
@@ -72,7 +75,7 @@ function Harness({
     skippedInitialSnapshotRefreshRef,
     skippedInitialSocketRefreshRef,
     socketStatusRef,
-    syncConversationPreview: vi.fn(),
+    syncConversationPreview,
     threadNearBottomRef,
     typingParticipantsTimeoutsRef,
     updatePresenceInCollections: vi.fn(),
@@ -163,6 +166,72 @@ describe('useChatSocketEvents', () => {
     });
 
     expect(queueAutoScroll).toHaveBeenCalledWith(false, 'socket:message_created');
+  });
+
+  it('skips merge and auto-scroll when the persisted message is already rendered', () => {
+    const mergeMessageIntoThread = vi.fn();
+    const queueAutoScroll = vi.fn();
+    const existingMessage = {
+      id: 'msg-dedupe',
+      conversation_id: 'conv-1',
+      body: 'already here',
+      is_own: false,
+    };
+    render(
+      <Harness
+        activeConversationId="conv-1"
+        initialMessages={[existingMessage]}
+        hasPersistedThreadMessageEquivalent={() => true}
+        mergeMessageIntoThread={mergeMessageIntoThread}
+        queueAutoScroll={queueAutoScroll}
+        threadNearBottom
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CHAT_SOCKET_MESSAGE_CREATED_EVENT, {
+        detail: {
+          conversation_id: 'conv-1',
+          payload: existingMessage,
+        },
+      }));
+    });
+
+    expect(mergeMessageIntoThread).not.toHaveBeenCalled();
+    expect(queueAutoScroll).toHaveBeenCalledWith(false, 'socket:message_created');
+  });
+
+    it('syncs inbox preview for inactive conversations on message.created', () => {
+    const syncConversationPreview = vi.fn();
+    const promoteConversationToTop = vi.fn();
+    render(
+      <Harness
+        activeConversationId="conv-active"
+        syncConversationPreview={syncConversationPreview}
+        promoteConversationToTop={promoteConversationToTop}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent(CHAT_SOCKET_MESSAGE_CREATED_EVENT, {
+        detail: {
+          conversation_id: 'conv-other',
+          payload: {
+            id: 'msg-other',
+            conversation_id: 'conv-other',
+            body: 'hello from elsewhere',
+            is_own: false,
+          },
+        },
+      }));
+    });
+
+    expect(syncConversationPreview).toHaveBeenCalledWith(
+      'conv-other',
+      expect.objectContaining({ id: 'msg-other' }),
+      {},
+    );
+    expect(promoteConversationToTop).toHaveBeenCalledWith('conv-other');
   });
 
   it('applies task metadata updates without reloading the message thread', () => {

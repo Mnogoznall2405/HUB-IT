@@ -106,7 +106,7 @@ def test_notes_message_does_not_increment_unread_for_author(chat_env):
         body="Напомнить себе про отчёт",
     )
 
-    conversations = service.list_conversations(current_user_id=1, limit=50)
+    conversations = service.list_conversations(current_user_id=1, limit=50)["items"]
     notes_item = next(item for item in conversations if item["id"] == notes["id"])
     assert notes_item["unread_count"] == 0
     assert "отч" in notes_item["last_message_preview"].lower()

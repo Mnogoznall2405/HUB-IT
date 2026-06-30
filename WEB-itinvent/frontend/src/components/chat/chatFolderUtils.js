@@ -7,8 +7,9 @@ export const SYSTEM_CHAT_FOLDERS = [
 
 export const ALL_CHAT_FOLDER_TAB = { key: 'all', label: 'Все' };
 
-/** Telegram-style order: system tabs → custom folders → «Все» at the end. */
-export const buildChatFolderTabList = (customFolders = []) => {
+/** Telegram-style order: system tabs → custom folders → «Все» at the end (optional). */
+export const buildChatFolderTabList = (customFolders = [], options = {}) => {
+  const { includeAllTab = true } = options;
   const custom = (Array.isArray(customFolders) ? customFolders : [])
     .map((folder) => ({
       key: String(folder?.id || '').trim(),
@@ -16,12 +17,14 @@ export const buildChatFolderTabList = (customFolders = []) => {
     }))
     .filter((item) => item.key);
 
-  return [...SYSTEM_CHAT_FOLDERS, ...custom, ALL_CHAT_FOLDER_TAB].filter((item) => item.key);
+  const tabs = [...SYSTEM_CHAT_FOLDERS, ...custom];
+  if (includeAllTab) tabs.push(ALL_CHAT_FOLDER_TAB);
+  return tabs.filter((item) => item.key);
 };
 
 /** Swipe/tab navigation order (excludes archive). */
-export const getChatFolderNavigationList = (customFolders = []) => (
-  buildChatFolderTabList(customFolders)
+export const getChatFolderNavigationList = (customFolders = [], options = {}) => (
+  buildChatFolderTabList(customFolders, options)
 );
 
 export const resolveAdjacentFolderKey = ({ tabs, activeKey, direction }) => {
@@ -49,13 +52,14 @@ export const resolveAdjacentFolderKey = ({ tabs, activeKey, direction }) => {
   return navigationTabs[nextIndex];
 };
 
-export const resolveFolderSwipeTarget = (activeKey, direction, customFolders = []) => {
+export const resolveFolderSwipeTarget = (activeKey, direction, customFolders = [], options = {}) => {
+  const { includeAllTab = true } = options;
   const normalizedActiveKey = String(activeKey || 'all').trim() || 'all';
   if (normalizedActiveKey === 'archived') {
-    return 'all';
+    return includeAllTab ? 'all' : 'personal';
   }
 
-  const tabs = getChatFolderNavigationList(customFolders);
+  const tabs = getChatFolderNavigationList(customFolders, { includeAllTab });
   return resolveAdjacentFolderKey({
     tabs,
     activeKey: normalizedActiveKey,

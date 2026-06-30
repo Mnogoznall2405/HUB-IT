@@ -1,6 +1,7 @@
 import { memo } from 'react';
 import { Box, Chip, IconButton, Typography } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
+import DeleteIcon from '@mui/icons-material/Delete';
 
 import { readFirst } from './databaseRecordModel';
 import { toInvNo } from './equipmentModel';
@@ -8,7 +9,9 @@ import { toInvNo } from './equipmentModel';
 function ConsumableListRow({
   item,
   onEditQty,
+  onDelete,
   canWrite = false,
+  canDelete = false,
 }) {
   const invNo = toInvNo(item);
   const typeName = readFirst(item, ['TYPE_NAME', 'type_name'], '');
@@ -46,6 +49,16 @@ function ConsumableListRow({
           onClick={() => onEditQty(item)}
         >
           <EditIcon fontSize="small" />
+        </IconButton>
+      ) : null}
+      {canDelete && onDelete ? (
+        <IconButton
+          size="small"
+          color="error"
+          aria-label={`Удалить расходник ${invNo}`}
+          onClick={() => onDelete(item)}
+        >
+          <DeleteIcon fontSize="small" />
         </IconButton>
       ) : null}
     </Box>

@@ -29,19 +29,41 @@ class _Entry:
 
 
 class _FakeConnection:
-    def __init__(self, ou_entries=None, user_entries=None):
+    def __init__(self, ou_entries=None, user_entries=None, page_size=1000):
         self.ou_entries = ou_entries or []
         self.user_entries = user_entries or []
+        self.page_size = max(1, int(page_size or 1000))
         self.calls = []
         self.unbound = False
+        self.result = {}
 
     def search(self, **kwargs):
         self.calls.append(kwargs)
         search_filter = kwargs.get("search_filter", "")
         if "organizationalUnit" in search_filter:
             self.entries = list(self.ou_entries)
+            self.result = {}
+            return True
+
+        paged_cookie = kwargs.get("paged_cookie")
+        page_size = int(kwargs.get("paged_size") or self.page_size)
+        if paged_cookie is None:
+            offset = 0
         else:
-            self.entries = list(self.user_entries)
+            offset = int(paged_cookie.decode("ascii")) if isinstance(paged_cookie, bytes) else int(paged_cookie)
+        end = offset + page_size
+        page = self.user_entries[offset:end]
+        self.entries = list(page)
+        if end < len(self.user_entries):
+            self.result = {
+                "controls": {
+                    "1.2.840.113556.1.4.319": {
+                        "value": {"cookie": str(end).encode("ascii")},
+                    }
+                }
+            }
+        else:
+            self.result = {}
         return True
 
     def unbind(self):
@@ -165,7 +187,7 @@ def test_password_expiry_report_query_filters_cached_snapshot(monkeypatch):
     assert filtered["total"] == 1
     assert filtered["users"][0]["login"] == "ivanov_ii"
     assert filtered["from_cache"] is True
-    assert len(conn.calls) == 1
+    assert len(conn.calls) == 2
 
 
 def test_list_ad_organizational_units_uses_cache(monkeypatch):

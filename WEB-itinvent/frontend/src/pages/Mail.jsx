@@ -1273,7 +1273,7 @@ function Mail() {
       setMailboxInfo(data || null);
       setMailboxes((prev) => mergeMailboxEntries(prev, data || null));
       const resolvedMailboxId = getMailboxEntryId(data);
-      if (resolvedMailboxId && (!activeMailboxId || resolvedMailboxId === activeMailboxId)) {
+      if (resolvedMailboxId) {
         setSelectedMailboxId(resolvedMailboxId);
       }
       return data || null;
@@ -1970,13 +1970,17 @@ function Mail() {
     setMailCredentialsError('');
     try {
       const data = await mailAPI.saveMyCredentials({
-        mailbox_id: activeMailboxId || undefined,
+        mailbox_id: getMailboxEntryId(mailboxInfo) || activeMailboxId || undefined,
         mailbox_login: login || undefined,
         mailbox_password: password,
         mailbox_email: mailboxEmail || undefined,
       });
       setMailboxInfo(data || null);
       setMailboxes((prev) => mergeMailboxEntries(prev, data || null));
+      const resolvedMailboxId = getMailboxEntryId(data);
+      if (resolvedMailboxId) {
+        setSelectedMailboxId(resolvedMailboxId);
+      }
       setMailCredentialsPassword('');
       setMailCredentialsOpen(false);
       setError('');
@@ -1991,6 +1995,7 @@ function Mail() {
   }, [
     activeMailboxId,
     getMailErrorDetail,
+    mailboxInfo,
     mailCredentialsEmail,
     mailCredentialsLogin,
     mailCredentialsPassword,

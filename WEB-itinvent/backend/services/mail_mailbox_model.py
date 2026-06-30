@@ -75,6 +75,7 @@ def select_mailbox_row(
     *,
     mailbox_id: str | None = None,
     allow_inactive: bool = False,
+    fallback_to_primary_on_missing: bool = False,
 ) -> dict[str, Any]:
     if not rows:
         raise MailboxSelectionError("Mailbox email is not configured")
@@ -85,7 +86,10 @@ def select_mailbox_row(
                 if not allow_inactive and not to_bool(row.get("is_active"), default=False):
                     raise MailboxSelectionError("Mailbox is inactive", status_code=409)
                 return row
-        raise MailboxSelectionError("Mailbox not found", status_code=404)
+        if fallback_to_primary_on_missing:
+            normalized_mailbox_id = ""
+        else:
+            raise MailboxSelectionError("Mailbox not found", status_code=404)
 
     def _row_sort_key(row: dict[str, Any]) -> tuple[int, float, int, int]:
         is_active = 1 if to_bool(row.get("is_active"), default=True) else 0

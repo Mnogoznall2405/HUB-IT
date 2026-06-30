@@ -1,5 +1,5 @@
 import React from 'react';
-import { fireEvent, render, screen } from '@testing-library/react';
+import { act, fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
@@ -359,5 +359,99 @@ describe('ChatSidebar', () => {
     );
 
     expect(screen.getByText(/Failed to load AI bots/i)).toBeInTheDocument();
+  });
+
+  it('shows read receipts and full date for own direct messages', () => {
+    renderWithTheme(buildProps({
+      activeConversationId: 'direct-read',
+      conversations: [{
+        ...baseConversation,
+        id: 'direct-read',
+        kind: 'direct',
+        title: 'Коллега',
+        last_message_at: '2026-06-08T10:00:00.000Z',
+        updated_at: '2026-06-08T10:00:00.000Z',
+        last_message_is_own: true,
+        last_message_delivery_status: 'read',
+        unread_count: 0,
+      }],
+      draftsByConversation: {},
+    }));
+
+    expect(screen.getByTestId('sidebar-delivery-read')).toBeInTheDocument();
+    expect(screen.getByText('08.06.2026')).toBeInTheDocument();
+  });
+
+  it('hides read receipts for incoming direct messages', () => {
+    renderWithTheme(buildProps({
+      activeConversationId: 'direct-in',
+      conversations: [{
+        ...baseConversation,
+        id: 'direct-in',
+        kind: 'direct',
+        title: 'Коллега',
+        last_message_at: '2026-06-08T10:00:00.000Z',
+        updated_at: '2026-06-08T10:00:00.000Z',
+        last_message_is_own: false,
+        last_message_delivery_status: null,
+        unread_count: 1,
+      }],
+      draftsByConversation: {},
+    }));
+
+    expect(screen.queryByTestId('sidebar-delivery-read')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('sidebar-delivery-sent')).not.toBeInTheDocument();
+    expect(screen.getByText('08.06.2026')).toBeInTheDocument();
+  });
+
+  it('hides the All folder tab on compact mobile', () => {
+    renderWithTheme(buildProps({
+      compactMobile: true,
+      isMobile: true,
+    }));
+
+    expect(screen.getByRole('button', { name: 'Личные' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Задачи' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Все' })).not.toBeInTheDocument();
+  });
+
+  it('keeps the All folder tab on desktop', () => {
+    renderWithTheme(buildProps());
+
+    expect(screen.getByRole('button', { name: 'Все' })).toBeInTheDocument();
+  });
+
+  it('collapses mobile search on list scroll and expands from header icon', async () => {
+    renderWithTheme(buildProps({
+      compactMobile: true,
+      disableMotion: true,
+      isMobile: true,
+      conversations: Array.from({ length: 12 }, (_, index) => ({
+        ...baseConversation,
+        id: `conv-${index}`,
+        title: `Чат ${index}`,
+      })),
+    }));
+
+    const list = screen.getByTestId('chat-sidebar-list-scroll');
+    Object.defineProperty(list, 'scrollTop', { configurable: true, value: 0, writable: true });
+    list.scrollTop = 120;
+
+    fireEvent.scroll(list);
+    await act(async () => {
+      await new Promise((resolve) => {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(resolve);
+        });
+      });
+    });
+
+    expect(screen.getByRole('button', { name: 'Поиск' })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Поиск' }));
+
+    expect(list.scrollTop).toBe(0);
+    expect(screen.queryByRole('button', { name: 'Поиск' })).not.toBeInTheDocument();
+    expect(screen.getByPlaceholderText('Поиск')).toBeInTheDocument();
   });
 });

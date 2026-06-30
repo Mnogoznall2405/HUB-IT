@@ -123,7 +123,7 @@ def test_task_share_lists_and_persists_snapshot(chat_env):
     assert messages["items"][0]["kind"] == "task_share"
     assert messages["items"][0]["task_preview"]["id"] == task["id"]
 
-    conversations = service.list_conversations(current_user_id=2, limit=20)
+    conversations = service.list_conversations(current_user_id=2, limit=20)["items"]
     assert conversations[0]["last_message_preview"].startswith("Задача:")
     assert chat_env["chat_db_path"].exists()
     assert chat_env["hub_db_path"].exists()

@@ -24,8 +24,10 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
   onSelect,
   onAction,
   onEditConsumableQty,
+  onDeleteConsumable,
   dataMode,
   canWrite,
+  canDelete = false,
   isAdmin,
   mobileSelectionMode,
   onMobileCardSelect,
@@ -82,7 +84,9 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
         onSelect={onSelect}
         onAction={onAction}
         onEditConsumableQty={onEditConsumableQty}
+        onDeleteConsumable={onDeleteConsumable}
         allowSelection={!isConsumablesMode && canWrite}
+        canDelete={canDelete}
         dataMode={dataMode}
         canWrite={canWrite}
         isAdmin={isAdmin}
@@ -90,6 +94,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
     );
   }, [
     canWrite,
+    canDelete,
     dataMode,
     isAdmin,
     isAllSelected,
@@ -99,6 +104,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
     mobileSelectionMode,
     onAction,
     onEditConsumableQty,
+    onDeleteConsumable,
     onMobileCardSelect,
     onSelect,
     onSelectAll,
@@ -116,7 +122,9 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
         displayData={displayData}
         showBranchHeaders={Object.keys(displayData).length > 1}
         onEditConsumableQty={onEditConsumableQty}
+        onDeleteConsumable={onDeleteConsumable}
         canWrite={canWrite}
+        canDelete={canDelete}
       />
     );
   }

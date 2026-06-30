@@ -14,6 +14,7 @@ import {
   formatDetailHistoryValue,
   hasDetailFormChanges,
   normalizeDetailComparable,
+  normalizeMultilineField,
   toGroupedItem,
   toItemId,
   toOwnerOption,
@@ -219,6 +220,14 @@ describe('detailModel', () => {
     });
   });
 
+  it('normalizes multiline equipment description for display', () => {
+    expect(buildDetailFormState({
+      DESCRIPTION: 'строка1\r\nстрока2',
+    })).toMatchObject({
+      description: 'строка1\nстрока2',
+    });
+  });
+
   it('maps API detail rows back into grouped equipment item shape', () => {
     expect(toGroupedItem({
       id: 1,
@@ -245,6 +254,13 @@ describe('detailModel', () => {
     expect(formatDetailDate('')).toBe('-');
     expect(formatDetailDate(null)).toBe('-');
     expect(formatDetailDate('not-a-date')).toBe('not-a-date');
+  });
+
+  it('normalizes legacy multiline fields for display', () => {
+    expect(normalizeMultilineField('Передача\r\nОт: X')).toBe('Передача\nОт: X');
+    expect(normalizeMultilineField('  line one\r\nline two  ')).toBe('line one\nline two');
+    expect(normalizeMultilineField('')).toBe('');
+    expect(normalizeMultilineField(null)).toBe('');
   });
 
   it('builds act summaries from mixed key shapes and fallbacks', () => {
@@ -284,6 +300,15 @@ describe('detailModel', () => {
       addInfo: 'note',
     });
     expect(buildDetailActSummary(null)).toBeNull();
+  });
+
+  it('preserves ADDINFO in act summaries', () => {
+    expect(buildDetailActSummary({
+      DOC_NO: 1464,
+      ADDINFO: 'Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026',
+    })).toMatchObject({
+      addInfo: 'Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026',
+    });
   });
 
   it('formats detail history values and transitions with fallbacks', () => {

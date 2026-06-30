@@ -17,6 +17,7 @@ function FolderTab({
       className="relative inline-flex shrink-0 items-center gap-1.5 whitespace-nowrap rounded-full px-3.5 py-1.5 transition-colors duration-150 active:opacity-80"
       style={{
         color: active ? 'var(--chat-folder-tab-active-text)' : 'var(--chat-text-secondary)',
+        backgroundColor: 'transparent',
         fontSize: 15,
         fontWeight: active ? 600 : 500,
         lineHeight: '20px',
@@ -55,11 +56,12 @@ function ChatFolderTabs({
   folderUnreadCounts = {},
   onFolderChange,
   disableMotion = false,
+  includeAllTab = true,
 }) {
   const scrollRef = useRef(null);
   const prefersReducedMotion = useReducedMotion();
   const reducedMotion = disableMotion || prefersReducedMotion;
-  const tabs = buildChatFolderTabList(customFolders);
+  const tabs = buildChatFolderTabList(customFolders, { includeAllTab });
   const normalizedActiveKey = String(activeFolderKey || 'all').trim() || 'all';
 
   useEffect(() => {

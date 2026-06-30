@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 
 import TasksEditDialog from './TasksEditDialog';
@@ -83,5 +83,12 @@ describe('TasksEditDialog', () => {
       editData: { ...baseEditData, title: 'ab' },
     });
     expect(screen.getByRole('button', { name: 'Сохранить изменения' })).toBeDisabled();
+  });
+
+  it('calls onClose when cancel is clicked', () => {
+    const onClose = vi.fn();
+    renderDialog({ onClose });
+    fireEvent.click(screen.getByRole('button', { name: 'Отмена' }));
+    expect(onClose).toHaveBeenCalledTimes(1);
   });
 });

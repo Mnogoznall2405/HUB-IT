@@ -5,25 +5,21 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import mimetypes
 import os
 import re
-import smtplib
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 from datetime import datetime
-from email import encoders
-from email.mime.base import MIMEBase
-from email.mime.multipart import MIMEMultipart
-from email.mime.text import MIMEText
 from pathlib import Path
 from typing import Any, Optional
 from uuid import uuid4
 
 from dotenv import dotenv_values
+
+from backend.services.task_email_service import task_email_service
 
 logger = logging.getLogger(__name__)
 
@@ -47,114 +43,34 @@ def _read_env(name: str, default: Optional[str] = None) -> Optional[str]:
     return default
 
 
-def _is_private_smtp_host(host: str) -> bool:
-    h = (host or "").strip().lower()
-    return (
-        h.startswith("10.")
-        or h.startswith("192.168.")
-        or h.startswith("172.")
-        or h in {"localhost", "127.0.0.1"}
-    )
-
-
-def _is_placeholder(value: str) -> bool:
-    v = (value or "").strip().lower()
-    return v in {"your_email@company.com", "your_email_password", "changeme", "change-me"}
-
-
 def _to_bool(value: Optional[str], default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-class _EmailSender:
-    """Minimal SMTP sender for transfer acts."""
-
-    def __init__(self) -> None:
-        self.smtp_server = _read_env("SMTP_SERVER", "localhost") or "localhost"
-        self.smtp_port = int(_read_env("SMTP_PORT", "25") or "25")
-        self.email = (
-            _read_env("EMAIL_ADDRESS")
-            or _read_env("SMTP_FROM_EMAIL")
-            or "noreply@localhost"
-        )
-        username = _read_env("SMTP_USERNAME")
-        password = _read_env("EMAIL_PASSWORD") or _read_env("SMTP_PASSWORD") or ""
-
-        self.username = username or self.email
-        self.password = "" if _is_placeholder(password) else password
-
-        use_auth_env = _read_env("SMTP_USE_AUTH")
-        if use_auth_env is not None:
-            self.use_auth = _to_bool(use_auth_env, default=False)
-        else:
-            # Behaves like bot/email_sender.py: local/private SMTP -> no AUTH
-            self.use_auth = not _is_private_smtp_host(self.smtp_server)
-
-        # AUTH without password is invalid
-        if self.use_auth and not self.password:
-            self.use_auth = False
-
-        self.use_tls = _to_bool(_read_env("SMTP_USE_TLS"), default=False) and self.use_auth
-
-    def send_files(
-        self,
-        recipient_email: str,
-        files: dict[str, str],
-        subject: str,
-        body: str,
-    ) -> bool:
-        msg = MIMEMultipart()
-        msg["From"] = self.email
-        msg["To"] = recipient_email
-        msg["Subject"] = subject
-        msg.attach(MIMEText(body or "", "plain", "utf-8"))
-
-        attached = 0
-        for _, path in files.items():
-            if not path or not os.path.exists(path):
-                continue
-            filename = os.path.basename(path)
-            mime_type, _ = mimetypes.guess_type(path)
-            if not mime_type:
-                mime_type = "application/octet-stream"
-            main, sub = mime_type.split("/", 1)
-
-            with open(path, "rb") as stream:
-                part = MIMEBase(main, sub)
-                part.set_payload(stream.read())
-            encoders.encode_base64(part)
-            part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
-            msg.attach(part)
-            attached += 1
-
-        if attached == 0:
-            return False
-
-        try:
-            with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30) as server:
-                if self.use_tls:
-                    server.ehlo()
-                    server.starttls()
-                    server.ehlo()
-                if self.use_auth and self.password:
-                    server.login(self.username, self.password)
-                server.sendmail(self.email, [recipient_email], msg.as_string())
-            return True
-        except smtplib.SMTPNotSupportedError as exc:
-            # Fallback for local SMTP servers without AUTH extension
-            logger.warning("SMTP AUTH not supported, retrying without AUTH: %s", exc)
-            try:
-                with smtplib.SMTP(self.smtp_server, self.smtp_port, timeout=30) as server:
-                    server.sendmail(self.email, [recipient_email], msg.as_string())
-                return True
-            except Exception as retry_exc:
-                logger.error("Email send retry failed: %s", retry_exc)
-                return False
-        except Exception as exc:
-            logger.error("Email send failed: %s", exc)
-            return False
+def _send_outgoing_files(
+    *,
+    recipient_email: str,
+    files: dict[str, str],
+    subject: str,
+    body: str,
+) -> bool:
+    attachments: list[tuple[str, bytes]] = []
+    for _, path in files.items():
+        if not path or not os.path.exists(path):
+            continue
+        filename = os.path.basename(path) or "attachment.bin"
+        with open(path, "rb") as stream:
+            attachments.append((filename, stream.read()))
+    if not attachments:
+        return False
+    return task_email_service.send_outgoing_email(
+        recipient_email=recipient_email,
+        subject=subject,
+        body_text=body or "",
+        attachments=attachments,
+    )
 
 
 def _safe_filename(name: str) -> str:
@@ -504,9 +420,9 @@ async def _send_files(
     if not files:
         return False
 
-    sender = _EmailSender()
+    sender = _send_outgoing_files
     return await asyncio.to_thread(
-        sender.send_files,
+        sender,
         recipient_email=recipient_email,
         files=files,
         subject=subject,
@@ -538,9 +454,8 @@ async def send_binary_file_email(
             with open(temp_path, "wb") as tmp:
                 tmp.write(bytes(file_bytes))
 
-            sender = _EmailSender()
             return await asyncio.to_thread(
-                sender.send_files,
+                _send_outgoing_files,
                 recipient_email=safe_recipient,
                 files={"uploaded_act": temp_path},
                 subject=str(subject or "").strip(),

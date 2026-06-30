@@ -5,6 +5,9 @@ import {
   buildTimelineItems,
   detectChatBodyFormat,
   formatMessageTime,
+  formatMessageMetaLabel,
+  formatSidebarConversationTime,
+  getChatInlineMetaReserveWidth,
   formatTaskConversationDue,
   getConversationDisplayTitle,
   getConversationHeaderSubtitle,
@@ -51,6 +54,59 @@ describe('formatMessageTime', () => {
     const result = formatMessageTime('2026-06-10T09:15:00.000Z');
     expect(result).toMatch(/^\d{2}:\d{2}$/);
     expect(result).not.toMatch(/\./);
+  });
+});
+
+describe('formatSidebarConversationTime', () => {
+  beforeEach(() => {
+    vi.setSystemTime(new Date('2026-06-18T12:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns HH:MM for today', () => {
+    expect(formatSidebarConversationTime('2026-06-18T14:30:00.000Z')).toMatch(/^\d{2}:\d{2}$/);
+  });
+
+  it('returns DD.MM.YYYY for older dates', () => {
+    expect(formatSidebarConversationTime('2026-06-08T10:00:00.000Z')).toBe('08.06.2026');
+  });
+});
+
+describe('getChatInlineMetaReserveWidth', () => {
+  beforeEach(() => {
+    vi.setSystemTime(new Date('2026-06-18T12:00:00.000Z'));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('reserves more space for edited direct messages than plain time', () => {
+    const plain = getChatInlineMetaReserveWidth({
+      message: {
+        created_at: '2026-06-18T01:18:00.000Z',
+        delivery_status: 'read',
+      },
+      isOwnDirect: true,
+    });
+    const edited = getChatInlineMetaReserveWidth({
+      message: {
+        created_at: '2026-06-18T01:18:00.000Z',
+        edited_at: '2026-06-18T01:25:00.000Z',
+        delivery_status: 'read',
+      },
+      isOwnDirect: true,
+    });
+
+    expect(parseFloat(edited)).toBeGreaterThan(parseFloat(plain));
+    expect(parseFloat(edited) - parseFloat(plain)).toBeLessThanOrEqual(2);
+    expect(formatMessageMetaLabel({
+      created_at: '2026-06-18T01:18:00.000Z',
+      edited_at: '2026-06-18T01:25:00.000Z',
+    })).toContain('изм.');
   });
 });
 

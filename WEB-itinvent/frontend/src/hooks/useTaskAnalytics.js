@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { hubAPI } from '../api/client';
+import hubTaskAnalyticsAPI from '../api/hubTaskAnalytics';
 import {
   buildAnalyticsRangeFromPreset,
   EMPTY_ANALYTICS_PAYLOAD,
@@ -52,7 +52,7 @@ export default function useTaskAnalytics({
     loadRequestIdRef.current = requestId;
     setLoading(true);
     try {
-      const response = await hubAPI.getTaskAnalytics(requestParams);
+      const response = await hubTaskAnalyticsAPI.getTaskAnalytics(requestParams);
       if (loadRequestIdRef.current !== requestId) return;
       setPayload(response || EMPTY_ANALYTICS_PAYLOAD);
       lastLoadedParamsKeyRef.current = paramsKey;

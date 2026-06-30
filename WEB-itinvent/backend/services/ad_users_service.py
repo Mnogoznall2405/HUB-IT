@@ -51,6 +51,9 @@ _AD_USER_PASSWORD_ATTRIBUTES = [
     "distinguishedName",
 ]
 
+_AD_LDAP_PAGE_SIZE = 1000
+_AD_PAGED_RESULTS_OID = "1.2.840.113556.1.4.319"
+
 _SERVICE_ACCOUNT_PATTERNS = re.compile(
     r"^(healthmailbox|svc[_\-]|admin(?:[_\-.]|$)|1c|1bit|bcpexec|corp[\.\-]admin|aid$|"
     r"scan[_\-]|backup|test[_\-]|service|system|sql|exchange|smtp|ftp|www|http|"
@@ -200,36 +203,68 @@ def _resolve_search_base(ou_dn: str | None) -> str:
 
 
 def _build_ad_users_search_filter(*, expiring_only: bool = False) -> str:
-    if not expiring_only:
-        return _AD_USER_ENABLED_FILTER
-    return (
-        "(&"
-        "(objectCategory=person)"
-        "(objectClass=user)"
-        "(!(userAccountControl:1.2.840.113556.1.4.803:=2))"
-        "(displayName=* *)"
-        ")"
-    )
+    # Password-expiry reports always filter in Python; keep one enabled-user LDAP filter.
+    del expiring_only
+    return _AD_USER_ENABLED_FILTER
+
+
+def _paged_search_entries(
+    conn: Connection,
+    *,
+    search_base: str,
+    search_filter: str,
+    attributes: list[str] | None = None,
+) -> list[Any]:
+    attribute_list = attributes or _AD_USER_PASSWORD_ATTRIBUTES
+    entries: list[Any] = []
+    cookie: bytes | None = None
+    while True:
+        conn.search(
+            search_base=search_base,
+            search_filter=search_filter,
+            attributes=attribute_list,
+            search_scope=SUBTREE,
+            size_limit=0,
+            paged_size=_AD_LDAP_PAGE_SIZE,
+            paged_cookie=cookie,
+        )
+        entries.extend(list(getattr(conn, "entries", []) or []))
+        result = getattr(conn, "result", None) or {}
+        controls = result.get("controls") or {}
+        page_control = controls.get(_AD_PAGED_RESULTS_OID) or controls.get(_AD_PAGED_RESULTS_OID.encode("ascii"))
+        if not page_control:
+            break
+        cookie = page_control.get("value", {}).get("cookie")
+        if not cookie:
+            break
+    return entries
 
 
 def _search_ad_users(
     search_base: str,
     *,
     expiring_only: bool = False,
+    search_filter: str | None = None,
     attributes: list[str] | None = None,
 ) -> tuple[list[Any], str | None]:
     conn = _open_ad_connection()
     if conn is None:
         return [], "LDAP connection is not configured or bind failed."
+    resolved_filter = str(search_filter or "").strip() or _build_ad_users_search_filter(expiring_only=expiring_only)
     try:
-        conn.search(
+        entries = _paged_search_entries(
+            conn,
             search_base=search_base,
-            search_filter=_build_ad_users_search_filter(expiring_only=expiring_only),
-            attributes=attributes or _AD_USER_PASSWORD_ATTRIBUTES,
-            search_scope=SUBTREE,
-            size_limit=0,
+            search_filter=resolved_filter,
+            attributes=attributes,
         )
-        return list(getattr(conn, "entries", []) or []), None
+        logger.info(
+            "AD user search completed base=%s filter=%s entries=%s paged=true",
+            search_base,
+            resolved_filter[:120],
+            len(entries),
+        )
+        return entries, None
     except Exception as exc:
         logger.error("AD user search failed: %s", exc)
         return [], str(exc)
@@ -238,6 +273,18 @@ def _search_ad_users(
             conn.unbind()
         except Exception:
             pass
+
+
+def _merge_entries_by_login(entries: list[Any]) -> list[Any]:
+    merged: dict[str, Any] = {}
+    fallback: list[Any] = []
+    for entry in entries:
+        login = _entry_value(entry, "sAMAccountName").lower()
+        if login:
+            merged[login] = entry
+        else:
+            fallback.append(entry)
+    return [*merged.values(), *fallback]
 
 
 def _ou_label_from_entry(entry: Any) -> str:
@@ -412,22 +459,35 @@ def _user_record_from_entry(
     }
 
 
-def _matches_expiring_person_account(login: str, display_name: str) -> bool:
+def _is_person_password_account(login: str, display_name: str) -> bool:
     login_value = str(login or "").strip()
     display_name_value = str(display_name or "").strip()
+    if not login_value:
+        return False
     if _SERVICE_ACCOUNT_PATTERNS.match(login_value):
+        return False
+    if _detect_account_type(login_value) == "mailbox":
+        return False
+    if "_" in login_value:
+        return True
+    if not display_name_value:
         return False
     if len(display_name_value.split()) < 2:
         return False
-    if display_name_value and not display_name_value[0].isalpha():
+    if not display_name_value[0].isalpha():
         return False
     name_parts = display_name_value.split()
-    if len(name_parts) < 2 or len(name_parts) > 5:
+    if len(name_parts) > 6:
         return False
     first_word = name_parts[0]
-    if len(first_word) < 3 or not first_word[0].isupper():
+    if not first_word or not first_word[0].isupper():
         return False
     return True
+
+
+def _matches_expiring_person_account(login: str, display_name: str) -> bool:
+    """Backward-compatible alias for person-account heuristics."""
+    return _is_person_password_account(login, display_name)
 
 
 def _matches_search_query(user: dict[str, Any], query: str) -> bool:
@@ -567,17 +627,13 @@ def _build_password_expiry_users(
         record = _user_record_from_entry(entry, branch_context, include_pwd_last_set=False)
         if not record:
             continue
-        if _detect_account_type(str(record.get("login") or "")) == "mailbox":
+        login_value = str(record.get("login") or "").strip()
+        display_name_value = str(record.get("display_name") or "").strip()
+        if not _is_person_password_account(login_value, display_name_value):
             continue
-        if normalized_mode == "all":
-            if not str(record.get("display_name") or "").strip():
-                continue
-        else:
-            if not _matches_expiring_person_account(
-                str(record.get("login") or ""),
-                str(record.get("display_name") or ""),
-            ):
-                continue
+        if not display_name_value:
+            record["display_name"] = login_value
+        if normalized_mode == "expiring":
             days_to_expire = int(record.get("days_to_expire") or 0)
             expired = bool(record.get("expired"))
             must_change = bool(record.get("must_change_now"))
@@ -611,12 +667,12 @@ def _fetch_password_expiry_users_from_ldap(
     ou_dn: str | None,
     normalized_mode: str,
     threshold: int,
-) -> tuple[list[dict[str, Any]], int, str | None]:
+) -> tuple[list[dict[str, Any]], int, str | None, dict[str, Any]]:
     search_base = _resolve_search_base(ou_dn)
     policy_days = get_ad_password_max_age_days()
-    entries, error = _search_ad_users(search_base, expiring_only=normalized_mode == "expiring")
+    entries, error = _search_ad_users(search_base)
     if error:
-        return [], policy_days, error
+        return [], policy_days, error, {"ldap_entries_fetched": 0, "ldap_paged": True}
     branch_context = _load_branch_mapping_context()
     users = _build_password_expiry_users(
         entries,
@@ -624,7 +680,50 @@ def _fetch_password_expiry_users_from_ldap(
         threshold=threshold,
         branch_context=branch_context,
     )
-    return users, policy_days, None
+    ldap_meta = {"ldap_entries_fetched": len(entries), "ldap_paged": True}
+    return users, policy_days, None, ldap_meta
+
+
+def _supplement_password_expiry_users_for_query(
+    users_snapshot: list[dict[str, Any]],
+    *,
+    ou_dn: str | None,
+    normalized_mode: str,
+    threshold: int,
+    q: str,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    normalized_q = str(q or "").strip()
+    if len(normalized_q) < 2:
+        return list(users_snapshot), {}
+    search_base = _resolve_search_base(ou_dn)
+    targeted_entries, error = _search_ad_users(
+        search_base,
+        search_filter=_build_user_lookup_filter(normalized_q),
+    )
+    if error or not targeted_entries:
+        return list(users_snapshot), {}
+    branch_context = _load_branch_mapping_context()
+    supplemental_users = _build_password_expiry_users(
+        targeted_entries,
+        normalized_mode=normalized_mode,
+        threshold=threshold,
+        branch_context=branch_context,
+    )
+    by_login = {
+        str(user.get("login") or "").lower(): user
+        for user in users_snapshot
+        if str(user.get("login") or "").strip()
+    }
+    added = 0
+    for user in supplemental_users:
+        login_key = str(user.get("login") or "").lower()
+        if login_key and login_key not in by_login:
+            by_login[login_key] = user
+            added += 1
+    return list(by_login.values()), {
+        "ldap_targeted_entries_fetched": len(targeted_entries),
+        "ldap_targeted_users_added": added,
+    }
 
 
 def get_ad_password_expiry_report(
@@ -653,9 +752,17 @@ def get_ad_password_expiry_report(
         *,
         cached_hit,
         from_cache: bool,
+        ldap_meta: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        merged_users, targeted_meta = _supplement_password_expiry_users_for_query(
+            users_snapshot,
+            ou_dn=normalized_ou,
+            normalized_mode=normalized_mode,
+            threshold=threshold,
+            q=q,
+        )
         filtered_users = [
-            user for user in users_snapshot
+            user for user in merged_users
             if _matches_search_query(user, q)
         ]
         payload = {
@@ -667,6 +774,10 @@ def get_ad_password_expiry_report(
             "total": len(filtered_users),
             "users": filtered_users,
         }
+        if ldap_meta:
+            payload.update(ldap_meta)
+        if targeted_meta:
+            payload.update(targeted_meta)
         if cached_hit is not None:
             payload.update(cache_metadata(cached_hit, from_cache=from_cache))
         return payload
@@ -683,7 +794,7 @@ def get_ad_password_expiry_report(
             )
 
     def loader():
-        users_snapshot, snapshot_policy_days, error = _fetch_password_expiry_users_from_ldap(
+        users_snapshot, snapshot_policy_days, error, ldap_meta = _fetch_password_expiry_users_from_ldap(
             ou_dn=normalized_ou,
             normalized_mode=normalized_mode,
             threshold=threshold,
@@ -708,6 +819,7 @@ def get_ad_password_expiry_report(
             snapshot_policy_days,
             cached_hit=stored,
             from_cache=False,
+            ldap_meta=ldap_meta,
         )
 
     if force:

@@ -1,5 +1,5 @@
 import { useCallback } from 'react';
-import { Box } from '@mui/material';
+import { Alert, Box } from '@mui/material';
 import TasksDataModeRouter from '../../components/hub/tasks/TasksDataModeRouter';
 import TasksMobileHeader from '../../components/hub/tasks/TasksMobileHeader';
 import TasksDesktopToolbar from '../../components/hub/tasks/TasksDesktopToolbar';
@@ -105,7 +105,12 @@ export default function TasksListLayout() {
         />
       ) : null}
 
-      <Box sx={{ flex: 1, minHeight: 0, overflow: 'hidden' }}>
+      <Box sx={{ flex: 1, minHeight: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+        {list.listTruncated && filters.viewMode === 'department' ? (
+          <Alert severity="warning" sx={{ mx: { xs: 1, md: 0 }, mb: 0.75, flexShrink: 0 }}>
+            Показаны не все задачи отдела: достигнут лимит выборки 2000 записей. Сузьте фильтры для полного списка.
+          </Alert>
+        ) : null}
         <TasksDataModeRouter
           pageMode={filters.pageMode}
           isMobile={ui.isMobile}
@@ -133,6 +138,9 @@ export default function TasksListLayout() {
           mobileBoardItems={list.mobileBoardItems}
           focusMode={filters.focusMode}
           analyticsViewProps={analyticsViewProps}
+          hasMoreTasks={list.hasMoreTasks}
+          onLoadMoreTasks={list.loadMoreTasks}
+          tasksTotal={list.tasksTotal}
         />
       </Box>
     </>

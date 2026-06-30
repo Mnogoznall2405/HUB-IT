@@ -56,6 +56,7 @@ export {
 import {
   clampTextSx,
   renderKvRows,
+  formatTaskObserversSummary,
   renderObserverBlock,
   getTaskUserLabel,
   getChecklistStats,
@@ -160,6 +161,9 @@ export function TaskMobileDetailScreen({
           <TaskMobilePersonRow label="Исполнитель" name={getTaskUserLabel(task, 'assignee')} ui={ui} theme={theme} />
           {getTaskUserLabel(task, 'controller') !== '-' ? (
             <TaskMobilePersonRow label="Контролёр" name={getTaskUserLabel(task, 'controller')} ui={ui} theme={theme} />
+          ) : null}
+          {formatTaskObserversSummary(task) ? (
+            <TaskMobilePersonRow label="Наблюдатели" name={formatTaskObserversSummary(task)} ui={ui} theme={theme} />
           ) : null}
         </Stack>
 

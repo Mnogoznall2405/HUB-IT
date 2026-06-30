@@ -3,39 +3,70 @@ import { MemoryRouter } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import useTasksPageController from './useTasksPageController';
-import { hubAPI } from '../../api/client';
+import hubTasksAPI from '../../api/hubTasks';
+import hubTaskSupportAPI from '../../api/hubTaskSupport';
 import { departmentsAPI } from '../../api/departments';
 
-vi.mock('../../api/client', () => ({
-  hubAPI: {
+vi.mock('../../api/hubTasks', () => ({
+  default: {
+    getTasks: vi.fn(),
+    getTask: vi.fn(),
+    createTask: vi.fn(),
+    updateTask: vi.fn(),
+    deleteTask: vi.fn(),
+    startTask: vi.fn(),
+    submitTask: vi.fn(),
+    reviewTask: vi.fn(),
+    reopenTask: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/hubTaskSupport', () => ({
+  default: {
     getAssignees: vi.fn(),
     getControllers: vi.fn(),
     getTaskProjects: vi.fn(),
     getTaskObjects: vi.fn(),
+    createTaskProject: vi.fn(),
+    createTaskObject: vi.fn(),
+    updateTaskProject: vi.fn(),
+    updateTaskObject: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/hubTaskAnalytics', () => ({
+  default: {
     getTaskAnalytics: vi.fn(),
     exportTaskAnalyticsExcel: vi.fn(),
-    getTasks: vi.fn(),
-    getTask: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/hubTaskActivity', () => ({
+  default: {
     getTaskComments: vi.fn(),
     getTaskStatusLog: vi.fn(),
     markTaskCommentsSeen: vi.fn(),
-    transformMarkdown: vi.fn(),
+    addTaskComment: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/hubTaskFiles', () => ({
+  default: {
+    uploadTaskAttachment: vi.fn(),
     downloadTaskAttachment: vi.fn(),
     downloadTaskReport: vi.fn(),
-    createTask: vi.fn(),
-    createTaskProject: vi.fn(),
-    createTaskObject: vi.fn(),
-    reviewTask: vi.fn(),
-    startTask: vi.fn(),
-    submitTask: vi.fn(),
-    reopenTask: vi.fn(),
-    deleteTask: vi.fn(),
-    updateTask: vi.fn(),
-    updateTaskProject: vi.fn(),
-    updateTaskObject: vi.fn(),
-    uploadTaskAttachment: vi.fn(),
-    addTaskComment: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/hubTaskDiscussion', () => ({
+  default: {
     openTaskDiscussion: vi.fn(),
+  },
+}));
+
+vi.mock('../../api/hubMarkdown', () => ({
+  default: {
+    transformMarkdown: vi.fn(),
   },
 }));
 
@@ -75,10 +106,10 @@ describe('useTasksPageController', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     installMatchMedia();
-    hubAPI.getTasks.mockResolvedValue({ items: [], total: 0, meta: {} });
-    hubAPI.getControllers.mockResolvedValue({ items: [] });
-    hubAPI.getTaskProjects.mockResolvedValue({ items: [] });
-    hubAPI.getTaskObjects.mockResolvedValue({ items: [] });
+    hubTasksAPI.getTasks.mockResolvedValue({ items: [], total: 0, meta: {} });
+    hubTaskSupportAPI.getControllers.mockResolvedValue({ items: [] });
+    hubTaskSupportAPI.getTaskProjects.mockResolvedValue({ items: [] });
+    hubTaskSupportAPI.getTaskObjects.mockResolvedValue({ items: [] });
     departmentsAPI.list.mockResolvedValue({ items: [] });
   });
 
@@ -90,7 +121,7 @@ describe('useTasksPageController', () => {
     });
 
     await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenCalled();
+      expect(hubTasksAPI.getTasks).toHaveBeenCalled();
     });
 
     expect(result.current.pageMode).toBe('list');

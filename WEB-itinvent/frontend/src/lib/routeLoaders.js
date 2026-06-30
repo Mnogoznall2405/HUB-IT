@@ -52,7 +52,7 @@ export const loadDashboardRoute = defineRouteLoader(() => import('../pages/Dashb
 export const loadDashboardNewsRoute = defineRouteLoader(() => import('../pages/DashboardNews'));
 export const loadTasksRoute = defineRouteLoader(() => import('../pages/Tasks'));
 export const loadTicketsRoute = defineRouteLoader(() => import('../pages/Tickets'));
-export const loadChatRoute = defineRouteLoader(() => import('../pages/Chat'));
+export const loadChatRoute = defineRouteLoader(() => import('../pages/chat/Chat'));
 export const loadDatabaseRoute = defineRouteLoader(() => import('../pages/Database'));
 export const loadNetworksRoute = defineRouteLoader(() => import('../pages/Networks'));
 export const loadSettingsRoute = defineRouteLoader(() => import('../pages/Settings'));

@@ -38,6 +38,7 @@ export default function TasksEditDialog({
   onSave,
   onEditDescriptionDraftChange,
   onAiTransform,
+  onEditObserversChange,
   selectedEditAssignee = null,
   selectedEditController = null,
   selectedEditObservers = [],
@@ -53,6 +54,7 @@ export default function TasksEditDialog({
   renderTaskObserverTags,
   taskUserAutocompleteSlotProps,
   assigneeAutocompleteProps,
+  observerAutocompleteProps,
   getAssigneeAutocompleteInputValue,
   createDuePresets = [],
   editDueLabel = 'Без срока',
@@ -158,14 +160,7 @@ export default function TasksEditDialog({
                 size="small"
                 options={getAssigneePickerOptions(selectedEditObservers)}
                 value={selectedEditObservers}
-                onChange={(_, value) => {
-                  setEditData((prev) => ({
-                    ...prev,
-                    observer_user_ids: Array.isArray(value)
-                      ? value.map((item) => String(item?.id || '')).filter(Boolean)
-                      : [],
-                  }));
-                }}
+                onChange={onEditObserversChange}
                 getOptionLabel={getTaskUserLabel}
                 isOptionEqualToValue={areSameTaskUsers}
                 clearOnEscape
@@ -173,7 +168,7 @@ export default function TasksEditDialog({
                 renderOption={renderTaskUserOptionMultiple}
                 renderTags={renderTaskObserverTags}
                 slotProps={taskUserAutocompleteSlotProps}
-                {...assigneeAutocompleteProps}
+                {...observerAutocompleteProps}
                 renderInput={(params) => (
                   <TextField
                     {...params}

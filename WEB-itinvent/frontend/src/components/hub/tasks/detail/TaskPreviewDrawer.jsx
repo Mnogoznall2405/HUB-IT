@@ -56,6 +56,7 @@ export {
 import {
   clampTextSx,
   renderKvRows,
+  formatTaskObserversSummary,
   renderObserverBlock,
   getTaskUserLabel,
   getChecklistStats,
@@ -247,6 +248,12 @@ export function TaskPreviewDrawer({
                   <Typography variant="caption" sx={{ color: ui.subtleText }}>Контролёр</Typography>
                   <Typography sx={{ fontWeight: 700 }}>{task?.controller_full_name || task?.controller_username || '-'}</Typography>
                 </Grid>
+                {formatTaskObserversSummary(task) ? (
+                  <Grid item xs={12} sm={6}>
+                    <Typography variant="caption" sx={{ color: ui.subtleText }}>Наблюдатели</Typography>
+                    <Typography sx={{ fontWeight: 700 }}>{formatTaskObserversSummary(task)}</Typography>
+                  </Grid>
+                ) : null}
                 <Grid item xs={12} sm={6}>
                   <Typography variant="caption" sx={{ color: ui.subtleText }}>Срок</Typography>
                   <Typography sx={{ fontWeight: 700 }}>{task?.due_at ? formatDateTime(task.due_at) : 'Без срока'}</Typography>

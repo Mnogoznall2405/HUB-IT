@@ -4,7 +4,13 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Tasks from './Tasks';
-import { hubAPI } from '../api/client';
+import hubTasksAPI from '../api/hubTasks';
+import hubTaskSupportAPI from '../api/hubTaskSupport';
+import hubTaskAnalyticsAPI from '../api/hubTaskAnalytics';
+import hubTaskActivityAPI from '../api/hubTaskActivity';
+import hubTaskFilesAPI from '../api/hubTaskFiles';
+import hubTaskDiscussionAPI from '../api/hubTaskDiscussion';
+import hubMarkdownAPI from '../api/hubMarkdown';
 import { departmentsAPI } from '../api/departments';
 
 const authState = vi.hoisted(() => ({
@@ -29,36 +35,66 @@ function installMatchMedia({ mobile = false } = {}) {
   }));
 }
 
-vi.mock('../api/client', () => ({
-  hubAPI: {
+vi.mock('../api/hubTasks', () => ({
+  default: {
+    getTasks: vi.fn(),
+    getTask: vi.fn(),
+    createTask: vi.fn(),
+    updateTask: vi.fn(),
+    deleteTask: vi.fn(),
+    startTask: vi.fn(),
+    submitTask: vi.fn(),
+    reviewTask: vi.fn(),
+    reopenTask: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubTaskSupport', () => ({
+  default: {
     getAssignees: vi.fn(),
     getControllers: vi.fn(),
     getTaskProjects: vi.fn(),
     getTaskObjects: vi.fn(),
+    createTaskProject: vi.fn(),
+    createTaskObject: vi.fn(),
+    updateTaskProject: vi.fn(),
+    updateTaskObject: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubTaskAnalytics', () => ({
+  default: {
     getTaskAnalytics: vi.fn(),
     exportTaskAnalyticsExcel: vi.fn(),
-    getTasks: vi.fn(),
-    getTask: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubTaskActivity', () => ({
+  default: {
     getTaskComments: vi.fn(),
     getTaskStatusLog: vi.fn(),
     markTaskCommentsSeen: vi.fn(),
-    transformMarkdown: vi.fn(),
+    addTaskComment: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubTaskFiles', () => ({
+  default: {
+    uploadTaskAttachment: vi.fn(),
     downloadTaskAttachment: vi.fn(),
     downloadTaskReport: vi.fn(),
-    createTask: vi.fn(),
-    createTaskProject: vi.fn(),
-    createTaskObject: vi.fn(),
-    reviewTask: vi.fn(),
-    startTask: vi.fn(),
-    submitTask: vi.fn(),
-    reopenTask: vi.fn(),
-    deleteTask: vi.fn(),
-    updateTask: vi.fn(),
-    updateTaskProject: vi.fn(),
-    updateTaskObject: vi.fn(),
-    uploadTaskAttachment: vi.fn(),
-    addTaskComment: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubTaskDiscussion', () => ({
+  default: {
     openTaskDiscussion: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubMarkdown', () => ({
+  default: {
+    transformMarkdown: vi.fn(),
   },
 }));
 
@@ -162,10 +198,12 @@ function LocationProbe() {
 async function selectAutocompleteOption(label, query, optionText, scope = screen) {
   const queries = typeof scope?.getByRole === 'function' ? scope : within(scope);
   const input = queries.getByRole('combobox', { name: label });
+  fireEvent.focus(input);
   fireEvent.change(input, { target: { value: query } });
+  fireEvent.input(input, { target: { value: query } });
   await waitFor(() => {
     expect(input.getAttribute('aria-controls')).toBeTruthy();
-  });
+  }, { timeout: 4000 });
   await waitFor(() => {
     const listboxId = input.getAttribute('aria-controls');
     const listbox = document.getElementById(listboxId);
@@ -266,7 +304,7 @@ beforeEach(() => {
     value: vi.fn(),
   });
 
-  hubAPI.getAssignees.mockImplementation(async (params = {}) => {
+  hubTaskSupportAPI.getAssignees.mockImplementation(async (params = {}) => {
     const fixtures = [
       { id: 1, username: 'assignee', full_name: 'Исполнитель И.И.' },
       { id: 4, username: 'ivanov', full_name: 'Иванов И.И.' },
@@ -289,17 +327,17 @@ beforeEach(() => {
     ));
     return { items, total: items.length, limit: 30 };
   });
-  hubAPI.getControllers.mockResolvedValue({
+  hubTaskSupportAPI.getControllers.mockResolvedValue({
     items: [{ id: 2, username: 'controller', full_name: 'Контролер К.К.' }],
   });
-  hubAPI.getTaskProjects.mockResolvedValue({
+  hubTaskSupportAPI.getTaskProjects.mockResolvedValue({
     items: [{ id: 'project-1', name: 'Проект Север', is_active: true }],
   });
-  hubAPI.getTaskObjects.mockResolvedValue({
+  hubTaskSupportAPI.getTaskObjects.mockResolvedValue({
     items: [{ id: 'object-1', project_id: 'project-1', name: 'Объект 17', is_active: true }],
   });
   departmentsAPI.list.mockResolvedValue({ items: [] });
-  hubAPI.getTaskAnalytics.mockResolvedValue({
+  hubTaskAnalyticsAPI.getTaskAnalytics.mockResolvedValue({
     summary: {
       total: 5,
       open: 3,
@@ -371,7 +409,7 @@ beforeEach(() => {
       ],
     },
   });
-  hubAPI.exportTaskAnalyticsExcel.mockResolvedValue({
+  hubTaskAnalyticsAPI.exportTaskAnalyticsExcel.mockResolvedValue({
     data: new Blob(['xlsx-bytes'], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     }),
@@ -380,17 +418,17 @@ beforeEach(() => {
       'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     },
   });
-  hubAPI.getTasks.mockResolvedValue({ items: [taskSummary], total: 1 });
-  hubAPI.getTask.mockResolvedValue(taskSummary);
-  hubAPI.getTaskComments.mockResolvedValue({
+  hubTasksAPI.getTasks.mockResolvedValue({ items: [taskSummary], total: 1 });
+  hubTasksAPI.getTask.mockResolvedValue(taskSummary);
+  hubTaskActivityAPI.getTaskComments.mockResolvedValue({
     items: [{ id: 'comment-1', username: 'commenter', body: 'Комментарий', created_at: '2026-03-21T09:20:00Z' }],
   });
-  hubAPI.getTaskStatusLog.mockResolvedValue({
+  hubTaskActivityAPI.getTaskStatusLog.mockResolvedValue({
     items: [{ id: 'status-1', old_status: 'new', new_status: 'in_progress', changed_by_username: 'rev-user', changed_at: '2026-03-21T09:25:00Z' }],
   });
-  hubAPI.markTaskCommentsSeen.mockResolvedValue({});
-  hubAPI.transformMarkdown.mockImplementation(async ({ text }) => text);
-  hubAPI.createTask.mockResolvedValue({ id: 'task-created' });
+  hubTaskActivityAPI.markTaskCommentsSeen.mockResolvedValue({});
+  hubMarkdownAPI.transformMarkdown.mockImplementation(async ({ text }) => text);
+  hubTasksAPI.createTask.mockResolvedValue({ id: 'task-created' });
 });
 
 describe('Tasks page detail workspace', () => {
@@ -508,7 +546,7 @@ describe('Tasks page detail workspace', () => {
     await selectAutocompleteOption('Участник', 'Испол', 'Исполнитель И.И.');
 
     await waitFor(() => {
-      expect(hubAPI.getTaskAnalytics).toHaveBeenLastCalledWith(expect.objectContaining({
+      expect(hubTaskAnalyticsAPI.getTaskAnalytics).toHaveBeenLastCalledWith(expect.objectContaining({
         participant_user_id: 1,
       }));
     });
@@ -519,7 +557,7 @@ describe('Tasks page detail workspace', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Экспорт Excel' }));
     await waitFor(() => {
-      expect(hubAPI.exportTaskAnalyticsExcel).toHaveBeenCalledWith(expect.objectContaining({
+      expect(hubTaskAnalyticsAPI.exportTaskAnalyticsExcel).toHaveBeenCalledWith(expect.objectContaining({
         participant_user_id: 1,
       }));
     });
@@ -568,7 +606,7 @@ describe('Tasks page detail workspace', () => {
   });
 
   it('splits list view into active and completed sections and toggles completed rows', async () => {
-    hubAPI.getTasks.mockResolvedValue({
+    hubTasksAPI.getTasks.mockResolvedValue({
       items: [
         { ...taskSummary, id: 'task-open', status: 'in_progress', title: 'Активная задача' },
         { ...taskSummary, id: 'task-done', status: 'done', title: 'Завершённая задача' },
@@ -608,17 +646,17 @@ describe('Tasks page detail workspace', () => {
     );
 
     await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenCalled();
+      expect(hubTasksAPI.getTasks).toHaveBeenCalled();
       expect(departmentsAPI.list).toHaveBeenCalled();
     });
-    expect(hubAPI.getTaskProjects).not.toHaveBeenCalled();
-    expect(hubAPI.getTaskObjects).not.toHaveBeenCalled();
-    expect(hubAPI.getControllers).not.toHaveBeenCalled();
+    expect(hubTaskSupportAPI.getTaskProjects).not.toHaveBeenCalled();
+    expect(hubTaskSupportAPI.getTaskObjects).not.toHaveBeenCalled();
+    expect(hubTaskSupportAPI.getControllers).not.toHaveBeenCalled();
 
     fireEvent.click(await screen.findByRole('button', { name: /Развернуть фильтры/i }));
     await waitFor(() => {
-      expect(hubAPI.getTaskProjects).toHaveBeenCalled();
-      expect(hubAPI.getControllers).toHaveBeenCalled();
+      expect(hubTaskSupportAPI.getTaskProjects).toHaveBeenCalled();
+      expect(hubTaskSupportAPI.getControllers).toHaveBeenCalled();
     });
   });
 
@@ -632,15 +670,15 @@ describe('Tasks page detail workspace', () => {
     );
 
     await waitFor(() => {
-      expect(hubAPI.getTaskProjects).toHaveBeenCalled();
-      expect(hubAPI.getTaskObjects).toHaveBeenCalled();
-      expect(hubAPI.getControllers).toHaveBeenCalled();
+      expect(hubTaskSupportAPI.getTaskProjects).toHaveBeenCalled();
+      expect(hubTaskSupportAPI.getTaskObjects).toHaveBeenCalled();
+      expect(hubTaskSupportAPI.getControllers).toHaveBeenCalled();
     });
     expect(await screen.findByRole('dialog')).toBeInTheDocument();
   });
 
   it('shows role scope switch on desktop and switches between assignee and creator', async () => {
-    hubAPI.getTasks.mockImplementation(async (params) => ({
+    hubTasksAPI.getTasks.mockImplementation(async (params) => ({
       items: [taskSummary],
       total: params?.role_scope === 'creator' ? 3 : 2,
     }));
@@ -667,7 +705,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(screen.getByTestId('tasks-role-creator'));
 
     await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.getTasks).toHaveBeenCalledWith(expect.objectContaining({
         role_scope: 'creator',
         scope: 'my',
       }));
@@ -678,7 +716,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(screen.getByTestId('tasks-role-assignee'));
 
     await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
         role_scope: 'assignee',
         scope: 'my',
       }));
@@ -703,7 +741,7 @@ describe('Tasks page detail workspace', () => {
     expect(await screen.findByTestId('tasks-role-scope-switch')).toBeInTheDocument();
 
     await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.getTasks).toHaveBeenCalledWith(expect.objectContaining({
         role_scope: 'creator',
         scope: 'my',
       }));
@@ -771,7 +809,7 @@ describe('Tasks page detail workspace', () => {
   });
 
   it('renders deadlines, calendar, and gantt task modes without the removed plan tab', async () => {
-    hubAPI.getTasks.mockResolvedValue({
+    hubTasksAPI.getTasks.mockResolvedValue({
       items: [
         {
           ...taskSummary,
@@ -828,7 +866,7 @@ describe('Tasks page detail workspace', () => {
     await selectAutocompleteOption('Исполнитель', 'Иван', 'Иванов И.И.');
 
     await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
         assignee_user_id: 4,
       }));
     });
@@ -871,7 +909,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /^Создать/ }));
 
     await waitFor(() => {
-      expect(hubAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
         title: 'Проверить доступ сотрудника',
         controller_user_id: null,
         priority: 'high',
@@ -926,7 +964,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
 
     await waitFor(() => {
-      expect(hubAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
         title: 'Задача с наблюдателем',
         assignee_user_ids: [1],
         observer_user_ids: [4],
@@ -935,11 +973,11 @@ describe('Tasks page detail workspace', () => {
   });
 
   it('uploads selected files after creating a task', async () => {
-    hubAPI.createTask.mockResolvedValue({
+    hubTasksAPI.createTask.mockResolvedValue({
       items: [{ id: 'task-created' }],
       created: 1,
     });
-    hubAPI.uploadTaskAttachment.mockResolvedValue({ id: 'attachment-created' });
+    hubTaskFilesAPI.uploadTaskAttachment.mockResolvedValue({ id: 'attachment-created' });
 
     render(
       <MemoryRouter initialEntries={['/tasks']}>
@@ -976,18 +1014,18 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
 
     await waitFor(() => {
-      expect(hubAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
         controller_user_id: null,
       }));
     });
     await waitFor(() => {
-      expect(hubAPI.uploadTaskAttachment).toHaveBeenCalledTimes(2);
+      expect(hubTaskFilesAPI.uploadTaskAttachment).toHaveBeenCalledTimes(2);
     });
-    expect(hubAPI.uploadTaskAttachment).toHaveBeenNthCalledWith(1, {
+    expect(hubTaskFilesAPI.uploadTaskAttachment).toHaveBeenNthCalledWith(1, {
       taskId: 'task-created',
       file: files[0],
     });
-    expect(hubAPI.uploadTaskAttachment).toHaveBeenNthCalledWith(2, {
+    expect(hubTaskFilesAPI.uploadTaskAttachment).toHaveBeenNthCalledWith(2, {
       taskId: 'task-created',
       file: files[1],
     });
@@ -1000,7 +1038,7 @@ describe('Tasks page detail workspace', () => {
       username: 'viewer',
       permissions: ['tasks.read', 'tasks.create'],
     };
-    hubAPI.getTaskProjects
+    hubTaskSupportAPI.getTaskProjects
       .mockResolvedValueOnce({
         items: [{ id: 'project-1', name: 'Проект Север', is_active: true }],
       })
@@ -1010,7 +1048,7 @@ describe('Tasks page detail workspace', () => {
           { id: 'project-new', name: 'Новый проект', is_active: true },
         ],
       });
-    hubAPI.createTaskProject.mockResolvedValue({
+    hubTaskSupportAPI.createTaskProject.mockResolvedValue({
       id: 'project-new',
       name: 'Новый проект',
       is_active: true,
@@ -1037,7 +1075,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Добавить' }));
 
     await waitFor(() => {
-      expect(hubAPI.createTaskProject).toHaveBeenCalledWith(expect.objectContaining({
+      expect(hubTaskSupportAPI.createTaskProject).toHaveBeenCalledWith(expect.objectContaining({
         name: 'Новый проект',
       }));
     });
@@ -1056,7 +1094,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(checkbox);
 
     await waitFor(() => {
-      expect(hubAPI.updateTask).toHaveBeenCalledWith('task-1', {
+      expect(hubTasksAPI.updateTask).toHaveBeenCalledWith('task-1', {
         checklist_items: [
           expect.objectContaining({ id: 'check-1', text: 'Проверить доступ', done: true }),
           expect.objectContaining({ id: 'check-2', text: 'Сообщить пользователю', done: true }),
@@ -1199,7 +1237,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
 
     await waitFor(() => {
-      expect(hubAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
         title: 'Проверить мобильный срок',
         due_at: toLocalDateTimeInput(expectedTomorrow),
       }));
@@ -1288,7 +1326,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(within(dialog).getByRole('button', { name: /^Создать/ }));
 
     await waitFor(() => {
-      expect(hubAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
         title: 'Создать задачу с описанием',
         description: 'Подробное описание для мобильной задачи',
         assignee_user_ids: [1, 4],
@@ -1298,11 +1336,11 @@ describe('Tasks page detail workspace', () => {
 
   it('formats mobile task description visually and attaches files from the editor', async () => {
     installMatchMedia({ mobile: true });
-    hubAPI.createTask.mockResolvedValue({
+    hubTasksAPI.createTask.mockResolvedValue({
       items: [{ id: 'task-created' }],
       created: 1,
     });
-    hubAPI.uploadTaskAttachment.mockResolvedValue({ id: 'attachment-created' });
+    hubTaskFilesAPI.uploadTaskAttachment.mockResolvedValue({ id: 'attachment-created' });
     const originalExecCommand = document.execCommand;
     document.execCommand = vi.fn((command) => {
       const editor = screen.queryByTestId('create-description-mobile-input');
@@ -1375,10 +1413,10 @@ describe('Tasks page detail workspace', () => {
       fireEvent.click(within(dialog).getByRole('button', { name: /^Создать/ }));
 
       await waitFor(() => {
-        expect(hubAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
           description: '**важный** текст',
         }));
-        expect(hubAPI.uploadTaskAttachment).toHaveBeenCalledWith({
+        expect(hubTaskFilesAPI.uploadTaskAttachment).toHaveBeenCalledWith({
           taskId: 'task-created',
           file,
         });
@@ -1524,7 +1562,7 @@ describe('Tasks page detail workspace', () => {
 
     fireEvent.click(screen.getByLabelText('Отметить пункт 1'));
     await waitFor(() => {
-      expect(hubAPI.updateTask).toHaveBeenCalledWith('task-1', {
+      expect(hubTasksAPI.updateTask).toHaveBeenCalledWith('task-1', {
         checklist_items: [
           expect.objectContaining({ id: 'check-1', done: true }),
           expect.objectContaining({ id: 'check-2', done: true }),
@@ -1539,7 +1577,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Добавить' }));
 
     await waitFor(() => {
-      expect(hubAPI.updateTask).toHaveBeenLastCalledWith('task-1', {
+      expect(hubTasksAPI.updateTask).toHaveBeenLastCalledWith('task-1', {
         checklist_items: [
           expect.objectContaining({ id: 'check-1' }),
           expect.objectContaining({ id: 'check-2' }),
@@ -1565,7 +1603,7 @@ describe('Tasks page detail workspace', () => {
     installMatchMedia({ mobile: true });
     chatFeatureFlags.chat = true;
     chatFeatureFlags.taskDiscussion = true;
-    hubAPI.getTask.mockResolvedValueOnce({
+    hubTasksAPI.getTask.mockResolvedValueOnce({
       ...taskSummary,
       id: 'task-empty',
       title: 'Пустая задача',
@@ -1624,7 +1662,7 @@ describe('Tasks page detail workspace', () => {
 
     fireEvent.click(within(navigationDrawer).getByTestId('tasks-mobile-status-done'));
     await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
         status: 'done',
       }));
     });
@@ -1640,7 +1678,7 @@ describe('Tasks page detail workspace', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Готово' }));
     await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
         status: 'done',
       }));
     });
@@ -1673,7 +1711,7 @@ describe('Tasks page detail workspace', () => {
   it('opens task discussion chat from detail banner when feature flag is enabled', async () => {
     chatFeatureFlags.chat = true;
     chatFeatureFlags.taskDiscussion = true;
-    hubAPI.openTaskDiscussion.mockResolvedValue({
+    hubTaskDiscussionAPI.openTaskDiscussion.mockResolvedValue({
       conversation_id: 'conv-task-1',
       created: true,
       kind: 'task',
@@ -1699,7 +1737,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(await screen.findByTestId('task-detail-open-chat'));
 
     await waitFor(() => {
-      expect(hubAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
+      expect(hubTaskDiscussionAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
     });
     await waitFor(() => {
       expect(screen.getByTestId('location-probe')).toHaveTextContent('/chat?conversation=conv-task-1');
@@ -1713,7 +1751,7 @@ describe('Tasks page detail workspace', () => {
     installMatchMedia({ mobile: true });
     chatFeatureFlags.chat = true;
     chatFeatureFlags.taskDiscussion = true;
-    hubAPI.openTaskDiscussion.mockResolvedValue({
+    hubTaskDiscussionAPI.openTaskDiscussion.mockResolvedValue({
       conversation_id: 'conv-task-mobile',
       created: false,
       kind: 'task',
@@ -1736,7 +1774,7 @@ describe('Tasks page detail workspace', () => {
     fireEvent.click(screen.getByTestId('task-mobile-open-chat'));
 
     await waitFor(() => {
-      expect(hubAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
+      expect(hubTaskDiscussionAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
       expect(screen.getByTestId('chat-page')).toBeInTheDocument();
     });
   });

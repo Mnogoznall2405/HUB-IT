@@ -3,16 +3,18 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
+import { ChatBubble } from './ChatBubble';
+import { getComposerMentionTrigger } from './ChatComposer';
 import ChatThread, {
-  ChatBubble,
   getChatKeyboardBottomSpacer,
   getChatThreadBottomPadding,
-  getComposerMentionTrigger,
+} from './ChatThread';
+import {
   isMobileMessageLongPress,
   shouldAnimateChatBubble,
-  shouldSuppressNativeMessageGesture,
   shouldCancelLongPressMove,
-} from './ChatThread';
+  shouldSuppressNativeMessageGesture,
+} from './chatBubbleGesturePolicy';
 import { buildChatUiTokens } from './chatUiTokens';
 
 const theme = createTheme();
@@ -525,6 +527,34 @@ describe('ChatBubble', () => {
     );
 
     expect(screen.getByTestId('chat-bubble-meta-inline')).toBeInTheDocument();
+
+    rerender(
+      <ThemeProvider theme={theme}>
+        <ChatBubble
+          conversationKind="direct"
+          message={{
+            id: 'msg-inline-edited',
+            kind: 'text',
+            body: 'Приятного отдыха',
+            created_at: '2026-03-21T01:18:00Z',
+            edited_at: '2026-03-21T01:25:00Z',
+            is_own: true,
+            delivery_status: 'read',
+            sender: { id: 1, username: 'author', full_name: 'Task Author' },
+          }}
+          navigate={vi.fn()}
+          theme={theme}
+          ui={ui}
+          onOpenReads={vi.fn()}
+          onOpenAttachmentPreview={vi.fn()}
+          onReplyMessage={vi.fn()}
+          compactMobile
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByTestId('chat-bubble-meta-inline')).toBeInTheDocument();
+    expect(screen.getByText(/изм\./)).toBeInTheDocument();
 
     rerender(
       <ThemeProvider theme={theme}>
@@ -1398,6 +1428,47 @@ describe('ChatBubble', () => {
     }
   });
 
+  it('does not auto-load older history when the thread is not scrollable', async () => {
+    const intersection = installIntersectionObserverMock();
+    const onLoadOlder = vi.fn();
+
+    try {
+      renderWithTheme(
+        <ChatThread
+          {...buildThreadProps({
+            messages: [
+              {
+                id: 'msg-short-history',
+                conversation_id: 'conv-1',
+                kind: 'text',
+                body: 'Short history anchor',
+                created_at: '2026-03-21T10:00:00Z',
+                is_own: false,
+                sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+              },
+            ],
+            messagesHasMore: true,
+            onLoadOlder,
+          })}
+        />,
+      );
+
+      const scrollRoot = screen.getByTestId('chat-thread-scroll');
+      Object.defineProperty(scrollRoot, 'scrollTop', { configurable: true, writable: true, value: 0 });
+      Object.defineProperty(scrollRoot, 'scrollHeight', { configurable: true, value: 480 });
+      Object.defineProperty(scrollRoot, 'clientHeight', { configurable: true, value: 480 });
+
+      await act(async () => {
+        fireEvent.wheel(scrollRoot, { deltaY: -80 });
+      });
+
+      expect(intersection.observers).toHaveLength(0);
+      expect(onLoadOlder).not.toHaveBeenCalled();
+    } finally {
+      intersection.restore();
+    }
+  });
+
   it('auto-loads older history only after the user scrolls near the top', async () => {
     const intersection = installIntersectionObserverMock();
     const onLoadOlder = vi.fn();
@@ -1425,6 +1496,8 @@ describe('ChatBubble', () => {
 
       const scrollRoot = screen.getByTestId('chat-thread-scroll');
       Object.defineProperty(scrollRoot, 'scrollTop', { configurable: true, writable: true, value: 0 });
+      Object.defineProperty(scrollRoot, 'scrollHeight', { configurable: true, value: 2400 });
+      Object.defineProperty(scrollRoot, 'clientHeight', { configurable: true, value: 600 });
 
       await act(async () => {
         fireEvent.wheel(scrollRoot, { deltaY: -80 });
@@ -1470,6 +1543,8 @@ describe('ChatBubble', () => {
 
       const scrollRoot = screen.getByTestId('chat-thread-scroll');
       Object.defineProperty(scrollRoot, 'scrollTop', { configurable: true, writable: true, value: 0 });
+      Object.defineProperty(scrollRoot, 'scrollHeight', { configurable: true, value: 2400 });
+      Object.defineProperty(scrollRoot, 'clientHeight', { configurable: true, value: 600 });
 
       await act(async () => {
         fireEvent.wheel(scrollRoot, { deltaY: -80 });
@@ -1487,26 +1562,30 @@ describe('ChatBubble', () => {
     }
   });
 
-  it('does not rescan date markers on every sticky-date scroll frame', async () => {
-    renderWithTheme(
+  it('renders inline date dividers on mobile without a floating sticky pill', () => {
+    vi.setSystemTime(new Date('2026-06-29T12:00:00.000Z'));
+
+    const { container } = renderWithTheme(
       <ChatThread
         {...buildThreadProps({
+          isMobile: true,
+          compactMobile: true,
           messages: [
             {
-              id: 'msg-date-1',
+              id: 'msg-old',
               conversation_id: 'conv-1',
               kind: 'text',
-              body: 'Morning',
-              created_at: '2026-03-21T10:00:00Z',
+              body: 'Old message',
+              created_at: '2026-06-27T10:00:00.000Z',
               is_own: false,
-              sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+              sender: { id: 2, username: 'peer', full_name: 'Peer User' },
             },
             {
-              id: 'msg-date-2',
+              id: 'msg-new',
               conversation_id: 'conv-1',
               kind: 'text',
-              body: 'Later',
-              created_at: '2026-03-21T10:01:00Z',
+              body: 'Today message',
+              created_at: '2026-06-29T10:00:00.000Z',
               is_own: true,
               sender: { id: 1, username: 'author', full_name: 'Task Author' },
             },
@@ -1515,17 +1594,12 @@ describe('ChatBubble', () => {
       />,
     );
 
-    const threadScroll = screen.getByTestId('chat-thread-scroll');
-    const originalQuerySelectorAll = threadScroll.querySelectorAll.bind(threadScroll);
-    const querySelectorAll = vi.fn(originalQuerySelectorAll);
-    threadScroll.querySelectorAll = querySelectorAll;
+    expect(screen.getByText('27 июня')).toBeInTheDocument();
+    expect(screen.getByText('Сегодня')).toBeInTheDocument();
+    expect(container.querySelector('[data-date-marker]')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-date-marker]')).toHaveLength(2);
 
-    await act(async () => {
-      fireEvent.scroll(threadScroll, { target: { scrollTop: 80 } });
-      await new Promise((resolve) => window.requestAnimationFrame(resolve));
-    });
-
-    expect(querySelectorAll).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 
   it('renders a pinned message bar and forwards open/unpin actions', () => {

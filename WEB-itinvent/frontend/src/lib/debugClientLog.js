@@ -1,6 +1,3 @@
-const DEBUG_SESSION_ID = '891634';
-const LOCAL_INGEST_URL = 'http://127.0.0.1:7567/ingest/0dd98d48-9716-48e2-8a2d-050e49aa7cea';
-
 const buildRelayUrl = () => {
   const rawBase = String(import.meta.env.BASE_URL || '/');
   const normalizedBase = rawBase === './' || rawBase === '.' ? '/' : rawBase;
@@ -26,22 +23,28 @@ export function emitAgentDebugLog(entry = {}) {
   if (!isAgentDebugLoggingEnabled()) return;
 
   const payload = {
-    sessionId: DEBUG_SESSION_ID,
     timestamp: Date.now(),
     ...entry,
   };
   const headers = {
     'Content-Type': 'application/json',
-    'X-Debug-Session-Id': DEBUG_SESSION_ID,
   };
   const body = JSON.stringify(payload);
 
-  fetch(LOCAL_INGEST_URL, {
-    method: 'POST',
-    headers,
-    body,
-    keepalive: true,
-  }).catch(() => {});
+  if (import.meta.env.DEV) {
+    void import('./debugClientLog.dev.js')
+      .then(({ DEBUG_SESSION_ID, LOCAL_INGEST_URL }) => {
+        const devPayload = { ...payload, sessionId: DEBUG_SESSION_ID };
+        const devHeaders = { ...headers, 'X-Debug-Session-Id': DEBUG_SESSION_ID };
+        fetch(LOCAL_INGEST_URL, {
+          method: 'POST',
+          headers: devHeaders,
+          body: JSON.stringify(devPayload),
+          keepalive: true,
+        }).catch(() => {});
+      })
+      .catch(() => {});
+  }
 
   fetch(buildRelayUrl(), {
     method: 'POST',

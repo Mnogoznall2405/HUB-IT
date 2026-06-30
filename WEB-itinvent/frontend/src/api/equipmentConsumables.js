@@ -27,6 +27,11 @@ export const equipmentConsumablesAPI = {
     const response = await apiClient.patch('/equipment/consumables/qty', payload);
     return response.data;
   },
+
+  deleteConsumable: async (itemId) => {
+    const response = await apiClient.delete(`/equipment/consumables/${itemId}`);
+    return response.data;
+  },
 };
 
 export default equipmentConsumablesAPI;

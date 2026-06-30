@@ -612,6 +612,10 @@ export const chatAPI = {
     return chatThreadMessagesAPI.getThreadBootstrap;
   },
 
+  get hydrateThreadMessages() {
+    return chatThreadMessagesAPI.hydrateThreadMessages;
+  },
+
   get getMessages() {
     return chatThreadMessagesAPI.getMessages;
   },
@@ -1326,6 +1330,10 @@ export const equipmentAPI = {
 
   get updateConsumableQty() {
     return equipmentConsumablesAPI.updateConsumableQty;
+  },
+
+  get deleteConsumable() {
+    return equipmentConsumablesAPI.deleteConsumable;
   },
 
   get transfer() {

@@ -132,6 +132,19 @@ describe('TaskWorkspacePanel', () => {
     });
   });
 
+  it('renders observers in task workspace panel', async () => {
+    hubAPI.getTask.mockResolvedValue({
+      ...task,
+      observers: [
+        { user_id: 4, full_name: 'Наблюдатель Н.Н.', username: 'observer' },
+      ],
+    });
+    renderPanel();
+
+    expect(await screen.findByText('Наблюдатели')).toBeInTheDocument();
+    expect(screen.getByText('Наблюдатель Н.Н.')).toBeInTheDocument();
+  });
+
   it('updates checklist items and reloads the task', async () => {
     renderPanel();
     await screen.findByText('Подключить монитор');

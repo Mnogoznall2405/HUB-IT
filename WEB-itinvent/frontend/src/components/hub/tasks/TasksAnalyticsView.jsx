@@ -1,4 +1,5 @@
 import {
+  Alert,
   Box,
   Button,
   Card,
@@ -67,6 +68,11 @@ export default function TasksAnalyticsView({
   return (
               <Box sx={{ height: '100%', minHeight: 0, overflowY: 'auto', pr: 0.2 }}>
                 <Stack spacing={1.2} sx={{ minHeight: '100%', pb: 0.6 }}>
+                  {analyticsPayload?.truncated ? (
+                    <Alert severity="warning">
+                      Аналитика построена по первым 2000 задачам, доступным вам по правам доступа. Сузьте фильтры для более точного отчёта.
+                    </Alert>
+                  ) : null}
                   {!isAnalyticsMobile ? (
                   <Box
                     sx={{

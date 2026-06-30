@@ -454,12 +454,14 @@ describe('equipmentConsumablesAPI contract', () => {
     'lookupConsumables',
     'consumeConsumable',
     'updateConsumableQty',
+    'deleteConsumable',
   ];
 
   beforeEach(() => {
     apiClientMock.get.mockReset();
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
     apiClientMock.patch = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.delete = vi.fn().mockResolvedValue({ data: { ok: true } });
     apiClientMock.get.mockResolvedValue({ data: { grouped: {} } });
     window.localStorage.clear();
   });
@@ -489,10 +491,12 @@ describe('equipmentConsumablesAPI contract', () => {
     await expect(equipmentConsumablesAPI.createConsumable(createPayload)).resolves.toEqual({ ok: true });
     await expect(equipmentConsumablesAPI.consumeConsumable(consumePayload)).resolves.toEqual({ ok: true });
     await expect(equipmentConsumablesAPI.updateConsumableQty(qtyPayload)).resolves.toEqual({ ok: true });
+    await expect(equipmentConsumablesAPI.deleteConsumable(77)).resolves.toEqual({ ok: true });
 
     expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/equipment/consumables/create', createPayload);
     expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/equipment/consumables/consume', consumePayload);
     expect(apiClientMock.patch).toHaveBeenCalledWith('/equipment/consumables/qty', qtyPayload);
+    expect(apiClientMock.delete).toHaveBeenCalledWith('/equipment/consumables/77');
   });
 
   it('passes lookup params through to the consumables lookup endpoint', async () => {
@@ -5412,7 +5416,7 @@ describe('authUserAdminAPI contract', () => {
 
     const { authUserAdminAPI } = await importAuthUserAdminAPI();
 
-    await expect(authUserAdminAPI.getTaskDelegatesBulk([1, '2', 'bad', 0])).resolves.toBe(bulkPayload);
+    await expect(authUserAdminAPI.getTaskDelegatesBulk([1, '2', 'bad', 0])).resolves.toEqual(bulkPayload);
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/auth/task-delegates', {
       params: { owner_ids: '1,2' },
@@ -5422,6 +5426,26 @@ describe('authUserAdminAPI contract', () => {
 
     await expect(authUserAdminAPI.getTaskDelegatesBulk([])).resolves.toEqual({ items: [] });
     expect(apiClientMock.get).not.toHaveBeenCalled();
+  });
+
+  it('chunks large task delegate bulk requests to avoid oversized query strings', async () => {
+    const ownerIds = Array.from({ length: 85 }, (_, index) => index + 1);
+    apiClientMock.get
+      .mockResolvedValueOnce({ data: { items: [{ owner_user_id: 1, task_delegate_links: [] }] } })
+      .mockResolvedValueOnce({ data: { items: [{ owner_user_id: 81, task_delegate_links: [] }] } });
+
+    const { authUserAdminAPI } = await importAuthUserAdminAPI();
+
+    await expect(authUserAdminAPI.getTaskDelegatesBulk(ownerIds)).resolves.toEqual({
+      items: [
+        { owner_user_id: 1, task_delegate_links: [] },
+        { owner_user_id: 81, task_delegate_links: [] },
+      ],
+    });
+
+    expect(apiClientMock.get).toHaveBeenCalledTimes(2);
+    expect(apiClientMock.get.mock.calls[0][1].params.owner_ids.split(',').length).toBe(80);
+    expect(apiClientMock.get.mock.calls[1][1].params.owner_ids.split(',').length).toBe(5);
   });
 
   it('falls back to an empty delegate items array for non-array update payloads', async () => {

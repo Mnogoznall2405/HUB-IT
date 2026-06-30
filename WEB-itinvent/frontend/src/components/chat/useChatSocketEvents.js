@@ -159,7 +159,20 @@ export default function useChatSocketEvents({
       const envelope = event?.detail || {};
       const message = envelope?.payload || {};
       const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
-      if (!message?.id || conversationId !== activeConversationIdRef.current) return;
+      if (!message?.id || !conversationId) return;
+
+      if (conversationId !== activeConversationIdRef.current) {
+        startTransition(() => {
+          syncConversationPreview(
+            conversationId,
+            message,
+            message?.is_own ? { unread_count: 0 } : {},
+          );
+          promoteConversationToTop(conversationId);
+        });
+        return;
+      }
+
       const isActive = conversationId === activeConversationIdRef.current;
       const alreadyRendered = hasPersistedThreadMessageEquivalent(messagesRef.current, message);
       latestActiveThreadSocketMessageRef.current = {
@@ -230,6 +243,11 @@ export default function useChatSocketEvents({
       const message = envelope?.payload || {};
       const conversationId = String(envelope?.conversation_id || message?.conversation_id || '').trim();
       if (!message?.id || conversationId !== activeConversationIdRef.current) return;
+      latestActiveThreadSocketMessageRef.current = {
+        conversationId,
+        messageId: String(message.id || '').trim(),
+        at: Date.now(),
+      };
       mergeMessageIntoThread(message);
       syncConversationPreview(conversationId, message);
     };

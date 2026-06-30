@@ -303,7 +303,7 @@ export function TaskEditDialog({
                     setAssigneeSearchInput(value);
                     return;
                   }
-                  if (reason === 'clear') {
+                  if (reason === 'reset' || reason === 'clear') {
                     setAssigneeSearchInput('');
                   }
                 }}
@@ -348,7 +348,13 @@ export function TaskEditDialog({
                 }}
                 inputValue={observerSearchInput}
                 onInputChange={(_, value, reason) => {
-                  if (reason === 'input' || reason === 'clear') setObserverSearchInput(value);
+                  if (reason === 'input') {
+                    setObserverSearchInput(value);
+                    return;
+                  }
+                  if (reason === 'reset' || reason === 'clear') {
+                    setObserverSearchInput('');
+                  }
                 }}
                 getOptionLabel={userLabel}
                 filterOptions={(options) => options}

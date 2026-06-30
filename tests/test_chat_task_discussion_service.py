@@ -144,7 +144,7 @@ def test_ensure_task_discussion_creates_members_and_message_channel(task_discuss
     )
     assert message["body"] == "Новый комментарий в чате"
 
-    listed = chat_service.list_conversations(current_user_id=2, limit=20)
+    listed = chat_service.list_conversations(current_user_id=2, limit=20)["items"]
     task_conversations = [item for item in listed if item.get("kind") == "task" or item.get("task_id") == task["id"]]
     assert len(task_conversations) == 1
     assert task_conversations[0]["task_title"] == "Проверить акт"

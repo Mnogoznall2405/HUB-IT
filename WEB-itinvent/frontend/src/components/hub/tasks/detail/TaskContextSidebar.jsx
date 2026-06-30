@@ -56,7 +56,7 @@ export {
 import {
   clampTextSx,
   renderKvRows,
-  renderObserverBlock,
+  formatTaskObserversSummary,
   getTaskUserLabel,
   getChecklistStats,
   getTaskViewCount,
@@ -83,6 +83,7 @@ export function TaskContextSidebar({
     { label: 'Постановщик', value: task?.created_by_full_name || task?.created_by_username || '-' },
     { label: 'Исполнитель', value: task?.assignee_full_name || task?.assignee_username || '-' },
     { label: 'Контролёр', value: task?.controller_full_name || task?.controller_username || '-' },
+    { label: 'Наблюдатели', value: formatTaskObserversSummary(task) || '-' },
     { label: 'Проверивший', value: task?.reviewer_full_name || '-' },
     { label: 'Проект', value: task?.project_name || 'Без проекта' },
     { label: 'Объект', value: task?.object_name || 'Без объекта' },
@@ -165,7 +166,6 @@ export function TaskContextSidebar({
               )}
             </Stack>
             {renderKvRows(summaryRows, ui)}
-            {renderObserverBlock(task, ui, theme)}
           </AccordionDetails>
         </Accordion>
 
@@ -231,7 +231,6 @@ export function TaskContextSidebar({
           )}
         </Stack>
         {renderKvRows(summaryRows, ui)}
-        {renderObserverBlock(task, ui, theme)}
       </Box>
 
       <Box

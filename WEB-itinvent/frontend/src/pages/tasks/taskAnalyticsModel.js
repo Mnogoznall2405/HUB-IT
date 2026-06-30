@@ -23,6 +23,7 @@ export const EMPTY_ANALYTICS_PAYLOAD = {
   by_object: [],
   status_breakdown: [],
   trend: { granularity: 'day', items: [] },
+  truncated: false,
 };
 
 export const analyticsStatusColors = {

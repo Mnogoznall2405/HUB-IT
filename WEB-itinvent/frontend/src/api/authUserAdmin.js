@@ -1,5 +1,7 @@
 import apiClient from './client';
 
+const TASK_DELEGATE_BULK_CHUNK_SIZE = 80;
+
 export const authUserAdminAPI = {
   getUsers: async () => {
     const response = await apiClient.get('/auth/users');
@@ -28,10 +30,18 @@ export const authUserAdminAPI = {
     if (normalizedOwnerIds.length === 0) {
       return { items: [] };
     }
-    const response = await apiClient.get('/auth/task-delegates', {
-      params: { owner_ids: normalizedOwnerIds.join(',') },
-    });
-    return response.data;
+    const mergedItems = [];
+    for (let offset = 0; offset < normalizedOwnerIds.length; offset += TASK_DELEGATE_BULK_CHUNK_SIZE) {
+      const chunk = normalizedOwnerIds.slice(offset, offset + TASK_DELEGATE_BULK_CHUNK_SIZE);
+      const response = await apiClient.get('/auth/task-delegates', {
+        params: { owner_ids: chunk.join(',') },
+      });
+      const chunkItems = response.data?.items;
+      if (Array.isArray(chunkItems)) {
+        mergedItems.push(...chunkItems);
+      }
+    }
+    return { items: mergedItems };
   },
 
   updateTaskDelegates: async (userId, items = []) => {

@@ -30,6 +30,21 @@ export const chatThreadMessagesAPI = {
     return response.data;
   },
 
+  hydrateThreadMessages: async (conversationId, messageIds = []) => {
+    const normalizedIds = Array.isArray(messageIds)
+      ? messageIds.map((item) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const response = await apiClient.get(
+      `/chat/conversations/${encodeURIComponent(conversationId)}/messages/hydrate`,
+      {
+        params: {
+          message_ids: normalizedIds.join(','),
+        },
+      },
+    );
+    return response.data;
+  },
+
   getMessages: async (conversationId, params = {}, options = {}) => {
     const response = await apiClient.get(
       `/chat/conversations/${encodeURIComponent(conversationId)}/messages`,

@@ -13,6 +13,7 @@ if str(WEB_ROOT) not in sys.path:
 
 from backend.services.hub_service import HubService
 from backend.services.transfer_act_reminder_service import TransferActReminderService
+from backend.services.transfer_service import register_act_records
 
 
 def _make_store(base_dir: Path) -> SimpleNamespace:
@@ -163,6 +164,57 @@ def test_create_transfer_reminder_creates_one_hub_task_and_pending_groups(temp_d
     controller_counts = hub.get_unread_counts(user_id=20)
     assert controller_counts["tasks_controller_open"] == 1
     assert controller_counts["tasks_review_required"] == 0
+
+
+def test_create_transfer_reminder_attaches_generated_acts_to_task(temp_dir, monkeypatch):
+    _, reminder_module, hub, reminder, actor = _build_services(temp_dir, monkeypatch)
+    transferred_items, acts = _sample_transfer_payload()
+    acts_dir = Path(temp_dir) / "generated_acts"
+    acts_dir.mkdir(parents=True, exist_ok=True)
+    for act in acts:
+        file_path = acts_dir / f"{act['act_id']}.pdf"
+        file_path.write_bytes(b"%PDF-1.4 generated act")
+        register_act_records(
+            [
+                {
+                    "act_id": act["act_id"],
+                    "file_path": str(file_path),
+                    "file_name": f"act_{act['old_employee']}.pdf",
+                    "file_type": "pdf",
+                }
+            ]
+        )
+
+    monkeypatch.setattr(
+        reminder_module.app_settings_service,
+        "resolve_transfer_act_reminder_controller",
+        lambda: {
+            "transfer_act_reminder_controller_username": "kozlovskii.me",
+            "resolved_controller": {"id": 20, "username": "kozlovskii.me", "full_name": "Kozlovskii Me"},
+            "resolved_controller_source": "configured",
+            "fallback_used": False,
+            "warning": None,
+        },
+    )
+
+    result = reminder.create_transfer_reminder(
+        db_id="main",
+        transferred_items=transferred_items,
+        acts=acts,
+        new_employee_no="501",
+        new_employee_name="New Employee",
+        actor_user=actor,
+    )
+
+    assert result["created"] is True
+    assert result["attached_acts_count"] == 2
+
+    task = hub.get_task(result["task_id"], user_id=10, is_admin=True)
+    attachments = list(task.get("attachments") or [])
+    assert len(attachments) == 2
+    assert all(str(item.get("scope") or "") == "transfer_act_generated" for item in attachments)
+    assert sorted(item["file_name"] for item in attachments) == ["act_Ivan Ivanov.pdf", "act_Petr Petrov.pdf"]
+    assert "Файлы" in str(task.get("description") or "")
 
 
 def test_create_transfer_reminder_accepts_admin_controller_without_explicit_tasks_review(temp_dir, monkeypatch):

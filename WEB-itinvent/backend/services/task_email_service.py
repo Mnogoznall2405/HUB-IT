@@ -4,10 +4,14 @@ import logging
 import os
 import smtplib
 from contextlib import contextmanager
+from email import encoders
 from email.message import EmailMessage
+from email.mime.base import MIMEBase
+from email.mime.multipart import MIMEMultipart
+from email.mime.text import MIMEText
 from email.utils import formataddr
 from threading import RLock
-from typing import Any, Iterator
+from typing import Any, Iterator, Sequence
 
 from backend.services.mail_exchange_transport import (
     ExchangeTransportError,
@@ -55,7 +59,9 @@ def _is_private_smtp_host(host: str) -> bool:
 
 
 class TaskEmailService:
-    """Low-volume Hub task email notifications via Exchange EWS or SMTP."""
+    """HUB-IT service mailbox outgoing mail via Exchange EWS or SMTP fallback."""
+
+    OutgoingAttachment = tuple[str, bytes]
 
     def is_enabled(self) -> bool:
         return _read_bool("TASK_EMAIL_NOTIFICATIONS_ENABLED", False)
@@ -139,7 +145,11 @@ class TaskEmailService:
         return _read_env("TASK_EMAIL_EWS_LOGIN") or self.sender_email()
 
     def ews_password(self) -> str:
-        return _read_env("TASK_EMAIL_EWS_PASSWORD") or _read_env("TASK_EMAIL_PASSWORD")
+        return (
+            _read_env("TASK_EMAIL_EWS_PASSWORD")
+            or _read_env("TASK_EMAIL_PASSWORD")
+            or _read_env("EMAIL_PASSWORD")
+        )
 
     def smtp_server(self) -> str:
         return _read_env("SMTP_SERVER", "localhost") or "localhost"
@@ -200,6 +210,49 @@ class TaskEmailService:
         value = str(email or "").strip()
         return "@" in value and "." in value.rsplit("@", 1)[-1]
 
+    def send_outgoing_email(
+        self,
+        *,
+        recipient_email: str,
+        subject: str,
+        body_text: str,
+        body_html: str = "",
+        attachments: Sequence[OutgoingAttachment] | None = None,
+        raise_on_error: bool = False,
+    ) -> bool:
+        recipient = str(recipient_email or "").strip()
+        if not self.is_valid_recipient(recipient):
+            return False
+        normalized_subject = str(subject or "").strip() or "HUB-IT"
+        normalized_body = str(body_text or "").strip()
+        normalized_html = str(body_html or "").strip() or plain_text_to_html(normalized_body)
+        normalized_attachments = [
+            (str(name or "").strip() or "attachment.bin", bytes(content or b""))
+            for name, content in (attachments or [])
+            if content
+        ]
+        try:
+            if self.transport() == "exchange":
+                return self._send_via_exchange(
+                    recipient_email=recipient,
+                    subject=normalized_subject,
+                    body_text=normalized_body,
+                    body_html=normalized_html,
+                    attachments=normalized_attachments,
+                )
+            return self._send_via_smtp(
+                recipient_email=recipient,
+                subject=normalized_subject,
+                body_text=normalized_body,
+                body_html=normalized_html,
+                attachments=normalized_attachments,
+            )
+        except Exception:
+            if raise_on_error:
+                raise
+            logger.exception("Outgoing email send failed")
+            return False
+
     def send_task_email(
         self,
         *,
@@ -210,34 +263,34 @@ class TaskEmailService:
     ) -> bool:
         if not self.is_enabled():
             return False
-        recipient = str(recipient_email or "").strip()
-        if not self.is_valid_recipient(recipient):
-            return False
         normalized_subject = str(subject or "").strip() or "HUB-IT: уведомление по задаче"
         normalized_body = str(body_text or "").strip() or "Откройте HUB-IT, чтобы посмотреть задачу."
         normalized_html = str(body_html or "").strip() or plain_text_to_html(normalized_body)
-        if self.transport() == "exchange":
-            return self._send_via_exchange(
-                recipient_email=recipient,
-                subject=normalized_subject,
-                body_text=normalized_body,
-                body_html=normalized_html,
-            )
-        return self._send_via_smtp(
-            recipient_email=recipient,
+        return self.send_outgoing_email(
+            recipient_email=recipient_email,
             subject=normalized_subject,
             body_text=normalized_body,
             body_html=normalized_html,
+            raise_on_error=True,
         )
 
-    def _send_via_exchange(self, *, recipient_email: str, subject: str, body_text: str, body_html: str) -> bool:
+    def _send_via_exchange(
+        self,
+        *,
+        recipient_email: str,
+        subject: str,
+        body_text: str,
+        body_html: str,
+        attachments: Sequence[OutgoingAttachment] | None = None,
+    ) -> bool:
         login = self.ews_login()
         password = self.ews_password()
         if not login or not password:
-            raise RuntimeError("TASK_EMAIL_EWS_PASSWORD is not configured for Exchange task notifications")
+            raise RuntimeError("TASK_EMAIL_EWS_PASSWORD is not configured for HUB-IT outgoing mail")
 
         try:
             from exchangelib import HTMLBody, Mailbox, Message
+            from exchangelib.attachments import FileAttachment
         except Exception as exc:
             raise RuntimeError("exchangelib package is not installed") from exc
 
@@ -254,26 +307,66 @@ class TaskEmailService:
             message = Message(
                 account=account,
                 subject=subject,
-                body=HTMLBody(body_html),
+                body=HTMLBody(body_html or plain_text_to_html(body_text)),
                 to_recipients=[Mailbox(email_address=recipient_email)],
             )
+            for filename, content in attachments or []:
+                if not content:
+                    continue
+                message.attach(FileAttachment(name=filename, content=content))
             message.send()
             return True
         except ExchangeTransportError as exc:
-            logger.exception("Task email Exchange transport failed")
+            logger.exception("HUB-IT outgoing Exchange transport failed")
             raise RuntimeError(str(exc)) from exc
         except Exception:
-            logger.exception("Task email Exchange send failed")
+            logger.exception("HUB-IT outgoing Exchange send failed")
             raise
 
-    def _send_via_smtp(self, *, recipient_email: str, subject: str, body_text: str, body_html: str) -> bool:
+    def _send_via_smtp(
+        self,
+        *,
+        recipient_email: str,
+        subject: str,
+        body_text: str,
+        body_html: str,
+        attachments: Sequence[OutgoingAttachment] | None = None,
+    ) -> bool:
         sender_email = self.sender_email()
-        msg = EmailMessage()
-        msg["From"] = formataddr((self.sender_name(), sender_email))
-        msg["To"] = recipient_email
-        msg["Subject"] = subject
-        msg.set_content(body_text)
-        msg.add_alternative(body_html, subtype="html")
+        normalized_attachments = [
+            (filename, content)
+            for filename, content in (attachments or [])
+            if content
+        ]
+
+        if normalized_attachments:
+            msg: EmailMessage | MIMEMultipart = MIMEMultipart()
+            msg["From"] = formataddr((self.sender_name(), sender_email))
+            msg["To"] = recipient_email
+            msg["Subject"] = subject
+            msg.attach(MIMEText(body_text or "", "plain", "utf-8"))
+            if body_html:
+                msg.attach(MIMEText(body_html, "html", "utf-8"))
+            for filename, content in normalized_attachments:
+                maintype, subtype = "application", "octet-stream"
+                if "." in filename:
+                    guessed = filename.rsplit(".", 1)[-1].lower()
+                    if guessed == "pdf":
+                        maintype, subtype = "application", "pdf"
+                part = MIMEBase(maintype, subtype)
+                part.set_payload(content)
+                encoders.encode_base64(part)
+                part.add_header("Content-Disposition", f'attachment; filename="{filename}"')
+                msg.attach(part)
+        else:
+            plain_msg = EmailMessage()
+            plain_msg["From"] = formataddr((self.sender_name(), sender_email))
+            plain_msg["To"] = recipient_email
+            plain_msg["Subject"] = subject
+            plain_msg.set_content(body_text)
+            if body_html:
+                plain_msg.add_alternative(body_html, subtype="html")
+            msg = plain_msg
 
         try:
             with smtplib.SMTP(self.smtp_server(), self.smtp_port(), timeout=self.smtp_timeout()) as server:
@@ -283,20 +376,27 @@ class TaskEmailService:
                     server.ehlo()
                 if self.use_auth() and self.password():
                     server.login(self.username(), self.password())
-                server.send_message(msg)
+                if isinstance(msg, EmailMessage):
+                    server.send_message(msg)
+                else:
+                    server.sendmail(sender_email, [recipient_email], msg.as_string())
             return True
         except smtplib.SMTPNotSupportedError as exc:
-            logger.warning("Task email SMTP AUTH/TLS not supported, retrying without auth: %s", exc)
+            logger.warning("HUB-IT outgoing SMTP AUTH/TLS not supported, retrying without auth: %s", exc)
             try:
                 with smtplib.SMTP(self.smtp_server(), self.smtp_port(), timeout=self.smtp_timeout()) as server:
-                    server.send_message(msg)
+                    if isinstance(msg, EmailMessage):
+                        server.send_message(msg)
+                    else:
+                        server.sendmail(sender_email, [recipient_email], msg.as_string())
                 return True
             except Exception as retry_exc:
-                logger.warning("Task email retry failed: %s", retry_exc)
+                logger.warning("HUB-IT outgoing SMTP retry failed: %s", retry_exc)
                 raise
         except Exception:
-            logger.exception("Task email SMTP send failed")
+            logger.exception("HUB-IT outgoing SMTP send failed")
             raise
 
 
 task_email_service = TaskEmailService()
+hub_outgoing_email_service = task_email_service

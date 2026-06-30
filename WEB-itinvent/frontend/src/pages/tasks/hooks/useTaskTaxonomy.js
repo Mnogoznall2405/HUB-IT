@@ -1,6 +1,5 @@
 import { useCallback, useState } from 'react';
-import { hubAPI } from '../../../api/client';
-import {
+import hubTaskSupportAPI from '../../../api/hubTaskSupport';import {
   createEmptyProjectDraft,
   createEmptyObjectDraft,
 } from '../taskCreateModel';
@@ -24,10 +23,9 @@ export default function useTaskTaxonomy({ setError, loadTaskUsers }) {
         is_active: projectDraft.is_active !== false,
       };
       if (editingProjectId) {
-        await hubAPI.updateTaskProject(editingProjectId, payload);
+        await hubTaskSupportAPI.updateTaskProject(editingProjectId, payload);
       } else {
-        await hubAPI.createTaskProject(payload);
-      }
+        await hubTaskSupportAPI.createTaskProject(payload);      }
       setEditingProjectId('');
       setProjectDraft(createEmptyProjectDraft());
       await loadTaskUsers({ force: true });
@@ -50,10 +48,9 @@ export default function useTaskTaxonomy({ setError, loadTaskUsers }) {
         is_active: objectDraft.is_active !== false,
       };
       if (editingObjectId) {
-        await hubAPI.updateTaskObject(editingObjectId, payload);
+        await hubTaskSupportAPI.updateTaskObject(editingObjectId, payload);
       } else {
-        await hubAPI.createTaskObject(payload);
-      }
+        await hubTaskSupportAPI.createTaskObject(payload);      }
       const retainedProjectId = editingObjectId ? '' : String(objectDraft.project_id || '');
       setEditingObjectId('');
       setObjectDraft(createEmptyObjectDraft(retainedProjectId));

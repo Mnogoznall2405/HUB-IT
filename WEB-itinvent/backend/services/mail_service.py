@@ -1171,6 +1171,7 @@ class MailService:
         user_id: int,
         mailbox_id: str | None = None,
         allow_inactive: bool = False,
+        fallback_to_primary_on_missing: bool = False,
     ) -> dict[str, Any]:
         rows = self._list_user_mailboxes_rows(user_id=int(user_id), include_inactive=True)
         try:
@@ -1178,6 +1179,7 @@ class MailService:
                 rows,
                 mailbox_id=mailbox_id,
                 allow_inactive=allow_inactive,
+                fallback_to_primary_on_missing=fallback_to_primary_on_missing,
             )
         except MailboxSelectionError as exc:
             raise MailServiceError(str(exc), status_code=exc.status_code) from exc
@@ -1858,6 +1860,7 @@ class MailService:
             user_id=int(user_id),
             mailbox_id=mailbox_id,
             allow_inactive=False,
+            fallback_to_primary_on_missing=True,
         )
         return self._build_mailbox_profile(
             user=user,
@@ -4514,6 +4517,7 @@ class MailService:
             user_id=int(user_id),
             mailbox_id=mailbox_id,
             allow_inactive=True,
+            fallback_to_primary_on_missing=True,
         )
         resolved_mailbox_id = _normalize_text(row.get("id"))
         if resolved_mailbox_id:
@@ -4585,6 +4589,7 @@ class MailService:
             user_id=int(user_id),
             mailbox_id=mailbox_id,
             allow_inactive=True,
+            fallback_to_primary_on_missing=True,
         )
         target_mailbox_id = _normalize_text(target_row.get("id"))
         target_auth_mode = _normalize_text(target_row.get("auth_mode"), "stored_credentials").lower()

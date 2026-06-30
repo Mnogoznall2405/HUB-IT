@@ -21,6 +21,7 @@ export function useChatFolderSwipe({
   activeFolderKey = 'all',
   customFolders = [],
   onFolderChange,
+  includeAllTab = true,
 }) {
   const [scrollElement, setScrollElementState] = useState(null);
   const swipeRef = useRef(resetSwipeState());
@@ -29,12 +30,14 @@ export function useChatFolderSwipe({
   const activeFolderKeyRef = useRef(activeFolderKey);
   const customFoldersRef = useRef(customFolders);
   const onFolderChangeRef = useRef(onFolderChange);
+  const includeAllTabRef = useRef(includeAllTab);
   const [folderSwipeOffset, setFolderSwipeOffset] = useState(0);
   const [folderSwipeDirection, setFolderSwipeDirection] = useState(0);
 
   activeFolderKeyRef.current = activeFolderKey;
   customFoldersRef.current = customFolders;
   onFolderChangeRef.current = onFolderChange;
+  includeAllTabRef.current = includeAllTab;
 
   const resetGesture = useCallback(() => {
     swipeRef.current = resetSwipeState();
@@ -107,7 +110,12 @@ export function useChatFolderSwipe({
         && Math.abs(currentOffset) >= FOLDER_SWIPE_TRIGGER_PX;
       const direction = currentOffset < 0 ? 'next' : 'prev';
       const nextKey = shouldNavigate
-        ? resolveFolderSwipeTarget(activeFolderKeyRef.current, direction, customFoldersRef.current)
+        ? resolveFolderSwipeTarget(
+          activeFolderKeyRef.current,
+          direction,
+          customFoldersRef.current,
+          { includeAllTab: includeAllTabRef.current },
+        )
         : null;
 
       swipeRef.current = resetSwipeState();

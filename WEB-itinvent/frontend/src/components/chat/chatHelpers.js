@@ -172,6 +172,18 @@ export const formatShortTime = (value) => {
   return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
 };
 
+export const formatSidebarConversationTime = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  }
+  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+};
+
 export const formatMessageTime = (value) => {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -188,6 +200,40 @@ export const formatMessageMetaLabel = (message) => {
   }
   return time;
 };
+
+const CHAT_INLINE_META_TIME_CHARS = 5;
+const CHAT_INLINE_META_TEXT_GAP_REM = 0.55;
+
+/** Reserve width for inline time/receipts at the end of a short single-line bubble. */
+export function getChatInlineMetaReserveWidth({
+  message,
+  compactMobile = false,
+  isOwnDirect = false,
+  isSending = false,
+} = {}) {
+  const metaLabel = formatMessageMetaLabel(message);
+  const labelLen = String(metaLabel || '').length;
+
+  let widthRem = isOwnDirect
+    ? (compactMobile ? 4.65 : 4.45)
+    : (compactMobile ? 3.25 : 2.95);
+
+  widthRem += CHAT_INLINE_META_TEXT_GAP_REM;
+
+  const extraChars = Math.max(0, labelLen - CHAT_INLINE_META_TIME_CHARS);
+  widthRem += extraChars * (compactMobile ? 0.34 : 0.32);
+
+  const uploadProgress = Number(message?.uploadProgress || 0);
+  const showUploadProgress = isSending
+    && Number.isFinite(uploadProgress)
+    && uploadProgress > 0
+    && uploadProgress < 100;
+  if (showUploadProgress) {
+    widthRem += 1.2;
+  }
+
+  return `${widthRem.toFixed(2)}rem`;
+}
 
 export const formatFullDate = (value) => {
   const raw = String(value || '').trim();
@@ -528,6 +574,26 @@ export const getTaskConversationMetaLine = (conversation) => {
 const formatTaskStatusLabel = (status) => {
   const [label] = getStatusMeta(status);
   return label || 'Задача';
+};
+
+export const resolveDirectConversationId = (peerUserId, sources = {}) => {
+  const normalizedPeerId = Number(peerUserId || 0);
+  if (!Number.isFinite(normalizedPeerId) || normalizedPeerId <= 0) return '';
+
+  const lists = [
+    Array.isArray(sources.conversations) ? sources.conversations : [],
+    Array.isArray(sources.searchChats) ? sources.searchChats : [],
+  ];
+
+  for (const list of lists) {
+    for (const item of list) {
+      if (String(item?.kind || '').trim() !== 'direct') continue;
+      if (Number(item?.direct_peer?.id || 0) === normalizedPeerId) {
+        return String(item?.id || '').trim();
+      }
+    }
+  }
+  return '';
 };
 
 export const getConversationHeaderSubtitle = (conversation) => {

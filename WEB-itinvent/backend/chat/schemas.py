@@ -99,6 +99,8 @@ class ChatConversationSummary(BaseModel):
     updated_at: str
     last_message_at: Optional[str] = None
     last_message_preview: str = ""
+    last_message_is_own: bool = False
+    last_message_delivery_status: Optional[Literal["sent", "read"]] = None
     unread_count: int = 0
     member_count: int = 0
     online_member_count: int = 0
@@ -112,6 +114,8 @@ class ChatConversationSummary(BaseModel):
 
 class ChatConversationListResponse(BaseModel):
     items: list[ChatConversationSummary] = Field(default_factory=list)
+    has_more: bool = False
+    next_cursor: Optional[str] = None
 
 
 class ChatConversationDetailResponse(ChatConversationSummary):
@@ -133,6 +137,17 @@ class ChatMessageListResponse(BaseModel):
 class ChatThreadBootstrapResponse(ChatMessageListResponse):
     initial_anchor_mode: Literal["bottom", "message", "first_unread"] = "bottom"
     initial_anchor_message_id: Optional[str] = None
+
+
+class ChatThreadHydrateItem(BaseModel):
+    message_id: str
+    read_by_count: int = 0
+    delivery_status: Optional[str] = None
+    reactions: list[ChatReactionSummary] = Field(default_factory=list)
+
+
+class ChatThreadHydrateResponse(BaseModel):
+    items: list[ChatThreadHydrateItem] = Field(default_factory=list)
 
 
 class ChatMessageSearchResponse(BaseModel):
@@ -170,6 +185,8 @@ class ChatHealthResponse(BaseModel):
     ai_worker_concurrency: int = 0
     ai_kb_index_age_sec: float = 0.0
     ai_last_run_duration_ms: float = 0.0
+    route_metrics: dict[str, dict[str, float]] = Field(default_factory=dict)
+    read_cache_metrics: dict[str, Any] = Field(default_factory=dict)
 
 
 class DirectConversationRequest(BaseModel):

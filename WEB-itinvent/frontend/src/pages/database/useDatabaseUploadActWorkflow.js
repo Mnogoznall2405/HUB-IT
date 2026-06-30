@@ -24,7 +24,6 @@ import {
 const noop = () => {};
 
 const createUploadActInitialForm = () => ({
-  document_title: '',
   from_employee: '',
   to_employee: '',
   doc_date: '',

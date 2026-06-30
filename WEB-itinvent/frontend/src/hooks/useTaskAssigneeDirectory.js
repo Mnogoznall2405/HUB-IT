@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { hubAPI } from '../api/client';
+import hubTaskSupportAPI from '../api/hubTaskSupport';
 
 export const TASK_ASSIGNEE_SEARCH_MIN_CHARS = 2;
 export const TASK_ASSIGNEE_SEARCH_LIMIT = 30;
@@ -73,7 +73,7 @@ export default function useTaskAssigneeDirectory({ departmentId = '' } = {}) {
       if (normalizedDepartmentId) {
         params.department_id = normalizedDepartmentId;
       }
-      const payload = await hubAPI.getAssignees(params);
+      const payload = await hubTaskSupportAPI.getAssignees(params);
       if (searchRequestRef.current !== requestId) return [];
       const items = Array.isArray(payload?.items) ? payload.items : [];
       if (!quiet) {
@@ -125,7 +125,7 @@ export default function useTaskAssigneeDirectory({ departmentId = '' } = {}) {
       if (normalizedDepartmentId) {
         params.department_id = normalizedDepartmentId;
       }
-      const payload = await hubAPI.getAssignees(params);
+      const payload = await hubTaskSupportAPI.getAssignees(params);
       if (resolveRequestRef.current !== requestId) return [];
       const items = Array.isArray(payload?.items) ? payload.items : [];
       mergeIntoCache(items);

@@ -49,19 +49,41 @@ class _Entry:
 
 
 class _FakeConnection:
-    def __init__(self, ou_entries=None, user_entries=None):
+    def __init__(self, ou_entries=None, user_entries=None, page_size=1000):
         self.ou_entries = ou_entries or []
         self.user_entries = user_entries or []
+        self.page_size = max(1, int(page_size or 1000))
         self.calls = []
         self.unbound = False
+        self.result = {}
 
     def search(self, **kwargs):
         self.calls.append(kwargs)
         search_filter = kwargs.get("search_filter", "")
         if "organizationalUnit" in search_filter:
             self.entries = list(self.ou_entries)
+            self.result = {}
+            return True
+
+        paged_cookie = kwargs.get("paged_cookie")
+        page_size = int(kwargs.get("paged_size") or self.page_size)
+        if paged_cookie is None:
+            offset = 0
         else:
-            self.entries = list(self.user_entries)
+            offset = int(paged_cookie.decode("ascii")) if isinstance(paged_cookie, bytes) else int(paged_cookie)
+        end = offset + page_size
+        page = self.user_entries[offset:end]
+        self.entries = list(page)
+        if end < len(self.user_entries):
+            self.result = {
+                "controls": {
+                    "1.2.840.113556.1.4.319": {
+                        "value": {"cookie": str(end).encode("ascii")},
+                    }
+                }
+            }
+        else:
+            self.result = {}
         return True
 
     def unbind(self):
@@ -206,6 +228,98 @@ def test_get_ad_password_expiry_report_uses_ou_search_base(monkeypatch):
     assert report["total"] == 1
     assert report["users"][0]["login"] == "ivanov_ii"
     assert conn.calls[0]["search_base"] == "OU=Users Objects,OU=Users standart,DC=example,DC=local"
+    assert "displayName=* *" not in conn.calls[0]["search_filter"]
+
+
+def test_get_ad_password_expiry_report_expiring_includes_underscore_login_without_display_name(monkeypatch):
+    from backend.services import ad_users_service as ad_module
+
+    now = datetime(2026, 6, 17, tzinfo=timezone.utc)
+    conn = _FakeConnection(
+        user_entries=[
+            _Entry(
+                sAMAccountName="zalesova_ey",
+                displayName="",
+                department="Sales",
+                title="Manager",
+                pwdLastSet=_ad_filetime(now - timedelta(days=39)),
+                distinguishedName="CN=Zalesova,OU=Users,DC=example,DC=local",
+            ),
+        ]
+    )
+    monkeypatch.setattr(ad_module, "_open_ad_connection", lambda: conn)
+    _patch_branch_context(monkeypatch, ad_module)
+    _patch_fixed_now(monkeypatch, ad_module, now)
+
+    report = ad_module.get_ad_password_expiry_report(mode="expiring", days_threshold=7)
+
+    assert report["total"] == 1
+    assert report["users"][0]["login"] == "zalesova_ey"
+    assert report["users"][0]["display_name"] == "zalesova_ey"
+
+
+def test_get_ad_password_expiry_report_paged_search_loads_all_entries(monkeypatch):
+    from backend.services import ad_users_service as ad_module
+
+    now = datetime(2026, 6, 17, tzinfo=timezone.utc)
+    user_entries = []
+    for index in range(1001, 1006):
+        user_entries.append(
+            _Entry(
+                sAMAccountName=f"user_{index}",
+                displayName=f"User {index}",
+                department="IT",
+                title="Engineer",
+                pwdLastSet=_ad_filetime(now - timedelta(days=39)),
+                distinguishedName=f"CN=User {index},OU=Users,DC=example,DC=local",
+            )
+        )
+    conn = _FakeConnection(user_entries=user_entries, page_size=2)
+    monkeypatch.setattr(ad_module, "_AD_LDAP_PAGE_SIZE", 2)
+    monkeypatch.setattr(ad_module, "_open_ad_connection", lambda: conn)
+    _patch_branch_context(monkeypatch, ad_module)
+    _patch_fixed_now(monkeypatch, ad_module, now)
+
+    report = ad_module.get_ad_password_expiry_report(mode="expiring", days_threshold=7, force=True)
+
+    assert report["total"] == 5
+    assert report["ldap_entries_fetched"] == 5
+    assert len(conn.calls) == 3
+
+
+def test_get_ad_password_expiry_report_query_uses_targeted_lookup(monkeypatch):
+    from backend.services import ad_users_service as ad_module
+
+    now = datetime(2026, 6, 17, tzinfo=timezone.utc)
+    bulk_conn = _FakeConnection(user_entries=[])
+    targeted_conn = _FakeConnection(
+        user_entries=[
+            _Entry(
+                sAMAccountName="petrov_pp",
+                displayName="Петров Пётр",
+                department="Sales",
+                title="Manager",
+                pwdLastSet=_ad_filetime(now - timedelta(days=39)),
+                distinguishedName="CN=Петров Пётр,OU=Users,DC=example,DC=local",
+            ),
+        ]
+    )
+    connections = iter([bulk_conn, targeted_conn])
+    monkeypatch.setattr(ad_module, "_open_ad_connection", lambda: next(connections))
+    _patch_branch_context(monkeypatch, ad_module)
+    _patch_fixed_now(monkeypatch, ad_module, now)
+
+    report = ad_module.get_ad_password_expiry_report(
+        mode="expiring",
+        days_threshold=7,
+        q="petrov",
+        force=True,
+    )
+
+    assert report["total"] == 1
+    assert report["users"][0]["login"] == "petrov_pp"
+    assert report["ldap_targeted_users_added"] == 1
+    assert "(anr=" in targeted_conn.calls[0]["search_filter"]
 
 
 def test_get_ad_password_expiry_report_expiring_mode_applies_threshold(monkeypatch):
@@ -282,13 +396,13 @@ def test_get_ad_password_expiry_report_marks_password_never_expires(monkeypatch)
     conn = _FakeConnection(
         user_entries=[
             _Entry(
-                sAMAccountName="service_acc",
-                displayName="Сервисный аккаунт",
+                sAMAccountName="neverexp_u1",
+                displayName="Never Expire User",
                 department="IT",
-                title="Service",
+                title="Engineer",
                 pwdLastSet=_ad_filetime(now - timedelta(days=120)),
                 userAccountControl=never_expire_uac,
-                distinguishedName="CN=Service,OU=Users,DC=example,DC=local",
+                distinguishedName="CN=Never Expire User,OU=Users,DC=example,DC=local",
             ),
         ]
     )
@@ -300,7 +414,7 @@ def test_get_ad_password_expiry_report_marks_password_never_expires(monkeypatch)
 
     assert report["total"] == 1
     user = report["users"][0]
-    assert user["login"] == "service_acc"
+    assert user["login"] == "neverexp_u1"
     assert user["password_never_expires"] is True
     assert user["expired"] is False
     assert user["expiration_date"] is None

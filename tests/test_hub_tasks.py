@@ -614,6 +614,54 @@ def test_author_can_review_and_outsider_cannot_access_task_artifacts(task_env):
     assert client.get(f"/hub/tasks/{task_id}/attachments/{attachment_id}/file").status_code == 403
 
 
+def test_assignee_controller_not_creator_cannot_review(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Assignee Controller Conflict", assignee_user_id=3, controller_user_id=3)
+    task_id = task["id"]
+
+    set_user(3)
+    submitted = _submit_task(client, task_id, comment="Ready for review")
+    assert submitted["status"] == "review"
+
+    detail = client.get(f"/hub/tasks/{task_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["capabilities"]["can_review"] is False
+
+    denied_review = client.post(
+        f"/hub/tasks/{task_id}/review",
+        json={"decision": "approve", "comment": "Self-review blocked"},
+    )
+    assert denied_review.status_code == 403
+
+
+def test_self_assigned_assignee_creator_can_review_after_submit(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Self Assigned Review", assignee_user_id=1, controller_user_id=3)
+    task_id = task["id"]
+
+    submitted = _submit_task(client, task_id, comment="Author finished own task")
+    assert submitted["status"] == "review"
+
+    detail = client.get(f"/hub/tasks/{task_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["capabilities"]["can_review"] is True
+
+    reviewed = client.post(
+        f"/hub/tasks/{task_id}/review",
+        json={"decision": "approve", "comment": "Accepted by self-assigned author"},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    reviewed_payload = reviewed.json()
+    assert reviewed_payload["status"] == "done"
+    assert reviewed_payload["reviewer_user_id"] == 1
+
+
 def test_controller_review_and_counts_include_author_and_controller_roles(task_env):
     client = task_env["client"]
     set_user = task_env["set_user"]
@@ -969,6 +1017,7 @@ def test_task_projects_protocol_date_and_analytics(task_env):
     assert payload["by_object"][0]["object_id"] == task_object["id"]
     assert payload["by_object"][0]["object_name"] == "Объект 17"
     assert payload["by_participant"][0]["participant_user_id"] == 2
+    assert payload.get("truncated") is False
 
 
 def test_task_analytics_backfills_completed_at_and_returns_extended_metrics(task_env):
@@ -1133,6 +1182,7 @@ def test_task_analytics_backfills_completed_at_and_returns_extended_metrics(task
     assert filtered_payload["summary"]["done_without_due"] == 1
     assert filtered_payload["by_participant"][0]["participant_user_id"] == 2
     assert filtered_payload["by_object"][0]["object_id"] == task_object["id"]
+    assert payload.get("truncated") is False
 
     overdue_detail = service.get_task(overdue_task["id"], user_id=1)
     assert overdue_detail is not None
@@ -1727,3 +1777,32 @@ def test_task_observer_added_notification_on_create_and_patch(task_env):
         item.get("event_type") == "task.observer_added" and item.get("entity_id") == task_id
         for item in taskonly_notifications.get("items", [])
     )
+
+
+def test_list_tasks_supports_controller_focus_and_pagination_filters(task_env):
+    client = task_env["client"]
+    service = task_env["service"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    controller_task = _create_task(client, title="Controller Filter Task", controller_user_id=3)
+    review_task = _create_task(client, title="Review Focus Task", assignee_user_id=1)
+    set_user(1)
+    _submit_task(client, review_task["id"], comment="Ready for review")
+    assert controller_task["id"]
+
+    controller_payload = service.list_tasks(user_id=1, scope="my", controller_user_id=3, limit=50)
+    assert all(int(item.get("controller_user_id") or 0) == 3 for item in controller_payload["items"])
+    assert any(item["id"] == controller_task["id"] for item in controller_payload["items"])
+
+    review_payload = service.list_tasks(user_id=1, scope="my", focus_mode="review", limit=50)
+    assert all(str(item.get("status") or "").lower() == "review" for item in review_payload["items"])
+    assert any(item["id"] == review_task["id"] for item in review_payload["items"])
+
+    page_one = service.list_tasks(user_id=1, scope="my", limit=1, offset=0, sort_by="updated_at", sort_dir="asc")
+    page_two = service.list_tasks(user_id=1, scope="my", limit=1, offset=1, sort_by="updated_at", sort_dir="asc")
+    assert page_one["limit"] == 1
+    assert page_one["offset"] == 0
+    assert page_two["offset"] == 1
+    if page_one["total"] > 1:
+        assert page_one["items"][0]["id"] != page_two["items"][0]["id"]

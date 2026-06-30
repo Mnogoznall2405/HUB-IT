@@ -55,7 +55,7 @@ describe('TasksDataModeRouter', () => {
     expect(screen.getByTestId('tasks-list-view')).toBeInTheDocument();
   });
 
-  it('renders deadlines bucket view for deadlines mode', () => {
+  it('renders deadlines bucket view for deadlines mode', async () => {
     render(
       <ThemeProvider theme={theme}>
         <TasksDataModeRouter
@@ -66,10 +66,10 @@ describe('TasksDataModeRouter', () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByTestId('tasks-deadlines-view')).toBeInTheDocument();
+    expect(await screen.findByTestId('tasks-deadlines-view')).toBeInTheDocument();
   });
 
-  it('renders board view for board mode', () => {
+  it('renders board view for board mode', async () => {
     render(
       <ThemeProvider theme={theme}>
         <TasksDataModeRouter
@@ -81,10 +81,10 @@ describe('TasksDataModeRouter', () => {
     );
 
     expect(screen.getByTestId('tasks-data-mode-router')).toBeInTheDocument();
-    expect(screen.getByTestId('tasks-desktop-kanban')).toBeInTheDocument();
+    expect(await screen.findByTestId('tasks-desktop-kanban')).toBeInTheDocument();
   });
 
-  it('renders calendar view for calendar mode', () => {
+  it('renders calendar view for calendar mode', async () => {
     render(
       <ThemeProvider theme={theme}>
         <TasksDataModeRouter
@@ -95,10 +95,10 @@ describe('TasksDataModeRouter', () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByTestId('tasks-calendar-view')).toBeInTheDocument();
+    expect(await screen.findByTestId('tasks-calendar-view')).toBeInTheDocument();
   });
 
-  it('renders gantt view for gantt mode', () => {
+  it('renders gantt view for gantt mode', async () => {
     render(
       <ThemeProvider theme={theme}>
         <TasksDataModeRouter
@@ -109,7 +109,7 @@ describe('TasksDataModeRouter', () => {
       </ThemeProvider>,
     );
 
-    expect(screen.getByTestId('tasks-gantt-view')).toBeInTheDocument();
+    expect(await screen.findByTestId('tasks-gantt-view')).toBeInTheDocument();
   });
 
   it('preloads analytics chunk via preloadTasksAnalyticsView', async () => {

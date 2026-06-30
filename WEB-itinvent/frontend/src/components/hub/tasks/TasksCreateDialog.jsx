@@ -74,6 +74,7 @@ export default function TasksCreateDialog({
   renderTaskObserverTags,
   taskUserAutocompleteSlotProps,
   assigneeAutocompleteProps,
+  observerAutocompleteProps,
   controllers = [],
   departments = [],
   activeTaskProjects = [],
@@ -347,7 +348,7 @@ export default function TasksCreateDialog({
                     renderOption={renderTaskUserOptionMultiple}
                     renderTags={renderTaskObserverTags}
                     slotProps={taskUserAutocompleteSlotProps}
-                    {...assigneeAutocompleteProps}
+                    {...observerAutocompleteProps}
                     renderInput={(params) => (
                       <TextField
                         {...params}

@@ -30,25 +30,23 @@ import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatComposer from './ChatComposer';
 import ChatMessageList from './ChatMessageList';
 import ChatSelectionActionDock from './ChatSelectionActionDock';
+import ChatThreadComposerBridge from './ChatThreadComposerBridge';
+import ChatThreadHeader, { AiRunStatusBanner } from './ChatThreadHeader';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
 import {
   CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX,
   getConversationDisplayTitle,
 } from './chatHelpers';
 import {
+  computePrependScrollRestoreTop,
+  shouldDeferPinnedBottomScroll,
+  shouldRetryPrependRestore,
+} from '../../lib/chat/chatThreadScrollModel';
+import {
   buildChatThreadMessageBodyTypographySx,
   CHAT_DEFAULT_FONT_SIZES,
   CHAT_FONT_FAMILY,
 } from './chatUiTokens';
-
-export {
-  ChatBubble,
-  isMobileMessageLongPress,
-  shouldAnimateChatBubble,
-  shouldCancelLongPressMove,
-  shouldSuppressNativeMessageGesture,
-} from './ChatBubble';
-export { getComposerMentionTrigger } from './ChatComposer';
 
 const COMPOSER_STICK_DISTANCE_PX = CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
 const BLUR_SCROLL_DELTA_PX = 12;
@@ -64,6 +62,7 @@ const SCROLL_WRITE_PRIORITY = {
   compensation: 1,
   pinnedBottom: 2,
   preserve: 3,
+  prependRestore: 4,
 };
 const SCROLL_WRITE_WINDOW_MS = 32;
 
@@ -108,478 +107,6 @@ export const getChatThreadBottomPadding = ({
   });
   return Math.max(baseGap, Math.round(baseGap + effectiveKeyboardInset + keyboardSpacer));
 };
-
-function HeaderAction({ title, children, onClick, active = false, compactMobile = false, hidden = false, disabled = false, density }) {
-  if (hidden) return null;
-  const actionSize = compactMobile
-    ? Math.max(density?.touchTarget || 44, density?.threadHeaderAction || 44)
-    : (density?.threadHeaderAction || 34);
-  return (
-    <Tooltip title={title}>
-      <span>
-        <IconButton
-          size="small"
-          aria-label={title}
-          onClick={onClick}
-          disabled={disabled}
-          sx={{
-            width: actionSize,
-            height: actionSize,
-            borderRadius: 0,
-            color: active ? 'var(--chat-action-active-text)' : 'inherit',
-            bgcolor: 'transparent',
-            transition: 'opacity 100ms ease, background-color 120ms ease, transform 120ms ease',
-            ...(compactMobile ? {
-              '&:active': {
-                opacity: 0.62,
-                transform: 'scale(0.96)',
-              },
-            } : {
-              '&:hover': {
-                bgcolor: active ? 'var(--chat-action-active-bg)' : 'var(--chat-action-hover-bg)',
-              },
-            }),
-            '&.Mui-disabled': {
-              opacity: 0.36,
-              color: 'inherit',
-            },
-          }}
-        >
-          {children}
-        </IconButton>
-      </span>
-    </Tooltip>
-  );
-}
-
-function AiRunStatusBanner({ aiStatus, theme, ui, compactMobile = false }) {
-  const status = String(aiStatus?.status || '').trim();
-  if (!status || status === 'completed') return null;
-  const label = status === 'queued'
-    ? 'AI поставлен в очередь'
-    : status === 'running'
-      ? 'AI анализирует запрос и файлы'
-      : 'AI не смог обработать запрос';
-  const tone = status === 'failed'
-    ? {
-      bg: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.16 : 0.1),
-      border: alpha(theme.palette.error.main, 0.22),
-      text: theme.palette.error.main,
-    }
-    : {
-      bg: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
-      border: alpha(theme.palette.primary.main, 0.22),
-      text: ui.accentText,
-    };
-  return (
-    <Box
-      sx={{
-        px: compactMobile ? 1.5 : 2,
-        py: 1.1,
-        borderBottom: `1px solid ${ui.borderSoft}`,
-        backgroundColor: tone.bg,
-      }}
-    >
-      <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: CHAT_FONT_FAMILY }}>
-        {label}
-      </Typography>
-      {status === 'failed' && aiStatus?.error_text ? (
-        <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-          {aiStatus.error_text}
-        </Typography>
-      ) : null}
-    </Box>
-  );
-}
-
-function AiInteractiveStatusBanner({ aiStatusDisplay, theme, ui, compactMobile = false }) {
-  if (!aiStatusDisplay?.visible) return null;
-  const tone = aiStatusDisplay.tone === 'error'
-    ? {
-      bg: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.16 : 0.1),
-      border: alpha(theme.palette.error.main, 0.22),
-      text: theme.palette.error.main,
-    }
-    : {
-      bg: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
-      border: alpha(theme.palette.primary.main, 0.22),
-      text: ui.accentText,
-    };
-  return (
-    <motion.div
-      key={`${aiStatusDisplay.status}:${aiStatusDisplay.stage}:${aiStatusDisplay.primaryText}`}
-      initial={{ opacity: 0, y: -6 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -6 }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
-    >
-      <Box
-        sx={{
-          px: compactMobile ? 1.5 : 2,
-          py: 1.1,
-          borderBottom: `1px solid ${ui.borderSoft}`,
-          backgroundColor: tone.bg,
-        }}
-      >
-        <Stack direction="row" spacing={1.1} alignItems="flex-start">
-          {aiStatusDisplay.showSpinner ? (
-            <CircularProgress
-              size={compactMobile ? 15 : 16}
-              thickness={5}
-              sx={{ mt: 0.15, color: tone.text, flexShrink: 0 }}
-            />
-          ) : (
-            <SmartToyOutlinedIcon sx={{ mt: 0.05, fontSize: 17, color: tone.text, flexShrink: 0 }} />
-          )}
-          <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: CHAT_FONT_FAMILY }}>
-              {aiStatusDisplay.primaryText}
-            </Typography>
-            {aiStatusDisplay.secondaryText ? (
-              <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-                {aiStatusDisplay.secondaryText}
-              </Typography>
-            ) : null}
-          </Box>
-        </Stack>
-      </Box>
-    </motion.div>
-  );
-}
-
-const ChatThreadHeader = memo(function ChatThreadHeader({
-  theme,
-  ui,
-  isMobile,
-  compactMobile,
-  activeConversation,
-  headerSubtitle,
-  typingLine,
-  contextPanelOpen,
-  onBack,
-  onOpenDrawer,
-  onOpenInfo,
-  onOpenTask,
-  onOpenSearch,
-  onOpenMenu,
-  selectionMode = false,
-  selectedMessageCount = 0,
-  canCopySelectedMessages = false,
-  canDeleteSelectedMessages = false,
-  onClearMessageSelection,
-  onCopySelectedMessages,
-  onForwardSelectedMessages,
-  onDeleteSelectedMessages,
-}) {
-  const density = ui.density || {};
-  const taskId = String(activeConversation?.task_id || '').trim();
-  const headerTitle = getConversationDisplayTitle(activeConversation);
-  const openHeaderPrimary = () => {
-    if (taskId && typeof onOpenTask === 'function') {
-      onOpenTask(taskId);
-      return;
-    }
-    onOpenInfo?.();
-  };
-  const headerShellSx = {
-    px: { xs: compactMobile ? 0.65 : 1.15, md: density.threadHeaderPx || 1.6 },
-    pb: compactMobile ? 0.45 : (density.threadHeaderPb || 0.78),
-    bgcolor: ui.threadTopbarBg,
-    backdropFilter: 'blur(16px)',
-    position: 'sticky',
-    top: 0,
-    zIndex: 5,
-    boxShadow: theme.palette.mode === 'dark' ? 'none' : `0 1px 0 ${ui.borderSoft}, 0 6px 14px ${alpha('#000', 0.06)}`,
-    borderBottom: theme.palette.mode === 'dark' ? `0.5px solid ${ui.borderSoft}` : 'none',
-  };
-  const headerContentSx = {
-    maxWidth: compactMobile ? '100%' : `${Number(density.contentMaxWidth || ui.contentMaxWidth || 980) + 56}px`,
-    mx: 'auto',
-    width: '100%',
-  };
-
-  if (selectionMode && compactMobile) {
-    const selectionIconButtonSx = {
-      width: 38,
-      height: 38,
-      borderRadius: 0,
-      color: theme.palette.text.primary,
-      bgcolor: 'transparent',
-      transition: 'opacity 120ms ease, transform 120ms ease',
-      '&:active': {
-        opacity: 0.62,
-        transform: 'scale(0.96)',
-      },
-      '&:disabled': {
-        opacity: 0.34,
-      },
-    };
-
-    return (
-      <Box
-        className="chat-safe-top chat-no-select"
-        data-testid="chat-selection-toolbar"
-        sx={{
-          ...headerShellSx,
-          px: 0.65,
-          pb: 0.3,
-          bgcolor: alpha(ui.threadTopbarBg || theme.palette.background.paper, 0.98),
-          backdropFilter: 'blur(18px) saturate(1.06)',
-          borderBottom: `1px solid ${ui.borderSoft || alpha(theme.palette.divider, 0.14)}`,
-          boxShadow: 'none',
-        }}
-      >
-        <Stack
-          direction="row"
-          alignItems="center"
-          justifyContent="space-between"
-          sx={{
-            ...headerContentSx,
-            minHeight: 44,
-          }}
-        >
-          <Stack direction="row" spacing={0.9} alignItems="center" sx={{ minWidth: 0 }}>
-            <IconButton
-              data-testid="chat-selection-clear"
-              aria-label="Отменить выделение"
-              onClick={onClearMessageSelection}
-              sx={selectionIconButtonSx}
-            >
-              <CloseRoundedIcon sx={{ fontSize: 28 }} />
-            </IconButton>
-            <Typography
-              data-testid="chat-selection-count-badge"
-              sx={{
-                color: theme.palette.text.primary,
-                fontSize: 21,
-                fontWeight: 700,
-                lineHeight: 1,
-                fontFamily: CHAT_FONT_FAMILY,
-              }}
-            >
-              {selectedMessageCount}
-            </Typography>
-          </Stack>
-
-          <Stack direction="row" spacing={0.65} alignItems="center">
-            <IconButton
-              data-testid="chat-selection-copy-action"
-              aria-label="Копировать"
-              disabled={!canCopySelectedMessages || selectedMessageCount <= 0 || typeof onCopySelectedMessages !== 'function'}
-              onClick={onCopySelectedMessages}
-              sx={selectionIconButtonSx}
-            >
-              <ContentCopyRoundedIcon sx={{ fontSize: 25 }} />
-            </IconButton>
-            <IconButton
-              data-testid="chat-selection-header-forward-action"
-              aria-label="Переслать"
-              disabled={selectedMessageCount <= 0 || typeof onForwardSelectedMessages !== 'function'}
-              onClick={onForwardSelectedMessages}
-              sx={selectionIconButtonSx}
-            >
-              <ForwardRoundedIcon sx={{ fontSize: 27 }} />
-            </IconButton>
-            <IconButton
-              data-testid="chat-selection-header-delete-action"
-              aria-label="Удалить"
-              disabled={!canDeleteSelectedMessages || selectedMessageCount <= 0 || typeof onDeleteSelectedMessages !== 'function'}
-              onClick={onDeleteSelectedMessages}
-              sx={{ ...selectionIconButtonSx, color: theme.palette.error.main }}
-            >
-              <DeleteRoundedIcon sx={{ fontSize: 25 }} />
-            </IconButton>
-          </Stack>
-        </Stack>
-      </Box>
-    );
-  }
-
-  if (selectionMode) {
-    return (
-      <Box className="chat-safe-top chat-no-select" data-testid="chat-selection-toolbar" sx={headerShellSx}>
-        <Stack
-          direction="row"
-          spacing={compactMobile ? 0.85 : 1.05}
-          alignItems="center"
-          justifyContent="space-between"
-          sx={headerContentSx}
-        >
-          <Stack direction="row" spacing={compactMobile ? 0.75 : 1} alignItems="center" sx={{ minWidth: 0 }}>
-            {isMobile ? (
-              <IconButton
-                size="small"
-                onClick={onBack}
-                aria-label="Назад к чатам"
-                sx={{
-                  ml: -0.2,
-                  width: compactMobile ? 44 : 38,
-                  height: compactMobile ? 44 : 38,
-                  borderRadius: 0,
-                  bgcolor: 'transparent',
-                }}
-              >
-                <ArrowBackRoundedIcon />
-              </IconButton>
-            ) : null}
-            <Box
-              data-testid="chat-selection-count-badge"
-              sx={{
-                width: compactMobile ? 34 : 36,
-                height: compactMobile ? 34 : 36,
-                borderRadius: 999,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-                bgcolor: ui.accentText || theme.palette.primary.main,
-                color: theme.palette.primary.contrastText,
-                fontWeight: 850,
-                fontSize: compactMobile ? 16 : 17,
-                fontFamily: CHAT_FONT_FAMILY,
-              }}
-            >
-              {selectedMessageCount}
-            </Box>
-            <Box
-              component="button"
-              type="button"
-              onClick={openHeaderPrimary}
-              aria-label={taskId ? 'Открыть задачу' : 'Информация о чате'}
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: compactMobile ? '10px' : '12px',
-                p: 0,
-                border: 'none',
-                bgcolor: 'transparent',
-                color: theme.palette.text.primary,
-                textAlign: 'left',
-                cursor: 'pointer',
-                minWidth: 0,
-              }}
-            >
-              <ConversationAvatar
-                conversation={activeConversation}
-                online={Boolean(activeConversation?.kind === 'direct' && activeConversation?.direct_peer?.presence?.is_online)}
-                size={compactMobile ? 40 : (density.threadHeaderAvatar || 42)}
-              />
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary), letterSpacing: '-0.01em', fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                  {headerTitle}
-                </Typography>
-                <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerSubtitleMobile : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                  {typingLine || headerSubtitle}
-                </Typography>
-              </Box>
-            </Box>
-          </Stack>
-
-          <HeaderAction
-            title="Действия чата"
-            onClick={onOpenMenu}
-            active={contextPanelOpen}
-            compactMobile={compactMobile}
-            density={density}
-          >
-            <MoreVertRoundedIcon fontSize="small" />
-          </HeaderAction>
-        </Stack>
-      </Box>
-    );
-  }
-
-  return (
-    <Box
-      className="chat-safe-top chat-no-select"
-      sx={headerShellSx}
-    >
-      <Stack
-        direction="row"
-        spacing={compactMobile ? 0.85 : 1.05}
-        alignItems="center"
-        justifyContent="space-between"
-        sx={{
-          ...headerContentSx,
-        }}
-      >
-        <Stack direction="row" spacing={compactMobile ? 0.75 : 1} alignItems="center" sx={{ minWidth: 0 }}>
-          {isMobile ? (
-            <IconButton
-              size="small"
-              onClick={onBack}
-              aria-label="Назад к чатам"
-              sx={{
-                ml: -0.2,
-                width: compactMobile ? 44 : 38,
-                height: compactMobile ? 44 : 38,
-                borderRadius: 0,
-                bgcolor: 'transparent',
-                '&:active': compactMobile ? {
-                  opacity: 0.62,
-                  transform: 'scale(0.96)',
-                } : undefined,
-              }}
-            >
-              <ArrowBackRoundedIcon />
-            </IconButton>
-          ) : null}
-
-          <Box
-            component="button"
-            type="button"
-            onClick={openHeaderPrimary}
-            aria-label={taskId ? 'Открыть задачу' : 'Информация о чате'}
-            sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: compactMobile ? '10px' : '12px',
-              p: 0,
-              border: 'none',
-              bgcolor: 'transparent',
-              color: theme.palette.text.primary,
-              textAlign: 'left',
-              cursor: 'pointer',
-              minWidth: 0,
-              '&:active': compactMobile ? {
-                opacity: 0.72,
-              } : undefined,
-            }}
-          >
-            <ConversationAvatar
-              conversation={activeConversation}
-              online={Boolean(activeConversation?.kind === 'direct' && activeConversation?.direct_peer?.presence?.is_online)}
-              size={compactMobile ? 40 : (density.threadHeaderAvatar || 42)}
-            />
-            <Box sx={{ minWidth: 0 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary), letterSpacing: '-0.01em', fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                {headerTitle}
-              </Typography>
-              <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerSubtitleMobile : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                {typingLine || headerSubtitle}
-              </Typography>
-            </Box>
-          </Box>
-        </Stack>
-
-        <Stack direction="row" spacing={0.1} alignItems="center">
-          <HeaderAction title="Поиск по сообщениям" onClick={onOpenSearch} compactMobile={compactMobile} hidden={compactMobile} density={density}>
-            <SearchRoundedIcon fontSize="small" />
-          </HeaderAction>
-          <HeaderAction
-            title="Действия чата"
-            onClick={onOpenMenu}
-            active={contextPanelOpen}
-            compactMobile={compactMobile}
-            density={density}
-          >
-            <MoreVertRoundedIcon fontSize="small" />
-          </HeaderAction>
-        </Stack>
-      </Stack>
-    </Box>
-  );
-});
 
 export const getTaskCompletedBannerText = (completedAt) => {
   const raw = String(completedAt || '').trim();
@@ -796,6 +323,7 @@ function ChatThread({
   effectiveLastReadMessageId,
   messagesHasMore,
   loadingOlder,
+  prependScrollRestoreRef,
   onLoadOlder,
   threadScrollRef,
   threadContentRef,
@@ -827,6 +355,7 @@ function ChatThread({
   onDeleteSelectedMessages,
   onOpenComposerMenu,
   composerRef,
+  composerTextBridge,
   messageText,
   onMessageTextChange,
   onComposerKeyDown,
@@ -917,24 +446,40 @@ function ChatThread({
     composerHeight,
   });
   const messageCount = Array.isArray(messages) ? messages.length : 0;
-  const [stickyDateLabel, setStickyDateLabel] = useState('');
   const [historyAutoLoadEnabled, setHistoryAutoLoadEnabled] = useState(false);
-  const stickyDateLabelRef = useRef('');
-  const stickyDateFrameRef = useRef(null);
-  const stickyDateAnchorsRef = useRef([]);
+  const loadingOlderRef = useRef(loadingOlder);
+  loadingOlderRef.current = loadingOlder;
+
+  const shouldDeferThreadPinnedScroll = useCallback(() => (
+    shouldDeferPinnedBottomScroll({
+      loadingOlder: loadingOlderRef.current,
+      prependRestorePending: Boolean(prependScrollRestoreRef?.current),
+    })
+  ), [prependScrollRestoreRef]);
 
   useEffect(() => {
     setHistoryAutoLoadEnabled(false);
   }, [activeConversationId]);
 
+  useEffect(() => {
+    if (!messagesHasMore) {
+      setHistoryAutoLoadEnabled(false);
+    }
+  }, [messagesHasMore]);
+
+  const isThreadScrollable = useCallback((node) => {
+    if (!node) return false;
+    return Number(node.scrollHeight) > Number(node.clientHeight) + 2;
+  }, []);
+
   const armHistoryAutoLoadIfNearTop = useCallback((event) => {
     if (historyAutoLoadEnabled) return;
     const node = event?.currentTarget;
-    if (!node) return;
+    if (!node || !isThreadScrollable(node)) return;
     const scrollTop = Number(node.scrollTop || 0);
     if (scrollTop > HISTORY_AUTO_LOAD_ARM_DISTANCE_PX) return;
     setHistoryAutoLoadEnabled(true);
-  }, [historyAutoLoadEnabled]);
+  }, [historyAutoLoadEnabled, isThreadScrollable]);
 
   const handleThreadWheel = useCallback((event) => {
     const deltaY = Number(event?.deltaY ?? event?.nativeEvent?.deltaY ?? 0);
@@ -979,6 +524,60 @@ function ChatThread({
     // #endregion
     return nextTop;
   }, []);
+
+  const applyPrependScrollRestore = useCallback((restore) => {
+    const container = threadScrollRef.current;
+    if (!container || !restore) return false;
+    const nextScrollTop = computePrependScrollRestoreTop(container, restore);
+    if (nextScrollTop === null) return false;
+    const applied = applyThreadScroll(container, nextScrollTop, SCROLL_WRITE_PRIORITY.prependRestore);
+    if (applied !== null) {
+      const distanceFromBottom = Number(container.scrollHeight || 0) - applied - Number(container.clientHeight || 0);
+      threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
+      lastScrollTopRef.current = applied;
+    }
+    return applied !== null;
+  }, [applyThreadScroll, threadScrollRef]);
+
+  const schedulePrependScrollRestoreLocal = useCallback((restore, { onSettled } = {}) => {
+    if (!restore) return () => {};
+    let frameIndex = 0;
+    let frameId = null;
+    let cancelled = false;
+
+    const attempt = () => {
+      if (cancelled) return;
+      applyPrependScrollRestore(restore);
+      const container = threadScrollRef.current;
+      if (container && shouldRetryPrependRestore(container, restore, frameIndex)) {
+        frameIndex += 1;
+        frameId = window.requestAnimationFrame(attempt);
+        return;
+      }
+      onSettled?.();
+    };
+
+    attempt();
+    return () => {
+      cancelled = true;
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [applyPrependScrollRestore, threadScrollRef]);
+
+  useLayoutEffect(() => {
+    const restore = prependScrollRestoreRef?.current;
+    if (!restore || !threadScrollRef.current) return undefined;
+
+    return schedulePrependScrollRestoreLocal(restore, {
+      onSettled: () => {
+        if (prependScrollRestoreRef) {
+          prependScrollRestoreRef.current = null;
+        }
+      },
+    });
+  }, [messages, prependScrollRestoreRef, schedulePrependScrollRestoreLocal, threadScrollRef]);
 
   useLayoutEffect(() => {
     const previousSelectionMode = previousSelectionModeRef.current;
@@ -1031,6 +630,7 @@ function ChatThread({
   }, [threadScrollRef, applyThreadScroll]);
 
   const schedulePinnedBottomScroll = useCallback(({ settleFrames = 0, forcePin = false } = {}) => {
+    if (shouldDeferThreadPinnedScroll()) return;
     if (threadPinnedScrollFrameRef.current !== null) {
       window.cancelAnimationFrame(threadPinnedScrollFrameRef.current);
       threadPinnedScrollFrameRef.current = null;
@@ -1056,7 +656,7 @@ function ChatThread({
     remaining -= 1;
     if (remaining <= 0) return;
     threadPinnedScrollFrameRef.current = window.requestAnimationFrame(tick);
-  }, [scrollPinnedThreadToBottom]);
+  }, [scrollPinnedThreadToBottom, shouldDeferThreadPinnedScroll]);
 
   const schedulePinnedBottomScrollRef = useRef(schedulePinnedBottomScroll);
   schedulePinnedBottomScrollRef.current = schedulePinnedBottomScroll;
@@ -1158,6 +758,10 @@ function ChatThread({
         const contentNode = threadContentRef?.current;
         const scrollNode = threadScrollRef.current;
         if (!contentNode || !scrollNode) return;
+        if (shouldDeferPinnedBottomScroll({
+          loadingOlder: loadingOlderRef.current,
+          prependRestorePending: Boolean(prependScrollRestoreRef?.current),
+        })) return;
         const nextHeight = Number(contentNode.offsetHeight || contentNode.scrollHeight || 0);
         const previousHeight = Number(threadContentHeightRef.current || 0);
         if (Math.abs(nextHeight - previousHeight) <= 1) return;
@@ -1188,7 +792,7 @@ function ChatThread({
     return () => {
       observer?.disconnect?.();
     };
-  }, [activeConversationId, messageCount, messagesLoading, threadContentRef, threadScrollRef, schedulePinnedBottomScroll]);
+  }, [activeConversationId, messageCount, messagesLoading, prependScrollRestoreRef, threadContentRef, threadScrollRef, schedulePinnedBottomScroll]);
 
   useEffect(() => {
     const node = composerDockRef.current;
@@ -1247,6 +851,11 @@ function ChatThread({
     const content = threadContentRef?.current;
     if (!container || !content) return;
 
+    const deferPinnedScroll = shouldDeferPinnedBottomScroll({
+      loadingOlder: loadingOlderRef.current,
+      prependRestorePending: Boolean(prependScrollRestoreRef?.current),
+    });
+
     const wasPinned = threadPinnedToBottomRef.current;
     const previousMetrics = messageReactionMetricsRef.current;
     const nextMetrics = new Map();
@@ -1289,6 +898,10 @@ function ChatThread({
     if (Math.abs(compensation) <= 1) {
       lastScrollTopRef.current = scrollTop;
       const distanceFromBottom = Number(container.scrollHeight || 0) - scrollTop - Number(container.clientHeight || 0);
+      if (deferPinnedScroll) {
+        threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
+        return;
+      }
       if (wasPinned && distanceFromBottom > COMPOSER_STICK_DISTANCE_PX) {
         // #region agent log
         emitAgentDebugLog({
@@ -1315,7 +928,7 @@ function ChatThread({
     lastScrollTopRef.current = effectiveScrollTop;
     const distanceFromBottom = Number(container.scrollHeight || 0) - effectiveScrollTop - Number(container.clientHeight || 0);
     threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
-  }, [messages, threadContentRef, threadScrollRef, applyThreadScroll, schedulePinnedBottomScroll]);
+  }, [messages, prependScrollRestoreRef, threadContentRef, threadScrollRef, applyThreadScroll, schedulePinnedBottomScroll]);
 
   // Простое отслеживание клавиатуры через resize окна
   useEffect(() => {
@@ -1429,64 +1042,6 @@ function ChatThread({
     return () => container.removeEventListener('chat-media-loaded', handleMediaLoaded);
   }, [activeConversationId, threadScrollRef, schedulePinnedBottomScroll]);
 
-  useLayoutEffect(() => {
-    if (!compactMobile || !threadScrollRef.current) return undefined;
-    const container = threadScrollRef.current;
-    if (!container) return undefined;
-
-    const refreshStickyDateAnchors = () => {
-      stickyDateAnchorsRef.current = Array.from(container.querySelectorAll('[data-message-date]'))
-        .map((el) => ({
-          top: Number(el.offsetTop || 0),
-          label: String(el.dataset.messageDate || '').trim(),
-        }))
-        .filter((item) => item.label);
-    };
-
-    const updateVisibleDateNow = () => {
-      stickyDateFrameRef.current = null;
-      const messageElements = stickyDateAnchorsRef.current;
-      let currentLabel = '';
-      const thresholdTop = Number(container.scrollTop || 0) + 100;
-      messageElements.forEach((el) => {
-        const elementTop = Number(el.top || 0);
-        if (elementTop <= thresholdTop) {
-          currentLabel = el.label || currentLabel;
-        }
-      });
-      if (currentLabel && currentLabel !== stickyDateLabelRef.current) {
-        stickyDateLabelRef.current = currentLabel;
-        setStickyDateLabel(currentLabel);
-      }
-    };
-
-    const scheduleVisibleDateUpdate = () => {
-      if (stickyDateFrameRef.current !== null) return;
-      stickyDateFrameRef.current = window.requestAnimationFrame(updateVisibleDateNow);
-    };
-
-    refreshStickyDateAnchors();
-    scheduleVisibleDateUpdate();
-    const resizeTarget = threadContentRef?.current || container;
-    const resizeObserver = typeof ResizeObserver === 'function'
-      ? new ResizeObserver(() => {
-        refreshStickyDateAnchors();
-        scheduleVisibleDateUpdate();
-      })
-      : null;
-    resizeObserver?.observe?.(resizeTarget);
-
-    container.addEventListener('scroll', scheduleVisibleDateUpdate, { passive: true });
-    return () => {
-      container.removeEventListener('scroll', scheduleVisibleDateUpdate);
-      resizeObserver?.disconnect?.();
-      if (stickyDateFrameRef.current !== null) {
-        window.cancelAnimationFrame(stickyDateFrameRef.current);
-        stickyDateFrameRef.current = null;
-      }
-    };
-  }, [compactMobile, messageCount, threadContentRef, threadScrollRef]);
-
   // На Android клавиатура сжимает visualViewport — скроллим при каждом изменении
   const handleComposerFocusChange = useCallback((focused) => {
     composerFocusedRef.current = Boolean(focused);
@@ -1576,6 +1131,7 @@ function ChatThread({
     threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
     if (
       !historyAutoLoadEnabled
+      && isThreadScrollable(node)
       && currentScrollTop <= HISTORY_AUTO_LOAD_ARM_DISTANCE_PX
       && currentScrollTop < previousScrollTop - 1
       && event?.nativeEvent?.isTrusted
@@ -1593,7 +1149,7 @@ function ChatThread({
 
     lastScrollTopRef.current = currentScrollTop;
     onThreadScroll?.(event);
-  }, [composerRef, historyAutoLoadEnabled, onThreadScroll]);
+  }, [composerRef, historyAutoLoadEnabled, isThreadScrollable, onThreadScroll]);
 
   if (!activeConversation) {
     return (
@@ -1760,30 +1316,10 @@ function ChatThread({
         }}
       >
         <Box sx={{ maxWidth: { xs: '100%', md: `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
-          {compactMobile && stickyDateLabel && (
-            <div
-              className="pointer-events-none sticky z-50 flex h-0 justify-center"
-              style={{ top: 4 }}
-            >
-              <div
-                className="rounded-full border px-2 py-0.5 text-[11px] font-semibold backdrop-blur-xl"
-                style={{
-                  backgroundColor: servicePillBg,
-                  color: servicePillText,
-                  borderColor: ui.borderSoft,
-                  minWidth: '70px',
-                  textAlign: 'center',
-                  transform: 'translateY(4px)',
-                }}
-              >
-                {stickyDateLabel}
-              </div>
-            </div>
-          )}
-
           <ChatMessageList
             theme={theme}
             ui={ui}
+            isMobile={isMobile}
             compactMobile={compactMobile}
             mobileInteractionsEnabled={resolvedMobileInteractionsEnabled}
             activeConversation={activeConversation}
@@ -1795,6 +1331,7 @@ function ChatThread({
             loadingOlder={loadingOlder}
             onLoadOlder={onLoadOlder}
             historyAutoLoadEnabled={historyAutoLoadEnabled}
+            threadScrollRef={threadScrollRef}
             threadContentRef={threadContentRef}
             bottomRef={bottomRef}
             onOpenReads={onOpenReads}
@@ -1879,6 +1416,52 @@ function ChatThread({
           onReplySelectedMessage={onReplySelectedMessage}
           onForwardSelectedMessages={onForwardSelectedMessages}
           onDeleteSelectedMessages={onDeleteSelectedMessages}
+        />
+      ) : composerTextBridge ? (
+        <ChatThreadComposerBridge
+          bridge={composerTextBridge}
+          composerProps={{
+            theme,
+            ui,
+            compactMobile,
+            activeConversationId,
+            selectedFiles,
+            fileCaption,
+            onOpenFileDialog,
+            onClearSelectedFiles,
+            preparingFiles,
+            sendingFiles,
+            fileUploadProgress,
+            selectedFilesSummary,
+            replyMessage,
+            onClearReply,
+            editingMessage,
+            onClearEditing,
+            onOpenComposerMenu,
+            composerRef,
+            onOpenEmojiPicker,
+            onCloseEmojiPicker,
+            onSendMessage,
+            onComposerPaste,
+            onComposerDrop,
+            onComposerDragOver,
+            onComposerDragLeave,
+            onComposerFocusChange: handleComposerFocusChange,
+            mentionCandidates,
+            onSearchMentionPeople,
+            composerDockRef,
+            keyboardInset,
+            mobileEmojiPickerOpen,
+            onInsertEmoji,
+            onSendSticker,
+            onSendGif,
+            voiceRecording,
+            voiceRecordingDuration,
+            voiceRecordingLevelRef,
+            onStartVoiceRecording,
+            onStopVoiceRecording,
+            onCancelVoiceRecording,
+          }}
         />
       ) : (
         <ChatComposer

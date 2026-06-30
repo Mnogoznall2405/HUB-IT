@@ -4,6 +4,7 @@
 
 ## Пользователям
 
+- [Функционал HUB-IT для руководства (DOCX)](user-guides/hub-platform-functionality-guide.docx) - перечень возможностей платформы, дорожная карта
 - [Основное руководство](user-guides/main-guide.md)
 - [Работы и обслуживание](user-guides/component-replacement-guide.md)
 - [Чистка ПК](user-guides/pc-cleaning-guide.md)

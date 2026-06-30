@@ -11,7 +11,13 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from backend.chat.models import ChatConversationUserState, ChatMessage, ChatMessageAttachment
+from backend.chat.chat_delivery_state import (
+    _apply_new_message_delivery_state,
+    _get_or_create_conversation_state,
+    _increment_unread_counters_for_recipients,
+    _mark_sender_message_seen,
+)
+from backend.chat.models import ChatConversation, ChatConversationUserState, ChatMessage, ChatMessageAttachment
 from backend.chat.utils import normalize_text as _normalize_text
 
 
@@ -32,100 +38,6 @@ def _attachment_kind_from_payload(item: dict[str, Any]) -> str:
 def _attachment_file_url(*, message_id: str, attachment_id: str, inline: bool = False) -> str:
     url = f"/api/v1/chat/messages/{message_id}/attachments/{attachment_id}/file"
     return f"{url}?inline=1" if inline else url
-
-
-def _get_or_create_conversation_state(
-    *,
-    session,
-    conversation_id: str,
-    current_user_id: int,
-) -> ChatConversationUserState:
-    state = session.execute(
-        select(ChatConversationUserState).where(
-            ChatConversationUserState.conversation_id == conversation_id,
-            ChatConversationUserState.user_id == int(current_user_id),
-        )
-    ).scalar_one_or_none()
-    if state is None:
-        state = ChatConversationUserState(
-            conversation_id=conversation_id,
-            user_id=int(current_user_id),
-        )
-        session.add(state)
-    return state
-
-
-def _mark_sender_message_seen(
-    *,
-    session,
-    conversation_id: str,
-    current_user_id: int,
-    message_id: str,
-    conversation_seq: int,
-    seen_at: datetime,
-) -> None:
-    state = _get_or_create_conversation_state(
-        session=session,
-        conversation_id=conversation_id,
-        current_user_id=int(current_user_id),
-    )
-    state.last_read_message_id = _normalize_text(message_id)
-    state.last_read_seq = max(0, int(conversation_seq or 0))
-    state.last_read_at = seen_at
-    state.unread_count = 0
-    state.opened_at = seen_at
-    state.updated_at = seen_at
-
-
-def _increment_unread_counters_for_recipients(
-    *,
-    session,
-    conversation_id: str,
-    sender_user_id: int,
-    member_user_ids: list[int],
-    seen_at: datetime,
-) -> None:
-    for member_user_id in list(member_user_ids or []):
-        normalized_member_user_id = int(member_user_id)
-        if normalized_member_user_id <= 0 or normalized_member_user_id == int(sender_user_id):
-            continue
-        state = _get_or_create_conversation_state(
-            session=session,
-            conversation_id=conversation_id,
-            current_user_id=normalized_member_user_id,
-        )
-        state.updated_at = seen_at
-        state.unread_count = max(0, int(state.unread_count or 0) + 1)
-
-
-def _apply_new_message_delivery_state(
-    *,
-    session,
-    conversation,
-    message: ChatMessage,
-    sender_user_id: int,
-    member_user_ids: list[int],
-    seen_at: datetime,
-) -> None:
-    conversation.last_message_id = message.id
-    conversation.last_message_seq = int(message.conversation_seq or 0)
-    conversation.last_message_at = seen_at
-    conversation.updated_at = seen_at
-    _mark_sender_message_seen(
-        session=session,
-        conversation_id=conversation.id,
-        current_user_id=int(sender_user_id),
-        message_id=message.id,
-        conversation_seq=int(message.conversation_seq or 0),
-        seen_at=seen_at,
-    )
-    _increment_unread_counters_for_recipients(
-        session=session,
-        conversation_id=conversation.id,
-        sender_user_id=int(sender_user_id),
-        member_user_ids=member_user_ids,
-        seen_at=seen_at,
-    )
 
 
 @dataclass(frozen=True)
@@ -252,6 +164,7 @@ class ChatTextMessagePersistence:
         payload: dict[str, Any] = {}
         dedup_hit = False
         normalized_client_message_id = _normalize_text(client_message_id) or None
+        serialize_context: tuple[str, str, list[int], int] | None = None
 
         with self._session_factory() as session:
             stage_started_at = time.perf_counter()
@@ -278,15 +191,12 @@ class ChatTextMessagePersistence:
             if existing_message is not None:
                 dedup_hit = True
                 message_id = existing_message.id
-                stage_started_at = time.perf_counter()
-                payload = self._build_message_payload_for_members(
-                    session=session,
-                    conversation=conversation,
-                    message=existing_message,
-                    current_user_id=int(current_user_id),
-                    member_user_ids=member_user_ids,
+                serialize_context = (
+                    conversation.id,
+                    existing_message.id,
+                    member_user_ids,
+                    int(current_user_id),
                 )
-                stage_metrics["serialize_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
             else:
                 stage_started_at = time.perf_counter()
                 now = self._now()
@@ -335,28 +245,41 @@ class ChatTextMessagePersistence:
                         if existing_message is None:
                             raise
                         message_id = existing_message.id
-                        payload = self._build_message_payload_for_members(
-                            session=dedup_session,
-                            conversation=dedup_conversation,
-                            message=existing_message,
-                            current_user_id=int(current_user_id),
-                            member_user_ids=member_user_ids,
+                        serialize_context = (
+                            dedup_conversation.id,
+                            existing_message.id,
+                            member_user_ids,
+                            int(current_user_id),
                         )
                     stage_metrics["flush_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
-                    stage_metrics["serialize_ms"] = stage_metrics.get("serialize_ms", 0.0)
                 else:
                     stage_metrics["flush_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
                     message_id = message.id
-
-                    stage_started_at = time.perf_counter()
-                    payload = self._build_message_payload_for_members(
-                        session=session,
-                        conversation=conversation,
-                        message=message,
-                        current_user_id=int(current_user_id),
-                        member_user_ids=member_user_ids,
+                    serialize_context = (
+                        conversation.id,
+                        message.id,
+                        member_user_ids,
+                        int(current_user_id),
                     )
-                    stage_metrics["serialize_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
+
+        if serialize_context is not None:
+            conv_id, serialized_message_id, serialized_member_user_ids, serialized_user_id = serialize_context
+            stage_started_at = time.perf_counter()
+            with self._session_factory() as read_session:
+                conversation = read_session.get(ChatConversation, conv_id)
+                if conversation is None:
+                    raise LookupError("Conversation not found")
+                message = read_session.get(ChatMessage, serialized_message_id)
+                if message is None:
+                    raise LookupError("Message not found")
+                payload = self._build_message_payload_for_members(
+                    session=read_session,
+                    conversation=conversation,
+                    message=message,
+                    current_user_id=serialized_user_id,
+                    member_user_ids=serialized_member_user_ids,
+                )
+            stage_metrics["serialize_ms"] = (time.perf_counter() - stage_started_at) * 1000.0
 
         return TextMessagePersistenceResult(
             payload=payload,
@@ -400,6 +323,11 @@ class ChatFileMessagePersistence:
         forward_from_message_id: str | None = None,
     ) -> FileMessagePersistenceResult:
         normalized_body = _normalize_text(body)
+        member_user_ids: list[int] = []
+        message_id = ""
+        attachment_payload: list[dict[str, Any]] = []
+        serialize_context: tuple[str, str, list[int], int, list[dict[str, Any]]] | None = None
+
         with self._session_factory() as session:
             conversation = self._require_membership(
                 session=session,
@@ -428,7 +356,7 @@ class ChatFileMessagePersistence:
             )
             session.add(message)
 
-            attachment_payload: list[dict[str, Any]] = []
+            attachment_payload = []
             for item in prepared:
                 session.add(
                     ChatMessageAttachment(
@@ -473,17 +401,36 @@ class ChatFileMessagePersistence:
                 seen_at=now,
             )
             session.flush()
-            payload = self._build_message_payload_for_members(
-                session=session,
-                conversation=conversation,
-                message=message,
-                current_user_id=int(current_user_id),
-                member_user_ids=member_user_ids,
-                attachments=attachment_payload,
+            message_id = message.id
+            serialize_context = (
+                conversation.id,
+                message.id,
+                member_user_ids,
+                int(current_user_id),
+                attachment_payload,
             )
+
+        payload: dict[str, Any] = {}
+        if serialize_context is not None:
+            conv_id, serialized_message_id, serialized_member_user_ids, serialized_user_id, serialized_attachments = serialize_context
+            with self._session_factory() as read_session:
+                conversation = read_session.get(ChatConversation, conv_id)
+                if conversation is None:
+                    raise LookupError("Conversation not found")
+                message = read_session.get(ChatMessage, serialized_message_id)
+                if message is None:
+                    raise LookupError("Message not found")
+                payload = self._build_message_payload_for_members(
+                    session=read_session,
+                    conversation=conversation,
+                    message=message,
+                    current_user_id=serialized_user_id,
+                    member_user_ids=serialized_member_user_ids,
+                    attachments=serialized_attachments,
+                )
         return FileMessagePersistenceResult(
             payload=payload,
-            message_id=message.id,
+            message_id=message_id,
             member_user_ids=member_user_ids,
         )
 
@@ -526,6 +473,10 @@ class ChatForwardMessagePersistence:
             _normalize_text(source.forward_from_message_id)
             or _normalize_text(source.source_message_id)
         )
+        member_user_ids: list[int] = []
+        message_id = ""
+        payload: dict[str, Any] = {}
+        serialize_context: tuple[str, str, list[int], int, list[dict[str, Any]]] | None = None
         with self._session_factory() as session:
             conversation = self._require_membership(
                 session=session,
@@ -604,17 +555,35 @@ class ChatForwardMessagePersistence:
                 seen_at=now,
             )
             session.flush()
-            payload = self._build_message_payload_for_members(
-                session=session,
-                conversation=conversation,
-                message=message,
-                current_user_id=int(current_user_id),
-                member_user_ids=member_user_ids,
-                attachments=attachment_payload,
+            message_id = message.id
+            serialize_context = (
+                conversation.id,
+                message.id,
+                member_user_ids,
+                int(current_user_id),
+                attachment_payload,
             )
+
+        if serialize_context is not None:
+            conv_id, serialized_message_id, serialized_member_user_ids, serialized_user_id, serialized_attachments = serialize_context
+            with self._session_factory() as read_session:
+                conversation = read_session.get(ChatConversation, conv_id)
+                if conversation is None:
+                    raise LookupError("Conversation not found")
+                message = read_session.get(ChatMessage, serialized_message_id)
+                if message is None:
+                    raise LookupError("Message not found")
+                payload = self._build_message_payload_for_members(
+                    session=read_session,
+                    conversation=conversation,
+                    message=message,
+                    current_user_id=serialized_user_id,
+                    member_user_ids=serialized_member_user_ids,
+                    attachments=serialized_attachments,
+                )
         return ForwardMessagePersistenceResult(
             payload=payload,
-            message_id=message.id,
+            message_id=message_id,
             member_user_ids=member_user_ids,
         )
 
@@ -651,6 +620,11 @@ class ChatTaskShareMessagePersistence:
         task_id: str,
         reply_to_message_id: str | None = None,
     ) -> TaskSharePersistenceResult:
+        member_user_ids: list[int] = []
+        message_id = ""
+        task_preview: dict[str, Any] = {}
+        payload: dict[str, Any] = {}
+        serialize_context: tuple[str, str, list[int], int] | None = None
         with self._session_factory() as session:
             conversation = self._require_membership(
                 session=session,
@@ -699,16 +673,33 @@ class ChatTaskShareMessagePersistence:
                 seen_at=now,
             )
             session.flush()
-            payload = self._build_message_payload_for_members(
-                session=session,
-                conversation=conversation,
-                message=message,
-                current_user_id=int(current_user_id),
-                member_user_ids=member_user_ids,
+            message_id = message.id
+            serialize_context = (
+                conversation.id,
+                message.id,
+                member_user_ids,
+                int(current_user_id),
             )
+
+        if serialize_context is not None:
+            conv_id, serialized_message_id, serialized_member_user_ids, serialized_user_id = serialize_context
+            with self._session_factory() as read_session:
+                conversation = read_session.get(ChatConversation, conv_id)
+                if conversation is None:
+                    raise LookupError("Conversation not found")
+                message = read_session.get(ChatMessage, serialized_message_id)
+                if message is None:
+                    raise LookupError("Message not found")
+                payload = self._build_message_payload_for_members(
+                    session=read_session,
+                    conversation=conversation,
+                    message=message,
+                    current_user_id=serialized_user_id,
+                    member_user_ids=serialized_member_user_ids,
+                )
         return TaskSharePersistenceResult(
             payload=payload,
-            message_id=message.id,
+            message_id=message_id,
             member_user_ids=member_user_ids,
             task_preview=task_preview,
         )

@@ -77,8 +77,38 @@ export const renderKvRows = (rows, ui) => (
   </Stack>
 );
 
+export const getTaskObserverEntries = (task) => {
+  const fromObservers = Array.isArray(task?.observers) ? task.observers : [];
+  if (fromObservers.length) {
+    return fromObservers.map((observer) => ({
+      user_id: observer?.user_id,
+      full_name: observer?.full_name,
+      username: observer?.username,
+    }));
+  }
+  const ids = Array.isArray(task?.observer_user_ids) ? task.observer_user_ids : [];
+  return ids
+    .map((id) => String(id || '').trim())
+    .filter(Boolean)
+    .map((id) => ({ user_id: id, full_name: '', username: '' }));
+};
+
+export const getTaskObserverLabel = (observer) => {
+  const label = String(observer?.full_name || observer?.username || observer?.user_id || '').trim();
+  return label || '-';
+};
+
+export const formatTaskObserversSummary = (task) => {
+  const entries = getTaskObserverEntries(task);
+  if (!entries.length) return '';
+  const labels = entries.map(getTaskObserverLabel).filter((label) => label && label !== '-');
+  return labels.join(', ');
+};
+
+export const hasTaskObservers = (task) => getTaskObserverEntries(task).length > 0;
+
 export const renderObserverBlock = (task, ui, theme) => {
-  const observers = Array.isArray(task?.observers) ? task.observers : [];
+  const observers = getTaskObserverEntries(task);
   if (!observers.length) return null;
   return (
     <Box sx={{ mt: 1 }}>
@@ -87,7 +117,7 @@ export const renderObserverBlock = (task, ui, theme) => {
       </Typography>
       <Stack direction="row" spacing={0.6} useFlexGap flexWrap="wrap" sx={{ mt: 0.45 }}>
         {observers.map((observer) => {
-          const label = String(observer?.full_name || observer?.username || observer?.user_id || '').trim() || '-';
+          const label = getTaskObserverLabel(observer);
           return (
             <Chip
               key={String(observer?.user_id || label)}

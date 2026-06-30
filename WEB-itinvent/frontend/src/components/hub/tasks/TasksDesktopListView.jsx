@@ -1,6 +1,7 @@
 import { useCallback } from 'react';
 import {
   Box,
+  Button,
   Card,
   Skeleton,
   Table,
@@ -50,6 +51,9 @@ export default function TasksDesktopListView({
   taskDiscussionChatEnabled = false,
   activeTaskProjects = [],
   onOpenTask,
+  hasMoreTasks = false,
+  onLoadMore,
+  tasksTotal = 0,
 }) {
   const { active, completed } = taskListSections || { active: { items: [] }, completed: { items: [] } };
   const hasAnyTasks = active.items.length > 0 || completed.items.length > 0;
@@ -177,6 +181,20 @@ export default function TasksDesktopListView({
           </TableBody>
         </Table>
       </TableContainer>
+      {hasMoreTasks ? (
+        <Box sx={{ px: 1.2, py: 1, borderTop: '1px solid', borderColor: ui.borderSoft, flexShrink: 0 }}>
+          <Button
+            fullWidth
+            variant="outlined"
+            size="small"
+            disabled={loading}
+            onClick={() => void onLoadMore?.()}
+            sx={{ textTransform: 'none', fontWeight: 800, borderRadius: '10px' }}
+          >
+            {loading ? 'Загрузка...' : `Показать ещё (${visibleTaskItems.length} из ${tasksTotal})`}
+          </Button>
+        </Box>
+      ) : null}
     </Card>
   );
 }

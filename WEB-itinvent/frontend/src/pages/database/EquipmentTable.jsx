@@ -13,6 +13,7 @@ import {
   Typography,
 } from '@mui/material';
 import EditIcon from '@mui/icons-material/Edit';
+import DeleteIcon from '@mui/icons-material/Delete';
 import { ActionMenu, StatusChip } from '../../components/common';
 import {
   DATA_MODE_CONSUMABLES,
@@ -27,7 +28,7 @@ const textCollator = new Intl.Collator('ru', { numeric: true, sensitivity: 'base
 const TABLE_VIRTUALIZE_THRESHOLD = 120;
 const TABLE_MAX_HEIGHT = 520;
 const TABLE_WIDTHS = {
-  consumables: { inv: 140, type: 140, model: 200, qty: 120, actions: 56 },
+  consumables: { inv: 140, type: 140, model: 200, qty: 120, actions: 96 },
   equipment: { select: 56, inv: 120, serial: 110, partNo: 130, type: 120, model: 170, employee: 220, status: 110, actions: 56 },
   equipmentMobile: { inv: 130, employee: 210, status: 110, actions: 56 },
 };
@@ -40,9 +41,11 @@ const EquipmentRow = memo(function EquipmentRow({
   onSelect,
   onAction,
   onEditConsumableQty = null,
+  onDeleteConsumable = null,
   allowSelection = true,
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
+  canDelete = false,
   isAdmin = false,
 }) {
   const invNo = String(item.INV_NO || item.inv_no || '');
@@ -98,14 +101,25 @@ const EquipmentRow = memo(function EquipmentRow({
           </Typography>
         </TableCell>
         <TableCell padding="checkbox" sx={{ width: TABLE_WIDTHS.consumables.actions, minWidth: TABLE_WIDTHS.consumables.actions }} align="right">
-          <IconButton
-            size="small"
-            aria-label="Изменить количество"
-            onClick={() => onEditConsumableQty?.(item)}
-            disabled={!onEditConsumableQty}
-          >
-            <EditIcon fontSize="small" />
-          </IconButton>
+          {onEditConsumableQty ? (
+            <IconButton
+              size="small"
+              aria-label="Изменить количество"
+              onClick={() => onEditConsumableQty(item)}
+            >
+              <EditIcon fontSize="small" />
+            </IconButton>
+          ) : null}
+          {canDelete && onDeleteConsumable ? (
+            <IconButton
+              size="small"
+              color="error"
+              aria-label={`Удалить расходник ${invNo || ''}`.trim()}
+              onClick={() => onDeleteConsumable(item)}
+            >
+              <DeleteIcon fontSize="small" />
+            </IconButton>
+          ) : null}
         </TableCell>
       </TableRow>
     );
@@ -210,9 +224,11 @@ const EquipmentTable = memo(function EquipmentTable({
   onSelect,
   onAction,
   onEditConsumableQty = null,
+  onDeleteConsumable = null,
   allowSelection = true,
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
+  canDelete = false,
   isAdmin = false,
 }) {
   const [scrollTop, setScrollTop] = useState(0);
@@ -486,9 +502,11 @@ const EquipmentTable = memo(function EquipmentTable({
                 onSelect={onSelect}
                 onAction={onAction}
                 onEditConsumableQty={onEditConsumableQty}
+                onDeleteConsumable={onDeleteConsumable}
                 allowSelection={allowSelection}
                 dataMode={dataMode}
                 canWrite={canWrite}
+                canDelete={canDelete}
                 isAdmin={isAdmin}
               />
             );

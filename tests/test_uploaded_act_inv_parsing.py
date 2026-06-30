@@ -1,4 +1,5 @@
 import sys
+from datetime import datetime
 from pathlib import Path
 
 
@@ -9,6 +10,42 @@ if str(WEB_ROOT) not in sys.path:
 
 from backend.services import act_upload_service  # noqa: E402
 from backend.database import queries  # noqa: E402
+from backend.utils.person_names import to_short_fio  # noqa: E402
+
+
+def test_build_uploaded_act_addinfo_uses_act_line_format():
+    add_info = queries._build_uploaded_act_addinfo(
+        1464,
+        "Санду Андрей Олегович",
+        "Козловский Андрей Михайлович",
+        datetime(2026, 6, 29),
+    )
+
+    assert add_info == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026"
+
+
+def test_uploaded_act_items_descr_matches_document_addinfo_format():
+    line = queries._build_uploaded_act_addinfo(
+        1464,
+        "Санду Андрей Олегович",
+        "Козловский Андрей Михайлович",
+        datetime(2026, 6, 29),
+    )
+    assert line == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026"
+    assert line.startswith("Акт 1464 ")
+    assert "->" not in line
+    assert ": акт №" not in line
+
+
+def test_to_short_fio():
+    assert to_short_fio("Иванов Иван Иванович") == "Иванов И.И."
+    assert to_short_fio("Санду А.О.") == "Санду А.О."
+
+
+def test_legacy_sqlserver_text_preserves_crlf():
+    text = queries._legacy_sqlserver_text("Передача\r\nОт: Ivan")
+    assert "\r\n" in text
+    assert text.splitlines() == ["Передача", "От: Ivan"]
 
 
 def test_legacy_sqlserver_text_normalizes_upload_act_arrows_for_cp1251(monkeypatch):

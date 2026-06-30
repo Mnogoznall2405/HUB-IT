@@ -1,6 +1,9 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import { hubAPI } from '../../../api/client';
+import hubTasksAPI from '../../../api/hubTasks';
+import hubTaskActivityAPI from '../../../api/hubTaskActivity';
+import hubTaskFilesAPI from '../../../api/hubTaskFiles';
+import hubTaskDiscussionAPI from '../../../api/hubTaskDiscussion';
 import TaskDetailChecklist from '../../../components/hub/tasks/TaskDetailChecklist';
 import { isTransferActUploadTask } from '../../../lib/hubTaskIntegrations';
 import { invalidateSWRCacheByPrefix } from '../../../lib/swrCache';
@@ -93,16 +96,16 @@ export default function useTaskDetails({
     setDetailsActivityLoading(true);
     try {
       if (isHistory) {
-        const res = await hubAPI.getTaskStatusLog(normalizedId);
+        const res = await hubTaskActivityAPI.getTaskStatusLog(normalizedId);
         if (!stillCurrent()) return;
         setDetailsStatusLog(Array.isArray(res?.items) ? res.items : []);
       } else {
-        const res = await hubAPI.getTaskComments(normalizedId);
+        const res = await hubTaskActivityAPI.getTaskComments(normalizedId);
         if (!stillCurrent()) return;
         setDetailsComments(Array.isArray(res?.items) ? res.items : []);
         if (options.hasUnread) {
           try {
-            await hubAPI.markTaskCommentsSeen(normalizedId);
+            await hubTaskActivityAPI.markTaskCommentsSeen(normalizedId);
             if (!stillCurrent()) return;
             patchTaskItem(normalizedId, { has_unread_comments: false });
             setDetailsTask((prev) => (
@@ -133,7 +136,7 @@ export default function useTaskDetails({
     setDetailsLoading(true);
     setDetailsActivityLoading(true);
     try {
-      const task = await hubAPI.getTask(normalizedId);
+      const task = await hubTasksAPI.getTask(normalizedId);
       if (isStale()) return;
       patchTaskItem(normalizedId, task || {});
       setDetailsTask(task || null);
@@ -281,7 +284,7 @@ export default function useTaskDetails({
 
   const handleDownloadAttachment = useCallback(async (task, attachment) => {
     try {
-      const response = await hubAPI.downloadTaskAttachment({ taskId: task.id, attachmentId: attachment.id });
+      const response = await hubTaskFilesAPI.downloadTaskAttachment({ taskId: task.id, attachmentId: attachment.id });
       downloadBlob(response, attachment?.file_name || 'attachment');
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка скачивания вложения');
@@ -291,7 +294,7 @@ export default function useTaskDetails({
   const handleDownloadReport = useCallback(async (report) => {
     if (!report?.id || !report?.file_name) return;
     try {
-      const response = await hubAPI.downloadTaskReport(report.id);
+      const response = await hubTaskFilesAPI.downloadTaskReport(report.id);
       downloadBlob(response, report.file_name);
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка скачивания отчёта');
@@ -304,7 +307,7 @@ export default function useTaskDetails({
     if (!taskId || !body) return;
     setDetailsCommentSaving(true);
     try {
-      await hubAPI.addTaskComment(taskId, body);
+      await hubTaskActivityAPI.addTaskComment(taskId, body);
       setDetailsCommentBody('');
       await refreshTasksAndDetails(taskId);
       window.dispatchEvent(new CustomEvent('hub-refresh-notifications'));
@@ -320,7 +323,7 @@ export default function useTaskDetails({
     if (!taskId || !taskDiscussionChatEnabled) return;
     setDiscussionOpening(true);
     try {
-      const response = await hubAPI.openTaskDiscussion(taskId);
+      const response = await hubTaskDiscussionAPI.openTaskDiscussion(taskId);
       const conversationId = String(response?.conversation_id || '').trim();
       if (!conversationId) throw new Error('Не удалось открыть чат по задаче');
       invalidateSWRCacheByPrefix('chat', 'conversations', String(user?.id || 'guest'));
@@ -353,7 +356,7 @@ export default function useTaskDetails({
     if (!taskId || !file) return;
     setUploadingAttachment(true);
     try {
-      await hubAPI.uploadTaskAttachment({ taskId, file });
+      await hubTaskFilesAPI.uploadTaskAttachment({ taskId, file });
       await refreshTasksAndDetails(taskId);
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка загрузки файла');
@@ -384,6 +387,10 @@ export default function useTaskDetails({
   const canReviewTask = useCallback((task) => {
     if (isTransferActUploadTask(task)) return false;
     if (!task?.id || String(task?.status || '').toLowerCase() !== 'review') return false;
+    const userId = Number(user?.id);
+    const assigneeId = Number(task?.assignee_user_id);
+    const creatorId = Number(task?.created_by_user_id);
+    if (userId > 0 && userId === assigneeId && userId !== creatorId) return false;
     if (canManageAllTasks) return true;
     if (currentUserManagedDepartmentIds.has(String(task?.department_id || ''))) return true;
     return Number(task?.created_by_user_id) === Number(user?.id)
@@ -452,7 +459,7 @@ export default function useTaskDetails({
       String(item?.id || '') === String(itemId) ? { ...item, done: Boolean(done) } : item
     ));
     const runAfter = existing?.chain || Promise.resolve();
-    const chain = runAfter.catch(() => {}).then(() => hubAPI.updateTask(taskId, { checklist_items: nextItems }));
+    const chain = runAfter.catch(() => {}).then(() => hubTasksAPI.updateTask(taskId, { checklist_items: nextItems }));
     mutations.set(taskId, { items: nextItems, chain });
     try {
       const updatedTask = await chain;
@@ -476,7 +483,7 @@ export default function useTaskDetails({
     const items = Array.isArray(task?.checklist_items) ? task.checklist_items : [];
     const nextItems = [...items, { id: createChecklistItemId(), text: itemText, done: false }];
     try {
-      await hubAPI.updateTask(taskId, { checklist_items: nextItems });
+      await hubTasksAPI.updateTask(taskId, { checklist_items: nextItems });
       await refreshTasksAndDetails(taskId);
     } catch (err) {
       setError(err?.response?.data?.detail || err?.message || 'Ошибка добавления пункта чек-листа');

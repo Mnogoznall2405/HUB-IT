@@ -10,6 +10,7 @@ import base64
 import re
 import os
 from backend.database.connection import get_db
+from backend.utils.person_names import to_short_fio
 from backend.database.equipment_act_history_reads import (
     get_equipment_acts_by_inv as _act_history_get_equipment_acts_by_inv,
     get_equipment_history_by_inv as _act_history_get_equipment_history_by_inv,
@@ -27,6 +28,21 @@ from backend.database.equipment_directory_reads import (
     get_location_by_no as _directory_get_location_by_no,
     get_locations_by_branch as _directory_get_locations_by_branch,
     locations_has_branch_column as _directory_locations_has_branch_column,
+)
+from backend.database.equipment_reference_reads import (
+    QUERY_GET_ALL_EQUIPMENT_TYPES,
+    QUERY_GET_ALL_STATUSES,
+    get_all_equipment_types as _reference_get_all_equipment_types,
+    get_all_statuses as _reference_get_all_statuses,
+    get_default_status_no as _reference_get_default_status_no,
+    get_model_by_no as _reference_get_model_by_no,
+    get_model_no_by_name as _reference_get_model_no_by_name,
+    get_models_by_type as _reference_get_models_by_type,
+    get_owner_by_no as _reference_get_owner_by_no,
+    get_owner_email_by_no as _reference_get_owner_email_by_no,
+    get_owner_no_by_name as _reference_get_owner_no_by_name,
+    get_status_by_no as _reference_get_status_by_no,
+    get_type_by_no as _reference_get_type_by_no,
 )
 from backend.database.equipment_search_reads import (
     QUERY_SEARCH_BY_SERIAL,
@@ -70,6 +86,31 @@ def _legacy_sqlserver_text(value: Any, *, max_len: Optional[int] = None) -> str:
     if max_len is not None:
         text = text[:max_len]
     return text
+
+
+_LEGACY_SQLSERVER_LINE_BREAK = "\r\n"
+
+
+def _join_legacy_multiline_lines(*lines: str) -> str:
+    return _LEGACY_SQLSERVER_LINE_BREAK.join(line for line in lines if line is not None)
+
+
+def _normalize_legacy_multiline_storage(value: Any) -> str:
+    text = str(value or "")
+    if not text:
+        return text
+    unified = text.replace("\r\n", "\n").replace("\r", "\n")
+    return unified.replace("\n", _LEGACY_SQLSERVER_LINE_BREAK)
+
+
+def _legacy_items_descr_value(value: Any) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    return _legacy_sqlserver_text(
+        _normalize_legacy_multiline_storage(text),
+        max_len=4000,
+    )
 
 
 # SQL Queries
@@ -211,19 +252,6 @@ QUERY_COUNT_ALL_EQUIPMENT = """
     SELECT COUNT(*) as total
     FROM ITEMS i
     WHERE i.CI_TYPE = 1
-"""
-
-QUERY_GET_ALL_EQUIPMENT_TYPES = """
-    SELECT CI_TYPE, TYPE_NO, TYPE_NAME
-    FROM CI_TYPES
-    WHERE CI_TYPE IS NOT NULL AND TYPE_NO IS NOT NULL
-    ORDER BY TYPE_NAME
-"""
-
-QUERY_GET_ALL_STATUSES = """
-    SELECT STATUS_NO, DESCR as STATUS_NAME
-    FROM STATUS
-    ORDER BY DESCR
 """
 
 QUERY_GET_MODELS_BY_TYPE = """
@@ -682,8 +710,23 @@ def get_transfer_act_items_by_inv_nos(inv_nos: List[str], db_id: Optional[str] =
     return db.execute_query(query, tuple(params))
 
 
+def _build_uploaded_act_addinfo(
+    doc_no: int,
+    from_employee: str,
+    to_employee: str,
+    doc_date: Optional[datetime],
+) -> str:
+    """Build DOCS.ADDINFO for uploaded transfer acts."""
+    from_short = to_short_fio(from_employee) or "-"
+    to_short = to_short_fio(to_employee) or "-"
+    date_str = doc_date.strftime("%d.%m.%Y") if doc_date else "-"
+    return f"Акт {int(doc_no)} {from_short} - {to_short} от {date_str}"
+
+
 def find_duplicate_uploaded_act(
-    document_title: str,
+    from_employee: str,
+    to_employee: str,
+    doc_date: Optional[datetime],
     file_name: str,
     db_id: Optional[str] = None,
 ) -> Optional[dict]:
@@ -691,10 +734,13 @@ def find_duplicate_uploaded_act(
     Detect possible duplicate act by DOCS and FILES metadata.
     """
     db = get_db(db_id)
-    title = str(document_title or "").strip()
     fname = str(file_name or "").strip()
+    from_short = to_short_fio(from_employee)
+    to_short = to_short_fio(to_employee)
+    date_str = doc_date.strftime("%d.%m.%Y") if doc_date else ""
 
-    if title:
+    if from_short and to_short and date_str:
+        addinfo_pattern = f"Акт % {from_short} - {to_short} от {date_str}"
         docs_rows = db.execute_query(
             """
             SELECT TOP 1
@@ -702,14 +748,13 @@ def find_duplicate_uploaded_act(
                 d.DOC_NUMBER AS doc_number,
                 d.DOC_DATE AS doc_date
             FROM DOCS d
-            WHERE d.DOC_NUMBER = ?
-               OR d.ADDINFO = ?
+            WHERE d.ADDINFO LIKE ?
             ORDER BY
                 CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
                 d.DOC_DATE DESC,
                 d.DOC_NO DESC
             """,
-            (title, title),
+            (addinfo_pattern,),
         )
         if docs_rows:
             row = docs_rows[0]
@@ -720,7 +765,7 @@ def find_duplicate_uploaded_act(
                 "doc_date": row.get("doc_date") or row.get("DOC_DATE"),
             }
 
-    if fname or title:
+    if fname:
         files_rows = db.execute_query(
             """
             SELECT TOP 1
@@ -730,11 +775,10 @@ def find_duplicate_uploaded_act(
                 f.FILE_DESCR AS file_descr,
                 f.CREATE_DATE AS create_date
             FROM FILES f
-            WHERE (? <> '' AND f.FILE_NAME = ?)
-               OR (? <> '' AND f.FILE_DESCR = ?)
+            WHERE f.FILE_NAME = ?
             ORDER BY f.CREATE_DATE DESC, f.FILE_NO DESC
             """,
-            (fname, fname, title, title),
+            (fname,),
         )
         if files_rows:
             row = files_rows[0]
@@ -752,7 +796,6 @@ def find_duplicate_uploaded_act(
 
 def create_uploaded_transfer_act(
     *,
-    document_title: str,
     from_employee: str,
     to_employee: str,
     doc_date: Optional[datetime],
@@ -784,22 +827,12 @@ def create_uploaded_transfer_act(
         or "IT-WEB"
     )
 
-    title = str(document_title or "").strip()
-    if not title:
-        title = "Перемещение оборудования"
-    title = _legacy_sqlserver_text(title, max_len=250)
-
     safe_file_name = str(file_name or "").strip() or f"Акт {datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
     safe_file_name = _legacy_sqlserver_text(safe_file_name, max_len=255)
-    file_descr = _legacy_sqlserver_text(title, max_len=250)
 
     date_value = doc_date or datetime.now()
     from_employee_value = _legacy_sqlserver_text(str(from_employee or "").strip(), max_len=250)
     to_employee_value = _legacy_sqlserver_text(str(to_employee or "").strip(), max_len=250)
-    add_info = f"Передача: {from_employee_value or '-'} -> {to_employee_value or '-'}"
-    if title and title.lower() not in add_info.lower():
-        add_info = f"{add_info}. {title}"
-    add_info = _legacy_sqlserver_text(add_info, max_len=500)
 
     owner_no = None
     if to_employee_value:
@@ -961,6 +994,15 @@ def create_uploaded_transfer_act(
         # 3) DOCS insert.
         cursor.execute("SELECT ISNULL(MAX(DOC_NO), 0) + 1 FROM DOCS")
         doc_no = int(cursor.fetchone()[0])
+        doc_number_value = _legacy_sqlserver_text(str(doc_no), max_len=250)
+        file_descr = doc_number_value
+        act_descr_line = _build_uploaded_act_addinfo(
+            doc_no,
+            from_employee_value,
+            to_employee_value,
+            date_value,
+        )
+        add_info = _legacy_sqlserver_text(act_descr_line, max_len=500)
 
         cursor.execute(
             """
@@ -979,7 +1021,7 @@ def create_uploaded_transfer_act(
                 loc_no_value,
                 empl_no_value,
                 template_suppl_no,
-                title,
+                doc_number_value,
                 date_value,
                 0,
                 add_info,
@@ -1028,18 +1070,12 @@ def create_uploaded_transfer_act(
                 descr_by_item[descr_item_id] = str(row[1]) if row[1] is not None else ""
 
             max_descr_len = 4000
-            now_text_for_items = datetime.now().strftime("%d.%m.%Y %H:%M")
             now_dt_for_items = datetime.now()
+            note_line = act_descr_line
+            if len(note_line) > max_descr_len:
+                note_line = note_line[:max_descr_len]
             for item_id in normalized_ids:
                 item_id_int = int(item_id)
-                prev_doc_no_for_item = previous_doc_by_item.get(item_id_int)
-                if prev_doc_no_for_item is not None and int(prev_doc_no_for_item) != int(doc_no):
-                    note_line = f"{now_text_for_items}: акт №{int(prev_doc_no_for_item)}->№{doc_no}"
-                else:
-                    note_line = f"{now_text_for_items}: акт №{doc_no}"
-
-                if len(note_line) > max_descr_len:
-                    note_line = note_line[:max_descr_len]
 
                 existing_descr = descr_by_item.get(item_id_int) or ""
                 if existing_descr:
@@ -1047,7 +1083,7 @@ def create_uploaded_transfer_act(
                     if remaining < 0:
                         remaining = 0
                     existing_descr = existing_descr[:remaining]
-                    separator = "" if existing_descr.endswith(("\r\n", "\n")) else "\n"
+                    separator = "" if existing_descr.endswith(("\r\n", "\n")) else "\r\n"
                     new_descr = f"{existing_descr}{separator}{note_line}" if existing_descr else note_line
                 else:
                     new_descr = note_line
@@ -1106,7 +1142,7 @@ def create_uploaded_transfer_act(
                     if remaining < 0:
                         remaining = 0
                     existing_addinfo = existing_addinfo[:remaining]
-                    new_addinfo = f"{existing_addinfo}\n{note}" if existing_addinfo else note
+                    new_addinfo = f"{existing_addinfo}\r\n{note}" if existing_addinfo else note
                 else:
                     new_addinfo = note
 
@@ -1182,7 +1218,7 @@ def create_uploaded_transfer_act(
                             if remaining < 0:
                                 remaining = 0
                             old_addinfo = old_addinfo[:remaining]
-                            old_addinfo_new = f"{old_addinfo}\n{annul_note}" if old_addinfo else annul_note
+                            old_addinfo_new = f"{old_addinfo}\r\n{annul_note}" if old_addinfo else annul_note
                         else:
                             old_addinfo_new = annul_note
 
@@ -1256,7 +1292,7 @@ def create_uploaded_transfer_act(
 
         return {
             "doc_no": doc_no,
-            "doc_number": title,
+            "doc_number": doc_number_value,
             "file_no": file_no,
             "linked_item_ids": normalized_ids,
             "updated_previous_doc_nos": sorted(
@@ -2141,21 +2177,12 @@ def get_all_locations(db_id: Optional[str] = None, branch_no: Any = None) -> Lis
 
 def get_all_equipment_types(db_id: Optional[str] = None) -> List[dict]:
     """Get all equipment types."""
-    db = get_db(db_id)
-    return db.execute_query(QUERY_GET_ALL_EQUIPMENT_TYPES)
+    return _reference_get_all_equipment_types(db_id, get_db_fn=get_db)
 
 
 def get_all_statuses(db_id: Optional[str] = None) -> List[dict]:
     """Get all equipment statuses."""
-    db = get_db(db_id)
-    rows = db.execute_query(QUERY_GET_ALL_STATUSES)
-    return [
-        {
-            "status_no": row.get("status_no", row.get("STATUS_NO")),
-            "status_name": row.get("status_name", row.get("STATUS_NAME")),
-        }
-        for row in rows
-    ]
+    return _reference_get_all_statuses(db_id, get_db_fn=get_db)
 
 
 def get_available_databases() -> dict:
@@ -2259,117 +2286,32 @@ def get_owner_departments(limit: int = 500, db_id: Optional[str] = None) -> List
 
 def get_owner_by_no(owner_no: int, db_id: Optional[str] = None) -> Optional[dict]:
     """Get owner by OWNER_NO."""
-    db = get_db(db_id)
-    query = """
-        SELECT
-            o.OWNER_NO,
-            o.OWNER_DISPLAY_NAME,
-            o.OWNER_DEPT
-        FROM OWNERS o
-        WHERE o.OWNER_NO = ?
-    """
-    rows = db.execute_query(query, (owner_no,))
-    return rows[0] if rows else None
+    return _reference_get_owner_by_no(owner_no, db_id, get_db_fn=get_db)
 
 
 def get_status_by_no(status_no: int, db_id: Optional[str] = None) -> Optional[dict]:
     """Get status by STATUS_NO."""
-    db = get_db(db_id)
-    query = """
-        SELECT
-            s.STATUS_NO,
-            s.DESCR as STATUS_NAME
-        FROM STATUS s
-        WHERE s.STATUS_NO = ?
-    """
-    rows = db.execute_query(query, (status_no,))
-    return rows[0] if rows else None
+    return _reference_get_status_by_no(status_no, db_id, get_db_fn=get_db)
 
 
 def get_default_status_no(db_id: Optional[str] = None) -> Optional[int]:
     """Resolve default STATUS_NO for create forms."""
-    db = get_db(db_id)
-    preferred_query = """
-        SELECT TOP 1 s.STATUS_NO
-        FROM STATUS s
-        WHERE LOWER(CAST(s.DESCR AS NVARCHAR(255))) LIKE N'%эксплуата%'
-        ORDER BY s.STATUS_NO
-    """
-    rows = db.execute_query(preferred_query, ())
-    if rows:
-        value = rows[0].get("STATUS_NO") or rows[0].get("status_no")
-        try:
-            return int(value) if value is not None else None
-        except (TypeError, ValueError):
-            return None
-
-    fallback_query = """
-        SELECT TOP 1 s.STATUS_NO
-        FROM STATUS s
-        ORDER BY s.STATUS_NO
-    """
-    rows = db.execute_query(fallback_query, ())
-    if not rows:
-        return None
-    value = rows[0].get("STATUS_NO") or rows[0].get("status_no")
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    return _reference_get_default_status_no(db_id, get_db_fn=get_db)
 
 
 def get_type_by_no(type_no: int, db_id: Optional[str] = None, ci_type: int = 1) -> Optional[dict]:
     """Get equipment type by TYPE_NO for selected CI_TYPE."""
-    db = get_db(db_id)
-    query = """
-        SELECT
-            t.CI_TYPE,
-            t.TYPE_NO,
-            t.TYPE_NAME
-        FROM CI_TYPES t
-        WHERE t.CI_TYPE = ? AND t.TYPE_NO = ?
-    """
-    rows = db.execute_query(query, (ci_type, type_no))
-    return rows[0] if rows else None
+    return _reference_get_type_by_no(type_no, db_id, ci_type=ci_type, get_db_fn=get_db)
 
 
 def get_models_by_type(type_no: int, db_id: Optional[str] = None, ci_type: int = 1) -> List[dict]:
     """Get model list by TYPE_NO for selected CI_TYPE."""
-    db = get_db(db_id)
-    query = """
-        SELECT
-            m.MODEL_NO as model_no,
-            m.MODEL_NAME as model_name,
-            m.TYPE_NO as type_no,
-            m.CI_TYPE as ci_type
-        FROM CI_MODELS m
-        WHERE m.CI_TYPE = ? AND m.TYPE_NO = ?
-        ORDER BY m.MODEL_NAME
-    """
-    return db.execute_query(query, (ci_type, type_no))
+    return _reference_get_models_by_type(type_no, db_id, ci_type=ci_type, get_db_fn=get_db)
 
 
 def get_model_no_by_name(model_name: str, ci_type: int = 1, strict: bool = True, db_id: Optional[str] = None) -> Optional[int]:
     """Get MODEL_NO by model name."""
-    if not model_name:
-        return None
-    db = get_db(db_id)
-    where_clause = "m.MODEL_NAME = ?" if strict else "m.MODEL_NAME LIKE ?"
-    param = model_name if strict else f"%{model_name}%"
-    query = f"""
-        SELECT TOP 1 m.MODEL_NO
-        FROM CI_MODELS m
-        WHERE m.CI_TYPE = ? AND {where_clause}
-        ORDER BY m.MODEL_NO
-    """
-    rows = db.execute_query(query, (ci_type, param))
-    if not rows:
-        return None
-    value = rows[0].get("MODEL_NO") or rows[0].get("model_no")
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    return _reference_get_model_no_by_name(model_name, ci_type=ci_type, strict=strict, db_id=db_id, get_db_fn=get_db)
 
 
 def create_model(model_name: str, type_no: int, ci_type: int = 1, db_id: Optional[str] = None) -> Optional[int]:
@@ -2406,18 +2348,7 @@ def create_model(model_name: str, type_no: int, ci_type: int = 1, db_id: Optiona
 
 def get_model_by_no(model_no: int, db_id: Optional[str] = None, ci_type: int = 1) -> Optional[dict]:
     """Get model by MODEL_NO for selected CI_TYPE."""
-    db = get_db(db_id)
-    query = """
-        SELECT
-            m.CI_TYPE,
-            m.TYPE_NO,
-            m.MODEL_NO,
-            m.MODEL_NAME
-        FROM CI_MODELS m
-        WHERE m.CI_TYPE = ? AND m.MODEL_NO = ?
-    """
-    rows = db.execute_query(query, (ci_type, model_no))
-    return rows[0] if rows else None
+    return _reference_get_model_by_no(model_no, db_id, ci_type=ci_type, get_db_fn=get_db)
 
 
 def get_branch_by_no(branch_no: Any, db_id: Optional[str] = None) -> Optional[dict]:
@@ -2472,6 +2403,8 @@ def update_equipment_fields(
         column = allowed_columns.get(key)
         if not column:
             continue
+        if column == "DESCR":
+            value = _legacy_items_descr_value(value)
         set_clauses.append(f"{column} = ?")
         params.append(value)
 
@@ -2611,27 +2544,127 @@ def delete_equipment_by_inv(inv_no: str, db_id: Optional[str] = None) -> dict:
         }
 
 
+def _format_item_inv_no(value: Any, *, fallback: str = "") -> str:
+    if value in (None, ""):
+        return fallback
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    text = str(value).strip()
+    if re.fullmatch(r"-?\d+\.0", text):
+        return text[:-2]
+    return text or fallback
+
+
+def delete_consumable_by_id(item_id: int, db_id: Optional[str] = None) -> dict:
+    """
+    Hard-delete one consumable card from ITEMS by ID (CI_TYPE=4).
+
+    Deletion is blocked when the consumable already has related acts or history.
+    """
+    try:
+        resolved_item_id = int(item_id)
+    except (TypeError, ValueError):
+        return {
+            "success": False,
+            "code": "invalid_item_id",
+            "message": "Invalid consumable item id",
+        }
+    if resolved_item_id <= 0:
+        return {
+            "success": False,
+            "code": "invalid_item_id",
+            "message": "Invalid consumable item id",
+        }
+
+    db = get_db(db_id)
+    with db.get_connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT TOP 1 ID, INV_NO
+            FROM ITEMS
+            WHERE CI_TYPE = 4
+              AND ID = ?
+            """,
+            (resolved_item_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return {
+                "success": False,
+                "code": "not_found",
+                "message": f"Consumable with ID {resolved_item_id} not found",
+            }
+
+        target_item_id = int(row[0])
+        resolved_inv_no = _format_item_inv_no(row[1], fallback=str(resolved_item_id))
+
+        cursor.execute(
+            """
+            SELECT COUNT(1)
+            FROM DOCS_LIST
+            WHERE ITEM_ID = ?
+            """,
+            (target_item_id,),
+        )
+        docs_count = int((cursor.fetchone() or [0])[0] or 0)
+
+        cursor.execute(
+            """
+            SELECT COUNT(1)
+            FROM CI_HISTORY
+            WHERE ITEM_ID = ?
+            """,
+            (target_item_id,),
+        )
+        history_count = int((cursor.fetchone() or [0])[0] or 0)
+
+        if docs_count > 0 or history_count > 0:
+            details = []
+            if docs_count > 0:
+                details.append(f"acts={docs_count}")
+            if history_count > 0:
+                details.append(f"history={history_count}")
+            suffix = f" ({', '.join(details)})" if details else ""
+            return {
+                "success": False,
+                "code": "has_dependencies",
+                "message": f"Consumable is linked to acts or history and cannot be deleted{suffix}",
+                "item_id": target_item_id,
+                "inv_no": resolved_inv_no,
+                "docs_count": docs_count,
+                "history_count": history_count,
+            }
+
+        cursor.execute(
+            """
+            DELETE FROM ITEMS
+            WHERE ID = ?
+              AND CI_TYPE = 4
+            """,
+            (target_item_id,),
+        )
+
+        if int(getattr(cursor, "rowcount", 0) or 0) <= 0:
+            return {
+                "success": False,
+                "code": "not_found",
+                "message": f"Consumable with ID {resolved_item_id} not found",
+            }
+
+        return {
+            "success": True,
+            "item_id": target_item_id,
+            "inv_no": resolved_inv_no,
+            "message": "Consumable deleted",
+        }
+
+
 def get_owner_no_by_name(employee_name: str, strict: bool = True, db_id: Optional[str] = None) -> Optional[int]:
     """Get OWNER_NO by employee full name."""
-    if not employee_name:
-        return None
-    db = get_db(db_id)
-    where_clause = "o.OWNER_DISPLAY_NAME = ?" if strict else "o.OWNER_DISPLAY_NAME LIKE ?"
-    param = employee_name if strict else f"%{employee_name}%"
-    query = f"""
-        SELECT TOP 1 o.OWNER_NO
-        FROM OWNERS o
-        WHERE {where_clause}
-        ORDER BY o.OWNER_NO
-    """
-    rows = db.execute_query(query, (param,))
-    if not rows:
-        return None
-    value = rows[0].get("OWNER_NO") or rows[0].get("owner_no")
-    try:
-        return int(value) if value is not None else None
-    except (TypeError, ValueError):
-        return None
+    return _reference_get_owner_no_by_name(employee_name, strict=strict, db_id=db_id, get_db_fn=get_db)
 
 
 def _parse_fio(full_name: str) -> tuple[str, str, str]:
@@ -2671,20 +2704,7 @@ def create_owner(employee_name: str, department: Optional[str] = None, db_id: Op
 
 def get_owner_email_by_no(owner_no: int, db_id: Optional[str] = None) -> Optional[str]:
     """Get owner email by OWNER_NO."""
-    db = get_db(db_id)
-    query = """
-        SELECT TOP 1 NULLIF(LTRIM(RTRIM(o.OWNER_EMAIL)), '') AS OWNER_EMAIL
-        FROM OWNERS o
-        WHERE o.OWNER_NO = ?
-    """
-    rows = db.execute_query(query, (owner_no,))
-    if not rows:
-        return None
-    value = rows[0].get("OWNER_EMAIL") or rows[0].get("owner_email")
-    if value is None:
-        return None
-    email = str(value).strip()
-    return email or None
+    return _reference_get_owner_email_by_no(owner_no, db_id, get_db_fn=get_db)
 
 
 def create_equipment_item(
@@ -2723,7 +2743,7 @@ def create_equipment_item(
     normalized_model_name = str(model_name or "").strip()
     normalized_hw_serial = str(hw_serial_no or "").strip() or None
     normalized_part_no = str(part_no or "").strip() or None
-    normalized_descr = str(description or "").strip() or None
+    normalized_descr = _legacy_items_descr_value(description)
     normalized_ip = str(ip_address or "").strip() or None
 
     if not normalized_serial:
@@ -2860,7 +2880,7 @@ def create_consumable_item(
 
     normalized_model_name = str(model_name or "").strip()
     normalized_part_no = str(part_no or "").strip() or None
-    normalized_descr = str(description or "").strip() or None
+    normalized_descr = _legacy_items_descr_value(description)
 
     try:
         resolved_qty = int(qty)

@@ -13,6 +13,7 @@ import {
   TaskContextSidebar,
   TaskDetailHeader,
   TaskMobileContentSummary,
+  TaskMobileDetailScreen,
   TaskPreviewDrawer,
 } from './TaskUi';
 
@@ -281,6 +282,34 @@ describe('TaskUi helpers', () => {
           isTransferReminder={false}
           formatDateTime={(value) => value || '-'}
           actionState={{ passive: true, stepLabel: 'Просмотр', hint: 'Только просмотр' }}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText('Наблюдатели')).toBeInTheDocument();
+    expect(screen.getByText('Наблюдатель Н.Н.')).toBeInTheDocument();
+  });
+
+  it('renders observers in mobile task detail screen', () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <TaskMobileDetailScreen
+          task={{
+            ...sampleTask,
+            observers: [
+              { user_id: 4, full_name: 'Наблюдатель Н.Н.', username: 'observer' },
+            ],
+          }}
+          attachments={[]}
+          canUploadFiles={false}
+          uploadingAttachment={false}
+          onUploadAttachment={vi.fn()}
+          onDownloadAttachment={vi.fn()}
+          onDownloadReport={vi.fn()}
+          formatDateTime={(value) => value || '-'}
+          formatFileSize={(value) => `${value} B`}
+          ui={ui}
+          theme={theme}
         />
       </ThemeProvider>,
     );

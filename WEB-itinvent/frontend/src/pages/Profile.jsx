@@ -1,1 +1,1 @@
-export { ProfilePage as default } from './AccountWorkspace';
+export { ProfilePage as default } from './account';

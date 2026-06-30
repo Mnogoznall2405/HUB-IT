@@ -11,7 +11,6 @@ const ui = {
 };
 
 const form = {
-  document_title: '',
   from_employee: '',
   to_employee: '',
   doc_date: '',
@@ -78,15 +77,15 @@ describe('UploadActDialog', () => {
     expect(screen.getByText('2. Проверка данных акта')).toBeInTheDocument();
     expect(screen.getByText('Проверьте дату')).toBeInTheDocument();
 
-    fireEvent.change(screen.getByLabelText('Название документа'), {
-      target: { value: 'Акт передачи' },
+    fireEvent.change(screen.getByLabelText('От сотрудника'), {
+      target: { value: 'Иванов И.И.' },
     });
     fireEvent.change(screen.getByLabelText('Инв. № (через запятую)'), {
       target: { value: '1001,1002' },
     });
     fireEvent.click(screen.getByLabelText('Я проверил инвентарные номера по PDF перед записью акта'));
 
-    expect(onFieldChange).toHaveBeenCalledWith('document_title', 'Акт передачи');
+    expect(onFieldChange).toHaveBeenCalledWith('from_employee', 'Иванов И.И.');
     expect(onInvNosChange).toHaveBeenCalledTimes(1);
     expect(onInvVerifiedChange).toHaveBeenCalledWith(true);
   });

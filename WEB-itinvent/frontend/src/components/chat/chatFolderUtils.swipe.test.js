@@ -43,6 +43,20 @@ describe('chat folder swipe navigation utils', () => {
     expect(resolveFolderSwipeTarget('archived', 'prev', customFolders)).toBe('all');
   });
 
+  it('resolves swipe target from archived to personal when All tab is hidden', () => {
+    expect(resolveFolderSwipeTarget('archived', 'next', customFolders, { includeAllTab: false })).toBe('personal');
+    expect(resolveFolderSwipeTarget('archived', 'prev', customFolders, { includeAllTab: false })).toBe('personal');
+  });
+
+  it('builds navigation list without All tab when requested', () => {
+    expect(getChatFolderNavigationList(customFolders, { includeAllTab: false }).map((item) => item.key)).toEqual([
+      'personal',
+      'tasks',
+      'folder-a',
+      'folder-b',
+    ]);
+  });
+
   it('delegates active folders to adjacent resolver', () => {
     expect(resolveFolderSwipeTarget('tasks', 'next', customFolders)).toBe('folder-a');
     expect(resolveFolderSwipeTarget('tasks', 'prev', customFolders)).toBe('personal');

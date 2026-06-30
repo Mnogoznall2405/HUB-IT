@@ -61,6 +61,22 @@ def test_mailbox_model_selects_explicit_and_recent_active_rows():
     assert mailbox_model.select_mailbox_row(rows, mailbox_id="inactive", allow_inactive=True)["id"] == "inactive"
 
 
+def test_mailbox_model_falls_back_when_requested_id_is_missing():
+    rows = [
+        {"id": "legacy-994", "is_active": True, "is_primary": True, "sort_order": 0, "last_selected_at": ""},
+    ]
+
+    assert mailbox_model.select_mailbox_row(
+        rows,
+        mailbox_id="legacy-38",
+        fallback_to_primary_on_missing=True,
+    )["id"] == "legacy-994"
+
+    with pytest.raises(mailbox_model.MailboxSelectionError, match="not found") as exc:
+        mailbox_model.select_mailbox_row(rows, mailbox_id="legacy-38")
+    assert exc.value.status_code == 404
+
+
 def test_mailbox_model_primary_duplicate_sort_and_entry_payload():
     rows = [
         {"id": "first", "mailbox_email": "first@example.test", "is_primary": False, "sort_order": 2},

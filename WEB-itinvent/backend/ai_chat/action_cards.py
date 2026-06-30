@@ -560,18 +560,42 @@ def get_action_card_for_message(message_id: str) -> dict[str, Any] | None:
     normalized_message_id = _normalize_text(message_id)
     if not normalized_message_id:
         return None
+    cards = get_action_cards_for_messages([normalized_message_id])
+    return cards.get(normalized_message_id)
+
+
+def get_action_cards_for_messages(message_ids: list[str]) -> dict[str, dict[str, Any]]:
+    normalized_ids = []
+    seen: set[str] = set()
+    for raw_id in list(message_ids or []):
+        normalized_message_id = _normalize_text(raw_id)
+        if not normalized_message_id or normalized_message_id in seen:
+            continue
+        seen.add(normalized_message_id)
+        normalized_ids.append(normalized_message_id)
+    if not normalized_ids:
+        return {}
+
     with app_session() as session:
-        row = session.execute(
-            select(AppAiPendingAction)
-            .where(AppAiPendingAction.message_id == normalized_message_id)
-            .order_by(AppAiPendingAction.created_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        if row is None:
-            return None
-        _set_expired_if_needed(row)
+        rows = list(
+            session.execute(
+                select(AppAiPendingAction)
+                .where(AppAiPendingAction.message_id.in_(normalized_ids))
+                .order_by(
+                    AppAiPendingAction.message_id.asc(),
+                    AppAiPendingAction.created_at.desc(),
+                )
+            ).scalars()
+        )
+        cards_by_message_id: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            normalized_message_id = _normalize_text(row.message_id)
+            if not normalized_message_id or normalized_message_id in cards_by_message_id:
+                continue
+            _set_expired_if_needed(row)
+            cards_by_message_id[normalized_message_id] = _action_to_card(row)
         session.flush()
-        return _action_to_card(row)
+        return cards_by_message_id
 
 
 def build_transfer_draft(

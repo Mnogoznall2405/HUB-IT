@@ -1,2 +1,2 @@
-export * from './AccountWorkspace';
-export { default } from './AccountWorkspace';
+export * from './account';
+export { default } from './account';

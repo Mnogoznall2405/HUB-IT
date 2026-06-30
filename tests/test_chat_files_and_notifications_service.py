@@ -129,7 +129,7 @@ def test_send_files_persists_attachment_and_creates_chat_notification(chat_env):
     assert messages["items"][0]["body"] == caption
     assert messages["items"][0]["attachments"][0]["file_name"] == "report.pdf"
 
-    conversations = service.list_conversations(current_user_id=2)
+    conversations = service.list_conversations(current_user_id=2)["items"]
     assert conversations[0]["last_message_preview"] == caption
 
     service.send_message(
@@ -227,7 +227,7 @@ def test_send_files_without_caption_keeps_file_name_preview(chat_env):
 
     assert created["body"] == ""
 
-    conversations = service.list_conversations(current_user_id=2)
+    conversations = service.list_conversations(current_user_id=2)["items"]
     assert conversations[0]["last_message_preview"].endswith("report.pdf")
 
 

@@ -40,7 +40,7 @@ vi.mock('../components/chat/ChatCommon', () => ({
   PresenceAvatar: ({ item }) => <div aria-label={`Аватар ${item?.full_name || item?.username}`} />,
 }));
 
-import { ProfileTab } from './AccountWorkspace';
+import { ProfileTab } from './account';
 
 const user = {
   id: 1,

@@ -44,6 +44,15 @@ describe('Chat page cache helpers', () => {
     expect(shouldSkipActiveThreadRevalidate({
       activeConversationId: 'conv-1',
       conversationId: 'conv-1',
+      reason: 'message_updated',
+      messages: [{ id: 'msg-10', isOptimistic: false }],
+      latestSocketMessage: { conversationId: 'conv-1', messageId: 'msg-10', at: now - 100 },
+      now,
+    })).toBe(true);
+
+    expect(shouldSkipActiveThreadRevalidate({
+      activeConversationId: 'conv-1',
+      conversationId: 'conv-1',
       reason: 'updated',
       messages: [{ id: 'msg-10', isOptimistic: false }],
       latestSocketMessage: { conversationId: 'conv-1', messageId: 'msg-10', at: now - 100 },

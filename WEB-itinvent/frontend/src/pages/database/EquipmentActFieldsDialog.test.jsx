@@ -53,6 +53,23 @@ describe('EquipmentActFieldsDialog', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
+  it('renders act description line', () => {
+    render(
+      <EquipmentActFieldsDialog
+        open
+        onClose={() => {}}
+        selectedAct={selectedAct}
+        summary={{
+          ...summary,
+          addInfo: 'Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026',
+        }}
+        onOpenFile={() => {}}
+      />
+    );
+
+    expect(screen.getByText('Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026')).toBeInTheDocument();
+  });
+
   it('shows empty state when no document is selected', () => {
     render(
       <EquipmentActFieldsDialog

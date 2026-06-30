@@ -87,6 +87,18 @@ const userLabel = (task, prefix) => (
   || '-'
 );
 
+const observersLabel = (task) => {
+  const fromObservers = Array.isArray(task?.observers) ? task.observers : [];
+  if (fromObservers.length) {
+    return fromObservers
+      .map((observer) => String(observer?.full_name || observer?.username || observer?.user_id || '').trim())
+      .filter(Boolean)
+      .join(', ');
+  }
+  const ids = Array.isArray(task?.observer_user_ids) ? task.observer_user_ids : [];
+  return ids.map((id) => String(id || '').trim()).filter(Boolean).join(', ');
+};
+
 const downloadResponse = (response, fallbackName) => {
   const blob = response?.data instanceof Blob ? response.data : new Blob([response?.data || response]);
   const url = window.URL.createObjectURL(blob);
@@ -381,6 +393,9 @@ function TaskWorkspacePanel({
                 <DetailRow label="Постановщик" value={userLabel(task, 'created_by')} ui={ui} />
                 <DetailRow label="Исполнитель" value={userLabel(task, 'assignee')} ui={ui} />
                 <DetailRow label="Контролёр" value={userLabel(task, 'controller')} ui={ui} />
+                {observersLabel(task) ? (
+                  <DetailRow label="Наблюдатели" value={observersLabel(task)} ui={ui} />
+                ) : null}
                 <Divider />
                 <DetailRow label="Крайний срок" value={task.due_at ? formatDateTime(task.due_at) : 'Без срока'} accent ui={ui} />
                 <DetailRow label="Статус" value={status.label} accent ui={ui} />

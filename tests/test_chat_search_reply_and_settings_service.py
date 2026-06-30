@@ -320,7 +320,7 @@ def test_conversation_settings_update_flags_and_muted_chat_skips_notifications(c
     assert updated["is_muted"] is True
     assert updated["is_archived"] is True
 
-    conversations = service.list_conversations(current_user_id=1, limit=20)
+    conversations = service.list_conversations(current_user_id=1, limit=20)["items"]
     assert conversations[0]["id"] == conversation["id"]
     assert conversations[0]["is_pinned"] is True
     assert conversations[0]["is_muted"] is True
@@ -357,8 +357,8 @@ def test_delete_direct_conversation_removes_history_for_all_members(chat_env):
     with chat_db_module.chat_session() as session:
         assert session.get(chat_models_module.ChatConversation, conversation["id"]) is None
         assert session.get(chat_models_module.ChatMessage, message["id"]) is None
-    assert service.list_conversations(current_user_id=1, limit=20) == []
-    assert service.list_conversations(current_user_id=2, limit=20) == []
+    assert service.list_conversations(current_user_id=1, limit=20)["items"] == []
+    assert service.list_conversations(current_user_id=2, limit=20)["items"] == []
     remaining_notifications = hub_service.poll_notifications(user_id=2, limit=50)["items"]
     assert all(
         not (

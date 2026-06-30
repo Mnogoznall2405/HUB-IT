@@ -5,7 +5,7 @@
 ## Что уже разделено
 
 - `hub`, уведомления, задачи, mail-runtime и локальные настройки остаются на SQLite.
-- новый chat-домен вынесен в отдельный backend-модуль `backend/chat/*`
+- новый chat-домен вынесен в отдельный backend-модуль `backend/chat/*` (см. [CHAT_BACKEND_ARCHITECTURE.md](./CHAT_BACKEND_ARCHITECTURE.md), [ADR-0003](../../docs/adr/0003-chat-backend-module-layout.md))
 - backend chat использует отдельный `CHAT_DATABASE_URL`
 - frontend chat скрыт за `VITE_CHAT_ENABLED`
 

@@ -145,7 +145,7 @@ def test_presence_is_included_for_users_and_conversations(chat_env, monkeypatch)
     assert by_id[3]["presence"]["is_online"] is False
     assert by_id[3]["presence"]["last_seen_at"]
 
-    conversations = service.list_conversations(current_user_id=1, limit=20)
+    conversations = service.list_conversations(current_user_id=1, limit=20)["items"]
     direct = next(item for item in conversations if item["id"] == chat_env["direct"]["id"])
     group = next(item for item in conversations if item["id"] == chat_env["group"]["id"])
     group_detail = service.get_conversation(current_user_id=1, conversation_id=chat_env["group"]["id"])
@@ -205,7 +205,7 @@ def test_conversation_summary_paths_do_not_require_full_members_payload(chat_env
         conversation_id=conversation["id"],
         user_ids=[1, 2, 3],
     )
-    listed = service.list_conversations(current_user_id=1, limit=20)
+    listed = service.list_conversations(current_user_id=1, limit=20)["items"]
     listed_group = next(item for item in listed if item["id"] == conversation["id"])
 
     assert summary["member_count"] == 3

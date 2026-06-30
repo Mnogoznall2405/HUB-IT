@@ -1,1 +1,1 @@
-export { AdminPage as default } from './AccountWorkspace';
+export { AdminPage as default } from './account';
