@@ -2561,7 +2561,8 @@ def delete_consumable_by_id(item_id: int, db_id: Optional[str] = None) -> dict:
     """
     Hard-delete one consumable card from ITEMS by ID (CI_TYPE=4).
 
-    Deletion is blocked when the consumable already has related acts or history.
+    Deletion is blocked when the consumable is linked to acts (DOCS_LIST).
+    Operational audit rows in CI_HISTORY are removed together with the card.
     """
     try:
         resolved_item_id = int(item_id)
@@ -2611,32 +2612,24 @@ def delete_consumable_by_id(item_id: int, db_id: Optional[str] = None) -> dict:
         )
         docs_count = int((cursor.fetchone() or [0])[0] or 0)
 
+        if docs_count > 0:
+            return {
+                "success": False,
+                "code": "has_dependencies",
+                "message": f"Consumable is linked to acts and cannot be deleted (acts={docs_count})",
+                "item_id": target_item_id,
+                "inv_no": resolved_inv_no,
+                "docs_count": docs_count,
+                "history_count": 0,
+            }
+
         cursor.execute(
             """
-            SELECT COUNT(1)
-            FROM CI_HISTORY
+            DELETE FROM CI_HISTORY
             WHERE ITEM_ID = ?
             """,
             (target_item_id,),
         )
-        history_count = int((cursor.fetchone() or [0])[0] or 0)
-
-        if docs_count > 0 or history_count > 0:
-            details = []
-            if docs_count > 0:
-                details.append(f"acts={docs_count}")
-            if history_count > 0:
-                details.append(f"history={history_count}")
-            suffix = f" ({', '.join(details)})" if details else ""
-            return {
-                "success": False,
-                "code": "has_dependencies",
-                "message": f"Consumable is linked to acts or history and cannot be deleted{suffix}",
-                "item_id": target_item_id,
-                "inv_no": resolved_inv_no,
-                "docs_count": docs_count,
-                "history_count": history_count,
-            }
 
         cursor.execute(
             """

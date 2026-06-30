@@ -142,7 +142,7 @@ def test_delete_consumable_route_returns_conflict_for_dependencies(monkeypatch, 
         lambda item_id, db_id=None: {
             "success": False,
             "code": "has_dependencies",
-            "message": "Consumable is linked to acts or history and cannot be deleted (acts=1, history=2)",
+            "message": "Consumable is linked to acts and cannot be deleted (acts=1)",
         },
     )
 
@@ -171,8 +171,9 @@ class _FakeCursor:
         if "SELECT COUNT(1) FROM DOCS_LIST" in normalized:
             self._fetchone = (self.docs_count,)
             return
-        if "SELECT COUNT(1) FROM CI_HISTORY" in normalized:
-            self._fetchone = (self.history_count,)
+        if normalized.startswith("DELETE FROM CI_HISTORY"):
+            self._fetchone = None
+            self.rowcount = self.history_count
             return
         if normalized.startswith("DELETE FROM ITEMS") and "CI_TYPE = 4" in normalized:
             self._fetchone = None
@@ -201,7 +202,7 @@ class _FakeDB:
         yield _FakeConnection(self.cursor_obj)
 
 
-def test_delete_consumable_query_helper_blocks_on_dependencies(monkeypatch):
+def test_delete_consumable_query_helper_blocks_on_act_dependencies(monkeypatch):
     cursor = _FakeCursor(item_row=(42, 2001.0), docs_count=1, history_count=2)
     monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: _FakeDB(cursor))
 
@@ -210,8 +211,30 @@ def test_delete_consumable_query_helper_blocks_on_dependencies(monkeypatch):
     assert result["success"] is False
     assert result["code"] == "has_dependencies"
     assert result["docs_count"] == 1
-    assert result["history_count"] == 2
+    assert "acts=1" in result["message"]
+    assert not any(query.startswith("DELETE FROM CI_HISTORY") for query, _ in cursor.executed)
     assert not any(query.startswith("DELETE FROM ITEMS") for query, _ in cursor.executed)
+
+
+def test_delete_consumable_query_helper_deletes_history_then_item(monkeypatch):
+    cursor = _FakeCursor(item_row=(42, 2001.0), docs_count=0, history_count=3, delete_rowcount=1)
+    monkeypatch.setattr(db_queries, "get_db", lambda db_id=None: _FakeDB(cursor))
+
+    result = db_queries.delete_consumable_by_id(42, db_id="main")
+
+    assert result == {
+        "success": True,
+        "item_id": 42,
+        "inv_no": "2001",
+        "message": "Consumable deleted",
+    }
+    history_idx = next(
+        i for i, (query, _) in enumerate(cursor.executed) if query.startswith("DELETE FROM CI_HISTORY")
+    )
+    items_idx = next(
+        i for i, (query, _) in enumerate(cursor.executed) if query.startswith("DELETE FROM ITEMS")
+    )
+    assert history_idx < items_idx
 
 
 def test_delete_consumable_query_helper_deletes_item_without_dependencies(monkeypatch):
