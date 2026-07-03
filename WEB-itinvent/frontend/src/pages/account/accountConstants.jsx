@@ -173,6 +173,13 @@ const PASSWORDS_PERMISSION_GROUP = {
   ],
 };
 
+const GROUPS_ACCESS_PERMISSION_GROUP = {
+  group: 'AD / Доступ к папкам',
+  permissions: [
+    { value: 'groups_access.read', label: 'Матрица доступа AD Groups: просмотр' },
+  ],
+};
+
 const AI_PERMISSION_GROUP = {
   group: 'AI',
   permissions: [
@@ -185,6 +192,7 @@ export const SETTINGS_PERMISSION_GROUPS = [
   ...permissionGroups,
   MY_FILES_PERMISSION_GROUP,
   PASSWORDS_PERMISSION_GROUP,
+  GROUPS_ACCESS_PERMISSION_GROUP,
   AI_PERMISSION_GROUP,
 ];
 

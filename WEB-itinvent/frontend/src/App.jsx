@@ -40,6 +40,7 @@ import {
   loadScanCenterRoute,
   loadSettingsRoute,
   loadPasswordsRoute,
+  loadGroupsAccessRoute,
   loadSharedFileRoute,
   loadStatisticsRoute,
   loadTasksRoute,
@@ -69,6 +70,7 @@ const Vcs = lazy(loadVcsRoute);
 const KnowledgeBase = lazy(loadKnowledgeBaseRoute);
 const AddressBook = lazy(loadAddressBookRoute);
 const Passwords = lazy(loadPasswordsRoute);
+const GroupsAccess = lazy(loadGroupsAccessRoute);
 const MyFiles = lazy(loadMyFilesRoute);
 const SharedFile = lazy(loadSharedFileRoute);
 
@@ -88,6 +90,7 @@ const routePermissions = [
   { path: '/mail', permissions: ['mail.access'] },
   { path: '/address-book', permissions: ['address_book.read'] },
   { path: '/passwords', permissions: ['passwords.read'] },
+  { path: '/groups-access', permissions: ['groups_access.read'] },
   { path: '/my-files', permissions: ['my_files.read'] },
 ];
 
@@ -489,6 +492,10 @@ function App() {
                 <Route
                   path="/passwords"
                   element={<PermissionRoute permission="passwords.read"><Passwords /></PermissionRoute>}
+                />
+                <Route
+                  path="/groups-access"
+                  element={<PermissionRoute permission="groups_access.read"><GroupsAccess /></PermissionRoute>}
                 />
                 <Route
                   path="/my-files"

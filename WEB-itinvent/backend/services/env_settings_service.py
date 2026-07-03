@@ -148,6 +148,11 @@ _DIRECT_DESCRIPTIONS = {
     "LDAP_SYNC_INTERVAL_SECONDS": ("Active Directory", "Интервал фоновой синхронизации AD в SQL OWNERS (секунды)."),
     "LDAP_APP_USER_SYNC_ENABLED": ("Active Directory", "Фоновая синхронизация web-пользователей из AD (1/0)."),
     "LDAP_APP_USER_SYNC_INTERVAL_SECONDS": ("Active Directory", "Интервал фоновой синхронизации web-пользователей из AD (секунды)."),
+    "AD_GROUPS_ACCESS_ENABLED": ("Active Directory", "Матрица доступа AD Groups: включить модуль (1/0)."),
+    "AD_GROUPS_ACCESS_BASE_DN": ("Active Directory", "Base DN OU Groups для матрицы доступа (пусто = auto-discovery)."),
+    "AD_GROUPS_ACCESS_BRANCHES": ("Active Directory", "Ветки OU для матрицы доступа (через запятую, например SPb,Tyumen)."),
+    "AD_GROUPS_ACCESS_SYNC_INTERVAL_SECONDS": ("Active Directory", "Интервал обновления снимка матрицы доступа (секунды)."),
+    "AD_GROUPS_ACCESS_LEVEL_RULES": ("Active Directory", "JSON regex-правила CN группы -> уровень доступа (read/write/full)."),
     "LDAP_APP_USER_IMPORT_PERSON_ONLY": ("Active Directory", "Импортировать только учётки сотрудников, без сервисных и mailbox (1/0)."),
     "AD_PASSWORD_MAX_AGE_DAYS": ("Active Directory", "Срок действия пароля AD в днях для AI-проверки и отчёта."),
     "SCAN_AGENT_SCAN_ON_START": (

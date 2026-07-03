@@ -14,6 +14,7 @@ import VideocamIcon from '@mui/icons-material/Videocam';
 import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
+import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { INVENTORY_SECTION_LABEL } from '../../lib/appBranding';
@@ -34,6 +35,7 @@ export const navigationItems = [
   { path: '/mail', label: 'Почта', shortLabel: 'Почта', icon: <MailOutlineIcon />, permission: 'mail.access', group: 'main' },
   { path: '/address-book', label: 'Адресная книга', shortLabel: 'Адреса', icon: <ContactPhoneIcon />, permission: 'address_book.read', group: 'tools' },
   { path: '/passwords', label: 'Пароли', shortLabel: 'Пароли', icon: <VpnKeyOutlinedIcon />, permission: 'passwords.read', group: 'tools' },
+  { path: '/groups-access', label: 'Доступ к папкам', shortLabel: 'Доступ', icon: <FolderSharedOutlinedIcon />, permission: 'groups_access.read', group: 'tools' },
   { path: '/my-files', label: 'Мои файлы', shortLabel: 'Файлы', icon: <FolderOpenOutlinedIcon />, permission: 'my_files.read', group: 'tools' },
   { path: '/database', label: INVENTORY_SECTION_LABEL, shortLabel: 'Учёт', icon: <StorageIcon />, permission: 'database.read', group: 'tools' },
   { path: '/networks', label: 'Сети', shortLabel: 'Сети', icon: <LanIcon />, permission: 'networks.read', group: 'tools' },

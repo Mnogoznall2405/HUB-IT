@@ -68,6 +68,7 @@ export const loadVcsRoute = defineRouteLoader(() => import('../pages/Vcs'));
 export const loadKnowledgeBaseRoute = defineRouteLoader(() => import('../pages/KnowledgeBase'));
 export const loadAddressBookRoute = defineRouteLoader(() => import('../pages/AddressBook'));
 export const loadPasswordsRoute = defineRouteLoader(() => import('../pages/Passwords'));
+export const loadGroupsAccessRoute = defineRouteLoader(() => import('../pages/GroupsAccess'));
 export const loadMyFilesRoute = defineRouteLoader(() => {
   if (ensureMyFilesGrantDeployReload()) {
     return new Promise(() => {});
@@ -99,6 +100,7 @@ const ROUTE_LOADERS = new Map([
   ['/kb', loadKnowledgeBaseRoute],
   ['/address-book', loadAddressBookRoute],
   ['/passwords', loadPasswordsRoute],
+  ['/groups-access', loadGroupsAccessRoute],
   ['/my-files', loadMyFilesRoute],
   ['/shared-files', loadSharedFileRoute],
 ]);
