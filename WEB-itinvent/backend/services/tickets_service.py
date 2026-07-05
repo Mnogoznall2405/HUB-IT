@@ -52,43 +52,50 @@ COMMENT_MIN_LENGTH = 1
 COMMENT_MAX_LENGTH = 2000
 HISTORY_PAGE_SIZE = 20
 
-# Fields tracked for change history when update_request() modifies them
-TRACKED_FIELDS = {"status", "assignee_id", "departure_date", "arrival_date", "total_cost", "route"}
-
-# All valid ticket request statuses
-VALID_STATUSES = {
-    "new",
-    "data_check",
-    "missing_data",
-    "ready_to_buy",
-    "in_progress",
-    "purchased",
-    "exchange_needed",
-    "refund",
-    "cancelled",
-    "no_show",
-    "closed",
-    "archive",
-}
-
 # Valid financial operation types
 VALID_FIN_OP_TYPES = {"refund", "exchange", "loss"}
 FIN_OP_MAX_AMOUNT = Decimal("9999999999.99")
 
+# Fields tracked for change history when update_request() modifies them
+TRACKED_FIELDS = {
+    "status",
+    "assignee_id",
+    "departure_date",
+    "arrival_date",
+    "total_cost",
+    "route",
+    "note",
+    "refund_loss",
+    "submitted_at",
+}
+
+# All valid ticket request statuses (simplified Excel workflow)
+VALID_STATUSES = {
+    "not_started",
+    "at_cashier",
+    "purchased",
+    "exchange_needed",
+    "cancel_purchase",
+    "refund_needed",
+}
+
+STATUS_LABELS: dict[str, str] = {
+    "not_started": "Билет ещё не запущен в работу",
+    "at_cashier": "Билет на стадии оформления (в кассах)",
+    "purchased": "Билет куплен",
+    "exchange_needed": "Необходимо заменить билет",
+    "cancel_purchase": "Необходимо отменить покупку",
+    "refund_needed": "Необходим возврат билета",
+}
+
 # State machine: allowed transitions from each status
 STATUS_TRANSITIONS: dict[str, list[str]] = {
-    "new": ["data_check", "missing_data", "cancelled"],
-    "data_check": ["ready_to_buy", "missing_data"],
-    "missing_data": ["data_check", "cancelled"],
-    "ready_to_buy": ["in_progress", "cancelled"],
-    "in_progress": ["purchased", "cancelled"],
-    "purchased": ["exchange_needed", "refund", "no_show", "closed"],
-    "exchange_needed": ["in_progress", "refund"],
-    "refund": ["closed"],
-    "no_show": ["closed"],
-    "cancelled": ["archive"],
-    "closed": ["archive"],
-    "archive": [],
+    "not_started": ["at_cashier"],
+    "at_cashier": ["purchased", "cancel_purchase"],
+    "purchased": ["exchange_needed", "refund_needed"],
+    "exchange_needed": ["at_cashier", "refund_needed"],
+    "cancel_purchase": [],
+    "refund_needed": [],
 }
 
 # Sortable columns mapping: external name -> TicketRequest attribute name
@@ -176,13 +183,15 @@ class CreateRequestDTO:
 
     employee_id: int
     object_id: int
-    status: str = "new"
+    status: str = "not_started"
     assignee_id: int | None = None
     submitted_at: datetime | None = None
     departure_date: datetime | None = None
     arrival_date: datetime | None = None
     route: str | None = None
     total_cost: Decimal = field(default_factory=lambda: Decimal("0.00"))
+    note: str | None = None
+    refund_loss: Decimal = field(default_factory=lambda: Decimal("0.00"))
     is_urgent: bool = False
     source: str = "manual"
 
@@ -199,6 +208,9 @@ class UpdateRequestDTO:
     arrival_date: datetime | None = None
     route: str | None = None
     total_cost: Decimal | None = None
+    note: str | None = None
+    refund_loss: Decimal | None = None
+    submitted_at: datetime | None = None
     is_urgent: bool | None = None
     needs_review: bool | None = None
     _provided_fields: set = field(default_factory=set)
@@ -247,6 +259,79 @@ def _parse_date(value: Any) -> datetime | None:
         except ValueError:
             continue
     return None
+
+
+def split_passport_series_number(value: str) -> tuple[str, str]:
+    """Split combined passport 'series number' into separate parts."""
+    parts = str(value or "").strip().split(None, 1)
+    if len(parts) == 2:
+        return parts[0], parts[1]
+    if len(parts) == 1:
+        return parts[0], ""
+    return "", ""
+
+
+def _get_current_document(employee: TicketEmployee | None) -> TicketEmployeeDocument | None:
+    if employee is None:
+        return None
+    documents = list(employee.documents or [])
+    if not documents:
+        return None
+    for doc in documents:
+        if doc.is_current:
+            return doc
+    return documents[0]
+
+
+def _document_personal_fields(
+    doc: TicketEmployeeDocument | None,
+    *,
+    decrypt: bool = False,
+) -> dict[str, str | None]:
+    empty = {
+        "passport_series": "",
+        "passport_number": "",
+        "passport_series_number": "",
+        "issued_by": "",
+        "issuer_code": "",
+        "birth_place": "",
+        "registration_address": "",
+    }
+    if doc is None:
+        return empty
+
+    if decrypt:
+        series = decrypt_secret(doc.passport_series_enc) or ""
+        number = decrypt_secret(doc.passport_number_enc) or ""
+        combined = decrypt_secret(doc.passport_series_number_enc) or ""
+        if not series and not number and combined:
+            series, number = split_passport_series_number(combined)
+        passport_series_number = combined or " ".join(part for part in (series, number) if part).strip()
+        return {
+            "passport_series": series,
+            "passport_number": number,
+            "passport_series_number": passport_series_number,
+            "issued_by": decrypt_secret(doc.issued_by_enc) or "",
+            "issuer_code": decrypt_secret(doc.issuer_code_enc) or "",
+            "birth_place": decrypt_secret(doc.birth_place_enc) or "",
+            "registration_address": decrypt_secret(doc.registration_address_enc) or "",
+        }
+
+    has_passport = bool(
+        doc.passport_series_enc
+        or doc.passport_number_enc
+        or doc.passport_series_number_enc
+    )
+    mask = MASKED_VALUE if has_passport else ""
+    return {
+        "passport_series": mask if (doc.passport_series_enc or doc.passport_series_number_enc) else "",
+        "passport_number": mask if (doc.passport_number_enc or doc.passport_series_number_enc) else "",
+        "passport_series_number": mask if has_passport else "",
+        "issued_by": MASKED_VALUE if doc.issued_by_enc else "",
+        "issuer_code": MASKED_VALUE if doc.issuer_code_enc else "",
+        "birth_place": MASKED_VALUE if doc.birth_place_enc else "",
+        "registration_address": MASKED_VALUE if doc.registration_address_enc else "",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -325,7 +410,9 @@ def _request_to_dict(req: TicketRequest) -> dict[str, Any]:
         "departure_date": req.departure_date.isoformat() if req.departure_date else None,
         "arrival_date": req.arrival_date.isoformat() if req.arrival_date else None,
         "route": req.route,
+        "note": req.note,
         "total_cost": str(req.total_cost),
+        "refund_loss": str(req.refund_loss),
         "is_urgent": req.is_urgent,
         "needs_review": req.needs_review,
         "source": req.source,
@@ -364,6 +451,43 @@ def _kanban_card_to_dict(req: TicketRequest) -> dict[str, Any]:
     }
 
 
+def _request_list_row_to_dict(
+    req: TicketRequest,
+    *,
+    decrypt_personal: bool = False,
+) -> dict[str, Any]:
+    """Convert request with denormalized employee/document fields for list/export."""
+    base = _request_to_dict(req)
+    employee = req.employee
+    document = _get_current_document(employee)
+    personal = _document_personal_fields(document, decrypt=decrypt_personal)
+
+    date_of_birth = None
+    if employee is not None:
+        if decrypt_personal and employee.date_of_birth_enc:
+            date_of_birth = decrypt_secret(employee.date_of_birth_enc) or None
+        elif employee.date_of_birth_enc:
+            date_of_birth = MASKED_VALUE
+
+    base.update(
+        {
+            "department": employee.department if employee else None,
+            "position": employee.position if employee else None,
+            "phone": employee.phone if employee else None,
+            "passport_series": personal["passport_series"],
+            "passport_number": personal["passport_number"],
+            "passport_series_number": personal["passport_series_number"],
+            "issue_date": document.issue_date.isoformat() if document and document.issue_date else None,
+            "issued_by": personal["issued_by"],
+            "issuer_code": personal["issuer_code"],
+            "date_of_birth": date_of_birth,
+            "birth_place": personal["birth_place"],
+            "registration_address": personal["registration_address"],
+        }
+    )
+    return base
+
+
 # ---------------------------------------------------------------------------
 # TicketsService
 # ---------------------------------------------------------------------------
@@ -383,6 +507,7 @@ class TicketsService:
         self,
         filters: RequestFilters | None = None,
         pagination: Pagination | None = None,
+        user_permissions: list[str] | None = None,
     ) -> PagedResult:
         """List ticket requests with pagination, sorting, and combined filters.
 
@@ -400,6 +525,8 @@ class TicketsService:
             filters = RequestFilters()
         if pagination is None:
             pagination = Pagination()
+
+        can_read_personal = self._can_read_personal_data(user_permissions)
 
         with app_session(self._database_url) as session:
             # Determine if we need explicit joins for search
@@ -477,13 +604,16 @@ class TicketsService:
 
             # Add eager loading for response serialization
             query = query.options(
-                joinedload(TicketRequest.employee),
+                joinedload(TicketRequest.employee).selectinload(TicketEmployee.documents),
                 joinedload(TicketRequest.object),
                 joinedload(TicketRequest.assignee),
             )
 
             rows = session.execute(query).unique().scalars().all()
-            items = [_request_to_dict(r) for r in rows]
+            items = [
+                _request_list_row_to_dict(r, decrypt_personal=can_read_personal)
+                for r in rows
+            ]
 
         return PagedResult(
             items=items,
@@ -524,13 +654,15 @@ class TicketsService:
             req = TicketRequest(
                 employee_id=data.employee_id,
                 object_id=data.object_id,
-                status=data.status or "new",
+                status=data.status or "not_started",
                 assignee_id=data.assignee_id,
                 submitted_at=data.submitted_at or now,
                 departure_date=data.departure_date,
                 arrival_date=data.arrival_date,
                 route=data.route,
+                note=data.note,
                 total_cost=data.total_cost,
+                refund_loss=data.refund_loss,
                 is_urgent=data.is_urgent,
                 needs_review=False,
                 source=data.source or "manual",
@@ -598,8 +730,14 @@ class TicketsService:
                 req.arrival_date = data.arrival_date
             if "route" in data._provided_fields:
                 req.route = data.route
+            if "note" in data._provided_fields:
+                req.note = data.note
             if "total_cost" in data._provided_fields and data.total_cost is not None:
                 req.total_cost = data.total_cost
+            if "refund_loss" in data._provided_fields and data.refund_loss is not None:
+                req.refund_loss = data.refund_loss
+            if "submitted_at" in data._provided_fields:
+                req.submitted_at = data.submitted_at
             if "is_urgent" in data._provided_fields and data.is_urgent is not None:
                 req.is_urgent = data.is_urgent
             if "needs_review" in data._provided_fields and data.needs_review is not None:
@@ -1159,7 +1297,7 @@ class TicketsService:
             if employee is None:
                 raise TicketsNotFoundError(f"Employee with id={employee_id} not found")
 
-            result = self._employee_to_dict(employee)
+            result = self._employee_to_dict(employee, decrypt=can_read_personal, include_personal=True)
             result["documents"] = [
                 self._document_to_dict(doc, decrypt=can_read_personal)
                 for doc in employee.documents
@@ -1191,6 +1329,8 @@ class TicketsService:
         with app_session(self._database_url) as session:
             employee = TicketEmployee(
                 full_name=str(data["full_name"]).strip()[:150],
+                department=self._normalize_optional_str(data.get("department"), max_len=200),
+                position=self._normalize_optional_str(data.get("position"), max_len=150),
                 phone=self._normalize_optional_str(data.get("phone"), max_len=30),
                 email=self._normalize_optional_str(data.get("email"), max_len=255),
                 status=data.get("status") if data.get("status") in EMPLOYEE_STATUSES else "active",
@@ -1220,7 +1360,7 @@ class TicketsService:
                 .where(TicketEmployee.id == employee.id)
             ).first()
 
-            result = self._employee_to_dict(employee_with_docs)
+            result = self._employee_to_dict(employee_with_docs, decrypt=can_read_personal, include_personal=True)
             result["documents"] = [
                 self._document_to_dict(doc, decrypt=can_read_personal)
                 for doc in employee_with_docs.documents
@@ -1267,6 +1407,10 @@ class TicketsService:
             # Update employee fields
             if "full_name" in data:
                 employee.full_name = str(data["full_name"]).strip()[:150]
+            if "department" in data:
+                employee.department = self._normalize_optional_str(data.get("department"), max_len=200)
+            if "position" in data:
+                employee.position = self._normalize_optional_str(data.get("position"), max_len=150)
             if "phone" in data:
                 employee.phone = self._normalize_optional_str(data.get("phone"), max_len=30)
             if "email" in data:
@@ -1276,7 +1420,11 @@ class TicketsService:
             if "app_user_id" in data:
                 employee.app_user_id = data["app_user_id"] or None
             if "date_of_birth" in data:
-                employee.date_of_birth_enc = encrypt_secret(data["date_of_birth"]) if data["date_of_birth"] else ""
+                dob = data["date_of_birth"]
+                if dob not in (None, "", MASKED_VALUE):
+                    employee.date_of_birth_enc = encrypt_secret(dob)
+                elif dob in ("", None):
+                    employee.date_of_birth_enc = ""
 
             employee.updated_at = now
 
@@ -1317,7 +1465,7 @@ class TicketsService:
                 .where(TicketEmployee.id == employee.id)
             ).first()
 
-            result = self._employee_to_dict(employee_with_docs)
+            result = self._employee_to_dict(employee_with_docs, decrypt=can_read_personal, include_personal=True)
             result["documents"] = [
                 self._document_to_dict(doc, decrypt=can_read_personal)
                 for doc in employee_with_docs.documents
@@ -1561,11 +1709,18 @@ class TicketsService:
         return PERM_TICKETS_PERSONAL_DATA_READ in user_permissions
 
     @staticmethod
-    def _employee_to_dict(employee: TicketEmployee) -> dict[str, Any]:
+    def _employee_to_dict(
+        employee: TicketEmployee,
+        *,
+        decrypt: bool = False,
+        include_personal: bool = False,
+    ) -> dict[str, Any]:
         """Convert employee model to dict (without documents)."""
-        return {
+        result = {
             "id": employee.id,
             "full_name": employee.full_name,
+            "department": employee.department,
+            "position": employee.position,
             "phone": employee.phone,
             "email": employee.email,
             "status": employee.status,
@@ -1573,30 +1728,45 @@ class TicketsService:
             "created_at": employee.created_at.isoformat() if employee.created_at else None,
             "updated_at": employee.updated_at.isoformat() if employee.updated_at else None,
         }
+        if include_personal:
+            if decrypt and employee.date_of_birth_enc:
+                result["date_of_birth"] = decrypt_secret(employee.date_of_birth_enc) or None
+            elif employee.date_of_birth_enc:
+                result["date_of_birth"] = MASKED_VALUE
+            else:
+                result["date_of_birth"] = None
+        return result
 
     @staticmethod
     def _document_to_dict(doc: TicketEmployeeDocument, *, decrypt: bool = False) -> dict[str, Any]:
         """Convert document model to dict, decrypting or masking personal data."""
-        if decrypt:
-            passport = decrypt_secret(doc.passport_series_number_enc)
-            issued_by = decrypt_secret(doc.issued_by_enc)
-            registration_address = decrypt_secret(doc.registration_address_enc)
-        else:
-            passport = MASKED_VALUE if doc.passport_series_number_enc else ""
-            issued_by = MASKED_VALUE if doc.issued_by_enc else ""
-            registration_address = MASKED_VALUE if doc.registration_address_enc else ""
-
+        personal = _document_personal_fields(doc, decrypt=decrypt)
         return {
             "id": doc.id,
             "employee_id": doc.employee_id,
-            "passport_series_number": passport,
-            "issued_by": issued_by,
+            "passport_series_number": personal["passport_series_number"],
+            "passport_series": personal["passport_series"],
+            "passport_number": personal["passport_number"],
+            "issued_by": personal["issued_by"],
+            "issuer_code": personal["issuer_code"],
+            "birth_place": personal["birth_place"],
             "issue_date": doc.issue_date.isoformat() if doc.issue_date else None,
-            "registration_address": registration_address,
+            "registration_address": personal["registration_address"],
             "is_current": doc.is_current,
             "created_at": doc.created_at.isoformat() if doc.created_at else None,
             "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
         }
+
+    @staticmethod
+    def _resolve_passport_fields(data: dict[str, Any]) -> tuple[str, str, str]:
+        series = str(data.get("passport_series") or "").strip()
+        number = str(data.get("passport_number") or "").strip()
+        combined = str(data.get("passport_series_number") or "").strip()
+        if not series and not number and combined and combined != MASKED_VALUE:
+            series, number = split_passport_series_number(combined)
+        if not combined and (series or number):
+            combined = " ".join(part for part in (series, number) if part).strip()
+        return series, number, combined
 
     @staticmethod
     def _validate_employee_data(data: dict[str, Any]) -> list[str]:
@@ -1640,10 +1810,9 @@ class TicketsService:
         errors: list[str] = []
 
         if not is_update:
-            # For creation, mandatory fields are required
-            passport = str(data.get("passport_series_number") or "").strip()
-            if not passport:
-                errors.append("passport_series_number is required")
+            series, number, combined = TicketsService._resolve_passport_fields(data)
+            if not combined:
+                errors.append("passport_series_number or passport_series/passport_number is required")
 
             issued_by = str(data.get("issued_by") or "").strip()
             if not issued_by:
@@ -1659,10 +1828,12 @@ class TicketsService:
                 elif issue_date > _utcnow():
                     errors.append("issue_date must not be in the future")
         else:
-            # For update, validate only provided fields
-            if "passport_series_number" in data:
-                passport = str(data["passport_series_number"] or "").strip()
-                if not passport:
+            if any(
+                key in data
+                for key in ("passport_series_number", "passport_series", "passport_number")
+            ):
+                series, number, combined = TicketsService._resolve_passport_fields(data)
+                if not combined or combined == MASKED_VALUE:
                     errors.append("passport_series_number cannot be empty")
 
             if "issued_by" in data:
@@ -1689,12 +1860,15 @@ class TicketsService:
     ) -> TicketEmployeeDocument:
         """Create a TicketEmployeeDocument instance from data dict."""
         issue_date = _parse_date(data.get("issue_date"))
+        series, number, combined = TicketsService._resolve_passport_fields(data)
 
         return TicketEmployeeDocument(
             employee_id=employee_id,
-            passport_series_number_enc=encrypt_secret(
-                str(data.get("passport_series_number") or "").strip()
-            ),
+            passport_series_number_enc=encrypt_secret(combined),
+            passport_series_enc=encrypt_secret(series) if series else "",
+            passport_number_enc=encrypt_secret(number) if number else "",
+            issuer_code_enc=encrypt_secret(str(data.get("issuer_code") or "").strip()),
+            birth_place_enc=encrypt_secret(str(data.get("birth_place") or "").strip()),
             issued_by_enc=encrypt_secret(str(data.get("issued_by") or "").strip()),
             issue_date=issue_date,
             registration_address_enc=encrypt_secret(
@@ -1710,18 +1884,33 @@ class TicketsService:
         doc: TicketEmployeeDocument, data: dict[str, Any], now: datetime
     ) -> None:
         """Update an existing TicketEmployeeDocument from data dict."""
-        if "passport_series_number" in data:
-            doc.passport_series_number_enc = encrypt_secret(
-                str(data["passport_series_number"] or "").strip()
-            )
+        if any(
+            key in data
+            for key in ("passport_series_number", "passport_series", "passport_number")
+        ):
+            series, number, combined = TicketsService._resolve_passport_fields(data)
+            if combined and combined != MASKED_VALUE:
+                doc.passport_series_number_enc = encrypt_secret(combined)
+                doc.passport_series_enc = encrypt_secret(series) if series else ""
+                doc.passport_number_enc = encrypt_secret(number) if number else ""
+        if "issuer_code" in data:
+            value = str(data["issuer_code"] or "").strip()
+            if value and value != MASKED_VALUE:
+                doc.issuer_code_enc = encrypt_secret(value)
+        if "birth_place" in data:
+            value = str(data["birth_place"] or "").strip()
+            if value and value != MASKED_VALUE:
+                doc.birth_place_enc = encrypt_secret(value)
         if "issued_by" in data:
-            doc.issued_by_enc = encrypt_secret(str(data["issued_by"] or "").strip())
+            value = str(data["issued_by"] or "").strip()
+            if value and value != MASKED_VALUE:
+                doc.issued_by_enc = encrypt_secret(value)
         if "issue_date" in data:
             doc.issue_date = _parse_date(data["issue_date"])
         if "registration_address" in data:
-            doc.registration_address_enc = encrypt_secret(
-                str(data["registration_address"] or "").strip()
-            )
+            value = str(data["registration_address"] or "").strip()
+            if value and value != MASKED_VALUE:
+                doc.registration_address_enc = encrypt_secret(value)
         if "is_current" in data:
             doc.is_current = bool(data["is_current"])
         doc.updated_at = now
@@ -2217,26 +2406,20 @@ class TicketsService:
         output.seek(0)
         return output.read()
 
-    def export_requests_xlsx(self, filters: RequestFilters | None = None) -> bytes:
-        """Export general request list to .xlsx file.
-
-        Generates an openpyxl Workbook with columns:
-        №, ФИО, Объект, Дата вылета, Дата прибытия, Статус, Ответственный, Стоимость
-
-        Max 50,000 records. Returns bytes (workbook saved to BytesIO).
-
-        Args:
-            filters: Same filters as list_requests (object_ids, statuses, assignee_ids, search)
-
-        Returns:
-            bytes: The .xlsx file content.
-        """
+    def export_requests_xlsx(
+        self,
+        filters: RequestFilters | None = None,
+        user_permissions: list[str] | None = None,
+    ) -> bytes:
+        """Export general request list to .xlsx file (Excel template columns)."""
         from io import BytesIO
 
         from openpyxl import Workbook
 
         if filters is None:
             filters = RequestFilters()
+
+        can_read_personal = self._can_read_personal_data(user_permissions)
 
         with app_session(self._database_url) as session:
             query = select(TicketRequest)
@@ -2298,7 +2481,7 @@ class TicketsService:
 
             # Eager load relationships
             query = query.options(
-                joinedload(TicketRequest.employee),
+                joinedload(TicketRequest.employee).selectinload(TicketEmployee.documents),
                 joinedload(TicketRequest.object),
                 joinedload(TicketRequest.assignee),
             )
@@ -2310,38 +2493,67 @@ class TicketsService:
             ws = wb.active
             ws.title = "Заявки"
 
-            # Header row
-            headers = ["№", "ФИО", "Объект", "Дата вылета", "Дата прибытия", "Статус", "Ответственный", "Стоимость"]
+            headers = [
+                "№ п/п",
+                "Дата подачи",
+                "ФИО",
+                "Подразделение",
+                "Должность",
+                "Серия",
+                "Номер",
+                "Дата выдачи",
+                "Кем выдан",
+                "Код подр.",
+                "Дата рождения",
+                "Место рождения",
+                "Прописка",
+                "Телефон",
+                "Прибытие / город",
+                "№ заявки",
+                "Шифр объекта",
+                "Примечание",
+                "Стоимость",
+                "Возврат",
+                "Статус",
+            ]
             ws.append(headers)
 
-            # Status labels for display
-            status_labels = {
-                "new": "Новая заявка",
-                "data_check": "Проверка данных",
-                "missing_data": "Не хватает данных",
-                "ready_to_buy": "Готово к покупке",
-                "in_progress": "В работе",
-                "purchased": "Билет куплен",
-                "exchange_needed": "Требуется обмен",
-                "refund": "Возврат",
-                "cancelled": "Отменено",
-                "no_show": "Не выехал",
-                "closed": "Закрыто",
-                "archive": "Архив",
-            }
-
-            for req in rows:
-                employee_name = req.employee.full_name if req.employee else ""
-                object_name = req.object.name if req.object else ""
-                departure = req.departure_date.strftime("%d.%m.%Y") if req.departure_date else ""
-                arrival = req.arrival_date.strftime("%d.%m.%Y") if req.arrival_date else ""
-                status_label = status_labels.get(req.status, req.status)
-                assignee_name = ""
-                if req.assignee:
-                    assignee_name = req.assignee.full_name or getattr(req.assignee, "username", "") or ""
-                cost = float(req.total_cost) if req.total_cost else 0.0
-
-                ws.append([req.id, employee_name, object_name, departure, arrival, status_label, assignee_name, cost])
+            for index, req in enumerate(rows, start=1):
+                row = _request_list_row_to_dict(req, decrypt_personal=can_read_personal)
+                arrival = row.get("arrival_date") or ""
+                route = row.get("route") or ""
+                arrival_route = " / ".join(
+                    part for part in (
+                        arrival[:10] if arrival else "",
+                        route,
+                    ) if part
+                )
+                submitted = row.get("submitted_at") or ""
+                issue_date = row.get("issue_date") or ""
+                dob = row.get("date_of_birth") or ""
+                ws.append([
+                    index,
+                    submitted[:10] if submitted else "",
+                    row.get("employee_name") or "",
+                    row.get("department") or "",
+                    row.get("position") or "",
+                    row.get("passport_series") or "",
+                    row.get("passport_number") or "",
+                    issue_date[:10] if issue_date else "",
+                    row.get("issued_by") or "",
+                    row.get("issuer_code") or "",
+                    dob[:10] if dob and dob != MASKED_VALUE else dob,
+                    row.get("birth_place") or "",
+                    row.get("registration_address") or "",
+                    row.get("phone") or "",
+                    arrival_route,
+                    row.get("id"),
+                    row.get("object_code") or "",
+                    row.get("note") or "",
+                    float(row.get("total_cost") or 0),
+                    float(row.get("refund_loss") or 0),
+                    STATUS_LABELS.get(row.get("status"), row.get("status")),
+                ])
 
         # Save to bytes
         output = BytesIO()
@@ -2371,11 +2583,13 @@ class TicketsService:
 
     # Active statuses for dashboard metrics
     ACTIVE_STATUSES = {
-        "new", "data_check", "missing_data", "ready_to_buy",
-        "in_progress", "purchased", "exchange_needed",
+        "not_started",
+        "at_cashier",
+        "purchased",
+        "exchange_needed",
     }
     # Problematic statuses — requests needing attention
-    PROBLEMATIC_STATUSES = {"missing_data", "exchange_needed"}
+    PROBLEMATIC_STATUSES = {"exchange_needed", "cancel_purchase", "refund_needed"}
 
     def get_dashboard(self) -> dict[str, Any]:
         """Return dashboard data with metrics, per-object breakdown, and top lists.
@@ -2409,13 +2623,13 @@ class TicketsService:
             # Count by specific statuses
             new_count = session.scalar(
                 select(func.count(TicketRequest.id)).where(
-                    TicketRequest.status == "new"
+                    TicketRequest.status == "not_started"
                 )
             ) or 0
 
             in_progress_count = session.scalar(
                 select(func.count(TicketRequest.id)).where(
-                    TicketRequest.status == "in_progress"
+                    TicketRequest.status == "at_cashier"
                 )
             ) or 0
 
@@ -2536,7 +2750,7 @@ class TicketsService:
                     select(func.count(TicketRequest.id)).where(
                         and_(
                             TicketRequest.object_id == obj.id,
-                            TicketRequest.status == "new",
+                            TicketRequest.status == "not_started",
                         )
                     )
                 ) or 0
@@ -2545,7 +2759,7 @@ class TicketsService:
                     select(func.count(TicketRequest.id)).where(
                         and_(
                             TicketRequest.object_id == obj.id,
-                            TicketRequest.status == "in_progress",
+                            TicketRequest.status == "at_cashier",
                         )
                     )
                 ) or 0
@@ -2708,14 +2922,7 @@ class TicketsService:
                 query = query.where(TicketRequest.assignee_id.in_(assignee_ids))
 
             # Only fetch statuses relevant to kanban + problematic flags
-            kanban_statuses = {
-                "new", "data_check", "missing_data", "ready_to_buy",
-                "in_progress",
-                "purchased",
-                "exchange_needed", "refund",
-                "cancelled",
-                "no_show",
-            }
+            kanban_statuses = set(VALID_STATUSES)
             query = query.where(
                 or_(
                     TicketRequest.status.in_(kanban_statuses),
@@ -2729,25 +2936,20 @@ class TicketsService:
             # Define column structure
             columns: dict[str, list[dict[str, Any]]] = {
                 "Не запущен": [],
-                "В работе": [],
+                "В кассах": [],
                 "Куплен": [],
                 "Возврат/обмен": [],
                 "Отмена": [],
                 "Проблема": [],
             }
 
-            # Status-to-column mapping
             status_column_map: dict[str, str] = {
-                "new": "Не запущен",
-                "data_check": "Не запущен",
-                "missing_data": "Не запущен",
-                "ready_to_buy": "Не запущен",
-                "in_progress": "В работе",
+                "not_started": "Не запущен",
+                "at_cashier": "В кассах",
                 "purchased": "Куплен",
                 "exchange_needed": "Возврат/обмен",
-                "refund": "Возврат/обмен",
-                "cancelled": "Отмена",
-                "no_show": "Проблема",
+                "refund_needed": "Возврат/обмен",
+                "cancel_purchase": "Отмена",
             }
 
             for req in rows:

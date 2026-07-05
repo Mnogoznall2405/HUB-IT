@@ -59,6 +59,8 @@ class TicketEmployee(AppBase):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     full_name: Mapped[str] = mapped_column(String(150), nullable=False, index=True)
+    department: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    position: Mapped[str | None] = mapped_column(String(150), nullable=True)
     date_of_birth_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
     phone: Mapped[str | None] = mapped_column(String(30), nullable=True)
     email: Mapped[str | None] = mapped_column(String(255), nullable=True)
@@ -88,6 +90,10 @@ class TicketEmployeeDocument(AppBase):
         Integer, ForeignKey("app.ticket_employees.id", ondelete="CASCADE"), nullable=False, index=True
     )
     passport_series_number_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    passport_series_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    passport_number_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    issuer_code_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    birth_place_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
     issued_by_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
     issue_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     registration_address_enc: Mapped[str] = mapped_column(Text, nullable=False, default="")
@@ -122,7 +128,7 @@ class TicketRequest(AppBase):
     object_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("app.ticket_objects.id", ondelete="RESTRICT"), nullable=False
     )
-    status: Mapped[str] = mapped_column(String(30), nullable=False, default="new")
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="not_started")
     assignee_id: Mapped[int | None] = mapped_column(
         Integer, ForeignKey("app.users.id", ondelete="SET NULL"), nullable=True
     )
@@ -131,6 +137,8 @@ class TicketRequest(AppBase):
     arrival_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     route: Mapped[str | None] = mapped_column(String(500), nullable=True)
     total_cost: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0.00"))
+    note: Mapped[str | None] = mapped_column(Text, nullable=True)
+    refund_loss: Mapped[Decimal] = mapped_column(Numeric(12, 2), nullable=False, default=Decimal("0.00"))
     is_urgent: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     needs_review: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     source: Mapped[str] = mapped_column(String(20), nullable=False, default="manual")

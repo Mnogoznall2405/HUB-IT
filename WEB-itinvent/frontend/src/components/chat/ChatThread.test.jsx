@@ -7,6 +7,7 @@ import { ChatBubble } from './ChatBubble';
 import { getComposerMentionTrigger } from './ChatComposer';
 import ChatThread, {
   getChatKeyboardBottomSpacer,
+  getChatJumpToLatestBottomOffset,
   getChatThreadBottomPadding,
 } from './ChatThread';
 import {
@@ -1347,12 +1348,12 @@ describe('ChatBubble', () => {
     const messageListActionButtons = screen.getAllByRole('button')
       .filter((button) => !button.getAttribute('aria-label') && String(button.textContent || '').trim());
 
-    expect(messageListActionButtons).toHaveLength(2);
+    expect(messageListActionButtons).toHaveLength(1);
 
     fireEvent.click(messageListActionButtons[0]);
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(messageListActionButtons[1]);
+    fireEvent.click(screen.getByTestId('chat-jump-to-latest'));
     expect(onJumpToLatest).toHaveBeenCalledTimes(1);
   });
 
@@ -2601,5 +2602,25 @@ describe('ChatThread composer', () => {
       keyboardInset: 280,
       composerHeight: 112,
     })).toBe(18);
+  });
+
+  it('positions jump-to-latest above composer and keyboard inset', () => {
+    expect(getChatJumpToLatestBottomOffset({
+      compactMobile: true,
+      composerHeight: 92,
+      keyboardInset: 0,
+    })).toBe(116);
+
+    expect(getChatJumpToLatestBottomOffset({
+      compactMobile: true,
+      composerHeight: 120,
+      keyboardInset: 280,
+    })).toBe(424);
+
+    expect(getChatJumpToLatestBottomOffset({
+      compactMobile: false,
+      composerHeight: 102,
+      selectionMode: true,
+    })).toBe(96);
   });
 });

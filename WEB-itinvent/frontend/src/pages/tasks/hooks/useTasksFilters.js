@@ -61,7 +61,7 @@ export default function useTasksFilters({
   const [showFilters, setShowFilters] = useState(false);
   const [mobileBoardFiltersOpen, setMobileBoardFiltersOpen] = useState(false);
   const [mobileSearchOpen, setMobileSearchOpen] = useState(() => Boolean(initialFilters.q));
-  const [completedTasksOpen, setCompletedTasksOpen] = useState(true);
+  const [completedTasksOpen, setCompletedTasksOpen] = useState(false);
 
   const searchInputRef = useRef(null);
 

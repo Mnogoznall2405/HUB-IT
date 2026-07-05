@@ -9,6 +9,7 @@ export default function PasswordUnlockBanner({
   unlockedRemainingMs,
   unlockedUntil,
   onUnlockClick,
+  requiresSetup = false,
   compact = false,
 }) {
   const theme = useTheme();
@@ -89,7 +90,10 @@ export default function PasswordUnlockBanner({
         Раскрытие и копирование паролей заблокированы
       </Typography>
       <Typography variant="caption" color="text.secondary" component="span" sx={{ ml: compact ? 0.75 : 0, display: compact ? 'inline' : 'block', mt: compact ? 0 : 0.25 }}>
-        {compact ? '· ' : ''}Подтвердите 2FA — дальше можно копировать пароли 5 минут.
+        {compact ? '· ' : ''}
+        {requiresSetup
+          ? 'Сначала подключите 2FA по QR-коду — затем можно копировать пароли 5 минут.'
+          : 'Подтвердите 2FA — дальше можно копировать пароли 5 минут.'}
       </Typography>
     </Alert>
   );

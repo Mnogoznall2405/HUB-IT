@@ -130,23 +130,41 @@ def test_groups_access_user_search(monkeypatch, snapshot_payload):
 
 
 def test_groups_access_matrix_grid(monkeypatch, snapshot_payload):
-    monkeypatch.setattr(
-        groups_access_api,
-        "get_matrix_grid",
-        lambda **kwargs: {
+    seen_kwargs = {}
+
+    def fake_get_matrix_grid(**kwargs):
+        seen_kwargs.update(kwargs)
+        return {
             "groups": snapshot_payload["groups"],
             "users": [{"login": "petrov_p", "display_name": "Петров П.П.", "access_count": 1}],
             "cells": [["petrov_p", snapshot_payload["groups"][0]["dn"], "member"]],
-            "summary": {"group_count": 1, "user_count": 1, "cell_count": 1},
+            "summary": {
+                "group_count": 1,
+                "user_count": 1,
+                "cell_count": 1,
+                "returned_group_count": 1,
+                "returned_user_count": 1,
+                "truncated": False,
+            },
             "synced_at": snapshot_payload["synced_at"],
-        },
+        }
+
+    monkeypatch.setattr(
+        groups_access_api,
+        "get_matrix_grid",
+        fake_get_matrix_grid,
     )
     client = _client_for(lambda: _make_user(permissions=[PERM_GROUPS_ACCESS_READ]))
-    response = client.get("/groups-access/matrix-grid", params={"branch": "SPb"})
+    response = client.get(
+        "/groups-access/matrix-grid",
+        params={"branch": "SPb", "group_limit": 123, "user_limit": 456},
+    )
     assert response.status_code == 200
     body = response.json()
     assert body["summary"]["cell_count"] == 1
     assert body["cells"][0][0] == "petrov_p"
+    assert seen_kwargs["group_limit"] == 123
+    assert seen_kwargs["user_limit"] == 456
 
 
 def test_groups_access_export_dataset(monkeypatch, snapshot_payload):

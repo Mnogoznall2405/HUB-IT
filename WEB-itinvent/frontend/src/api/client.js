@@ -1184,6 +1184,14 @@ export const equipmentAPI = {
     return equipmentComputersAPI.getAgentComputerChanges;
   },
 
+  get getComputersSummary() {
+    return equipmentComputersAPI.getComputersSummary;
+  },
+
+  get getAgentComputer() {
+    return equipmentComputersAPI.getAgentComputer;
+  },
+
   get searchBySerial() {
     return equipmentSearchAPI.searchBySerial;
   },

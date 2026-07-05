@@ -180,14 +180,14 @@ describe('ChatSidebar', () => {
     }));
 
     expect(screen.getByTestId('task-section-active')).toHaveTextContent('Активные');
-    expect(screen.getByTestId('task-section-completed-toggle')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByTestId('task-section-completed-toggle')).toHaveAttribute('aria-expanded', 'false');
     expect(screen.getByText('Активная задача')).toBeInTheDocument();
-    expect(screen.getByText('Завершённая задача')).toBeInTheDocument();
+    expect(screen.queryByText('Завершённая задача')).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByTestId('task-section-completed-toggle'));
 
-    expect(screen.getByTestId('task-section-completed-toggle')).toHaveAttribute('aria-expanded', 'false');
-    expect(screen.queryByText('Завершённая задача')).not.toBeInTheDocument();
+    expect(screen.getByTestId('task-section-completed-toggle')).toHaveAttribute('aria-expanded', 'true');
+    expect(screen.getByText('Завершённая задача')).toBeInTheDocument();
     expect(screen.getByText('Активная задача')).toBeInTheDocument();
   });
 

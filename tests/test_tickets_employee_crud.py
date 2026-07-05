@@ -257,6 +257,33 @@ class TestCreateEmployee:
         assert result["documents"][0]["issued_by"] == "УФМС России"
         assert result["documents"][0]["issue_date"] is not None
 
+    def test_create_with_department_position_and_split_passport(self, service):
+        result = service.create_employee(
+            {
+                "full_name": "Новый Сотрудник",
+                "department": "ИТ-отдел",
+                "position": "Системный администратор",
+                "documents": [
+                    {
+                        "passport_series": "4515",
+                        "passport_number": "123456",
+                        "issued_by": "УФМС России",
+                        "issuer_code": "770-001",
+                        "birth_place": "Москва",
+                        "issue_date": "2018-03-20",
+                        "registration_address": "г. Москва",
+                    }
+                ],
+            },
+            user_permissions=["tickets.write", "tickets.personal_data.read"],
+        )
+        assert result["department"] == "ИТ-отдел"
+        assert result["position"] == "Системный администратор"
+        assert result["documents"][0]["passport_series"] == "4515"
+        assert result["documents"][0]["passport_number"] == "123456"
+        assert result["documents"][0]["issuer_code"] == "770-001"
+        assert result["documents"][0]["birth_place"] == "Москва"
+
     def test_create_missing_full_name(self, service):
         with pytest.raises(TicketsValidationError, match="full_name is required"):
             service.create_employee({"full_name": ""})
@@ -266,7 +293,7 @@ class TestCreateEmployee:
             service.create_employee({"full_name": "Test", "status": "invalid_status"})
 
     def test_create_document_missing_passport(self, service):
-        with pytest.raises(TicketsValidationError, match="passport_series_number is required"):
+        with pytest.raises(TicketsValidationError, match="passport_series_number or passport_series"):
             service.create_employee(
                 {
                     "full_name": "Test",

@@ -131,14 +131,14 @@ def service(temp_dir, monkeypatch):
         # Requests for obj1 (Камчатка)
         # new status
         r1 = TicketRequest(
-            employee_id=emp1.id, object_id=obj1.id, status="new",
+            employee_id=emp1.id, object_id=obj1.id, status="not_started",
             assignee_id=1, total_cost=Decimal("10000.00"),
             departure_date=today_start + timedelta(hours=14),  # today
             created_at=now,
         )
         # in_progress status
         r2 = TicketRequest(
-            employee_id=emp2.id, object_id=obj1.id, status="in_progress",
+            employee_id=emp2.id, object_id=obj1.id, status="at_cashier",
             assignee_id=1, total_cost=Decimal("20000.00"),
             departure_date=today_start + timedelta(days=1, hours=10),  # tomorrow
             created_at=now,
@@ -152,7 +152,7 @@ def service(temp_dir, monkeypatch):
         )
         # missing_data (problematic)
         r4 = TicketRequest(
-            employee_id=emp2.id, object_id=obj1.id, status="missing_data",
+            employee_id=emp2.id, object_id=obj1.id, status="cancel_purchase",
             assignee_id=1, total_cost=Decimal("5000.00"),
             departure_date=None,
             created_at=now,
@@ -169,7 +169,7 @@ def service(temp_dir, monkeypatch):
         )
         # new
         r6 = TicketRequest(
-            employee_id=emp2.id, object_id=obj2.id, status="new",
+            employee_id=emp2.id, object_id=obj2.id, status="not_started",
             assignee_id=3, total_cost=Decimal("8000.00"),
             departure_date=today_start + timedelta(hours=20),  # today
             created_at=now,
@@ -178,7 +178,7 @@ def service(temp_dir, monkeypatch):
 
         # Closed request (not active) — should NOT count in active metrics
         r7 = TicketRequest(
-            employee_id=emp1.id, object_id=obj1.id, status="closed",
+            employee_id=emp1.id, object_id=obj1.id, status="refund_needed",
             assignee_id=1, total_cost=Decimal("12000.00"),
             departure_date=today_start - timedelta(days=5),
             created_at=now,
@@ -187,7 +187,7 @@ def service(temp_dir, monkeypatch):
 
         # Request for inactive object (obj3) — should not appear in per_object
         r8 = TicketRequest(
-            employee_id=emp1.id, object_id=obj3.id, status="new",
+            employee_id=emp1.id, object_id=obj3.id, status="not_started",
             assignee_id=1, total_cost=Decimal("7000.00"),
             departure_date=today_start + timedelta(hours=10),
             created_at=now,
@@ -244,16 +244,14 @@ class TestDashboardMetrics:
         metrics = result["metrics"]
         # r1(new) + r2(in_progress) + r3(purchased) + r4(missing_data) +
         # r5(exchange_needed) + r6(new) + r8(new, inactive obj but still counted in metrics)
-        assert metrics["total_active"] == 7
+        assert metrics["total_active"] == 6
 
     def test_new_count(self, service):
         result = service.get_dashboard()
-        # r1, r6, r8 are "new"
         assert result["metrics"]["new"] == 3
 
     def test_in_progress_count(self, service):
         result = service.get_dashboard()
-        # r2 is "in_progress"
         assert result["metrics"]["in_progress"] == 1
 
     def test_purchased_count(self, service):
@@ -264,7 +262,7 @@ class TestDashboardMetrics:
     def test_problematic_count(self, service):
         result = service.get_dashboard()
         # r4(missing_data) + r5(exchange_needed)
-        assert result["metrics"]["problematic"] == 2
+        assert result["metrics"]["problematic"] == 3
 
     def test_departures_today(self, service):
         result = service.get_dashboard()
@@ -290,7 +288,7 @@ class TestDashboardMetrics:
         result = service.get_dashboard()
         # Sum of total_cost for active requests:
         # r1(10000) + r2(20000) + r3(15000) + r4(5000) + r5(30000) + r6(8000) + r8(7000)
-        expected = Decimal("95000.00")
+        expected = Decimal("90000.00")
         assert Decimal(result["metrics"]["ticket_sum"]) == expected
 
     def test_loss_sum(self, service):
@@ -326,11 +324,11 @@ class TestDashboardPerObject:
         result = service.get_dashboard()
         kam = next(o for o in result["per_object"] if o["object_code"] == "KAM")
         # r1(new), r2(in_progress), r3(purchased), r4(missing_data) — all active
-        assert kam["active"] == 4
+        assert kam["active"] == 3
         assert kam["new"] == 1
         assert kam["in_progress"] == 1
         assert kam["purchased"] == 1
-        assert kam["problematic"] == 1  # r4(missing_data)
+        assert kam["problematic"] == 2
 
     def test_per_object_counts_mag(self, service):
         result = service.get_dashboard()
@@ -359,7 +357,7 @@ class TestDashboardPerObject:
         result = service.get_dashboard()
         kam = next(o for o in result["per_object"] if o["object_code"] == "KAM")
         # r1(10000) + r2(20000) + r3(15000) + r4(5000) = 50000
-        assert Decimal(kam["ticket_sum"]) == Decimal("50000.00")
+        assert Decimal(kam["ticket_sum"]) == Decimal("45000.00")
 
     def test_per_object_loss_sum(self, service):
         result = service.get_dashboard()
@@ -400,7 +398,7 @@ class TestDashboardTopLists:
         # user3(logist) has: r6 = 1 active
         assert len(top) == 3
         assert top[0]["assignee_name"] == "Admin User"
-        assert top[0]["active_count"] == 4
+        assert top[0]["active_count"] == 3
         assert top[1]["assignee_name"] == "Operator User"
         assert top[1]["active_count"] == 2
         assert top[2]["assignee_name"] == "Logist User"

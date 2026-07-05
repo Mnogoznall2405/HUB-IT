@@ -102,7 +102,7 @@ function TasksDataModeRouter({
 
   taskListSections,
 
-  completedTasksOpen = true,
+  completedTasksOpen = false,
 
   onToggleCompletedTasks,
 

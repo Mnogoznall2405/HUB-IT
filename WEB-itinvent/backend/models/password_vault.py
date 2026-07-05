@@ -168,6 +168,30 @@ class PasswordVaultUnlockResponse(BaseModel):
     unlocked_until: str
 
 
+class PasswordVaultUnlockSetup2faResponse(BaseModel):
+    setup_challenge_id: str
+    otpauth_uri: str
+    issuer: str
+    account_name: str
+    manual_entry_key: str
+    qr_svg: Optional[str] = None
+
+
+class PasswordVaultUnlockVerify2faSetupRequest(BaseModel):
+    setup_challenge_id: str = Field(..., min_length=8)
+    totp_code: str = Field(..., min_length=6, max_length=16)
+
+    @field_validator("setup_challenge_id", "totp_code", mode="before")
+    @classmethod
+    def _strip_text(cls, value):
+        return _normalize_text(value)
+
+
+class PasswordVaultUnlockVerify2faSetupResponse(BaseModel):
+    unlocked_until: str
+    backup_codes: list[str] = Field(default_factory=list)
+
+
 class PasswordVaultUnlockWebAuthnVerifyRequest(BaseModel):
     challenge_id: str = Field(..., min_length=8)
     credential: dict[str, Any] = Field(default_factory=dict)

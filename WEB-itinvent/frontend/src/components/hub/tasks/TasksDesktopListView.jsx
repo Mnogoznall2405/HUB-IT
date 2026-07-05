@@ -46,7 +46,7 @@ export default function TasksDesktopListView({
   loading = false,
   visibleTaskItems = [],
   taskListSections,
-  completedTasksOpen = true,
+  completedTasksOpen = false,
   onToggleCompletedTasks,
   taskDiscussionChatEnabled = false,
   activeTaskProjects = [],

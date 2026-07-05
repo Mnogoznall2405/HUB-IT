@@ -1,33 +1,38 @@
 export const TICKET_STATUS_OPTIONS = [
-  { value: 'new', label: 'Новая' },
-  { value: 'data_check', label: 'Проверка данных' },
-  { value: 'missing_data', label: 'Не хватает данных' },
-  { value: 'ready_to_buy', label: 'Готова к покупке' },
-  { value: 'in_progress', label: 'В работе' },
+  { value: 'not_started', label: 'Не запущен' },
+  { value: 'at_cashier', label: 'В кассах' },
   { value: 'purchased', label: 'Куплен' },
-  { value: 'exchange_needed', label: 'Нужен обмен' },
-  { value: 'refund', label: 'Возврат' },
-  { value: 'cancelled', label: 'Отмена' },
-  { value: 'no_show', label: 'Не явился' },
-  { value: 'closed', label: 'Закрыта' },
-  { value: 'archive', label: 'Архив' },
+  { value: 'exchange_needed', label: 'Нужна замена' },
+  { value: 'cancel_purchase', label: 'Отмена покупки' },
+  { value: 'refund_needed', label: 'Нужен возврат' },
 ];
 
 export const STATUS_LABELS = Object.fromEntries(TICKET_STATUS_OPTIONS.map((item) => [item.value, item.label]));
 
 export const STATUS_COLORS = {
-  new: 'default',
-  data_check: 'info',
-  missing_data: 'warning',
-  ready_to_buy: 'primary',
-  in_progress: 'primary',
+  not_started: 'default',
+  at_cashier: 'warning',
   purchased: 'success',
-  exchange_needed: 'warning',
-  refund: 'secondary',
-  cancelled: 'error',
-  no_show: 'error',
-  closed: 'success',
-  archive: 'default',
+  exchange_needed: 'info',
+  cancel_purchase: 'error',
+  refund_needed: 'default',
+};
+
+export const STATUS_ROW_COLORS = {
+  not_started: 'transparent',
+  at_cashier: '#FFF9C4',
+  purchased: '#C8E6C9',
+  exchange_needed: '#BBDEFB',
+  cancel_purchase: '#FFCDD2',
+  refund_needed: '#E0E0E0',
+};
+
+export const STATUS_CHANGE_HINTS = {
+  at_cashier: 'Обычно меняют логисты',
+  purchased: 'Обычно меняют подбор / ОК на объекте',
+  exchange_needed: 'Обычно меняют подбор / ОК на объекте',
+  cancel_purchase: 'Обычно меняют подбор / ОК на объекте',
+  refund_needed: 'Обычно меняют подбор / ОК на объекте',
 };
 
 export const ATTACHMENT_TYPES = [
@@ -84,4 +89,35 @@ export const getErrorMessage = (error) => {
   if (Array.isArray(detail)) return detail.join(', ');
   if (detail) return String(detail);
   return error?.message || 'Ошибка выполнения операции';
+};
+
+export const MASKED_PERSONAL_VALUE = '** **** ******';
+
+export const isMaskedPersonalValue = (value) => {
+  if (!value) return false;
+  return String(value).trim() === MASKED_PERSONAL_VALUE;
+};
+
+export const toDateInputValue = (value) => {
+  if (!value || isMaskedPersonalValue(value)) return '';
+  const str = String(value);
+  return str.length >= 10 ? str.slice(0, 10) : str;
+};
+
+export const splitPassportSeriesNumber = (value) => {
+  const parts = String(value || '').trim().split(/\s+/);
+  if (parts.length >= 2) {
+    return { series: parts[0], number: parts.slice(1).join(' ') };
+  }
+  if (parts.length === 1 && parts[0]) {
+    return { series: parts[0], number: '' };
+  }
+  return { series: '', number: '' };
+};
+
+export const formatArrivalRoute = (arrivalDate, route) => {
+  const arrival = arrivalDate ? formatDate(arrivalDate) : '';
+  const city = route ? String(route).trim() : '';
+  if (arrival && city) return `${arrival} / ${city}`;
+  return arrival || city || '-';
 };

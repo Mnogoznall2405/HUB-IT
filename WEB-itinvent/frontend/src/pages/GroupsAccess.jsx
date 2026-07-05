@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Box,
@@ -35,16 +35,25 @@ import GroupsAccessMatrixTable from '../components/groupsAccess/GroupsAccessMatr
 import { groupsAccessAPI } from '../api/groupsAccess';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
-import { exportGroupsAccessWorkbook, getAccessLevelMeta } from '../lib/groupsAccessUtils';
+import { getAccessLevelMeta } from '../lib/groupsAccessUtils';
 import { hideScrollbarSx } from '../lib/hideScrollbarSx';
 import { buildOfficeUiTokens, getOfficePanelSx } from '../theme/officeUiTokens';
 
 const SEARCH_DEBOUNCE_MS = 300;
+const MATRIX_GROUP_LIMIT = 250;
+const MATRIX_USER_LIMIT = 500;
+const MEMBER_PREVIEW_LIMIT = 250;
 const BRANCH_TABS = [
   { value: 'all', label: 'Все' },
   { value: 'SPb', label: 'SPb' },
   { value: 'Tyumen', label: 'Tyumen' },
 ];
+const VIEW_MODES = {
+  FOLDERS: 'folders',
+  USER: 'user',
+  MATRIX: 'matrix',
+  EXPORT: 'export',
+};
 
 const useDebouncedValue = (value, delayMs = SEARCH_DEBOUNCE_MS) => {
   const [debounced, setDebounced] = useState(value);
@@ -94,11 +103,13 @@ const GroupsAccess = () => {
   const { user } = useAuth();
   const { notifySuccess, notifyApiError } = useNotification();
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
+  const groupDetailRequestIdRef = useRef(0);
 
   const [branchTab, setBranchTab] = useState('all');
-  const [viewMode, setViewMode] = useState('list');
+  const [viewMode, setViewMode] = useState(VIEW_MODES.FOLDERS);
   const [folderQuery, setFolderQuery] = useState('');
   const [userQuery, setUserQuery] = useState('');
+  const [memberQuery, setMemberQuery] = useState('');
   const debouncedUserQuery = useDebouncedValue(userQuery);
   const debouncedFolderQuery = useDebouncedValue(folderQuery);
 
@@ -109,18 +120,118 @@ const GroupsAccess = () => {
   const [datasetSummary, setDatasetSummary] = useState(null);
   const [selectedGroupDn, setSelectedGroupDn] = useState('');
   const [groupDetail, setGroupDetail] = useState(null);
-  const [loadingDataset, setLoadingDataset] = useState(true);
+  const [loadingList, setLoadingList] = useState(true);
+  const [loadingUserSearch, setLoadingUserSearch] = useState(false);
+  const [loadingMatrix, setLoadingMatrix] = useState(false);
   const [loadingDetail, setLoadingDetail] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportingFolder, setExportingFolder] = useState(false);
   const [error, setError] = useState('');
   const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
 
   const activeBranch = branchTab === 'all' ? '' : branchTab;
+  const loadingDataset = loadingList || loadingUserSearch || loadingMatrix;
+  const groupsByKey = useMemo(() => {
+    const nextMap = new Map();
+    groups.forEach((item) => {
+      const key = getGroupKey(item);
+      if (key) nextMap.set(key, item);
+    });
+    return nextMap;
+  }, [groups]);
   const selectedGroup = useMemo(
-    () => groups.find((item) => getGroupKey(item) === selectedGroupDn) || groupDetail?.group || null,
-    [groupDetail?.group, groups, selectedGroupDn],
+    () => groupsByKey.get(selectedGroupDn) || groupDetail?.group || null,
+    [groupDetail?.group, groupsByKey, selectedGroupDn],
   );
+  const groupMembers = useMemo(
+    () => (Array.isArray(groupDetail?.members) ? groupDetail.members : []),
+    [groupDetail?.members],
+  );
+  const visibleGroupMembers = useMemo(() => {
+    const query = String(memberQuery || '').trim().toLowerCase();
+    if (!query) return groupMembers;
+    return groupMembers.filter((member) => (
+      String(member?.login || '').toLowerCase().includes(query)
+      || String(member?.display_name || '').toLowerCase().includes(query)
+    ));
+  }, [groupMembers, memberQuery]);
+  const foundAccessCount = useMemo(
+    () => users.reduce((total, item) => total + (Array.isArray(item?.access) ? item.access.length : 0), 0),
+    [users],
+  );
+  const exportPreviewMembers = useMemo(
+    () => groupMembers.slice(0, MEMBER_PREVIEW_LIMIT),
+    [groupMembers],
+  );
+  const hasHiddenExportMembers = groupMembers.length > exportPreviewMembers.length;
+  const summaryGroupCount = datasetSummary?.group_count ?? status?.summary?.group_count ?? groups.length;
+  const summaryUserCount = datasetSummary?.user_count ?? status?.summary?.user_count ?? users.length;
+  const matrixTruncated = viewMode === VIEW_MODES.MATRIX && Boolean(datasetSummary?.truncated);
+  const matrixReturnedGroupCount = datasetSummary?.returned_group_count ?? groups.length;
+  const matrixReturnedUserCount = datasetSummary?.returned_user_count ?? users.length;
+  const viewModeToggleSx = useMemo(() => {
+    const idleText = ui.isDark
+      ? alpha(theme.palette.common.white, 0.76)
+      : theme.palette.text.secondary;
+    const hoverText = ui.isDark
+      ? theme.palette.common.white
+      : theme.palette.text.primary;
+    const selectedText = ui.isDark
+      ? theme.palette.common.white
+      : theme.palette.text.primary;
+    const selectedBg = ui.isDark
+      ? alpha(theme.palette.common.white, 0.14)
+      : theme.palette.background.paper;
+
+    return {
+      width: { xs: '100%', lg: 'auto' },
+      alignSelf: { xs: 'stretch', lg: 'center' },
+      gap: 0.25,
+      flexWrap: 'wrap',
+      p: 0.25,
+      bgcolor: ui.isDark
+        ? alpha(theme.palette.common.white, 0.035)
+        : alpha(theme.palette.common.black, 0.035),
+      border: '1px solid',
+      borderColor: ui.borderStrong,
+      borderRadius: 1.5,
+      '& .MuiToggleButtonGroup-grouped': {
+        mx: 0,
+        border: 0,
+        borderRadius: '8px !important',
+      },
+      '& .MuiToggleButton-root': {
+        minHeight: 36,
+        flex: { xs: '1 1 calc(50% - 4px)', sm: '0 0 auto' },
+        minWidth: { xs: 0, sm: 132 },
+        justifyContent: 'center',
+        px: { xs: 1, sm: 1.25 },
+        color: idleText,
+        fontWeight: 800,
+        lineHeight: 1.15,
+        whiteSpace: 'nowrap',
+        opacity: 1,
+        textTransform: 'none',
+        '& .MuiSvgIcon-root': {
+          color: 'inherit',
+        },
+        '&:hover': {
+          color: hoverText,
+          bgcolor: ui.actionHover,
+        },
+        '&.Mui-selected': {
+          color: selectedText,
+          bgcolor: selectedBg,
+          boxShadow: `0 1px 3px ${alpha(theme.palette.common.black, ui.isDark ? 0.26 : 0.12)}`,
+          '&:hover': {
+            color: selectedText,
+            bgcolor: selectedBg,
+          },
+        },
+      },
+    };
+  }, [theme, ui]);
 
   const loadStatus = useCallback(async () => {
     try {
@@ -132,7 +243,7 @@ const GroupsAccess = () => {
   }, [notifyApiError]);
 
   const loadListGroups = useCallback(async () => {
-    setLoadingDataset(true);
+    setLoadingList(true);
     setError('');
     try {
       const payload = await groupsAccessAPI.getMatrix({
@@ -143,17 +254,17 @@ const GroupsAccess = () => {
       });
       const nextGroups = Array.isArray(payload?.items) ? payload.items : [];
       setGroups(nextGroups);
+      setUsers([]);
       setMatrixCells([]);
       setDatasetSummary({
         group_count: payload?.total ?? nextGroups.length,
-        user_count: status?.summary?.user_count ?? 0,
       });
 
       setSelectedGroupDn((current) => {
         if (current && nextGroups.some((item) => getGroupKey(item) === current)) {
           return current;
         }
-        if (nextGroups.length > 0 && !debouncedUserQuery) {
+        if (nextGroups.length > 0) {
           return getGroupKey(nextGroups[0]);
         }
         return '';
@@ -162,12 +273,12 @@ const GroupsAccess = () => {
       setError('Не удалось загрузить список папок');
       notifyApiError(requestError, 'Не удалось загрузить список папок');
     } finally {
-      setLoadingDataset(false);
+      setLoadingList(false);
     }
-  }, [activeBranch, debouncedFolderQuery, debouncedUserQuery, notifyApiError, status?.summary?.user_count]);
+  }, [activeBranch, debouncedFolderQuery, notifyApiError]);
 
   const loadUserSearch = useCallback(async () => {
-    setLoadingDataset(true);
+    setLoadingUserSearch(true);
     setError('');
     try {
       const payload = await groupsAccessAPI.searchUser({
@@ -179,7 +290,6 @@ const GroupsAccess = () => {
       setUsers(nextUsers);
       setMatrixCells([]);
       setDatasetSummary({
-        group_count: groups.length,
         user_count: payload?.total ?? nextUsers.length,
       });
       setSelectedGroupDn('');
@@ -188,18 +298,20 @@ const GroupsAccess = () => {
       setError('Не удалось найти учётки');
       notifyApiError(requestError, 'Не удалось найти учётки');
     } finally {
-      setLoadingDataset(false);
+      setLoadingUserSearch(false);
     }
-  }, [activeBranch, debouncedUserQuery, groups.length, notifyApiError]);
+  }, [activeBranch, debouncedUserQuery, notifyApiError]);
 
   const loadMatrixGrid = useCallback(async () => {
-    setLoadingDataset(true);
+    setLoadingMatrix(true);
     setError('');
     try {
       const payload = await groupsAccessAPI.getMatrixGrid({
         branch: activeBranch,
         folderQ: debouncedFolderQuery,
         userQ: debouncedUserQuery,
+        groupLimit: MATRIX_GROUP_LIMIT,
+        userLimit: MATRIX_USER_LIMIT,
       });
       const nextGroups = Array.isArray(payload?.groups) ? payload.groups : [];
       const nextUsers = Array.isArray(payload?.users) ? payload.users : [];
@@ -223,12 +335,14 @@ const GroupsAccess = () => {
       setError('Не удалось загрузить матрицу доступа');
       notifyApiError(requestError, 'Не удалось загрузить матрицу доступа');
     } finally {
-      setLoadingDataset(false);
+      setLoadingMatrix(false);
     }
   }, [activeBranch, debouncedFolderQuery, debouncedUserQuery, notifyApiError]);
 
   const loadGroupDetail = useCallback(async (groupDn) => {
     const normalized = normalizeText(groupDn);
+    const requestId = groupDetailRequestIdRef.current + 1;
+    groupDetailRequestIdRef.current = requestId;
     if (!normalized) {
       setGroupDetail(null);
       return;
@@ -236,12 +350,16 @@ const GroupsAccess = () => {
     setLoadingDetail(true);
     try {
       const payload = await groupsAccessAPI.getGroup(normalized);
+      if (groupDetailRequestIdRef.current !== requestId) return;
       setGroupDetail(payload);
     } catch (requestError) {
+      if (groupDetailRequestIdRef.current !== requestId) return;
       notifyApiError(requestError, 'Не удалось загрузить участников группы');
       setGroupDetail(null);
     } finally {
-      setLoadingDetail(false);
+      if (groupDetailRequestIdRef.current === requestId) {
+        setLoadingDetail(false);
+      }
     }
   }, [notifyApiError]);
 
@@ -250,29 +368,41 @@ const GroupsAccess = () => {
   }, [loadStatus]);
 
   useEffect(() => {
-    if (viewMode === 'matrix') {
+    if (viewMode === VIEW_MODES.MATRIX) {
       loadMatrixGrid();
       return;
     }
-    if (debouncedUserQuery) {
-      loadUserSearch();
+    if (viewMode === VIEW_MODES.USER) {
+      setGroups([]);
+      setMatrixCells([]);
+      setSelectedGroupDn('');
+      setGroupDetail(null);
+      if (debouncedUserQuery) {
+        loadUserSearch();
+      } else {
+        setUsers([]);
+        setDatasetSummary(null);
+        setLoadingUserSearch(false);
+      }
       return;
     }
-    setUsers([]);
     loadListGroups();
   }, [debouncedUserQuery, loadListGroups, loadMatrixGrid, loadUserSearch, viewMode]);
 
   useEffect(() => {
-    if (viewMode !== 'list' || debouncedUserQuery) return;
-    if (!selectedGroupDn) return;
+    if (viewMode !== VIEW_MODES.FOLDERS && viewMode !== VIEW_MODES.EXPORT) return;
+    if (!selectedGroupDn) {
+      loadGroupDetail('');
+      return;
+    }
     loadGroupDetail(selectedGroupDn);
-  }, [debouncedUserQuery, loadGroupDetail, selectedGroupDn, viewMode]);
+  }, [loadGroupDetail, selectedGroupDn, viewMode]);
 
   const handleSelectGroup = (group) => {
     const groupDn = getGroupKey(group);
     setSelectedGroupDn(groupDn);
-    setUserQuery('');
-    if (isMobile && viewMode === 'list') {
+    setMemberQuery('');
+    if (isMobile && viewMode === VIEW_MODES.FOLDERS) {
       setMobileSheetOpen(true);
     }
   };
@@ -282,8 +412,16 @@ const GroupsAccess = () => {
     try {
       await groupsAccessAPI.refresh();
       notifySuccess('Снимок матрицы доступа обновлён');
-      await Promise.all([loadStatus(), viewMode === 'matrix' ? loadMatrixGrid() : loadListGroups()]);
-      if (selectedGroupDn && viewMode === 'list') {
+      let reloadCurrentView = Promise.resolve();
+      if (viewMode === VIEW_MODES.MATRIX) {
+        reloadCurrentView = loadMatrixGrid();
+      } else if (viewMode === VIEW_MODES.USER) {
+        reloadCurrentView = debouncedUserQuery ? loadUserSearch() : Promise.resolve();
+      } else {
+        reloadCurrentView = loadListGroups();
+      }
+      await Promise.all([loadStatus(), reloadCurrentView]);
+      if (selectedGroupDn && (viewMode === VIEW_MODES.FOLDERS || viewMode === VIEW_MODES.EXPORT)) {
         await loadGroupDetail(selectedGroupDn);
       }
     } catch (requestError) {
@@ -296,10 +434,12 @@ const GroupsAccess = () => {
   const handleExportExcel = async () => {
     setExporting(true);
     try {
+      const exportFolderQuery = viewMode === VIEW_MODES.USER ? '' : debouncedFolderQuery;
+      const exportUserQuery = viewMode === VIEW_MODES.FOLDERS ? '' : debouncedUserQuery;
       const payload = await groupsAccessAPI.getExport({
         branch: activeBranch,
-        folderQ: debouncedFolderQuery,
-        userQ: debouncedUserQuery,
+        folderQ: exportFolderQuery,
+        userQ: exportUserQuery,
       });
       const exportGroups = Array.isArray(payload?.groups) ? payload.groups : [];
       const exportUsers = Array.isArray(payload?.users) ? payload.users : [];
@@ -307,7 +447,8 @@ const GroupsAccess = () => {
         notifyApiError(null, 'Нет данных для выгрузки');
         return;
       }
-      exportGroupsAccessWorkbook({
+      const { exportGroupsAccessWorkbook } = await import('../lib/groupsAccessExport');
+      await exportGroupsAccessWorkbook({
         groups: exportGroups,
         users: exportUsers,
         branch: activeBranch,
@@ -321,38 +462,59 @@ const GroupsAccess = () => {
     }
   };
 
+  const handleExportSelectedGroup = async () => {
+    if (!selectedGroupDn) {
+      notifyApiError(null, 'Выберите папку для выгрузки');
+      return;
+    }
+
+    setExportingFolder(true);
+    try {
+      const currentDetailDn = getGroupKey(groupDetail?.group);
+      const payload = currentDetailDn === selectedGroupDn
+        ? groupDetail
+        : await groupsAccessAPI.getGroup(selectedGroupDn);
+      const exportGroup = payload?.group || selectedGroup;
+      const exportMembers = Array.isArray(payload?.members) ? payload.members : [];
+      if (!exportGroup) {
+        notifyApiError(null, 'Не удалось определить выбранную папку');
+        return;
+      }
+      const { exportGroupMembersWorkbook } = await import('../lib/groupsAccessExport');
+      await exportGroupMembersWorkbook({
+        group: exportGroup,
+        members: exportMembers,
+        syncedAt: payload?.synced_at || status?.last_sync_at,
+      });
+      notifySuccess('Excel по папке сформирован');
+    } catch (requestError) {
+      notifyApiError(requestError, 'Не удалось выгрузить выбранную папку');
+    } finally {
+      setExportingFolder(false);
+    }
+  };
+
   const renderGroupList = () => (
     <Paper
       variant="outlined"
       sx={{
         ...getOfficePanelSx(ui),
         height: '100%',
+        minHeight: { xs: 320, md: 0 },
         display: 'flex',
         flexDirection: 'column',
+        contain: 'layout style',
         borderColor: alpha(theme.palette.primary.main, 0.18),
       }}
     >
       <Box sx={{ p: 1.5, borderBottom: `1px solid ${alpha(theme.palette.divider, 0.8)}` }}>
-        <Typography variant="subtitle2" sx={{ mb: 1 }}>
-          Папки и группы
-        </Typography>
-        <TextField
-          fullWidth
-          size="small"
-          placeholder="Поиск папки или группы"
-          value={folderQuery}
-          onChange={(event) => setFolderQuery(event.target.value)}
-          InputProps={{
-            startAdornment: (
-              <InputAdornment position="start">
-                <SearchOutlinedIcon fontSize="small" />
-              </InputAdornment>
-            ),
-          }}
-        />
+        <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between">
+          <Typography variant="subtitle2">Папки и группы AD</Typography>
+          <Chip size="small" variant="outlined" label={`${groups.length} в списке`} />
+        </Stack>
       </Box>
-      <Box sx={{ flex: 1, overflow: 'auto', ...hideScrollbarSx }}>
-        {loadingDataset ? (
+      <Box sx={{ flex: '1 1 auto', minHeight: 220, overflow: 'hidden', ...hideScrollbarSx }}>
+        {loadingList ? (
           <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
             <CircularProgress size={28} />
           </Box>
@@ -361,22 +523,20 @@ const GroupsAccess = () => {
             Группы не найдены. Измените фильтр или обновите снимок.
           </Typography>
         ) : (
-          <Box sx={{ flex: 1, minHeight: 0 }}>
-            <GroupsAccessFolderList
-              groups={groups}
-              selectedGroupDn={selectedGroupDn}
-              branchTab={branchTab}
-              onSelectGroup={handleSelectGroup}
-              renderAccessLevelChip={(level) => <AccessLevelChip level={level} />}
-              getGroupKey={getGroupKey}
-            />
-          </Box>
+          <GroupsAccessFolderList
+            groups={groups}
+            selectedGroupDn={selectedGroupDn}
+            branchTab={branchTab}
+            onSelectGroup={handleSelectGroup}
+            renderAccessLevelChip={(level) => <AccessLevelChip level={level} />}
+            getGroupKey={getGroupKey}
+          />
         )}
       </Box>
       <Box sx={{ px: 1.5, py: 1, borderTop: `1px solid ${alpha(theme.palette.divider, 0.8)}` }}>
         <Typography variant="caption" color="text.secondary">
           {groups.length} папок
-          {viewMode === 'matrix' || debouncedUserQuery
+          {viewMode === VIEW_MODES.MATRIX
             ? ` · ${users.length} учёток в выборке`
             : ''}
         </Typography>
@@ -385,59 +545,80 @@ const GroupsAccess = () => {
   );
 
   const renderUserSearchResults = () => (
-    <Stack spacing={1.5}>
-      {loadingDataset ? (
+    <Stack spacing={1.25} sx={{ height: '100%', minHeight: 0 }}>
+      {!debouncedUserQuery ? (
+        <Alert severity="info">
+          Введите логин или ФИО, чтобы увидеть все папки, к которым у сотрудника есть доступ.
+        </Alert>
+      ) : loadingUserSearch ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
           <CircularProgress size={28} />
         </Box>
       ) : users.length === 0 ? (
         <Alert severity="info">По учётке ничего не найдено.</Alert>
       ) : (
-        users.map((item) => (
-          <Paper key={item.login} variant="outlined" sx={{ p: 1.5, ...getOfficePanelSx(ui) }}>
-            <Stack spacing={1}>
-              <Box>
-                <Typography variant="subtitle2">{item.display_name || item.login}</Typography>
-                <Typography variant="caption" color="text.secondary">{item.login}</Typography>
-              </Box>
-              <Stack spacing={1}>
-                {(item.access || []).map((accessRow) => (
-                  <Box
-                    key={`${item.login}-${accessRow.group_dn}`}
-                    sx={{
-                      p: 1,
-                      borderRadius: 1.5,
-                      border: `1px solid ${alpha(theme.palette.divider, 0.75)}`,
-                      bgcolor: alpha(theme.palette.background.default, 0.45),
-                    }}
-                  >
-                    <Stack direction="row" spacing={0.75} alignItems="center" useFlexGap flexWrap="wrap" sx={{ mb: 0.5 }}>
-                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {accessRow.folder_label}
-                      </Typography>
-                      <Chip size="small" label={accessRow.branch} variant="outlined" />
-                      <AccessLevelChip level={accessRow.access_level} />
-                    </Stack>
-                    <FolderPathBreadcrumb
-                      path={accessRow.folder_path || accessRow.folder_label}
-                      branch={accessRow.branch}
-                      compact
-                    />
-                  </Box>
-                ))}
-              </Stack>
+        <>
+          <Paper variant="outlined" sx={{ p: 1.25, ...getOfficePanelSx(ui) }}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+              <Typography variant="subtitle2">
+                Найдено: {users.length} учёток · {foundAccessCount} доступов
+              </Typography>
+              <Chip size="small" variant="outlined" label={branchTab === 'all' ? 'Все филиалы' : branchTab} />
             </Stack>
           </Paper>
-        ))
+          <Box
+            data-testid="groups-access-user-results-scroll"
+            sx={{ flex: 1, minHeight: 0, overflow: 'auto', pr: { xs: 0, md: 0.5 }, ...hideScrollbarSx }}
+          >
+            <Stack spacing={1}>
+              {users.map((item) => (
+                <Paper key={item.login} variant="outlined" sx={{ p: 1.25, ...getOfficePanelSx(ui) }}>
+                  <Stack spacing={1}>
+                    <Stack direction={{ xs: 'column', sm: 'row' }} spacing={0.75} alignItems={{ xs: 'flex-start', sm: 'center' }} justifyContent="space-between">
+                      <Box sx={{ minWidth: 0 }}>
+                        <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>{item.display_name || item.login}</Typography>
+                        <Typography variant="caption" color="text.secondary">{item.login}</Typography>
+                      </Box>
+                      <Chip size="small" variant="outlined" label={`${item.access_count ?? item.access?.length ?? 0} папок`} />
+                    </Stack>
+                    <Stack spacing={0.65}>
+                      {(item.access || []).map((accessRow) => (
+                        <Box
+                          key={`${item.login}-${accessRow.group_dn}`}
+                          sx={{
+                            py: 0.75,
+                            px: 1,
+                            borderRadius: 1,
+                            border: `1px solid ${alpha(theme.palette.divider, 0.65)}`,
+                            bgcolor: alpha(theme.palette.background.default, 0.4),
+                          }}
+                        >
+                          <Stack direction="row" spacing={0.75} alignItems="center" useFlexGap flexWrap="wrap" sx={{ mb: 0.35 }}>
+                            <Typography variant="body2" sx={{ fontWeight: 700 }}>
+                              {accessRow.folder_label}
+                            </Typography>
+                            <AccessLevelChip level={accessRow.access_level} />
+                            <Chip size="small" label={accessRow.branch} variant="outlined" />
+                          </Stack>
+                          <FolderPathBreadcrumb
+                            path={accessRow.folder_path || accessRow.folder_label}
+                            branch=""
+                            compact
+                          />
+                        </Box>
+                      ))}
+                    </Stack>
+                  </Stack>
+                </Paper>
+              ))}
+            </Stack>
+          </Box>
+        </>
       )}
     </Stack>
   );
 
   const renderGroupDetail = () => {
-    if (debouncedUserQuery) {
-      return renderUserSearchResults();
-    }
-
     if (!selectedGroup) {
       return (
         <Alert severity="info" sx={{ m: 0 }}>
@@ -446,8 +627,6 @@ const GroupsAccess = () => {
       );
     }
 
-    const members = Array.isArray(groupDetail?.members) ? groupDetail.members : [];
-
     return (
       <Paper
         variant="outlined"
@@ -455,11 +634,13 @@ const GroupsAccess = () => {
           p: { xs: 1.5, md: 2 },
           ...getOfficePanelSx(ui),
           height: '100%',
+          minHeight: 0,
+          overflow: 'hidden',
           borderColor: alpha(theme.palette.primary.main, 0.24),
           boxShadow: `inset 4px 0 0 ${theme.palette.primary.main}`,
         }}
       >
-        <Stack spacing={1.5}>
+        <Stack spacing={1.5} sx={{ height: '100%', minHeight: 0 }}>
           <Box>
             <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
               <Typography variant="h6" sx={{ fontSize: { xs: '1.05rem', md: '1.2rem' } }}>
@@ -467,6 +648,7 @@ const GroupsAccess = () => {
               </Typography>
               <Chip size="small" label={selectedGroup.branch} color="primary" variant="outlined" />
               <AccessLevelChip level={selectedGroup.access_level} />
+              <Chip size="small" variant="outlined" label={`${groupMembers.length} пользователей`} />
             </Stack>
             <Box sx={{ mt: 1 }}>
               <FolderPathBreadcrumb
@@ -480,46 +662,218 @@ const GroupsAccess = () => {
                 {selectedGroup.description}
               </Typography>
             ) : null}
+            <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.75, overflowWrap: 'anywhere' }}>
+              AD-группа: {selectedGroup.cn || 'не указана'}
+            </Typography>
           </Box>
 
           {loadingDetail ? (
             <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
               <CircularProgress size={28} />
             </Box>
-          ) : members.length === 0 ? (
+          ) : groupMembers.length === 0 ? (
             <Alert severity="warning">В снимке нет пользователей с доступом к этой папке.</Alert>
           ) : (
-            <Box sx={{ overflow: 'auto', ...hideScrollbarSx, maxHeight: { xs: 'none', md: 'calc(100vh - 340px)' } }}>
-              <Stack spacing={0.75}>
-                {members.map((member) => (
-                  <Box
-                    key={member.login}
-                    sx={{
-                      display: 'flex',
-                      justifyContent: 'space-between',
-                      gap: 1,
-                      py: 0.85,
-                      px: 1,
-                      borderRadius: 1,
-                      borderBottom: `1px solid ${alpha(theme.palette.divider, 0.55)}`,
-                      bgcolor: alpha(theme.palette.background.default, 0.35),
-                    }}
-                  >
-                    <Box>
-                      <Typography variant="body2" sx={{ fontWeight: 600 }}>
-                        {member.display_name || member.login}
-                      </Typography>
-                      <Typography variant="caption" color="text.secondary">{member.login}</Typography>
-                    </Box>
-                  </Box>
-                ))}
-              </Stack>
-            </Box>
+            <Stack spacing={1} sx={{ flex: 1, minHeight: 0 }}>
+              <TextField
+                size="small"
+                placeholder="Фильтр участников"
+                value={memberQuery}
+                onChange={(event) => setMemberQuery(event.target.value)}
+                InputProps={{
+                  startAdornment: (
+                    <InputAdornment position="start">
+                      <SearchOutlinedIcon fontSize="small" />
+                    </InputAdornment>
+                  ),
+                }}
+              />
+              <Box sx={{ flex: 1, minHeight: { xs: 180, md: 0 }, overflow: 'auto', ...hideScrollbarSx, maxHeight: { xs: 'none', md: 'calc(100vh - 390px)' } }}>
+                {visibleGroupMembers.length === 0 ? (
+                  <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>
+                    По фильтру участников ничего не найдено.
+                  </Typography>
+                ) : (
+                  <Stack spacing={0.5}>
+                    {visibleGroupMembers.map((member) => (
+                      <Box
+                        key={member.login}
+                        sx={{
+                          display: 'flex',
+                          justifyContent: 'space-between',
+                          gap: 1,
+                          py: 0.75,
+                          px: 1,
+                          borderRadius: 1,
+                          borderBottom: `1px solid ${alpha(theme.palette.divider, 0.55)}`,
+                          bgcolor: alpha(theme.palette.background.default, 0.35),
+                        }}
+                      >
+                        <Box sx={{ minWidth: 0 }}>
+                          <Typography variant="body2" sx={{ fontWeight: 700, lineHeight: 1.2 }} noWrap>
+                            {member.display_name || member.login}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" noWrap>{member.login}</Typography>
+                        </Box>
+                      </Box>
+                    ))}
+                  </Stack>
+                )}
+              </Box>
+            </Stack>
           )}
         </Stack>
       </Paper>
     );
   };
+
+  const renderExportView = () => (
+    <Grid container spacing={1.5} sx={{ flex: 1, minHeight: 0 }}>
+      <Grid item xs={12} md={5} lg={4} sx={{ height: { xs: 380, md: 'calc(100vh - 300px)' }, minHeight: 0 }}>
+        {renderGroupList()}
+      </Grid>
+      <Grid item xs={12} md={7} lg={8} sx={{ height: { md: 'calc(100vh - 300px)' }, minHeight: 0 }}>
+        <Paper
+          variant="outlined"
+          sx={{
+            ...getOfficePanelSx(ui),
+            height: { xs: 'auto', md: '100%' },
+            display: 'flex',
+            flexDirection: 'column',
+            overflow: 'hidden',
+          }}
+        >
+          <Box sx={{ p: 1.5, borderBottom: `1px solid ${alpha(theme.palette.divider, 0.8)}` }}>
+            <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+              <Box sx={{ minWidth: 0 }}>
+                <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                  Экспорт доступов
+                </Typography>
+                <Typography variant="caption" color="text.secondary">
+                  {branchTab === 'all' ? 'Все филиалы' : branchTab}
+                </Typography>
+              </Box>
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={exporting ? <CircularProgress size={16} color="inherit" /> : <DownloadOutlinedIcon />}
+                onClick={handleExportExcel}
+                disabled={exporting || loadingDataset}
+              >
+                Выгрузить выборку
+              </Button>
+            </Stack>
+          </Box>
+
+          <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', p: 1.5, ...hideScrollbarSx }}>
+            <Stack spacing={1.25}>
+              <Box
+                sx={{
+                  p: 1.25,
+                  borderRadius: 1,
+                  border: `1px solid ${alpha(theme.palette.divider, 0.65)}`,
+                  bgcolor: alpha(theme.palette.background.default, 0.35),
+                }}
+              >
+                <Stack direction="row" spacing={0.75} useFlexGap flexWrap="wrap">
+                  <Chip size="small" variant="outlined" label={`${summaryGroupCount} папок`} />
+                  <Chip size="small" variant="outlined" label={`${summaryUserCount} учёток`} />
+                  {debouncedFolderQuery ? <Chip size="small" variant="outlined" label={`Папка: ${debouncedFolderQuery}`} /> : null}
+                  {debouncedUserQuery ? <Chip size="small" variant="outlined" label={`Учётка: ${debouncedUserQuery}`} /> : null}
+                </Stack>
+              </Box>
+
+              <Box
+                sx={{
+                  p: 1.25,
+                  borderRadius: 1,
+                  border: `1px solid ${alpha(theme.palette.divider, 0.65)}`,
+                }}
+              >
+                <Stack spacing={1}>
+                  <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ xs: 'stretch', sm: 'center' }} justifyContent="space-between">
+                    <Box sx={{ minWidth: 0 }}>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                        Выбранная папка
+                      </Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {selectedGroup ? `${groupMembers.length} участников` : 'Папка не выбрана'}
+                      </Typography>
+                    </Box>
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      startIcon={exportingFolder ? <CircularProgress size={16} /> : <DownloadOutlinedIcon />}
+                      onClick={handleExportSelectedGroup}
+                      disabled={!selectedGroupDn || exportingFolder || loadingDetail}
+                    >
+                      Папку с участниками
+                    </Button>
+                  </Stack>
+
+                  {selectedGroup ? (
+                    <>
+                      <Stack direction="row" spacing={0.75} alignItems="center" useFlexGap flexWrap="wrap">
+                        <Typography variant="body2" sx={{ fontWeight: 800 }}>
+                          {selectedGroup.folder_label || selectedGroup.cn}
+                        </Typography>
+                        <Chip size="small" label={selectedGroup.branch} variant="outlined" />
+                        <AccessLevelChip level={selectedGroup.access_level} />
+                      </Stack>
+                      <FolderPathBreadcrumb
+                        path={selectedGroup.folder_path || selectedGroup.folder_label || selectedGroup.cn}
+                        branch={selectedGroup.branch}
+                        compact
+                        emphasize
+                      />
+                      {loadingDetail ? (
+                        <Box sx={{ display: 'flex', justifyContent: 'center', py: 2 }}>
+                          <CircularProgress size={24} />
+                        </Box>
+                      ) : groupMembers.length ? (
+                        <Box sx={{ maxHeight: 260, overflow: 'auto', ...hideScrollbarSx }}>
+                          <Stack spacing={0.5}>
+                            {exportPreviewMembers.map((member) => (
+                              <Box
+                                key={member.login}
+                                sx={{
+                                  px: 1,
+                                  py: 0.65,
+                                  borderRadius: 1,
+                                  bgcolor: alpha(theme.palette.background.default, 0.38),
+                                  borderBottom: `1px solid ${alpha(theme.palette.divider, 0.48)}`,
+                                }}
+                              >
+                                <Typography variant="body2" sx={{ fontWeight: 700 }} noWrap>
+                                  {member.display_name || member.login}
+                                </Typography>
+                                <Typography variant="caption" color="text.secondary" noWrap>
+                                  {member.login}
+                                </Typography>
+                              </Box>
+                            ))}
+                            {hasHiddenExportMembers ? (
+                              <Typography variant="caption" color="text.secondary" sx={{ px: 1, py: 0.5 }}>
+                                В preview показаны первые {MEMBER_PREVIEW_LIMIT} участников. В Excel попадёт полный список: {groupMembers.length}.
+                              </Typography>
+                            ) : null}
+                          </Stack>
+                        </Box>
+                      ) : (
+                        <Alert severity="warning">В снимке нет участников для выбранной папки.</Alert>
+                      )}
+                    </>
+                  ) : (
+                    <Alert severity="info">Выберите папку слева, чтобы выгрузить список участников.</Alert>
+                  )}
+                </Stack>
+              </Box>
+            </Stack>
+          </Box>
+        </Paper>
+      </Grid>
+    </Grid>
+  );
 
   const renderMatrixView = () => (
     <Stack spacing={1.25}>
@@ -564,7 +918,12 @@ const GroupsAccess = () => {
           Для удобного просмотра большой матрицы поверните телефон горизонтально или выгрузите Excel.
         </Alert>
       ) : null}
-      {loadingDataset ? (
+      {matrixTruncated ? (
+        <Alert severity="warning">
+          Матрица ограничена для быстрого рендера: показано {matrixReturnedGroupCount} из {summaryGroupCount} папок и {matrixReturnedUserCount} из {summaryUserCount} учёток. Сузьте фильтр или выгрузите Excel для полного списка.
+        </Alert>
+      ) : null}
+      {loadingMatrix ? (
         <Box sx={{ display: 'flex', justifyContent: 'center', py: 5 }}>
           <CircularProgress size={30} />
         </Box>
@@ -577,6 +936,7 @@ const GroupsAccess = () => {
           onSelectGroup={handleSelectGroup}
           ui={ui}
           maxHeight={isMobile ? '58vh' : 'calc(100vh - 320px)'}
+          compact={isMobile}
         />
       )}
     </Stack>
@@ -598,7 +958,7 @@ const GroupsAccess = () => {
             />
             <Chip
               size="small"
-              label={`${datasetSummary?.group_count ?? groups.length} групп · ${datasetSummary?.user_count ?? users.length} учёток`}
+              label={`${summaryGroupCount} групп · ${summaryUserCount} учёток`}
               variant="outlined"
             />
             <Button
@@ -624,7 +984,7 @@ const GroupsAccess = () => {
           </Stack>
         )}
       >
-        <Stack spacing={1.5} sx={{ height: '100%' }}>
+        <Stack spacing={1.5} sx={{ height: '100%', minHeight: 0 }}>
           <Paper variant="outlined" sx={{ px: { xs: 1, sm: 1.5 }, py: 1, ...getOfficePanelSx(ui) }}>
             <Stack spacing={1}>
               <Stack
@@ -639,9 +999,10 @@ const GroupsAccess = () => {
                     setBranchTab(value);
                     setSelectedGroupDn('');
                     setGroupDetail(null);
+                    setMemberQuery('');
                   }}
                   variant={isMobile ? 'fullWidth' : 'standard'}
-                  sx={{ minHeight: 40 }}
+                  sx={{ minHeight: 40, width: { xs: '100%', lg: 'auto' } }}
                 >
                   {BRANCH_TABS.map((tab) => (
                     <Tab key={tab.value} value={tab.value} label={tab.label} sx={{ minHeight: 40 }} />
@@ -652,46 +1013,58 @@ const GroupsAccess = () => {
                   size="small"
                   exclusive
                   value={viewMode}
+                  sx={viewModeToggleSx}
                   onChange={(_event, value) => {
                     if (!value) return;
                     setViewMode(value);
-                    if (value === 'matrix') {
+                    setError('');
+                    if (value !== VIEW_MODES.FOLDERS) {
                       setMobileSheetOpen(false);
                     }
                   }}
                 >
-                  <ToggleButton value="list">
+                  <ToggleButton value={VIEW_MODES.FOLDERS}>
                     <ViewListOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
-                    Список
+                    По папкам
                   </ToggleButton>
-                  <ToggleButton value="matrix">
+                  <ToggleButton value={VIEW_MODES.USER}>
+                    <SearchOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
+                    По сотруднику
+                  </ToggleButton>
+                  <ToggleButton value={VIEW_MODES.MATRIX}>
                     <GridViewOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
                     Матрица
+                  </ToggleButton>
+                  <ToggleButton value={VIEW_MODES.EXPORT}>
+                    <DownloadOutlinedIcon fontSize="small" sx={{ mr: 0.75 }} />
+                    Экспорт
                   </ToggleButton>
                 </ToggleButtonGroup>
               </Stack>
 
               <Stack direction={{ xs: 'column', md: 'row' }} spacing={1}>
-                <TextField
-                  size="small"
-                  placeholder="Поиск по учётке"
-                  value={userQuery}
-                  onChange={(event) => setUserQuery(event.target.value)}
-                  sx={{ flex: 1 }}
-                  InputProps={{
-                    startAdornment: (
-                      <InputAdornment position="start">
-                        <SearchOutlinedIcon fontSize="small" />
+                {viewMode !== VIEW_MODES.USER ? (
+                  <TextField
+                    size="small"
+                    placeholder="Папка, путь или AD-группа"
+                    value={folderQuery}
+                    onChange={(event) => setFolderQuery(event.target.value)}
+                    sx={{ flex: 1 }}
+                    InputProps={{
+                      startAdornment: (
+                        <InputAdornment position="start">
+                          <SearchOutlinedIcon fontSize="small" />
                       </InputAdornment>
                     ),
                   }}
                 />
-                {viewMode === 'list' ? (
+                ) : null}
+                {viewMode !== VIEW_MODES.FOLDERS ? (
                   <TextField
                     size="small"
-                    placeholder="Фильтр папок"
-                    value={folderQuery}
-                    onChange={(event) => setFolderQuery(event.target.value)}
+                    placeholder={viewMode === VIEW_MODES.MATRIX ? 'Фильтр учёток в матрице' : 'Логин или ФИО сотрудника'}
+                    value={userQuery}
+                    onChange={(event) => setUserQuery(event.target.value)}
                     sx={{ flex: 1 }}
                     InputProps={{
                       startAdornment: (
@@ -713,23 +1086,29 @@ const GroupsAccess = () => {
             </Alert>
           ) : null}
 
-          {viewMode === 'matrix' ? (
-            renderMatrixView()
-          ) : debouncedUserQuery ? (
-            <Box>
+          {viewMode === VIEW_MODES.MATRIX ? (
+            <Box sx={{ flex: 1, minHeight: 0, overflow: 'auto', ...hideScrollbarSx }}>
+              {renderMatrixView()}
+            </Box>
+          ) : viewMode === VIEW_MODES.EXPORT ? (
+            <Box sx={{ flex: 1, minHeight: 0, overflow: { xs: 'auto', md: 'hidden' }, ...hideScrollbarSx }}>
+              {renderExportView()}
+            </Box>
+          ) : viewMode === VIEW_MODES.USER ? (
+            <Box sx={{ flex: 1, minHeight: 0, overflow: 'hidden', pb: 1, display: 'flex', flexDirection: 'column' }}>
               <Typography variant="subtitle2" sx={{ mb: 1 }}>
-                Результаты по учётке «{debouncedUserQuery}» ({users.length})
+                {debouncedUserQuery ? `Результаты по сотруднику «${debouncedUserQuery}»` : 'Поиск сотрудника'}
               </Typography>
               {renderUserSearchResults()}
             </Box>
           ) : isMobile ? (
-            <Box sx={{ flex: 1, minHeight: 0 }}>{renderGroupList()}</Box>
+            <Box sx={{ flex: 1, minHeight: 320 }}>{renderGroupList()}</Box>
           ) : (
             <Grid container spacing={1.5} sx={{ flex: 1, minHeight: 0 }}>
               <Grid item xs={12} md={5} lg={4} sx={{ height: { md: 'calc(100vh - 300px)' } }}>
                 {renderGroupList()}
               </Grid>
-              <Grid item xs={12} md={7} lg={8}>
+              <Grid item xs={12} md={7} lg={8} sx={{ height: { md: 'calc(100vh - 300px)' }, minHeight: 0 }}>
                 {renderGroupDetail()}
               </Grid>
             </Grid>
@@ -738,7 +1117,7 @@ const GroupsAccess = () => {
 
         <Drawer
           anchor="bottom"
-          open={isMobile && mobileSheetOpen && viewMode === 'list'}
+          open={isMobile && mobileSheetOpen && viewMode === VIEW_MODES.FOLDERS}
           onClose={() => setMobileSheetOpen(false)}
           PaperProps={{
             sx: {

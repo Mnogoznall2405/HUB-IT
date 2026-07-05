@@ -1,6 +1,6 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-06-30 05:52 UTC_  
+_Сгенерировано: 2026-07-05 10:01 UTC_
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
@@ -1599,6 +1599,10 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `is_current` | boolean | no | `true` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `passport_series_enc` | text | no | `''::text` |
+| `passport_number_enc` | text | no | `''::text` |
+| `issuer_code_enc` | text | no | `''::text` |
+| `birth_place_enc` | text | no | `''::text` |
 
 - **Primary key:** `id`
 - **Foreign keys:**
@@ -1622,6 +1626,8 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `app_user_id` | integer | yes | `` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `department` | varchar(200) | yes | `` |
+| `position` | varchar(150) | yes | `` |
 
 - **Primary key:** `id`
 - **Foreign keys:**
@@ -1780,7 +1786,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `id` **PK** | integer | no | `nextval('app.ticket_requests_id_seq'::regclass)` |
 | `employee_id` | integer | no | `` |
 | `object_id` | integer | no | `` |
-| `status` | varchar(30) | no | `'new'::character varying` |
+| `status` | varchar(30) | no | `'not_started'::character varying` |
 | `assignee_id` | integer | yes | `` |
 | `submitted_at` | timestamptz | yes | `` |
 | `departure_date` | timestamptz | yes | `` |
@@ -1793,6 +1799,8 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `version` | integer | no | `1` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `note` | text | yes | `` |
+| `refund_loss` | numeric | no | `0.00` |
 
 - **Primary key:** `id`
 - **Foreign keys:**

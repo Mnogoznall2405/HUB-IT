@@ -629,10 +629,10 @@ describe('Tasks page detail workspace', () => {
     expect(within(listView).getByTestId('task-section-completed-toggle')).toHaveTextContent('1');
 
     expect(await screen.findByTestId('tasks-list-row-task-open')).toBeInTheDocument();
-    expect(screen.getByTestId('tasks-list-row-task-done')).toBeInTheDocument();
+    expect(screen.queryByTestId('tasks-list-row-task-done')).not.toBeInTheDocument();
 
     fireEvent.click(within(listView).getByTestId('task-section-completed-toggle'));
-    expect(screen.queryByTestId('tasks-list-row-task-done')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('tasks-list-row-task-done')).toBeInTheDocument();
     expect(screen.getByTestId('tasks-list-row-task-open')).toBeInTheDocument();
   });
 

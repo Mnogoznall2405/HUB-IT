@@ -65,6 +65,8 @@ async def groups_access_matrix_grid(
     branch: str = Query(default=""),
     folder_q: str = Query(default="", max_length=200),
     user_q: str = Query(default="", max_length=200),
+    group_limit: int = Query(default=250, ge=1, le=1000),
+    user_limit: int = Query(default=500, ge=1, le=2000),
     _: User = Depends(require_permission(PERM_GROUPS_ACCESS_READ)),
 ):
     normalized_branch = str(branch or "").strip() or None
@@ -73,6 +75,8 @@ async def groups_access_matrix_grid(
         branch=normalized_branch,
         folder_query=folder_q,
         user_query=user_q,
+        group_limit=group_limit,
+        user_limit=user_limit,
     )
 
 

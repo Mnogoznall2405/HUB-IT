@@ -11,6 +11,7 @@ from sqlalchemy import func, or_, select
 
 from backend.appdb.db import AppDatabaseConfigurationError, app_session, ensure_app_schema_initialized
 from backend.appdb.models import AppPasswordVaultAudit, AppPasswordVaultEntry, AppPasswordVaultGroup
+from backend.config import config
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.auth_security_service import auth_security_service
 from backend.services.secret_crypto_service import (
@@ -25,6 +26,8 @@ from backend.services.user_service import user_service
 PASSWORD_VAULT_UNLOCK_TTL_SECONDS = 300
 PASSWORD_VAULT_UNLOCK_NAMESPACE = "password_vault_unlock"
 PASSWORD_VAULT_UNLOCK_RATE_NAMESPACE = "password_vault_unlock_rate"
+PASSWORD_VAULT_2FA_SETUP_NAMESPACE = "password_vault_2fa_setup"
+PASSWORD_VAULT_2FA_SETUP_TTL_SECONDS = 600
 
 
 class PasswordVaultError(RuntimeError):
@@ -554,6 +557,95 @@ class PasswordVaultService:
             raise
 
         return self._grant_unlock(actor=actor, session_id=session_id, meta=meta, audit_action="unlock")
+
+    def start_unlock_2fa_setup(self, *, actor: Any, meta: PasswordVaultRequestMeta) -> dict[str, Any]:
+        user_id = _actor_id(actor)
+        self._check_unlock_rate_limit(user_id=user_id, ip_address=meta.ip_address)
+        raw_user = user_service.get_by_id(user_id)
+        if not raw_user:
+            raise PasswordVaultAccessError("Authenticated user is required")
+        if bool(raw_user.get("is_2fa_enabled", False)):
+            raise PasswordVaultValidationError("2FA is already enabled")
+
+        account_name = str(raw_user.get("username") or raw_user.get("email") or "").strip()
+        provisioning = twofa_service.build_provisioning(
+            username=account_name,
+            issuer=config.security.totp_issuer,
+        )
+        setup_challenge_id = uuid.uuid4().hex
+        auth_runtime_store_service.set_json(
+            PASSWORD_VAULT_2FA_SETUP_NAMESPACE,
+            setup_challenge_id,
+            {
+                "user_id": user_id,
+                "pending_totp_secret_enc": twofa_service.encrypt_secret(provisioning.secret),
+            },
+            ttl_seconds=PASSWORD_VAULT_2FA_SETUP_TTL_SECONDS,
+        )
+        return {
+            "setup_challenge_id": setup_challenge_id,
+            "otpauth_uri": provisioning.otpauth_uri,
+            "issuer": twofa_service.resolve_totp_issuer_domain(),
+            "account_name": account_name,
+            "manual_entry_key": provisioning.secret,
+            "qr_svg": provisioning.qr_svg,
+        }
+
+    def verify_unlock_2fa_setup(
+        self,
+        *,
+        actor: Any,
+        session_id: str | None,
+        setup_challenge_id: str,
+        totp_code: str,
+        meta: PasswordVaultRequestMeta,
+    ) -> dict[str, Any]:
+        user_id = _actor_id(actor)
+        self._check_unlock_rate_limit(user_id=user_id, ip_address=meta.ip_address)
+
+        challenge_key = _normalize_text(setup_challenge_id)
+        if not challenge_key:
+            raise PasswordVaultValidationError("2FA setup challenge is required")
+
+        try:
+            payload = auth_runtime_store_service.get_json(PASSWORD_VAULT_2FA_SETUP_NAMESPACE, challenge_key)
+            if not isinstance(payload, dict) or int(payload.get("user_id") or 0) != user_id:
+                raise PasswordVaultAccessError("2FA setup session expired. Start again.")
+
+            encrypted_secret = _normalize_text(payload.get("pending_totp_secret_enc"))
+            if not encrypted_secret:
+                raise PasswordVaultAccessError("2FA setup session expired. Start again.")
+
+            try:
+                secret = twofa_service.decrypt_secret(encrypted_secret)
+            except Exception as exc:
+                raise PasswordVaultAccessError(f"Failed to read TOTP secret: {exc}") from exc
+
+            if not twofa_service.verify_totp(secret=secret, code=_normalize_text(totp_code)):
+                raise PasswordVaultAccessError("Invalid 2FA code")
+
+            auth_runtime_store_service.delete(PASSWORD_VAULT_2FA_SETUP_NAMESPACE, challenge_key)
+
+            backup_codes = twofa_service.generate_backup_codes()
+            user_service.update_user(
+                user_id,
+                totp_secret_enc=encrypted_secret,
+                is_2fa_enabled=True,
+                twofa_enabled_at=_utc_iso(),
+            )
+            auth_security_service._replace_backup_codes(user_id, backup_codes)
+        except (PasswordVaultAccessError, PasswordVaultValidationError):
+            self._record_unlock_failure(user_id=user_id, ip_address=meta.ip_address)
+            raise
+
+        unlock_result = self._grant_unlock(
+            actor=actor,
+            session_id=session_id,
+            meta=meta,
+            audit_action="unlock.setup_2fa",
+        )
+        unlock_result["backup_codes"] = backup_codes
+        return unlock_result
 
     def unlock_with_trusted_device(
         self,

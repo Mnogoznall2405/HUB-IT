@@ -36,12 +36,20 @@ export const groupsAccessAPI = {
     return data;
   },
 
-  getMatrixGrid: async ({ branch = '', folderQ = '', userQ = '' } = {}) => {
+  getMatrixGrid: async ({
+    branch = '',
+    folderQ = '',
+    userQ = '',
+    groupLimit,
+    userLimit,
+  } = {}) => {
     const { data } = await apiClient.get('/groups-access/matrix-grid', {
       params: {
         branch: branch || undefined,
         folder_q: folderQ || undefined,
         user_q: userQ || undefined,
+        group_limit: groupLimit || undefined,
+        user_limit: userLimit || undefined,
       },
     });
     return data;

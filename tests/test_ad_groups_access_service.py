@@ -127,3 +127,74 @@ def test_search_user_access_and_matrix_from_snapshot(tmp_path, monkeypatch):
     assert grid_payload["summary"]["group_count"] == 1
     assert grid_payload["summary"]["user_count"] == 1
     assert grid_payload["cells"] == [["ivanov_i", "CN=RO_Finance,OU=Tyumen,OU=Groups,DC=zsgp,DC=corp", "read"]]
+
+
+def test_matrix_grid_limits_interactive_payload(tmp_path, monkeypatch):
+    first_group_dn = "CN=RO_A,OU=Tyumen,OU=Groups,DC=zsgp,DC=corp"
+    second_group_dn = "CN=RO_B,OU=Tyumen,OU=Groups,DC=zsgp,DC=corp"
+    snapshot = {
+        "synced_at": "2026-07-03T10:00:00Z",
+        "groups": [
+            {
+                "dn": first_group_dn,
+                "cn": "RO_A",
+                "branch": "Tyumen",
+                "folder_label": "A",
+                "folder_path": "Resources / A",
+                "access_level": "read",
+                "member_count": 2,
+            },
+            {
+                "dn": second_group_dn,
+                "cn": "RO_B",
+                "branch": "Tyumen",
+                "folder_label": "B",
+                "folder_path": "Resources / B",
+                "access_level": "read",
+                "member_count": 1,
+            },
+        ],
+        "users": [
+            {
+                "login": "ivanov_i",
+                "display_name": "Иванов И.И.",
+                "access": [
+                    {
+                        "group_dn": first_group_dn,
+                        "folder_label": "A",
+                        "folder_path": "Resources / A",
+                        "branch": "Tyumen",
+                        "access_level": "read",
+                    },
+                ],
+            },
+            {
+                "login": "petrov_p",
+                "display_name": "Петров П.П.",
+                "access": [
+                    {
+                        "group_dn": first_group_dn,
+                        "folder_label": "A",
+                        "folder_path": "Resources / A",
+                        "branch": "Tyumen",
+                        "access_level": "read",
+                    },
+                ],
+            },
+        ],
+    }
+    snapshot_path = tmp_path / "ad_groups_access_snapshot.json"
+    snapshot_path.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
+    monkeypatch.setattr(service, "_snapshot_path", lambda: snapshot_path)
+
+    payload = service.get_matrix_grid(branch="Tyumen", group_limit=1, user_limit=1)
+
+    assert len(payload["groups"]) == 1
+    assert len(payload["users"]) == 1
+    assert payload["summary"]["group_count"] == 2
+    assert payload["summary"]["returned_group_count"] == 1
+    assert payload["summary"]["user_count"] == 2
+    assert payload["summary"]["returned_user_count"] == 1
+    assert payload["summary"]["group_truncated"] is True
+    assert payload["summary"]["user_truncated"] is True
+    assert payload["summary"]["truncated"] is True

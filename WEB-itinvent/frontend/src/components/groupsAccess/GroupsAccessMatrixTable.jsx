@@ -1,4 +1,4 @@
-import { memo, useCallback, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useMemo, useRef } from 'react';
 import { Box, Chip, Paper, Typography } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
 import { FixedSizeGrid as VirtualGrid } from 'react-window';
@@ -13,7 +13,9 @@ import { getOfficePanelSx } from '../../theme/officeUiTokens';
 
 const ROW_HEIGHT = 46;
 const COL_WIDTH = 68;
+const COMPACT_COL_WIDTH = 62;
 const USER_COL_WIDTH = 220;
+const COMPACT_USER_COL_WIDTH = 168;
 const HEADER_HEIGHT = 58;
 
 const AccessCell = memo(({ level }) => {
@@ -88,11 +90,14 @@ const GroupsAccessMatrixTable = ({
   onSelectGroup,
   ui,
   maxHeight = 'calc(100vh - 320px)',
+  compact = false,
 }) => {
   const theme = useTheme();
   const headerScrollRef = useRef(null);
-  const [scrollTop, setScrollTop] = useState(0);
+  const userListRef = useRef(null);
   const sparseMap = useMemo(() => buildSparseAccessMap(cells), [cells]);
+  const columnWidth = compact ? COMPACT_COL_WIDTH : COL_WIDTH;
+  const userColumnWidth = compact ? COMPACT_USER_COL_WIDTH : USER_COL_WIDTH;
 
   const renderGridCell = useCallback(({ columnIndex, rowIndex, style }) => {
     const group = groups[columnIndex];
@@ -109,14 +114,23 @@ const GroupsAccessMatrixTable = ({
           boxSizing: 'border-box',
           borderBottom: `1px solid ${alpha(theme.palette.divider, 0.55)}`,
           borderRight: `1px solid ${alpha(theme.palette.divider, 0.45)}`,
-          bgcolor: selected ? alpha(theme.palette.primary.main, 0.06) : 'background.paper',
+          bgcolor: selected ? alpha(theme.palette.primary.main, ui.isDark ? 0.12 : 0.06) : ui.panelSolid,
           borderLeft: selected ? `2px solid ${alpha(theme.palette.primary.main, 0.35)}` : undefined,
         }}
       >
         <AccessCell level={level} />
       </Box>
     );
-  }, [groups, users, sparseMap, selectedGroupDn, theme.palette.divider, theme.palette.primary.main]);
+  }, [
+    groups,
+    sparseMap,
+    selectedGroupDn,
+    theme.palette.divider,
+    theme.palette.primary.main,
+    ui.isDark,
+    ui.panelSolid,
+    users,
+  ]);
 
   const renderUserRow = useCallback(({ index, style }) => {
     const user = users[index];
@@ -132,7 +146,8 @@ const GroupsAccessMatrixTable = ({
           justifyContent: 'center',
           borderBottom: `1px solid ${alpha(theme.palette.divider, 0.55)}`,
           borderRight: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
-          bgcolor: 'background.paper',
+          bgcolor: ui.panelSolid,
+          color: 'text.primary',
         }}
       >
         <Typography variant="body2" sx={{ fontWeight: 600, lineHeight: 1.2 }} noWrap>
@@ -143,13 +158,13 @@ const GroupsAccessMatrixTable = ({
         </Typography>
       </Box>
     );
-  }, [users, theme.palette.divider]);
+  }, [users, theme.palette.divider, ui.panelSolid]);
 
   const handleGridScroll = useCallback(({ scrollLeft, scrollTop: nextScrollTop }) => {
     if (headerScrollRef.current) {
       headerScrollRef.current.scrollLeft = scrollLeft;
     }
-    setScrollTop(nextScrollTop);
+    userListRef.current?.scrollTo(nextScrollTop);
   }, []);
 
   if (!groups.length) {
@@ -162,7 +177,7 @@ const GroupsAccessMatrixTable = ({
     );
   }
 
-  const gridWidth = groups.length * COL_WIDTH;
+  const gridWidth = groups.length * columnWidth;
 
   return (
     <Paper variant="outlined" sx={{ ...getOfficePanelSx(ui), overflow: 'hidden' }}>
@@ -189,10 +204,10 @@ const GroupsAccessMatrixTable = ({
       <Box sx={{ display: 'flex', height: maxHeight, minHeight: 280 }}>
         <Box
           sx={{
-            width: USER_COL_WIDTH,
+            width: userColumnWidth,
             flexShrink: 0,
             borderRight: `1px solid ${alpha(theme.palette.divider, 0.8)}`,
-            bgcolor: 'background.paper',
+            bgcolor: ui.panelSolid,
             display: 'flex',
             flexDirection: 'column',
             minHeight: 0,
@@ -222,11 +237,11 @@ const GroupsAccessMatrixTable = ({
               <AutoSizer>
                 {({ height }) => (
                   <VirtualList
+                    ref={userListRef}
                     height={height}
-                    width={USER_COL_WIDTH}
+                    width={userColumnWidth}
                     itemCount={users.length}
                     itemSize={ROW_HEIGHT}
-                    scrollTop={scrollTop}
                     style={{ overflow: 'hidden' }}
                   >
                     {renderUserRow}
@@ -258,12 +273,12 @@ const GroupsAccessMatrixTable = ({
                     onClick={() => onSelectGroup?.(group)}
                     title={title}
                     sx={{
-                      width: COL_WIDTH,
+                      width: columnWidth,
                       flexShrink: 0,
                       px: 0.5,
                       py: 0.5,
                       cursor: onSelectGroup ? 'pointer' : 'default',
-                      bgcolor: selected ? alpha(theme.palette.primary.main, 0.14) : 'background.paper',
+                      bgcolor: selected ? alpha(theme.palette.primary.main, ui.isDark ? 0.2 : 0.14) : ui.panelSolid,
                       borderBottom: selected ? `3px solid ${theme.palette.primary.main}` : undefined,
                       borderRight: `1px solid ${alpha(theme.palette.divider, 0.45)}`,
                       boxSizing: 'border-box',
@@ -311,12 +326,14 @@ const GroupsAccessMatrixTable = ({
                 {({ height, width }) => (
                   <VirtualGrid
                     columnCount={groups.length}
-                    columnWidth={COL_WIDTH}
+                    columnWidth={columnWidth}
                     height={height}
                     rowCount={users.length}
                     rowHeight={ROW_HEIGHT}
                     width={width}
                     onScroll={handleGridScroll}
+                    overscanColumnCount={4}
+                    overscanRowCount={8}
                   >
                     {renderGridCell}
                   </VirtualGrid>

@@ -108,6 +108,30 @@ export const getChatThreadBottomPadding = ({
   return Math.max(baseGap, Math.round(baseGap + effectiveKeyboardInset + keyboardSpacer));
 };
 
+const JUMP_TO_LATEST_ABOVE_COMPOSER_GAP_PX = 24;
+const JUMP_TO_LATEST_FAB_SIZE_PX = {
+  mobile: 56,
+  desktop: 52,
+};
+const JUMP_TO_LATEST_FAB_ICON_PX = {
+  mobile: 32,
+  desktop: 30,
+};
+
+export const getChatJumpToLatestBottomOffset = ({
+  compactMobile = false,
+  composerHeight = 0,
+  keyboardInset = 0,
+  selectionMode = false,
+} = {}) => {
+  if (selectionMode) {
+    return compactMobile ? 92 : 96;
+  }
+  const measuredComposer = Math.max(compactMobile ? 72 : 80, Number(composerHeight || 0));
+  const keyboard = compactMobile ? Math.max(0, Number(keyboardInset || 0)) : 0;
+  return Math.round(measuredComposer + keyboard + JUMP_TO_LATEST_ABOVE_COMPOSER_GAP_PX);
+};
+
 export const getTaskCompletedBannerText = (completedAt) => {
   const raw = String(completedAt || '').trim();
   if (!raw) return 'Задача выполнена. Обсуждение остаётся открытым';
@@ -434,8 +458,22 @@ function ChatThread({
   const selectionMode = Number(selectedMessageCount || 0) > 0;
   const servicePillBg = ui.servicePillBg || alpha(ui.composerDockBg || ui.panelBg || theme.palette.background.paper, 0.78);
   const servicePillText = ui.servicePillText || ui.textSecondary;
-  const jumpPillBg = ui.jumpPillBg || theme.palette.primary.main;
-  const jumpPillText = ui.jumpPillText || theme.palette.primary.contrastText;
+  const jumpFabBg = ui.jumpFabBg || ui.surfaceStrong || theme.palette.background.paper;
+  const jumpFabIcon = ui.jumpFabIcon || ui.textSecondary || theme.palette.text.secondary;
+  const jumpFabHoverBg = ui.jumpFabHoverBg || ui.surfaceHover || alpha(theme.palette.common.white, 0.08);
+  const jumpFabShadow = ui.jumpFabShadow || ui.shadowSoft || '0 4px 14px rgba(0,0,0,0.2)';
+  const jumpToLatestBottomOffset = getChatJumpToLatestBottomOffset({
+    compactMobile,
+    composerHeight,
+    keyboardInset,
+    selectionMode,
+  });
+  const jumpFabSize = compactMobile
+    ? JUMP_TO_LATEST_FAB_SIZE_PX.mobile
+    : JUMP_TO_LATEST_FAB_SIZE_PX.desktop;
+  const jumpFabIconSize = compactMobile
+    ? JUMP_TO_LATEST_FAB_ICON_PX.mobile
+    : JUMP_TO_LATEST_FAB_ICON_PX.desktop;
   const density = ui.density || {};
   const contentMaxWidth = Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
   const aiRunStatus = String(aiStatus?.status || '').trim();
@@ -1365,10 +1403,7 @@ function ChatThread({
           sx={{
             position: 'absolute',
             right: { xs: 12, md: 22 },
-            bottom: {
-              xs: `${Math.max(12, keyboardInset + (selectionMode ? 92 : 10))}px`,
-              md: selectionMode ? '96px' : '20px',
-            },
+            bottom: `${jumpToLatestBottomOffset}px`,
             zIndex: 4,
           }}
         >
@@ -1376,30 +1411,35 @@ function ChatThread({
             badgeContent={Number(activeConversation?.unread_count || 0)}
             color="primary"
             invisible={Number(activeConversation?.unread_count || 0) <= 0}
+            overlap="circular"
+            anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
           >
-            <Button
-              variant="contained"
-              size="small"
+            <IconButton
+              data-testid="chat-jump-to-latest"
+              aria-label="К последним сообщениям"
               onClick={onJumpToLatest}
-              endIcon={<KeyboardArrowDownRoundedIcon />}
               sx={{
-                borderRadius: compactMobile ? 999 : 1.35,
-                boxShadow: compactMobile ? '0 6px 14px rgba(6, 18, 32, 0.14)' : ui.shadowStrong,
-                textTransform: 'none',
-                px: compactMobile ? 0.95 : 1.15,
-                minWidth: compactMobile ? 0 : undefined,
-                bgcolor: jumpPillBg,
-                color: jumpPillText,
-                minHeight: compactMobile ? 40 : 34,
-                fontSize: compactMobile ? '12px' : '0.78rem',
-                fontWeight: 700,
+                width: jumpFabSize,
+                height: jumpFabSize,
+                minWidth: jumpFabSize,
+                minHeight: jumpFabSize,
+                p: 0,
+                borderRadius: '50%',
+                overflow: 'hidden',
+                bgcolor: jumpFabBg,
+                color: jumpFabIcon,
+                boxShadow: jumpFabShadow,
+                border: `1px solid ${alpha(jumpFabIcon, theme.palette.mode === 'dark' ? 0.08 : 0.12)}`,
+                '&:hover': {
+                  bgcolor: jumpFabHoverBg,
+                },
                 '&:active': compactMobile ? {
-                  opacity: 0.62,
+                  opacity: 0.72,
                 } : undefined,
               }}
             >
-              К последним
-            </Button>
+              <KeyboardArrowDownRoundedIcon sx={{ fontSize: jumpFabIconSize }} />
+            </IconButton>
           </Badge>
         </Box>
       ) : null}</AnimatePresence>

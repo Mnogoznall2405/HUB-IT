@@ -9,7 +9,7 @@ export default function TasksMobileFeedView({
   loading = false,
   taskItems = [],
   taskListSections,
-  completedTasksOpen = true,
+  completedTasksOpen = false,
   onToggleCompletedTasks,
   renderTaskCard,
 }) {

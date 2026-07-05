@@ -163,7 +163,7 @@ function ChatSidebar({
   const [folderMenuConversation, setFolderMenuConversation] = useState(null);
   const [searchFocused, setSearchFocused] = useState(false);
   const [sidebarListScrollElement, setSidebarListScrollElement] = useState(null);
-  const [completedTasksOpen, setCompletedTasksOpen] = useState(true);
+  const [completedTasksOpen, setCompletedTasksOpen] = useState(false);
   const searchInputRef = useRef(null);
   const showEmbeddedMenuButton = false;
   const chatUnavailable = health?.available === false;

@@ -1,0 +1,40 @@
+{
+  "generated_at": "2026-07-03T09:55:54+00:00",
+  "period_start": "2025-01-01",
+  "period_note": "С запуска платформы по дату формирования отчёта",
+  "postgres": {
+    "configured": true,
+    "dialect": "postgresql",
+    "users_total": 1214,
+    "users_with_telegram": 20,
+    "active_users_since_2025": 32,
+    "departments_total": 129,
+    "hub_tasks_total": 266,
+    "hub_tasks_done": 230,
+    "hub_tasks_since_2025": 266,
+    "hub_task_comments": 203,
+    "hub_announcements": 5,
+    "hub_task_projects": 5,
+    "my_files_total": 41,
+    "password_vault_entries": 237,
+    "inventory_hosts_total": 466,
+    "inventory_hosts_recent": 380,
+    "ticket_requests_total": 0,
+    "mail_messages_log": 178,
+    "kb_articles": 0,
+    "equipment_transfers": 272,
+    "pc_cleanings": 128,
+    "battery_replacements": 24,
+    "component_replacements": 1,
+    "chat_conversations": null,
+    "chat_messages": null,
+    "chat_messages_since_2025": null
+  },
+  "scan_center": {
+    "configured": true,
+    "path": "C:\\Project\\Image_scan\\data\\scan_server\\scan_server.db",
+    "scan_agents": 396,
+    "scan_incidents": 56319,
+    "scan_jobs": 825953
+  }
+}

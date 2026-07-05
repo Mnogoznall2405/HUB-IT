@@ -699,15 +699,21 @@ def get_matrix_grid(
     branch: str | None = None,
     folder_query: str = "",
     user_query: str = "",
+    group_limit: int = 250,
+    user_limit: int = 500,
 ) -> dict[str, Any]:
     snapshot = load_snapshot()
-    groups = [_project_group_item(group) for group in _filter_groups_from_snapshot(
+    all_groups = [_project_group_item(group) for group in _filter_groups_from_snapshot(
         snapshot,
         branch=branch,
         folder_query=folder_query,
     )]
+    safe_group_limit = max(1, min(int(group_limit or 250), 1000))
+    safe_user_limit = max(1, min(int(user_limit or 500), 2000))
+    groups = all_groups[:safe_group_limit]
     group_dns = {str(group.get("dn") or "").strip() for group in groups if str(group.get("dn") or "").strip()}
-    users = _filter_users_for_groups(snapshot, group_dns=group_dns, user_query=user_query)
+    all_users = _filter_users_for_groups(snapshot, group_dns=group_dns, user_query=user_query)
+    users = all_users[:safe_user_limit]
     cells = _build_sparse_cells(users, group_dns=group_dns)
     users_light = [
         {
@@ -724,9 +730,16 @@ def get_matrix_grid(
         "users": users_light,
         "cells": cells,
         "summary": {
-            "group_count": len(groups),
-            "user_count": len(users_light),
+            "group_count": len(all_groups),
+            "user_count": len(all_users),
             "cell_count": len(cells),
+            "returned_group_count": len(groups),
+            "returned_user_count": len(users_light),
+            "group_limit": safe_group_limit,
+            "user_limit": safe_user_limit,
+            "group_truncated": len(all_groups) > len(groups),
+            "user_truncated": len(all_users) > len(users_light),
+            "truncated": len(all_groups) > len(groups) or len(all_users) > len(users_light),
         },
     }
 

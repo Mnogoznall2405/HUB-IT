@@ -158,6 +158,53 @@ def test_password_vault_unlock_requires_enabled_2fa(temp_dir, monkeypatch):
         service.unlock(actor=_actor(), session_id="session-2", totp_code="123456", meta=_meta())
 
 
+def test_password_vault_unlock_setup_enables_2fa_and_grants_access(temp_dir, monkeypatch):
+    _configure_crypto(monkeypatch)
+    _install_runtime_store(monkeypatch)
+    service = PasswordVaultService(database_url=_sqlite_url(temp_dir))
+    actor = _actor()
+    user_state = {
+        "id": actor.id,
+        "username": actor.username,
+        "email": actor.email,
+        "is_2fa_enabled": False,
+        "totp_secret_enc": "",
+    }
+
+    monkeypatch.setattr(service_module.user_service, "get_by_id", lambda _user_id: dict(user_state))
+    monkeypatch.setattr(
+        service_module.user_service,
+        "update_user",
+        lambda user_id, **fields: user_state.update(fields),
+    )
+    monkeypatch.setattr(service_module.twofa_service, "encrypt_secret", lambda secret: f"enc:{secret}")
+    monkeypatch.setattr(service_module.twofa_service, "decrypt_secret", lambda value: str(value).replace("enc:", ""))
+    monkeypatch.setattr(
+        service_module.twofa_service,
+        "verify_totp",
+        lambda *, secret, code, valid_window=1: code == "123456",
+    )
+    monkeypatch.setattr(service_module.twofa_service, "generate_backup_codes", lambda count=8: ["BACKUP-1", "BACKUP-2"])
+    monkeypatch.setattr(service_module.auth_security_service, "_replace_backup_codes", lambda user_id, codes: None)
+
+    setup = service.start_unlock_2fa_setup(actor=actor, meta=_meta())
+    assert setup["setup_challenge_id"]
+    assert setup["otpauth_uri"]
+    assert setup["manual_entry_key"]
+
+    result = service.verify_unlock_2fa_setup(
+        actor=actor,
+        session_id="session-setup",
+        setup_challenge_id=setup["setup_challenge_id"],
+        totp_code="123456",
+        meta=_meta(),
+    )
+    assert result["unlocked_until"]
+    assert result["backup_codes"] == ["BACKUP-1", "BACKUP-2"]
+    assert user_state["is_2fa_enabled"] is True
+    assert service.get_unlocked_until(user_id=actor.id, session_id="session-setup")
+
+
 def test_password_vault_unlock_accepts_totp_and_backup_code(temp_dir, monkeypatch):
     _configure_crypto(monkeypatch)
     _install_runtime_store(monkeypatch)

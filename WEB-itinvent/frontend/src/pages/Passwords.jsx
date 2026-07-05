@@ -90,16 +90,47 @@ const emptyGeneratorOptions = {
   excludeSimilar: true,
 };
 
+const passwordEntryLabelProps = { shrink: true };
+
+const passwordEntryFormFieldSx = {
+  '& .MuiInputLabel-outlined.MuiInputLabel-shrink': {
+    transform: 'translate(14px, -9px) scale(0.75)',
+  },
+  '& .MuiOutlinedInput-inputMultiline': {
+    paddingTop: '10px',
+  },
+  '& .MuiAutocomplete-inputRoot': {
+    alignItems: 'center',
+    minHeight: 40,
+    py: '4px !important',
+  },
+};
+
 export const normalizeTagList = (value) => {
   const items = Array.isArray(value)
     ? value
-    : String(value || '').split(',');
+    : String(value || '').split(/[,;\n]+/);
   return items
     .map((item) => normalizeText(item).replace(/^#+/, '').trim())
     .filter(Boolean)
     .filter((item, index, list) => list.findIndex((candidate) => candidate.toLowerCase() === item.toLowerCase()) === index)
     .slice(0, 20);
 };
+
+export const splitVaultTagInput = (text) => {
+  const raw = String(text || '');
+  const endsWithSeparator = /[,;\n]\s*$/.test(raw);
+  const parts = raw.split(/[,;\n]+/);
+  const remainder = endsWithSeparator ? '' : String(parts.pop() || '');
+  return {
+    completed: normalizeTagList(parts),
+    remainder,
+  };
+};
+
+export const appendVaultTags = (existingTags, incomingTags) => (
+  normalizeTagList([...(Array.isArray(existingTags) ? existingTags : []), ...(Array.isArray(incomingTags) ? incomingTags : [])])
+);
 
 const buildCharacterSets = (options = {}) => {
   const excludeSimilar = options.excludeSimilar !== false;
@@ -151,7 +182,7 @@ function Passwords() {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeSection = searchParams.get('section') === 'ad-expiry' ? 'ad-expiry' : 'vault';
-  const { user, hasPermission } = useAuth();
+  const { user, hasPermission, refreshSession } = useAuth();
   const { notifySuccess, notifyWarning, notifyApiError } = useNotification();
   const [entries, setEntries] = useState([]);
   const [groups, setGroups] = useState([]);
@@ -170,8 +201,13 @@ function Passwords() {
   const [entryDialogOpen, setEntryDialogOpen] = useState(false);
   const [formMode, setFormMode] = useState('create');
   const [form, setForm] = useState(emptyForm);
+  const [tagInputValue, setTagInputValue] = useState('');
   const [unlockDialogOpen, setUnlockDialogOpen] = useState(false);
+  const [unlockMode, setUnlockMode] = useState('verify');
   const [unlockCode, setUnlockCode] = useState('');
+  const [unlockSetupCode, setUnlockSetupCode] = useState('');
+  const [unlockSetupData, setUnlockSetupData] = useState(null);
+  const [unlockSetupLoading, setUnlockSetupLoading] = useState(false);
   const [unlocking, setUnlocking] = useState(false);
   const [pendingReveal, setPendingReveal] = useState(null);
   const [generatorOptions, setGeneratorOptions] = useState(emptyGeneratorOptions);
@@ -324,10 +360,36 @@ function Passwords() {
     selectedEntry && revealBusyId.startsWith(`${selectedEntry.id}:`),
   );
 
+  const resetTagInput = useCallback(() => {
+    setTagInputValue('');
+  }, []);
+
+  const commitPendingTagInput = useCallback((draft, { includeRemainder = false } = {}) => {
+    const raw = String(draft ?? tagInputValue ?? '');
+    const { completed, remainder } = splitVaultTagInput(raw);
+    const additions = [...completed];
+    const tail = normalizeText(remainder).replace(/^#+/, '');
+    if (includeRemainder && tail) {
+      additions.push(tail);
+    }
+    if (!additions.length) {
+      setTagInputValue(remainder);
+      return null;
+    }
+    let nextTags = null;
+    setForm((prev) => {
+      nextTags = appendVaultTags(prev.tags, additions);
+      return { ...prev, tags: nextTags };
+    });
+    setTagInputValue(includeRemainder ? '' : remainder);
+    return nextTags;
+  }, [tagInputValue]);
+
   const openCreateDialog = () => {
     setFormMode('create');
     setForm(emptyForm);
     setGeneratedPassword('');
+    resetTagInput();
     setEntryDialogOpen(true);
   };
 
@@ -342,13 +404,15 @@ function Passwords() {
       description: entry.description,
     });
     setGeneratedPassword('');
+    resetTagInput();
     setEntryDialogOpen(true);
   };
 
   const handleSaveEntry = async () => {
+    const flushedTags = commitPendingTagInput(tagInputValue, { includeRemainder: true });
     const payload = {
       group: form.group,
-      tags: normalizeTagList(form.tags),
+      tags: normalizeTagList(flushedTags || form.tags),
       login: form.login,
       description: form.description,
     };
@@ -413,6 +477,35 @@ function Passwords() {
     return true;
   };
 
+  const loadUnlockSetup = useCallback(async () => {
+    setUnlockSetupLoading(true);
+    try {
+      const setup = await passwordsAPI.unlockSetup2fa();
+      setUnlockSetupData(setup);
+      return setup;
+    } catch (error) {
+      notifyApiError(error, 'Не удалось подготовить настройку 2FA.', { dedupeMode: 'none' });
+      setUnlockDialogOpen(false);
+      return null;
+    } finally {
+      setUnlockSetupLoading(false);
+    }
+  }, [notifyApiError]);
+
+  const openUnlockDialog = useCallback(() => {
+    setUnlockCode('');
+    setUnlockSetupCode('');
+    if (!user?.is_2fa_enabled) {
+      setUnlockMode('setup');
+      setUnlockSetupData(null);
+      setUnlockDialogOpen(true);
+      void loadUnlockSetup();
+      return;
+    }
+    setUnlockMode('verify');
+    setUnlockDialogOpen(true);
+  }, [loadUnlockSetup, user?.is_2fa_enabled]);
+
   const revealEntry = async (entry, purpose, { allowUnlockPrompt = false } = {}) => {
     setRevealBusyId(`${entry.id}:${purpose}`);
     try {
@@ -432,8 +525,7 @@ function Passwords() {
     } catch (error) {
       if (allowUnlockPrompt && isVaultUnlockRequiredError(error)) {
         setPendingReveal({ entry, purpose });
-        setUnlockCode('');
-        setUnlockDialogOpen(true);
+        openUnlockDialog();
         return false;
       }
       notifyApiError(
@@ -471,10 +563,7 @@ function Passwords() {
     }
   };
 
-  const handleOpenUnlock = () => {
-    setUnlockCode('');
-    setUnlockDialogOpen(true);
-  };
+  const handleOpenUnlock = openUnlockDialog;
 
   const handleEditEntry = (entry) => {
     setMobileSheetOpen(false);
@@ -489,11 +578,17 @@ function Passwords() {
     }
   };
 
-  const completeUnlock = useCallback(async (unlockedUntilValue) => {
+  const completeUnlock = useCallback(async (unlockedUntilValue, { notifyMessage } = {}) => {
     const resolvedUnlock = syncUnlockedUntil(unlockedUntilValue);
     setUnlockDialogOpen(false);
     setUnlockCode('');
-    notifySuccess('Доступ к раскрытию паролей открыт на 5 минут.', { source: 'passwords', dedupeMode: 'none' });
+    setUnlockSetupCode('');
+    setUnlockSetupData(null);
+    setUnlockMode('verify');
+    notifySuccess(
+      notifyMessage || 'Доступ к раскрытию паролей открыт на 5 минут.',
+      { source: 'passwords', dedupeMode: 'none' },
+    );
     const nextReveal = pendingReveal;
     setPendingReveal(null);
     if (nextReveal?.entry) {
@@ -534,6 +629,28 @@ function Passwords() {
         extractWebAuthnErrorMessage(error, 'Не удалось подтвердить passkey.'),
         { source: 'passwords', dedupeMode: 'none' },
       );
+    } finally {
+      setUnlocking(false);
+    }
+  };
+
+  const handleVerify2faSetup = async () => {
+    const code = unlockSetupCode.trim();
+    if (code.length < 6 || !unlockSetupData?.setup_challenge_id) return;
+    setUnlocking(true);
+    try {
+      const result = await passwordsAPI.unlockVerify2faSetup({
+        setup_challenge_id: unlockSetupData.setup_challenge_id,
+        totp_code: code,
+      });
+      await refreshSession();
+      const backupCodes = Array.isArray(result?.backup_codes) ? result.backup_codes : [];
+      const notifyMessage = backupCodes.length
+        ? `2FA подключён. Сохраните backup-коды: ${backupCodes.join(', ')}`
+        : '2FA подключён. Хранилище разблокировано.';
+      await completeUnlock(result?.unlocked_until || null, { notifyMessage });
+    } catch (error) {
+      notifyApiError(error, 'Не удалось подтвердить настройку 2FA.', { dedupeMode: 'none' });
     } finally {
       setUnlocking(false);
     }
@@ -619,6 +736,7 @@ function Passwords() {
               unlockedRemainingMs={unlockedRemainingMs}
               unlockedUntil={unlockedUntil}
               onUnlockClick={handleOpenUnlock}
+              requiresSetup={!user?.is_2fa_enabled}
               compact
             />
 
@@ -811,14 +929,22 @@ function Passwords() {
         )}
       </PageShell>
 
-      <Dialog open={entryDialogOpen} onClose={() => setEntryDialogOpen(false)} fullWidth maxWidth="md">
+      <Dialog
+        open={entryDialogOpen}
+        onClose={() => {
+          resetTagInput();
+          setEntryDialogOpen(false);
+        }}
+        fullWidth
+        maxWidth="md"
+      >
         <DialogTitle>{formMode === 'edit' ? 'Редактировать запись' : 'Новая запись'}</DialogTitle>
         <DialogContent dividers>
           <Grid container spacing={2}>
             <Grid item xs={12} md={7}>
-              <Stack spacing={2} sx={{ pt: 0.5 }}>
+              <Stack spacing={2} sx={{ pt: 0.5, ...passwordEntryFormFieldSx }}>
                 <FormControl fullWidth required>
-                  <InputLabel id="password-group-label">Группа</InputLabel>
+                  <InputLabel id="password-group-label" shrink>Группа</InputLabel>
                   <Select
                     labelId="password-group-label"
                     label="Группа"
@@ -847,6 +973,7 @@ function Passwords() {
                   onChange={(event) => setForm((prev) => ({ ...prev, login: event.target.value }))}
                   required
                   fullWidth
+                  InputLabelProps={passwordEntryLabelProps}
                   inputProps={{ 'data-testid': 'password-form-login' }}
                 />
                 <Autocomplete
@@ -854,9 +981,25 @@ function Passwords() {
                   freeSolo
                   options={tags}
                   value={form.tags}
+                  inputValue={tagInputValue}
                   filterSelectedOptions
                   onChange={(_, nextValue) => {
                     setForm((prev) => ({ ...prev, tags: normalizeTagList(nextValue) }));
+                    resetTagInput();
+                  }}
+                  onInputChange={(_, newInputValue, reason) => {
+                    if (reason === 'reset' || reason === 'clear') {
+                      resetTagInput();
+                      return;
+                    }
+                    const { completed, remainder } = splitVaultTagInput(newInputValue);
+                    if (completed.length) {
+                      setForm((prev) => ({
+                        ...prev,
+                        tags: appendVaultTags(prev.tags, completed),
+                      }));
+                    }
+                    setTagInputValue(remainder);
                   }}
                   isOptionEqualToValue={(option, value) => (
                     String(option).toLowerCase() === String(value).toLowerCase()
@@ -868,10 +1011,25 @@ function Passwords() {
                       {...params}
                       label="Теги"
                       placeholder={tags.length ? 'Выберите из списка или введите новый' : 'Введите тег'}
-                      helperText="До 20 тегов. Можно выбрать существующий или добавить новый."
+                      helperText="До 20 тегов. Можно выбрать существующий, ввести новый и нажать Enter, Tab или запятую."
+                      InputLabelProps={{
+                        ...params.InputLabelProps,
+                        ...passwordEntryLabelProps,
+                      }}
                       inputProps={{
                         ...params.inputProps,
                         'data-testid': 'password-form-tags',
+                        onBlur: (event) => {
+                          params.inputProps?.onBlur?.(event);
+                          commitPendingTagInput(event.target.value, { includeRemainder: true });
+                        },
+                        onKeyDown: (event) => {
+                          params.inputProps?.onKeyDown?.(event);
+                          if (event.key === 'Enter' && tagInputValue.trim()) {
+                            event.preventDefault();
+                            commitPendingTagInput(tagInputValue, { includeRemainder: true });
+                          }
+                        },
                       }}
                     />
                   )}
@@ -883,6 +1041,7 @@ function Passwords() {
                   onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))}
                   required={formMode !== 'edit'}
                   helperText={formMode === 'edit' ? 'Оставьте пустым, чтобы не менять пароль.' : ''}
+                  InputLabelProps={passwordEntryLabelProps}
                   inputProps={{ 'data-testid': 'password-form-password' }}
                   fullWidth
                 />
@@ -893,6 +1052,7 @@ function Passwords() {
                   multiline
                   minRows={4}
                   fullWidth
+                  InputLabelProps={passwordEntryLabelProps}
                 />
               </Stack>
             </Grid>
@@ -948,7 +1108,14 @@ function Passwords() {
           </Grid>
         </DialogContent>
         <DialogActions>
-          <Button onClick={() => setEntryDialogOpen(false)}>Отмена</Button>
+          <Button
+            onClick={() => {
+              resetTagInput();
+              setEntryDialogOpen(false);
+            }}
+          >
+            Отмена
+          </Button>
           <Button variant="contained" onClick={handleSaveEntry} disabled={!formIsValid || saving || !groups.length}>
             {saving ? 'Сохранение...' : 'Сохранить'}
           </Button>
@@ -958,12 +1125,25 @@ function Passwords() {
       <PasswordUnlockDialog
         open={unlockDialogOpen}
         isMobile={isMobile}
+        mode={unlockMode}
+        accountName={user?.username || ''}
         unlockCode={unlockCode}
+        setupCode={unlockSetupCode}
+        setupData={unlockSetupData}
+        setupLoading={unlockSetupLoading}
         unlocking={unlocking}
-        passkeyAvailable={passkeyUnlockAvailable}
-        onClose={() => setUnlockDialogOpen(false)}
+        passkeyAvailable={passkeyUnlockAvailable && unlockMode === 'verify'}
+        onClose={() => {
+          setUnlockDialogOpen(false);
+          setUnlockSetupCode('');
+          setUnlockSetupData(null);
+          setUnlockMode('verify');
+        }}
         onCodeChange={(event) => setUnlockCode(event.target.value)}
+        onSetupCodeChange={(event) => setUnlockSetupCode(event.target.value)}
         onSubmit={handleUnlock}
+        onSetupSubmit={handleVerify2faSetup}
+        onReloadSetup={loadUnlockSetup}
         onPasskeyUnlock={handleUnlockWithPasskey}
       />
       <Drawer
