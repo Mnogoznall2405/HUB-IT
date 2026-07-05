@@ -967,7 +967,7 @@ def create_uploaded_transfer_act(
         template_empl_no = int(template[4]) if template and template[4] is not None else None
         template_suppl_no = int(template[5]) if template and template[5] is not None else None
 
-        # Force document type as "Act" using recent act documents.
+        # Force document type as "Act" using recent non-annulled act documents.
         cursor.execute(
             """
             SELECT TOP 1 d.TYPE_NO
@@ -977,6 +977,8 @@ def create_uploaded_transfer_act(
                 LOWER(COALESCE(d.DOC_NUMBER, N'')) LIKE N'%акт%'
                 OR LOWER(COALESCE(d.ADDINFO, N'')) LIKE N'%акт%'
               )
+              AND LOWER(COALESCE(d.DOC_NUMBER, N'')) NOT LIKE N'%аннулир%'
+              AND LOWER(COALESCE(d.ADDINFO, N'')) NOT LIKE N'%аннулир%'
             ORDER BY
                 CASE WHEN d.DOC_DATE IS NULL THEN 1 ELSE 0 END,
                 d.DOC_DATE DESC,

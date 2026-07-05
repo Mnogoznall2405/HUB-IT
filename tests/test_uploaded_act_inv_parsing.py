@@ -13,6 +13,66 @@ from backend.database import queries  # noqa: E402
 from backend.utils.person_names import to_short_fio  # noqa: E402
 
 
+class _UploadedActFakeCursor:
+    def __init__(self):
+        self._one = None
+        self._many = []
+        self.inserted_docs_params = None
+
+    def execute(self, query, params=None):
+        text = " ".join(str(query or "").lower().split())
+        self._one = None
+        self._many = []
+
+        if "from docs_list dl inner join docs d" in text and "dl.item_id in" in text:
+            self._many = []
+        elif "select i.id, i.branch_no, i.loc_no" in text:
+            self._many = [(101, 7, 9)]
+        elif "select top 1 d.type_no, d.comp_no" in text:
+            self._one = (99, 0, None, None, None, None)
+        elif "select top 1 d.type_no" in text and "n'%акт%'" in text:
+            self._one = (10,) if "n'%аннулир%'" in text else (99,)
+        elif "select isnull(max(doc_no), 0) + 1 from docs" in text:
+            self._one = (1464,)
+        elif "insert into docs (" in text:
+            self.inserted_docs_params = tuple(params or ())
+        elif "select i.id, i.descr" in text:
+            self._many = [(101, "")]
+        elif "select top 1 d.type_no" in text and "n'%аннулирован%'" in text:
+            self._one = (99,)
+        elif "select isnull(max(file_no), 0) + 1 from files" in text:
+            self._one = (501,)
+        return self
+
+    def fetchone(self):
+        return self._one
+
+    def fetchall(self):
+        return list(self._many)
+
+
+class _UploadedActFakeConnection:
+    def __init__(self):
+        self.cursor_obj = _UploadedActFakeCursor()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def cursor(self):
+        return self.cursor_obj
+
+
+class _UploadedActFakeDB:
+    def __init__(self):
+        self.connection = _UploadedActFakeConnection()
+
+    def get_connection(self):
+        return self.connection
+
+
 def test_build_uploaded_act_addinfo_uses_act_line_format():
     add_info = queries._build_uploaded_act_addinfo(
         1464,
@@ -56,6 +116,26 @@ def test_legacy_sqlserver_text_normalizes_upload_act_arrows_for_cp1251(monkeypat
     assert "→" not in text
     assert "->" in text
     text.encode("cp1251")
+
+
+def test_create_uploaded_transfer_act_does_not_copy_annulled_doc_type(monkeypatch):
+    fake_db = _UploadedActFakeDB()
+    monkeypatch.setattr(queries, "get_db", lambda db_id=None: fake_db)
+
+    result = queries.create_uploaded_transfer_act(
+        from_employee="Old Owner",
+        to_employee="",
+        doc_date=datetime(2026, 6, 29),
+        equipment_item_ids=[101],
+        file_name="signed.pdf",
+        file_bytes=b"%PDF-1.4",
+        created_by="tester",
+        db_id="main",
+    )
+
+    assert result["doc_no"] == 1464
+    assert fake_db.connection.cursor_obj.inserted_docs_params is not None
+    assert fake_db.connection.cursor_obj.inserted_docs_params[1] == 10
 
 
 def test_parse_inv_nos_from_text_ignores_word_garbage_and_dates():
