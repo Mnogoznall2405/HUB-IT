@@ -3,11 +3,17 @@ import { fireEvent, render, screen } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
+vi.mock('../../lib/chatFeature', () => ({
+  TASK_DISCUSSION_CHAT_ENABLED: false,
+}));
+
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
 import {
   normalizeTaskDetailTab,
   TaskContextSidebar,
   TaskDetailHeader,
+  TaskMobileContentSummary,
+  TaskMobileDetailScreen,
   TaskPreviewDrawer,
 } from './TaskUi';
 
@@ -133,6 +139,46 @@ describe('TaskUi helpers', () => {
     expect(screen.getByRole('button', { name: /Назад/i })).toBeInTheDocument();
   });
 
+  it('renders mobile task content with title, description, and files first', () => {
+    const onDownloadAttachment = vi.fn();
+    const onDownloadReport = vi.fn();
+
+    render(
+      <ThemeProvider theme={theme}>
+        <TaskMobileContentSummary
+          task={sampleTask}
+          attachments={[
+            {
+              id: 'att-1',
+              file_name: 'акт-перемещения.pdf',
+              file_size: 2048,
+              uploaded_at: '2026-03-21T09:10:00Z',
+            },
+          ]}
+          canUploadFiles
+          uploadingAttachment={false}
+          onUploadAttachment={vi.fn()}
+          onDownloadAttachment={onDownloadAttachment}
+          onDownloadReport={onDownloadReport}
+          formatDateTime={(value) => value || '-'}
+          formatFileSize={(value) => `${value} B`}
+          ui={ui}
+          theme={theme}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByTestId('task-mobile-content')).toBeInTheDocument();
+    expect(screen.getByText(sampleTask.title)).toBeInTheDocument();
+    expect(screen.getByTestId('task-mobile-description')).toHaveTextContent('Проверить INV_NO');
+    expect(screen.getByTestId('task-mobile-files')).toHaveTextContent('акт-перемещения.pdf');
+    expect(screen.getByTestId('task-mobile-files')).toHaveTextContent('report.pdf');
+    expect(screen.getByRole('button', { name: /Прикрепить файл/i })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('button', { name: /Скачать акт-перемещения\.pdf/i }));
+    expect(onDownloadAttachment).toHaveBeenCalledTimes(1);
+  });
+
   it('renders mobile context sidebar as compact sections', () => {
     render(
       <ThemeProvider theme={theme}>
@@ -145,12 +191,21 @@ describe('TaskUi helpers', () => {
           transferLabel="Осталось актов: 1"
           isTransferReminder={false}
           formatDateTime={(value) => value || '-'}
+          actionState={{
+            key: 'submit',
+            stepLabel: 'Сдать результат',
+            actionLabel: 'Сдать',
+            hint: 'Нажмите "Сдать", добавьте комментарий и файл при необходимости.',
+          }}
           actions={<button type="button">primary</button>}
           mobile
         />
       </ThemeProvider>,
     );
 
+    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Что сделать');
+    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Сдать результат');
+    expect(screen.getByTestId('task-context-mobile-action')).toHaveTextContent('Нажмите "Сдать"');
     expect(screen.getByTestId('task-context-mobile-context')).toBeInTheDocument();
     expect(screen.getByTestId('task-context-mobile-timeline')).toBeInTheDocument();
 
@@ -159,5 +214,107 @@ describe('TaskUi helpers', () => {
 
     fireEvent.click(screen.getByText('Сроки и состояние'));
     expect(screen.getByText('Срок')).toBeInTheDocument();
+  });
+
+  it('renders passive mobile status for tasks waiting on review', () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <TaskContextSidebar
+          task={sampleTask}
+          ui={ui}
+          theme={theme}
+          statusMeta={{ label: 'На проверке', color: '#7c3aed', bg: 'rgba(124,58,237,0.14)' }}
+          priorityMeta={{ value: 'normal', label: 'Обычный', dotColor: '#64748b' }}
+          transferLabel="Осталось актов: 1"
+          isTransferReminder={false}
+          formatDateTime={(value) => value || '-'}
+          actionState={{
+            key: 'waiting_review',
+            stepLabel: 'На проверке',
+            actionLabel: '',
+            hint: 'Результат отправлен на проверку. Ожидайте решения контролёра.',
+            passive: true,
+          }}
+          mobile
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByTestId('task-context-mobile-status')).toHaveTextContent('Статус');
+    expect(screen.getByTestId('task-context-mobile-status')).toHaveTextContent('На проверке');
+    expect(screen.queryByTestId('task-context-mobile-action')).not.toBeInTheDocument();
+    expect(screen.queryByText('Что сделать')).not.toBeInTheDocument();
+    expect(screen.queryByText('Проверить результат')).not.toBeInTheDocument();
+  });
+
+  it('renders observer badge and observer chips in task context', () => {
+    const { unmount: unmountHeader } = render(
+      <ThemeProvider theme={theme}>
+        <TaskDetailHeader
+          task={{ ...sampleTask, is_observer: true }}
+          statusMeta={{ label: 'В работе', color: '#d97706', bg: 'rgba(217,119,6,0.16)' }}
+          priorityMeta={{ value: 'normal', label: 'Обычный', dotColor: '#64748b' }}
+          transferLabel=""
+          isTransferReminder={false}
+          ui={ui}
+          theme={theme}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText('Наблюдатель')).toBeInTheDocument();
+    unmountHeader();
+
+    render(
+      <ThemeProvider theme={theme}>
+        <TaskContextSidebar
+          task={{
+            ...sampleTask,
+            observers: [
+              { user_id: 4, full_name: 'Наблюдатель Н.Н.', username: 'observer' },
+            ],
+          }}
+          ui={ui}
+          theme={theme}
+          statusMeta={{ label: 'В работе', color: '#d97706', bg: 'rgba(217,119,6,0.16)' }}
+          priorityMeta={{ value: 'normal', label: 'Обычный', dotColor: '#64748b' }}
+          transferLabel=""
+          isTransferReminder={false}
+          formatDateTime={(value) => value || '-'}
+          actionState={{ passive: true, stepLabel: 'Просмотр', hint: 'Только просмотр' }}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText('Наблюдатели')).toBeInTheDocument();
+    expect(screen.getByText('Наблюдатель Н.Н.')).toBeInTheDocument();
+  });
+
+  it('renders observers in mobile task detail screen', () => {
+    render(
+      <ThemeProvider theme={theme}>
+        <TaskMobileDetailScreen
+          task={{
+            ...sampleTask,
+            observers: [
+              { user_id: 4, full_name: 'Наблюдатель Н.Н.', username: 'observer' },
+            ],
+          }}
+          attachments={[]}
+          canUploadFiles={false}
+          uploadingAttachment={false}
+          onUploadAttachment={vi.fn()}
+          onDownloadAttachment={vi.fn()}
+          onDownloadReport={vi.fn()}
+          formatDateTime={(value) => value || '-'}
+          formatFileSize={(value) => `${value} B`}
+          ui={ui}
+          theme={theme}
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByText('Наблюдатели')).toBeInTheDocument();
+    expect(screen.getByText('Наблюдатель Н.Н.')).toBeInTheDocument();
   });
 });

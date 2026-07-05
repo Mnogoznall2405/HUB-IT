@@ -74,6 +74,14 @@ describe('SETTINGS_PERMISSION_GROUPS', () => {
       expect.objectContaining({ value: 'my_files.audit.read', label: 'Мои файлы: журнал аудита' }),
     ]));
   });
+
+  it('exposes task creation as a separate permission in the user permission matrix', () => {
+    const flattened = SETTINGS_PERMISSION_GROUPS.flatMap((group) => group.permissions || []);
+
+    expect(flattened).toEqual(expect.arrayContaining([
+      expect.objectContaining({ value: 'tasks.create', label: 'Задачи: создание' }),
+    ]));
+  });
 });
 
 describe('AiBotsAdminSection', () => {

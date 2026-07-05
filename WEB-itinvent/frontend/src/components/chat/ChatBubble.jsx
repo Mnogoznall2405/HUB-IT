@@ -34,7 +34,8 @@ import MarkdownRenderer from '../hub/MarkdownRenderer';
 import {
   detectChatBodyFormat,
   formatFullDate,
-  formatShortTime,
+  formatMessageMetaLabel,
+  getChatInlineMetaReserveWidth,
   getEmojiOnlyCount,
   getReplyPreviewText,
   hasChatMarkdownTable,
@@ -42,47 +43,25 @@ import {
   isImageAttachment,
   isVideoAttachment,
 } from './chatHelpers';
+import {
+  isMobileMessageLongPress,
+  shouldAnimateChatBubble,
+  shouldCancelLongPressMove,
+  shouldSuppressNativeMessageGesture,
+} from './chatBubbleGesturePolicy';
+import useChatBubbleGestures from './useChatBubbleGestures';
 
-const LONG_PRESS_SCROLL_CANCEL_PX = 30;
-const LONG_PRESS_HORIZONTAL_CANCEL_PX = 44;
+export {
+  isMobileMessageLongPress,
+  shouldAnimateChatBubble,
+  shouldCancelLongPressMove,
+  shouldSuppressNativeMessageGesture,
+} from './chatBubbleGesturePolicy';
+
 const joinClasses = (...values) => values.filter(Boolean).join(' ');
+const SWIPE_TRIGGER = 38;
 const LIGHT_GROUP_SENDER_COLORS = ['#d45246', '#c97a00', '#2f8b44', '#387adf', '#8b4ccf', '#0f9d8a', '#c95d9c', '#468fba'];
 const DARK_GROUP_SENDER_COLORS = ['#ff7b73', '#f6c15c', '#7de26f', '#6bb6ff', '#c59bff', '#64e1cf', '#ff99dc', '#7bd7ff'];
-export const isMobileMessageLongPress = ({
-  mobileInteractionsEnabled = false,
-  compactMobile = false,
-} = {}) => Boolean(mobileInteractionsEnabled || compactMobile);
-
-export const shouldCancelLongPressMove = ({
-  startX = 0,
-  startY = 0,
-  currentX = 0,
-  currentY = 0,
-} = {}) => {
-  const deltaX = Math.abs(Number(currentX || 0) - Number(startX || 0));
-  const deltaY = Math.abs(Number(currentY || 0) - Number(startY || 0));
-  if (deltaY >= LONG_PRESS_SCROLL_CANCEL_PX && deltaY > deltaX + 8) return true;
-  if (deltaX >= LONG_PRESS_HORIZONTAL_CANCEL_PX && deltaX > deltaY + 16) return true;
-  return false;
-};
-
-export const shouldSuppressNativeMessageGesture = ({
-  mobileInteractionsEnabled = false,
-  compactMobile = false,
-} = {}) => isMobileMessageLongPress({ mobileInteractionsEnabled, compactMobile });
-
-export const shouldAnimateChatBubble = ({
-  prefersReducedMotion = false,
-  compactMobile = false,
-  isOwn = false,
-  isOptimistic = false,
-  isSending = false,
-} = {}) => {
-  if (prefersReducedMotion) return false;
-  if (isOwn) return false;
-  if (compactMobile && !isOptimistic) return false;
-  return true;
-};
 
 const messageAppear = keyframes`
   from {
@@ -540,11 +519,15 @@ function ChatBubbleMeta({
       direction="row"
       spacing={0.3}
       justifyContent="flex-end"
-      alignItems="center"
+      alignItems={isInlineLayout ? 'flex-end' : 'center'}
       sx={{
         position: inFlow ? 'relative' : 'absolute',
         right: inFlow ? 'auto' : (isMediaLayout ? 10 : (isInlineLayout ? 10 : 12)),
-        bottom: inFlow ? 'auto' : (bottomOffset ?? (isMediaLayout ? 10 : (isInlineLayout ? 4 : 5))),
+        bottom: inFlow ? 'auto' : (
+          isInlineLayout
+            ? Math.max(2, Math.round((density.bubblePy ?? 0.82) * 8 * 0.34))
+            : (bottomOffset ?? (isMediaLayout ? 10 : 5))
+        ),
         mt: inFlow ? (dense ? 0 : '2px') : 0,
         mb: inFlow ? (dense ? 0 : '4px') : 0,
         pr: inFlow ? (dense ? 0 : '10px') : 0,
@@ -557,41 +540,14 @@ function ChatBubbleMeta({
         pointerEvents: isInlineLayout ? 'none' : 'auto',
       }}
     >
-      {false && !isInlineLayout && !isMediaLayout && isOwnGroup && readByCount > 0 ? (
-        <Typography
-          component="button"
-          type="button"
-          onClick={() => onOpenReads?.(message)}
-          sx={{
-            appearance: 'none',
-            border: 'none',
-            bgcolor: 'transparent',
-            p: 0,
-            mr: 0.3,
-            cursor: 'pointer',
-            fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta,
-            fontWeight: 700,
-            color: message?.is_own ? alpha('#fff', 0.92) : ui.accentText,
-            lineHeight: 1,
-            fontFamily: CHAT_FONT_FAMILY,
-          }}
-        >
-          {`Просмотрели: ${readByCount}`}
-        </Typography>
-      ) : null}
-
-      {false && !compactMobile && !isInlineLayout && !isMediaLayout ? (
-        <Tooltip title="Ответить">
-          <span>
-            <IconButton size="small" aria-label="Ответить" onClick={() => onReplyMessage?.(message)} sx={{ p: 0, width: 18, height: 18, color: receiptColor }}>
-              <ReplyRoundedIcon sx={{ fontSize: 15 }} />
-            </IconButton>
-          </span>
-        </Tooltip>
-      ) : null}
-
-      <Typography variant="caption" title={formatFullDate(message?.created_at)} sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta, lineHeight: 1, fontFamily: CHAT_FONT_FAMILY }}>
-        {formatShortTime(message?.created_at)}
+      <Typography
+        variant="caption"
+        title={message?.edited_at
+          ? `${formatFullDate(message?.created_at)} · изменено ${formatFullDate(message?.edited_at)}`
+          : formatFullDate(message?.created_at)}
+        sx={{ color: receiptColor, fontSize: density.bubbleMetaFontSize || CHAT_DEFAULT_FONT_SIZES.meta, lineHeight: 1, fontFamily: CHAT_FONT_FAMILY, whiteSpace: 'nowrap' }}
+      >
+        {formatMessageMetaLabel(message)}
       </Typography>
 
       {shouldShowUploadProgress ? (
@@ -797,20 +753,45 @@ export function ChatBubble({
   const bubbleText = message?.is_own ? ui.bubbleOwnText : ui.bubbleOtherText;
   const linkColors = resolveChatBubbleLinkColors(ui, Boolean(message?.is_own));
   const linkColor = linkColors.text || ui.accentText || theme.palette.primary.main;
-  const longPressTimerRef = useRef(null);
-  const longPressStartRef = useRef({ x: 0, y: 0 });
-  const longPressGestureRef = useRef({ source: '', pointerId: null, handled: false });
   const prefersReducedMotion = useReducedMotion();
   const canToggleSelection = typeof onToggleMessageSelection === 'function';
-  const mobileMessageInteractionsEnabled = isMobileMessageLongPress({
-    mobileInteractionsEnabled,
-    compactMobile,
-  });
-  const suppressNativeMessageGesture = shouldSuppressNativeMessageGesture({
-    mobileInteractionsEnabled,
-    compactMobile,
-  });
   const resolvedMessageId = String(message?.id || '').trim();
+  const hasAudioAttachments = attachments.length > 0
+    && attachments.some((attachment) => isAudioAttachment(attachment));
+  const mediaOnlyAttachments = attachments.length > 0
+    && !hasAudioAttachments
+    && attachments.every((attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment));
+  const pureMediaBubble = mediaOnlyAttachments && !attachmentCaption;
+  const {
+    swipeDx,
+    longPressGestureRef,
+    mobileMessageInteractionsEnabled,
+    toggleSelection,
+    clearLongPress,
+    handleClickCapture,
+    handleContextMenu,
+    handleBubbleClick,
+    startPointerLongPress,
+    handlePointerLongPressMove,
+    handlePointerCancel,
+    startLongPress,
+    handleLongPressMove,
+    handleTouchCancel,
+    handleSwipeMove,
+    handleSwipeEnd,
+  } = useChatBubbleGestures({
+    mobileInteractionsEnabled,
+    compactMobile,
+    selectionMode,
+    canToggleSelection,
+    message,
+    attachments,
+    pureMediaBubble,
+    onToggleMessageSelection,
+    onStartMessageSelection,
+    onOpenMessageMenu,
+    onReplyMessage,
+  });
   const handleToggleReaction = useCallback((emoji) => {
     if (onToggleReaction) return onToggleReaction(emoji);
     if (onToggleReactionRaw) return onToggleReactionRaw(resolvedMessageId, emoji);
@@ -826,10 +807,6 @@ export function ChatBubble({
   });
   const [reactionPickerOpen, setReactionPickerOpen] = useState(false);
   const reactionPickerRef = useRef(null);
-  const swipeRef = useRef({ startX: 0, startY: 0, active: false, triggered: false });
-  const [swipeDx, setSwipeDx] = useState(0);
-  const SWIPE_TRIGGER = 38;
-  const SWIPE_MAX = 52;
   useEffect(() => {
     if (!reactionPickerOpen) return undefined;
     const handleOutside = (e) => {
@@ -841,221 +818,8 @@ export function ChatBubble({
     return () => window.removeEventListener('mousedown', handleOutside, true);
   }, [reactionPickerOpen]);
 
-  const clearLongPress = () => {
-    if (longPressTimerRef.current) {
-      window.clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-    longPressGestureRef.current = { source: '', pointerId: null, handled: longPressGestureRef.current.handled };
-  };
-
-  const resetLongPressGesture = () => {
-    if (longPressTimerRef.current) {
-      window.clearTimeout(longPressTimerRef.current);
-      longPressTimerRef.current = null;
-    }
-    longPressGestureRef.current = { source: '', pointerId: null, handled: false };
-  };
-
-  const toggleSelection = () => {
-    if (!message?.id || !canToggleSelection) return;
-    onToggleMessageSelection(message);
-  };
-
-  const handleClickCapture = (event) => {
-    if (longPressGestureRef.current.handled) {
-      event.preventDefault();
-      event.stopPropagation();
-      longPressGestureRef.current = { source: '', pointerId: null, handled: false };
-      return;
-    }
-    if (!selectionMode) return;
-    event.preventDefault();
-    event.stopPropagation();
-    toggleSelection();
-  };
-
-  const runLongPressAction = (target) => {
-    if (selectionMode && canToggleSelection) {
-      toggleSelection();
-      return;
-    }
-    const hasAttachments = attachments.length > 0 || pureMediaBubble;
-    if (compactMobile && hasAttachments) {
-      if (typeof onStartMessageSelection === 'function') {
-        onStartMessageSelection(message);
-      }
-      if (typeof onOpenMessageMenu === 'function') {
-        onOpenMessageMenu(message, target);
-      }
-      return;
-    }
-    if (typeof onStartMessageSelection === 'function') {
-      onStartMessageSelection(message);
-      return;
-    }
-    if (typeof onOpenMessageMenu === 'function') {
-      onOpenMessageMenu(message, target);
-      return;
-    }
-    onReplyMessage?.(message);
-  };
-
-  const scheduleLongPress = ({ x = 0, y = 0, target = null, pointerId = null, source = 'touch' } = {}) => {
-    if (!mobileMessageInteractionsEnabled) return;
-    if (longPressTimerRef.current) return;
-    if (longPressGestureRef.current.source && longPressGestureRef.current.source !== source) return;
-    longPressStartRef.current = {
-      x: Number(x || 0),
-      y: Number(y || 0),
-    };
-    longPressGestureRef.current = { source, pointerId, handled: false };
-    longPressTimerRef.current = window.setTimeout(() => {
-      longPressTimerRef.current = null;
-      longPressGestureRef.current = { ...longPressGestureRef.current, handled: true };
-      runLongPressAction(target);
-    }, 420);
-  };
-
-  const startLongPress = (event) => {
-    if (!mobileMessageInteractionsEnabled) return;
-    if (suppressNativeMessageGesture && event?.cancelable) {
-      event.preventDefault();
-    }
-    const touch = event?.touches?.[0] || null;
-    if (compactMobile && touch) {
-      swipeRef.current = { startX: touch.clientX, startY: touch.clientY, active: true, triggered: false };
-    }
-    scheduleLongPress({
-      x: Number(touch?.clientX || 0),
-      y: Number(touch?.clientY || 0),
-      target: event?.currentTarget || null,
-      source: 'touch',
-    });
-  };  const handleSwipeMove = (event) => {
-    if (!compactMobile || !swipeRef.current.active) return;
-    const touch = event?.touches?.[0];
-    if (!touch) return;
-    const dx = touch.clientX - swipeRef.current.startX;
-    const dy = Math.abs(touch.clientY - swipeRef.current.startY);
-    if (dy > 20) { swipeRef.current.active = false; setSwipeDx(0); return; }
-    if (dx < 0) {
-      const clamped = Math.min(Math.abs(dx), SWIPE_MAX);
-      setSwipeDx(clamped);
-      if (clamped >= SWIPE_TRIGGER && !swipeRef.current.triggered) {
-        swipeRef.current.triggered = true;
-        if (navigator.vibrate) navigator.vibrate(30);
-      }
-    }
-  };
-  const handleSwipeEnd = () => {
-    if (!compactMobile) return;
-    if (swipeRef.current.triggered) {
-      onReplyMessage?.(message);
-    }
-    swipeRef.current = { startX: 0, startY: 0, active: false, triggered: false };
-    setSwipeDx(0);
-  };
-
-  const startPointerLongPress = (event) => {
-    if (!mobileMessageInteractionsEnabled) return;
-    if (event?.pointerType && event.pointerType !== 'touch') return;
-    if (suppressNativeMessageGesture && event?.cancelable) {
-      event.preventDefault();
-    }
-    scheduleLongPress({
-      x: Number(event?.clientX || 0),
-      y: Number(event?.clientY || 0),
-      target: event?.currentTarget || null,
-      pointerId: event?.pointerId ?? null,
-      source: 'pointer',
-    });
-  };
-
-  const handleLongPressMove = (event) => {
-    if (!longPressTimerRef.current) return;
-    const touch = event?.touches?.[0] || null;
-    if (!touch) {
-      resetLongPressGesture();
-      return;
-    }
-    if (shouldCancelLongPressMove({
-      startX: longPressStartRef.current.x,
-      startY: longPressStartRef.current.y,
-      currentX: Number(touch.clientX || 0),
-      currentY: Number(touch.clientY || 0),
-    })) {
-      resetLongPressGesture();
-    }
-  };
-
-  const handlePointerLongPressMove = (event) => {
-    if (!longPressTimerRef.current) return;
-    if (event?.pointerType && event.pointerType !== 'touch') return;
-    if (longPressGestureRef.current.pointerId !== null && event?.pointerId !== longPressGestureRef.current.pointerId) return;
-    if (shouldCancelLongPressMove({
-      startX: longPressStartRef.current.x,
-      startY: longPressStartRef.current.y,
-      currentX: Number(event?.clientX || 0),
-      currentY: Number(event?.clientY || 0),
-    })) {
-      resetLongPressGesture();
-    }
-  };
-
-  const handleTouchCancel = () => {
-    if (!mobileMessageInteractionsEnabled) {
-      resetLongPressGesture();
-    }
-  };
-
-  const handlePointerCancel = () => {
-    if (!mobileMessageInteractionsEnabled) {
-      resetLongPressGesture();
-    }
-  };
-
-  const handleContextMenu = (event) => {
-    if (mobileMessageInteractionsEnabled) {
-      event.preventDefault();
-      event.stopPropagation();
-      if (!longPressTimerRef.current && !longPressGestureRef.current.handled) {
-        longPressGestureRef.current = { source: 'contextmenu', pointerId: null, handled: true };
-        runLongPressAction(event.currentTarget);
-      }
-      return;
-    }
-    if (selectionMode && canToggleSelection) {
-      event.preventDefault();
-      event.stopPropagation();
-      toggleSelection();
-      return;
-    }
-    if (typeof onOpenMessageMenu !== 'function') return;
-    event.preventDefault();
-    event.stopPropagation();
-    onOpenMessageMenu(message, {
-      anchorEl: event.currentTarget,
-      anchorPosition: {
-        top: Math.round(Number(event.clientY || 0)),
-        left: Math.round(Number(event.clientX || 0)),
-      },
-      anchorReference: 'anchorPosition',
-    });
-  };
-
-  useEffect(() => () => {
-    clearLongPress();
-  }, []);
-
-  const hasAudioAttachments = attachments.length > 0
-    && attachments.some((attachment) => isAudioAttachment(attachment));
-  const mediaOnlyAttachments = attachments.length > 0
-    && !hasAudioAttachments
-    && attachments.every((attachment) => isImageAttachment(attachment) || isVideoAttachment(attachment));
   const imageOnlyGallery = attachments.length > 1 && attachments.every((attachment) => isImageAttachment(attachment));
   const showMediaMetaOverlay = mediaOnlyAttachments && !attachmentCaption;
-  const pureMediaBubble = mediaOnlyAttachments && !attachmentCaption;
   const hasReactions = Array.isArray(message?.reactions) && message.reactions.length > 0;
   const reactionFooter = hasReactions && !showMediaMetaOverlay;
   const textMetaInFlow = !compactMobile
@@ -1158,8 +922,8 @@ export function ChatBubble({
             left: { xs: 6, md: 10 },
             top: '50%',
             transform: 'translateY(-50%)',
-            width: compactMobile ? 28 : 26,
-            height: compactMobile ? 28 : 26,
+            width: compactMobile ? 44 : 26,
+            height: compactMobile ? 44 : 26,
             p: 0,
             border: 'none',
             borderRadius: 999,
@@ -1224,10 +988,7 @@ export function ChatBubble({
           data-chat-bubble-surface="true"
         data-chat-table-layout={hasMarkdownTable ? 'wide' : undefined}
         onContextMenu={handleContextMenu}
-        onClick={compactMobile && !selectionMode && !pureMediaBubble && attachments.length === 0 && typeof onOpenMessageMenu === 'function' ? (event) => {
-          if (longPressGestureRef.current.handled) return;
-          onOpenMessageMenu(message, event.currentTarget);
-        } : undefined}
+        onClick={compactMobile && !selectionMode && !pureMediaBubble && attachments.length === 0 && typeof onOpenMessageMenu === 'function' ? handleBubbleClick : undefined}
         onPointerDown={startPointerLongPress}
         onPointerMove={handlePointerLongPressMove}
         onPointerUp={clearLongPress}
@@ -1564,7 +1325,12 @@ export function ChatBubble({
               '&::after': inlineMeta ? {
                 content: '""',
                 display: 'inline-block',
-                width: isOwnDirect ? (compactMobile ? '4.15rem' : '3.9rem') : (compactMobile ? '2.8rem' : '2.5rem'),
+                width: getChatInlineMetaReserveWidth({
+                  message,
+                  compactMobile,
+                  isOwnDirect,
+                  isSending,
+                }),
                 height: '0.9em',
               } : undefined,
             }}
@@ -1623,7 +1389,7 @@ export function ChatBubble({
               compactMobile={compactMobile}
               onOpenReads={onOpenReads}
               onReplyMessage={onReplyMessage}
-              bottomOffset={7}
+              bottomOffset={inlineMeta ? undefined : 7}
               inFlow={reactionFooter || textMetaInFlow || (attachments.length > 0 && !showMediaMetaOverlay)}
               dense={reactionFooter || textMetaInFlow}
             />

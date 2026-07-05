@@ -42,34 +42,19 @@ from backend.services.tickets_service import (
 # Constants mirroring the service implementation
 # ---------------------------------------------------------------------------
 
-ACTIVE_STATUSES = {
-    "new", "data_check", "missing_data", "ready_to_buy",
-    "in_progress", "purchased", "exchange_needed",
-}
+ACTIVE_STATUSES = set(TicketsService.ACTIVE_STATUSES)
 
-KANBAN_STATUSES = {
-    "new", "data_check", "missing_data", "ready_to_buy",
-    "in_progress",
-    "purchased",
-    "exchange_needed", "refund",
-    "cancelled",
-    "no_show",
-}
+KANBAN_STATUSES = set(VALID_STATUSES)
 
-# Statuses excluded from kanban (closed, archive)
-EXCLUDED_FROM_KANBAN = {"closed", "archive"}
+EXCLUDED_FROM_KANBAN: set[str] = set()
 
 STATUS_COLUMN_MAP = {
-    "new": "Не запущен",
-    "data_check": "Не запущен",
-    "missing_data": "Не запущен",
-    "ready_to_buy": "Не запущен",
-    "in_progress": "В работе",
+    "not_started": "Не запущен",
+    "at_cashier": "В кассах",
     "purchased": "Куплен",
     "exchange_needed": "Возврат/обмен",
-    "refund": "Возврат/обмен",
-    "cancelled": "Отмена",
-    "no_show": "Проблема",
+    "refund_needed": "Возврат/обмен",
+    "cancel_purchase": "Отмена",
 }
 
 

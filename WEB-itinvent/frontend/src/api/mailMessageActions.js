@@ -60,6 +60,14 @@ export const mailMessageActionsAPI = {
     const response = await apiClient.post('/mail/messages/mark-all-read', payload);
     return response.data;
   },
+
+  setImportance: async (messageId, payload = {}) => {
+    const response = await apiClient.post(
+      `/mail/messages/${encodeURIComponent(messageId)}/importance`,
+      payload,
+    );
+    return response.data;
+  },
 };
 
 export default mailMessageActionsAPI;

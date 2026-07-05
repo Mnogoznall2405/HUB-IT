@@ -1,3 +1,4 @@
+import { memo } from 'react';
 import { motion } from 'framer-motion';
 import { Box, Stack, Typography } from '@mui/material';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
@@ -33,7 +34,7 @@ function TypingDots({ color }) {
   );
 }
 
-export default function ChatTypingIndicator({
+function ChatTypingIndicator({
   botName = 'AI Ассистент',
   theme,
   ui,
@@ -101,3 +102,5 @@ export default function ChatTypingIndicator({
     </Box>
   );
 }
+
+export default memo(ChatTypingIndicator);

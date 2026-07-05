@@ -50,6 +50,7 @@ import SearchIcon from '@mui/icons-material/Search';
 import LockIcon from '@mui/icons-material/Lock';
 import LockOpenIcon from '@mui/icons-material/LockOpen';
 import MainLayout from '../components/layout/MainLayout';
+import MobileShellPageHeader from '../components/layout/MobileShellPageHeader';
 import PageShell from '../components/layout/PageShell';
 import InteractiveMapCanvas from '../components/networks/InteractiveMapCanvas';
 import BranchList from '../components/networks/BranchList';
@@ -2825,8 +2826,14 @@ function Networks() {
   );
 
   return (
-    <MainLayout>
-      <PageShell fullHeight={!isMobile} sx={isMobile ? {} : { display: 'flex', flexDirection: 'column' }}>
+    <MainLayout showDatabaseSelector>
+      <PageShell
+        fullHeight={!isMobile}
+        sx={isMobile
+          ? { pb: 'calc(var(--app-shell-mobile-bottom-nav-height, 64px) + 8px)' }
+          : { display: 'flex', flexDirection: 'column' }}
+      >
+        {isMobile ? <MobileShellPageHeader title="Сети" showDatabaseSelector /> : null}
         {!isMobile && (
           <Stack direction="row" justifyContent="space-between" spacing={1.5} sx={{ mb: 2, flexShrink: 0 }}>
             <Box>

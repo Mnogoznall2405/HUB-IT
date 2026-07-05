@@ -44,7 +44,6 @@ describe('useDatabaseUploadActWorkflow', () => {
     equipmentAPI.getTransferReminder.mockResolvedValue(null);
     equipmentAPI.parseUploadedAct.mockResolvedValue({
       draft_id: 'draft-1',
-      document_title: 'Act',
       from_employee: 'Ivanov',
       to_employee: 'Petrov',
       equipment_inv_nos: ['1001'],
@@ -141,7 +140,6 @@ describe('useDatabaseUploadActWorkflow', () => {
     const file = createPdfFile();
     const fallbackDraft = {
       draft_id: 'manual-draft',
-      document_title: '',
       from_employee: '',
       to_employee: '',
       equipment_inv_nos: [],
@@ -171,7 +169,6 @@ describe('useDatabaseUploadActWorkflow', () => {
     const { result, props } = renderUploadActHook();
     const draft = {
       draft_id: 'draft-1',
-      document_title: 'Transfer act',
       from_employee: 'Ivanov Ivan',
       to_employee: 'Petrov Petr',
       doc_date: '2026-05-03',

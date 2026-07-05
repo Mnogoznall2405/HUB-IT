@@ -13,7 +13,7 @@ from backend.services.hub_service import hub_service
 
 
 _DATE_BASIS_LABELS = {
-    "protocol_date": "По дате протокола",
+    "protocol_date": "По дате постановки",
     "completed_at": "По завершению",
     "due_at": "По сроку",
 }
@@ -140,6 +140,7 @@ def build_task_analytics_excel(
     project_ids: list[str] | None = None,
     object_ids: list[str] | None = None,
     participant_user_ids: list[int] | None = None,
+    current_user=None,
 ) -> tuple[bytes, str]:
     analytics = hub_service_impl.get_task_analytics(
         start_date=start_date,
@@ -148,6 +149,7 @@ def build_task_analytics_excel(
         project_ids=project_ids,
         object_ids=object_ids,
         participant_user_ids=participant_user_ids,
+        current_user=current_user,
     )
 
     summary = analytics.get("summary") or {}
@@ -173,7 +175,7 @@ def build_task_analytics_excel(
         [
             ["Период с", _normalize_text(filters.get("start_date")) or "Без ограничения"],
             ["Период по", _normalize_text(filters.get("end_date")) or "Без ограничения"],
-            ["База дат", _DATE_BASIS_LABELS.get(_normalize_text(filters.get("date_basis"), "protocol_date"), "По дате протокола")],
+            ["База дат", _DATE_BASIS_LABELS.get(_normalize_text(filters.get("date_basis"), "protocol_date"), "По дате постановки")],
             ["Проекты", filter_labels["projects"]],
             ["Объекты", filter_labels["objects"]],
             ["Участники", filter_labels["participants"]],

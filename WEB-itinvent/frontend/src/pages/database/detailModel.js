@@ -140,7 +140,7 @@ export const buildDetailFormState = (data) => ({
   serial_no: String(readFirst(data, ['SERIAL_NO', 'serial_no'], '') || ''),
   hw_serial_no: String(readFirst(data, ['HW_SERIAL_NO', 'hw_serial_no'], '') || ''),
   part_no: String(readFirst(data, ['PART_NO', 'part_no'], '') || ''),
-  description: String(readFirst(data, ['DESCRIPTION', 'description'], '') || ''),
+  description: normalizeMultilineField(readFirst(data, ['DESCRIPTION', 'description'], '')),
   status_no: toNumberOrNull(readFirst(data, ['STATUS_NO', 'status_no'], null)),
   empl_no: toNumberOrNull(readFirst(data, ['EMPL_NO', 'empl_no'], null)),
   employee_name: String(readFirst(data, ['OWNER_DISPLAY_NAME', 'employee_name'], '') || ''),
@@ -172,6 +172,12 @@ export const formatDetailDate = (dateStr) => {
   }
 };
 
+export const normalizeMultilineField = (value) => {
+  const text = String(value ?? '');
+  if (!text) return '';
+  return text.replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+};
+
 export const buildDetailActSummary = (act) => {
   if (!act || typeof act !== 'object') return null;
   const pick = (keys, fallback = '-') => {
@@ -194,7 +200,7 @@ export const buildDetailActSummary = (act) => {
     createUser: pick(['create_user_name', 'CREATE_USER_NAME']),
     changeDate: pick(['ch_date', 'CH_DATE']),
     changeUser: pick(['ch_user', 'CH_USER']),
-    addInfo: String(addInfo || '').trim(),
+    addInfo: normalizeMultilineField(addInfo),
   };
 };
 

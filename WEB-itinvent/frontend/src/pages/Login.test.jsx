@@ -15,6 +15,8 @@ const {
   mockGetTrustedDeviceRegistrationOptions,
   mockVerifyTrustedDeviceRegistration,
   mockQrToDataUrl,
+  mockOfferPasswordSaveForAppleKeychain,
+  mockSubmitSafariPasswordSaveFullPage,
   locationAssignMock,
   locationReplaceMock,
 } = vi.hoisted(() => ({
@@ -30,6 +32,8 @@ const {
   mockGetTrustedDeviceRegistrationOptions: vi.fn(),
   mockVerifyTrustedDeviceRegistration: vi.fn(),
   mockQrToDataUrl: vi.fn(),
+  mockOfferPasswordSaveForAppleKeychain: vi.fn(),
+  mockSubmitSafariPasswordSaveFullPage: vi.fn(),
   locationAssignMock: vi.fn(),
   locationReplaceMock: vi.fn(),
 }));
@@ -60,6 +64,15 @@ vi.mock('../api/client', () => ({
     verifyTrustedDeviceRegistration: mockVerifyTrustedDeviceRegistration,
   },
 }));
+
+vi.mock('../lib/passwordCredentialSave', async (importOriginal) => {
+  const actual = await importOriginal();
+  return {
+    ...actual,
+    offerPasswordSaveForAppleKeychain: (...args) => mockOfferPasswordSaveForAppleKeychain(...args),
+    submitSafariPasswordSaveFullPage: (...args) => mockSubmitSafariPasswordSaveFullPage(...args),
+  };
+});
 
 import Login from './Login';
 
@@ -114,6 +127,35 @@ function submitPasswordStep({ username = 'ivanov', password = 'secret' } = {}) {
   fireEvent.submit(screen.getByTestId('password-auth-form'));
 }
 
+function installIphoneSafari() {
+  installMatchMedia({ mobile: true });
+  Object.defineProperty(window.navigator, 'userAgent', {
+    configurable: true,
+    value: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Mobile/15E148 Safari/604.1',
+  });
+  Object.defineProperty(window.navigator, 'platform', {
+    configurable: true,
+    value: 'iPhone',
+  });
+  Object.defineProperty(window.navigator, 'maxTouchPoints', {
+    configurable: true,
+    value: 5,
+  });
+}
+
+function primeTotpResumeFromSafariSave({
+  challengeId = 'challenge-setup',
+  username = 'ivanov',
+  nextStep = 'totp_setup',
+} = {}) {
+  sessionStorage.setItem('hubit_totp_resume', JSON.stringify({
+    loginChallengeId: challengeId,
+    username,
+    nextStep,
+  }));
+  window.location.search = `?resume_challenge=${encodeURIComponent(challengeId)}`;
+}
+
 async function ensurePasswordFormVisible() {
   return screen.findByTestId('password-auth-form');
 }
@@ -136,10 +178,18 @@ describe('Login hybrid internal/external flow', () => {
     mockGetTrustedDeviceRegistrationOptions.mockReset();
     mockVerifyTrustedDeviceRegistration.mockReset();
     mockQrToDataUrl.mockReset();
+    mockSubmitSafariPasswordSaveFullPage.mockReset();
     locationAssignMock.mockReset();
     locationReplaceMock.mockReset();
 
     mockQrToDataUrl.mockResolvedValue('data:image/png;base64,qr-image');
+    mockOfferPasswordSaveForAppleKeychain.mockResolvedValue({
+      offered: false,
+      saved: false,
+      reason: 'unsupported',
+    });
+    mockSubmitSafariPasswordSaveFullPage.mockReturnValue({ submitted: true, reason: 'full_page_post' });
+    sessionStorage.clear();
     mockGetLoginMode.mockResolvedValue({
       network_zone: 'internal',
       biometric_login_enabled: false,
@@ -167,6 +217,7 @@ describe('Login hybrid internal/external flow', () => {
         hash: '',
       },
     });
+    window.location.search = '';
 
     window.navigator.credentials = {
       create: vi.fn(),
@@ -255,6 +306,87 @@ describe('Login hybrid internal/external flow', () => {
     expect(locationAssignMock).not.toHaveBeenCalled();
   });
 
+  it('redirects iPhone login through Safari password save bridge', async () => {
+    installIphoneSafari();
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+    });
+    mockLogin.mockResolvedValue({
+      success: true,
+      status: '2fa_setup_required',
+      login_challenge_id: 'challenge-setup',
+      trusted_devices_available: false,
+    });
+
+    render(<Login />);
+    await ensurePasswordFormVisible();
+    submitPasswordStep();
+
+    await waitFor(() => {
+      expect(mockSubmitSafariPasswordSaveFullPage).toHaveBeenCalledWith({
+        username: 'ivanov',
+        password: 'secret',
+        loginChallengeId: 'challenge-setup',
+      });
+    });
+    expect(mockStartTwoFactorSetup).not.toHaveBeenCalled();
+  });
+
+  it('uses apple-otpauth button on iPhone during 2FA setup', async () => {
+    installIphoneSafari();
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+    });
+    mockStartTwoFactorSetup.mockResolvedValue({
+      success: true,
+      login_challenge_id: 'challenge-setup',
+      otpauth_uri: 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=hubit.zsgp.ru',
+      manual_entry_key: 'ABC123',
+      qr_svg: null,
+    });
+    primeTotpResumeFromSafariSave();
+
+    render(<Login />);
+
+    await waitFor(() => {
+      expect(mockStartTwoFactorSetup).toHaveBeenCalledWith('challenge-setup');
+    });
+
+    const appleButton = await screen.findByTestId('totp-open-apple-passwords');
+    expect(appleButton).toBeEnabled();
+    expect(screen.getByText(/QR-код и ручной ключ/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('totp-open-authenticator')).not.toBeInTheDocument();
+  });
+
+  it('shows compact 2FA setup on iPhone without password-save helpers', async () => {
+    installIphoneSafari();
+    mockGetLoginMode.mockResolvedValue({
+      network_zone: 'external',
+      biometric_login_enabled: false,
+    });
+    mockStartTwoFactorSetup.mockResolvedValue({
+      success: true,
+      login_challenge_id: 'challenge-setup',
+      otpauth_uri: 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=hubit.zsgp.ru',
+      manual_entry_key: 'ABC123',
+      qr_svg: null,
+    });
+    primeTotpResumeFromSafariSave();
+
+    render(<Login />);
+
+    await waitFor(() => {
+      expect(mockStartTwoFactorSetup).toHaveBeenCalledWith('challenge-setup');
+    });
+
+    expect(await screen.findByTestId('totp-open-apple-passwords')).toBeInTheDocument();
+    expect(screen.queryByTestId('totp-save-password-to-keychain')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('totp-confirm-password-saved')).not.toBeInTheDocument();
+    expect(screen.getByText(/QR-код и ручной ключ/i)).toBeInTheDocument();
+  });
+
   it('does not auto-attempt passkey until WebAuthn API is available', async () => {
     delete window.PublicKeyCredential;
 
@@ -318,7 +450,7 @@ describe('Login hybrid internal/external flow', () => {
       expect(mockVerifyPasskeyLogin).toHaveBeenCalledTimes(1);
       expect(locationAssignMock).toHaveBeenCalledWith('/dashboard');
     });
-    expect(screen.queryByTestId('password-auth-form')).not.toBeInTheDocument();
+    expect(screen.getByTestId('password-auth-form')).toBeInTheDocument();
   });
 
   it('reveals password fallback after external biometric cancellation', async () => {
@@ -559,17 +691,14 @@ describe('Login hybrid internal/external flow', () => {
     const otpauthUri = 'otpauth://totp/HUB-IT:ivanov?secret=ABC123&issuer=HUB-IT';
     const openAuthenticatorLink = await screen.findByTestId('totp-open-authenticator');
     expect(openAuthenticatorLink).toHaveAttribute('href', otpauthUri);
-    expect(await screen.findByTestId('totp-qr-image')).toBeInTheDocument();
-    expect(screen.queryByText('ABC123')).not.toBeInTheDocument();
-    expect(screen.queryByDisplayValue(otpauthUri)).not.toBeInTheDocument();
-    expect(screen.queryByTestId('totp-manual-panel')).not.toBeInTheDocument();
+    const details = screen.getByText('QR-код и ручной ключ').closest('details');
+    expect(details).not.toHaveAttribute('open');
 
-    fireEvent.click(screen.getByTestId('totp-manual-toggle'));
-    expect(screen.getByTestId('totp-manual-panel')).toBeInTheDocument();
+    fireEvent.click(screen.getByText('QR-код и ручной ключ'));
+    expect(details).toHaveAttribute('open');
+    expect(await screen.findByTestId('totp-qr-image')).toBeInTheDocument();
     expect(screen.getByText('ABC123')).toBeInTheDocument();
-    expect(screen.getByDisplayValue(otpauthUri)).toBeInTheDocument();
     expect(screen.getByTestId('totp-copy-manual-key')).toBeInTheDocument();
-    expect(screen.getByTestId('totp-copy-uri')).toBeInTheDocument();
 
     setInputValue('login-totp-setup-code', '123456');
     fireEvent.submit(document.getElementById('login-totp-setup-code').closest('form'));

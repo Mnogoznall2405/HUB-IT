@@ -22,9 +22,27 @@ import {
 import RefreshIcon from '@mui/icons-material/Refresh';
 import DownloadIcon from '@mui/icons-material/Download';
 import { ticketsAPI } from '../../api/tickets';
-import { STATUS_COLORS, STATUS_LABELS, TICKET_STATUS_OPTIONS, downloadBlob, formatDate, formatMoney, getErrorMessage } from './ticketUi';
+import {
+  STATUS_COLORS,
+  STATUS_LABELS,
+  STATUS_ROW_COLORS,
+  TICKET_STATUS_OPTIONS,
+  downloadBlob,
+  formatArrivalRoute,
+  formatDate,
+  formatMoney,
+  getErrorMessage,
+  isMaskedPersonalValue,
+} from './ticketUi';
 
 const normalizeMulti = (value) => (Array.isArray(value) ? value : []);
+
+const formatPassportCell = (series, number) => {
+  const left = series || '';
+  const right = number || '';
+  if (left && right) return `${left} / ${right}`;
+  return left || right || '-';
+};
 
 export default function TicketRequestList({ objects = [], onSelectRequest, canWrite = false }) {
   const [rows, setRows] = useState([]);
@@ -34,9 +52,6 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
   const [search, setSearch] = useState('');
   const [objectIds, setObjectIds] = useState([]);
   const [statuses, setStatuses] = useState([]);
-  const [assigneeIds, setAssigneeIds] = useState([]);
-  const [sortField, setSortField] = useState('created_at');
-  const [sortDir, setSortDir] = useState('desc');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -45,11 +60,10 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
     page_size: pageSize,
     object_ids: objectIds,
     statuses,
-    assignee_ids: assigneeIds,
     search: search.trim().length >= 2 ? search.trim() : '',
-    sort_field: sortField,
-    sort_dir: sortDir,
-  }), [assigneeIds, objectIds, page, pageSize, search, sortDir, sortField, statuses]);
+    sort_field: 'submitted_at',
+    sort_dir: 'desc',
+  }), [objectIds, page, pageSize, search, statuses]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -69,25 +83,6 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
     const timer = window.setTimeout(load, search.trim() ? 300 : 0);
     return () => window.clearTimeout(timer);
   }, [load, search]);
-
-  const assigneeOptions = useMemo(() => {
-    const seen = new Map();
-    rows.forEach((row) => {
-      if (row.assignee_id != null && row.assignee_name) {
-        seen.set(String(row.assignee_id), row.assignee_name);
-      }
-    });
-    return [...seen.entries()].map(([id, name]) => ({ id, name }));
-  }, [rows]);
-
-  const setSort = (field) => {
-    if (sortField === field) {
-      setSortDir((current) => (current === 'asc' ? 'desc' : 'asc'));
-      return;
-    }
-    setSortField(field);
-    setSortDir('asc');
-  };
 
   const exportRows = async () => {
     const blob = await ticketsAPI.exportRequests(params);
@@ -143,24 +138,6 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
             ))}
           </Select>
         </FormControl>
-        <FormControl size="small" sx={{ minWidth: 210 }}>
-          <InputLabel>Ответственный</InputLabel>
-          <Select
-            multiple
-            value={assigneeIds}
-            label="Ответственный"
-            onChange={(event) => {
-              setAssigneeIds(normalizeMulti(event.target.value));
-              setPage(1);
-            }}
-            renderValue={(selected) => `${selected.length} выбрано`}
-          >
-            <MenuItem value="none">Без ответственного</MenuItem>
-            {assigneeOptions.map((item) => (
-              <MenuItem key={item.id} value={item.id}>{item.name}</MenuItem>
-            ))}
-          </Select>
-        </FormControl>
         <Button startIcon={<RefreshIcon />} onClick={load} disabled={loading}>Обновить</Button>
         {canWrite ? <Button startIcon={<DownloadIcon />} onClick={exportRows}>Экспорт</Button> : null}
       </Stack>
@@ -172,47 +149,74 @@ export default function TicketRequestList({ objects = [], onSelectRequest, canWr
         <Table size="small" stickyHeader>
           <TableHead>
             <TableRow>
-              {[
-                ['id', '№'],
-                ['created_at', 'Создана'],
-                ['departure_date', 'Вылет'],
-                ['arrival_date', 'Прибытие'],
-              ].map(([field, label]) => (
-                <TableCell key={field}>
-                  <Button size="small" onClick={() => setSort(field)}>{label}</Button>
-                </TableCell>
-              ))}
+              <TableCell>№ п/п</TableCell>
+              <TableCell>Дата подачи</TableCell>
               <TableCell>ФИО</TableCell>
-              <TableCell>Объект</TableCell>
+              <TableCell>Подразделение</TableCell>
+              <TableCell>Должность</TableCell>
+              <TableCell>Серия / Номер</TableCell>
+              <TableCell>Дата выдачи</TableCell>
+              <TableCell>Кем выдан</TableCell>
+              <TableCell>Код подр.</TableCell>
+              <TableCell>Дата рождения</TableCell>
+              <TableCell>Место рождения</TableCell>
+              <TableCell>Прописка</TableCell>
+              <TableCell>Телефон</TableCell>
+              <TableCell>Прибытие / город</TableCell>
+              <TableCell>№ заявки</TableCell>
+              <TableCell>Шифр объекта</TableCell>
+              <TableCell>Примечание</TableCell>
+              <TableCell align="right">Стоимость</TableCell>
+              <TableCell align="right">Возврат</TableCell>
               <TableCell>Статус</TableCell>
-              <TableCell>Ответственный</TableCell>
-              <TableCell align="right">Сумма</TableCell>
             </TableRow>
           </TableHead>
           <TableBody>
-            {rows.map((row) => (
+            {rows.map((row, index) => (
               <TableRow
                 key={row.id}
                 hover
                 onClick={() => onSelectRequest?.(row.id)}
-                sx={{ cursor: 'pointer' }}
+                sx={{
+                  cursor: 'pointer',
+                  backgroundColor: STATUS_ROW_COLORS[row.status] || 'transparent',
+                }}
               >
-                <TableCell>{row.id}</TableCell>
-                <TableCell>{formatDate(row.created_at)}</TableCell>
-                <TableCell>{formatDate(row.departure_date)}</TableCell>
-                <TableCell>{formatDate(row.arrival_date)}</TableCell>
+                <TableCell>{(page - 1) * pageSize + index + 1}</TableCell>
+                <TableCell>{formatDate(row.submitted_at)}</TableCell>
                 <TableCell>{row.employee_name || '-'}</TableCell>
-                <TableCell>{row.object_name || row.object_code || '-'}</TableCell>
+                <TableCell>{row.department || '-'}</TableCell>
+                <TableCell>{row.position || '-'}</TableCell>
+                <TableCell>{formatPassportCell(row.passport_series, row.passport_number)}</TableCell>
+                <TableCell>{formatDate(row.issue_date)}</TableCell>
+                <TableCell>{row.issued_by || '-'}</TableCell>
+                <TableCell>{row.issuer_code || '-'}</TableCell>
                 <TableCell>
-                  <Chip size="small" color={STATUS_COLORS[row.status] || 'default'} label={STATUS_LABELS[row.status] || row.status} />
+                  {isMaskedPersonalValue(row.date_of_birth) ? row.date_of_birth : formatDate(row.date_of_birth)}
                 </TableCell>
-                <TableCell>{row.assignee_name || 'Без ответственного'}</TableCell>
+                <TableCell>{row.birth_place || '-'}</TableCell>
+                <TableCell>{row.registration_address || '-'}</TableCell>
+                <TableCell>{row.phone || '-'}</TableCell>
+                <TableCell>{formatArrivalRoute(row.arrival_date, row.route)}</TableCell>
+                <TableCell>{row.id}</TableCell>
+                <TableCell>{row.object_code || '-'}</TableCell>
+                <TableCell sx={{ maxWidth: 180, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {row.note || '-'}
+                </TableCell>
                 <TableCell align="right">{formatMoney(row.total_cost)}</TableCell>
+                <TableCell align="right">{formatMoney(row.refund_loss)}</TableCell>
+                <TableCell>
+                  <Chip
+                    size="small"
+                    color={STATUS_COLORS[row.status] || 'default'}
+                    label={STATUS_LABELS[row.status] || row.status}
+                  />
+                </TableCell>
               </TableRow>
             ))}
             {!loading && rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={9}>
+                <TableCell colSpan={20}>
                   <Typography color="text.secondary" sx={{ py: 3, textAlign: 'center' }}>
                     Заявки не найдены
                   </Typography>

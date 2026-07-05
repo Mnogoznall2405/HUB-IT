@@ -14,15 +14,18 @@ export default function useChatComposerSending({
   cancelPendingInitialAnchor,
   createOptimisticTextMessage,
   draftWriteTimeoutRef,
+  editingMessage,
   flushDraftToStorage,
   focusComposer,
   latestMessageTextRef,
   logChatDebug,
+  mergeMessageIntoThread,
   messageText,
   notifyApiError,
   readSelectedDatabaseId,
   removeThreadMessage,
   replyMessage,
+  setEditingMessage,
   setMessageText,
   setOptimisticAiQueuedStatus,
   setReplyMessage,
@@ -35,7 +38,41 @@ export default function useChatComposerSending({
     const body = String(messageText || '').trim();
     if (!conversationId || !body) return false;
     const bodyFormat = 'plain';
-    const draftReplyMessage = replyMessage ? { ...replyMessage } : null;
+    const draftEditingMessage = editingMessage ? { ...editingMessage } : null;
+    const draftReplyMessage = !draftEditingMessage && replyMessage ? { ...replyMessage } : null;
+
+    if (draftEditingMessage?.id) {
+      const messageId = String(draftEditingMessage.id || '').trim();
+      if (!messageId) return false;
+      const previousBody = String(draftEditingMessage.body || '').trim();
+      if (previousBody === body) {
+        setEditingMessage(null);
+        setMessageText('');
+        focusComposer({ forceMobile: true });
+        return true;
+      }
+      setMessageText('');
+      setEditingMessage(null);
+      focusComposer({ forceMobile: true });
+      try {
+        const updated = await chatAPI.editChatMessage(conversationId, messageId, body, {
+          body_format: bodyFormat,
+        });
+        if (updated?.id) {
+          mergeMessageIntoThread(updated);
+        }
+        return true;
+      } catch (error) {
+        if (activeConversationIdRef.current === conversationId) {
+          setMessageText(body);
+          setEditingMessage(draftEditingMessage);
+          focusComposer({ forceMobile: true });
+        }
+        notifyApiError(error, 'Не удалось изменить сообщение.');
+        return false;
+      }
+    }
+
     const optimisticMessage = createOptimisticTextMessage({
       conversationId,
       body,
@@ -64,7 +101,9 @@ export default function useChatComposerSending({
     focusComposer({ forceMobile: true });
     try {
       let serverMessage = null;
-      const canSendViaSocket = CHAT_WS_ENABLED && socketStatusRef.current === 'connected';
+      const canSendViaSocket = CHAT_WS_ENABLED
+        && chatSocket.isOpen()
+        && socketStatusRef.current === 'connected';
       if (canSendViaSocket) {
         try {
           const response = await chatSocket.sendMessage(conversationId, body, {
@@ -79,6 +118,7 @@ export default function useChatComposerSending({
             conversationId,
             error: String(socketError?.message || socketError),
           });
+          chatSocket.close();
           socketStatusRef.current = 'disconnected';
           setSocketStatus('disconnected');
         }
@@ -132,15 +172,18 @@ export default function useChatComposerSending({
     cancelPendingInitialAnchor,
     createOptimisticTextMessage,
     draftWriteTimeoutRef,
+    editingMessage,
     flushDraftToStorage,
     focusComposer,
     latestMessageTextRef,
     logChatDebug,
+    mergeMessageIntoThread,
     messageText,
     notifyApiError,
     readSelectedDatabaseId,
     removeThreadMessage,
     replyMessage,
+    setEditingMessage,
     setMessageText,
     setOptimisticAiQueuedStatus,
     setReplyMessage,

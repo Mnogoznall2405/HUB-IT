@@ -34,6 +34,7 @@ import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { jsonAPI } from '../api/json_client';
 import { useNotification } from '../contexts/NotificationContext';
+import { useAuth } from '../contexts/AuthContext';
 import { createNavigateToastAction } from '../components/feedback/toastActions';
 import { buildOfficeUiTokens } from '../theme/officeUiTokens';
 
@@ -204,6 +205,8 @@ function Statistics() {
     notifyApiError: pushNotifyApiError,
     notifySuccess: pushNotifySuccess,
   } = useNotification();
+  const { hasPermission } = useAuth();
+  const canViewMfu = hasPermission('mfu.read');
   const statisticsToastAction = useMemo(() => createNavigateToastAction('/statistics', 'Открыть статистику'), []);
   const notifySuccess = useCallback((message, options = {}) => (
     pushNotifySuccess(message, { source: 'statistics', action: statisticsToastAction, ...options })
@@ -248,7 +251,7 @@ function Statistics() {
       setLoading(true);
       setError('');
       if (tab === 'pc') await loadPcStats();
-      if (tab === 'mfu') await loadMfuStats();
+      if (tab === 'mfu' && canViewMfu) await loadMfuStats();
       if (tab === 'battery') await loadBatteryStats();
       if (tab === 'pc_components') await loadPcComponentsStats();
     } catch (requestError) {
@@ -263,7 +266,13 @@ function Statistics() {
     } finally {
       setLoading(false);
     }
-  }, [tab, loadPcStats, loadMfuStats, loadBatteryStats, loadPcComponentsStats]);
+  }, [tab, canViewMfu, loadPcStats, loadMfuStats, loadBatteryStats, loadPcComponentsStats]);
+
+  useEffect(() => {
+    if (tab === 'mfu' && !canViewMfu) {
+      setTab('pc');
+    }
+  }, [tab, canViewMfu]);
 
   useEffect(() => {
     loadActiveStats();
@@ -419,7 +428,7 @@ function Statistics() {
 
         <Tabs value={tab} onChange={(_, nextValue) => setTab(nextValue)} sx={{ mb: 2 }}>
           <Tab value="pc" label="Чистка ПК" />
-          <Tab value="mfu" label="МФУ" />
+          {canViewMfu && <Tab value="mfu" label="МФУ" />}
           <Tab value="battery" label="Батареи" />
           <Tab value="pc_components" label="Комплектующие ПК" />
         </Tabs>

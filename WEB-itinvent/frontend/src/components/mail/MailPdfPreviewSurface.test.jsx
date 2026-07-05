@@ -1,14 +1,35 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import React, { forwardRef, useEffect } from 'react';
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import MailPdfPreviewSurface, { clampPage, normalizePreviewSheets } from './MailPdfPreviewSurface';
 
 const loadPdfDocumentFromUrl = vi.fn();
-const renderPdfPage = vi.fn();
+const resetTransformMock = vi.fn();
+
+vi.mock('./MailPdfPageTile', () => ({
+  default: forwardRef(({ pageNumber, onVisibilityChange }, ref) => {
+    useEffect(() => {
+      onVisibilityChange?.(pageNumber, 1);
+    }, [onVisibilityChange, pageNumber]);
+    return <div ref={ref} data-testid={`mail-pdf-page-tile-${pageNumber}`} />;
+  }),
+}));
 
 vi.mock('../../lib/pdfPreview', () => ({
   loadPdfDocumentFromUrl: (...args) => loadPdfDocumentFromUrl(...args),
-  renderPdfPage: (...args) => renderPdfPage(...args),
+  renderPdfPage: vi.fn(),
+  resolveInitialPdfFitZoom: () => 1,
+}));
+
+vi.mock('../../lib/useDocumentPinchPan', () => ({
+  default: () => ({
+    viewportRef: { current: null },
+    contentRef: { current: null },
+    resetTransform: resetTransformMock,
+    viewportSx: { overflowY: 'auto', overflowX: 'hidden' },
+    contentSx: {},
+  }),
 }));
 
 const renderWithTheme = (node) => render(
@@ -38,31 +59,42 @@ describe('MailPdfPreviewSurface helpers', () => {
 describe('MailPdfPreviewSurface', () => {
   beforeEach(() => {
     loadPdfDocumentFromUrl.mockReset();
-    renderPdfPage.mockReset();
     loadPdfDocumentFromUrl.mockResolvedValue({
       numPages: 4,
+      getPage: vi.fn().mockResolvedValue({
+        getViewport: () => ({ width: 600, height: 800 }),
+      }),
       destroy: vi.fn(),
     });
-    renderPdfPage.mockResolvedValue({ width: 120, height: 160 });
+    Element.prototype.scrollIntoView = vi.fn();
   });
 
-  it('renders one PDF page on canvas and loads document from blob url', async () => {
-    const { container } = renderWithTheme(
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('renders vertical page tiles and loads document from blob url', async () => {
+    renderWithTheme(
       <MailPdfPreviewSurface
         objectUrl="blob:preview"
         filename="report.docx"
         sourceKind="word"
         pageCount={4}
+        fillContainer
       />,
     );
 
     await waitFor(() => expect(loadPdfDocumentFromUrl).toHaveBeenCalledWith('blob:preview'));
-    await waitFor(() => expect(renderPdfPage).toHaveBeenCalled());
-    expect(container.querySelector('canvas')).toBeTruthy();
+    await waitFor(() => expect(screen.getByTestId('mail-pdf-page-tile-1')).toBeTruthy());
+    expect(screen.getByTestId('mail-pdf-page-tile-2')).toBeTruthy();
+    expect(screen.getByTestId('mail-pdf-page-tile-3')).toBeTruthy();
+    expect(screen.getByTestId('mail-pdf-page-tile-4')).toBeTruthy();
     expect(screen.getByText('1 / 4')).toBeTruthy();
+    expect(screen.getByTestId('mail-pdf-preview-viewport')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Увеличить/i })).toBeNull();
   });
 
-  it('switches excel sheet tab to the first page of the selected sheet', async () => {
+  it('scrolls to the selected excel sheet page when tab is clicked', async () => {
     renderWithTheme(
       <MailPdfPreviewSurface
         objectUrl="blob:excel-preview"
@@ -76,14 +108,11 @@ describe('MailPdfPreviewSurface', () => {
       />,
     );
 
-    await waitFor(() => expect(renderPdfPage).toHaveBeenCalled());
+    await waitFor(() => expect(screen.getByTestId('mail-pdf-page-tile-3')).toBeTruthy());
     fireEvent.click(screen.getByRole('tab', { name: 'Лист2' }));
 
     await waitFor(() => {
-      expect(renderPdfPage).toHaveBeenCalledWith(expect.objectContaining({
-        pageNumber: 3,
-      }));
+      expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
     });
-    expect(screen.getByText('1 / 2')).toBeTruthy();
   });
 });

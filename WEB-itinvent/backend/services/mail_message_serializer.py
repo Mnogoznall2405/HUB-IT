@@ -147,6 +147,15 @@ def item_conversation_key(item: Any) -> str:
     return normalize_subject_for_conversation(getattr(item, "subject", ""))
 
 
+def item_attachments_count(item: Any) -> int:
+    attachments = getattr(item, "attachments", None)
+    if attachments is not None:
+        count = len(list(attachments))
+        if count > 0:
+            return count
+    return 1 if bool(getattr(item, "has_attachments", False)) else 0
+
+
 def item_importance(item: Any) -> str:
     value = _normalize_text(getattr(item, "importance", None), "normal").lower()
     if value in {"high", "low", "normal"}:
@@ -411,7 +420,7 @@ class MailMessageSerializer:
             "received_at": received_iso,
             "is_read": bool(getattr(item, "is_read", False)),
             "has_attachments": has_attachments,
-            "attachments_count": 1 if has_attachments else 0,
+            "attachments_count": item_attachments_count(item),
             "body_preview": body_preview,
             "importance": item_importance(item),
             "categories": [str(value).strip() for value in (getattr(item, "categories", None) or []) if str(value).strip()],

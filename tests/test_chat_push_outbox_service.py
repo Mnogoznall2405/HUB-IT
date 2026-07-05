@@ -242,3 +242,62 @@ def test_chat_push_outbox_worker_retries_transient_failures_and_then_marks_termi
     assert second_result["failed"] == 1
     assert second_job.status == "failed"
     assert int(second_job.attempt_count or 0) == 2
+
+
+@pytest.mark.asyncio
+async def test_chat_service_start_starts_push_outbox_worker(monkeypatch):
+    push_started = []
+    push_stopped = []
+
+    class _PushOutboxService:
+        async def start(self) -> None:
+            push_started.append(True)
+
+        async def stop(self) -> None:
+            push_stopped.append(True)
+
+        @staticmethod
+        def get_backlog_snapshot():
+            return {"queued": 0, "ready": 0, "processing": 0, "failed": 0, "oldest_queued_age_sec": 0.0}
+
+    class _EventOutboxService:
+        async def start(self) -> None:
+            return None
+
+        async def stop(self) -> None:
+            return None
+
+        @staticmethod
+        def get_backlog_snapshot():
+            return {
+                "queued": 0,
+                "processing": 0,
+                "failed": 0,
+                "oldest_queued_age_sec": 0.0,
+                "dispatcher_active": 0,
+                "avg_job_ms": 0.0,
+            }
+
+    monkeypatch.setitem(
+        sys.modules,
+        "backend.chat.push_outbox_service",
+        type("_PushOutboxModule", (), {"chat_push_outbox_service": _PushOutboxService()})(),
+    )
+    monkeypatch.setitem(
+        sys.modules,
+        "backend.chat.event_outbox_service",
+        type("_EventOutboxModule", (), {"chat_event_outbox_service": _EventOutboxService()})(),
+    )
+    monkeypatch.setattr(chat_service_module.ChatService, "cleanup_expired_upload_sessions", lambda self, force=True: None)
+
+    async def _noop_upload_cleanup_loop(self):
+        return
+
+    monkeypatch.setattr(chat_service_module.ChatService, "_run_upload_session_cleanup_loop", _noop_upload_cleanup_loop)
+
+    service = chat_service_module.ChatService()
+    await service.start()
+    await service.stop()
+
+    assert push_started == [True]
+    assert push_stopped == [True]

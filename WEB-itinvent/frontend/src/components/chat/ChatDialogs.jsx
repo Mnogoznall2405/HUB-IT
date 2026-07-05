@@ -36,6 +36,7 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutline';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
+import EditOutlinedIcon from '@mui/icons-material/EditOutlined';
 import DoneAllRoundedIcon from '@mui/icons-material/DoneAllRounded';
 import FlagOutlinedIcon from '@mui/icons-material/FlagOutlined';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
@@ -57,11 +58,20 @@ import VolumeOffIcon from '@mui/icons-material/VolumeOff';
 import VolumeUpIcon from '@mui/icons-material/VolumeUp';
 
 import ChatContextPanel from './ChatContextPanel';
+import {
+  DialogListSkeleton,
+  GroupUserCheckboxRow,
+  SearchResultCard,
+  SelectedUserPill,
+} from './ChatDialogsPrimitives';
 import ChatFileUploadDialog from './ChatFileUploadDialog';
 import ChatMediaPreviewDialog from './ChatMediaPreviewDialog';
-import { PresenceAvatar } from './ChatCommon';
+import MailAttachmentPreviewDialog from '../mail/MailAttachmentPreviewDialog';
+import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
+import ChatMessageContextMenu from './ChatMessageContextMenu';
 import {
   CHAT_MAX_FILE_COUNT,
+  formatFileSize,
   formatFullDate,
   getConversationHeaderSubtitle,
   getMessagePreview,
@@ -105,211 +115,6 @@ const MobileInfoTransition = forwardRef(function MobileInfoTransition(props, ref
   );
 });
 
-function DialogSkeletonLine({ ui, width = '100%', height = 14, radius = 999, sx }) {
-  return (
-    <Skeleton
-      variant="rounded"
-      animation="wave"
-      width={width}
-      height={height}
-      sx={{
-        borderRadius: radius,
-        bgcolor: ui.skeletonBase || alpha(ui.textSecondary || '#78909c', 0.16),
-        '&::after': {
-          background: `linear-gradient(90deg, transparent, ${ui.skeletonWave || alpha('#ffffff', 0.48)}, transparent)`,
-        },
-        ...sx,
-      }}
-    />
-  );
-}
-
-function DialogListSkeleton({ ui, rows = 4, compact = false }) {
-  return (
-    <Stack spacing={compact ? 0.9 : 1.05} sx={{ px: compact ? 1.1 : 1.5, py: compact ? 1.25 : 2 }}>
-      {Array.from({ length: rows }).map((_, index) => (
-        <Stack key={index} direction="row" spacing={1.25} alignItems="center">
-          <DialogSkeletonLine ui={ui} width={compact ? 34 : 42} height={compact ? 34 : 42} radius={compact ? 11 : 14} />
-          <Box sx={{ flex: 1, minWidth: 0 }}>
-            <DialogSkeletonLine ui={ui} width={index % 2 ? '54%' : '72%'} height={14} radius={8} />
-            <DialogSkeletonLine ui={ui} width={index % 2 ? '76%' : '48%'} height={11} radius={8} sx={{ mt: 0.8 }} />
-          </Box>
-        </Stack>
-      ))}
-    </Stack>
-  );
-}
-
-function SearchResultCard({ item, ui, onOpen }) {
-  const cardText = ui.textStrong || ui.textPrimary || '#17212b';
-  const cardSurface = ui.surfaceMuted || ui.drawerBgSoft || ui.panelBg || '#ffffff';
-  const cardHover = ui.surfaceHover || ui.drawerHover || ui.accentSoft || cardSurface;
-  return (
-    <Paper
-      elevation={0}
-      component="button"
-      type="button"
-      onClick={() => onOpen?.(item)}
-      sx={{
-        width: '100%',
-        textAlign: 'left',
-        p: 1.4,
-        borderRadius: 3,
-        border: `1px solid ${ui.borderSoft}`,
-        bgcolor: cardSurface,
-        cursor: 'pointer',
-        color: cardText,
-        transition: 'background-color 140ms ease, border-color 140ms ease, transform 100ms ease, opacity 100ms ease',
-        '&:hover': {
-          bgcolor: cardHover,
-          borderColor: ui.accentSoft || alpha(ui.accentText || '#3390ec', 0.24),
-        },
-        '&:active': {
-          opacity: 0.84,
-          transform: 'scale(0.995)',
-        },
-      }}
-    >
-      <Stack spacing={0.7}>
-        <Stack direction="row" spacing={1} justifyContent="space-between" alignItems="center">
-          <Typography variant="subtitle2" sx={{ fontWeight: 800, color: cardText }} noWrap>
-            {item?.sender?.full_name || item?.sender?.username || 'Сообщение'}
-          </Typography>
-          <Typography variant="caption" sx={{ color: ui.textSecondary, flexShrink: 0 }}>
-            {formatFullDate(item?.created_at)}
-          </Typography>
-        </Stack>
-        <Typography variant="body2" sx={{ color: ui.textSecondary }} noWrap>
-          {getSearchResultPreview(item)}
-        </Typography>
-      </Stack>
-    </Paper>
-  );
-}
-
-function GroupUserRow({
-  item,
-  ui,
-  onAction,
-  checked = false,
-}) {
-  const accentColor = ui.accentText || '#3390ec';
-  const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
-  const hoverBg = ui.drawerHover || ui.surfaceHover || alpha(primaryText, 0.06);
-  return (
-    <Paper
-      elevation={0}
-      component="button"
-      type="button"
-      role="checkbox"
-      aria-checked={checked}
-      data-user-id={String(item?.id || '')}
-      onClick={() => onAction?.(item)}
-      sx={{
-        width: '100%',
-        px: 1.35,
-        py: 0.9,
-        borderRadius: 0,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 1.35,
-        textAlign: 'left',
-        color: primaryText,
-        cursor: 'pointer',
-        bgcolor: 'transparent',
-        transition: 'background-color 120ms ease',
-        '&:hover': { bgcolor: hoverBg },
-        '&:active': { opacity: 0.76 },
-      }}
-    >
-      {/* Avatar with check overlay */}
-      <Box sx={{ position: 'relative', flexShrink: 0 }}>
-        <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={46} />
-        {checked ? (
-          <Box
-            sx={{
-              position: 'absolute',
-              inset: 0,
-              borderRadius: '50%',
-              bgcolor: accentColor,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              animation: 'fadeIn 120ms ease',
-              '@keyframes fadeIn': { from: { opacity: 0, transform: 'scale(0.7)' }, to: { opacity: 1, transform: 'scale(1)' } },
-            }}
-          >
-            <CheckRoundedIcon sx={{ fontSize: 26, color: '#fff' }} />
-          </Box>
-        ) : null}
-      </Box>
-      <Box sx={{ minWidth: 0, flex: 1 }}>
-        <Typography
-          variant="body1"
-          sx={{ fontWeight: checked ? 700 : 600, color: checked ? accentColor : primaryText, fontFamily: 'inherit', lineHeight: 1.35 }}
-          noWrap
-        >
-          {item?.full_name || item?.username || 'Пользователь'}
-        </Typography>
-        <Typography variant="body2" sx={{ color: ui.textSecondary, fontSize: '0.82rem', lineHeight: 1.3 }} noWrap>
-          {getPersonStatusLine(item)}
-        </Typography>
-      </Box>
-    </Paper>
-  );
-}
-
-function GroupUserCheckboxRow({ item, ui, checked = false, onToggle, compact = false }) {
-  return <GroupUserRow item={item} ui={ui} checked={checked} onAction={onToggle} />;
-}
-
-function SelectedUserPill({ item, ui, onRemove }) {
-  const accentColor = ui.accentText || '#3390ec';
-  const primaryText = ui.textStrong || ui.bubbleOtherText || '#17212b';
-  const bgColor = ui.drawerBg || ui.panelBg || '#17212b';
-  const shortName = String(item?.full_name || item?.username || 'Участник').split(' ')[0];
-  return (
-    <Stack
-      alignItems="center"
-      spacing={0.4}
-      sx={{ flex: '0 0 auto', width: 68, cursor: onRemove ? 'pointer' : 'default', pt: 0.5, pb: 0.25 }}
-      onClick={() => onRemove?.(item)}
-    >
-      {/* Extra padding so presence dot + close badge don't clip */}
-      <Box sx={{ position: 'relative', p: '3px' }}>
-        <PresenceAvatar item={item} online={Boolean(item?.presence?.is_online)} size={46} />
-        {onRemove ? (
-          <Box
-            sx={{
-              position: 'absolute',
-              top: 0,
-              right: 0,
-              width: 18,
-              height: 18,
-              borderRadius: '50%',
-              bgcolor: bgColor,
-              display: 'flex',
-              alignItems: 'center',
-              justifyContent: 'center',
-              border: `2px solid ${bgColor}`,
-              zIndex: 2,
-            }}
-          >
-            <CloseRoundedIcon sx={{ fontSize: 11, color: accentColor }} />
-          </Box>
-        ) : null}
-      </Box>
-      <Typography
-        variant="caption"
-        sx={{ color: primaryText, fontWeight: 600, fontSize: '0.74rem', lineHeight: 1.2, textAlign: 'center', width: '100%', px: 0.25 }}
-        noWrap
-      >
-        {shortName}
-      </Typography>
-    </Stack>
-  );
-}
-
 export default function ChatDialogs({
   theme,
   ui,
@@ -332,6 +137,7 @@ export default function ChatDialogs({
   onForwardMessageFromMenu,
   onReportMessageFromMenu,
   onDeleteMessageFromMenu,
+  onEditMessageFromMenu,
   onSelectMessageFromMenu,
   onOpenReadsFromMessageMenu,
   onOpenAttachmentFromMessageMenu,
@@ -395,6 +201,10 @@ export default function ChatDialogs({
   onOpenAttachmentPreview,
   attachmentPreview,
   onCloseAttachmentPreview,
+  documentPreview,
+  onCloseDocumentPreview,
+  onDownloadDocumentPreview,
+  onDownloadDocumentPreviewPdf,
   messageReadsOpen,
   onCloseMessageReads,
   messageReadsMessage,
@@ -405,6 +215,7 @@ export default function ChatDialogs({
   conversationHeaderSubtitle,
   settingsUpdating,
   onUpdateConversationSettings,
+  onRequestDeleteConversation,
   onAddGroupMembers,
   onRemoveGroupParticipant,
   onUpdateGroupMemberRole,
@@ -442,15 +253,6 @@ export default function ChatDialogs({
   const messageMenuAnchorPosition = messageMenuAnchor?.anchorPosition || null;
   const messageMenuUsesPointerAnchor = Boolean(messageMenuAnchorPosition);
   const messageMenuOpen = Boolean(messageMenuMessage && (messageMenuAnchorElement || messageMenuAnchorPosition));
-  const messageMenuAttachments = Array.isArray(messageMenuMessage?.attachments) ? messageMenuMessage.attachments : [];
-  const canCopyMessage = Boolean(String(getMessagePreview(messageMenuMessage) || '').trim());
-  const canTogglePinMessage = Boolean(messageMenuMessage?.id);
-  const canCopyMessageLink = Boolean(messageMenuMessage?.id && (messageMenuMessage?.conversation_id || activeConversationId));
-  const canForwardMessage = Boolean(messageMenuMessage?.id);
-  const canReportMessage = Boolean(messageMenuMessage?.id && !messageMenuMessage?.is_own);
-  const canSelectMessage = Boolean(messageMenuMessage?.id);
-  const canDeleteMessage = activeConversationKind === 'group'
-    && Boolean(messageMenuMessage?.id && !messageMenuMessage?.is_deleted && messageMenuMessage?.kind !== 'system');
   const forwardConversationItems = useMemo(() => {
     const source = Array.isArray(forwardTargets) ? forwardTargets : [];
     const normalizedQuery = String(forwardConversationQuery || '').trim().toLowerCase();
@@ -473,11 +275,6 @@ export default function ChatDialogs({
   const forwardSearchPlaceholder = forwardSelectedCount > 1
     ? `Переслать ${forwardSelectedCount} сообщений...`
     : 'Переслать...';
-  const canOpenReadsFromMessage = activeConversationKind === 'group'
-    && Boolean(messageMenuMessage?.is_own)
-    && Number(messageMenuMessage?.read_by_count || 0) > 0;
-  const canOpenAttachmentFromMessage = messageMenuAttachments.length > 0;
-  const canOpenTaskFromMessage = Boolean(messageMenuMessage?.kind === 'task_share' && messageMenuMessage?.task_preview?.id);
   const selectedGroupMemberIds = useMemo(
     () => new Set(selectedGroupUsers.map((item) => String(item?.id || '').trim()).filter(Boolean)),
     [selectedGroupUsers],
@@ -535,61 +332,6 @@ export default function ChatDialogs({
     bgcolor: ui.surfaceMuted || alpha(ui.pageBg || ui.panelBg || '#020617', 0.44),
     boxShadow: 'none',
   }), [ui.borderSoft, ui.pageBg, ui.panelBg, ui.surfaceMuted]);
-  const messageMenuPaperSx = useMemo(() => ({
-    minWidth: 248,
-    maxWidth: 300,
-    mt: messageMenuUsesPointerAnchor ? 0 : 0.75,
-    borderRadius: 3.2,
-    border: `1px solid ${popupBorderColor}`,
-    bgcolor: popupSurface,
-    color: popupTextColor,
-    backgroundImage: 'none',
-    backdropFilter: 'blur(18px)',
-    boxShadow: popupShadow,
-    overflow: 'hidden',
-    '& .MuiList-root': {
-      py: 0.65,
-    },
-    '& .MuiMenuItem-root': {
-      minHeight: density.dialogMenuItemMinHeight || 44,
-      gap: density.dialogMenuItemGap || 1.55,
-      px: density.dialogMenuItemPx || 1.8,
-      py: density.dialogMenuItemPy || 1,
-      mx: 0.5,
-      my: 0.1,
-      borderRadius: 1.7,
-      fontSize: density.dialogMenuFontSize || '1.05rem',
-      fontWeight: 600,
-      letterSpacing: '-0.01em',
-      fontFamily: TELEGRAM_CHAT_FONT_FAMILY,
-      color: popupTextColor,
-      transition: 'background-color 120ms ease, opacity 100ms ease',
-      '&:hover': {
-        bgcolor: popupHoverBg,
-      },
-      '&:active': {
-        bgcolor: popupActiveBg,
-      },
-      '&.Mui-disabled': {
-        opacity: 0.42,
-      },
-      '& .MuiSvgIcon-root': {
-        fontSize: density.dialogMenuIconSize || 22,
-        color: popupIconColor,
-        flexShrink: 0,
-      },
-      '&[data-message-menu-tone="danger"]': {
-        color: popupDangerColor,
-      },
-      '&[data-message-menu-tone="danger"] .MuiSvgIcon-root': {
-        color: popupDangerColor,
-      },
-    },
-    '& .MuiDivider-root': {
-      my: 0.4,
-      borderColor: popupBorderColor,
-    },
-  }), [density.dialogMenuFontSize, density.dialogMenuIconSize, density.dialogMenuItemGap, density.dialogMenuItemMinHeight, density.dialogMenuItemPx, density.dialogMenuItemPy, messageMenuUsesPointerAnchor, popupActiveBg, popupBorderColor, popupDangerColor, popupHoverBg, popupIconColor, popupShadow, popupSurface, popupTextColor]);
   const forwardDialogPaperSx = useMemo(() => ({
     borderRadius: { xs: 3, sm: 4 },
     border: `1px solid ${popupBorderColor}`,
@@ -725,92 +467,32 @@ export default function ChatDialogs({
 
   return (
     <>
-      <Menu
-        anchorReference={messageMenuUsesPointerAnchor ? 'anchorPosition' : 'anchorEl'}
-        anchorEl={messageMenuUsesPointerAnchor ? null : messageMenuAnchorElement}
-        anchorPosition={messageMenuUsesPointerAnchor ? messageMenuAnchorPosition : undefined}
+      <ChatMessageContextMenu
+        theme={theme}
+        ui={ui}
         open={messageMenuOpen}
         onClose={onCloseMessageMenu}
-        anchorOrigin={messageMenuUsesPointerAnchor ? undefined : { vertical: 'bottom', horizontal: 'center' }}
-        transformOrigin={messageMenuUsesPointerAnchor ? { vertical: 'top', horizontal: 'left' } : { vertical: 'top', horizontal: 'center' }}
-        PaperProps={{
-          elevation: 0,
-          sx: messageMenuPaperSx,
-        }}
-      >
-        {typeof onToggleReactionFromMenu === 'function' ? (
-          <Box sx={{ display: 'flex', gap: '2px', px: 1, py: 0.75, borderBottom: '1px solid', borderColor: 'divider' }}>
-            {['👍', '❤️', '😂', '😮', '😢', '🔥'].map((emoji) => (
-              <Box
-                key={emoji}
-                component="button"
-                type="button"
-                onClick={() => { onToggleReactionFromMenu?.(messageMenuMessage, emoji); onCloseMessageMenu?.(); }}
-                sx={{ fontSize: '22px', lineHeight: 1, cursor: 'pointer', border: 'none', bgcolor: 'transparent', p: '4px', borderRadius: 1.5, transition: 'transform 100ms ease', '&:hover': { transform: 'scale(1.3)' }, '&:active': { transform: 'scale(0.9)' } }}
-              >
-                {emoji}
-              </Box>
-            ))}
-          </Box>
-        ) : null}
-        <MenuItem onClick={() => onReplyFromMessageMenu?.(messageMenuMessage)} disabled={!messageMenuMessage}>
-          <ReplyRoundedIcon />
-          Ответить
-        </MenuItem>
-        <MenuItem onClick={() => onCopyMessage?.(messageMenuMessage)} disabled={!messageMenuMessage || !canCopyMessage}>
-          <ContentCopyRoundedIcon />
-          Копировать
-        </MenuItem>
-        <MenuItem onClick={() => onTogglePinMessageFromMenu?.(messageMenuMessage)} disabled={!messageMenuMessage || !canTogglePinMessage}>
-          <PushPinOutlinedIcon />
-          {messageMenuPinned ? 'Открепить' : 'Закрепить'}
-        </MenuItem>
-        <MenuItem onClick={() => onForwardMessageFromMenu?.(messageMenuMessage)} disabled={!messageMenuMessage || !canForwardMessage}>
-          <ForwardRoundedIcon />
-          Переслать
-        </MenuItem>
-        <MenuItem onClick={() => onSelectMessageFromMenu?.(messageMenuMessage)} disabled={!messageMenuMessage || !canSelectMessage}>
-          <CheckCircleOutlineRoundedIcon />
-          Выбрать
-        </MenuItem>
-        {canCopyMessageLink || canOpenReadsFromMessage || canOpenAttachmentFromMessage || canOpenTaskFromMessage || canReportMessage || canDeleteMessage ? <Divider /> : null}
-        {canCopyMessageLink ? (
-          <MenuItem onClick={() => onCopyMessageLink?.(messageMenuMessage)} disabled={!messageMenuMessage}>
-            <LinkRoundedIcon />
-            Копировать ссылку
-          </MenuItem>
-        ) : null}
-        {canOpenReadsFromMessage ? (
-          <MenuItem onClick={() => onOpenReadsFromMessageMenu?.(messageMenuMessage)}>
-            <DoneAllRoundedIcon />
-            Кто прочитал
-          </MenuItem>
-        ) : null}
-        {canOpenAttachmentFromMessage ? (
-          <MenuItem onClick={() => onOpenAttachmentFromMessageMenu?.(messageMenuMessage)}>
-            <OpenInNewRoundedIcon />
-            Открыть вложение
-          </MenuItem>
-        ) : null}
-        {canOpenTaskFromMessage ? (
-          <MenuItem onClick={() => onOpenTaskFromMessageMenu?.(messageMenuMessage)}>
-            <TaskAltRoundedIcon />
-            Открыть задачу
-          </MenuItem>
-        ) : null}
-        {canReportMessage ? (
-          <MenuItem data-message-menu-tone="danger" onClick={() => onReportMessageFromMenu?.(messageMenuMessage)}>
-            <FlagOutlinedIcon />
-            Пожаловаться
-          </MenuItem>
-        ) : null}
-        {canDeleteMessage ? (
-          <MenuItem data-message-menu-tone="danger" onClick={() => onDeleteMessageFromMenu?.(messageMenuMessage)}>
-            <DeleteOutlineIcon />
-            Удалить сообщение
-          </MenuItem>
-        ) : null}
-      </Menu>
+        anchorEl={messageMenuAnchorElement}
+        anchorPosition={messageMenuAnchorPosition}
+        usesPointerAnchor={messageMenuUsesPointerAnchor}
+        message={messageMenuMessage}
+        activeConversation={activeConversation}
+        activeConversationId={activeConversationId}
+        messageMenuPinned={messageMenuPinned}
+        onToggleReactionFromMenu={onToggleReactionFromMenu}
+        onReplyFromMessageMenu={onReplyFromMessageMenu}
+        onCopyMessage={onCopyMessage}
+        onTogglePinMessageFromMenu={onTogglePinMessageFromMenu}
+        onCopyMessageLink={onCopyMessageLink}
+        onForwardMessageFromMenu={onForwardMessageFromMenu}
+        onReportMessageFromMenu={onReportMessageFromMenu}
+        onSelectMessageFromMenu={onSelectMessageFromMenu}
+        onEditMessageFromMenu={onEditMessageFromMenu}
+        onDeleteMessageFromMenu={onDeleteMessageFromMenu}
+        onOpenReadsFromMessageMenu={onOpenReadsFromMessageMenu}
+        onOpenAttachmentFromMessageMenu={onOpenAttachmentFromMessageMenu}
+        onOpenTaskFromMessageMenu={onOpenTaskFromMessageMenu}
+      />
 
       {/* Меню 3 точки, стиль Telegram */}
       <Menu
@@ -883,14 +565,23 @@ export default function ChatDialogs({
         <Divider sx={{ bgcolor: popupBorderColor }} />
 
         <MenuItem
-          onClick={runThreadMenuAction(() => {})}
+          onClick={runThreadMenuAction(() => onRequestDeleteConversation?.(activeConversation))}
+          disabled={
+            !activeConversationId
+            || activeConversationKind === 'task'
+            || Boolean(String(activeConversation?.task_id || '').trim())
+            || activeConversationKind === 'ai'
+          }
           sx={{
             color: popupDangerColor,
             '&:active': { bgcolor: alpha(popupDangerColor, 0.12) },
           }}
         >
           <DeleteOutlineIcon sx={{ fontSize: density.dialogMenuIconSize || 22, color: popupDangerColor, flexShrink: 0 }} />
-          Удалить чат
+          {activeConversationKind === 'group'
+          && String(activeConversation?.viewer_member_role || '').trim() !== 'owner'
+            ? 'Выйти из группы'
+            : 'Удалить чат'}
         </MenuItem>
       </Menu>
 
@@ -1816,7 +1507,6 @@ export default function ChatDialogs({
                   const isForwarding = forwardingConversationId === item.id;
                   const hasOtherForward = Boolean(forwardingConversationId) && !isForwarding;
                   const subtitle = getConversationHeaderSubtitle(item) || item?.last_message_preview || 'Чат';
-                  const avatarItem = item?.kind === 'direct' ? (item?.direct_peer || item) : item;
                   return (
                     <Box key={item.id}>
                       <Paper
@@ -1831,8 +1521,8 @@ export default function ChatDialogs({
                           bgcolor: isForwarding ? alpha(accentColor, isDarkTheme ? 0.16 : 0.1) : 'transparent',
                         }}
                       >
-                        <PresenceAvatar
-                          item={avatarItem}
+                        <ConversationAvatar
+                          conversation={item}
                           online={Boolean(item?.kind === 'direct' && item?.direct_peer?.presence?.is_online)}
                           size={density.dialogForwardAvatar || 52}
                         />
@@ -1863,6 +1553,15 @@ export default function ChatDialogs({
         onClose={onCloseAttachmentPreview}
         prefersReducedMotion={prefersReducedMotion}
       />
+      {documentPreview?.open ? (
+        <MailAttachmentPreviewDialog
+          attachmentPreview={documentPreview}
+          onClose={onCloseDocumentPreview}
+          onDownload={onDownloadDocumentPreview}
+          onDownloadPreviewPdf={onDownloadDocumentPreviewPdf}
+          formatFileSize={formatFileSize}
+        />
+      ) : null}
       <Dialog open={searchOpen} onClose={onCloseSearch} fullWidth maxWidth="sm" PaperProps={{ sx: dialogPaperSx }}>
         <DialogTitle sx={dialogTitleSx}>Поиск по сообщениям</DialogTitle>
         <DialogContent sx={dialogContentSx}>

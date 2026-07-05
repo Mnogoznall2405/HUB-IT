@@ -13,6 +13,7 @@ from sqlalchemy import select
 from backend.appdb.db import app_session, initialize_app_schema, is_app_database_configured
 from backend.appdb.models import AppSessionRecord
 from backend.config import config
+from backend.services.trusted_device_service import trusted_device_service
 from local_store import SQLiteLocalStore, get_local_store
 
 
@@ -158,6 +159,7 @@ class SessionService:
             "status": str(row.status or "active"),
             "closed_at": row.closed_at.isoformat() if row.closed_at else None,
             "closed_reason": row.closed_reason,
+            "trusted_device_id": row.trusted_device_id,
             "device_label": row.device_label,
         }
 
@@ -176,6 +178,7 @@ class SessionService:
         row.status = str(payload.get("status") or "active")
         row.closed_at = _parse_datetime(payload.get("closed_at"))
         row.closed_reason = str(payload.get("closed_reason") or "").strip() or None
+        row.trusted_device_id = str(payload.get("trusted_device_id") or "").strip() or None
         row.device_label = str(payload.get("device_label") or "").strip() or None
 
     def _normalize_db_row(self, row: AppSessionRecord, now: Optional[datetime] = None) -> dict:
@@ -184,7 +187,22 @@ class SessionService:
             self._apply_session_payload(row, item)
         return item
 
-    def _idle_timeout_delta(self) -> timedelta:
+    def _effective_trusted_device_id(self, session: dict) -> str | None:
+        raw = str(session.get("trusted_device_id") or "").strip()
+        if not raw:
+            return None
+        device = trusted_device_service.get_device(raw)
+        if not device:
+            return None
+        if not bool(device.get("is_active", True)):
+            return None
+        if bool(device.get("is_expired", False)):
+            return None
+        return raw
+
+    def _idle_timeout_delta(self, session: dict | None = None) -> timedelta:
+        if session is not None and self._effective_trusted_device_id(session):
+            return timedelta(days=max(1, int(config.session.idle_timeout_trusted_days)))
         return timedelta(minutes=max(1, int(config.session.idle_timeout_minutes)))
 
     def _history_retention_delta(self) -> timedelta:
@@ -197,7 +215,7 @@ class SessionService:
         )
         if anchor is None:
             return None
-        return anchor + self._idle_timeout_delta()
+        return anchor + self._idle_timeout_delta(session)
 
     def _resolve_status(self, session: dict, now: Optional[datetime] = None) -> str:
         now = now or _utc_now()
@@ -235,6 +253,11 @@ class SessionService:
         resolved_device = _build_device_label(session.get("user_agent", ""))
         if device_label != resolved_device:
             session["device_label"] = resolved_device
+            changed = True
+
+        raw_trusted = str(session.get("trusted_device_id") or "").strip() or None
+        if raw_trusted and not self._effective_trusted_device_id(session):
+            session["trusted_device_id"] = None
             changed = True
 
         idle_expires_at = self._compute_idle_expires_at(session)
@@ -303,6 +326,7 @@ class SessionService:
         ip_address: str,
         user_agent: str,
         expires_at: str,
+        trusted_device_id: str | None = None,
     ) -> dict:
         self._run_maintenance()
         now_iso = _utc_now_iso()
@@ -321,6 +345,7 @@ class SessionService:
             "status": "active",
             "closed_at": None,
             "closed_reason": None,
+            "trusted_device_id": str(trusted_device_id or "").strip() or None,
             "device_label": "",
         }
         self._normalize_session(item)
@@ -349,7 +374,7 @@ class SessionService:
                     return True
                 now_iso = now.isoformat()
                 item["last_seen_at"] = now_iso
-                item["idle_expires_at"] = (now + self._idle_timeout_delta()).isoformat()
+                item["idle_expires_at"] = (now + self._idle_timeout_delta(item)).isoformat()
                 item["status"] = "active"
                 self._apply_session_payload(row, item)
                 return True
@@ -371,7 +396,7 @@ class SessionService:
                 touched = True
                 break
             session["last_seen_at"] = now_iso
-            session["idle_expires_at"] = (now + self._idle_timeout_delta()).isoformat()
+            session["idle_expires_at"] = (now + self._idle_timeout_delta(session)).isoformat()
             session["status"] = "active"
             touched = True
             changed = True
@@ -610,19 +635,20 @@ class SessionService:
             return []
         if self._use_app_database:
             self._run_maintenance()
+            now = _utc_now()
+            normalized_sessions: list[dict] = []
             with app_session(self._database_url) as session:
                 rows = session.scalars(
                     select(AppSessionRecord)
                     .where(AppSessionRecord.user_id.in_(normalized_user_ids))
                     .order_by(AppSessionRecord.last_seen_at.desc(), AppSessionRecord.created_at.desc())
                 ).all()
-                normalized_sessions = [self._row_to_session_dict(row) for row in rows]
-                normalized_sessions = [
-                    item
-                    for item in normalized_sessions
-                    if not active_only or item.get("status") == "active"
-                ]
-                return normalized_sessions
+                for row in rows:
+                    item = self._normalize_db_row(row, now=now)
+                    if active_only and item.get("status") != "active":
+                        continue
+                    normalized_sessions.append(item)
+            return normalized_sessions
         self._run_maintenance()
         sessions = self._load_sessions()
         now = _utc_now()

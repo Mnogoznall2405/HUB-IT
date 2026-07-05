@@ -2,6 +2,7 @@
 Database management API endpoints - switch between databases.
 """
 from fastapi import APIRouter, Depends, HTTPException, Cookie, Header, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from typing import List, Dict, Optional
@@ -167,13 +168,16 @@ async def get_available_databases(current_user: User = Depends(get_current_activ
     Returns:
         List of available databases
     """
-    databases = get_all_db_configs()
-    assigned_db = normalize_database_id(_get_assigned_db(current_user))
-    if assigned_db and current_user and current_user.role != "admin":
-        filtered = [db for db in databases if db["id"] == assigned_db]
-        if filtered:
-            return filtered
-    return databases
+    def _build_response() -> list[dict]:
+        databases = get_all_db_configs()
+        assigned_db = normalize_database_id(_get_assigned_db(current_user))
+        if assigned_db and current_user and current_user.role != "admin":
+            filtered = [db for db in databases if db["id"] == assigned_db]
+            if filtered:
+                return filtered
+        return databases
+
+    return await run_in_threadpool(_build_response)
 
 
 @router.get("/current")
@@ -188,20 +192,23 @@ async def get_current_database(
     Returns:
         Current database information
     """
-    active_db, source = resolve_current_database_id(
-        current_user,
-        request_hint=x_database_id,
-        legacy_cookie=selected_database,
-        include_default=True,
-    )
-    db_config = get_database_config(active_db)
-    return {
-        "id": active_db or config.database.database,
-        "name": db_config["database"],
-        "host": db_config["host"],
-        "source": source,
-        "locked": "true" if source == "assigned" else "false",
-    }
+    def _build_response() -> dict[str, str]:
+        active_db, source = resolve_current_database_id(
+            current_user,
+            request_hint=x_database_id,
+            legacy_cookie=selected_database,
+            include_default=True,
+        )
+        db_config = get_database_config(active_db)
+        return {
+            "id": active_db or config.database.database,
+            "name": db_config["database"],
+            "host": db_config["host"],
+            "source": source,
+            "locked": "true" if source == "assigned" else "false",
+        }
+
+    return await run_in_threadpool(_build_response)
 
 
 class SwitchDatabaseRequest(BaseModel):

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef } from 'react';
 
 import {
   buildDatabaseSearchIndex,
@@ -11,12 +11,14 @@ export function useDatabaseSearch({
   selectedBranch,
   setExpandedBranches,
   setExpandedLocations,
+  searchQuery,
+  setSearchQuery,
+  filteredData,
+  setFilteredData,
   debounceMs = 1200,
 }) {
-  const [searchQuery, setSearchQuery] = useState('');
-  const [filteredData, setFilteredData] = useState(null);
   const debounceTimerRef = useRef(null);
-  const searchQueryRef = useRef('');
+  const searchQueryRef = useRef(searchQuery);
 
   const cancelSearchDebounce = useCallback(() => {
     if (debounceTimerRef.current != null) {
@@ -46,7 +48,7 @@ export function useDatabaseSearch({
     if (nextExpandedLocations != null) {
       setExpandedLocations(nextExpandedLocations);
     }
-  }, [searchIndex, setExpandedBranches, setExpandedLocations]);
+  }, [searchIndex, setExpandedBranches, setExpandedLocations, setFilteredData]);
 
   const applySearchDebounced = useCallback(
     (query) => {
@@ -73,7 +75,7 @@ export function useDatabaseSearch({
 
       applySearchDebounced(query);
     },
-    [applySearchDebounced, cancelSearchDebounce, runSearchNow]
+    [applySearchDebounced, cancelSearchDebounce, runSearchNow, setSearchQuery]
   );
 
   const handleSearchKeyDown = useCallback(
@@ -98,7 +100,7 @@ export function useDatabaseSearch({
       return;
     }
     setFilteredData(null);
-  }, [selectedBranch, searchIndex, cancelSearchDebounce, runSearchNow]);
+  }, [selectedBranch, searchIndex, cancelSearchDebounce, runSearchNow, setFilteredData]);
 
   useEffect(() => () => {
     cancelSearchDebounce();
@@ -107,14 +109,14 @@ export function useDatabaseSearch({
   const clearFilteredData = useCallback(() => {
     cancelSearchDebounce();
     setFilteredData(null);
-  }, [cancelSearchDebounce]);
+  }, [cancelSearchDebounce, setFilteredData]);
 
   const clearSearch = useCallback(() => {
     cancelSearchDebounce();
     searchQueryRef.current = '';
     setSearchQuery('');
     setFilteredData(null);
-  }, [cancelSearchDebounce]);
+  }, [cancelSearchDebounce, setFilteredData, setSearchQuery]);
 
   return {
     searchQuery,

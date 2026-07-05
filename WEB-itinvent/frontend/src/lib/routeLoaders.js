@@ -1,5 +1,10 @@
+import {
+  clearRouteChunkRecoveryState,
+  isRouteChunkLoadError,
+  ROUTE_CHUNK_RELOAD_KEY,
+} from './routeChunkRecovery';
+
 const routePrefetchPromises = new Map();
-const ROUTE_CHUNK_RELOAD_KEY = 'itinvent:route-chunk-reload-attempted';
 const MY_FILES_GRANT_DEPLOY_KEY = 'hubit:my-files:grant-download-v2';
 
 const ensureMyFilesGrantDeployReload = () => {
@@ -16,24 +21,10 @@ const ensureMyFilesGrantDeployReload = () => {
   }
 };
 
-const isRouteChunkLoadError = (error) => {
-  const message = String(error?.message || error || '').toLowerCase();
-  return (
-    message.includes('failed to fetch dynamically imported module')
-    || message.includes('importing a module script failed')
-    || message.includes('loading chunk')
-    || message.includes('chunkloaderror')
-  );
-};
-
 const loadRouteWithReloadFallback = (loader) => (
   loader()
     .then((module) => {
-      try {
-        window.sessionStorage.removeItem(ROUTE_CHUNK_RELOAD_KEY);
-      } catch {
-        // Ignore storage failures.
-      }
+      clearRouteChunkRecoveryState();
       return module;
     })
     .catch((error) => {
@@ -58,22 +49,26 @@ const defineRouteLoader = (loader) => () => loadRouteWithReloadFallback(loader);
 
 export const loadLoginRoute = defineRouteLoader(() => import('../pages/Login'));
 export const loadDashboardRoute = defineRouteLoader(() => import('../pages/Dashboard'));
+export const loadDashboardNewsRoute = defineRouteLoader(() => import('../pages/DashboardNews'));
 export const loadTasksRoute = defineRouteLoader(() => import('../pages/Tasks'));
 export const loadTicketsRoute = defineRouteLoader(() => import('../pages/Tickets'));
-export const loadChatRoute = defineRouteLoader(() => import('../pages/Chat'));
+export const loadChatRoute = defineRouteLoader(() => import('../pages/chat/Chat'));
 export const loadDatabaseRoute = defineRouteLoader(() => import('../pages/Database'));
 export const loadNetworksRoute = defineRouteLoader(() => import('../pages/Networks'));
 export const loadSettingsRoute = defineRouteLoader(() => import('../pages/Settings'));
+export const loadProfileRoute = defineRouteLoader(() => import('../pages/Profile'));
+export const loadAdminRoute = defineRouteLoader(() => import('../pages/Admin'));
 export const loadStatisticsRoute = defineRouteLoader(() => import('../pages/Statistics'));
 export const loadComputersRoute = defineRouteLoader(() => import('../pages/Computers'));
 export const loadScanCenterRoute = defineRouteLoader(() => import('../pages/ScanCenter'));
 export const loadMfuRoute = defineRouteLoader(() => import('../pages/Mfu'));
 export const loadMailRoute = defineRouteLoader(() => import('../pages/Mail'));
-export const loadAdUsersRoute = defineRouteLoader(() => import('../pages/AdUsers'));
+export const loadMobileMenuRoute = defineRouteLoader(() => import('../pages/MobileMenu'));
 export const loadVcsRoute = defineRouteLoader(() => import('../pages/Vcs'));
 export const loadKnowledgeBaseRoute = defineRouteLoader(() => import('../pages/KnowledgeBase'));
 export const loadAddressBookRoute = defineRouteLoader(() => import('../pages/AddressBook'));
 export const loadPasswordsRoute = defineRouteLoader(() => import('../pages/Passwords'));
+export const loadGroupsAccessRoute = defineRouteLoader(() => import('../pages/GroupsAccess'));
 export const loadMyFilesRoute = defineRouteLoader(() => {
   if (ensureMyFilesGrantDeployReload()) {
     return new Promise(() => {});
@@ -85,22 +80,27 @@ export const loadSharedFileRoute = defineRouteLoader(() => import('../pages/Shar
 const ROUTE_LOADERS = new Map([
   ['/login', loadLoginRoute],
   ['/dashboard', loadDashboardRoute],
+  ['/dashboard/news', loadDashboardNewsRoute],
   ['/tasks', loadTasksRoute],
   ['/tickets', loadTicketsRoute],
   ['/chat', loadChatRoute],
   ['/database', loadDatabaseRoute],
   ['/networks', loadNetworksRoute],
   ['/settings', loadSettingsRoute],
+  ['/profile', loadProfileRoute],
+  ['/admin', loadAdminRoute],
   ['/statistics', loadStatisticsRoute],
   ['/computers', loadComputersRoute],
   ['/scan-center', loadScanCenterRoute],
   ['/mfu', loadMfuRoute],
   ['/mail', loadMailRoute],
-  ['/ad-users', loadAdUsersRoute],
+  ['/menu', loadMobileMenuRoute],
+  ['/ad-users', loadAdminRoute],
   ['/vcs', loadVcsRoute],
   ['/kb', loadKnowledgeBaseRoute],
   ['/address-book', loadAddressBookRoute],
   ['/passwords', loadPasswordsRoute],
+  ['/groups-access', loadGroupsAccessRoute],
   ['/my-files', loadMyFilesRoute],
   ['/shared-files', loadSharedFileRoute],
 ]);
@@ -108,8 +108,17 @@ const ROUTE_LOADERS = new Map([
 export const normalizeRouteLoaderPath = (path) => {
   const normalized = String(path || '').trim();
   if (!normalized) return '';
+  if (normalized === '/settings' || normalized.startsWith('/settings/')) {
+    return '/settings';
+  }
+  if (normalized === '/admin' || normalized.startsWith('/admin/')) {
+    return '/admin';
+  }
   if (normalized === '/networks' || normalized.startsWith('/networks/')) {
     return '/networks';
+  }
+  if (normalized === '/dashboard/news' || normalized.startsWith('/dashboard/news/')) {
+    return '/dashboard/news';
   }
   if (normalized === '/shared-files' || normalized.startsWith('/shared-files/')) {
     return '/shared-files';

@@ -1,4 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+vi.mock('./chatFeature', () => ({
+  TASK_DISCUSSION_CHAT_ENABLED: false,
+}));
+
 import {
   createHubSystemNotification,
   createMailSystemNotification,

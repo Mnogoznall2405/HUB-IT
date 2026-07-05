@@ -24,9 +24,11 @@ from backend.api.v1 import hub
 from backend.models.auth import User
 
 hub_service_module = importlib.import_module("backend.services.hub_service")
+access_policy_module = importlib.import_module("backend.services.access_policy_service")
 
 
 TASKS_READ = "tasks.read"
+TASKS_CREATE = "tasks.create"
 TASKS_WRITE = "tasks.write"
 TASKS_REVIEW = "tasks.review"
 DASHBOARD_READ = "dashboard.read"
@@ -91,6 +93,19 @@ def _public_user(raw: dict) -> User:
 
 @pytest.fixture
 def task_env(temp_dir, monkeypatch):
+    monkeypatch.setenv("TASK_DISCUSSION_CHAT_ENABLED", "0")
+    monkeypatch.setenv("CHAT_MODULE_ENABLED", "0")
+    monkeypatch.setenv("TASK_EMAIL_AUTODISPATCH_ENABLED", "0")
+    task_discussion_module = importlib.import_module("backend.chat.task_discussion")
+    monkeypatch.setattr(task_discussion_module, "is_task_discussion_chat_enabled", lambda: False)
+    monkeypatch.setattr(task_discussion_module.config.chat, "task_discussion_enabled", False, raising=False)
+
+    async def _run_in_threadpool_inline(func, *args, **kwargs):
+        # TestClient + run_in_threadpool can deadlock on Windows (anyio thread pool).
+        return func(*args, **kwargs)
+
+    monkeypatch.setattr(hub, "run_in_threadpool", _run_in_threadpool_inline)
+
     raw_users = {
         1: _raw_user(1, "author", "Task Author", "operator", [DASHBOARD_READ, TASKS_READ, TASKS_WRITE]),
         2: _raw_user(2, "assignee", "Task Assignee", "viewer", [DASHBOARD_READ, TASKS_READ]),
@@ -99,6 +114,7 @@ def task_env(temp_dir, monkeypatch):
         5: _raw_user(5, "admin", "Task Admin", "admin", [DASHBOARD_READ, TASKS_READ, TASKS_WRITE, TASKS_REVIEW]),
         6: _raw_user(6, "taskonly", "Task Only User", "viewer", [TASKS_READ]),
         7: _raw_user(7, "assistant", "Task Assistant", "viewer", [TASKS_READ]),
+        8: _raw_user(8, "createonly", "Task Create Only", "viewer", [DASHBOARD_READ, TASKS_READ, TASKS_CREATE]),
     }
     users_by_id = dict(raw_users)
     store = SimpleNamespace(
@@ -114,6 +130,8 @@ def task_env(temp_dir, monkeypatch):
 
     service = hub_service_module.HubService()
     monkeypatch.setattr(hub, "hub_service", service)
+    monkeypatch.setattr(hub_service_module, "hub_service", service)
+    monkeypatch.setattr(service, "_schedule_task_email_outbox_dispatch", lambda: None)
 
     app = FastAPI()
     app.include_router(hub.router, prefix="/hub")
@@ -129,15 +147,26 @@ def task_env(temp_dir, monkeypatch):
     def set_user(user_id: int) -> None:
         current["user"] = _public_user(raw_users[user_id])
 
-    return {
+    yield {
         "client": client,
         "set_user": set_user,
         "raw_users": raw_users,
         "service": service,
     }
 
+    client.close()
 
-def _create_task(client: TestClient, *, assignee_user_id: int = 2, controller_user_id: int = 3, title: str = "Task Alpha") -> dict:
+
+def _create_task(
+    client: TestClient,
+    *,
+    assignee_user_id: int = 2,
+    controller_user_id: int = 3,
+    title: str = "Task Alpha",
+    due_at: str | None = None,
+    email_deadline_remind_hours: int | None = None,
+    observer_user_ids: list[int] | None = None,
+) -> dict:
     project_code = f"{title.lower().replace(' ', '-')}-{uuid4().hex[:8]}"
     project_response = client.post(
         "/hub/task-projects",
@@ -155,6 +184,9 @@ def _create_task(client: TestClient, *, assignee_user_id: int = 2, controller_us
             "project_id": project["id"],
             "protocol_date": "2026-03-01",
             "priority": "high",
+            **({"due_at": due_at} if due_at else {}),
+            **({"email_deadline_remind_hours": email_deadline_remind_hours} if email_deadline_remind_hours is not None else {}),
+            **({"observer_user_ids": observer_user_ids} if observer_user_ids else {}),
         },
     )
     assert response.status_code == 200, response.text
@@ -171,6 +203,126 @@ def _submit_task(client: TestClient, task_id: str, *, comment: str = "Report don
     )
     assert response.status_code == 200, response.text
     return response.json()
+
+
+def _approve_task(client: TestClient, task_id: str, *, comment: str = "Approved") -> dict:
+    response = client.post(
+        f"/hub/tasks/{task_id}/review",
+        json={"decision": "approve", "comment": comment},
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_reopen_completed_task_by_participant(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Reopen Me")
+    task_id = task["id"]
+
+    set_user(2)
+    _submit_task(client, task_id, comment="Done once")
+
+    set_user(3)
+    approved = _approve_task(client, task_id)
+    assert approved["status"] == "done"
+
+    set_user(2)
+    detail = client.get(f"/hub/tasks/{task_id}")
+    assert detail.status_code == 200
+    assert detail.json()["capabilities"]["can_reopen"] is True
+
+    reopened = client.post(f"/hub/tasks/{task_id}/reopen", json={"due_at": "2026-07-01T19:00"})
+    assert reopened.status_code == 200, reopened.text
+    reopened_payload = reopened.json()
+    assert reopened_payload["status"] == "in_progress"
+    assert reopened_payload["due_at"] is not None
+    assert reopened_payload["capabilities"]["can_reopen"] is False
+    assert reopened_payload["capabilities"]["can_submit"] is True
+
+    status_log = client.get(f"/hub/tasks/{task_id}/status-log")
+    assert status_log.status_code == 200
+    transitions = [(row["old_status"], row["new_status"]) for row in status_log.json()["items"]]
+    assert ("done", "in_progress") in transitions
+
+
+def test_reopen_completed_task_denied_for_outsider(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Protected Reopen")
+    task_id = task["id"]
+
+    set_user(2)
+    _submit_task(client, task_id)
+
+    set_user(3)
+    _approve_task(client, task_id)
+
+    set_user(4)
+    denied = client.post(f"/hub/tasks/{task_id}/reopen")
+    assert denied.status_code == 403
+
+
+def test_reopen_non_completed_task_returns_400(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Still Open")
+    task_id = task["id"]
+
+    set_user(2)
+    bad = client.post(f"/hub/tasks/{task_id}/reopen")
+    assert bad.status_code == 400
+
+
+def test_reopen_completed_task_queues_email_notification(task_env, monkeypatch):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    service = task_env["service"]
+    raw_users = task_env["raw_users"]
+
+    raw_users[1]["mailbox_email"] = "creator@example.test"
+    raw_users[3]["mailbox_email"] = "controller@example.test"
+    monkeypatch.setenv("TASK_EMAIL_NOTIFICATIONS_ENABLED", "1")
+    monkeypatch.setenv("TASK_EMAIL_AUTODISPATCH_ENABLED", "0")
+    monkeypatch.setenv("TASK_EMAIL_APP_URL", "https://hub.example.test")
+
+    set_user(1)
+    task = _create_task(client, title="Reopen Email Task")
+    task_id = task["id"]
+
+    set_user(2)
+    _submit_task(client, task_id)
+
+    set_user(3)
+    _approve_task(client, task_id)
+
+    set_user(2)
+    reopened = client.post(
+        f"/hub/tasks/{task_id}/reopen",
+        json={"due_at": "2026-08-15T19:00"},
+    )
+    assert reopened.status_code == 200, reopened.text
+
+    rows = [row for row in _task_email_rows(service) if row.get("event_type") == "task.reopened"]
+    assert len(rows) >= 1
+    assert {row["recipient_email"] for row in rows} & {"creator@example.test", "controller@example.test"}
+    assert all("Reopen Email Task" in row["subject"] for row in rows)
+    assert all("возвращено в работу" in row["body_text"].lower() for row in rows)
+    assert all(f"/tasks?task={task_id}" in row["body_text"] for row in rows)
+
+
+def _task_email_rows(service) -> list[dict]:
+    with service._lock, service._connect() as conn:
+        rows = conn.execute(
+            f"SELECT * FROM {service._TASK_EMAIL_OUTBOX_TABLE} ORDER BY created_at ASC, id ASC"
+        ).fetchall()
+    return [dict(row) for row in rows]
 
 
 def test_create_task_detail_access_and_role_scopes(task_env):
@@ -196,9 +348,136 @@ def test_create_task_detail_access_and_role_scopes(task_env):
     assert detail_payload["controller_user_id"] == 3
     assert detail_payload["created_by_user_id"] == 1
     assert "attachments_count" in detail_payload
+    assert detail_payload["capabilities"] == {
+        "can_edit": False,
+        "can_start": False,
+        "can_submit": False,
+        "can_review": False,
+        "can_reopen": False,
+        "can_upload_files": True,
+        "can_update_checklist": True,
+        "can_open_discussion": False,
+    }
 
     set_user(4)
     denied = client.get(f"/hub/tasks/{task_id}")
+    assert denied.status_code == 403
+
+
+def test_create_only_user_can_create_task_without_taxonomy_management(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(8)
+    project_response = client.post(
+        "/hub/task-projects",
+        json={"name": "Create Only Project", "code": f"create-only-{uuid4().hex[:8]}"},
+    )
+    assert project_response.status_code == 200, project_response.text
+    project = project_response.json()
+
+    created = client.post(
+        "/hub/tasks",
+        json={
+            "title": "Create Only Task",
+            "description": "Viewer role can create tasks",
+            "assignee_user_ids": [8],
+            "controller_user_id": None,
+            "project_id": project["id"],
+            "protocol_date": "2026-03-01",
+            "priority": "high",
+            "checklist_items": [
+                {"id": "step-1", "text": "Collect inventory", "done": False},
+                {"id": "step-2", "text": "Confirm result", "done": True},
+            ],
+        },
+    )
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["created"] == 1
+    assert payload["items"][0]["controller_user_id"] == 0
+    assert payload["items"][0]["controller_full_name"] == ""
+    task = payload["items"][0]
+    assert task["created_by_user_id"] == 8
+    assert task["assignee_user_id"] == 8
+    assert task["project_id"] == project["id"]
+    assert task["priority"] == "high"
+    assert task["checklist_total"] == 2
+    assert task["checklist_done"] == 1
+    assert task["checklist_items"][0]["text"] == "Collect inventory"
+
+
+def test_create_task_without_department_allows_cross_assignee(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(8)
+    project_response = client.post(
+        "/hub/task-projects",
+        json={"name": "Cross Assignee Project", "code": f"cross-assignee-{uuid4().hex[:8]}"},
+    )
+    assert project_response.status_code == 200, project_response.text
+    project = project_response.json()
+
+    created = client.post(
+        "/hub/tasks",
+        json={
+            "title": "Cross Assignee Task",
+            "description": "No department required",
+            "assignee_user_ids": [2],
+            "controller_user_id": None,
+            "project_id": project["id"],
+            "protocol_date": "2026-03-01",
+            "priority": "normal",
+            "department_id": None,
+            "visibility_scope": "private",
+        },
+    )
+    assert created.status_code == 200, created.text
+    payload = created.json()
+    assert payload["created"] == 1
+    task = payload["items"][0]
+    assert task["assignee_user_id"] == 2
+    assert task["created_by_user_id"] == 8
+    assert not task.get("department_id")
+    assert task.get("visibility_scope") == "private"
+
+
+def test_assignee_can_update_task_checklist_only(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Checklist Access")
+    seed_response = client.patch(
+        f"/hub/tasks/{task['id']}",
+        json={"checklist_items": [{"id": "step-1", "text": "Check workstation", "done": False}]},
+    )
+    assert seed_response.status_code == 200, seed_response.text
+    assert seed_response.json()["checklist_done"] == 0
+
+    clear_controller = client.patch(
+        f"/hub/tasks/{task['id']}",
+        json={"controller_user_id": None},
+    )
+    assert clear_controller.status_code == 200, clear_controller.text
+    assert clear_controller.json()["controller_user_id"] == 0
+    assert clear_controller.json()["controller_full_name"] == ""
+
+    set_user(2)
+    updated = client.patch(
+        f"/hub/tasks/{task['id']}",
+        json={"checklist_items": [{"id": "step-1", "text": "Check workstation", "done": True}]},
+    )
+    assert updated.status_code == 200, updated.text
+    payload = updated.json()
+    assert payload["checklist_done"] == 1
+    assert payload["checklist_items"][0]["done"] is True
+
+    denied = client.patch(
+        f"/hub/tasks/{task['id']}",
+        json={"title": "Blocked rename"},
+    )
     assert denied.status_code == 403
 
 
@@ -301,8 +580,14 @@ def test_author_can_review_and_outsider_cannot_access_task_artifacts(task_env):
     raw_users[1]["permissions"] = [DASHBOARD_READ, TASKS_READ]
     raw_users[1]["custom_permissions"] = [DASHBOARD_READ, TASKS_READ]
     set_user(1)
-    assignee_users = client.get("/hub/users/assignees")
+    assignee_users = client.get("/hub/users/assignees", params={"q": "author"})
     assert assignee_users.status_code == 200, assignee_users.text
+    assignee_payload = assignee_users.json()
+    assert isinstance(assignee_payload.get("items"), list)
+    assert "total" in assignee_payload
+    assignee_by_id = client.get("/hub/users/assignees", params={"ids": "4"})
+    assert assignee_by_id.status_code == 200, assignee_by_id.text
+    assert len(assignee_by_id.json().get("items") or []) >= 1
     controller_users = client.get("/hub/users/controllers")
     assert controller_users.status_code == 200, controller_users.text
     author_update = client.patch(f"/hub/tasks/{task_id}", json={"title": "Author Review Updated"})
@@ -327,6 +612,54 @@ def test_author_can_review_and_outsider_cannot_access_task_artifacts(task_env):
     assert client.get(f"/hub/tasks/{task_id}/status-log").status_code == 403
     assert client.get(f"/hub/tasks/reports/{report_id}/file").status_code == 403
     assert client.get(f"/hub/tasks/{task_id}/attachments/{attachment_id}/file").status_code == 403
+
+
+def test_assignee_controller_not_creator_cannot_review(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Assignee Controller Conflict", assignee_user_id=3, controller_user_id=3)
+    task_id = task["id"]
+
+    set_user(3)
+    submitted = _submit_task(client, task_id, comment="Ready for review")
+    assert submitted["status"] == "review"
+
+    detail = client.get(f"/hub/tasks/{task_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["capabilities"]["can_review"] is False
+
+    denied_review = client.post(
+        f"/hub/tasks/{task_id}/review",
+        json={"decision": "approve", "comment": "Self-review blocked"},
+    )
+    assert denied_review.status_code == 403
+
+
+def test_self_assigned_assignee_creator_can_review_after_submit(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    task = _create_task(client, title="Self Assigned Review", assignee_user_id=1, controller_user_id=3)
+    task_id = task["id"]
+
+    submitted = _submit_task(client, task_id, comment="Author finished own task")
+    assert submitted["status"] == "review"
+
+    detail = client.get(f"/hub/tasks/{task_id}")
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["capabilities"]["can_review"] is True
+
+    reviewed = client.post(
+        f"/hub/tasks/{task_id}/review",
+        json={"decision": "approve", "comment": "Accepted by self-assigned author"},
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    reviewed_payload = reviewed.json()
+    assert reviewed_payload["status"] == "done"
+    assert reviewed_payload["reviewer_user_id"] == 1
 
 
 def test_controller_review_and_counts_include_author_and_controller_roles(task_env):
@@ -378,6 +711,49 @@ def test_controller_review_and_counts_include_author_and_controller_roles(task_e
         json={"decision": "approve", "comment": "Outsider"},
     )
     assert denied_review.status_code == 403
+
+
+def test_compute_unread_counts_sql_task_metrics(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    service = task_env["service"]
+
+    set_user(1)
+    overdue_task = _create_task(client, title="Overdue SQL", due_at="2020-01-01T12:00:00+00:00")
+    review_task = _create_task(client, title="Review SQL")
+    done_overdue = _create_task(client, title="Done Overdue SQL", due_at="2020-01-01T12:00:00+00:00")
+
+    set_user(2)
+    assert _submit_task(client, review_task["id"], comment="Ready")["status"] == "review"
+    assert _submit_task(client, done_overdue["id"], comment="Finished")["status"] == "review"
+
+    set_user(3)
+    approved = client.post(
+        f"/hub/tasks/{done_overdue['id']}/review",
+        json={"decision": "approve", "comment": "Closed"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "done"
+
+    set_user(1)
+    counts = service.get_unread_counts(user_id=1)
+    assert counts["tasks_created_open"] == 2
+    assert counts["tasks_open_total"] == 2
+    assert counts["tasks_overdue"] == 1
+    assert counts["tasks_review_required"] == 1
+
+    set_user(2)
+    comment_response = client.post(
+        f"/hub/tasks/{overdue_task['id']}/comments",
+        json={"body": "Overdue ping"},
+    )
+    assert comment_response.status_code == 200, comment_response.text
+
+    set_user(1)
+    assert service.get_unread_counts(user_id=1)["tasks_with_unread_comments"] == 1
+    mark_seen = client.post(f"/hub/tasks/{overdue_task['id']}/comments/mark-seen")
+    assert mark_seen.status_code == 200, mark_seen.text
+    assert service.get_unread_counts(user_id=1)["tasks_with_unread_comments"] == 0
 
 
 def test_assignee_cannot_submit_task_twice_while_waiting_for_review(task_env):
@@ -441,6 +817,10 @@ def test_task_comment_summary_unread_seen_and_notifications(task_env):
     assert author_payload["latest_comment_full_name"] == "Task Assignee"
     assert author_payload["has_unread_comments"] is True
 
+    author_counts_with_comment = client.get("/hub/notifications/unread-counts")
+    assert author_counts_with_comment.status_code == 200
+    assert author_counts_with_comment.json()["tasks_with_unread_comments"] == 1
+
     author_poll = client.get("/hub/notifications/poll", params={"limit": 20})
     assert author_poll.status_code == 200
     assert not any(
@@ -462,6 +842,7 @@ def test_task_comment_summary_unread_seen_and_notifications(task_env):
     author_counts_after = client.get("/hub/notifications/unread-counts")
     assert author_counts_after.status_code == 200
     assert author_counts_after.json()["notifications_unread_total"] == 0
+    assert author_counts_after.json()["tasks_with_unread_comments"] == 0
 
     set_user(3)
     controller_tasks = client.get("/hub/tasks", params={"scope": "my", "role_scope": "controller"})
@@ -636,6 +1017,7 @@ def test_task_projects_protocol_date_and_analytics(task_env):
     assert payload["by_object"][0]["object_id"] == task_object["id"]
     assert payload["by_object"][0]["object_name"] == "Объект 17"
     assert payload["by_participant"][0]["participant_user_id"] == 2
+    assert payload.get("truncated") is False
 
 
 def test_task_analytics_backfills_completed_at_and_returns_extended_metrics(task_env):
@@ -800,6 +1182,7 @@ def test_task_analytics_backfills_completed_at_and_returns_extended_metrics(task
     assert filtered_payload["summary"]["done_without_due"] == 1
     assert filtered_payload["by_participant"][0]["participant_user_id"] == 2
     assert filtered_payload["by_object"][0]["object_id"] == task_object["id"]
+    assert payload.get("truncated") is False
 
     overdue_detail = service.get_task(overdue_task["id"], user_id=1)
     assert overdue_detail is not None
@@ -939,3 +1322,487 @@ def test_delegate_receives_task_notifications_and_read_only_access(task_env, mon
 
     update = client.patch(f"/hub/tasks/{task['id']}", json={"title": "Delegate Edit"})
     assert update.status_code == 403
+
+
+def test_task_email_outbox_queues_assignment_and_dispatches(task_env, monkeypatch):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    service = task_env["service"]
+    raw_users = task_env["raw_users"]
+
+    raw_users[2]["mailbox_email"] = "assignee@example.test"
+    raw_users[3]["email"] = "controller@example.test"
+    monkeypatch.setenv("TASK_EMAIL_NOTIFICATIONS_ENABLED", "1")
+    monkeypatch.setenv("TASK_EMAIL_AUTODISPATCH_ENABLED", "0")
+    monkeypatch.setenv("TASK_EMAIL_APP_URL", "https://hub.example.test")
+
+    set_user(1)
+    task = _create_task(client, title="Email Assigned Task")
+
+    rows = _task_email_rows(service)
+    assert {row["event_type"] for row in rows} == {"task.assigned", "task.controller_assigned"}
+    assert {row["recipient_email"] for row in rows} == {"assignee@example.test", "controller@example.test"}
+    assert all(row["status"] == "pending" for row in rows)
+    assert all(f"/tasks?task={task['id']}" in row["body_text"] for row in rows)
+
+    sent: list[dict] = []
+    monkeypatch.setattr(
+        hub_service_module.task_email_service,
+        "send_task_email",
+        lambda **kwargs: sent.append(kwargs) or True,
+    )
+
+    result = service.dispatch_task_email_outbox()
+
+    assert result == {"claimed": 2, "sent": 2, "failed": 0}
+    assert len(sent) == 2
+    assert {item["recipient_email"] for item in sent} == {"assignee@example.test", "controller@example.test"}
+    assert all("Email Assigned Task" in item["subject"] for item in sent)
+    assert {row["status"] for row in _task_email_rows(service)} == {"sent"}
+
+
+def test_read_paths_skip_inline_task_due_ensure(task_env, monkeypatch):
+    service = task_env["service"]
+    calls: list[int] = []
+
+    def _track(conn, *, user_id: int) -> None:
+        calls.append(int(user_id))
+
+    monkeypatch.setattr(service, "_maybe_ensure_task_due_notifications_for_user", _track)
+    service.get_unread_counts(user_id=2)
+    service.poll_notifications(user_id=2, limit=20)
+    assert calls == []
+
+
+def test_list_tasks_returns_explicit_list_columns(task_env):
+    client = task_env["client"]
+    service = task_env["service"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    created = _create_task(client, title="List Columns Task")
+    detail = service.get_task(created["id"], user_id=1, is_admin=False)
+    listed = service.list_tasks(user_id=1, scope="my", role_scope="both", limit=20)["items"][0]
+
+    for column in hub_service_module._TASK_LIST_SELECT_COLUMNS:
+        assert column in listed
+    assert listed["latest_report"] is None
+    assert listed["attachments"] == []
+    assert listed["attachments_count"] == 0
+    assert listed["project_name"]
+    assert listed["checklist_total"] == detail["checklist_total"]
+    assert listed["has_unread_comments"] is detail["has_unread_comments"]
+
+
+def test_department_scope_list_excludes_foreign_department_tasks(task_env, monkeypatch):
+    service = task_env["service"]
+    raw_users = task_env["raw_users"]
+    dept_visible = "dept-visible"
+    dept_foreign = "dept-foreign"
+
+    monkeypatch.setattr(
+        hub_service_module.department_service,
+        "get_department",
+        lambda department_id: {"id": department_id, "name": department_id}
+        if str(department_id) in {dept_visible, dept_foreign}
+        else None,
+    )
+    monkeypatch.setattr(
+        hub_service_module.department_service,
+        "get_user_department_ids",
+        lambda user, roles=None: {dept_visible}
+        if int(user.get("id") if isinstance(user, dict) else user) == 4
+        else set(),
+    )
+    monkeypatch.setattr(
+        hub_service_module,
+        "can_create_task_for_department",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        access_policy_module,
+        "user_is_department_manager",
+        lambda user, department_id: False,
+    )
+    monkeypatch.setattr(
+        access_policy_module,
+        "user_is_department_member",
+        lambda user, department_id: (
+            str(department_id) == dept_visible and int(user.get("id") if isinstance(user, dict) else user) == 4
+        ),
+    )
+
+    actor = raw_users[1]
+    project = service.create_task_project(name="Department Scope Project", code=f"dept-scope-{uuid4().hex[:8]}")
+    visible = service.create_task(
+        title="Visible Department Task",
+        description="Visible in department scope",
+        assignee_user_id=2,
+        controller_user_id=3,
+        due_at=None,
+        project_id=project["id"],
+        department_id=dept_visible,
+        visibility_scope="department",
+        actor=actor,
+    )
+    foreign = service.create_task(
+        title="Foreign Department Task",
+        description="Must stay hidden",
+        assignee_user_id=2,
+        controller_user_id=3,
+        due_at=None,
+        project_id=project["id"],
+        department_id=dept_foreign,
+        visibility_scope="department",
+        actor=actor,
+    )
+    assignee_private = service.create_task(
+        title="Assignee Private Foreign Task",
+        description="Visible as assignee",
+        assignee_user_id=4,
+        controller_user_id=3,
+        due_at=None,
+        project_id=project["id"],
+        department_id=dept_foreign,
+        visibility_scope="private",
+        actor=actor,
+    )
+
+    payload = service.list_tasks(user_id=4, scope="department", limit=50)
+    task_ids = {item["id"] for item in payload["items"]}
+    assert visible["id"] in task_ids
+    assert foreign["id"] not in task_ids
+    assert assignee_private["id"] in task_ids
+
+
+def test_department_scope_pagination_offset_and_total(task_env, monkeypatch):
+    service = task_env["service"]
+    raw_users = task_env["raw_users"]
+    dept_visible = "dept-pagination"
+
+    monkeypatch.setattr(
+        hub_service_module.department_service,
+        "get_department",
+        lambda department_id: {"id": department_id, "name": department_id}
+        if str(department_id) == dept_visible
+        else None,
+    )
+    monkeypatch.setattr(
+        hub_service_module.department_service,
+        "get_user_department_ids",
+        lambda user, roles=None: {dept_visible}
+        if int(user.get("id") if isinstance(user, dict) else user) == 4
+        else set(),
+    )
+    monkeypatch.setattr(
+        hub_service_module,
+        "can_create_task_for_department",
+        lambda *args, **kwargs: True,
+    )
+    monkeypatch.setattr(
+        access_policy_module,
+        "user_is_department_manager",
+        lambda user, department_id: False,
+    )
+    monkeypatch.setattr(
+        access_policy_module,
+        "user_is_department_member",
+        lambda user, department_id: (
+            str(department_id) == dept_visible and int(user.get("id") if isinstance(user, dict) else user) == 4
+        ),
+    )
+
+    actor = raw_users[1]
+    project = service.create_task_project(name="Department Pagination Project", code=f"dept-page-{uuid4().hex[:8]}")
+    created_ids: list[str] = []
+    for index in range(5):
+        created = service.create_task(
+            title=f"Department Pagination {index}",
+            description="Pagination task",
+            assignee_user_id=2,
+            controller_user_id=3,
+            due_at=None,
+            project_id=project["id"],
+            department_id=dept_visible,
+            visibility_scope="department",
+            actor=actor,
+        )
+        created_ids.append(created["id"])
+
+    page_one = service.list_tasks(user_id=4, scope="department", limit=2, offset=0, sort_by="updated_at", sort_dir="asc")
+    page_two = service.list_tasks(user_id=4, scope="department", limit=2, offset=2, sort_by="updated_at", sort_dir="asc")
+    page_three = service.list_tasks(user_id=4, scope="department", limit=2, offset=4, sort_by="updated_at", sort_dir="asc")
+
+    assert page_one["total"] == 5
+    assert page_two["total"] == 5
+    assert page_three["total"] == 5
+    assert len(page_one["items"]) == 2
+    assert len(page_two["items"]) == 2
+    assert len(page_three["items"]) == 1
+    assert {item["id"] for item in page_one["items"]}.isdisjoint({item["id"] for item in page_two["items"]})
+    returned_ids = [item["id"] for item in page_one["items"] + page_two["items"] + page_three["items"]]
+    assert len(returned_ids) == len(set(returned_ids))
+    assert set(returned_ids).issubset(set(created_ids))
+
+
+def test_task_due_notification_cycle_includes_assignee_and_delegate(task_env, monkeypatch):
+    service = task_env["service"]
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    monkeypatch.setattr(hub_service_module.user_service, "get_delegate_user_ids", lambda owner_user_id, active_only=True: [7] if int(owner_user_id) == 2 else [])
+    monkeypatch.setattr(hub_service_module.user_service, "get_delegate_owner_ids", lambda delegate_user_id, active_only=True: [2] if int(delegate_user_id) == 7 else [])
+
+    set_user(1)
+    due_at = (datetime.now(timezone.utc) + timedelta(hours=12)).isoformat()
+    _create_task(client, title="Delegate Due Cycle", due_at=due_at)
+
+    with service._lock, service._connect() as conn:
+        user_ids = service._collect_task_due_notification_user_ids(conn)
+    assert user_ids == [2, 7]
+
+    processed = service.run_task_due_notification_cycle()
+    assert processed == 2
+
+
+def test_task_email_deadline_soon_and_overdue_digest_are_deduped(task_env, monkeypatch):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    service = task_env["service"]
+    raw_users = task_env["raw_users"]
+
+    raw_users[2]["mailbox_email"] = "assignee@example.test"
+    monkeypatch.setenv("TASK_EMAIL_NOTIFICATIONS_ENABLED", "1")
+    monkeypatch.setenv("TASK_EMAIL_AUTODISPATCH_ENABLED", "0")
+    monkeypatch.setenv("TASK_EMAIL_DEADLINE_SOON_HOURS", "24")
+
+    set_user(1)
+    soon_due = (datetime.now(timezone.utc) + timedelta(hours=23)).isoformat()
+    overdue_due = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat()
+    soon_task = _create_task(client, title="Email Deadline Soon", due_at=soon_due)
+    overdue_task = _create_task(client, title="Email Overdue Digest", due_at=overdue_due)
+
+    set_user(2)
+    service.run_task_due_notifications_for_user(2, force=True)
+
+    rows = _task_email_rows(service)
+    deadline_rows = [
+        row for row in rows
+        if row["event_type"] == "task.deadline_soon" and row["task_id"] == soon_task["id"]
+    ]
+    digest_rows = [row for row in rows if row["event_type"] == "task.overdue_digest"]
+
+    assert len(deadline_rows) == 1
+    assert deadline_rows[0]["recipient_email"] == "assignee@example.test"
+    assert "Email Deadline Soon" in deadline_rows[0]["subject"]
+    assert len(digest_rows) == 1
+    assert digest_rows[0]["recipient_email"] == "assignee@example.test"
+    assert "Email Overdue Digest" in digest_rows[0]["body_text"]
+    assert overdue_task["id"] in digest_rows[0]["body_text"]
+
+
+def test_create_task_stores_custom_email_deadline_remind_hours(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    service = task_env["service"]
+
+    set_user(1)
+    due_at = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    project_response = client.post(
+        "/hub/task-projects",
+        json={"name": "Email Remind Project", "code": "email-remind-project"},
+    )
+    assert project_response.status_code == 200, project_response.text
+    project = project_response.json()
+
+    response = client.post(
+        "/hub/tasks",
+        json={
+            "title": "Custom Email Remind",
+            "description": "Task body",
+            "assignee_user_ids": [2],
+            "controller_user_id": 3,
+            "project_id": project["id"],
+            "protocol_date": "2026-03-01",
+            "due_at": due_at,
+            "email_deadline_remind_hours": 48,
+        },
+    )
+    assert response.status_code == 200, response.text
+    task = response.json()["items"][0]
+    assert task["email_deadline_remind_hours"] == 48
+
+    with service._lock, service._connect() as conn:
+        row = conn.execute(
+            f"SELECT email_deadline_remind_hours FROM {service._TASKS_TABLE} WHERE id = ?",
+            (task["id"],),
+        ).fetchone()
+    assert row is not None
+    assert int(row["email_deadline_remind_hours"]) == 48
+
+
+def test_deadline_soon_email_respects_per_task_off_and_custom_hours(task_env, monkeypatch):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    service = task_env["service"]
+    raw_users = task_env["raw_users"]
+
+    raw_users[2]["mailbox_email"] = "assignee@example.test"
+    monkeypatch.setenv("TASK_EMAIL_NOTIFICATIONS_ENABLED", "1")
+    monkeypatch.setenv("TASK_EMAIL_AUTODISPATCH_ENABLED", "0")
+    monkeypatch.setenv("TASK_EMAIL_DEADLINE_SOON_HOURS", "24")
+
+    set_user(1)
+    due_soon = (datetime.now(timezone.utc) + timedelta(hours=20)).isoformat()
+    due_later = (datetime.now(timezone.utc) + timedelta(hours=60)).isoformat()
+
+    off_task = _create_task(
+        client,
+        title="Email Remind Off",
+        due_at=due_soon,
+        email_deadline_remind_hours=0,
+    )
+    custom_task = _create_task(
+        client,
+        title="Email Remind Custom",
+        due_at=due_later,
+        email_deadline_remind_hours=48,
+    )
+
+    set_user(2)
+    service.run_task_due_notifications_for_user(2, force=True)
+
+    rows = _task_email_rows(service)
+    deadline_rows = [row for row in rows if row["event_type"] == "task.deadline_soon"]
+
+    assert not any(row["task_id"] == off_task["id"] for row in deadline_rows)
+    assert not any(row["task_id"] == custom_task["id"] for row in deadline_rows)
+
+    notifications = service.poll_notifications(user_id=2, limit=50)
+    assert any(
+        item.get("event_type") == "task.deadline_soon" and item.get("entity_id") == off_task["id"]
+        for item in notifications.get("items", [])
+    )
+
+
+def test_task_observer_can_view_list_and_chat_capabilities(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    created = _create_task(client, title="Observer Task", observer_user_ids=[4])
+    task_id = created["id"]
+    assert created["observer_user_ids"] == [4]
+    assert len(created.get("observers") or []) == 1
+    assert created["observers"][0]["user_id"] == 4
+
+    set_user(4)
+    my_tasks = client.get("/hub/tasks", params={"scope": "my", "role_scope": "both"})
+    assert my_tasks.status_code == 200, my_tasks.text
+    assert my_tasks.json()["total"] == 1
+
+    detail = client.get(f"/hub/tasks/{task_id}")
+    assert detail.status_code == 200, detail.text
+    payload = detail.json()
+    assert payload["is_observer"] is True
+    assert payload["capabilities"] == {
+        "can_edit": False,
+        "can_start": False,
+        "can_submit": False,
+        "can_review": False,
+        "can_reopen": False,
+        "can_upload_files": False,
+        "can_update_checklist": False,
+        "can_open_discussion": False,
+    }
+
+    start_denied = client.post(f"/hub/tasks/{task_id}/start")
+    assert start_denied.status_code == 403
+
+
+def test_observer_membership_clause_uses_postgresql_json_array_elements(monkeypatch):
+    service = hub_service_module.HubService()
+    monkeypatch.setattr(service, "_uses_postgresql", lambda: True)
+    clause, params = service._observer_membership_clause(5)
+    assert "json_array_elements_text" in clause
+    assert "json_each" not in clause
+    assert params == [5]
+
+
+def test_users_by_id_reuses_cached_active_user_directory(task_env, monkeypatch):
+    service = task_env["service"]
+    calls = {"count": 0}
+
+    def _list_users():
+        calls["count"] += 1
+        return [
+            {"id": 1, "username": "author", "full_name": "Task Author", "is_active": True},
+            {"id": 4, "username": "outsider", "full_name": "Task Outsider", "is_active": True},
+        ]
+
+    monkeypatch.setattr(hub_service_module.user_service, "list_users", _list_users)
+
+    first = service._users_by_id()
+    second = service._users_by_id()
+
+    assert calls["count"] == 1
+    assert first[1]["username"] == "author"
+    assert second[4]["username"] == "outsider"
+
+
+def test_task_observer_added_notification_on_create_and_patch(task_env):
+    client = task_env["client"]
+    set_user = task_env["set_user"]
+    service = task_env["service"]
+
+    set_user(1)
+    created = _create_task(client, title="Observer Notify", observer_user_ids=[4, 7])
+    task_id = created["id"]
+
+    notifications = service.poll_notifications(user_id=4, limit=20)
+    assert any(
+        item.get("event_type") == "task.observer_added" and item.get("entity_id") == task_id
+        for item in notifications.get("items", [])
+    )
+
+    set_user(1)
+    patch_response = client.patch(
+        f"/hub/tasks/{task_id}",
+        json={"observer_user_ids": [4, 7, 6]},
+    )
+    assert patch_response.status_code == 200, patch_response.text
+
+    taskonly_notifications = service.poll_notifications(user_id=6, limit=20)
+    assert any(
+        item.get("event_type") == "task.observer_added" and item.get("entity_id") == task_id
+        for item in taskonly_notifications.get("items", [])
+    )
+
+
+def test_list_tasks_supports_controller_focus_and_pagination_filters(task_env):
+    client = task_env["client"]
+    service = task_env["service"]
+    set_user = task_env["set_user"]
+
+    set_user(1)
+    controller_task = _create_task(client, title="Controller Filter Task", controller_user_id=3)
+    review_task = _create_task(client, title="Review Focus Task", assignee_user_id=1)
+    set_user(1)
+    _submit_task(client, review_task["id"], comment="Ready for review")
+    assert controller_task["id"]
+
+    controller_payload = service.list_tasks(user_id=1, scope="my", controller_user_id=3, limit=50)
+    assert all(int(item.get("controller_user_id") or 0) == 3 for item in controller_payload["items"])
+    assert any(item["id"] == controller_task["id"] for item in controller_payload["items"])
+
+    review_payload = service.list_tasks(user_id=1, scope="my", focus_mode="review", limit=50)
+    assert all(str(item.get("status") or "").lower() == "review" for item in review_payload["items"])
+    assert any(item["id"] == review_task["id"] for item in review_payload["items"])
+
+    page_one = service.list_tasks(user_id=1, scope="my", limit=1, offset=0, sort_by="updated_at", sort_dir="asc")
+    page_two = service.list_tasks(user_id=1, scope="my", limit=1, offset=1, sort_by="updated_at", sort_dir="asc")
+    assert page_one["limit"] == 1
+    assert page_one["offset"] == 0
+    assert page_two["offset"] == 1
+    if page_one["total"] > 1:
+        assert page_one["items"][0]["id"] != page_two["items"][0]["id"]

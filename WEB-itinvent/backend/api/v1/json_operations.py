@@ -54,7 +54,7 @@ from backend.json_db.transfers import TransferManager
 from backend.json_db.works import WorksManager
 from backend.json_db.cartridges import CartridgeDatabase, CartridgeInfo
 from backend.services.excel_export_service import build_statistics_excel
-from backend.services.authorization_service import PERM_DATABASE_WRITE
+from backend.services.authorization_service import PERM_DATABASE_WRITE, PERM_MFU_READ
 from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
 from backend.models.auth import User
 
@@ -588,7 +588,7 @@ async def get_mfu_statistics(
     db_name: Optional[str] = None,
     manager: WorksManager = Depends(get_works_manager),
     db_id: Optional[str] = Depends(get_current_database_id),
-    current_user: User = Depends(get_current_active_user),
+    _: User = Depends(require_permission(PERM_MFU_READ)),
 ):
     """Get MFU/printer/plotter maintenance statistics by branch."""
     try:

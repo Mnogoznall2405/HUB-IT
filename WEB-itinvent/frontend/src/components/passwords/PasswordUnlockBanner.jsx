@@ -9,6 +9,8 @@ export default function PasswordUnlockBanner({
   unlockedRemainingMs,
   unlockedUntil,
   onUnlockClick,
+  requiresSetup = false,
+  compact = false,
 }) {
   const theme = useTheme();
   const remainingLabel = formatUnlockRemainingLabel(unlockedRemainingMs);
@@ -16,27 +18,38 @@ export default function PasswordUnlockBanner({
     ? Math.max(0, Math.min(100, (unlockedRemainingMs / (5 * 60 * 1000)) * 100))
     : 0;
 
+  const alertSx = compact
+    ? { flexShrink: 0, borderRadius: 0.5, py: 0, '& .MuiAlert-message': { py: 0.5 } }
+    : { flexShrink: 0, borderRadius: 0.5 };
+
   if (isUnlocked) {
     return (
       <Alert
         severity={isUnlockExpiringSoon ? 'warning' : 'success'}
         icon={<LockOpenOutlinedIcon fontSize="inherit" />}
-        sx={{ flexShrink: 0, borderRadius: 0.5 }}
+        sx={alertSx}
         data-testid="password-unlock-banner"
       >
-        <Stack spacing={0.75}>
-          <Stack direction={{ xs: 'column', sm: 'row' }} spacing={1} alignItems={{ sm: 'center' }} justifyContent="space-between">
-            <Box>
-              <Typography variant="subtitle2" fontWeight={800}>
+        <Stack spacing={compact ? 0.5 : 0.75}>
+          <Stack direction="row" spacing={1} alignItems="center" justifyContent="space-between" flexWrap="wrap" useFlexGap>
+            <Box sx={{ minWidth: 0 }}>
+              <Typography variant={compact ? 'body2' : 'subtitle2'} fontWeight={800}>
                 {isUnlockExpiringSoon ? 'Сессия разблокировки скоро истечёт' : 'Раскрытие паролей разблокировано'}
+                {compact && remainingLabel ? (
+                  <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 0.75 }}>
+                    · осталось {remainingLabel}
+                  </Typography>
+                ) : null}
               </Typography>
-              <Typography variant="body2">
-                {remainingLabel
-                  ? `Осталось ${remainingLabel}`
-                  : `До ${formatDateTime(unlockedUntil)}`}
-              </Typography>
+              {!compact ? (
+                <Typography variant="body2">
+                  {remainingLabel
+                    ? `Осталось ${remainingLabel}`
+                    : `До ${formatDateTime(unlockedUntil)}`}
+                </Typography>
+              ) : null}
             </Box>
-            <Button size="small" variant="outlined" onClick={onUnlockClick}>
+            <Button size="small" variant="outlined" onClick={onUnlockClick} sx={{ flexShrink: 0 }}>
               Продлить 2FA
             </Button>
           </Stack>
@@ -44,7 +57,7 @@ export default function PasswordUnlockBanner({
             variant="determinate"
             value={progress}
             sx={{
-              height: 6,
+              height: compact ? 4 : 6,
               borderRadius: 999,
               bgcolor: alpha(theme.palette.common.black, 0.08),
             }}
@@ -58,7 +71,7 @@ export default function PasswordUnlockBanner({
     <Alert
       severity="info"
       icon={<LockOpenOutlinedIcon fontSize="inherit" />}
-      sx={{ flexShrink: 0, borderRadius: 0.5 }}
+      sx={alertSx}
       data-testid="password-unlock-banner"
       action={(
         <Button
@@ -67,16 +80,20 @@ export default function PasswordUnlockBanner({
           variant="outlined"
           onClick={onUnlockClick}
           data-testid="password-unlock-open"
+          sx={{ flexShrink: 0 }}
         >
           Разблокировать
         </Button>
       )}
     >
-      <Typography variant="subtitle2" fontWeight={800}>
+      <Typography variant={compact ? 'body2' : 'subtitle2'} fontWeight={800} component="span">
         Раскрытие и копирование паролей заблокированы
       </Typography>
-      <Typography variant="body2">
-        Подтвердите 2FA один раз — дальше можно копировать пароли в течение 5 минут.
+      <Typography variant="caption" color="text.secondary" component="span" sx={{ ml: compact ? 0.75 : 0, display: compact ? 'inline' : 'block', mt: compact ? 0 : 0.25 }}>
+        {compact ? '· ' : ''}
+        {requiresSetup
+          ? 'Сначала подключите 2FA по QR-коду — затем можно копировать пароли 5 минут.'
+          : 'Подтвердите 2FA — дальше можно копировать пароли 5 минут.'}
       </Typography>
     </Alert>
   );

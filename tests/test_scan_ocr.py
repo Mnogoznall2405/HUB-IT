@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from scan_server.ocr import MAX_RENDERED_PAGE_PIXELS, _cap_zoom_for_max_pixels
+from scan_server.ocr import MAX_PAGE_DIMENSION_POINTS, MAX_RENDERED_PAGE_PIXELS, _cap_zoom_for_max_pixels
 
 
 def test_cap_zoom_for_max_pixels_keeps_normal_page_unchanged():
@@ -22,3 +22,7 @@ def test_cap_zoom_for_max_pixels_scales_down_large_page():
     assert 0.0 < zoom < requested_zoom
     pixels = (10000.0 * zoom) * (10000.0 * zoom)
     assert pixels <= MAX_RENDERED_PAGE_PIXELS * 1.001
+
+
+def test_max_page_dimension_constant_is_sane():
+    assert MAX_PAGE_DIMENSION_POINTS > 1000.0

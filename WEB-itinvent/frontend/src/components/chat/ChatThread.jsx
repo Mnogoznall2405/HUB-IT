@@ -12,9 +12,11 @@ import {
 } from '@mui/material';
 import { alpha } from '@mui/material/styles';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
+import CheckCircleRoundedIcon from '@mui/icons-material/CheckCircleRounded';
 import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import ContentCopyRoundedIcon from '@mui/icons-material/ContentCopyRounded';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
+import DeleteRoundedIcon from '@mui/icons-material/DeleteRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import MoreVertRoundedIcon from '@mui/icons-material/MoreVertRounded';
@@ -23,28 +25,28 @@ import SearchRoundedIcon from '@mui/icons-material/SearchRounded';
 import SmartToyOutlinedIcon from '@mui/icons-material/SmartToyOutlined';
 import { AnimatePresence, motion } from 'framer-motion';
 
-import { PresenceAvatar } from './ChatCommon';
+import { emitAgentDebugLog } from '../../lib/debugClientLog';
+import { ConversationAvatar, PresenceAvatar } from './ChatCommon';
 import ChatComposer from './ChatComposer';
 import ChatMessageList from './ChatMessageList';
 import ChatSelectionActionDock from './ChatSelectionActionDock';
+import ChatThreadComposerBridge from './ChatThreadComposerBridge';
+import ChatThreadHeader, { AiRunStatusBanner } from './ChatThreadHeader';
 import { useMainLayoutShell } from '../layout/MainLayoutShellContext';
 import {
   CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX,
+  getConversationDisplayTitle,
 } from './chatHelpers';
+import {
+  computePrependScrollRestoreTop,
+  shouldDeferPinnedBottomScroll,
+  shouldRetryPrependRestore,
+} from '../../lib/chat/chatThreadScrollModel';
 import {
   buildChatThreadMessageBodyTypographySx,
   CHAT_DEFAULT_FONT_SIZES,
   CHAT_FONT_FAMILY,
 } from './chatUiTokens';
-
-export {
-  ChatBubble,
-  isMobileMessageLongPress,
-  shouldAnimateChatBubble,
-  shouldCancelLongPressMove,
-  shouldSuppressNativeMessageGesture,
-} from './ChatBubble';
-export { getComposerMentionTrigger } from './ChatComposer';
 
 const COMPOSER_STICK_DISTANCE_PX = CHAT_THREAD_NEAR_BOTTOM_DISTANCE_PX;
 const BLUR_SCROLL_DELTA_PX = 12;
@@ -60,6 +62,7 @@ const SCROLL_WRITE_PRIORITY = {
   compensation: 1,
   pinnedBottom: 2,
   preserve: 3,
+  prependRestore: 4,
 };
 const SCROLL_WRITE_WINDOW_MS = 32;
 
@@ -105,452 +108,110 @@ export const getChatThreadBottomPadding = ({
   return Math.max(baseGap, Math.round(baseGap + effectiveKeyboardInset + keyboardSpacer));
 };
 
-function HeaderAction({ title, children, onClick, active = false, compactMobile = false, hidden = false, disabled = false, density }) {
-  if (hidden) return null;
-  const actionSize = compactMobile
-    ? Math.max(density?.touchTarget || 44, density?.threadHeaderAction || 44)
-    : (density?.threadHeaderAction || 34);
-  return (
-    <Tooltip title={title}>
-      <span>
-        <IconButton
-          size="small"
-          aria-label={title}
-          onClick={onClick}
-          disabled={disabled}
-          sx={{
-            width: actionSize,
-            height: actionSize,
-            borderRadius: 0,
-            color: active ? 'var(--chat-action-active-text)' : 'inherit',
-            bgcolor: 'transparent',
-            transition: 'opacity 100ms ease, background-color 120ms ease, transform 120ms ease',
-            ...(compactMobile ? {
-              '&:active': {
-                opacity: 0.62,
-                transform: 'scale(0.96)',
-              },
-            } : {
-              '&:hover': {
-                bgcolor: active ? 'var(--chat-action-active-bg)' : 'var(--chat-action-hover-bg)',
-              },
-            }),
-            '&.Mui-disabled': {
-              opacity: 0.36,
-              color: 'inherit',
-            },
-          }}
-        >
-          {children}
-        </IconButton>
-      </span>
-    </Tooltip>
-  );
-}
+const JUMP_TO_LATEST_ABOVE_COMPOSER_GAP_PX = 24;
+const JUMP_TO_LATEST_FAB_SIZE_PX = {
+  mobile: 56,
+  desktop: 52,
+};
+const JUMP_TO_LATEST_FAB_ICON_PX = {
+  mobile: 32,
+  desktop: 30,
+};
 
-function AiRunStatusBanner({ aiStatus, theme, ui, compactMobile = false }) {
-  const status = String(aiStatus?.status || '').trim();
-  if (!status || status === 'completed') return null;
-  const label = status === 'queued'
-    ? 'AI поставлен в очередь'
-    : status === 'running'
-      ? 'AI анализирует запрос и файлы'
-      : 'AI не смог обработать запрос';
-  const tone = status === 'failed'
-    ? {
-      bg: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.16 : 0.1),
-      border: alpha(theme.palette.error.main, 0.22),
-      text: theme.palette.error.main,
-    }
-    : {
-      bg: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
-      border: alpha(theme.palette.primary.main, 0.22),
-      text: ui.accentText,
-    };
-  return (
-    <Box
-      sx={{
-        px: compactMobile ? 1.5 : 2,
-        py: 1.1,
-        borderBottom: `1px solid ${ui.borderSoft}`,
-        backgroundColor: tone.bg,
-      }}
-    >
-      <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: CHAT_FONT_FAMILY }}>
-        {label}
-      </Typography>
-      {status === 'failed' && aiStatus?.error_text ? (
-        <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-          {aiStatus.error_text}
-        </Typography>
-      ) : null}
-    </Box>
-  );
-}
+export const getChatJumpToLatestBottomOffset = ({
+  compactMobile = false,
+  composerHeight = 0,
+  keyboardInset = 0,
+  selectionMode = false,
+} = {}) => {
+  if (selectionMode) {
+    return compactMobile ? 92 : 96;
+  }
+  const measuredComposer = Math.max(compactMobile ? 72 : 80, Number(composerHeight || 0));
+  const keyboard = compactMobile ? Math.max(0, Number(keyboardInset || 0)) : 0;
+  return Math.round(measuredComposer + keyboard + JUMP_TO_LATEST_ABOVE_COMPOSER_GAP_PX);
+};
 
-function AiInteractiveStatusBanner({ aiStatusDisplay, theme, ui, compactMobile = false }) {
-  if (!aiStatusDisplay?.visible) return null;
-  const tone = aiStatusDisplay.tone === 'error'
-    ? {
-      bg: alpha(theme.palette.error.main, theme.palette.mode === 'dark' ? 0.16 : 0.1),
-      border: alpha(theme.palette.error.main, 0.22),
-      text: theme.palette.error.main,
-    }
-    : {
-      bg: alpha(theme.palette.primary.main, theme.palette.mode === 'dark' ? 0.18 : 0.1),
-      border: alpha(theme.palette.primary.main, 0.22),
-      text: ui.accentText,
-    };
-  return (
-    <motion.div
-      key={`${aiStatusDisplay.status}:${aiStatusDisplay.stage}:${aiStatusDisplay.primaryText}`}
-      initial={{ opacity: 0, y: -6 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -6 }}
-      transition={{ duration: 0.18, ease: 'easeOut' }}
-    >
-      <Box
-        sx={{
-          px: compactMobile ? 1.5 : 2,
-          py: 1.1,
-          borderBottom: `1px solid ${ui.borderSoft}`,
-          backgroundColor: tone.bg,
-        }}
-      >
-        <Stack direction="row" spacing={1.1} alignItems="flex-start">
-          {aiStatusDisplay.showSpinner ? (
-            <CircularProgress
-              size={compactMobile ? 15 : 16}
-              thickness={5}
-              sx={{ mt: 0.15, color: tone.text, flexShrink: 0 }}
-            />
-          ) : (
-            <SmartToyOutlinedIcon sx={{ mt: 0.05, fontSize: 17, color: tone.text, flexShrink: 0 }} />
-          )}
-          <Box sx={{ minWidth: 0 }}>
-            <Typography sx={{ fontSize: compactMobile ? 13 : 13.5, fontWeight: 700, color: tone.text, fontFamily: CHAT_FONT_FAMILY }}>
-              {aiStatusDisplay.primaryText}
-            </Typography>
-            {aiStatusDisplay.secondaryText ? (
-              <Typography sx={{ mt: 0.4, fontSize: 12.5, color: ui.textSecondary, fontFamily: CHAT_FONT_FAMILY }}>
-                {aiStatusDisplay.secondaryText}
-              </Typography>
-            ) : null}
-          </Box>
-        </Stack>
-      </Box>
-    </motion.div>
-  );
-}
+export const getTaskCompletedBannerText = (completedAt) => {
+  const raw = String(completedAt || '').trim();
+  if (!raw) return 'Задача выполнена. Обсуждение остаётся открытым';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return 'Задача выполнена. Обсуждение остаётся открытым';
+  const dateLabel = date.toLocaleDateString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+  });
+  const timeLabel = date.toLocaleTimeString('ru-RU', {
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+  return `Задача выполнена ${dateLabel} в ${timeLabel}. Обсуждение остаётся открытым`;
+};
 
-const ChatThreadHeader = memo(function ChatThreadHeader({
+const TaskCompletedBanner = memo(function TaskCompletedBanner({
+  activeConversation,
+  compactMobile,
+  onOpenTask,
   theme,
   ui,
-  isMobile,
-  compactMobile,
-  activeConversation,
-  headerSubtitle,
-  typingLine,
-  contextPanelOpen,
-  onBack,
-  onOpenDrawer,
-  onOpenInfo,
-  onOpenSearch,
-  onOpenMenu,
-  selectionMode = false,
-  selectedMessageCount = 0,
-  canCopySelectedMessages = false,
-  onClearMessageSelection,
-  onCopySelectedMessages,
-  onForwardSelectedMessages,
 }) {
-  const density = ui.density || {};
-  const headerShellSx = {
-    px: { xs: compactMobile ? 0.65 : 1.15, md: density.threadHeaderPx || 1.6 },
-    pb: compactMobile ? 0.45 : (density.threadHeaderPb || 0.78),
-    bgcolor: ui.threadTopbarBg,
-    backdropFilter: 'blur(16px)',
-    position: 'sticky',
-    top: 0,
-    zIndex: 5,
-    boxShadow: theme.palette.mode === 'dark' ? 'none' : `0 1px 0 ${ui.borderSoft}, 0 6px 14px ${alpha('#000', 0.06)}`,
-    borderBottom: theme.palette.mode === 'dark' ? `0.5px solid ${ui.borderSoft}` : 'none',
-  };
-  const headerContentSx = {
-    maxWidth: compactMobile ? '100%' : `${Number(density.contentMaxWidth || ui.contentMaxWidth || 980) + 56}px`,
-    mx: 'auto',
-    width: '100%',
-  };
-
-  if (selectionMode && compactMobile) {
-    const selectionIconButtonSx = {
-      width: 38,
-      height: 38,
-      borderRadius: 0,
-      color: theme.palette.text.primary,
-      bgcolor: 'transparent',
-      transition: 'opacity 120ms ease, transform 120ms ease',
-      '&:active': {
-        opacity: 0.62,
-        transform: 'scale(0.96)',
-      },
-      '&:disabled': {
-        opacity: 0.34,
-      },
-    };
-
-    return (
-      <Box
-        className="chat-safe-top chat-no-select"
-        data-testid="chat-selection-toolbar"
-        sx={{
-          ...headerShellSx,
-          px: 0.65,
-          pb: 0.3,
-          bgcolor: alpha(ui.threadTopbarBg || theme.palette.background.paper, 0.98),
-          backdropFilter: 'blur(18px) saturate(1.06)',
-          borderBottom: `1px solid ${ui.borderSoft || alpha(theme.palette.divider, 0.14)}`,
-          boxShadow: 'none',
-        }}
-      >
-        <Stack
-          direction="row"
-          alignItems="center"
-          justifyContent="space-between"
-          sx={{
-            ...headerContentSx,
-            minHeight: 44,
-          }}
-        >
-          <Stack direction="row" spacing={0.9} alignItems="center" sx={{ minWidth: 0 }}>
-            <IconButton
-              data-testid="chat-selection-clear"
-              aria-label="Отменить выделение"
-              onClick={onClearMessageSelection}
-              sx={selectionIconButtonSx}
-            >
-              <CloseRoundedIcon sx={{ fontSize: 28 }} />
-            </IconButton>
-            <Typography
-              data-testid="chat-selection-count-badge"
-              sx={{
-                color: theme.palette.text.primary,
-                fontSize: 21,
-                fontWeight: 700,
-                lineHeight: 1,
-                fontFamily: CHAT_FONT_FAMILY,
-              }}
-            >
-              {selectedMessageCount}
-            </Typography>
-          </Stack>
-
-          <Stack direction="row" spacing={0.65} alignItems="center">
-            <IconButton
-              data-testid="chat-selection-copy-action"
-              aria-label="Копировать"
-              disabled={!canCopySelectedMessages || selectedMessageCount <= 0 || typeof onCopySelectedMessages !== 'function'}
-              onClick={onCopySelectedMessages}
-              sx={selectionIconButtonSx}
-            >
-              <ContentCopyRoundedIcon sx={{ fontSize: 25 }} />
-            </IconButton>
-            <IconButton
-              data-testid="chat-selection-header-forward-action"
-              aria-label="Переслать"
-              disabled={selectedMessageCount <= 0 || typeof onForwardSelectedMessages !== 'function'}
-              onClick={onForwardSelectedMessages}
-              sx={selectionIconButtonSx}
-            >
-              <ForwardRoundedIcon sx={{ fontSize: 27 }} />
-            </IconButton>
-          </Stack>
-        </Stack>
-      </Box>
-    );
-  }
-
-  if (selectionMode) {
-    return (
-      <Box className="chat-safe-top chat-no-select" data-testid="chat-selection-toolbar" sx={headerShellSx}>
-        <Stack
-          direction="row"
-          spacing={compactMobile ? 0.85 : 1.05}
-          alignItems="center"
-          justifyContent="space-between"
-          sx={headerContentSx}
-        >
-          <Stack direction="row" spacing={compactMobile ? 0.75 : 1} alignItems="center" sx={{ minWidth: 0 }}>
-            {isMobile ? (
-              <IconButton
-                size="small"
-                onClick={onBack}
-                aria-label="Назад к чатам"
-                sx={{
-                  ml: -0.2,
-                  width: compactMobile ? 34 : 38,
-                  height: compactMobile ? 34 : 38,
-                  borderRadius: 0,
-                  bgcolor: 'transparent',
-                }}
-              >
-                <ArrowBackRoundedIcon />
-              </IconButton>
-            ) : null}
-            <Box
-              data-testid="chat-selection-count-badge"
-              sx={{
-                width: compactMobile ? 34 : 36,
-                height: compactMobile ? 34 : 36,
-                borderRadius: 999,
-                display: 'inline-flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                flexShrink: 0,
-                bgcolor: ui.accentText || theme.palette.primary.main,
-                color: theme.palette.primary.contrastText,
-                fontWeight: 850,
-                fontSize: compactMobile ? 16 : 17,
-                fontFamily: CHAT_FONT_FAMILY,
-              }}
-            >
-              {selectedMessageCount}
-            </Box>
-            <Box
-              component="button"
-              type="button"
-              onClick={onOpenInfo}
-              aria-label="Информация о чате"
-              sx={{
-                display: 'flex',
-                alignItems: 'center',
-                gap: compactMobile ? '10px' : '12px',
-                p: 0,
-                border: 'none',
-                bgcolor: 'transparent',
-                color: theme.palette.text.primary,
-                textAlign: 'left',
-                cursor: 'pointer',
-                minWidth: 0,
-              }}
-            >
-              <PresenceAvatar
-                item={activeConversation.kind === 'direct' ? (activeConversation.direct_peer || activeConversation) : activeConversation}
-                online={Boolean(activeConversation?.kind === 'direct' && activeConversation?.direct_peer?.presence?.is_online)}
-                size={compactMobile ? 40 : (density.threadHeaderAvatar || 42)}
-              />
-              <Box sx={{ minWidth: 0 }}>
-                <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary), letterSpacing: '-0.01em', fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                  {activeConversation.title}
-                </Typography>
-                <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerSubtitleMobile : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                  {typingLine || headerSubtitle}
-                </Typography>
-              </Box>
-            </Box>
-          </Stack>
-
-          <HeaderAction
-            title="Действия чата"
-            onClick={onOpenMenu}
-            active={contextPanelOpen}
-            compactMobile={compactMobile}
-            density={density}
-          >
-            <MoreVertRoundedIcon fontSize="small" />
-          </HeaderAction>
-        </Stack>
-      </Box>
-    );
-  }
+  const taskId = String(activeConversation?.task_id || '').trim();
+  const completed = String(activeConversation?.task_status || '').trim().toLowerCase() === 'done';
+  if (!taskId || !completed) return null;
 
   return (
     <Box
-      className="chat-safe-top chat-no-select"
-      sx={headerShellSx}
+      data-testid="task-completed-banner"
+      sx={{
+        px: compactMobile ? 1 : 1.5,
+        py: compactMobile ? 0.7 : 0.8,
+        bgcolor: theme.palette.mode === 'dark' ? alpha('#059669', 0.18) : alpha('#10b981', 0.12),
+        borderBottom: `1px solid ${alpha('#059669', theme.palette.mode === 'dark' ? 0.38 : 0.22)}`,
+        color: theme.palette.mode === 'dark' ? '#a7f3d0' : '#065f46',
+        flexShrink: 0,
+      }}
     >
       <Stack
         direction="row"
-        spacing={compactMobile ? 0.85 : 1.05}
+        spacing={0.8}
         alignItems="center"
         justifyContent="space-between"
         sx={{
-          ...headerContentSx,
+          maxWidth: compactMobile ? '100%' : `${Number(ui?.density?.contentMaxWidth || ui?.contentMaxWidth || 980) + 56}px`,
+          mx: 'auto',
         }}
       >
-        <Stack direction="row" spacing={compactMobile ? 0.75 : 1} alignItems="center" sx={{ minWidth: 0 }}>
-          {isMobile ? (
-            <IconButton
-              size="small"
-              onClick={onBack}
-              aria-label="Назад к чатам"
-              sx={{
-                ml: -0.2,
-                width: compactMobile ? 34 : 38,
-                height: compactMobile ? 34 : 38,
-                borderRadius: 0,
-                bgcolor: 'transparent',
-                '&:active': compactMobile ? {
-                  opacity: 0.62,
-                  transform: 'scale(0.96)',
-                } : undefined,
-              }}
-            >
-              <ArrowBackRoundedIcon />
-            </IconButton>
-          ) : null}
-
-          <Box
-            component="button"
-            type="button"
-            onClick={onOpenInfo}
-            aria-label="Информация о чате"
+        <Stack direction="row" spacing={0.7} alignItems="center" sx={{ minWidth: 0 }}>
+          <CheckCircleRoundedIcon sx={{ fontSize: compactMobile ? 18 : 20, flexShrink: 0 }} />
+          <Typography
+            variant="body2"
             sx={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: compactMobile ? '10px' : '12px',
-              p: 0,
-              border: 'none',
-              bgcolor: 'transparent',
-              color: theme.palette.text.primary,
-              textAlign: 'left',
-              cursor: 'pointer',
               minWidth: 0,
-              '&:active': compactMobile ? {
-                opacity: 0.72,
-              } : undefined,
+              fontSize: compactMobile ? '0.75rem' : '0.8rem',
+              lineHeight: 1.25,
+              fontWeight: 700,
+              color: 'inherit',
             }}
           >
-            <PresenceAvatar
-              item={activeConversation.kind === 'direct' ? (activeConversation.direct_peer || activeConversation) : activeConversation}
-              online={Boolean(activeConversation?.kind === 'direct' && activeConversation?.direct_peer?.presence?.is_online)}
-              size={compactMobile ? 40 : (density.threadHeaderAvatar || 42)}
-            />
-            <Box sx={{ minWidth: 0 }}>
-              <Typography variant="subtitle2" sx={{ fontWeight: 700, lineHeight: 1.1, color: theme.palette.text.primary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerTitleMobile : (density.threadHeaderTitleFontSize || CHAT_DEFAULT_FONT_SIZES.desktopPrimary), letterSpacing: '-0.01em', fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                {activeConversation.title}
-              </Typography>
-              <Typography variant="caption" sx={{ color: ui.textSecondary, fontSize: compactMobile ? CHAT_DEFAULT_FONT_SIZES.headerSubtitleMobile : (density.threadHeaderSubtitleFontSize || '0.82rem'), lineHeight: 1.12, fontFamily: CHAT_FONT_FAMILY }} noWrap>
-                {typingLine || headerSubtitle}
-              </Typography>
-            </Box>
-          </Box>
+            {getTaskCompletedBannerText(activeConversation?.task_completed_at)}
+          </Typography>
         </Stack>
-
-        <Stack direction="row" spacing={0.1} alignItems="center">
-          <HeaderAction title="Поиск по сообщениям" onClick={onOpenSearch} compactMobile={compactMobile} hidden={compactMobile} density={density}>
-            <SearchRoundedIcon fontSize="small" />
-          </HeaderAction>
-          <HeaderAction
-            title="Действия чата"
-            onClick={onOpenMenu}
-            active={contextPanelOpen}
-            compactMobile={compactMobile}
-            density={density}
-          >
-            <MoreVertRoundedIcon fontSize="small" />
-          </HeaderAction>
-        </Stack>
+        <Button
+          size="small"
+          onClick={() => onOpenTask?.(taskId)}
+          sx={{
+            minWidth: 'auto',
+            px: compactMobile ? 0.7 : 1,
+            flexShrink: 0,
+            textTransform: 'none',
+            fontSize: compactMobile ? '0.72rem' : '0.76rem',
+            fontWeight: 800,
+            color: 'inherit',
+          }}
+        >
+          Открыть задачу
+        </Button>
       </Stack>
     </Box>
   );
@@ -651,8 +312,8 @@ const PinnedMessageBar = memo(function PinnedMessageBar({
           aria-label="Снять закрепленное сообщение"
           onClick={() => onUnpinPinnedMessage?.()}
           sx={{
-            width: compactMobile ? 34 : (density.threadPinnedClose || 32),
-            height: compactMobile ? 34 : (density.threadPinnedClose || 32),
+            width: compactMobile ? 44 : (density.threadPinnedClose || 32),
+            height: compactMobile ? 44 : (density.threadPinnedClose || 32),
             borderRadius: compactMobile ? 999 : 1.5,
             color: ui.textSecondary,
             bgcolor: ui.surfaceMuted || alpha(theme.palette.common.white, 0.03),
@@ -686,6 +347,7 @@ function ChatThread({
   effectiveLastReadMessageId,
   messagesHasMore,
   loadingOlder,
+  prependScrollRestoreRef,
   onLoadOlder,
   threadScrollRef,
   threadContentRef,
@@ -693,6 +355,7 @@ function ChatThread({
   bottomRef,
   onBack,
   onOpenInfo,
+  onOpenTask,
   onOpenSearch,
   onOpenMenu,
   onOpenReads,
@@ -716,6 +379,7 @@ function ChatThread({
   onDeleteSelectedMessages,
   onOpenComposerMenu,
   composerRef,
+  composerTextBridge,
   messageText,
   onMessageTextChange,
   onComposerKeyDown,
@@ -734,6 +398,8 @@ function ChatThread({
   onJumpToLatest,
   replyMessage,
   onClearReply,
+  editingMessage,
+  onClearEditing,
   aiTypingStatus,
   aiStatus,
   pinnedMessage,
@@ -766,6 +432,7 @@ function ChatThread({
   onStartVoiceRecording,
   onStopVoiceRecording,
   onCancelVoiceRecording,
+  onBindPinnedScroll,
 }) {
   const { openDrawer, headerMode } = useMainLayoutShell();
   const resolvedMobileInteractionsEnabled = Boolean(mobileInteractionsEnabled || isMobile);
@@ -774,6 +441,9 @@ function ChatThread({
   const lastProgrammaticScrollRef = useRef({ at: 0, priority: 0 });
   const composerFocusedRef = useRef(false);
   const threadPinnedToBottomRef = useRef(true);
+  const threadPinnedScrollFrameRef = useRef(null);
+  const threadViewportHeightRef = useRef(0);
+  const threadContentHeightRef = useRef(0);
   const previousComposerLayoutRef = useRef({ composerHeight: null, keyboardInset: null });
   const keyboardViewportBaselineRef = useRef(0);
   const messageReactionMetricsRef = useRef(new Map());
@@ -784,39 +454,70 @@ function ChatThread({
   const [backSwipeOffset, setBackSwipeOffset] = useState(0);
   const hasConversationTarget = Boolean(String(activeConversationId || '').trim());
   const showConversationLoadingState = !activeConversation && (messagesLoading || hasConversationTarget);
-  const showEmbeddedMenuButton = compactMobile && headerMode !== 'notifications-only';
+  const showEmbeddedMenuButton = false;
   const selectionMode = Number(selectedMessageCount || 0) > 0;
   const servicePillBg = ui.servicePillBg || alpha(ui.composerDockBg || ui.panelBg || theme.palette.background.paper, 0.78);
   const servicePillText = ui.servicePillText || ui.textSecondary;
-  const jumpPillBg = ui.jumpPillBg || theme.palette.primary.main;
-  const jumpPillText = ui.jumpPillText || theme.palette.primary.contrastText;
+  const jumpFabBg = ui.jumpFabBg || ui.surfaceStrong || theme.palette.background.paper;
+  const jumpFabIcon = ui.jumpFabIcon || ui.textSecondary || theme.palette.text.secondary;
+  const jumpFabHoverBg = ui.jumpFabHoverBg || ui.surfaceHover || alpha(theme.palette.common.white, 0.08);
+  const jumpFabShadow = ui.jumpFabShadow || ui.shadowSoft || '0 4px 14px rgba(0,0,0,0.2)';
+  const jumpToLatestBottomOffset = getChatJumpToLatestBottomOffset({
+    compactMobile,
+    composerHeight,
+    keyboardInset,
+    selectionMode,
+  });
+  const jumpFabSize = compactMobile
+    ? JUMP_TO_LATEST_FAB_SIZE_PX.mobile
+    : JUMP_TO_LATEST_FAB_SIZE_PX.desktop;
+  const jumpFabIconSize = compactMobile
+    ? JUMP_TO_LATEST_FAB_ICON_PX.mobile
+    : JUMP_TO_LATEST_FAB_ICON_PX.desktop;
   const density = ui.density || {};
   const contentMaxWidth = Number(density.contentMaxWidth || ui.contentMaxWidth || 980);
   const aiRunStatus = String(aiStatus?.status || '').trim();
+  const previousAiRunStatusRef = useRef('');
   const scrollBottomPadding = getChatThreadBottomPadding({
     compactMobile,
     keyboardInset,
     composerHeight,
   });
   const messageCount = Array.isArray(messages) ? messages.length : 0;
-  const [stickyDateLabel, setStickyDateLabel] = useState('');
   const [historyAutoLoadEnabled, setHistoryAutoLoadEnabled] = useState(false);
-  const stickyDateLabelRef = useRef('');
-  const stickyDateFrameRef = useRef(null);
-  const stickyDateAnchorsRef = useRef([]);
+  const loadingOlderRef = useRef(loadingOlder);
+  loadingOlderRef.current = loadingOlder;
+
+  const shouldDeferThreadPinnedScroll = useCallback(() => (
+    shouldDeferPinnedBottomScroll({
+      loadingOlder: loadingOlderRef.current,
+      prependRestorePending: Boolean(prependScrollRestoreRef?.current),
+    })
+  ), [prependScrollRestoreRef]);
 
   useEffect(() => {
     setHistoryAutoLoadEnabled(false);
   }, [activeConversationId]);
 
+  useEffect(() => {
+    if (!messagesHasMore) {
+      setHistoryAutoLoadEnabled(false);
+    }
+  }, [messagesHasMore]);
+
+  const isThreadScrollable = useCallback((node) => {
+    if (!node) return false;
+    return Number(node.scrollHeight) > Number(node.clientHeight) + 2;
+  }, []);
+
   const armHistoryAutoLoadIfNearTop = useCallback((event) => {
     if (historyAutoLoadEnabled) return;
     const node = event?.currentTarget;
-    if (!node) return;
+    if (!node || !isThreadScrollable(node)) return;
     const scrollTop = Number(node.scrollTop || 0);
     if (scrollTop > HISTORY_AUTO_LOAD_ARM_DISTANCE_PX) return;
     setHistoryAutoLoadEnabled(true);
-  }, [historyAutoLoadEnabled]);
+  }, [historyAutoLoadEnabled, isThreadScrollable]);
 
   const handleThreadWheel = useCallback((event) => {
     const deltaY = Number(event?.deltaY ?? event?.nativeEvent?.deltaY ?? 0);
@@ -839,11 +540,82 @@ function ChatThread({
     }
     const maxScrollTop = Math.max(0, Number(container.scrollHeight || 0) - Number(container.clientHeight || 0));
     const nextTop = Math.max(0, Math.min(maxScrollTop, Number(rawTarget || 0)));
+    if (Math.abs(nextTop - Number(container.scrollTop || 0)) <= 1) {
+      return nextTop;
+    }
     container.scrollTop = nextTop;
     lastScrollTopRef.current = nextTop;
     lastProgrammaticScrollRef.current = { at: now, priority };
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'ChatThread.jsx:applyThreadScroll',
+      message: 'thread scroll write',
+      data: {
+        priority,
+        nextTop: Math.round(nextTop),
+        scrollHeight: Math.round(Number(container.scrollHeight || 0)),
+        clientHeight: Math.round(Number(container.clientHeight || 0)),
+        distanceFromBottom: Math.round(Math.max(0, Number(container.scrollHeight || 0) - nextTop - Number(container.clientHeight || 0))),
+      },
+      hypothesisId: 'H1',
+    });
+    // #endregion
     return nextTop;
   }, []);
+
+  const applyPrependScrollRestore = useCallback((restore) => {
+    const container = threadScrollRef.current;
+    if (!container || !restore) return false;
+    const nextScrollTop = computePrependScrollRestoreTop(container, restore);
+    if (nextScrollTop === null) return false;
+    const applied = applyThreadScroll(container, nextScrollTop, SCROLL_WRITE_PRIORITY.prependRestore);
+    if (applied !== null) {
+      const distanceFromBottom = Number(container.scrollHeight || 0) - applied - Number(container.clientHeight || 0);
+      threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
+      lastScrollTopRef.current = applied;
+    }
+    return applied !== null;
+  }, [applyThreadScroll, threadScrollRef]);
+
+  const schedulePrependScrollRestoreLocal = useCallback((restore, { onSettled } = {}) => {
+    if (!restore) return () => {};
+    let frameIndex = 0;
+    let frameId = null;
+    let cancelled = false;
+
+    const attempt = () => {
+      if (cancelled) return;
+      applyPrependScrollRestore(restore);
+      const container = threadScrollRef.current;
+      if (container && shouldRetryPrependRestore(container, restore, frameIndex)) {
+        frameIndex += 1;
+        frameId = window.requestAnimationFrame(attempt);
+        return;
+      }
+      onSettled?.();
+    };
+
+    attempt();
+    return () => {
+      cancelled = true;
+      if (frameId !== null) {
+        window.cancelAnimationFrame(frameId);
+      }
+    };
+  }, [applyPrependScrollRestore, threadScrollRef]);
+
+  useLayoutEffect(() => {
+    const restore = prependScrollRestoreRef?.current;
+    if (!restore || !threadScrollRef.current) return undefined;
+
+    return schedulePrependScrollRestoreLocal(restore, {
+      onSettled: () => {
+        if (prependScrollRestoreRef) {
+          prependScrollRestoreRef.current = null;
+        }
+      },
+    });
+  }, [messages, prependScrollRestoreRef, schedulePrependScrollRestoreLocal, threadScrollRef]);
 
   useLayoutEffect(() => {
     const previousSelectionMode = previousSelectionModeRef.current;
@@ -859,12 +631,19 @@ function ChatThread({
     });
   }, [selectionMode, threadScrollRef, applyThreadScroll]);
 
-  const scrollPinnedThreadToBottom = useCallback(({ settleFrames = 1 } = {}) => {
+  const scrollPinnedThreadToBottom = useCallback(({ settleFrames = 1, forcePin = false } = {}) => {
     const container = threadScrollRef.current;
-    if (!container || !threadPinnedToBottomRef.current) return;
+    if (!container) return;
+    if (forcePin) {
+      threadPinnedToBottomRef.current = true;
+    }
+    if (!threadPinnedToBottomRef.current) return;
 
     const scrollToBottom = () => {
-      const bottomTarget = Number(container.scrollHeight || 0) - Number(container.clientHeight || 0);
+      const bottomTarget = Math.max(
+        0,
+        Number(container.scrollHeight || 0) - Number(container.clientHeight || 0),
+      );
       applyThreadScroll(container, bottomTarget, SCROLL_WRITE_PRIORITY.pinnedBottom);
     };
 
@@ -874,6 +653,9 @@ function ChatThread({
     if (remainingFrames <= 0) return;
 
     const settle = () => {
+      if (forcePin) {
+        threadPinnedToBottomRef.current = true;
+      }
       if (!threadPinnedToBottomRef.current) return;
       scrollToBottom();
       remainingFrames -= 1;
@@ -884,6 +666,171 @@ function ChatThread({
 
     window.requestAnimationFrame(settle);
   }, [threadScrollRef, applyThreadScroll]);
+
+  const schedulePinnedBottomScroll = useCallback(({ settleFrames = 0, forcePin = false } = {}) => {
+    if (shouldDeferThreadPinnedScroll()) return;
+    if (threadPinnedScrollFrameRef.current !== null) {
+      window.cancelAnimationFrame(threadPinnedScrollFrameRef.current);
+      threadPinnedScrollFrameRef.current = null;
+    }
+
+    const framesLeft = Math.max(1, Math.floor(Number(settleFrames || 0)) + 1);
+    let remaining = framesLeft;
+
+    const tick = () => {
+      threadPinnedScrollFrameRef.current = null;
+      if (forcePin) {
+        threadPinnedToBottomRef.current = true;
+      }
+      if (!threadPinnedToBottomRef.current) return;
+      scrollPinnedThreadToBottom({ settleFrames: 0, forcePin });
+      remaining -= 1;
+      if (remaining <= 0) return;
+      threadPinnedScrollFrameRef.current = window.requestAnimationFrame(tick);
+    };
+
+    if (!threadPinnedToBottomRef.current) return;
+    scrollPinnedThreadToBottom({ settleFrames: 0 });
+    remaining -= 1;
+    if (remaining <= 0) return;
+    threadPinnedScrollFrameRef.current = window.requestAnimationFrame(tick);
+  }, [scrollPinnedThreadToBottom, shouldDeferThreadPinnedScroll]);
+
+  const schedulePinnedBottomScrollRef = useRef(schedulePinnedBottomScroll);
+  schedulePinnedBottomScrollRef.current = schedulePinnedBottomScroll;
+
+  useEffect(() => {
+    if (typeof onBindPinnedScroll !== 'function') return undefined;
+    onBindPinnedScroll(schedulePinnedBottomScroll);
+    return () => {
+      onBindPinnedScroll(null);
+    };
+  }, [onBindPinnedScroll, schedulePinnedBottomScroll]);
+
+  useLayoutEffect(() => {
+    const prev = String(previousAiRunStatusRef.current || '').trim();
+    previousAiRunStatusRef.current = aiRunStatus;
+    if (prev === aiRunStatus) return;
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'ChatThread.jsx:aiRunStatusChange',
+      message: 'AI banner layout shift',
+      data: {
+        prevStatus: prev,
+        nextStatus: aiRunStatus,
+        pinned: Boolean(threadPinnedToBottomRef.current),
+        aiTypingVisible: Boolean(aiTypingStatus?.visible),
+      },
+      hypothesisId: 'H3',
+    });
+    // #endregion
+    if (threadPinnedToBottomRef.current) {
+      schedulePinnedBottomScroll({ settleFrames: 0 });
+    }
+  }, [aiRunStatus, aiTypingStatus?.visible, schedulePinnedBottomScroll]);
+
+  useLayoutEffect(() => {
+    if (!compactMobile) return undefined;
+    const container = threadScrollRef.current;
+    if (!container) return undefined;
+
+    threadViewportHeightRef.current = Number(container.clientHeight || 0);
+
+    const observer = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => {
+        const node = threadScrollRef.current;
+        if (!node) return;
+        const nextHeight = Number(node.clientHeight || 0);
+        const previousHeight = Number(threadViewportHeightRef.current || 0);
+        const heightDelta = nextHeight - previousHeight;
+        if (Math.abs(heightDelta) <= 1) return;
+        const scrollTop = Number(node.scrollTop || 0);
+        const scrollHeight = Number(node.scrollHeight || 0);
+        const distanceFromBottom = scrollHeight - scrollTop - nextHeight;
+        threadViewportHeightRef.current = nextHeight;
+        const heightShrunk = heightDelta < -20;
+        const shouldRecoverBottom = threadPinnedToBottomRef.current
+          || distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX
+          || (heightShrunk && Math.abs(heightDelta) > 80);
+        // #region agent log
+        emitAgentDebugLog({
+          location: 'ChatThread.jsx:viewportResizeObserver',
+          message: shouldRecoverBottom
+            ? 'viewport height changed — recover bottom scroll'
+            : 'viewport height changed — skip recover',
+          data: {
+            previousHeight: Math.round(previousHeight),
+            nextHeight: Math.round(nextHeight),
+            heightDelta: Math.round(heightDelta),
+            distanceFromBottom: Math.round(Math.max(0, distanceFromBottom)),
+            pinned: Boolean(threadPinnedToBottomRef.current),
+            shouldRecoverBottom,
+          },
+          hypothesisId: 'H-M9',
+        });
+        // #endregion
+        if (!shouldRecoverBottom) return;
+        threadPinnedToBottomRef.current = true;
+        schedulePinnedBottomScrollRef.current?.({ settleFrames: 2, forcePin: true });
+      })
+      : null;
+    observer?.observe?.(container);
+
+    return () => {
+      observer?.disconnect?.();
+      if (threadPinnedScrollFrameRef.current !== null) {
+        window.cancelAnimationFrame(threadPinnedScrollFrameRef.current);
+        threadPinnedScrollFrameRef.current = null;
+      }
+    };
+  }, [compactMobile, threadScrollRef]);
+
+  useLayoutEffect(() => {
+    const content = threadContentRef?.current;
+    if (!content) return undefined;
+
+    threadContentHeightRef.current = Number(content.offsetHeight || content.scrollHeight || 0);
+
+    const observer = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => {
+        const contentNode = threadContentRef?.current;
+        const scrollNode = threadScrollRef.current;
+        if (!contentNode || !scrollNode) return;
+        if (shouldDeferPinnedBottomScroll({
+          loadingOlder: loadingOlderRef.current,
+          prependRestorePending: Boolean(prependScrollRestoreRef?.current),
+        })) return;
+        const nextHeight = Number(contentNode.offsetHeight || contentNode.scrollHeight || 0);
+        const previousHeight = Number(threadContentHeightRef.current || 0);
+        if (Math.abs(nextHeight - previousHeight) <= 1) return;
+        threadContentHeightRef.current = nextHeight;
+        if (!threadPinnedToBottomRef.current) return;
+        // #region agent log
+        emitAgentDebugLog({
+          location: 'ChatThread.jsx:contentResizeObserver',
+          message: 'content height changed while pinned',
+          data: {
+            previousHeight: Math.round(previousHeight),
+            nextHeight: Math.round(nextHeight),
+            scrollHeight: Math.round(Number(scrollNode.scrollHeight || 0)),
+            clientHeight: Math.round(Number(scrollNode.clientHeight || 0)),
+            distanceFromBottom: Math.round(Math.max(
+              0,
+              Number(scrollNode.scrollHeight || 0) - Number(scrollNode.scrollTop || 0) - Number(scrollNode.clientHeight || 0),
+            )),
+          },
+          hypothesisId: 'H-M1',
+        });
+        // #endregion
+        schedulePinnedBottomScroll({ settleFrames: 1, forcePin: true });
+      })
+      : null;
+    observer?.observe?.(content);
+
+    return () => {
+      observer?.disconnect?.();
+    };
+  }, [activeConversationId, messageCount, messagesLoading, prependScrollRestoreRef, threadContentRef, threadScrollRef, schedulePinnedBottomScroll]);
 
   useEffect(() => {
     const node = composerDockRef.current;
@@ -915,16 +862,39 @@ function ChatThread({
 
     const heightChanged = Math.abs(Number(composerHeight || 0) - Number(previousLayout.composerHeight || 0)) > 1;
     const insetChanged = Math.abs(Number(keyboardInset || 0) - Number(previousLayout.keyboardInset || 0)) > 1;
-    if (!heightChanged && !insetChanged) return;
+    const shouldScrollPinned = insetChanged
+      || (heightChanged && threadPinnedToBottomRef.current);
+    if (!shouldScrollPinned) return;
 
-    scrollPinnedThreadToBottom({ settleFrames: 2 });
-  }, [composerHeight, keyboardInset, scrollPinnedThreadToBottom]);
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'ChatThread.jsx:composerLayoutEffect',
+      message: 'layout scroll pinned',
+      data: {
+        heightChanged,
+        insetChanged,
+        composerHeight: Math.round(Number(composerHeight || 0)),
+        keyboardInset: Math.round(Number(keyboardInset || 0)),
+        scrollBottomPadding,
+        pinned: Boolean(threadPinnedToBottomRef.current),
+      },
+      hypothesisId: insetChanged ? 'H4' : 'H-M2',
+    });
+    // #endregion
+    schedulePinnedBottomScroll({ settleFrames: heightChanged && !insetChanged ? 1 : 0 });
+  }, [composerHeight, keyboardInset, scrollBottomPadding, schedulePinnedBottomScroll]);
 
   useLayoutEffect(() => {
     const container = threadScrollRef.current;
     const content = threadContentRef?.current;
     if (!container || !content) return;
 
+    const deferPinnedScroll = shouldDeferPinnedBottomScroll({
+      loadingOlder: loadingOlderRef.current,
+      prependRestorePending: Boolean(prependScrollRestoreRef?.current),
+    });
+
+    const wasPinned = threadPinnedToBottomRef.current;
     const previousMetrics = messageReactionMetricsRef.current;
     const nextMetrics = new Map();
     const messageElements = Array.from(content.querySelectorAll('[data-message-id]'));
@@ -966,6 +936,27 @@ function ChatThread({
     if (Math.abs(compensation) <= 1) {
       lastScrollTopRef.current = scrollTop;
       const distanceFromBottom = Number(container.scrollHeight || 0) - scrollTop - Number(container.clientHeight || 0);
+      if (deferPinnedScroll) {
+        threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
+        return;
+      }
+      if (wasPinned && distanceFromBottom > COMPOSER_STICK_DISTANCE_PX) {
+        // #region agent log
+        emitAgentDebugLog({
+          location: 'ChatThread.jsx:messagesLayoutPinnedCatchUp',
+          message: 'content grew while pinned — catch-up scroll',
+          data: {
+            distanceFromBottom: Math.round(distanceFromBottom),
+            scrollHeight: Math.round(Number(container.scrollHeight || 0)),
+            clientHeight: Math.round(Number(container.clientHeight || 0)),
+          },
+          hypothesisId: 'H-M3',
+        });
+        // #endregion
+        threadPinnedToBottomRef.current = true;
+        schedulePinnedBottomScroll({ settleFrames: 2, forcePin: true });
+        return;
+      }
       threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
       return;
     }
@@ -975,7 +966,7 @@ function ChatThread({
     lastScrollTopRef.current = effectiveScrollTop;
     const distanceFromBottom = Number(container.scrollHeight || 0) - effectiveScrollTop - Number(container.clientHeight || 0);
     threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
-  }, [messages, threadContentRef, threadScrollRef, applyThreadScroll]);
+  }, [messages, prependScrollRestoreRef, threadContentRef, threadScrollRef, applyThreadScroll, schedulePinnedBottomScroll]);
 
   // Простое отслеживание клавиатуры через resize окна
   useEffect(() => {
@@ -1006,9 +997,50 @@ function ChatThread({
       const overlayInset = Math.max(0, layoutHeight - viewportHeight - viewportOffsetTop);
       const nextInset = layoutResizeDelta > 80 ? 0 : (overlayInset > 80 ? overlayInset : 0);
 
-      setKeyboardInset((currentInset) => (
-        Math.abs(Number(currentInset || 0) - nextInset) > 1 ? nextInset : currentInset
-      ));
+      setKeyboardInset((currentInset) => {
+        const willUpdate = Math.abs(Number(currentInset || 0) - nextInset) > 1;
+        if (willUpdate || layoutResizeDelta > 80) {
+          const container = threadScrollRef.current;
+          const scrollTop = Number(container?.scrollTop || 0);
+          const scrollHeight = Number(container?.scrollHeight || 0);
+          const clientHeight = Number(container?.clientHeight || 0);
+          const measuredComposerHeight = Math.round(
+            Number(composerDockRef.current?.getBoundingClientRect?.().height || composerHeight || 0),
+          );
+          const distanceFromBottom = Math.max(0, scrollHeight - scrollTop - clientHeight);
+          const nextPadding = getChatThreadBottomPadding({
+            compactMobile,
+            keyboardInset: nextInset,
+            composerHeight: measuredComposerHeight,
+          });
+          // #region agent log
+          emitAgentDebugLog({
+            location: 'ChatThread.jsx:measureKeyboardInset',
+            message: 'keyboard inset change',
+            data: {
+              prevInset: Math.round(Number(currentInset || 0)),
+              nextInset: Math.round(nextInset),
+              layoutResizeDelta: Math.round(layoutResizeDelta),
+              composerHeight: measuredComposerHeight,
+              scrollBottomPadding: nextPadding,
+              distanceFromBottom: Math.round(distanceFromBottom),
+              pinned: Boolean(threadPinnedToBottomRef.current),
+            },
+            hypothesisId: 'H2',
+          });
+          // #endregion
+          if (
+            layoutResizeDelta > 80
+            && (
+              threadPinnedToBottomRef.current
+              || distanceFromBottom > COMPOSER_STICK_DISTANCE_PX
+            )
+          ) {
+            schedulePinnedBottomScroll({ settleFrames: 2, forcePin: true });
+          }
+        }
+        return willUpdate ? nextInset : currentInset;
+      });
     };
 
     measureKeyboardInset();
@@ -1020,65 +1052,33 @@ function ChatThread({
       window.visualViewport?.removeEventListener?.('resize', measureKeyboardInset);
       window.visualViewport?.removeEventListener?.('scroll', measureKeyboardInset);
     };
-  }, [compactMobile]);
+  }, [compactMobile, threadScrollRef, schedulePinnedBottomScroll]);
 
-  useLayoutEffect(() => {
-    if (!compactMobile || !threadScrollRef.current) return undefined;
+  useEffect(() => {
     const container = threadScrollRef.current;
     if (!container) return undefined;
-
-    const refreshStickyDateAnchors = () => {
-      stickyDateAnchorsRef.current = Array.from(container.querySelectorAll('[data-message-date]'))
-        .map((el) => ({
-          top: Number(el.offsetTop || 0),
-          label: String(el.dataset.messageDate || '').trim(),
-        }))
-        .filter((item) => item.label);
-    };
-
-    const updateVisibleDateNow = () => {
-      stickyDateFrameRef.current = null;
-      const messageElements = stickyDateAnchorsRef.current;
-      let currentLabel = '';
-      const thresholdTop = Number(container.scrollTop || 0) + 100;
-      messageElements.forEach((el) => {
-        const elementTop = Number(el.top || 0);
-        if (elementTop <= thresholdTop) {
-          currentLabel = el.label || currentLabel;
-        }
+    const handleMediaLoaded = () => {
+      if (!threadPinnedToBottomRef.current) return;
+      // #region agent log
+      emitAgentDebugLog({
+        location: 'ChatThread.jsx:mediaLoaded',
+        message: 'media asset loaded while pinned',
+        data: {
+          scrollHeight: Math.round(Number(container.scrollHeight || 0)),
+          clientHeight: Math.round(Number(container.clientHeight || 0)),
+          distanceFromBottom: Math.round(Math.max(
+            0,
+            Number(container.scrollHeight || 0) - Number(container.scrollTop || 0) - Number(container.clientHeight || 0),
+          )),
+        },
+        hypothesisId: 'H-M5',
       });
-      if (currentLabel && currentLabel !== stickyDateLabelRef.current) {
-        stickyDateLabelRef.current = currentLabel;
-        setStickyDateLabel(currentLabel);
-      }
+      // #endregion
+      schedulePinnedBottomScroll({ settleFrames: 2, forcePin: true });
     };
-
-    const scheduleVisibleDateUpdate = () => {
-      if (stickyDateFrameRef.current !== null) return;
-      stickyDateFrameRef.current = window.requestAnimationFrame(updateVisibleDateNow);
-    };
-
-    refreshStickyDateAnchors();
-    scheduleVisibleDateUpdate();
-    const resizeTarget = threadContentRef?.current || container;
-    const resizeObserver = typeof ResizeObserver === 'function'
-      ? new ResizeObserver(() => {
-        refreshStickyDateAnchors();
-        scheduleVisibleDateUpdate();
-      })
-      : null;
-    resizeObserver?.observe?.(resizeTarget);
-
-    container.addEventListener('scroll', scheduleVisibleDateUpdate, { passive: true });
-    return () => {
-      container.removeEventListener('scroll', scheduleVisibleDateUpdate);
-      resizeObserver?.disconnect?.();
-      if (stickyDateFrameRef.current !== null) {
-        window.cancelAnimationFrame(stickyDateFrameRef.current);
-        stickyDateFrameRef.current = null;
-      }
-    };
-  }, [compactMobile, messageCount, threadContentRef, threadScrollRef]);
+    container.addEventListener('chat-media-loaded', handleMediaLoaded);
+    return () => container.removeEventListener('chat-media-loaded', handleMediaLoaded);
+  }, [activeConversationId, threadScrollRef, schedulePinnedBottomScroll]);
 
   // На Android клавиатура сжимает visualViewport — скроллим при каждом изменении
   const handleComposerFocusChange = useCallback((focused) => {
@@ -1086,35 +1086,29 @@ function ChatThread({
     onComposerFocusChange?.(focused);
     if (!focused) return;
     if (!threadPinnedToBottomRef.current) return;
-
-    let scrollFrameId = null;
-    let remainingFrames = 2;
-    const scrollToEnd = () => {
-      if (!composerFocusedRef.current || !threadPinnedToBottomRef.current) return;
-      if (scrollFrameId) return;
-      scrollFrameId = window.requestAnimationFrame(() => {
-        scrollFrameId = null;
-        if (!composerFocusedRef.current || !threadPinnedToBottomRef.current) return;
-        scrollPinnedThreadToBottom({ settleFrames: 0 });
-        remainingFrames -= 1;
-        if (remainingFrames > 0) scrollToEnd();
-      });
-    };
+    // #region agent log
+    emitAgentDebugLog({
+      location: 'ChatThread.jsx:composerFocus',
+      message: 'composer focused scroll listeners',
+      data: { keyboardInset: Math.round(Number(keyboardInset || 0)), pinned: true },
+      hypothesisId: 'H4',
+    });
+    // #endregion
 
     if (window.visualViewport) {
       const vp = window.visualViewport;
-      vp.addEventListener('resize', scrollToEnd);
-      vp.addEventListener('scroll', scrollToEnd);
+      const scrollOnce = () => {
+        if (!composerFocusedRef.current || !threadPinnedToBottomRef.current) return;
+        schedulePinnedBottomScroll({ settleFrames: 0 });
+      };
+      vp.addEventListener('resize', scrollOnce);
+      vp.addEventListener('scroll', scrollOnce);
       setTimeout(() => {
-        vp.removeEventListener('resize', scrollToEnd);
-        vp.removeEventListener('scroll', scrollToEnd);
-        if (scrollFrameId) {
-          window.cancelAnimationFrame(scrollFrameId);
-          scrollFrameId = null;
-        }
-      }, 2000);
+        vp.removeEventListener('resize', scrollOnce);
+        vp.removeEventListener('scroll', scrollOnce);
+      }, 1200);
     }
-  }, [onComposerFocusChange, scrollPinnedThreadToBottom]);
+  }, [keyboardInset, onComposerFocusChange, schedulePinnedBottomScroll]);
 
   const handleThreadTouchStart = useCallback((event) => {
     if (!compactMobile || typeof onBack !== 'function') return;
@@ -1175,6 +1169,7 @@ function ChatThread({
     threadPinnedToBottomRef.current = distanceFromBottom <= COMPOSER_STICK_DISTANCE_PX;
     if (
       !historyAutoLoadEnabled
+      && isThreadScrollable(node)
       && currentScrollTop <= HISTORY_AUTO_LOAD_ARM_DISTANCE_PX
       && currentScrollTop < previousScrollTop - 1
       && event?.nativeEvent?.isTrusted
@@ -1192,7 +1187,7 @@ function ChatThread({
 
     lastScrollTopRef.current = currentScrollTop;
     onThreadScroll?.(event);
-  }, [composerRef, historyAutoLoadEnabled, onThreadScroll]);
+  }, [composerRef, historyAutoLoadEnabled, isThreadScrollable, onThreadScroll]);
 
   if (!activeConversation) {
     return (
@@ -1286,14 +1281,25 @@ function ChatThread({
         onBack={onBack}
         onOpenDrawer={showEmbeddedMenuButton ? openDrawer : undefined}
         onOpenInfo={onOpenInfo}
+        onOpenTask={onOpenTask}
         onOpenSearch={onOpenSearch}
         onOpenMenu={onOpenMenu}
         selectionMode={selectionMode}
         selectedMessageCount={selectedMessageCount}
         canCopySelectedMessages={canCopySelectedMessages}
+        canDeleteSelectedMessages={canDeleteSelectedMessages}
         onClearMessageSelection={onClearMessageSelection}
         onCopySelectedMessages={onCopySelectedMessages}
         onForwardSelectedMessages={onForwardSelectedMessages}
+        onDeleteSelectedMessages={onDeleteSelectedMessages}
+      />
+
+      <TaskCompletedBanner
+        activeConversation={activeConversation}
+        compactMobile={compactMobile}
+        onOpenTask={onOpenTask}
+        theme={theme}
+        ui={ui}
       />
 
       <PinnedMessageBar
@@ -1348,30 +1354,10 @@ function ChatThread({
         }}
       >
         <Box sx={{ maxWidth: { xs: '100%', md: `${contentMaxWidth}px` }, mx: 'auto', width: '100%' }}>
-          {compactMobile && stickyDateLabel && (
-            <div
-              className="pointer-events-none sticky z-50 flex h-0 justify-center"
-              style={{ top: 4 }}
-            >
-              <div
-                className="rounded-full border px-2 py-0.5 text-[11px] font-semibold backdrop-blur-xl"
-                style={{
-                  backgroundColor: servicePillBg,
-                  color: servicePillText,
-                  borderColor: ui.borderSoft,
-                  minWidth: '70px',
-                  textAlign: 'center',
-                  transform: 'translateY(4px)',
-                }}
-              >
-                {stickyDateLabel}
-              </div>
-            </div>
-          )}
-
           <ChatMessageList
             theme={theme}
             ui={ui}
+            isMobile={isMobile}
             compactMobile={compactMobile}
             mobileInteractionsEnabled={resolvedMobileInteractionsEnabled}
             activeConversation={activeConversation}
@@ -1383,6 +1369,7 @@ function ChatThread({
             loadingOlder={loadingOlder}
             onLoadOlder={onLoadOlder}
             historyAutoLoadEnabled={historyAutoLoadEnabled}
+            threadScrollRef={threadScrollRef}
             threadContentRef={threadContentRef}
             bottomRef={bottomRef}
             onOpenReads={onOpenReads}
@@ -1416,10 +1403,7 @@ function ChatThread({
           sx={{
             position: 'absolute',
             right: { xs: 12, md: 22 },
-            bottom: {
-              xs: `${Math.max(12, keyboardInset + (selectionMode ? 92 : 10))}px`,
-              md: selectionMode ? '96px' : '20px',
-            },
+            bottom: `${jumpToLatestBottomOffset}px`,
             zIndex: 4,
           }}
         >
@@ -1427,30 +1411,35 @@ function ChatThread({
             badgeContent={Number(activeConversation?.unread_count || 0)}
             color="primary"
             invisible={Number(activeConversation?.unread_count || 0) <= 0}
+            overlap="circular"
+            anchorOrigin={{ vertical: 'top', horizontal: 'right' }}
           >
-            <Button
-              variant="contained"
-              size="small"
+            <IconButton
+              data-testid="chat-jump-to-latest"
+              aria-label="К последним сообщениям"
               onClick={onJumpToLatest}
-              endIcon={<KeyboardArrowDownRoundedIcon />}
               sx={{
-                borderRadius: compactMobile ? 999 : 1.35,
-                boxShadow: compactMobile ? '0 6px 14px rgba(6, 18, 32, 0.14)' : ui.shadowStrong,
-                textTransform: 'none',
-                px: compactMobile ? 0.95 : 1.15,
-                minWidth: compactMobile ? 0 : undefined,
-                bgcolor: jumpPillBg,
-                color: jumpPillText,
-                minHeight: compactMobile ? 30 : 34,
-                fontSize: compactMobile ? '12px' : '0.78rem',
-                fontWeight: 700,
+                width: jumpFabSize,
+                height: jumpFabSize,
+                minWidth: jumpFabSize,
+                minHeight: jumpFabSize,
+                p: 0,
+                borderRadius: '50%',
+                overflow: 'hidden',
+                bgcolor: jumpFabBg,
+                color: jumpFabIcon,
+                boxShadow: jumpFabShadow,
+                border: `1px solid ${alpha(jumpFabIcon, theme.palette.mode === 'dark' ? 0.08 : 0.12)}`,
+                '&:hover': {
+                  bgcolor: jumpFabHoverBg,
+                },
                 '&:active': compactMobile ? {
-                  opacity: 0.62,
+                  opacity: 0.72,
                 } : undefined,
               }}
             >
-              К последним
-            </Button>
+              <KeyboardArrowDownRoundedIcon sx={{ fontSize: jumpFabIconSize }} />
+            </IconButton>
           </Badge>
         </Box>
       ) : null}</AnimatePresence>
@@ -1468,6 +1457,52 @@ function ChatThread({
           onForwardSelectedMessages={onForwardSelectedMessages}
           onDeleteSelectedMessages={onDeleteSelectedMessages}
         />
+      ) : composerTextBridge ? (
+        <ChatThreadComposerBridge
+          bridge={composerTextBridge}
+          composerProps={{
+            theme,
+            ui,
+            compactMobile,
+            activeConversationId,
+            selectedFiles,
+            fileCaption,
+            onOpenFileDialog,
+            onClearSelectedFiles,
+            preparingFiles,
+            sendingFiles,
+            fileUploadProgress,
+            selectedFilesSummary,
+            replyMessage,
+            onClearReply,
+            editingMessage,
+            onClearEditing,
+            onOpenComposerMenu,
+            composerRef,
+            onOpenEmojiPicker,
+            onCloseEmojiPicker,
+            onSendMessage,
+            onComposerPaste,
+            onComposerDrop,
+            onComposerDragOver,
+            onComposerDragLeave,
+            onComposerFocusChange: handleComposerFocusChange,
+            mentionCandidates,
+            onSearchMentionPeople,
+            composerDockRef,
+            keyboardInset,
+            mobileEmojiPickerOpen,
+            onInsertEmoji,
+            onSendSticker,
+            onSendGif,
+            voiceRecording,
+            voiceRecordingDuration,
+            voiceRecordingLevelRef,
+            onStartVoiceRecording,
+            onStopVoiceRecording,
+            onCancelVoiceRecording,
+          }}
+        />
       ) : (
         <ChatComposer
           theme={theme}
@@ -1484,6 +1519,8 @@ function ChatThread({
           selectedFilesSummary={selectedFilesSummary}
           replyMessage={replyMessage}
           onClearReply={onClearReply}
+          editingMessage={editingMessage}
+          onClearEditing={onClearEditing}
           onOpenComposerMenu={onOpenComposerMenu}
           composerRef={composerRef}
           messageText={messageText}

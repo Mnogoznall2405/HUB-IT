@@ -7,7 +7,12 @@
     "dev": "vite",
     "test": "vitest",
     "test:run": "vitest run",
+    "test:chat:gate": "vitest run src/pages/chat/ChatPageContent.smoke.test.jsx src/pages/chat/chatPageSlice38.test.js src/pages/chat/buildChatPagePanesBags.test.js src/pages/chat/useChatPageDialogsLayerProps.test.js src/pages/chat/useChatPageCoreBridge.test.js src/pages/chat/useChatAiController.test.js src/pages/chat/useChatDraftsAndPinned.test.js src/components/chat/useChatComposerTextBridge.test.js src/pages/chat/pickChatPageLayoutSections.test.js src/lib/chat/chatThreadScrollModel.test.js src/pages/chat/useChatThreadController.test.js src/pages/chat/useChatScrollController.test.js src/pages/chat/useChatSocketController.test.js src/pages/Chat.test.jsx src/pages/chat/useChatSidebarSection.test.jsx src/pages/chat/useChatThreadSection.test.jsx src/components/chat/ChatComposer.test.jsx",
+    "test:chat:premerge": "npm run lint:chat-imports && npm run test:chat:gate && npm run build",
+    "lint": "eslint src/pages/chat src/components/chat",
+    "lint:chat-imports": "node scripts/check-chat-page-imports.mjs",
     "build": "vite build",
+    "generate:icons": "python scripts/generate-pwa-icons.py",
     "preview": "vite preview"
   },
   "dependencies": {
@@ -46,6 +51,10 @@
     "@types/react-dom": "^18.3.0",
     "@vitejs/plugin-react": "^5.2.0",
     "autoprefixer": "^10.5.0",
+    "eslint": "^9.22.0",
+    "eslint-plugin-import": "^2.31.0",
+    "eslint-plugin-react-hooks": "^5.2.0",
+    "globals": "^16.0.0",
     "jsdom": "^26.0.0",
     "postcss": "^8.5.13",
     "rollup": "^4.60.2",

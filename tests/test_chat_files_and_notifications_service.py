@@ -81,6 +81,7 @@ def chat_env(temp_dir, monkeypatch):
     monkeypatch.setattr(chat_service_module.user_service, "to_public_user", lambda raw: dict(raw))
 
     hub_service = hub_service_module.HubService()
+    monkeypatch.setattr(hub_service_module, "hub_service", hub_service)
     monkeypatch.setattr(chat_service_module, "hub_service", hub_service)
 
     chat_db_module._engine = None
@@ -128,7 +129,7 @@ def test_send_files_persists_attachment_and_creates_chat_notification(chat_env):
     assert messages["items"][0]["body"] == caption
     assert messages["items"][0]["attachments"][0]["file_name"] == "report.pdf"
 
-    conversations = service.list_conversations(current_user_id=2)
+    conversations = service.list_conversations(current_user_id=2)["items"]
     assert conversations[0]["last_message_preview"] == caption
 
     service.send_message(
@@ -226,7 +227,7 @@ def test_send_files_without_caption_keeps_file_name_preview(chat_env):
 
     assert created["body"] == ""
 
-    conversations = service.list_conversations(current_user_id=2)
+    conversations = service.list_conversations(current_user_id=2)["items"]
     assert conversations[0]["last_message_preview"].endswith("report.pdf")
 
 
@@ -1132,3 +1133,39 @@ def test_system_message_persistence_advances_sequence_and_read_counters(chat_env
     assert int(states[1].unread_count) == 0
     assert int(states[2].unread_count) == 1
     assert int(states[3].unread_count) == 0
+
+
+def test_group_avatar_file_path_requires_group_membership(chat_env):
+    service = chat_env["service"]
+    hub_service = chat_env["hub_service"]
+
+    group = service.create_group_conversation(
+        current_user_id=1,
+        title="Avatar Group",
+        member_user_ids=[2],
+    )
+    conversation_id = group["id"]
+    safe_id = "".join(c if c.isalnum() or c in "-_" else "_" for c in conversation_id)
+    avatars_dir = Path(hub_service.data_dir) / "group_avatars"
+    avatars_dir.mkdir(parents=True, exist_ok=True)
+    avatar_path = avatars_dir / f"{safe_id}.jpg"
+    avatar_path.write_bytes(b"fake-jpeg-content")
+    avatar_url = f"/api/v1/chat/group-avatars/{safe_id}.jpg?v=1"
+
+    service.update_group_avatar(
+        current_user_id=1,
+        conversation_id=conversation_id,
+        avatar_url=avatar_url,
+    )
+
+    resolved = service.get_group_avatar_file_path(
+        current_user_id=2,
+        filename=f"{safe_id}.jpg",
+    )
+    assert resolved == str(avatar_path)
+
+    with pytest.raises(PermissionError):
+        service.get_group_avatar_file_path(
+            current_user_id=3,
+            filename=f"{safe_id}.jpg",
+        )

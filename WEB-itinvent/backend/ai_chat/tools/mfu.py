@@ -14,6 +14,7 @@ from backend.ai_chat.tools.context import (
 )
 from backend.ai_chat.tools.registry import ai_tool_registry
 from backend.database.equipment_db import get_all_equipment_flat
+from backend.services.authorization_service import PERM_MFU_READ, authorization_service
 
 
 DEFAULT_LIMIT = 100
@@ -109,6 +110,21 @@ def _resolve_db(context: AiToolExecutionContext, database_id: str | None) -> str
     return requested or current
 
 
+def _has_permission(context: AiToolExecutionContext, permission: str) -> bool:
+    payload = context.user_payload if isinstance(context.user_payload, dict) else {}
+    return authorization_service.has_permission(
+        payload.get("role"),
+        permission,
+        use_custom_permissions=bool(payload.get("use_custom_permissions", False)),
+        custom_permissions=payload.get("custom_permissions") or [],
+    )
+
+
+def _require_permission(context: AiToolExecutionContext, permission: str) -> None:
+    if not _has_permission(context, permission):
+        raise PermissionError(f"Permission required: {permission}")
+
+
 class MfuDevicesListTool(AiTool):
     tool_id = MFU_TOOL_DEVICES_LIST
     description = (
@@ -119,6 +135,10 @@ class MfuDevicesListTool(AiTool):
     stage = "checking_mfu"
 
     def execute(self, *, context: AiToolExecutionContext, args: MfuDevicesListArgs) -> AiToolResult:
+        try:
+            _require_permission(context, PERM_MFU_READ)
+        except PermissionError as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc))
         database_id = _resolve_db(context, args.database_id)
         if not database_id:
             return AiToolResult(tool_id=self.tool_id, ok=False, error="ITinvent database is not configured.")
@@ -181,6 +201,10 @@ class MfuDeviceStatusTool(AiTool):
     stage = "checking_mfu"
 
     def execute(self, *, context: AiToolExecutionContext, args: MfuDeviceStatusArgs) -> AiToolResult:
+        try:
+            _require_permission(context, PERM_MFU_READ)
+        except PermissionError as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc))
         import asyncio
 
         inv_no = _normalize_text(args.inv_no)
@@ -247,6 +271,10 @@ class MfuPagesMonthlyTool(AiTool):
     stage = "checking_mfu"
 
     def execute(self, *, context: AiToolExecutionContext, args: MfuPagesMonthlyArgs) -> AiToolResult:
+        try:
+            _require_permission(context, PERM_MFU_READ)
+        except PermissionError as exc:
+            return AiToolResult(tool_id=self.tool_id, ok=False, error=str(exc))
         import asyncio
 
         inv_no = _normalize_text(args.inv_no)

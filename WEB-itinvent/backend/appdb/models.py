@@ -159,6 +159,7 @@ class AppSessionRecord(AppBase):
     status: Mapped[str] = mapped_column(String(32), nullable=False, default="active", index=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     closed_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    trusted_device_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     device_label: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
@@ -223,6 +224,8 @@ class AppUserSetting(AppBase):
     font_family: Mapped[str] = mapped_column(String(32), nullable=False, default="Aptos")
     font_scale: Mapped[float] = mapped_column(Float, nullable=False, default=1.0)
     dashboard_mobile_sections_json: Mapped[str | None] = mapped_column("dashboard_mobile_sections", Text, nullable=True)
+    mobile_bottom_nav_items_json: Mapped[str | None] = mapped_column("mobile_bottom_nav_items", Text, nullable=True)
+    database_branch_filters_json: Mapped[str | None] = mapped_column("database_branch_filters", Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
 
 
@@ -785,6 +788,44 @@ class SystemMigrationCheckpoint(AppBase):
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     value_json: Mapped[str] = mapped_column(Text, nullable=False, default="null")
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMailboxQuotaSnapshot(AppBase):
+    __tablename__ = "mailbox_quota_snapshots"
+    __table_args__ = _table_args(
+        Index("ix_app_mailbox_quota_snapshots_imported_at", "imported_at"),
+        Index("ix_app_mailbox_quota_snapshots_payload_sha256", "payload_sha256"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    imported_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    collected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    source_host: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    exchange_server: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    payload_sha256: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+
+
+class AppMailboxQuotaRow(AppBase):
+    __tablename__ = "mailbox_quota_rows"
+    __table_args__ = _table_args(
+        Index("ix_app_mailbox_quota_rows_snapshot_email", "snapshot_id", "email"),
+        Index("ix_app_mailbox_quota_rows_snapshot_used_percent", "snapshot_id", "used_percent"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    snapshot_id: Mapped[int] = mapped_column(Integer, nullable=False, index=True)
+    email: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    display_name: Mapped[str] = mapped_column(String(512), nullable=False, default="")
+    upn: Mapped[str] = mapped_column(String(320), nullable=False, default="")
+    mailbox_type: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    used_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    quota_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    free_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    used_percent: Mapped[float | None] = mapped_column(Float, nullable=True)
+    database_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
 
 
 class AppAuthRuntimeItem(AppBase):

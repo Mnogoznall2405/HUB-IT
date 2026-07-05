@@ -39,6 +39,7 @@ describe('MailBulkActionBar', () => {
 
     expect(screen.getByTestId('mail-mobile-bulk-header')).toBeTruthy();
     expect(screen.getByTestId('mail-mobile-bulk-bottom-bar')).toBeTruthy();
+    expect(screen.getByTestId('mail-mobile-bulk-bottom-bar')).toHaveAttribute('data-layout', 'inline');
     expect(screen.getByText('Выбрано: 2')).toBeTruthy();
 
     fireEvent.click(screen.getByText('Прочитано'));

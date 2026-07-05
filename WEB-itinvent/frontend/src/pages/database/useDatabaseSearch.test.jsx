@@ -1,4 +1,5 @@
-import { act, renderHook } from '@testing-library/react';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import { useState } from 'react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { useDatabaseSearch } from './useDatabaseSearch';
@@ -30,17 +31,37 @@ const groupedEquipment = {
   Remote: { Stock: [stockPrinter] },
 };
 
+const setExpandedBranches = vi.fn();
+const setExpandedLocations = vi.fn();
+
 const createProps = (overrides = {}) => ({
   allEquipment: groupedEquipment,
   selectedBranch: '',
-  setExpandedBranches: vi.fn(),
-  setExpandedLocations: vi.fn(),
+  setExpandedBranches,
+  setExpandedLocations,
   debounceMs: 50,
   ...overrides,
 });
 
+function renderSearchHook(overrides = {}) {
+  const hookProps = createProps(overrides);
+  return renderHook(() => {
+    const [searchQuery, setSearchQuery] = useState('');
+    const [filteredData, setFilteredData] = useState(null);
+    const search = useDatabaseSearch({
+      ...hookProps,
+      searchQuery,
+      setSearchQuery,
+      filteredData,
+      setFilteredData,
+    });
+    return search;
+  });
+}
+
 describe('useDatabaseSearch', () => {
   beforeEach(() => {
+    vi.clearAllMocks();
     vi.useFakeTimers();
   });
 
@@ -50,8 +71,7 @@ describe('useDatabaseSearch', () => {
   });
 
   it('builds branch-filtered source data and search index', () => {
-    const props = createProps({ selectedBranch: ' hq ' });
-    const { result } = renderHook(() => useDatabaseSearch(props));
+    const { result } = renderSearchHook({ selectedBranch: ' hq ' });
 
     expect(result.current.searchSourceData).toEqual({
       HQ: { Office: [printer], Lab: [pc] },
@@ -61,8 +81,7 @@ describe('useDatabaseSearch', () => {
   });
 
   it('debounces search changes and expands matched branches and locations', () => {
-    const props = createProps();
-    const { result } = renderHook(() => useDatabaseSearch(props));
+    const { result } = renderSearchHook();
 
     act(() => {
       result.current.handleSearchChange({ target: { value: 'laser' } });
@@ -70,7 +89,7 @@ describe('useDatabaseSearch', () => {
 
     expect(result.current.searchQuery).toBe('laser');
     expect(result.current.filteredData).toBeNull();
-    expect(props.setExpandedBranches).not.toHaveBeenCalled();
+    expect(setExpandedBranches).not.toHaveBeenCalled();
 
     act(() => {
       vi.advanceTimersByTime(49);
@@ -82,14 +101,13 @@ describe('useDatabaseSearch', () => {
     });
 
     expect(result.current.filteredData).toEqual({ HQ: { Office: [printer] } });
-    expect(props.setExpandedBranches).toHaveBeenLastCalledWith(new Set(['HQ']));
-    expect(props.setExpandedLocations).toHaveBeenLastCalledWith(new Set(['HQ::Office']));
+    expect(setExpandedBranches).toHaveBeenLastCalledWith(new Set(['HQ']));
+    expect(setExpandedLocations).toHaveBeenLastCalledWith(new Set(['HQ::Office']));
   });
 
   it('runs search immediately on Enter and cancels the pending debounce', () => {
-    const props = createProps();
     const preventDefault = vi.fn();
-    const { result } = renderHook(() => useDatabaseSearch(props));
+    const { result } = renderSearchHook();
 
     act(() => {
       result.current.handleSearchChange({ target: { value: 'anna' } });
@@ -98,21 +116,21 @@ describe('useDatabaseSearch', () => {
 
     expect(preventDefault).toHaveBeenCalledTimes(1);
     expect(result.current.filteredData).toEqual({ HQ: { Lab: [pc] } });
-    expect(props.setExpandedBranches).toHaveBeenCalledTimes(1);
+    expect(setExpandedBranches).toHaveBeenCalledTimes(1);
 
     act(() => {
       vi.advanceTimersByTime(50);
     });
 
-    expect(props.setExpandedBranches).toHaveBeenCalledTimes(1);
+    expect(setExpandedBranches).toHaveBeenCalledTimes(1);
   });
 
   it('clears filtered data for queries shorter than two characters', () => {
-    const props = createProps();
-    const { result } = renderHook(() => useDatabaseSearch(props));
+    const { result } = renderSearchHook();
 
     act(() => {
-      result.current.runSearchNow('laser');
+      result.current.handleSearchChange({ target: { value: 'laser' } });
+      vi.advanceTimersByTime(50);
     });
     expect(result.current.filteredData).toEqual({ HQ: { Office: [printer] } });
 
@@ -131,9 +149,22 @@ describe('useDatabaseSearch', () => {
   });
 
   it('re-runs an active query when branch-filtered search data changes', () => {
-    const props = createProps();
-    const { result, rerender } = renderHook((hookProps) => useDatabaseSearch(hookProps), {
-      initialProps: props,
+    const { result, rerender } = renderHook(() => {
+      const [searchQuery, setSearchQuery] = useState('');
+      const [filteredData, setFilteredData] = useState(null);
+      const [selectedBranch, setSelectedBranch] = useState('');
+      const search = useDatabaseSearch({
+        allEquipment: groupedEquipment,
+        selectedBranch,
+        setExpandedBranches,
+        setExpandedLocations,
+        debounceMs: 50,
+        searchQuery,
+        setSearchQuery,
+        filteredData,
+        setFilteredData,
+      });
+      return { ...search, setSelectedBranch };
     });
 
     act(() => {
@@ -146,19 +177,19 @@ describe('useDatabaseSearch', () => {
       Remote: { Stock: [stockPrinter] },
     });
 
-    const nextProps = { ...props, selectedBranch: 'Remote' };
-    rerender(nextProps);
+    act(() => {
+      result.current.setSelectedBranch('Remote');
+    });
 
     expect(result.current.filteredData).toEqual({
       Remote: { Stock: [stockPrinter] },
     });
-    expect(nextProps.setExpandedBranches).toHaveBeenLastCalledWith(new Set(['Remote']));
-    expect(nextProps.setExpandedLocations).toHaveBeenLastCalledWith(new Set(['Remote::Stock']));
+    expect(setExpandedBranches).toHaveBeenLastCalledWith(new Set(['Remote']));
+    expect(setExpandedLocations).toHaveBeenLastCalledWith(new Set(['Remote::Stock']));
   });
 
   it('cancels pending debounced search on clearSearch and unmount', () => {
-    const props = createProps();
-    const { result, unmount } = renderHook(() => useDatabaseSearch(props));
+    const { result, unmount } = renderSearchHook();
 
     act(() => {
       result.current.handleSearchChange({ target: { value: 'laser' } });
@@ -168,7 +199,7 @@ describe('useDatabaseSearch', () => {
 
     expect(result.current.searchQuery).toBe('');
     expect(result.current.filteredData).toBeNull();
-    expect(props.setExpandedBranches).not.toHaveBeenCalled();
+    expect(setExpandedBranches).not.toHaveBeenCalled();
 
     act(() => {
       result.current.handleSearchChange({ target: { value: 'anna' } });
@@ -179,6 +210,6 @@ describe('useDatabaseSearch', () => {
       vi.advanceTimersByTime(50);
     });
 
-    expect(props.setExpandedBranches).not.toHaveBeenCalled();
+    expect(setExpandedBranches).not.toHaveBeenCalled();
   });
 });

@@ -1,0 +1,210 @@
+# План: вкладка «Истечение пароля AD» на странице Пароли
+
+## Контекст
+
+Проект: [`WEB-itinvent`](C:\Project\Image_scan\WEB-itinvent)
+
+| Что уже есть | Что отсутствует |
+|---|---|
+| Логика расчёта срока пароля в [`ad_users_service.py`](C:\Project\Image_scan\WEB-itinvent\backend\services\ad_users_service.py) (`pwdLastSet` + 40 дней) | UI на вкладке «Пароли» |
+| REST `GET /api/v1/ad-users/password-status` (только admin, без параметров) | Фильтрация по OU |
+| AI tools `ad.users.expiring_soon` (порог дней, без OU) | Дерево OU |
+| API-клиент `adUsersAPI.getPasswordStatus()` | Вызов с фронтенда |
+
+Ваши решения:
+- **Доступ:** `passwords.read`
+- **Данные:** переключатель «Все / Только истекающие»
+- **OU:** иерархическое дерево из AD
+- **Ящики:** не показывать
+
+---
+
+## Архитектура
+
+```mermaid
+flowchart LR
+  subgraph frontend [Frontend /passwords]
+    Tabs[PasswordSectionTabs]
+    Vault[Passwords vault]
+    Expiry[PasswordAdExpiryView]
+    OuTree[OuTreePanel]
+    Tabs --> Vault
+    Tabs --> Expiry
+    Expiry --> OuTree
+    Expiry --> UserTable
+  end
+
+  subgraph backend [Backend API]
+  OU["GET /ad-users/organizational-units"]
+  Exp["GET /ad-users/password-expiry"]
+  end
+
+  OuTree --> OU
+  UserTable --> Exp
+  Exp --> LDAP[ad_users_service LDAP]
+  OU --> LDAP
+```
+
+---
+
+## 1. Backend: LDAP и сервис
+
+Файл: [`backend/services/ad_users_service.py`](C:\Project\Image_scan\WEB-itinvent\backend\services\ad_users_service.py)
+
+### 1.1 Список OU (дерево)
+
+Новая функция `list_ad_organizational_units(*, parent_dn: str | None = None)`:
+
+- `parent_dn` пустой → дети корня домена (`_resolve_ad_search_base()`), scope `ONELEVEL`
+- `parent_dn` задан → дети выбранного OU, scope `ONELEVEL`
+- LDAP-фильтр: `(objectClass=organizationalUnit)`
+- Атрибуты: `distinguishedName`, `name`, `ou`
+- Ответ: `[{ dn, label, has_children }]`
+- `has_children` — быстрая проверка `ONELEVEL` под OU (или эвристика «всегда true» на первом этапе, если проверка дорогая)
+
+### 1.2 Отчёт по истечению паролей
+
+Новая унифицированная функция `get_ad_password_expiry_report(*, ou_dn: str | None, mode: Literal["all","expiring"], days_threshold: int, q: str)`:
+
+- **`ou_dn`** — `search_base` для LDAP (если не задан — корень домена, как сейчас)
+- **`mode=all`** — переиспользовать логику [`get_ad_users_password_status()`](C:\Project\Image_scan\WEB-itinvent\backend\services\ad_users_service.py) (включая маппинг филиалов из IT-Invent), но с параметризованным `search_base`
+- **`mode=expiring`** — переиспользовать фильтры из [`list_ad_users_expiring_soon()`](C:\Project\Image_scan\WEB-itinvent\backend\services\ad_users_service.py) (исключение служебных аккаунтов, `days_threshold`), тоже с `search_base=ou_dn`
+- Добавить в LDAP-атрибуты `distinguishedName` (для отображения пути OU в таблице, опционально)
+- Параметр **`q`** — клиентский или серверный поиск по `login` / `display_name` / `department` (начать с серверной фильтрации в Python после LDAP, как в других AD-функциях)
+- Вернуть структуру:
+
+```python
+{
+  "status": "ok",
+  "ou_dn": "...",
+  "mode": "all|expiring",
+  "threshold_days": 7,
+  "policy_days": 40,
+  "total": 123,
+  "users": [...]
+}
+```
+
+Рефакторинг: вынести общий LDAP-поиск пользователей в `_search_ad_users(search_base, filter_extra=None)` чтобы не дублировать bind/unbind.
+
+---
+
+## 2. Backend: API endpoints
+
+Файл: [`backend/api/v1/ad_users.py`](C:\Project\Image_scan\WEB-itinvent\backend\api\v1\ad_users.py)
+
+| Endpoint | Параметры | Права |
+|---|---|---|
+| `GET /organizational-units` | `parent_dn` (optional) | `passwords.read` |
+| `GET /password-expiry` | `ou_dn`, `mode`, `days_threshold`, `q` | `passwords.read` |
+
+- Заменить `get_current_admin_user` на `require_permission(PERM_PASSWORDS_READ)` для новых эндпоинтов
+- Старый `GET /password-status` оставить admin-only **или** пометить deprecated и перенаправить на новый (минимальный риск: оставить как есть, новый UI использует `/password-expiry`)
+
+Импорт: `PERM_PASSWORDS_READ` из [`authorization_service.py`](C:\Project\Image_scan\WEB-itinvent\backend\services\authorization_service.py).
+
+---
+
+## 3. Frontend: переключатель вкладок
+
+### 3.1 Компонент табов
+
+Новый файл: [`frontend/src/components/passwords/PasswordSectionTabs.jsx`](C:\Project\Image_scan\WEB-itinvent\frontend\src\components\passwords\PasswordSectionTabs.jsx)
+
+Паттерн как [`MailSectionTabs.jsx`](C:\Project\Image_scan\WEB-itinvent\frontend\src\components\mail\MailSectionTabs.jsx):
+
+- `vault` → «Хранилище»
+- `ad-expiry` → «Истечение пароля AD»
+
+### 3.2 Обёртка страницы
+
+Изменить [`frontend/src/pages/Passwords.jsx`](C:\Project\Image_scan\WEB-itinvent\frontend\src\pages\Passwords.jsx):
+
+- Добавить state `activeSection` (`vault` | `ad-expiry`)
+- Сохранять в URL: `?section=ad-expiry` (как в Settings) для закладок
+- В шапке `PageShell` — `PasswordSectionTabs`
+- Условный рендер: текущий vault-контент без изменений / новый `PasswordAdExpiryView`
+
+---
+
+## 4. Frontend: страница истечения паролей
+
+Новые компоненты в `frontend/src/components/passwords/`:
+
+| Компонент | Назначение |
+|---|---|
+| `PasswordAdExpiryView.jsx` | Layout: дерево OU + панель фильтров + таблица |
+| `AdOuTreePanel.jsx` | Дерево OU (lazy load по `parent_dn`) |
+| `PasswordExpiryTable.jsx` | Таблица пользователей с цветовыми статусами |
+| `PasswordExpiryFilters.jsx` | Переключатель «Все / Истекающие», slider порога дней, поиск |
+
+### UI-поведение
+
+**Левая колонка (desktop) / Drawer (mobile):**
+- Дерево OU с lazy expand
+- Пункт «Весь домен» (корень) — `ou_dn` не передаётся
+- Выбранный OU подсвечивается
+
+**Верхняя панель:**
+- `ToggleButtonGroup`: «Все пользователи» / «Только истекающие»
+- При режиме «Истекающие» — `Slider` или `TextField` для `days_threshold` (default 7, как в AI tool)
+- Поиск по ФИО / логину
+- Кнопка «Обновить»
+
+**Таблица (колонки):**
+- ФИО (`display_name`)
+- Логин (`login`)
+- Отдел (`department`)
+- Филиал (`branch_name`) — из существующего маппинга
+- Дата смены пароля (`pwd_last_set_date`)
+- Истекает (`expiration_date`)
+- Осталось дней (`days_to_expire`)
+- Статус: Chip — «Просрочен» / «Скоро» / «OK» / «Сменить сейчас»
+
+**Сортировка по умолчанию:** как в backend — просроченные первыми, затем по `days_to_expire`.
+
+**Состояния:** loading skeleton, пустой OU, ошибка LDAP (Alert), «LDAP не настроен».
+
+### Дерево OU
+
+Добавить зависимость `@mui/x-tree-view` (стандартный пакет MUI для `SimpleTreeView` + lazy children). Альтернатива без новой зависимости — рекурсивный `Collapse`/`List`, но дерево с lazy load проще на `@mui/x-tree-view`.
+
+### API-клиент
+
+Расширить [`frontend/src/api/adUsers.js`](C:\Project\Image_scan\WEB-itinvent\frontend\src\api\adUsers.js):
+
+```js
+getOrganizationalUnits(parentDn)
+getPasswordExpiry({ ouDn, mode, daysThreshold, q })
+```
+
+---
+
+## 5. Тесты
+
+Файл: [`tests/test_ad_password_status.py`](C:\Project\Image_scan\tests\test_ad_password_status.py) (расширить) + новый `test_ad_ou_password_expiry.py`:
+
+- Unit: `list_ad_organizational_units` строит дерево из mock LDAP entries
+- Unit: `get_ad_password_expiry_report` с `ou_dn` меняет `search_base`
+- Unit: режим `expiring` применяет `days_threshold`
+- API: `GET /password-expiry` требует `passwords.read`, отклоняет без прав
+- Frontend: smoke-тест переключения табов в `Passwords.test.jsx`
+
+---
+
+## 6. Порядок реализации
+
+1. Backend: OU listing + рефакторинг LDAP search + `get_ad_password_expiry_report`
+2. Backend: два REST endpoint с `passwords.read`
+3. Frontend: `PasswordSectionTabs` + интеграция в `Passwords.jsx`
+4. Frontend: `PasswordAdExpiryView` + дерево OU + таблица
+5. Тесты backend + минимальный frontend test
+6. Ручная проверка на реальном AD (выбор OU, оба режима, mobile drawer)
+
+---
+
+## Риски и ограничения
+
+- **Производительность:** режим «Все» на корне домена может вернуть тысячи записей. OU-фильтр снижает нагрузку; при необходимости позже добавить server-side pagination.
+- **Политика 40 дней:** сейчас фиксированная константа `AD_PASSWORD_MAX_AGE_DAYS`, не реальная доменная политика AD. Менять не планируем в этом этапе.
+- **Права:** страница остаётся за `passwords.read` в навигации; новые AD-endpoint тоже на этом permission (не admin-only).

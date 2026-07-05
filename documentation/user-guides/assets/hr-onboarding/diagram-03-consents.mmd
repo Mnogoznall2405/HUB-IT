@@ -1,0 +1,10 @@
+flowchart LR
+    A[Politika_PDn] --> B[Soglasie_na_obrabotku]
+    B --> C[Zagruzka_dokumentov]
+    C --> D{Nuzhna_peredacha}
+    D -->|Da| E[Soglasie_na_peredachu]
+    D -->|Net| F[Vnutrennyaya_obrabotka]
+    E --> F
+    F --> G{Iskhod}
+    G -->|Prinyat| H[Lichnoe_delo]
+    G -->|Otkaz| I[Akt_unichtozheniya]

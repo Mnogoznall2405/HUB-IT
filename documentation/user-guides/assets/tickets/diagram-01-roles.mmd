@@ -1,0 +1,35 @@
+flowchart LR
+    subgraph management [Руководство]
+        MGR[Руководитель / контроль]
+    end
+
+    subgraph operators [Операционный контур]
+        OP[Оператор логистики]
+        COORD[Координатор объекта]
+    end
+
+    subgraph admin [Администрирование]
+        ADM[Администратор системы]
+    end
+
+    subgraph data [Справочники]
+        OBJ[Объекты / филиалы]
+        EMP[Сотрудники]
+    end
+
+    subgraph process [Работа с заявками]
+        REQ[Заявка на билет]
+        DOC[Документы и вложения]
+        FIN[Потери / возвраты / обмены]
+    end
+
+    MGR -->|дашборд, отчёты, SLA| REQ
+    OP -->|создание, статусы, покупка| REQ
+    COORD -->|данные сотрудника, срочность| REQ
+    ADM -->|объекты, права, правила SLA| OBJ
+    OP --> DOC
+    OP --> FIN
+    COORD --> EMP
+    ADM --> EMP
+    REQ --> OBJ
+    REQ --> EMP

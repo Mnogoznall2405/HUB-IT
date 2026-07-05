@@ -137,6 +137,7 @@ export default function useReadReceipts({
       await markReadRef.current(currentConversationId, nextMessageId);
       lastSentMessageIdRef.current = nextMessageId;
     } catch (error) {
+      pendingIds.forEach((messageId) => pendingReadIdsRef.current.add(messageId));
       onReadSyncErrorRef.current?.(error);
     } finally {
       if (inFlightMessageIdRef.current === nextMessageId) {

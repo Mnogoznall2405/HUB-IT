@@ -111,45 +111,24 @@ def service(temp_dir, monkeypatch):
         # Create requests in various statuses
         now = datetime.now(timezone.utc)
         requests_data = [
-            # "Не запущен" column
-            {"employee_id": emp1_id, "object_id": obj1_id, "status": "new", "assignee_id": 1,
+            {"employee_id": emp1_id, "object_id": obj1_id, "status": "not_started", "assignee_id": 1,
              "route": "Москва - Камчатка", "departure_date": now},
-            {"employee_id": emp2_id, "object_id": obj2_id, "status": "data_check", "assignee_id": 2,
-             "route": "Москва - Магадан", "departure_date": now},
-            {"employee_id": emp1_id, "object_id": obj1_id, "status": "missing_data", "assignee_id": 1,
-             "route": "Москва - Камчатка", "departure_date": now},
-            {"employee_id": emp2_id, "object_id": obj2_id, "status": "ready_to_buy", "assignee_id": 2,
-             "route": "Москва - Магадан", "departure_date": now},
-            # "В работе" column
-            {"employee_id": emp1_id, "object_id": obj1_id, "status": "in_progress", "assignee_id": 1,
-             "route": "Москва - Камчатка", "departure_date": now},
-            # "Куплен" column
-            {"employee_id": emp2_id, "object_id": obj2_id, "status": "purchased", "assignee_id": 2,
-             "route": "Москва - Магадан", "departure_date": now},
-            # "Возврат/обмен" column
-            {"employee_id": emp1_id, "object_id": obj1_id, "status": "exchange_needed", "assignee_id": 1,
-             "route": "Москва - Камчатка", "departure_date": now},
-            {"employee_id": emp2_id, "object_id": obj2_id, "status": "refund", "assignee_id": 2,
-             "route": "Москва - Магадан", "departure_date": now},
-            # "Отмена" column
-            {"employee_id": emp1_id, "object_id": obj1_id, "status": "cancelled", "assignee_id": 1,
-             "route": "Москва - Камчатка", "departure_date": now},
-            # "Проблема" column — no_show
-            {"employee_id": emp2_id, "object_id": obj2_id, "status": "no_show", "assignee_id": 2,
-             "route": "Москва - Магадан", "departure_date": now},
-            # "Проблема" column — needs_review flag (status is "new" but flagged)
-            {"employee_id": emp1_id, "object_id": obj1_id, "status": "new", "assignee_id": 1,
-             "route": "Москва - Камчатка", "departure_date": now,
+            {"employee_id": emp2_id, "object_id": obj2_id, "status": "not_started", "assignee_id": 2,
+             "route": "Москва - Магадан", "departure_date": now,
              "needs_review": True},
-            # "Проблема" column — is_urgent flag (status is "in_progress" but flagged)
-            {"employee_id": emp2_id, "object_id": obj2_id, "status": "in_progress", "assignee_id": 2,
+            {"employee_id": emp1_id, "object_id": obj1_id, "status": "at_cashier", "assignee_id": 1,
+             "route": "Москва - Камчатка", "departure_date": now},
+            {"employee_id": emp2_id, "object_id": obj2_id, "status": "at_cashier", "assignee_id": 2,
              "route": "Москва - Магадан", "departure_date": now,
              "is_urgent": True},
-            # Archived/closed — should NOT appear on kanban
-            {"employee_id": emp1_id, "object_id": obj1_id, "status": "closed", "assignee_id": 1,
-             "route": "Москва - Камчатка", "departure_date": now},
-            {"employee_id": emp2_id, "object_id": obj2_id, "status": "archive", "assignee_id": 2,
+            {"employee_id": emp2_id, "object_id": obj2_id, "status": "purchased", "assignee_id": 2,
              "route": "Москва - Магадан", "departure_date": now},
+            {"employee_id": emp1_id, "object_id": obj1_id, "status": "exchange_needed", "assignee_id": 1,
+             "route": "Москва - Камчатка", "departure_date": now},
+            {"employee_id": emp2_id, "object_id": obj2_id, "status": "refund_needed", "assignee_id": 2,
+             "route": "Москва - Магадан", "departure_date": now},
+            {"employee_id": emp1_id, "object_id": obj1_id, "status": "cancel_purchase", "assignee_id": 1,
+             "route": "Москва - Камчатка", "departure_date": now},
         ]
 
         for rd in requests_data:
@@ -194,27 +173,20 @@ class TestKanbanColumnGrouping:
     def test_all_columns_present(self, service):
         """All 6 kanban columns are always returned."""
         result = service.get_kanban()
-        expected_columns = {"Не запущен", "В работе", "Куплен", "Возврат/обмен", "Отмена", "Проблема"}
+        expected_columns = {"Не запущен", "В кассах", "Куплен", "Возврат/обмен", "Отмена", "Проблема"}
         assert set(result.keys()) == expected_columns
 
     def test_ne_zapuschen_column(self, service):
-        """'Не запущен' column contains new, data_check, missing_data, ready_to_buy statuses."""
         result = service.get_kanban()
         column = result["Не запущен"]
-        # We have 4 requests with these statuses (not flagged)
-        # The "new" with needs_review=True goes to "Проблема" instead
-        statuses = {card["status"] for card in column}
-        assert statuses <= {"new", "data_check", "missing_data", "ready_to_buy"}
-        # Should have exactly 4 cards (new, data_check, missing_data, ready_to_buy — unflagged)
-        assert len(column) == 4
-
-    def test_v_rabote_column(self, service):
-        """'В работе' column contains in_progress status (unflagged)."""
-        result = service.get_kanban()
-        column = result["В работе"]
-        # 1 in_progress unflagged (the is_urgent one goes to Проблема)
         assert len(column) == 1
-        assert column[0]["status"] == "in_progress"
+        assert column[0]["status"] == "not_started"
+
+    def test_v_kassah_column(self, service):
+        result = service.get_kanban()
+        column = result["В кассах"]
+        assert len(column) == 1
+        assert column[0]["status"] == "at_cashier"
 
     def test_kuplen_column(self, service):
         """'Куплен' column contains purchased status."""
@@ -228,7 +200,7 @@ class TestKanbanColumnGrouping:
         result = service.get_kanban()
         column = result["Возврат/обмен"]
         statuses = {card["status"] for card in column}
-        assert statuses == {"exchange_needed", "refund"}
+        assert statuses == {"exchange_needed", "refund_needed"}
         assert len(column) == 2
 
     def test_otmena_column(self, service):
@@ -236,17 +208,14 @@ class TestKanbanColumnGrouping:
         result = service.get_kanban()
         column = result["Отмена"]
         assert len(column) == 1
-        assert column[0]["status"] == "cancelled"
+        assert column[0]["status"] == "cancel_purchase"
 
     def test_problema_column(self, service):
-        """'Проблема' column contains no_show + flagged requests (needs_review/is_urgent)."""
         result = service.get_kanban()
         column = result["Проблема"]
-        # no_show (1) + needs_review (1) + is_urgent (1) = 3
-        assert len(column) == 3
+        assert len(column) == 2
 
-    def test_closed_and_archive_excluded(self, service):
-        """Closed and archived requests do not appear on kanban."""
+    def test_all_statuses_represented(self, service):
         result = service.get_kanban()
         all_cards = []
         for cards in result.values():
@@ -329,11 +298,11 @@ class TestKanbanFilters:
         """Without filters, all kanban-eligible requests are returned."""
         result = service.get_kanban()
         total_cards = sum(len(cards) for cards in result.values())
-        # 14 total requests - 2 (closed, archive) = 12 kanban-eligible
-        assert total_cards == 12
+        # 8 requests on the simplified kanban board
+        assert total_cards == 8
 
     def test_empty_filter_lists_returns_all(self, service):
         """Empty filter lists are treated as no filter."""
         result = service.get_kanban({"object_ids": [], "assignee_ids": []})
         total_cards = sum(len(cards) for cards in result.values())
-        assert total_cards == 12
+        assert total_cards == 8

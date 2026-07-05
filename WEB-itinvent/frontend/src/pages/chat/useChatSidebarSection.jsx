@@ -1,0 +1,150 @@
+import { useMemo } from 'react';
+
+import ChatSidebar from '../../components/chat/ChatSidebar';
+import buildChatPagePanesBags from './buildChatPagePanesBags';
+
+export default function useChatSidebarSection(ctx) {
+  const { shell, sidebar } = buildChatPagePanesBags(ctx);
+  const { theme, ui, isMobile, isPhone, mobileMotionDisabled } = shell;
+  const {
+    health,
+    user,
+    unreadTotal,
+    sidebarQuery,
+    setSidebarQuery,
+    sidebarSearchActive,
+    searchingSidebar,
+    searchPeople,
+    searchChats,
+    searchResultEmpty,
+    openingPeerId,
+    handleOpenPeer,
+    activeConversationId,
+    openConversation,
+    prefetchThreadBootstrap,
+    conversationsLoading,
+    filteredConversations,
+    openGroupDialog,
+    sidebarScrollRef,
+    handleSidebarScroll,
+    conversationFilter,
+    handleActiveFolderChange,
+    customFolders,
+    conversationFilterCounts,
+    conversationIdsByFolder,
+    handleOpenFolderManager,
+    handleOpenArchiveFolder,
+    handleToggleConversationInFolder,
+    draftsByConversation,
+    updateConversationSettings,
+    requestDeleteConversation,
+    requestLeaveConversation,
+    conversationActionPendingId,
+    aiSidebarRows,
+    aiBotsLoading,
+    aiBotsError,
+    canUseAiChat,
+    handleOpenAiBot,
+    openingAiBotId,
+    skipRowEnterAnimation,
+  } = sidebar;
+
+  return useMemo(
+    () => (
+      <ChatSidebar
+        theme={theme}
+        ui={ui}
+        isMobile={isMobile}
+        compactMobile={isPhone}
+        disableMotion={mobileMotionDisabled}
+        health={health}
+        user={user}
+        unreadTotal={unreadTotal}
+        sidebarQuery={sidebarQuery}
+        onSidebarQueryChange={setSidebarQuery}
+        sidebarSearchActive={sidebarSearchActive}
+        searchingSidebar={searchingSidebar}
+        searchPeople={searchPeople}
+        searchChats={searchChats}
+        searchResultEmpty={searchResultEmpty}
+        openingPeerId={openingPeerId}
+        onOpenPeer={handleOpenPeer}
+        activeConversationId={activeConversationId}
+        onOpenConversation={openConversation}
+        onPrefetchConversation={prefetchThreadBootstrap}
+        conversationsLoading={conversationsLoading}
+        conversations={filteredConversations}
+        onOpenGroup={openGroupDialog}
+        sidebarScrollRef={sidebarScrollRef}
+        onSidebarScroll={handleSidebarScroll}
+        activeFolderKey={conversationFilter}
+        onActiveFolderChange={handleActiveFolderChange}
+        customFolders={customFolders}
+        folderUnreadCounts={conversationFilterCounts}
+        conversationIdsByFolder={conversationIdsByFolder}
+        onOpenFolderManager={handleOpenFolderManager}
+        onOpenArchive={handleOpenArchiveFolder}
+        onToggleConversationInFolder={handleToggleConversationInFolder}
+        draftsByConversation={draftsByConversation}
+        onUpdateConversationSettings={updateConversationSettings}
+        onRequestDeleteConversation={requestDeleteConversation}
+        onRequestLeaveConversation={requestLeaveConversation}
+        conversationActionPendingId={conversationActionPendingId}
+        aiBots={aiSidebarRows}
+        aiBotsLoading={aiBotsLoading}
+        aiBotsError={aiBotsError}
+        showAiSection={canUseAiChat}
+        onOpenAiBot={handleOpenAiBot}
+        openingAiBotId={openingAiBotId}
+        skipRowEnterAnimation={skipRowEnterAnimation}
+      />
+    ),
+    [
+      aiBotsError,
+      aiBotsLoading,
+      aiSidebarRows,
+      canUseAiChat,
+      conversationActionPendingId,
+      conversationFilter,
+      conversationFilterCounts,
+      conversationIdsByFolder,
+      conversationsLoading,
+      customFolders,
+      draftsByConversation,
+      filteredConversations,
+      handleActiveFolderChange,
+      handleOpenAiBot,
+      handleOpenArchiveFolder,
+      handleOpenFolderManager,
+      handleOpenPeer,
+      handleToggleConversationInFolder,
+      health,
+      isMobile,
+      isPhone,
+      mobileMotionDisabled,
+      openingAiBotId,
+      openingPeerId,
+      openConversation,
+      skipRowEnterAnimation,
+      openGroupDialog,
+      prefetchThreadBootstrap,
+      requestDeleteConversation,
+      requestLeaveConversation,
+      searchChats,
+      searchPeople,
+      searchResultEmpty,
+      searchingSidebar,
+      sidebarQuery,
+      sidebarScrollRef,
+      handleSidebarScroll,
+      sidebarSearchActive,
+      setSidebarQuery,
+      theme,
+      ui,
+      unreadTotal,
+      updateConversationSettings,
+      user,
+      activeConversationId,
+    ],
+  );
+}

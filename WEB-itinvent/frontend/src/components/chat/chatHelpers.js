@@ -172,6 +172,69 @@ export const formatShortTime = (value) => {
   return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit' });
 };
 
+export const formatSidebarConversationTime = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) {
+    return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+  }
+  return date.toLocaleDateString('ru-RU', { day: '2-digit', month: '2-digit', year: 'numeric' });
+};
+
+export const formatMessageTime = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
+};
+
+export const formatMessageMetaLabel = (message) => {
+  const time = formatMessageTime(message?.created_at);
+  if (!time) return '';
+  if (String(message?.edited_at || '').trim()) {
+    return `${time}, изм.`;
+  }
+  return time;
+};
+
+const CHAT_INLINE_META_TIME_CHARS = 5;
+const CHAT_INLINE_META_TEXT_GAP_REM = 0.55;
+
+/** Reserve width for inline time/receipts at the end of a short single-line bubble. */
+export function getChatInlineMetaReserveWidth({
+  message,
+  compactMobile = false,
+  isOwnDirect = false,
+  isSending = false,
+} = {}) {
+  const metaLabel = formatMessageMetaLabel(message);
+  const labelLen = String(metaLabel || '').length;
+
+  let widthRem = isOwnDirect
+    ? (compactMobile ? 4.65 : 4.45)
+    : (compactMobile ? 3.25 : 2.95);
+
+  widthRem += CHAT_INLINE_META_TEXT_GAP_REM;
+
+  const extraChars = Math.max(0, labelLen - CHAT_INLINE_META_TIME_CHARS);
+  widthRem += extraChars * (compactMobile ? 0.34 : 0.32);
+
+  const uploadProgress = Number(message?.uploadProgress || 0);
+  const showUploadProgress = isSending
+    && Number.isFinite(uploadProgress)
+    && uploadProgress > 0
+    && uploadProgress < 100;
+  if (showUploadProgress) {
+    widthRem += 1.2;
+  }
+
+  return `${widthRem.toFixed(2)}rem`;
+}
+
 export const formatFullDate = (value) => {
   const raw = String(value || '').trim();
   if (!raw) return '';
@@ -209,6 +272,22 @@ export const formatFileSize = (value) => {
   if (size < 1024) return `${size} Б`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} КБ`;
   return `${(size / (1024 * 1024)).toFixed(1)} МБ`;
+};
+
+export const canEditChatMessage = (message) => {
+  if (!message?.id || message?.is_deleted || message?.isOptimistic) return false;
+  if (String(message?.kind || '').trim() !== 'text') return false;
+  if (!message?.is_own) return false;
+  const attachments = Array.isArray(message?.attachments) ? message.attachments : [];
+  if (attachments.length > 0) return false;
+  return Boolean(String(message?.body || '').trim());
+};
+
+export const canDeleteChatMessage = (message, { conversationKind } = {}) => {
+  if (!message?.id || message?.is_deleted || message?.isOptimistic) return false;
+  if (String(message?.kind || '').trim() === 'system') return false;
+  if (message?.is_own) return true;
+  return String(conversationKind || '').trim() === 'group';
 };
 
 export const getMessagePreview = (message) => {
@@ -265,6 +344,14 @@ export const normalizeChatAttachmentUrl = (value) => {
     return `${apiV1Base}/${normalized}`;
   }
   return normalized;
+};
+
+export const pickBlobAttachmentUrl = (...candidates) => {
+  for (const candidate of candidates) {
+    const normalized = normalizeChatAttachmentUrl(candidate) || String(candidate || '').trim();
+    if (normalized.startsWith('blob:')) return normalized;
+  }
+  return '';
 };
 
 const getAttachmentMimeType = (attachment) => String(
@@ -438,10 +525,87 @@ export const getGroupOnlineCount = (conversation) => {
   return 0;
 };
 
+export const isNotesConversation = (conversation) => String(conversation?.kind || '').trim() === 'notes';
+
+export const isTaskConversation = (conversation) => {
+  const kind = String(conversation?.kind || '').trim();
+  return kind === 'task' || Boolean(String(conversation?.task_id || '').trim());
+};
+
+export const isCompletedTaskConversation = (conversation) => (
+  isTaskConversation(conversation) && String(conversation?.task_status || '').trim().toLowerCase() === 'done'
+);
+
+export const getConversationDisplayTitle = (conversation) => {
+  if (!conversation) return '';
+  if (!isTaskConversation(conversation)) {
+    return normalizeTrimmedChatText(conversation?.title);
+  }
+  const taskTitle = normalizeTrimmedChatText(conversation?.task_title);
+  if (taskTitle) return taskTitle;
+  return normalizeTrimmedChatText(conversation?.title).replace(/^Задача:\s*/i, '') || 'Задача';
+};
+
+export const formatTaskConversationDue = (value) => {
+  const raw = String(value || '').trim();
+  if (!raw) return 'Без срока';
+  const date = new Date(raw);
+  if (Number.isNaN(date.getTime())) return 'Без срока';
+  const now = new Date();
+  const includeYear = date.getFullYear() !== now.getFullYear();
+  return date.toLocaleString('ru-RU', {
+    day: '2-digit',
+    month: '2-digit',
+    ...(includeYear ? { year: 'numeric' } : {}),
+    hour: '2-digit',
+    minute: '2-digit',
+  });
+};
+
+export const getTaskConversationMetaLine = (conversation) => {
+  const assignee = normalizeTrimmedChatText(
+    conversation?.task_assignee_full_name,
+    'Исполнитель не назначен',
+  );
+  const due = formatTaskConversationDue(conversation?.task_due_at);
+  return `${assignee} • ${due === 'Без срока' ? due : `Срок: ${due}`}`;
+};
+
+const formatTaskStatusLabel = (status) => {
+  const [label] = getStatusMeta(status);
+  return label || 'Задача';
+};
+
+export const resolveDirectConversationId = (peerUserId, sources = {}) => {
+  const normalizedPeerId = Number(peerUserId || 0);
+  if (!Number.isFinite(normalizedPeerId) || normalizedPeerId <= 0) return '';
+
+  const lists = [
+    Array.isArray(sources.conversations) ? sources.conversations : [],
+    Array.isArray(sources.searchChats) ? sources.searchChats : [],
+  ];
+
+  for (const list of lists) {
+    for (const item of list) {
+      if (String(item?.kind || '').trim() !== 'direct') continue;
+      if (Number(item?.direct_peer?.id || 0) === normalizedPeerId) {
+        return String(item?.id || '').trim();
+      }
+    }
+  }
+  return '';
+};
+
 export const getConversationHeaderSubtitle = (conversation) => {
   if (!conversation) return '';
+  if (conversation.kind === 'notes') {
+    return 'Личные заметки';
+  }
   if (conversation.kind === 'direct') {
     return formatPresenceText(conversation?.direct_peer?.presence);
+  }
+  if (isTaskConversation(conversation)) {
+    return `Статус: ${formatTaskStatusLabel(conversation?.task_status)} • ${Number(conversation?.member_count || 0)} участников`;
   }
   return `${Number(conversation?.member_count || 0)} участников • ${getGroupOnlineCount(conversation)} онлайн`;
 };
@@ -449,8 +613,14 @@ export const getConversationHeaderSubtitle = (conversation) => {
 export const getConversationStatusLine = (conversation) => {
   const preview = normalizeTrimmedChatText(conversation?.last_message_preview, 'Сообщений пока нет');
   if (!conversation) return preview;
+  if (conversation.kind === 'notes') {
+    return `Личные заметки • ${preview}`;
+  }
   if (conversation.kind === 'direct') {
     return `${formatPresenceText(conversation?.direct_peer?.presence)} • ${preview}`;
+  }
+  if (isTaskConversation(conversation)) {
+    return `${formatTaskStatusLabel(conversation?.task_status)} • ${preview}`;
   }
   return `${getGroupOnlineCount(conversation)} онлайн • ${preview}`;
 };
@@ -467,6 +637,24 @@ export const sortByName = (items) => (
     const b = normalizeTrimmedChatText(right?.full_name || right?.username || right?.title).toLowerCase();
     return a.localeCompare(b, 'ru');
   })
+);
+
+export const compareSidebarConversations = (left, right) => {
+  const leftPinned = left?.is_pinned ? 1 : 0;
+  const rightPinned = right?.is_pinned ? 1 : 0;
+  if (leftPinned !== rightPinned) return rightPinned - leftPinned;
+
+  const leftArchived = left?.is_archived ? 1 : 0;
+  const rightArchived = right?.is_archived ? 1 : 0;
+  if (leftArchived !== rightArchived) return leftArchived - rightArchived;
+
+  return String(right?.last_message_at || right?.updated_at || '').localeCompare(
+    String(left?.last_message_at || left?.updated_at || ''),
+  );
+};
+
+export const sortSidebarConversations = (conversations) => (
+  [...(Array.isArray(conversations) ? conversations : [])].sort(compareSidebarConversations)
 );
 
 export const getMessageIndexById = (messages, messageId) => {
@@ -516,6 +704,41 @@ export const countUnreadIncomingAfterMarker = (messages, markerId) => {
     if (markerIndex < 0 || index > markerIndex) total += 1;
   });
   return total;
+};
+
+export const applyReadReceiptDeltaToMessages = (messages, payload) => {
+  const list = Array.isArray(messages) ? messages : [];
+  const messageId = String(payload?.message_id || '').trim();
+  if (!messageId) return list;
+  const nextReadByCount = Number(payload?.read_by_count);
+  const nextDeliveryStatus = String(payload?.delivery_status || '').trim();
+  const readIndex = getMessageIndexById(list, messageId);
+  if (readIndex < 0) return list;
+
+  const markAsRead = nextDeliveryStatus === 'read'
+    || (Number.isFinite(nextReadByCount) && nextReadByCount > 0);
+
+  if (!markAsRead) {
+    return list.map((item) => {
+      if (String(item?.id || '').trim() !== messageId) return item;
+      return {
+        ...item,
+        read_by_count: Number.isFinite(nextReadByCount) ? nextReadByCount : item?.read_by_count,
+        delivery_status: nextDeliveryStatus || item?.delivery_status,
+      };
+    });
+  }
+
+  return list.map((item, index) => {
+    if (!item?.is_own || index > readIndex) return item;
+    return {
+      ...item,
+      read_by_count: Number.isFinite(nextReadByCount)
+        ? Math.max(Number(item?.read_by_count || 0), nextReadByCount)
+        : item?.read_by_count,
+      delivery_status: 'read',
+    };
+  });
 };
 
 export const getUnreadAnchorId = (messages, viewerLastReadMessageId) => {

@@ -143,6 +143,30 @@ class ChatUploadSessionStore:
         shutil.rmtree(session_dir, ignore_errors=True)
         self.release_lock(session_id)
 
+    def delete_for_conversation(self, conversation_id: str) -> int:
+        normalized_conversation_id = _normalize_text(conversation_id)
+        if not normalized_conversation_id:
+            return 0
+        root = self._upload_sessions_root()
+        if not root.exists():
+            return 0
+        deleted = 0
+        for session_dir in list(root.iterdir()):
+            if not session_dir.is_dir():
+                continue
+            session_id = _normalize_text(session_dir.name)
+            lock = self.lock_for(session_id)
+            with lock:
+                try:
+                    manifest = self.load_manifest(session_id)
+                except LookupError:
+                    continue
+                if _normalize_text(manifest.get("conversation_id")) != normalized_conversation_id:
+                    continue
+                self.delete_session_dir(session_id)
+                deleted += 1
+        return deleted
+
     def maybe_cleanup(self, *, force: bool = False) -> None:
         now = self._now()
         if not force and self._last_cleanup_at is not None:

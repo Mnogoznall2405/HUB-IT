@@ -76,6 +76,7 @@ class ScanServerConfig:
     ocr_timeout_sec: int
     ocr_dpi: int
     ocr_only_if_no_text: bool
+    worker_memory_limit_mb: int
 
     @classmethod
     def from_env(cls) -> "ScanServerConfig":
@@ -190,6 +191,10 @@ class ScanServerConfig:
             ocr_timeout_sec=max(5, min(300, _to_int(os.getenv("SCAN_OCR_TIMEOUT_SEC", "45"), 45))),
             ocr_dpi=max(100, min(600, _to_int(os.getenv("SCAN_OCR_DPI", "300"), 300))),
             ocr_only_if_no_text=_to_bool(os.getenv("SCAN_OCR_ONLY_IF_NO_TEXT", "1"), True),
+            worker_memory_limit_mb=max(
+                0,
+                _to_int(os.getenv("SCAN_WORKER_MEMORY_LIMIT_MB", "6144"), 6144),
+            ),
         )
 
 

@@ -291,10 +291,14 @@ export function getOfficePageShellSx(ui, { fullHeight = false } = {}) {
     bgcolor: 'transparent',
     ...(fullHeight ? {
       height: {
-        xs: 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 32px)',
+        xs: 'calc(100dvh - var(--app-shell-top-offset, 0px) - var(--app-shell-mobile-bottom-nav-height, 0px) - 16px)',
         md: 'calc(100dvh - var(--app-shell-top-offset, var(--app-shell-header-offset)) - 48px)',
       },
       overflow: 'hidden',
     } : {}),
   };
+}
+
+export function getAppShellMobileFabBottomOffset(gapPx = 16) {
+  return `calc(var(--app-shell-mobile-bottom-nav-height, calc(64px + env(safe-area-inset-bottom, 0px))) + ${gapPx}px)`;
 }

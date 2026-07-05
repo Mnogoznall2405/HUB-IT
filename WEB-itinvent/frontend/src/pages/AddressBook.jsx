@@ -34,7 +34,7 @@ import {
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { isValidEmailRecipient } from '../components/mail/mailComposeState';
-import { addressBookAPI } from '../api/client';
+import { addressBookAPI } from '../api/addressBook';
 import { useAuth } from '../contexts/AuthContext';
 import { useNotification } from '../contexts/NotificationContext';
 import { openAddressBookChat } from '../lib/addressBookChat';
@@ -66,6 +66,7 @@ const AddressBook = () => {
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
   const canUseChat = CHAT_FEATURE_ENABLED && hasPermission('chat.read') && hasPermission('chat.write');
   const searchInputRef = useRef(null);
+  const pageShellRef = useRef(null);
 
   const [query, setQuery] = useState('');
   const [items, setItems] = useState([]);
@@ -239,7 +240,11 @@ const AddressBook = () => {
 
   return (
     <MainLayout showDatabaseSelector={false}>
-      <PageShell fullHeight sx={{ gap: { xs: 0.75, sm: 2 } }}>
+      <PageShell
+        ref={pageShellRef}
+        fullHeight
+        sx={{ gap: { xs: 0.75, sm: 2 } }}
+      >
         {isMobile ? (
           <AddressBookMobileToolbar
             total={total}

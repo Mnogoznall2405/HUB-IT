@@ -100,7 +100,7 @@ def test_chat_service_health_includes_realtime_mode_and_outbox_age(monkeypatch):
     assert payload["ai_last_run_duration_ms"] == 3456.7
 
 
-def test_main_health_check_includes_chat_snapshot_when_enabled(monkeypatch):
+def test_main_health_ready_includes_chat_snapshot_when_enabled(monkeypatch):
     async def _fake_run_sync(func, *args, **kwargs):
         return {
             "enabled": True,
@@ -117,10 +117,10 @@ def test_main_health_check_includes_chat_snapshot_when_enabled(monkeypatch):
             "event_dispatcher_active": True,
         }
 
-    monkeypatch.setattr(main_module.config.chat, "enabled", True, raising=False)
+    monkeypatch.setattr(main_module.config.chat, "enabled", True)
     monkeypatch.setattr(main_module.to_thread, "run_sync", _fake_run_sync)
 
-    payload = asyncio.run(main_module.health_check())
+    payload = asyncio.run(main_module.health_ready())
 
     assert payload["status"] == "ok"
     assert payload["version"]

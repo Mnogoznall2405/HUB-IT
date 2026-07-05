@@ -23,9 +23,11 @@ module.exports = {
       env: {
         BACKEND_HOST: '127.0.0.1',
         BACKEND_PORT: '8001',
-        ANYIO_THREAD_TOKENS: '120',
+        ANYIO_THREAD_TOKENS: '200',
         APP_DB_POOL_SIZE: '10',
         APP_DB_MAX_OVERFLOW: '20',
+        CHAT_DB_POOL_SIZE: '10',
+        CHAT_DB_MAX_OVERFLOW: '20',
         REQUEST_METRICS_ENABLED: '1',
         REQUEST_METRICS_SLOW_MS: '1000',
         REQUEST_METRICS_MAX_ROUTES: '300',

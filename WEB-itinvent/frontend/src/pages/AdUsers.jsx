@@ -28,7 +28,8 @@ import SearchIcon from '@mui/icons-material/Search';
 import SyncIcon from '@mui/icons-material/Sync';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
-import { adUsersAPI } from '../api/client';
+import { adUsersAPI } from '../api/adUsers';
+import { openAdPasswordPortal } from '../components/passwords/adPasswordPortal';
 import { useAuth } from '../contexts/AuthContext';
 
 const NO_DEPARTMENT_LABEL = 'Без отдела';
@@ -98,7 +99,29 @@ const formatImportSummary = (result) => {
   ].join(', ');
 };
 
-const AdUsers = () => {
+const formatFullSyncSummary = (result) => {
+  if (!result) return '';
+  return [
+    `создано: ${Number(result.created || 0)}`,
+    `обновлено: ${Number(result.updated || 0)}`,
+    `реактивировано: ${Number(result.reactivated || 0)}`,
+    `деактивировано: ${Number(result.deactivated || 0)}`,
+    `защищено admin: ${Number(result.protected_admins || 0)}`,
+    `сессий закрыто: ${Number(result.sessions_closed || 0)}`,
+    `конфликтов: ${Number(result.skipped_conflicts || 0)}`,
+    `пропущено сервисных: ${Number(result.skipped_non_person || 0)}`,
+    `в AD: ${Number(result.total_ad_users || 0)}`,
+  ].join(', ');
+};
+
+const formatSyncStatusTime = (value) => {
+  if (!value) return '—';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('ru-RU');
+};
+
+const AdUsers = ({ embedded = false }) => {
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [bulkImporting, setBulkImporting] = useState(false);
@@ -107,19 +130,36 @@ const AdUsers = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [error, setError] = useState('');
   const [syncResult, setSyncResult] = useState(null);
+  const [fullSyncResult, setFullSyncResult] = useState(null);
+  const [fullSyncing, setFullSyncing] = useState(false);
+  const [syncStatus, setSyncStatus] = useState(null);
   const [expandedDepartments, setExpandedDepartments] = useState(new Set());
   const debouncedSearchQuery = useDebouncedValue(searchQuery);
 
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down('sm'));
-  const { hasPermission } = useAuth();
+  const { hasPermission, user } = useAuth();
   const canManageAdUsers = hasPermission('ad_users.manage');
+  const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
+
+  const loadSyncStatus = useCallback(async () => {
+    if (!isAdmin) return;
+    try {
+      const payload = await adUsersAPI.getSyncStatus();
+      setSyncStatus(payload);
+    } catch (err) {
+      console.error('Failed to load AD sync status:', err);
+    }
+  }, [isAdmin]);
 
   const fetchInitialData = useCallback(async () => {
     setLoading(true);
     setError('');
     try {
-      const usersData = await adUsersAPI.getImportCandidates();
+      const [usersData] = await Promise.all([
+        adUsersAPI.getImportCandidates(),
+        loadSyncStatus(),
+      ]);
       const nextUsers = Array.isArray(usersData) ? usersData : [];
       setUsers(nextUsers);
       setSelectedLogins((prev) => {
@@ -132,7 +172,7 @@ const AdUsers = () => {
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [loadSyncStatus]);
 
   useEffect(() => {
     void fetchInitialData();
@@ -191,7 +231,7 @@ const AdUsers = () => {
   }, []);
 
   const openPasswordPortal = useCallback(() => {
-    window.open('https://tmn-srv-rgw-01/RDWeb/Pages/en-US/password.aspx', '_blank', 'noopener,noreferrer');
+    openAdPasswordPortal();
   }, []);
 
   const toggleLogin = useCallback((login) => {
@@ -256,6 +296,26 @@ const AdUsers = () => {
     }
   }, [importLogins, selectedLogins]);
 
+  const handleFullSync = useCallback(async () => {
+    setFullSyncing(true);
+    setError('');
+    setFullSyncResult(null);
+    try {
+      const result = await adUsersAPI.syncAllToApp();
+      setFullSyncResult(result);
+      setSyncResult(null);
+      if (result?.status === 'warning') {
+        setError(String(result?.message || 'Синхронизация завершена с предупреждением.'));
+      }
+      await fetchInitialData();
+    } catch (err) {
+      console.error('Failed to run full AD sync:', err);
+      setError('Не удалось выполнить полную синхронизацию пользователей AD.');
+    } finally {
+      setFullSyncing(false);
+    }
+  }, [fetchInitialData]);
+
   const handleImportToApp = useCallback(async (login) => {
     const normalizedLogin = normalizeLogin(login);
     if (!normalizedLogin) return;
@@ -270,9 +330,8 @@ const AdUsers = () => {
     }
   }, [importLogins]);
 
-  return (
-    <MainLayout>
-      <PageShell>
+  const content = (
+    <>
         <Box sx={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', mb: 2, gap: 2, flexWrap: 'wrap' }}>
           <Typography variant="h4" component="h1" gutterBottom={false}>
             Пользователи AD
@@ -283,10 +342,21 @@ const AdUsers = () => {
               color="primary"
               startIcon={<RefreshIcon />}
               onClick={() => void fetchInitialData()}
-              disabled={loading || bulkImporting}
+              disabled={loading || bulkImporting || fullSyncing}
             >
               Обновить
             </Button>
+            {isAdmin ? (
+              <Button
+                variant="contained"
+                color="primary"
+                startIcon={fullSyncing ? <CircularProgress size={18} color="inherit" /> : <SyncIcon />}
+                onClick={() => void handleFullSync()}
+                disabled={loading || bulkImporting || fullSyncing}
+              >
+                {fullSyncing ? 'Синхронизация...' : 'Синхронизировать всех'}
+              </Button>
+            ) : null}
             <Button
               variant="contained"
               color="secondary"
@@ -299,8 +369,28 @@ const AdUsers = () => {
         </Box>
 
         <Alert severity="info" sx={{ mb: 2 }}>
-          Импорт создаёт web-пользователей из AD по логину sAMAccountName. Существующие LDAP-пользователи обновляются, local-конфликты не изменяются.
+          Импорт создаёт web-пользователей из AD по логину sAMAccountName. В список попадают только учётки сотрудников (ФИО из 2–5 слов, без svc/admin/1c и mailbox). Полная синхронизация добавляет новых, обновляет ldap-пользователей и отключает пропавших из AD (кроме admin).
         </Alert>
+
+        {isAdmin && syncStatus?.last_sync_at ? (
+          <Alert severity="info" sx={{ mb: 2 }}>
+            Последняя автосинхронизация: {formatSyncStatusTime(syncStatus.last_sync_at)}
+            {syncStatus?.status === 'error' && syncStatus?.error ? ` — ошибка: ${syncStatus.error}` : ''}
+            {syncStatus?.result ? ` (${formatFullSyncSummary(syncStatus.result)})` : ''}
+          </Alert>
+        ) : null}
+
+        {fullSyncResult ? (
+          <Alert
+            severity={fullSyncResult?.status === 'warning' ? 'warning' : 'success'}
+            sx={{ mb: 2 }}
+            onClose={() => setFullSyncResult(null)}
+          >
+            {fullSyncResult?.status === 'warning'
+              ? String(fullSyncResult?.message || 'Синхронизация завершена с предупреждением.')
+              : `Полная синхронизация завершена: ${formatFullSyncSummary(fullSyncResult)}`}
+          </Alert>
+        ) : null}
 
         <Paper variant="outlined" sx={{ p: 1.25, mb: 2 }}>
           <Stack direction={{ xs: 'column', md: 'row' }} spacing={1.2} alignItems={{ xs: 'stretch', md: 'center' }} justifyContent="space-between">
@@ -540,7 +630,12 @@ const AdUsers = () => {
             )}
           </Box>
         )}
-      </PageShell>
+    </>
+  );
+  if (embedded) return content;
+  return (
+    <MainLayout>
+      <PageShell>{content}</PageShell>
     </MainLayout>
   );
 };

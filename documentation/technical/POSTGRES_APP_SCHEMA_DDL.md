@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-06-10 03:42 UTC_  
+_Сгенерировано: 2026-07-05 10:01 UTC_
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (83 tables)
+## Schema `app` (86 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -460,6 +460,34 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.hub_task_email_outbox`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | text | no | `` |
+| `dedupe_key` | text | no | `` |
+| `task_id` | text | yes | `` |
+| `recipient_user_id` | integer | no | `` |
+| `recipient_email` | text | no | `` |
+| `event_type` | text | no | `` |
+| `subject` | text | no | `` |
+| `body_text` | text | no | `` |
+| `status` | text | no | `'pending'::text` |
+| `attempt_count` | integer | no | `0` |
+| `available_at` | text | no | `` |
+| `created_at` | text | no | `` |
+| `updated_at` | text | no | `` |
+| `sent_at` | text | yes | `` |
+| `last_error` | text | no | `''::text` |
+| `body_html` | text | no | `''::text` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `idx_hub_task_email_outbox_status`: (status, available_at, created_at)
+  - `uq_hub_task_email_outbox_dedupe` UNIQUE: (dedupe_key)
+
+---
+
 ### `app.hub_task_objects`
 
 | Column | Type | Nullable | Default |
@@ -568,16 +596,22 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `completed_at_source` | text | yes | `` |
 | `department_id` | text | yes | `` |
 | `visibility_scope` | text | no | `'private'::text` |
+| `checklist_items` | text | no | `'[]'::text` |
+| `email_deadline_remind_hours` | integer | yes | `` |
+| `observer_user_ids` | text | no | `'[]'::text` |
 
 - **Primary key:** `id`
 - **Indexes:**
   - `idx_hub_tasks_assignee`: (assignee_user_id, status, updated_at)
   - `idx_hub_tasks_completed_at`: (completed_at)
   - `idx_hub_tasks_controller`: (controller_user_id, status, updated_at)
+  - `idx_hub_tasks_created_by`: (created_by_user_id, status, updated_at)
   - `idx_hub_tasks_department`: (department_id, updated_at)
+  - `idx_hub_tasks_due_at`: (due_at)
   - `idx_hub_tasks_object`: (object_id, updated_at)
   - `idx_hub_tasks_project`: (project_id, updated_at)
   - `idx_hub_tasks_protocol_date`: (protocol_date)
+  - `idx_hub_tasks_title_trgm`: ((expression))
 
 ---
 
@@ -852,6 +886,49 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 - **Primary key:** `user_id, folder_id`
 - **Indexes:**
   - `idx_mail_visible_custom_folders_user_created`: (user_id, created_at)
+
+---
+
+### `app.mailbox_quota_rows`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.mailbox_quota_rows_id_seq'::regclass)` |
+| `snapshot_id` | integer | no | `` |
+| `email` | varchar(320) | no | `` |
+| `display_name` | varchar(512) | no | `` |
+| `upn` | varchar(320) | no | `` |
+| `mailbox_type` | varchar(64) | no | `` |
+| `used_bytes` | bigint | yes | `` |
+| `quota_bytes` | bigint | yes | `` |
+| `free_bytes` | bigint | yes | `` |
+| `used_percent` | double precision | yes | `` |
+| `database_name` | varchar(255) | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_mailbox_quota_rows_snapshot_email`: (snapshot_id, email)
+  - `ix_app_mailbox_quota_rows_snapshot_id`: (snapshot_id)
+  - `ix_app_mailbox_quota_rows_snapshot_used_percent`: (snapshot_id, used_percent)
+
+---
+
+### `app.mailbox_quota_snapshots`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.mailbox_quota_snapshots_id_seq'::regclass)` |
+| `imported_at` | timestamptz | no | `` |
+| `collected_at` | timestamptz | yes | `` |
+| `source_host` | varchar(255) | no | `` |
+| `exchange_server` | varchar(255) | no | `` |
+| `payload_sha256` | varchar(64) | no | `` |
+| `row_count` | integer | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_mailbox_quota_snapshots_imported_at`: (imported_at)
+  - `ix_app_mailbox_quota_snapshots_payload_sha256`: (payload_sha256)
 
 ---
 
@@ -1522,6 +1599,10 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `is_current` | boolean | no | `true` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `passport_series_enc` | text | no | `''::text` |
+| `passport_number_enc` | text | no | `''::text` |
+| `issuer_code_enc` | text | no | `''::text` |
+| `birth_place_enc` | text | no | `''::text` |
 
 - **Primary key:** `id`
 - **Foreign keys:**
@@ -1545,6 +1626,8 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `app_user_id` | integer | yes | `` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `department` | varchar(200) | yes | `` |
+| `position` | varchar(150) | yes | `` |
 
 - **Primary key:** `id`
 - **Foreign keys:**
@@ -1703,7 +1786,7 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `id` **PK** | integer | no | `nextval('app.ticket_requests_id_seq'::regclass)` |
 | `employee_id` | integer | no | `` |
 | `object_id` | integer | no | `` |
-| `status` | varchar(30) | no | `'new'::character varying` |
+| `status` | varchar(30) | no | `'not_started'::character varying` |
 | `assignee_id` | integer | yes | `` |
 | `submitted_at` | timestamptz | yes | `` |
 | `departure_date` | timestamptz | yes | `` |
@@ -1716,6 +1799,8 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `version` | integer | no | `1` |
 | `created_at` | timestamptz | no | `` |
 | `updated_at` | timestamptz | no | `` |
+| `note` | text | yes | `` |
+| `refund_loss` | numeric | no | `0.00` |
 
 - **Primary key:** `id`
 - **Foreign keys:**
@@ -1866,6 +1951,8 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 | `font_scale` | double precision | no | `` |
 | `updated_at` | timestamptz | no | `` |
 | `dashboard_mobile_sections` | text | yes | `` |
+| `mobile_bottom_nav_items` | text | yes | `` |
+| `database_branch_filters` | text | yes | `` |
 
 - **Primary key:** `user_id`
 

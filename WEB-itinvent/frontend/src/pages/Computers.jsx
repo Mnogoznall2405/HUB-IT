@@ -572,7 +572,8 @@ function Computers() {
   const [computers, setComputers] = useState([]);
   const [changes, setChanges] = useState({ totals: {}, daily: [] });
   const [loading, setLoading] = useState(true);
-  const [autoLoadingMore, setAutoLoadingMore] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [detailLoading, setDetailLoading] = useState(false);
   const [selected, setSelected] = useState(null);
   const [open, setOpen] = useState(false);
 
@@ -597,7 +598,6 @@ function Computers() {
 
   const inFlightRef = useRef(false);
   const pollTimerRef = useRef(null);
-  const autoLoadTimerRef = useRef(null);
   const loadedCountRef = useRef(0);
   const retryDelaySecRef = useRef(AUTO_REFRESH_BASE_SEC);
   const hasInitializedRef = useRef(false);
@@ -611,11 +611,37 @@ function Computers() {
     }
   }, []);
 
-  const clearAutoLoadTimer = useCallback(() => {
-    if (autoLoadTimerRef.current) {
-      clearTimeout(autoLoadTimerRef.current);
-      autoLoadTimerRef.current = null;
+  const searchFilterParams = useMemo(() => ({
+    scope,
+    branch: branch !== 'all' ? branch : undefined,
+    status: status !== 'all' ? status : undefined,
+    outlookStatus: outlookStatus !== 'all' ? outlookStatus : undefined,
+    q: debouncedQuery || undefined,
+    searchFields,
+    changedOnly,
+  }), [branch, changedOnly, debouncedQuery, outlookStatus, scope, searchFields, status]);
+
+  const loadSummary = useCallback(async () => {
+    try {
+      const summary = await equipmentAPI.getComputersSummary(searchFilterParams);
+      if (summary && typeof summary === 'object') {
+        setSearchSummary(summary);
+      }
+    } catch (err) {
+      console.error('Computers summary load failed', err);
     }
+  }, [searchFilterParams]);
+
+  const loadChangesDeferred = useCallback(() => {
+    equipmentAPI.getAgentComputerChanges(50)
+      .then((changeData) => {
+        if (changeData && typeof changeData === 'object') {
+          setChanges(changeData);
+        }
+      })
+      .catch((err) => {
+        console.error('Computers changes load failed', err);
+      });
   }, []);
 
   useEffect(() => {
@@ -635,24 +661,15 @@ function Computers() {
     inFlightRef.current = true;
     try {
       if (withLoader) setLoading(true);
-      if (append) setAutoLoadingMore(true);
-      const [pcPayload, changeData] = await Promise.all([
-        equipmentAPI.searchAgentComputers({
-          scope,
-          branch: branch !== 'all' ? branch : undefined,
-          status: status !== 'all' ? status : undefined,
-          outlookStatus: outlookStatus !== 'all' ? outlookStatus : undefined,
-          q: debouncedQuery || undefined,
-          searchFields,
-          changedOnly,
-          sortBy: 'hostname',
-          sortDir: 'asc',
-          limit,
-          offset,
-          includeSummary: !append,
-        }),
-        append ? Promise.resolve(null) : equipmentAPI.getAgentComputerChanges(50),
-      ]);
+      if (append) setLoadingMore(true);
+      const pcPayload = await equipmentAPI.searchAgentComputers({
+        ...searchFilterParams,
+        sortBy: 'hostname',
+        sortDir: 'asc',
+        limit,
+        offset,
+        includeSummary: false,
+      });
       const items = Array.isArray(pcPayload?.items) ? pcPayload.items : (Array.isArray(pcPayload) ? pcPayload : []);
       setComputers((prev) => {
         const next = append ? [...prev, ...items] : items;
@@ -666,8 +683,6 @@ function Computers() {
         has_more: Boolean(pcPayload?.has_more),
         next_offset: pcPayload?.next_offset ?? null,
       });
-      setSearchSummary((prev) => (pcPayload?.summary && typeof pcPayload.summary === 'object' ? pcPayload.summary : (append ? prev : null)));
-      setChanges((prev) => (changeData && typeof changeData === 'object' ? changeData : (append ? prev : { totals: {}, daily: [] })));
       retryDelaySecRef.current = AUTO_REFRESH_BASE_SEC;
       return true;
     } catch (err) {
@@ -676,10 +691,10 @@ function Computers() {
       return false;
     } finally {
       if (withLoader) setLoading(false);
-      if (append) setAutoLoadingMore(false);
+      if (append) setLoadingMore(false);
       inFlightRef.current = false;
     }
-  }, [branch, changedOnly, debouncedQuery, outlookStatus, scope, searchFields, status]);
+  }, [searchFilterParams]);
 
   const scheduleNextPoll = useCallback((delaySec) => {
     clearPollTimer();
@@ -691,26 +706,46 @@ function Computers() {
         return;
       }
       await load({ withLoader: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
+      await loadSummary();
+      loadChangesDeferred();
       scheduleNextPoll(retryDelaySecRef.current);
     }, Math.max(1, nextDelaySec) * 1000);
-  }, [clearPollTimer, getBackgroundRefreshLimit, load]);
+  }, [clearPollTimer, getBackgroundRefreshLimit, load, loadChangesDeferred, loadSummary]);
 
   const handleManualRefresh = useCallback(async () => {
-    await load({ withLoader: true, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
+    await Promise.all([
+      load({ withLoader: true, append: false, offset: 0, limit: getBackgroundRefreshLimit() }),
+      loadSummary(),
+    ]);
+    loadChangesDeferred();
     scheduleNextPoll(retryDelaySecRef.current);
-  }, [getBackgroundRefreshLimit, load, scheduleNextPoll]);
+  }, [getBackgroundRefreshLimit, load, loadChangesDeferred, loadSummary, scheduleNextPoll]);
 
-  useEffect(() => {
-    clearAutoLoadTimer();
-    if (loading || autoLoadingMore || !searchMeta.has_more) return undefined;
-    if (typeof document !== 'undefined' && document.visibilityState !== 'visible') return undefined;
+  const handleLoadMore = useCallback(async () => {
+    if (loadingMore || !searchMeta.has_more) return;
     const nextOffset = Number(searchMeta.next_offset ?? computers.length);
-    if (!Number.isFinite(nextOffset) || nextOffset < 0 || nextOffset <= 0) return undefined;
-    autoLoadTimerRef.current = setTimeout(() => {
-      load({ withLoader: false, append: true, offset: nextOffset });
-    }, 250);
-    return clearAutoLoadTimer;
-  }, [autoLoadingMore, clearAutoLoadTimer, computers.length, load, loading, searchMeta.has_more, searchMeta.next_offset]);
+    if (!Number.isFinite(nextOffset) || nextOffset < 0) return;
+    await load({ withLoader: false, append: true, offset: nextOffset, limit: COMPUTERS_PAGE_SIZE });
+  }, [computers.length, load, loadingMore, searchMeta.has_more, searchMeta.next_offset]);
+
+  const openComputerDetail = useCallback(async (pc) => {
+    if (!pc) return;
+    setSelected(pc);
+    setOpen(true);
+    setDetailLoading(true);
+    try {
+      const macAddress = String(pc.mac_address || '').trim();
+      if (!macAddress) return;
+      const fullPayload = await equipmentAPI.getAgentComputer(macAddress, { scope });
+      if (fullPayload && typeof fullPayload === 'object') {
+        setSelected(fullPayload);
+      }
+    } catch (err) {
+      console.error('Computer detail load failed', err);
+    } finally {
+      setDetailLoading(false);
+    }
+  }, [scope]);
 
   const toggleSearchField = useCallback((fieldKey) => {
     setSearchFields((prev) => {
@@ -726,25 +761,24 @@ function Computers() {
   useEffect(() => {
     let isActive = true;
     const init = async () => {
-      await load({ withLoader: !hasInitializedRef.current });
+      loadedCountRef.current = 0;
+      await Promise.all([
+        load({ withLoader: !hasInitializedRef.current, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE }),
+        loadSummary(),
+      ]);
       if (!isActive) return;
       hasInitializedRef.current = true;
       scheduleNextPoll(AUTO_REFRESH_BASE_SEC);
+      window.setTimeout(() => {
+        if (isActive) loadChangesDeferred();
+      }, 0);
     };
     init();
     return () => {
       isActive = false;
       clearPollTimer();
-      clearAutoLoadTimer();
     };
-  }, [clearAutoLoadTimer, clearPollTimer, load, scheduleNextPoll]);
-
-  // Trigger search on load if debouncedQuery is set (e.g., from URL ?q=...)
-  useEffect(() => {
-    if (debouncedQuery && debouncedQuery.trim()) {
-      load({ withLoader: true, append: false, offset: 0 });
-    }
-  }, []);
+  }, [clearPollTimer, load, loadChangesDeferred, loadSummary, scheduleNextPoll]);
 
   useEffect(() => {
     const handleVisibilityChange = async () => {
@@ -753,11 +787,13 @@ function Computers() {
         return;
       }
       await load({ withLoader: false, append: false, offset: 0, limit: getBackgroundRefreshLimit() });
+      await loadSummary();
+      loadChangesDeferred();
       scheduleNextPoll(retryDelaySecRef.current);
     };
     document.addEventListener('visibilitychange', handleVisibilityChange);
     return () => document.removeEventListener('visibilitychange', handleVisibilityChange);
-  }, [clearPollTimer, getBackgroundRefreshLimit, load, scheduleNextPoll]);
+  }, [clearPollTimer, getBackgroundRefreshLimit, load, loadChangesDeferred, loadSummary, scheduleNextPoll]);
 
   useEffect(() => {
     const reloadAfterDbSwitch = async () => {
@@ -771,7 +807,11 @@ function Computers() {
       setSelected(null);
       setOpen(false);
       loadedCountRef.current = 0;
-      await load({ withLoader: true, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE });
+      await Promise.all([
+        load({ withLoader: true, append: false, offset: 0, limit: COMPUTERS_PAGE_SIZE }),
+        loadSummary(),
+      ]);
+      loadChangesDeferred();
       scheduleNextPoll(AUTO_REFRESH_BASE_SEC);
     };
 
@@ -790,7 +830,7 @@ function Computers() {
       window.removeEventListener('database-changed', handleDatabaseChanged);
       window.removeEventListener('storage', handleStorage);
     };
-  }, [load, scheduleNextPoll]);
+  }, [load, loadChangesDeferred, loadSummary, scheduleNextPoll]);
 
   useEffect(() => {
     localStorage.setItem('computers_show_dashboard', showDashboard ? '1' : '0');
@@ -812,16 +852,18 @@ function Computers() {
   useEffect(() => {
     if (!selected) return;
     const currentKey = pcChangeKey(selected);
-    const nextSelected = computers.find((pc) => pcChangeKey(pc) === currentKey);
-    if (nextSelected) {
-      if (nextSelected !== selected) {
-        setSelected(nextSelected);
-      }
+    const listItem = computers.find((pc) => pcChangeKey(pc) === currentKey);
+    if (!listItem) {
+      setSelected(null);
+      setOpen(false);
       return;
     }
-    setSelected(null);
-    setOpen(false);
-  }, [computers, selected]);
+    // Пока drawer открыт, selected заполняется detail-endpoint — не затирать лёгкой карточкой из списка.
+    if (open) return;
+    if (listItem !== selected) {
+      setSelected(listItem);
+    }
+  }, [computers, open, selected]);
 
   useEffect(() => {
     if (!open) {
@@ -1171,8 +1213,7 @@ function Computers() {
                                     onClick={() => {
                                       markPcChangesSeen(pc);
                                       setExpandedUserProfiles({});
-                                      setSelected(pc);
-                                      setOpen(true);
+                                      openComputerDetail(pc);
                                     }}
                                     sx={{
                                       ...getOfficePanelSx(ui, {
@@ -1277,11 +1318,18 @@ function Computers() {
               </Paper>
             ))}
             {searchMeta.has_more ? (
-              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 0.8, py: 1 }}>
-                <LinearProgress sx={{ width: { xs: '100%', sm: 360 }, maxWidth: '100%' }} />
+              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, py: 1.5 }}>
                 <Typography variant="caption" color="text.secondary">
-                  Подгружаю остальные ПК: {computers.length} из {searchMeta.total}
+                  Показано {computers.length} из {searchMeta.total}
                 </Typography>
+                <Button
+                  variant="outlined"
+                  onClick={handleLoadMore}
+                  disabled={loadingMore}
+                  sx={{ minWidth: 220 }}
+                >
+                  {loadingMore ? 'Загрузка…' : `Загрузить ещё ${Math.min(COMPUTERS_PAGE_SIZE, Math.max(0, searchMeta.total - computers.length))}`}
+                </Button>
               </Box>
             ) : searchMeta.total > computers.length ? (
               <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center', py: 1 }}>
@@ -1295,6 +1343,7 @@ function Computers() {
           <Box sx={{ width: { xs: '100vw', sm: 560 }, maxWidth: '100vw', p: { xs: 2, sm: 2.5 }, bgcolor: 'background.default', height: '100%', overflowY: 'auto' }}>
             {!selected ? null : (
               <Stack spacing={1.4}>
+                {detailLoading ? <LinearProgress sx={{ mb: 0.5 }} /> : null}
                 <Paper variant="outlined" sx={{ p: 1.5, borderRadius: 1.5 }}>
                   <Typography variant="h6" sx={{ fontWeight: 700, mb: 0.6 }}>
                     {selected.hostname || 'Неизвестный ПК'}
@@ -1381,7 +1430,9 @@ function Computers() {
                         sx={{ ml: 0, mr: 0 }}
                       />
                     </Stack>
-                    {selectedUserProfileSizes.profiles.length > 0 ? (
+                    {detailLoading ? (
+                      <Typography variant="body2" color="text.secondary">Загрузка размеров профилей…</Typography>
+                    ) : selectedUserProfileSizes.profiles.length > 0 ? (
                       <Stack spacing={0.7}>
                         {selectedUserProfileSizes.profiles.slice(0, 8).map((profile, idx) => {
                           const profileKey = getUserProfileKey(profile, idx);

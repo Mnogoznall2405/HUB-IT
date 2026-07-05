@@ -14,13 +14,27 @@ export const chatAttachmentsAPI = {
     return response.data;
   },
 
-  downloadAttachment: async (messageId, attachmentId) => {
+  downloadAttachment: async (messageId, attachmentId, _options = {}) => {
     const response = await apiClient.get(
       `/chat/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/file`,
       { responseType: 'blob' },
     );
     return response;
   },
+
+  getAttachmentPreview: async (messageId, attachmentId) => {
+    const response = await apiClient.get(
+      `/chat/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/preview`,
+    );
+    return response.data;
+  },
+
+  downloadAttachmentPreviewPdf: async (messageId, attachmentId) => (
+    apiClient.get(
+      `/chat/messages/${encodeURIComponent(messageId)}/attachments/${encodeURIComponent(attachmentId)}/preview/pdf`,
+      { responseType: 'blob' },
+    )
+  ),
 };
 
 export default chatAttachmentsAPI;

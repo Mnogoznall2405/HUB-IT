@@ -44,6 +44,15 @@ describe('Chat page cache helpers', () => {
     expect(shouldSkipActiveThreadRevalidate({
       activeConversationId: 'conv-1',
       conversationId: 'conv-1',
+      reason: 'message_updated',
+      messages: [{ id: 'msg-10', isOptimistic: false }],
+      latestSocketMessage: { conversationId: 'conv-1', messageId: 'msg-10', at: now - 100 },
+      now,
+    })).toBe(true);
+
+    expect(shouldSkipActiveThreadRevalidate({
+      activeConversationId: 'conv-1',
+      conversationId: 'conv-1',
       reason: 'updated',
       messages: [{ id: 'msg-10', isOptimistic: false }],
       latestSocketMessage: { conversationId: 'conv-1', messageId: 'msg-10', at: now - 100 },
@@ -77,7 +86,7 @@ describe('Chat page cache helpers', () => {
     expect(next.map((message) => message.id)).toEqual(['msg-1', 'msg-2']);
   });
 
-  it('does not preserve older local messages outside the latest payload window', () => {
+  it('preserves locally loaded older messages when a latest payload revalidates the window', () => {
     const current = [
       { id: 'msg-1', conversation_id: 'conv-1', body: 'older loaded page', created_at: '2026-04-28T07:59:00.000Z' },
       { id: 'msg-2', conversation_id: 'conv-1', body: 'latest', created_at: '2026-04-28T08:00:00.000Z' },
@@ -91,7 +100,7 @@ describe('Chat page cache helpers', () => {
       mode: 'replaceWindowButPreserveFreshLocal',
     });
 
-    expect(next.map((message) => message.id)).toEqual(['msg-2']);
+    expect(next.map((message) => message.id)).toEqual(['msg-1', 'msg-2']);
   });
 
   it('prioritizes nearby and recent conversations for thread prefetch', () => {

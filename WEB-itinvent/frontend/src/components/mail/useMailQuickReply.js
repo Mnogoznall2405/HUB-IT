@@ -30,16 +30,19 @@ export default function useMailQuickReply({
   handleMailCredentialsRequired,
   getMailErrorDetail,
   onError,
+  onSendingStart,
+  onSent,
 } = {}) {
   const [quickReplyBody, setQuickReplyBody] = useState('');
   const [quickReplySending, setQuickReplySending] = useState(false);
 
-  const sendQuickReply = useCallback(async (selectedMessage) => {
+  const sendQuickReply = useCallback(async (selectedMessage, bodyOverride) => {
     if (!selectedMessage?.id) return false;
-    const body = String(quickReplyBody || '').trim();
+    const body = String(bodyOverride ?? quickReplyBody ?? '').trim();
     if (!body) return false;
 
     setQuickReplySending(true);
+    onSendingStart?.();
     try {
       const context = selectedMessage?.compose_context?.reply || {};
       const to = toRecipientEmails(context?.to);
@@ -49,7 +52,7 @@ export default function useMailQuickReply({
         cc: toRecipientEmails(context?.cc),
         bcc: [],
         subject: normalizeComposeSubject('reply', context?.subject || selectedMessage.subject || ''),
-        body: buildQuickReplyHtml(quickReplyBody),
+        body: buildQuickReplyHtml(body),
         is_html: true,
         reply_to_message_id: selectedMessage.id,
       });
@@ -57,6 +60,7 @@ export default function useMailQuickReply({
       invalidateMailClientCache?.();
       await refreshList?.({ silent: true, force: true });
       await refreshFolderSummary?.();
+      onSent?.();
       return true;
     } catch (requestError) {
       const fallback = 'Не удалось отправить быстрый ответ.';
@@ -77,6 +81,8 @@ export default function useMailQuickReply({
     refreshList,
     resolveComposeMailboxId,
     onError,
+    onSendingStart,
+    onSent,
   ]);
 
   return {

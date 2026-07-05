@@ -5,7 +5,7 @@
 ## Что уже разделено
 
 - `hub`, уведомления, задачи, mail-runtime и локальные настройки остаются на SQLite.
-- новый chat-домен вынесен в отдельный backend-модуль `backend/chat/*`
+- новый chat-домен вынесен в отдельный backend-модуль `backend/chat/*` (см. [CHAT_BACKEND_ARCHITECTURE.md](./CHAT_BACKEND_ARCHITECTURE.md), [ADR-0003](../../docs/adr/0003-chat-backend-module-layout.md))
 - backend chat использует отдельный `CHAT_DATABASE_URL`
 - frontend chat скрыт за `VITE_CHAT_ENABLED`
 
@@ -98,6 +98,21 @@ npm run build
 - unread counters
 - mark-read
 - поиск пользователей из текущих web-users
+
+## Чат по задачам Hub
+
+При включённом корпоративном чате можно перенести обсуждение задач из вкладки «Комментарии» в отдельные беседы чата (`kind=task`).
+
+В `.env`:
+
+```env
+TASK_DISCUSSION_CHAT_ENABLED=1
+VITE_TASK_DISCUSSION_CHAT_ENABLED=1
+```
+
+Требуется `CHAT_MODULE_ENABLED=1` и `VITE_CHAT_ENABLED=1`. После изменения переменных перезапустите backend (`scripts/pm2/restart-backend.ps1`) и пересоберите frontend для IIS.
+
+Новые сообщения по задаче отправляются только через чат; старые `hub_task_comments` остаются в архиве read-only. Беседа создаётся при первом нажатии «Открыть чат» / «Чат по задаче».
 
 ## Что не входит в v1
 

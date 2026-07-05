@@ -24,6 +24,9 @@ from backend.models.password_vault import (
     PasswordVaultRevealResponse,
     PasswordVaultUnlockRequest,
     PasswordVaultUnlockResponse,
+    PasswordVaultUnlockSetup2faResponse,
+    PasswordVaultUnlockVerify2faSetupRequest,
+    PasswordVaultUnlockVerify2faSetupResponse,
     PasswordVaultUnlockWebAuthnVerifyRequest,
 )
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
@@ -223,6 +226,41 @@ async def unlock_password_vault(
             session_id=session_id,
             totp_code=payload.totp_code,
             backup_code=payload.backup_code,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/unlock/setup-2fa", response_model=PasswordVaultUnlockSetup2faResponse)
+async def unlock_password_vault_setup_2fa(
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+) -> dict[str, Any]:
+    try:
+        return await run_in_threadpool(
+            password_vault_service.start_unlock_2fa_setup,
+            actor=current_user,
+            meta=_request_meta(request),
+        )
+    except Exception as exc:
+        raise _service_error_to_http(exc) from exc
+
+
+@router.post("/unlock/verify-2fa-setup", response_model=PasswordVaultUnlockVerify2faSetupResponse)
+async def unlock_password_vault_verify_2fa_setup(
+    payload: PasswordVaultUnlockVerify2faSetupRequest,
+    request: Request,
+    current_user: User = Depends(require_permission(PERM_PASSWORDS_READ)),
+    session_id: str | None = Depends(get_current_session_id),
+) -> dict[str, Any]:
+    try:
+        return await run_in_threadpool(
+            password_vault_service.verify_unlock_2fa_setup,
+            actor=current_user,
+            session_id=session_id,
+            setup_challenge_id=payload.setup_challenge_id,
+            totp_code=payload.totp_code,
             meta=_request_meta(request),
         )
     except Exception as exc:

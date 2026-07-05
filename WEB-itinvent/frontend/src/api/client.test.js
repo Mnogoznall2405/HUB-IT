@@ -454,12 +454,14 @@ describe('equipmentConsumablesAPI contract', () => {
     'lookupConsumables',
     'consumeConsumable',
     'updateConsumableQty',
+    'deleteConsumable',
   ];
 
   beforeEach(() => {
     apiClientMock.get.mockReset();
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
     apiClientMock.patch = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.delete = vi.fn().mockResolvedValue({ data: { ok: true } });
     apiClientMock.get.mockResolvedValue({ data: { grouped: {} } });
     window.localStorage.clear();
   });
@@ -489,10 +491,12 @@ describe('equipmentConsumablesAPI contract', () => {
     await expect(equipmentConsumablesAPI.createConsumable(createPayload)).resolves.toEqual({ ok: true });
     await expect(equipmentConsumablesAPI.consumeConsumable(consumePayload)).resolves.toEqual({ ok: true });
     await expect(equipmentConsumablesAPI.updateConsumableQty(qtyPayload)).resolves.toEqual({ ok: true });
+    await expect(equipmentConsumablesAPI.deleteConsumable(77)).resolves.toEqual({ ok: true });
 
     expect(apiClientMock.post).toHaveBeenNthCalledWith(1, '/equipment/consumables/create', createPayload);
     expect(apiClientMock.post).toHaveBeenNthCalledWith(2, '/equipment/consumables/consume', consumePayload);
     expect(apiClientMock.patch).toHaveBeenCalledWith('/equipment/consumables/qty', qtyPayload);
+    expect(apiClientMock.delete).toHaveBeenCalledWith('/equipment/consumables/77');
   });
 
   it('passes lookup params through to the consumables lookup endpoint', async () => {
@@ -1230,12 +1234,14 @@ describe('adUsersAPI', () => {
 });
 
 describe('departmentsAPI', () => {
-  beforeEach(() => {
+  beforeEach(async () => {
     apiClientMock.get.mockReset();
     apiClientMock.get.mockResolvedValue({ data: { items: [] } });
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { items: [] } });
     apiClientMock.put = vi.fn().mockResolvedValue({ data: { ok: true } });
     window.localStorage.clear();
+    const { invalidateDepartmentsListCache } = await import('./departments');
+    invalidateDepartmentsListCache();
   });
 
   it('loads departments through the dedicated departments module', async () => {
@@ -1245,6 +1251,40 @@ describe('departmentsAPI', () => {
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/departments', {
       params: { search: 'ops' },
+    });
+  });
+
+  it('reuses cached departments list within ttl for repeated default requests', async () => {
+    const { departmentsAPI } = await import('./departments');
+    apiClientMock.get.mockResolvedValue({ data: { items: [{ id: 'dept-1', name: 'Ops' }] } });
+
+    const first = await departmentsAPI.list();
+    const second = await departmentsAPI.list();
+
+    expect(first).toEqual({ items: [{ id: 'dept-1', name: 'Ops' }] });
+    expect(second).toEqual(first);
+    expect(apiClientMock.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('bypasses departments cache when force refresh is requested', async () => {
+    const { departmentsAPI } = await import('./departments');
+
+    await departmentsAPI.list();
+    await departmentsAPI.list({ force: true });
+
+    expect(apiClientMock.get).toHaveBeenCalledTimes(2);
+  });
+
+  it('invalidates departments cache after manager updates and sync actions', async () => {
+    const { departmentsAPI } = await import('./departments');
+
+    await departmentsAPI.list();
+    await departmentsAPI.setManagers('ops team', [1, 2]);
+    await departmentsAPI.list();
+
+    expect(apiClientMock.get).toHaveBeenCalledTimes(2);
+    expect(apiClientMock.put).toHaveBeenCalledWith('/departments/ops%20team/managers', {
+      manager_user_ids: [1, 2],
     });
   });
 
@@ -3068,6 +3108,7 @@ describe('chatConversationDetailsAPI contract', () => {
   const conversationDetailMethods = [
     'getConversation',
     'updateConversationSettings',
+    'deleteConversation',
   ];
 
   beforeEach(() => {
@@ -3075,6 +3116,9 @@ describe('chatConversationDetailsAPI contract', () => {
     apiClientMock.get.mockResolvedValue({ data: { id: 'conv/1 A', title: 'Ops' } });
     apiClientMock.patch = vi.fn().mockResolvedValue({
       data: { id: 'conv/1 A', notifications_enabled: false },
+    });
+    apiClientMock.delete = vi.fn().mockResolvedValue({
+      data: { ok: true, conversation_id: 'conv/1 A' },
     });
   });
 
@@ -3092,6 +3136,8 @@ describe('chatConversationDetailsAPI contract', () => {
     })).resolves.toEqual({ id: 'conv/1 A', title: 'Ops' });
     await expect(chatConversationDetailsAPI.updateConversationSettings('conv/1 A', payload))
       .resolves.toEqual({ id: 'conv/1 A', notifications_enabled: false });
+    await expect(chatConversationDetailsAPI.deleteConversation('conv/1 A'))
+      .resolves.toEqual({ ok: true, conversation_id: 'conv/1 A' });
 
     expect(apiClientMock.get).toHaveBeenCalledWith('/chat/conversations/conv%2F1%20A', {
       signal: controller.signal,
@@ -3101,6 +3147,7 @@ describe('chatConversationDetailsAPI contract', () => {
       payload,
     );
     expect(apiClientMock.patch.mock.calls[0][1]).toBe(payload);
+    expect(apiClientMock.delete).toHaveBeenCalledWith('/chat/conversations/conv%2F1%20A');
   });
 
   it('keeps client chat conversation detail methods compatible with the dedicated module and re-export', async () => {
@@ -3126,15 +3173,20 @@ describe('chatConversationDetailsAPI contract', () => {
       .mockResolvedValue({ id: 'conv-spy' });
     const settingsSpy = vi.spyOn(chatConversationDetailsAPI, 'updateConversationSettings')
       .mockResolvedValue({ id: 'settings-spy' });
+    const deleteSpy = vi.spyOn(chatConversationDetailsAPI, 'deleteConversation')
+      .mockResolvedValue({ ok: true });
 
     await expect(chatAPI.getConversation('conv-1', options)).resolves.toEqual({ id: 'conv-spy' });
     await expect(chatAPI.updateConversationSettings('conv-1', payload))
       .resolves.toEqual({ id: 'settings-spy' });
+    await expect(chatAPI.deleteConversation('conv-1')).resolves.toEqual({ ok: true });
 
     expect(detailSpy).toHaveBeenCalledWith('conv-1', options);
     expect(settingsSpy).toHaveBeenCalledWith('conv-1', payload);
+    expect(deleteSpy).toHaveBeenCalledWith('conv-1');
     detailSpy.mockRestore();
     settingsSpy.mockRestore();
+    deleteSpy.mockRestore();
   });
 });
 
@@ -3354,6 +3406,7 @@ describe('chatAiActionsAPI contract', () => {
 describe('chatThreadMessagesAPI contract', () => {
   const threadMessageMethods = [
     'deleteChatMessage',
+    'editChatMessage',
     'getThreadBootstrap',
     'getMessages',
     'searchMessages',
@@ -3365,6 +3418,7 @@ describe('chatThreadMessagesAPI contract', () => {
     apiClientMock.get.mockReset();
     apiClientMock.get.mockResolvedValue({ data: { items: [] } });
     apiClientMock.post = vi.fn().mockResolvedValue({ data: { ok: true } });
+    apiClientMock.patch = vi.fn().mockResolvedValue({ data: { id: 'msg-1', body: 'updated' } });
     apiClientMock.delete = vi.fn().mockResolvedValue({ data: { deleted: true } });
   });
 
@@ -3411,6 +3465,22 @@ describe('chatThreadMessagesAPI contract', () => {
     expect(apiClientMock.post).toHaveBeenCalledWith('/chat/conversations/conv%2F1%20A/read', {
       message_id: 'msg/2 B',
     });
+  });
+
+  it('edits messages with encoded ids and body payload', async () => {
+    const { chatThreadMessagesAPI } = await importChatThreadMessagesAPI();
+
+    await expect(chatThreadMessagesAPI.editChatMessage('conv/1 A', 'msg/2 B', 'Updated text', {
+      body_format: 'plain',
+    })).resolves.toEqual({ id: 'msg-1', body: 'updated' });
+
+    expect(apiClientMock.patch).toHaveBeenCalledWith(
+      '/chat/conversations/conv%2F1%20A/messages/msg%2F2%20B',
+      {
+        body: 'Updated text',
+        body_format: 'plain',
+      },
+    );
   });
 
   it('keeps client chat thread message methods compatible with the dedicated module and re-export', async () => {
@@ -5335,6 +5405,49 @@ describe('authUserAdminAPI contract', () => {
     expect(apiClientMock.put.mock.calls[0][1].items).toBe(delegateItems);
   });
 
+  it('loads task delegates in bulk with comma-separated numeric owner ids', async () => {
+    const bulkPayload = {
+      items: [
+        { owner_user_id: 1, task_delegate_links: [{ delegate_user_id: 12, role_type: 'assistant' }] },
+        { owner_user_id: 2, task_delegate_links: [] },
+      ],
+    };
+    apiClientMock.get.mockResolvedValueOnce({ data: bulkPayload });
+
+    const { authUserAdminAPI } = await importAuthUserAdminAPI();
+
+    await expect(authUserAdminAPI.getTaskDelegatesBulk([1, '2', 'bad', 0])).resolves.toEqual(bulkPayload);
+
+    expect(apiClientMock.get).toHaveBeenCalledWith('/auth/task-delegates', {
+      params: { owner_ids: '1,2' },
+    });
+
+    apiClientMock.get.mockClear();
+
+    await expect(authUserAdminAPI.getTaskDelegatesBulk([])).resolves.toEqual({ items: [] });
+    expect(apiClientMock.get).not.toHaveBeenCalled();
+  });
+
+  it('chunks large task delegate bulk requests to avoid oversized query strings', async () => {
+    const ownerIds = Array.from({ length: 85 }, (_, index) => index + 1);
+    apiClientMock.get
+      .mockResolvedValueOnce({ data: { items: [{ owner_user_id: 1, task_delegate_links: [] }] } })
+      .mockResolvedValueOnce({ data: { items: [{ owner_user_id: 81, task_delegate_links: [] }] } });
+
+    const { authUserAdminAPI } = await importAuthUserAdminAPI();
+
+    await expect(authUserAdminAPI.getTaskDelegatesBulk(ownerIds)).resolves.toEqual({
+      items: [
+        { owner_user_id: 1, task_delegate_links: [] },
+        { owner_user_id: 81, task_delegate_links: [] },
+      ],
+    });
+
+    expect(apiClientMock.get).toHaveBeenCalledTimes(2);
+    expect(apiClientMock.get.mock.calls[0][1].params.owner_ids.split(',').length).toBe(80);
+    expect(apiClientMock.get.mock.calls[1][1].params.owner_ids.split(',').length).toBe(5);
+  });
+
   it('falls back to an empty delegate items array for non-array update payloads', async () => {
     const { authUserAdminAPI } = await importAuthUserAdminAPI();
 
@@ -5357,6 +5470,7 @@ describe('authUserAdminAPI contract', () => {
     expect(authAPI.updateUser).toBe(authUserAdminAPI.updateUser);
     expect(authAPI.deleteUser).toBe(authUserAdminAPI.deleteUser);
     expect(authAPI.getTaskDelegates).toBe(authUserAdminAPI.getTaskDelegates);
+    expect(authAPI.getTaskDelegatesBulk).toBe(authUserAdminAPI.getTaskDelegatesBulk);
     expect(authAPI.updateTaskDelegates).toBe(authUserAdminAPI.updateTaskDelegates);
     expect(authUserAdminAPI.syncAD).toBeUndefined();
     expect(authUserAdminAPI.adminResetTwoFactor).toBeUndefined();

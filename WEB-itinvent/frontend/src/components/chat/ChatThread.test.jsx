@@ -3,16 +3,19 @@ import { act, fireEvent, render, screen, within } from '@testing-library/react';
 import { ThemeProvider, createTheme } from '@mui/material/styles';
 import { describe, expect, it, vi } from 'vitest';
 
+import { ChatBubble } from './ChatBubble';
+import { getComposerMentionTrigger } from './ChatComposer';
 import ChatThread, {
-  ChatBubble,
   getChatKeyboardBottomSpacer,
+  getChatJumpToLatestBottomOffset,
   getChatThreadBottomPadding,
-  getComposerMentionTrigger,
+} from './ChatThread';
+import {
   isMobileMessageLongPress,
   shouldAnimateChatBubble,
-  shouldSuppressNativeMessageGesture,
   shouldCancelLongPressMove,
-} from './ChatThread';
+  shouldSuppressNativeMessageGesture,
+} from './chatBubbleGesturePolicy';
 import { buildChatUiTokens } from './chatUiTokens';
 
 const theme = createTheme();
@@ -525,6 +528,34 @@ describe('ChatBubble', () => {
     );
 
     expect(screen.getByTestId('chat-bubble-meta-inline')).toBeInTheDocument();
+
+    rerender(
+      <ThemeProvider theme={theme}>
+        <ChatBubble
+          conversationKind="direct"
+          message={{
+            id: 'msg-inline-edited',
+            kind: 'text',
+            body: 'Приятного отдыха',
+            created_at: '2026-03-21T01:18:00Z',
+            edited_at: '2026-03-21T01:25:00Z',
+            is_own: true,
+            delivery_status: 'read',
+            sender: { id: 1, username: 'author', full_name: 'Task Author' },
+          }}
+          navigate={vi.fn()}
+          theme={theme}
+          ui={ui}
+          onOpenReads={vi.fn()}
+          onOpenAttachmentPreview={vi.fn()}
+          onReplyMessage={vi.fn()}
+          compactMobile
+        />
+      </ThemeProvider>,
+    );
+
+    expect(screen.getByTestId('chat-bubble-meta-inline')).toBeInTheDocument();
+    expect(screen.getByText(/изм\./)).toBeInTheDocument();
 
     rerender(
       <ThemeProvider theme={theme}>
@@ -1317,12 +1348,12 @@ describe('ChatBubble', () => {
     const messageListActionButtons = screen.getAllByRole('button')
       .filter((button) => !button.getAttribute('aria-label') && String(button.textContent || '').trim());
 
-    expect(messageListActionButtons).toHaveLength(2);
+    expect(messageListActionButtons).toHaveLength(1);
 
     fireEvent.click(messageListActionButtons[0]);
     expect(onLoadOlder).toHaveBeenCalledTimes(1);
 
-    fireEvent.click(messageListActionButtons[1]);
+    fireEvent.click(screen.getByTestId('chat-jump-to-latest'));
     expect(onJumpToLatest).toHaveBeenCalledTimes(1);
   });
 
@@ -1398,6 +1429,47 @@ describe('ChatBubble', () => {
     }
   });
 
+  it('does not auto-load older history when the thread is not scrollable', async () => {
+    const intersection = installIntersectionObserverMock();
+    const onLoadOlder = vi.fn();
+
+    try {
+      renderWithTheme(
+        <ChatThread
+          {...buildThreadProps({
+            messages: [
+              {
+                id: 'msg-short-history',
+                conversation_id: 'conv-1',
+                kind: 'text',
+                body: 'Short history anchor',
+                created_at: '2026-03-21T10:00:00Z',
+                is_own: false,
+                sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+              },
+            ],
+            messagesHasMore: true,
+            onLoadOlder,
+          })}
+        />,
+      );
+
+      const scrollRoot = screen.getByTestId('chat-thread-scroll');
+      Object.defineProperty(scrollRoot, 'scrollTop', { configurable: true, writable: true, value: 0 });
+      Object.defineProperty(scrollRoot, 'scrollHeight', { configurable: true, value: 480 });
+      Object.defineProperty(scrollRoot, 'clientHeight', { configurable: true, value: 480 });
+
+      await act(async () => {
+        fireEvent.wheel(scrollRoot, { deltaY: -80 });
+      });
+
+      expect(intersection.observers).toHaveLength(0);
+      expect(onLoadOlder).not.toHaveBeenCalled();
+    } finally {
+      intersection.restore();
+    }
+  });
+
   it('auto-loads older history only after the user scrolls near the top', async () => {
     const intersection = installIntersectionObserverMock();
     const onLoadOlder = vi.fn();
@@ -1425,6 +1497,8 @@ describe('ChatBubble', () => {
 
       const scrollRoot = screen.getByTestId('chat-thread-scroll');
       Object.defineProperty(scrollRoot, 'scrollTop', { configurable: true, writable: true, value: 0 });
+      Object.defineProperty(scrollRoot, 'scrollHeight', { configurable: true, value: 2400 });
+      Object.defineProperty(scrollRoot, 'clientHeight', { configurable: true, value: 600 });
 
       await act(async () => {
         fireEvent.wheel(scrollRoot, { deltaY: -80 });
@@ -1470,6 +1544,8 @@ describe('ChatBubble', () => {
 
       const scrollRoot = screen.getByTestId('chat-thread-scroll');
       Object.defineProperty(scrollRoot, 'scrollTop', { configurable: true, writable: true, value: 0 });
+      Object.defineProperty(scrollRoot, 'scrollHeight', { configurable: true, value: 2400 });
+      Object.defineProperty(scrollRoot, 'clientHeight', { configurable: true, value: 600 });
 
       await act(async () => {
         fireEvent.wheel(scrollRoot, { deltaY: -80 });
@@ -1487,26 +1563,30 @@ describe('ChatBubble', () => {
     }
   });
 
-  it('does not rescan date markers on every sticky-date scroll frame', async () => {
-    renderWithTheme(
+  it('renders inline date dividers on mobile without a floating sticky pill', () => {
+    vi.setSystemTime(new Date('2026-06-29T12:00:00.000Z'));
+
+    const { container } = renderWithTheme(
       <ChatThread
         {...buildThreadProps({
+          isMobile: true,
+          compactMobile: true,
           messages: [
             {
-              id: 'msg-date-1',
+              id: 'msg-old',
               conversation_id: 'conv-1',
               kind: 'text',
-              body: 'Morning',
-              created_at: '2026-03-21T10:00:00Z',
+              body: 'Old message',
+              created_at: '2026-06-27T10:00:00.000Z',
               is_own: false,
-              sender: { id: 2, username: 'assignee', full_name: 'Task Assignee' },
+              sender: { id: 2, username: 'peer', full_name: 'Peer User' },
             },
             {
-              id: 'msg-date-2',
+              id: 'msg-new',
               conversation_id: 'conv-1',
               kind: 'text',
-              body: 'Later',
-              created_at: '2026-03-21T10:01:00Z',
+              body: 'Today message',
+              created_at: '2026-06-29T10:00:00.000Z',
               is_own: true,
               sender: { id: 1, username: 'author', full_name: 'Task Author' },
             },
@@ -1515,17 +1595,12 @@ describe('ChatBubble', () => {
       />,
     );
 
-    const threadScroll = screen.getByTestId('chat-thread-scroll');
-    const originalQuerySelectorAll = threadScroll.querySelectorAll.bind(threadScroll);
-    const querySelectorAll = vi.fn(originalQuerySelectorAll);
-    threadScroll.querySelectorAll = querySelectorAll;
+    expect(screen.getByText('27 июня')).toBeInTheDocument();
+    expect(screen.getByText('Сегодня')).toBeInTheDocument();
+    expect(container.querySelector('[data-date-marker]')).toBeInTheDocument();
+    expect(container.querySelectorAll('[data-date-marker]')).toHaveLength(2);
 
-    await act(async () => {
-      fireEvent.scroll(threadScroll, { target: { scrollTop: 80 } });
-      await new Promise((resolve) => window.requestAnimationFrame(resolve));
-    });
-
-    expect(querySelectorAll).not.toHaveBeenCalled();
+    vi.useRealTimers();
   });
 
   it('renders a pinned message bar and forwards open/unpin actions', () => {
@@ -1553,12 +1628,61 @@ describe('ChatBubble', () => {
     expect(onUnpinPinnedMessage).toHaveBeenCalledTimes(1);
   });
 
+  it('keeps discussion available and opens the task from a completed-task banner', () => {
+    const onOpenTask = vi.fn();
+
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          activeConversation: {
+            id: 'task-conv',
+            kind: 'task',
+            title: 'Задача: Старое название',
+            task_id: 'task-1',
+            task_title: 'Закрытая задача',
+            task_status: 'done',
+            task_completed_at: '2026-06-23T09:32:00',
+          },
+          activeConversationId: 'task-conv',
+          onOpenTask,
+        })}
+      />,
+    );
+
+    expect(screen.getByTestId('task-completed-banner')).toHaveTextContent('Задача выполнена 23.06.2026 в 09:32');
+    expect(screen.getByText('Закрытая задача')).toBeInTheDocument();
+    expect(screen.getByRole('textbox')).toBeEnabled();
+
+    fireEvent.click(within(screen.getByTestId('task-completed-banner')).getByRole('button', { name: 'Открыть задачу' }));
+    expect(onOpenTask).toHaveBeenCalledWith('task-1');
+  });
+
+  it('does not show the completed-task banner for an active task', () => {
+    renderWithTheme(
+      <ChatThread
+        {...buildThreadProps({
+          activeConversation: {
+            id: 'task-conv',
+            kind: 'task',
+            title: 'Активная задача',
+            task_id: 'task-1',
+            task_status: 'in_progress',
+          },
+          activeConversationId: 'task-conv',
+        })}
+      />,
+    );
+
+    expect(screen.queryByTestId('task-completed-banner')).not.toBeInTheDocument();
+  });
+
   it('renders Telegram-like message selection controls and actions', () => {
     const onToggleMessageSelection = vi.fn();
     const onClearMessageSelection = vi.fn();
     const onCopySelectedMessages = vi.fn();
     const onReplySelectedMessage = vi.fn();
     const onForwardSelectedMessages = vi.fn();
+    const onDeleteSelectedMessages = vi.fn();
 
     renderWithTheme(
       <ChatThread
@@ -1587,11 +1711,13 @@ describe('ChatBubble', () => {
           selectedMessageCount: 1,
           canReplySelectedMessage: true,
           canCopySelectedMessages: true,
+          canDeleteSelectedMessages: true,
           onToggleMessageSelection,
           onClearMessageSelection,
           onCopySelectedMessages,
           onReplySelectedMessage,
           onForwardSelectedMessages,
+          onDeleteSelectedMessages,
         })}
       />,
     );
@@ -1602,7 +1728,10 @@ describe('ChatBubble', () => {
     expect(screen.getByTestId('chat-selection-reply-action')).toHaveTextContent('Ответить');
     expect(screen.getByTestId('chat-selection-forward-action')).toHaveTextContent('Переслать');
     expect(screen.queryByTestId('chat-selection-count-label')).not.toBeInTheDocument();
+    // Удаление на мобильном живёт в верхнем тулбаре (паритет с десктопом),
+    // а не в нижнем доке.
     expect(screen.queryByTestId('chat-selection-delete-action')).not.toBeInTheDocument();
+    expect(screen.getByTestId('chat-selection-header-delete-action')).toBeInTheDocument();
     expect(screen.queryByText('Task Assignee')).not.toBeInTheDocument();
     expect(getComputedStyle(screen.getByText('Selected message').closest('[data-chat-message-id]')).backgroundColor).toBe('rgba(0, 0, 0, 0)');
     expect(screen.getByText('Selected message').closest('[data-chat-bubble-surface="true"]')).toHaveStyle({
@@ -1624,6 +1753,9 @@ describe('ChatBubble', () => {
 
     fireEvent.click(screen.getByTestId('chat-selection-forward-action'));
     expect(onForwardSelectedMessages).toHaveBeenCalledTimes(2);
+
+    fireEvent.click(screen.getByTestId('chat-selection-header-delete-action'));
+    expect(onDeleteSelectedMessages).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByTestId('chat-selection-clear'));
     expect(onClearMessageSelection).toHaveBeenCalledTimes(1);
@@ -1762,7 +1894,7 @@ describe('ChatBubble', () => {
     expect(screen.getByText('+1')).toBeInTheDocument();
   });
 
-  it('uses smaller selection circles on phone and desktop layouts', () => {
+  it('uses an accessible 44px selection target on phone and a compact circle on desktop', () => {
     const { rerender } = renderWithTheme(
       <ChatBubble
         conversationKind="direct"
@@ -1785,8 +1917,8 @@ describe('ChatBubble', () => {
     );
 
     expect(screen.getByTestId('chat-message-select-msg-circle-size')).toHaveStyle({
-      width: '28px',
-      height: '28px',
+      width: '44px',
+      height: '44px',
       top: '50%',
     });
 
@@ -2470,5 +2602,25 @@ describe('ChatThread composer', () => {
       keyboardInset: 280,
       composerHeight: 112,
     })).toBe(18);
+  });
+
+  it('positions jump-to-latest above composer and keyboard inset', () => {
+    expect(getChatJumpToLatestBottomOffset({
+      compactMobile: true,
+      composerHeight: 92,
+      keyboardInset: 0,
+    })).toBe(116);
+
+    expect(getChatJumpToLatestBottomOffset({
+      compactMobile: true,
+      composerHeight: 120,
+      keyboardInset: 280,
+    })).toBe(424);
+
+    expect(getChatJumpToLatestBottomOffset({
+      compactMobile: false,
+      composerHeight: 102,
+      selectionMode: true,
+    })).toBe(96);
   });
 });

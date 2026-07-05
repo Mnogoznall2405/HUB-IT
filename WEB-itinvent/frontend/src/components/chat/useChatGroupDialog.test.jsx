@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { chatAPI } from '../../api/client';
-import useChatGroupDialog from './useChatGroupDialog';
+import useChatGroupDialog, { resetChatGroupUsersCache } from './useChatGroupDialog';
 
 vi.mock('../../api/client', () => ({
   chatAPI: {
@@ -62,6 +62,8 @@ function Harness({
 describe('useChatGroupDialog', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetChatGroupUsersCache();
+    chatAPI.getUsers.mockResolvedValue({ items: [] });
   });
 
   it('loads users, manages members, and creates a group conversation', async () => {
@@ -82,11 +84,11 @@ describe('useChatGroupDialog', () => {
     );
 
     fireEvent.click(screen.getByText('open'));
-    await waitFor(() => expect(chatAPI.getUsers).toHaveBeenCalledWith({ q: '', limit: 100 }));
+    await waitFor(() => expect(chatAPI.getUsers).toHaveBeenCalledWith({ q: '', limit: 200 }));
     expect(screen.getByTestId('open')).toHaveTextContent('true');
 
     fireEvent.change(screen.getByLabelText('search'), { target: { value: 'be' } });
-    await waitFor(() => expect(chatAPI.getUsers).toHaveBeenLastCalledWith({ q: 'be', limit: 100 }));
+    await waitFor(() => expect(chatAPI.getUsers).toHaveBeenLastCalledWith({ q: 'be', limit: 200 }));
 
     fireEvent.click(screen.getByText('add beta'));
     fireEvent.click(screen.getByText('add alpha'));

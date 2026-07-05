@@ -4,10 +4,7 @@ import {
   Box,
   Button,
   Divider,
-  Drawer,
   IconButton,
-  List,
-  ListItemButton,
   ListItemIcon,
   ListItemText,
   Menu,
@@ -15,33 +12,29 @@ import {
   Typography,
 } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
-import ArchiveOutlinedIcon from '@mui/icons-material/ArchiveOutlined';
 import ArrowBackRoundedIcon from '@mui/icons-material/ArrowBackRounded';
-import DeleteForeverRoundedIcon from '@mui/icons-material/DeleteForeverRounded';
-import DeleteOutlineRoundedIcon from '@mui/icons-material/DeleteOutlineRounded';
 import DraftsRoundedIcon from '@mui/icons-material/DraftsRounded';
-import DriveFileMoveRoundedIcon from '@mui/icons-material/DriveFileMoveRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import ForwardRoundedIcon from '@mui/icons-material/ForwardRounded';
 import KeyboardArrowDownRoundedIcon from '@mui/icons-material/KeyboardArrowDownRounded';
-import MarkEmailReadRoundedIcon from '@mui/icons-material/MarkEmailReadRounded';
-import MarkEmailUnreadRoundedIcon from '@mui/icons-material/MarkEmailUnreadRounded';
 import MoreHorizRoundedIcon from '@mui/icons-material/MoreHorizRounded';
 import PrintOutlinedIcon from '@mui/icons-material/PrintOutlined';
-import ReplyAllRoundedIcon from '@mui/icons-material/ReplyAllRounded';
 import ReplyRoundedIcon from '@mui/icons-material/ReplyRounded';
-import RestoreFromTrashRoundedIcon from '@mui/icons-material/RestoreFromTrashRounded';
 import SubjectRoundedIcon from '@mui/icons-material/SubjectRounded';
 import {
+  buildMailPreviewActionItems,
+  buildMailPreviewReadState,
+} from './mailPreviewActions';
+import {
   buildMailUiTokens,
-  getMailBottomSheetPaperSx,
   getMailIconButtonSx,
   getMailMenuPaperSx,
   getMailMetaTextSx,
   getMailSurfaceButtonSx,
-  getMailSheetHandleSx,
 } from './mailUiTokens';
 import { formatMailPersonWithEmail, getMailPersonDisplay } from './mailPeople';
+import MailSummarizeButton from './MailSummarizeButton';
+import MailSummarySheet, { useMailSummarySheetState } from './MailSummarySheet';
 
 const buildRecipients = (selectedMessage) => ([
   ...(Array.isArray(selectedMessage?.to_people) ? selectedMessage.to_people : (Array.isArray(selectedMessage?.to) ? selectedMessage.to : []))
@@ -59,23 +52,6 @@ const buildParticipantsLabel = (participants) => {
   return `${items.slice(0, 3).join(', ')} +${items.length - 3}`;
 };
 
-function SheetActionItem({ icon, label, onClick, danger = false, disabled = false, testId }) {
-  return (
-    <ListItemButton data-testid={testId} onClick={onClick} disabled={disabled}>
-      <ListItemIcon sx={{ minWidth: 38, color: danger ? 'error.main' : 'inherit' }}>
-        {icon}
-      </ListItemIcon>
-      <ListItemText
-        primary={label}
-        primaryTypographyProps={{
-          fontWeight: 600,
-          color: danger ? 'error.main' : 'inherit',
-        }}
-      />
-    </ListItemButton>
-  );
-}
-
 function DesktopActionItem({ icon, label, onClick, danger = false, disabled = false }) {
   return (
     <MenuItem onClick={onClick} disabled={disabled} sx={{ minHeight: 46 }}>
@@ -90,54 +66,6 @@ function DesktopActionItem({ icon, label, onClick, danger = false, disabled = fa
         }}
       />
     </MenuItem>
-  );
-}
-
-function MobileBottomActionButton({ icon, label, onClick, danger = false, disabled = false, tokens }) {
-  return (
-    <Button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      sx={{
-        minWidth: 0,
-        width: tokens.bulkActionSize,
-        height: 56,
-        px: 0.25,
-        py: 0.5,
-        borderRadius: tokens.radiusMd,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 0.25,
-        color: danger
-          ? (tokens.isDark ? '#fecaca' : '#b91c1c')
-          : tokens.textPrimary,
-        bgcolor: 'transparent',
-        textTransform: 'none',
-        fontWeight: 800,
-        fontSize: '0.68rem',
-        lineHeight: 1.1,
-        transition: tokens.transition,
-        '& .MuiButton-startIcon': {
-          m: 0,
-          '& svg': { fontSize: 22 },
-        },
-        '&:hover': {
-          bgcolor: danger
-            ? 'rgba(239, 68, 68, 0.10)'
-            : tokens.actionHover,
-        },
-        '&:active': {
-          transform: 'scale(0.98)',
-        },
-        '&.Mui-disabled': {
-          opacity: 0.42,
-        },
-      }}
-      startIcon={icon}
-    >
-      {label}
-    </Button>
   );
 }
 
@@ -165,13 +93,22 @@ export default function MailPreviewHeader({
   showBackButton,
   onBackToList,
   compactMobile = false,
+  summarizeLoading = false,
+  summarizeText = '',
+  onSummarize,
+  onCopySummary,
 }) {
   const theme = useTheme();
   const tokens = useMemo(() => buildMailUiTokens(theme), [theme]);
   const [menuAnchorEl, setMenuAnchorEl] = useState(null);
-  const [mobileSheetOpen, setMobileSheetOpen] = useState(false);
-  const [mobileMoveSheetOpen, setMobileMoveSheetOpen] = useState(false);
   const [recipientsExpanded, setRecipientsExpanded] = useState(false);
+  const {
+    summaryOpen,
+    setSummaryOpen,
+    summarySheetText,
+    summarySheetError,
+    openSummary,
+  } = useMailSummarySheetState({ onSummarize, summarizeText });
 
   if (!selectedMessage) return null;
 
@@ -215,38 +152,25 @@ export default function MailPreviewHeader({
   const recipients = buildRecipients(selectedMessage);
   const recipientCount = recipients.length;
   const participantsLabel = buildParticipantsLabel(conversationParticipants);
-  const effectiveUnreadCount = isConversation
-    ? Number(selectedConversation?.unread_count || 0)
-    : (selectedMessage.is_read ? 0 : 1);
-  const effectiveIsRead = effectiveUnreadCount === 0;
-  const readActionIcon = effectiveIsRead
-    ? <MarkEmailUnreadRoundedIcon fontSize="small" />
-    : <MarkEmailReadRoundedIcon fontSize="small" />;
-  const readActionLabel = effectiveIsRead ? 'Пометить как непрочитанное' : 'Пометить как прочитанное';
   const canArchive = folder !== 'archive' && folder !== 'trash';
   const availableMoveTargets = Array.isArray(moveTargets)
     ? moveTargets.filter((option) => option.value !== folder)
     : [];
+  const { readActionIcon, readActionLabel } = buildMailPreviewReadState(
+    selectedMessage,
+    selectedConversation,
+    viewMode,
+  );
 
   const handleAction = (callback) => () => {
     setMenuAnchorEl(null);
-    setMobileSheetOpen(false);
-    setMobileMoveSheetOpen(false);
     callback?.();
   };
 
   const handleMoveAction = (value) => () => {
     setMenuAnchorEl(null);
-    setMobileSheetOpen(false);
-    setMobileMoveSheetOpen(false);
     onMoveTargetChange?.(value);
     onMoveSelectedMessage?.(value);
-  };
-
-  const handleOpenMobileMoveSheet = () => {
-    if (!availableMoveTargets.length || messageActionLoading) return;
-    setMobileSheetOpen(false);
-    setMobileMoveSheetOpen(true);
   };
 
   const primaryActionLabel = folder === 'drafts' ? 'Открыть черновик' : 'Ответить';
@@ -257,87 +181,22 @@ export default function MailPreviewHeader({
     ? () => onOpenComposeFromDraft?.()
     : () => onOpenComposeFromMessage?.('reply');
 
-  const actionItems = [
-    ...(folder === 'drafts'
-      ? [{
-          id: 'open-draft',
-          label: 'Открыть черновик',
-          icon: <DraftsRoundedIcon fontSize="small" />,
-          onClick: onOpenComposeFromDraft,
-        }]
-      : [
-          {
-            id: 'reply',
-            label: 'Ответить',
-            icon: <ReplyRoundedIcon fontSize="small" />,
-            onClick: () => onOpenComposeFromMessage?.('reply'),
-          },
-          {
-            id: 'reply-all',
-            label: 'Ответить всем',
-            icon: <ReplyAllRoundedIcon fontSize="small" />,
-            onClick: () => onOpenComposeFromMessage?.('reply_all'),
-          },
-          {
-            id: 'forward',
-            label: 'Переслать',
-            icon: <ForwardRoundedIcon fontSize="small" />,
-            onClick: () => onOpenComposeFromMessage?.('forward'),
-          },
-        ]),
-    {
-      id: 'toggle-read',
-      label: readActionLabel,
-      icon: readActionIcon,
-      onClick: onToggleReadState,
-    },
-    ...(folder === 'trash'
-      ? [
-          {
-            id: 'restore',
-            label: 'Восстановить',
-            icon: <RestoreFromTrashRoundedIcon fontSize="small" />,
-            onClick: onRestoreSelectedMessage,
-          },
-          {
-            id: 'delete-forever',
-            label: 'Удалить навсегда',
-            icon: <DeleteForeverRoundedIcon fontSize="small" />,
-            onClick: () => onDeleteSelectedMessage?.(true),
-            danger: true,
-          },
-        ]
-      : [{
-          id: 'delete',
-          label: 'Удалить',
-          icon: <DeleteOutlineRoundedIcon fontSize="small" />,
-          onClick: () => onDeleteSelectedMessage?.(false),
-          danger: true,
-        }]),
-    ...(canArchive
-      ? [{
-          id: 'archive',
-          label: 'Архив',
-          icon: <ArchiveOutlinedIcon fontSize="small" />,
-          onClick: onArchiveSelectedMessage,
-        }]
-      : []),
-  ];
-
-  const mobileQuickActionIds = new Set([
-    folder === 'drafts' ? 'open-draft' : 'reply',
-    'forward',
-    'toggle-read',
-    folder === 'trash' ? 'delete-forever' : 'delete',
-  ]);
-  const mobileSheetActionItems = compactMobile
-    ? actionItems.filter((item) => !mobileQuickActionIds.has(item.id))
-    : actionItems;
-  const mobileForwardDisabled = folder === 'drafts' || messageActionLoading;
-  const mobileReadActionLabel = effectiveIsRead ? 'Не проч.' : 'Прочитано';
+  const actionItems = buildMailPreviewActionItems({
+    folder,
+    readActionIcon,
+    readActionLabel,
+    onOpenComposeFromDraft,
+    onOpenComposeFromMessage,
+    onToggleReadState,
+    onRestoreSelectedMessage,
+    onDeleteSelectedMessage,
+    onArchiveSelectedMessage,
+    canArchive,
+  });
 
   return (
-    <Box sx={{ borderBottom: '1px solid', borderColor: tokens.panelBorder }}>
+    <>
+    <Box sx={{ borderBottom: '1px solid', borderColor: tokens.panelBorder, flexShrink: 0 }}>
       <Box
         className="mail-glass-header"
         sx={{
@@ -399,6 +258,15 @@ export default function MailPreviewHeader({
               >
                 {primaryActionIcon}
               </IconButton>
+            ) : null}
+
+            {!compactMobile && folder !== 'drafts' && !isConversation ? (
+              <MailSummarizeButton
+                tokens={tokens}
+                loading={summarizeLoading}
+                onClick={openSummary}
+                testId="mail-preview-summarize"
+              />
             ) : null}
 
             {!compactMobile && folder !== 'drafts' ? (
@@ -553,192 +421,18 @@ export default function MailPreviewHeader({
           onClick={handleAction(onPrintSelectedMessage)}
         />
       </Menu>
-
-      {compactMobile ? (
-        <Box
-          data-testid="mail-preview-mobile-bottom-bar"
-          sx={{
-            position: 'fixed',
-            left: 0,
-            right: 0,
-            bottom: 0,
-            zIndex: theme.zIndex.appBar + 2,
-            minHeight: `calc(${tokens.bulkBarHeight}px + env(safe-area-inset-bottom, 0px))`,
-            px: 1,
-            pt: 0.55,
-            pb: 'calc(0.55rem + env(safe-area-inset-bottom, 0px))',
-            bgcolor: tokens.bulkBottomBarBg,
-            borderTop: '1px solid',
-            borderColor: tokens.panelBorder,
-            boxShadow: tokens.isDark
-              ? '0 -18px 36px rgba(0, 0, 0, 0.32)'
-              : '0 -18px 36px rgba(15, 23, 42, 0.12)',
-          }}
-        >
-          <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-around', gap: 0.35 }}>
-            <MobileBottomActionButton
-              icon={primaryActionIcon}
-              label={folder === 'drafts' ? 'Открыть' : 'Ответить'}
-              disabled={messageActionLoading}
-              onClick={primaryActionHandler}
-              tokens={tokens}
-            />
-            <MobileBottomActionButton
-              icon={<ForwardRoundedIcon />}
-              label="Переслать"
-              disabled={mobileForwardDisabled}
-              onClick={() => onOpenComposeFromMessage?.('forward')}
-              tokens={tokens}
-            />
-            <MobileBottomActionButton
-              icon={readActionIcon}
-              label={mobileReadActionLabel}
-              disabled={messageActionLoading}
-              onClick={onToggleReadState}
-              tokens={tokens}
-            />
-            <MobileBottomActionButton
-              icon={folder === 'trash' ? <DeleteForeverRoundedIcon /> : <DeleteOutlineRoundedIcon />}
-              label="Удалить"
-              danger
-              disabled={messageActionLoading}
-              onClick={() => onDeleteSelectedMessage?.(folder === 'trash')}
-              tokens={tokens}
-            />
-            <MobileBottomActionButton
-              icon={<MoreHorizRoundedIcon />}
-              label="Ещё"
-              disabled={messageActionLoading}
-              onClick={() => setMobileSheetOpen(true)}
-              tokens={tokens}
-            />
-          </Box>
-        </Box>
-      ) : null}
-
-      <Drawer
-        anchor="bottom"
-        open={mobileSheetOpen}
-        onClose={() => setMobileSheetOpen(false)}
-        ModalProps={{ keepMounted: true, sx: { zIndex: theme.zIndex.drawer + 4 } }}
-        PaperProps={{
-          'data-testid': 'mail-preview-mobile-actions-sheet',
-          sx: getMailBottomSheetPaperSx(tokens),
-        }}
-      >
-        <Box sx={{ pt: 1 }}>
-          <Box sx={getMailSheetHandleSx(tokens, { mb: 1 })} />
-          <List
-            disablePadding
-            sx={{
-              maxHeight: 'min(72dvh, 520px)',
-              overflowY: 'auto',
-              overscrollBehavior: 'contain',
-              WebkitOverflowScrolling: 'touch',
-            }}
-          >
-            {mobileSheetActionItems.map((item) => (
-              <SheetActionItem
-                key={item.id}
-                icon={item.icon}
-                label={item.label}
-                danger={item.danger}
-                disabled={messageActionLoading}
-                onClick={handleAction(item.onClick)}
-              />
-            ))}
-            {availableMoveTargets.length > 0 ? <Divider /> : null}
-            {availableMoveTargets.length > 0 ? (
-              <SheetActionItem
-                icon={<DriveFileMoveRoundedIcon fontSize="small" />}
-                label={'\u041f\u0435\u0440\u0435\u043c\u0435\u0441\u0442\u0438\u0442\u044c'}
-                testId="mail-preview-mobile-open-move-sheet"
-                disabled={messageActionLoading}
-                onClick={handleOpenMobileMoveSheet}
-              />
-            ) : null}
-            <Divider />
-            <SheetActionItem
-              icon={<SubjectRoundedIcon fontSize="small" />}
-              label="Заголовки"
-              onClick={handleAction(onOpenHeaders)}
-            />
-            <SheetActionItem
-              icon={<DownloadRoundedIcon fontSize="small" />}
-              label="Скачать .eml"
-              onClick={handleAction(onDownloadSource)}
-            />
-            <SheetActionItem
-              icon={<PrintOutlinedIcon fontSize="small" />}
-              label="Печать"
-              onClick={handleAction(onPrintSelectedMessage)}
-            />
-          </List>
-        </Box>
-      </Drawer>
-
-      <Drawer
-        anchor="bottom"
-        open={mobileMoveSheetOpen}
-        onClose={() => setMobileMoveSheetOpen(false)}
-        ModalProps={{ keepMounted: true, sx: { zIndex: theme.zIndex.drawer + 5 } }}
-        PaperProps={{
-          'data-testid': 'mail-preview-mobile-move-sheet',
-          sx: getMailBottomSheetPaperSx(tokens, {
-            maxHeight: '82dvh',
-          }),
-        }}
-      >
-        <Box sx={{ pt: 1 }}>
-          <Box sx={getMailSheetHandleSx(tokens, { mb: 1 })} />
-          <Box sx={{ px: 2, pb: 1 }}>
-            <Typography sx={{ fontWeight: 800, fontSize: '1rem', color: tokens.textPrimary }}>
-              {'\u041f\u0435\u0440\u0435\u043c\u0435\u0441\u0442\u0438\u0442\u044c \u0432 \u043f\u0430\u043f\u043a\u0443'}
-            </Typography>
-            <Typography sx={getMailMetaTextSx(tokens, { mt: 0.25 })}>
-              {'\u041f\u0430\u043f\u043a\u0438 \u043c\u043e\u0436\u043d\u043e \u043f\u0440\u043e\u043a\u0440\u0443\u0447\u0438\u0432\u0430\u0442\u044c.'}
-            </Typography>
-          </Box>
-          <Divider />
-          <List
-            disablePadding
-            sx={{
-              maxHeight: 'min(58dvh, 420px)',
-              overflowY: 'auto',
-              overscrollBehavior: 'contain',
-              WebkitOverflowScrolling: 'touch',
-              py: 0.4,
-            }}
-          >
-            {availableMoveTargets.map((option) => (
-              <ListItemButton
-                key={option.value}
-                data-testid={`mail-preview-mobile-move-option-${option.value}`}
-                disabled={messageActionLoading}
-                onClick={handleMoveAction(option.value)}
-                sx={{
-                  minHeight: 48,
-                  px: 2,
-                  '&.Mui-focusVisible': {
-                    bgcolor: tokens.surfaceHover,
-                  },
-                }}
-              >
-                <ListItemIcon sx={{ minWidth: 38, color: tokens.textSecondary }}>
-                  <DriveFileMoveRoundedIcon fontSize="small" />
-                </ListItemIcon>
-                <ListItemText
-                  primary={option.label}
-                  primaryTypographyProps={{
-                    fontWeight: 700,
-                    noWrap: true,
-                  }}
-                />
-              </ListItemButton>
-            ))}
-          </List>
-        </Box>
-      </Drawer>
     </Box>
+    <MailSummarySheet
+      open={summaryOpen}
+      onClose={() => setSummaryOpen(false)}
+      tokens={tokens}
+      summarizeLoading={summarizeLoading}
+      summarizeText={summarizeText}
+      summarySheetText={summarySheetText}
+      summarySheetError={summarySheetError}
+      onCopySummary={onCopySummary}
+      testId="mail-preview-summary-sheet"
+    />
+    </>
   );
 }

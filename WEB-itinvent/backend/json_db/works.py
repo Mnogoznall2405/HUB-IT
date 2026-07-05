@@ -31,24 +31,13 @@ class WorksManager:
     COMPONENT_FILE = "component_replacements.json"
     CLEANING_FILE = "pc_cleanings.json"
     NOTE_AUTHOR = "IT-BOT"
+    # Keep in sync with frontend/src/pages/database/equipmentModel.js (PC_KEYWORDS).
     PC_KEYWORDS = (
         "системный блок",
         "системный",
         "пк",
         "pc",
         "system unit",
-        "workstation",
-        "desktop",
-        "prodesk",
-        "elitedesk",
-        "optiplex",
-        "thinkcentre",
-        "ноутбук",
-        "notebook",
-        "laptop",
-        "лэптоп",
-        "моноблок",
-        "all-in-one",
     )
     PRINTER_MFU_KEYWORDS = (
         "принтер",

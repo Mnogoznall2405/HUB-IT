@@ -329,6 +329,34 @@ select {
   }
 }
 
+@keyframes chat-folder-tab-shimmer {
+  0% {
+    background-position: -180% 0;
+  }
+  100% {
+    background-position: 180% 0;
+  }
+}
+
+.chat-folder-tab-shimmer {
+  background-image: linear-gradient(
+    110deg,
+    var(--chat-folder-tab-active-bg) 0%,
+    var(--chat-folder-tab-active-bg) 34%,
+    rgba(255, 255, 255, 0.34) 50%,
+    var(--chat-folder-tab-active-bg) 66%,
+    var(--chat-folder-tab-active-bg) 100%
+  );
+  background-size: 220% 100%;
+  animation: chat-folder-tab-shimmer 2.8s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chat-folder-tab-shimmer {
+    animation: none;
+  }
+}
+
 .skeleton {
   background: linear-gradient(
     90deg,
@@ -370,5 +398,69 @@ select {
 
   .no-print {
     display: none !important;
+  }
+}
+
+@keyframes login-ambient-drift-a {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(24px, 18px, 0);
+  }
+}
+
+@keyframes login-ambient-drift-b {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+
+  50% {
+    transform: translate3d(-24px, -16px, 0);
+  }
+}
+
+.login-ambient-blob {
+  position: absolute;
+  pointer-events: none;
+  border-radius: 9999px;
+  filter: blur(130px);
+  will-change: transform;
+}
+
+.login-ambient-blob--primary {
+  left: -18%;
+  top: -18%;
+  width: 38rem;
+  height: 38rem;
+  background: rgb(14 116 144 / 0.18);
+  animation: login-ambient-drift-a 18s ease-in-out infinite;
+}
+
+.login-ambient-blob--secondary {
+  right: -14%;
+  bottom: -20%;
+  width: 32rem;
+  height: 32rem;
+  background: rgb(4 120 87 / 0.12);
+  animation: login-ambient-drift-b 20s ease-in-out infinite;
+}
+
+@media (max-width: 767px) {
+  .login-mobile-shell .login-mobile-card,
+  .login-mobile-shell [data-testid="password-auth-form"] input,
+  .login-mobile-shell [data-testid="password-auth-form"] textarea,
+  .login-mobile-shell [data-testid="biometric-hero-button"] {
+    backdrop-filter: none !important;
+    -webkit-backdrop-filter: none !important;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .login-ambient-blob {
+    animation: none !important;
   }
 }

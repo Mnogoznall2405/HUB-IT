@@ -2,7 +2,8 @@ $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent $MyInvocation.MyCommand.Path
 $toolsDir = Join-Path $root 'tools'
-$nodeDir = Get-ChildItem -Path $toolsDir -Directory -Filter 'node-v*-win-x64' -ErrorAction SilentlyContinue |
+$nodeDir = Get-ChildItem -Path $toolsDir -Directory -Filter 'node-*-win-x64-*' -ErrorAction SilentlyContinue |
+    Where-Object { Test-Path (Join-Path $_.FullName 'node.exe') } |
     Sort-Object Name -Descending |
     Select-Object -First 1
 

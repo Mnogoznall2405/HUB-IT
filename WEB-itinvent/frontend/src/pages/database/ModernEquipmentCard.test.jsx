@@ -43,12 +43,11 @@ describe('ModernEquipmentCard', () => {
     const onAction = vi.fn();
     renderCard({ onAction });
 
-    expect(screen.getByText('LaserJet')).toBeInTheDocument();
-    expect(screen.getByText('INV: 1001')).toBeInTheDocument();
+    expect(screen.getByText('1001 · LaserJet')).toBeInTheDocument();
 
-    fireEvent.click(screen.getByText('LaserJet'));
+    fireEvent.click(screen.getByText('1001 · LaserJet'));
 
-    expect(screen.getByText('Серийный номер')).toBeInTheDocument();
+    expect(screen.getByText(/S\/N:/)).toBeInTheDocument();
     expect(screen.getByText('Office')).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole('button', { name: /Перемещение с актом/ }));
@@ -56,12 +55,18 @@ describe('ModernEquipmentCard', () => {
     expect(onAction).toHaveBeenCalledWith('transfer', item);
   });
 
+  it('hides the selection checkbox until selection mode is enabled', () => {
+    renderCard({ onToggleSelect: vi.fn(), selectionMode: false });
+
+    expect(screen.queryByTestId('database-mobile-select-1001')).not.toBeInTheDocument();
+  });
+
   it('toggles selection from the checkbox area and from card tap in selection mode', () => {
     const onToggleSelect = vi.fn();
     renderCard({ onToggleSelect, selectionMode: true });
 
     fireEvent.click(screen.getByTestId('database-mobile-select-1001'));
-    fireEvent.click(screen.getByText('LaserJet'));
+    fireEvent.click(screen.getByText('1001 · LaserJet'));
 
     expect(onToggleSelect).toHaveBeenNthCalledWith(1, '1001');
     expect(onToggleSelect).toHaveBeenNthCalledWith(2, '1001');

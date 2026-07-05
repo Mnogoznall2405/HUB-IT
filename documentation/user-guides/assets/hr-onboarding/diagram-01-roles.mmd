@@ -1,0 +1,23 @@
+flowchart TB
+    subgraph subjects [Subjekty_PDn]
+        Candidate[Soisatel]
+    end
+    subgraph operator [Operator_PDn]
+        EMP[Rabotodatel]
+        HR[Kadry]
+        SEC[Otvetstvennyj_za_PDn]
+    end
+    subgraph internal [Vnutrennie_poluchateli]
+        ACC[Buhgalteriya]
+        SB[Sluzhba_bezopasnosti]
+    end
+    subgraph external [Obrabotchiki_po_dogovoru]
+        HOST[Hosting_RF]
+        KEDO[KEDO_provajder]
+    end
+    Candidate -->|personalnaya_ssylka| EMP
+    HR -->|vnutrennij_dostup| EMP
+    EMP -->|rol_i_minimum| ACC
+    EMP -->|rol_i_minimum| SB
+    EMP -->|dogovor_porucheniya| HOST
+    EMP -->|dogovor_porucheniya| KEDO

@@ -388,6 +388,10 @@ export function buildChatUiTokens(theme, options = {}) {
 
     jumpPillBg: dark ? accentDark : accent,
     jumpPillText: '#ffffff',
+    jumpFabBg: dark ? '#2f3948' : alpha('#ffffff', 0.96),
+    jumpFabIcon: dark ? 'rgba(255,255,255,0.74)' : '#5f6b76',
+    jumpFabHoverBg: dark ? '#384352' : '#eef3f7',
+    jumpFabShadow: dark ? '0 4px 14px rgba(0,0,0,0.34)' : '0 4px 14px rgba(80,104,128,0.16)',
 
     headerActionBg: dark ? 'transparent' : alpha('#5f6b76', 0.06),
     headerActionActiveBg: dark ? alpha(accentDark, 0.18) : alpha(accent, 0.12),

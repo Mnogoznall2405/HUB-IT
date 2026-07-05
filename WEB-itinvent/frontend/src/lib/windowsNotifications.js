@@ -144,11 +144,13 @@ export async function requestBrowserNotificationPermission() {
   return normalizePermission(result);
 }
 
+import { getTaskNotificationPath } from './taskNavigation';
+
 export function getHubNotificationNavigateTo(item) {
   const entityType = String(item?.entity_type || '').trim().toLowerCase();
   const entityId = String(item?.entity_id || '').trim();
   if (entityType === 'task' && entityId) {
-    return `/tasks?task=${encodeURIComponent(entityId)}&task_tab=comments`;
+    return getTaskNotificationPath(item);
   }
   if (entityType === 'announcement' && entityId) {
     return `/dashboard?announcement=${encodeURIComponent(entityId)}`;

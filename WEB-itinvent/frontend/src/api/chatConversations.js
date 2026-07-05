@@ -12,6 +12,11 @@ export const chatConversationsAPI = {
     });
     return response.data;
   },
+
+  ensureNotesConversation: async () => {
+    const response = await apiClient.post('/chat/conversations/notes');
+    return response.data;
+  },
 };
 
 export default chatConversationsAPI;

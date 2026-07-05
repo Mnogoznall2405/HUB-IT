@@ -27,9 +27,10 @@ if str(WEB_ROOT) not in sys.path:
     sys.path.insert(0, str(WEB_ROOT))
 
 from backend.appdb.models import AppBase, AppUser
-from backend.appdb.tickets_models import TicketEmployee, TicketObject, TicketRequest
+from backend.appdb.tickets_models import TicketEmployee, TicketEmployeeDocument, TicketObject, TicketRequest
 from backend.services.tickets_service import (
     CreateRequestDTO,
+    MASKED_VALUE,
     Pagination,
     PagedResult,
     RequestFilters,
@@ -154,7 +155,7 @@ def _create_sample_request(service, **overrides) -> dict:
     defaults = {
         "employee_id": seed["emp1_id"],
         "object_id": seed["obj1_id"],
-        "status": "new",
+        "status": "not_started",
         "assignee_id": seed["user_id"],
         "route": "Москва - Камчатка",
         "total_cost": Decimal("15000.00"),
@@ -181,7 +182,7 @@ class TestCreateRequest:
         assert result["id"] is not None
         assert result["employee_id"] == seed["emp1_id"]
         assert result["object_id"] == seed["obj1_id"]
-        assert result["status"] == "new"
+        assert result["status"] == "not_started"
         assert result["version"] == 1
         assert result["source"] == "manual"
         assert result["is_urgent"] is False
@@ -194,7 +195,7 @@ class TestCreateRequest:
         dto = CreateRequestDTO(
             employee_id=seed["emp1_id"],
             object_id=seed["obj2_id"],
-            status="in_progress",
+            status="at_cashier",
             assignee_id=seed["user_id"],
             submitted_at=now,
             departure_date=now,
@@ -206,7 +207,7 @@ class TestCreateRequest:
         )
         result = service.create_request(dto)
 
-        assert result["status"] == "in_progress"
+        assert result["status"] == "at_cashier"
         assert result["assignee_id"] == seed["user_id"]
         assert result["route"] == "Москва - Магадан - Москва"
         assert result["total_cost"] == "45000.50"
@@ -433,22 +434,22 @@ class TestListRequestsFilters:
         assert result.total == 2
 
     def test_filter_by_status(self, service):
-        _create_sample_request(service, status="new")
-        _create_sample_request(service, status="in_progress")
-        _create_sample_request(service, status="new")
+        _create_sample_request(service, status="not_started")
+        _create_sample_request(service, status="at_cashier")
+        _create_sample_request(service, status="not_started")
 
-        filters = RequestFilters(statuses=["new"])
+        filters = RequestFilters(statuses=["not_started"])
         result = service.list_requests(filters=filters)
         assert result.total == 2
         for item in result.items:
-            assert item["status"] == "new"
+            assert item["status"] == "not_started"
 
     def test_filter_by_multiple_statuses(self, service):
-        _create_sample_request(service, status="new")
-        _create_sample_request(service, status="in_progress")
+        _create_sample_request(service, status="not_started")
+        _create_sample_request(service, status="at_cashier")
         _create_sample_request(service, status="purchased")
 
-        filters = RequestFilters(statuses=["new", "in_progress"])
+        filters = RequestFilters(statuses=["not_started", "at_cashier"])
         result = service.list_requests(filters=filters)
         assert result.total == 2
 
@@ -485,20 +486,20 @@ class TestListRequestsFilters:
     def test_combined_filters_and_logic(self, service):
         seed = service._seed
         # Match both filters
-        _create_sample_request(service, object_id=seed["obj1_id"], status="new")
+        _create_sample_request(service, object_id=seed["obj1_id"], status="not_started")
         # Match only object
-        _create_sample_request(service, object_id=seed["obj1_id"], status="in_progress")
+        _create_sample_request(service, object_id=seed["obj1_id"], status="at_cashier")
         # Match only status
-        _create_sample_request(service, object_id=seed["obj2_id"], status="new")
+        _create_sample_request(service, object_id=seed["obj2_id"], status="not_started")
 
         filters = RequestFilters(
             object_ids=[seed["obj1_id"]],
-            statuses=["new"],
+            statuses=["not_started"],
         )
         result = service.list_requests(filters=filters)
         assert result.total == 1
         assert result.items[0]["object_id"] == seed["obj1_id"]
-        assert result.items[0]["status"] == "new"
+        assert result.items[0]["status"] == "not_started"
 
 
 # ---------------------------------------------------------------------------
@@ -574,14 +575,14 @@ class TestListRequestsSearch:
     def test_search_combined_with_filters(self, service):
         seed = service._seed
         # Match both search and filter (use phone for reliable SQLite search)
-        _create_sample_request(service, employee_id=seed["emp1_id"], status="new")
+        _create_sample_request(service, employee_id=seed["emp1_id"], status="not_started")
         # Match search but not filter
-        _create_sample_request(service, employee_id=seed["emp1_id"], status="in_progress")
+        _create_sample_request(service, employee_id=seed["emp1_id"], status="at_cashier")
         # Match filter but not search
-        _create_sample_request(service, employee_id=seed["emp2_id"], status="new")
+        _create_sample_request(service, employee_id=seed["emp2_id"], status="not_started")
 
         # Search by phone substring (ASCII, works in SQLite)
-        filters = RequestFilters(search="900123", statuses=["new"])
+        filters = RequestFilters(search="900123", statuses=["not_started"])
         result = service.list_requests(filters=filters)
         assert result.total == 1
 
@@ -603,3 +604,104 @@ class TestListRequestsSearch:
         # Should find at least the request with that ID
         found_ids = [item["id"] for item in result.items]
         assert r1["id"] in found_ids
+
+
+class TestListRequestsDenorm:
+    def test_list_includes_employee_and_document_fields_masked(self, service):
+        from backend.appdb.tickets_models import TicketEmployeeDocument
+        from backend.services.secret_crypto_service import encrypt_secret
+
+        with service._test_session_factory() as session:
+            emp = TicketEmployee(
+                full_name="Петров Пётр",
+                department="ИТ",
+                position="Инженер",
+                phone="+79001112233",
+                date_of_birth_enc=encrypt_secret("1985-02-10"),
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(emp)
+            session.flush()
+            doc = TicketEmployeeDocument(
+                employee_id=emp.id,
+                passport_series_enc=encrypt_secret("4010"),
+                passport_number_enc=encrypt_secret("123456"),
+                issued_by_enc=encrypt_secret("ОВД"),
+                issuer_code_enc=encrypt_secret("770-001"),
+                birth_place_enc=encrypt_secret("СПб"),
+                registration_address_enc=encrypt_secret("ул. Тестовая, 1"),
+                issue_date=datetime(2015, 1, 1, tzinfo=timezone.utc),
+                is_current=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(doc)
+            obj = TicketObject(code="TST", name="Тест", region="Регион", is_active=True)
+            session.add(obj)
+            session.flush()
+            req = TicketRequest(
+                employee_id=emp.id,
+                object_id=obj.id,
+                status="not_started",
+                note="Тестовая заявка",
+                refund_loss=Decimal("100.00"),
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(req)
+
+        result = service.list_requests(user_permissions=["tickets.read"])
+        assert result.total == 1
+        row = result.items[0]
+        assert row["employee_name"] == "Петров Пётр"
+        assert row["department"] == "ИТ"
+        assert row["position"] == "Инженер"
+        assert row["object_code"] == "TST"
+        assert row["note"] == "Тестовая заявка"
+        assert row["passport_series"] == MASKED_VALUE
+        assert row["issuer_code"] == MASKED_VALUE
+
+    def test_list_decrypts_personal_data_with_permission(self, service):
+        from backend.appdb.tickets_models import TicketEmployeeDocument
+        from backend.services.secret_crypto_service import encrypt_secret
+
+        with service._test_session_factory() as session:
+            emp = TicketEmployee(
+                full_name="Сидоров",
+                status="active",
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(emp)
+            session.flush()
+            doc = TicketEmployeeDocument(
+                employee_id=emp.id,
+                passport_series_enc=encrypt_secret("4500"),
+                passport_number_enc=encrypt_secret("999888"),
+                issued_by_enc=encrypt_secret("ОВД"),
+                is_current=True,
+                created_at=datetime.now(timezone.utc),
+                updated_at=datetime.now(timezone.utc),
+            )
+            session.add(doc)
+            obj = TicketObject(code="ABC", name="Объект", region="Регион", is_active=True)
+            session.add(obj)
+            session.flush()
+            session.add(
+                TicketRequest(
+                    employee_id=emp.id,
+                    object_id=obj.id,
+                    status="not_started",
+                    created_at=datetime.now(timezone.utc),
+                    updated_at=datetime.now(timezone.utc),
+                )
+            )
+
+        result = service.list_requests(
+            user_permissions=["tickets.read", "tickets.personal_data.read"],
+        )
+        row = result.items[0]
+        assert row["passport_series"] == "4500"
+        assert row["passport_number"] == "999888"

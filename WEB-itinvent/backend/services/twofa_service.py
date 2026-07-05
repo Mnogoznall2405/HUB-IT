@@ -75,10 +75,23 @@ class TwoFactorService:
     def decrypt_secret(self, encrypted_secret: str | None) -> str:
         return decrypt_secret(encrypted_secret)
 
+    def resolve_totp_display_label(self, issuer: str | None = None) -> str:
+        return str(issuer or config.security.totp_issuer or "HUB-IT").strip() or "HUB-IT"
+
+    def resolve_totp_issuer_domain(self) -> str:
+        rp_id = str(config.security.webauthn_rp_id or "").strip()
+        if rp_id:
+            return rp_id
+        return self.resolve_totp_display_label()
+
     def build_otpauth_uri(self, *, secret: str, username: str, issuer: str | None = None) -> str:
         account_name = urllib.parse.quote(str(username or "").strip(), safe="")
-        issuer_name = urllib.parse.quote(str(issuer or config.security.totp_issuer or "HUB-IT").strip(), safe="")
-        return f"otpauth://totp/{issuer_name}:{account_name}?secret={secret}&issuer={issuer_name}&digits=6&period=30"
+        display_label = urllib.parse.quote(self.resolve_totp_display_label(issuer), safe="")
+        issuer_domain = urllib.parse.quote(self.resolve_totp_issuer_domain(), safe="")
+        return (
+            f"otpauth://totp/{display_label}:{account_name}"
+            f"?secret={secret}&issuer={issuer_domain}&digits=6&period=30"
+        )
 
     def build_qr_svg(self, otpauth_uri: str) -> str | None:
         try:

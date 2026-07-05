@@ -165,6 +165,24 @@ def test_hub_service_supports_app_db_backend(temp_dir, monkeypatch):
     assert tasks["total"] == 1
     assert tasks["items"][0]["id"] == task["id"]
 
+    lock_entries: list[str] = []
+    real_lock = hub_service_module.RLock()
+
+    class _TrackingLock:
+        def __enter__(self):
+            lock_entries.append("enter")
+            return real_lock.__enter__()
+
+        def __exit__(self, exc_type, exc, tb):
+            return real_lock.__exit__(exc_type, exc, tb)
+
+    service._lock = _TrackingLock()
+    service.list_tasks(user_id=2, scope="my", role_scope="assignee", limit=20, offset=0)
+    service.get_unread_counts(user_id=2)
+    service.poll_notifications(user_id=2, limit=20)
+    service.get_task(task["id"], user_id=2)
+    assert lock_entries == []
+
     announcement = service.create_announcement(
         payload={
             "title": "App DB Announcement",

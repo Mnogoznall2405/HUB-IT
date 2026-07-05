@@ -14,7 +14,7 @@ from backend.database import queries
 from backend.database.connection import get_db
 from backend.database.equipment_db import invalidate_equipment_cache
 from backend.models.auth import User
-from backend.services.authorization_service import PERM_DATABASE_WRITE
+from backend.services.authorization_service import PERM_DATABASE_DELETE, PERM_DATABASE_WRITE
 from backend.models.equipment import (
     EquipmentSearchResponse,
     EmployeeSearchResponse,
@@ -32,6 +32,7 @@ from backend.models.equipment import (
     ConsumableConsumeResponse,
     ConsumableQtyUpdateRequest,
     ConsumableQtyUpdateResponse,
+    ConsumableDeleteResponse,
     TransferActOnlyRequest,
     TransferExecuteRequest,
     TransferLocationRequest,
@@ -1159,6 +1160,30 @@ async def update_consumable_qty(
     message = str(result.get("message") or "Failed to update consumable quantity")
     if message == "Consumable not found":
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
+
+
+@router.delete("/consumables/{item_id}", response_model=ConsumableDeleteResponse)
+async def delete_consumable(
+    item_id: int,
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_DELETE)),
+):
+    """Hard-delete one consumable card from ITEMS (CI_TYPE=4)."""
+    del current_user
+    result = queries.delete_consumable_by_id(item_id, db_id=db_id)
+    if result.get("success"):
+        invalidate_equipment_cache(db_id)
+        return ConsumableDeleteResponse(**result)
+
+    code = str(result.get("code") or "").strip().lower()
+    message = result.get("message") or "Failed to delete consumable"
+    if code == "not_found":
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=message)
+    if code == "has_dependencies":
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=message)
+    if code == "invalid_item_id":
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
     raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=message)
 
 

@@ -209,6 +209,13 @@ def _initialize_app_schema_uncached(database_url: str | None = None) -> None:
                 connection.execute(text("ALTER TABLE trusted_devices ADD COLUMN expires_at DATETIME NULL"))
             if trusted_device_columns:
                 connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_trusted_devices_expires_at ON trusted_devices(expires_at)"))
+            session_columns = {
+                str(row[1] or "").strip().lower()
+                for row in connection.execute(text("PRAGMA table_info('sessions')"))
+            }
+            if session_columns and "trusted_device_id" not in session_columns:
+                connection.execute(text("ALTER TABLE sessions ADD COLUMN trusted_device_id VARCHAR(64) NULL"))
+                connection.execute(text("CREATE INDEX IF NOT EXISTS ix_app_sessions_trusted_device_id ON sessions(trusted_device_id)"))
             auth_runtime_columns = {
                 str(row[1] or "").strip().lower()
                 for row in connection.execute(text("PRAGMA table_info('auth_runtime_items')"))

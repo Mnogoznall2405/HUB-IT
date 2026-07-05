@@ -191,6 +191,14 @@ class ConsumableQtyUpdateResponse(BaseModel):
     message: str = Field(..., description="Operation message")
 
 
+class ConsumableDeleteResponse(BaseModel):
+    """Result of consumable hard-delete operation."""
+    success: bool = Field(..., description="Deletion status")
+    item_id: Optional[int] = Field(None, description="Deleted ITEMS.ID")
+    inv_no: Optional[str] = Field(None, description="Inventory number")
+    message: str = Field(..., description="Operation message")
+
+
 class TransferItemResult(BaseModel):
     """Result of transfer operation for a single item."""
     inv_no: str = Field(..., description="Inventory number")
@@ -308,7 +316,6 @@ class UploadedActDraftResponse(BaseModel):
     """Parsed uploaded act draft."""
     draft_id: str = Field(..., description="Draft identifier")
     file_name: str = Field(..., description="Uploaded file name")
-    document_title: str = Field(..., description="Detected document title")
     from_employee: str = Field(default="", description="Detected old employee")
     to_employee: str = Field(default="", description="Detected new employee")
     doc_date: Optional[str] = Field(None, description="Detected document date (YYYY-MM-DD)")
@@ -320,7 +327,6 @@ class UploadedActDraftResponse(BaseModel):
 class UploadedActCommitRequest(BaseModel):
     """Commit request for parsed act draft."""
     draft_id: str = Field(..., min_length=1, description="Draft identifier")
-    document_title: Optional[str] = Field(None, description="Final document title")
     from_employee: Optional[str] = Field(None, description="Old employee")
     to_employee: Optional[str] = Field(None, description="New employee")
     doc_date: Optional[str] = Field(None, description="Document date YYYY-MM-DD")

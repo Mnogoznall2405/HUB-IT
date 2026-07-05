@@ -25,10 +25,14 @@ const {
   mockCreateChatSystemNotification,
   mockGetChatNotificationState,
   mockSyncChatPushSubscription,
+  mockClaimChatMessageNotification,
+  mockShouldSkipChatPushForegroundNotification,
   mockLocation,
   mockChatSocketRetain,
   mockChatSocketSubscribeInbox,
   mockChatSocketUnsubscribeInbox,
+  mockChatSocketGetConnectionState,
+  mockPreferences,
 } = vi.hoisted(() => ({
   mockHasPermission: vi.fn(() => true),
   mockNavigate: vi.fn(),
@@ -48,10 +52,16 @@ const {
   mockCreateChatSystemNotification: vi.fn(),
   mockGetChatNotificationState: vi.fn(),
   mockSyncChatPushSubscription: vi.fn(),
+  mockClaimChatMessageNotification: vi.fn((messageId) => Boolean(String(messageId || '').trim())),
+  mockShouldSkipChatPushForegroundNotification: vi.fn(() => false),
   mockLocation: { pathname: '/dashboard', search: '' },
   mockChatSocketRetain: vi.fn(() => vi.fn()),
   mockChatSocketSubscribeInbox: vi.fn(),
   mockChatSocketUnsubscribeInbox: vi.fn(),
+  mockChatSocketGetConnectionState: vi.fn(() => 'disconnected'),
+  mockPreferences: {
+    mobile_bottom_nav_items: ['/dashboard', '/tasks', '/chat', '/mail'],
+  },
 }));
 
 vi.mock('react-router-dom', async () => {
@@ -79,6 +89,12 @@ vi.mock('../../contexts/NotificationContext', () => ({
     clearToastHistory: mockClearToastHistory,
     hasSeenHubNotification: vi.fn(() => false),
     markHubNotificationsSeen: mockMarkHubNotificationsSeen,
+  }),
+}));
+
+vi.mock('../../contexts/PreferencesContext', () => ({
+  usePreferences: () => ({
+    preferences: mockPreferences,
   }),
 }));
 
@@ -113,6 +129,7 @@ vi.mock('../../api/database', () => ({
 vi.mock('../../lib/chatFeature', () => ({
   CHAT_FEATURE_ENABLED: true,
   CHAT_WS_ENABLED: true,
+  TASK_DISCUSSION_CHAT_ENABLED: false,
 }));
 
 vi.mock('../../lib/chatSocket', () => ({
@@ -120,6 +137,7 @@ vi.mock('../../lib/chatSocket', () => ({
     retain: mockChatSocketRetain,
     subscribeInbox: mockChatSocketSubscribeInbox,
     unsubscribeInbox: mockChatSocketUnsubscribeInbox,
+    getConnectionState: mockChatSocketGetConnectionState,
   },
   CHAT_SOCKET_MESSAGE_CREATED_EVENT: 'chat-ws-message-created',
   CHAT_SOCKET_STATUS_EVENT: 'chat-ws-status',
@@ -128,11 +146,14 @@ vi.mock('../../lib/chatSocket', () => ({
 
 vi.mock('../../lib/chatNotifications', () => ({
   buildChatNotificationRoute: ({ conversationId }) => `/chat?conversation=${conversationId}`,
+  claimChatMessageNotification: mockClaimChatMessageNotification,
   createChatSystemNotification: mockCreateChatSystemNotification,
   getChatNotificationState: mockGetChatNotificationState,
   refreshChatNotificationState: vi.fn(),
   setChatForegroundDiagnostic: vi.fn(),
   setChatSocketStatus: vi.fn(),
+  shouldDeliverExternalChatViaPushOnly: vi.fn((state) => Boolean(state?.backgroundCapable || state?.pushSubscribed)),
+  shouldSkipChatPushForegroundNotification: mockShouldSkipChatPushForegroundNotification,
   syncChatPushSubscription: mockSyncChatPushSubscription,
 }));
 
@@ -150,6 +171,90 @@ vi.mock('./ToastHistoryList', () => ({
 }));
 
 import MainLayout from './MainLayout';
+
+const HUB_POLL_UNREAD_COUNTS = {
+  notifications_unread_total: 1,
+  announcements_unread: 0,
+  announcements_ack_pending: 0,
+  tasks_open_total: 1,
+  tasks_open: 1,
+  tasks_new: 1,
+  tasks_assignee_open: 1,
+  tasks_created_open: 0,
+  tasks_controller_open: 0,
+  tasks_review_required: 0,
+  tasks_overdue: 0,
+  tasks_with_unread_comments: 0,
+};
+
+const HUB_POLL_NEW_ITEM = {
+  id: 'hub-1',
+  title: 'Новая задача',
+  body: 'Добавление данных',
+  entity_type: 'task',
+  entity_id: 'task-1',
+  created_at: '2026-03-21T10:00:02Z',
+  unread: 1,
+};
+
+const HUB_POLL_LEGACY_ITEM = {
+  id: 'hub-read-legacy',
+  title: 'Read legacy item',
+  body: 'Should not stay in bell inbox',
+  entity_type: 'task',
+  entity_id: 'task-read',
+  created_at: '2026-03-21T09:55:00Z',
+  unread: 0,
+};
+
+function installHubPollSequenceMock() {
+  let pollCalls = 0;
+
+  mockApiGet.mockImplementation(async (url, options = {}) => {
+    const params = options?.params || {};
+    if (url === '/database/list') {
+      return { data: [{ id: 'default', name: 'Основная БД' }] };
+    }
+    if (url === '/database/current') {
+      return { data: { id: 'default', name: 'Основная БД', locked: false } };
+    }
+    if (url === '/hub/notifications/unread-counts') {
+      return {
+        data: {
+          ...HUB_POLL_UNREAD_COUNTS,
+          notifications_unread_total: 0,
+        },
+      };
+    }
+    if (url === '/hub/notifications/poll') {
+      if (params.unread_only) {
+        return {
+          data: {
+            items: [HUB_POLL_NEW_ITEM],
+            unread_counts: HUB_POLL_UNREAD_COUNTS,
+          },
+        };
+      }
+      pollCalls += 1;
+      return {
+        data: {
+          items: pollCalls >= 2 ? [HUB_POLL_NEW_ITEM] : [HUB_POLL_LEGACY_ITEM],
+          unread_counts: HUB_POLL_UNREAD_COUNTS,
+        },
+      };
+    }
+    return { data: {} };
+  });
+}
+
+async function advanceHubPollInterval() {
+  await act(async () => {
+    vi.advanceTimersByTime(20_000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
 
 function installMatchMedia({ mobile = false, windowControlsOverlay = false } = {}) {
   const previousMatchMedia = window.matchMedia;
@@ -198,7 +303,6 @@ function mockElementHeightsByTestId(heightsByTestId) {
 
 describe('MainLayout hub Windows notifications', () => {
   let visibilityState = 'visible';
-  let pollCallCount = 0;
   let notificationPermission = 'granted';
   let notificationInstances = [];
 
@@ -208,7 +312,6 @@ describe('MainLayout hub Windows notifications', () => {
     window.localStorage.setItem(WINDOWS_NOTIFICATIONS_ENABLED_KEY, '1');
     window.localStorage.setItem(WINDOWS_NOTIFICATIONS_EXPLICITLY_SET_KEY, '1');
     visibilityState = 'hidden';
-    pollCallCount = 0;
     notificationPermission = 'granted';
     notificationInstances = [];
     mockHasPermission.mockReset();
@@ -229,6 +332,8 @@ describe('MainLayout hub Windows notifications', () => {
     mockGetNotificationPreferences.mockReset();
     mockCreateChatSystemNotification.mockReset();
     mockGetChatNotificationState.mockReset();
+    mockClaimChatMessageNotification.mockReset();
+    mockShouldSkipChatPushForegroundNotification.mockReset();
     mockSyncChatPushSubscription.mockReset();
     mockChatSocketRetain.mockClear();
     mockChatSocketSubscribeInbox.mockClear();
@@ -261,7 +366,10 @@ describe('MainLayout hub Windows notifications', () => {
       enabled: true,
       permission: 'granted',
       pushSubscribed: false,
+      socketStatus: 'unknown',
     });
+    mockClaimChatMessageNotification.mockImplementation((messageId) => Boolean(String(messageId || '').trim()));
+    mockShouldSkipChatPushForegroundNotification.mockReturnValue(false);
     window.focus = vi.fn();
     mockLocation.pathname = '/dashboard';
     mockLocation.search = '';
@@ -272,6 +380,9 @@ describe('MainLayout hub Windows notifications', () => {
     });
 
     window.HTMLMediaElement.prototype.play = vi.fn().mockResolvedValue(undefined);
+    window.Audio = vi.fn().mockImplementation(() => ({
+      play: vi.fn().mockResolvedValue(undefined),
+    }));
 
     class MockNotification {
       constructor(title, options) {
@@ -363,32 +474,50 @@ describe('MainLayout hub Windows notifications', () => {
             },
           };
         }
-        pollCallCount += 1;
-        return {
-          data: {
-            items: pollCallCount === 1
-              ? [
-                {
-                  id: 'hub-read-legacy',
-                  title: 'Read legacy item',
-                  body: 'Should not stay in bell inbox',
-                  entity_type: 'task',
-                  entity_id: 'task-read',
-                  created_at: '2026-03-21T09:55:00Z',
-                  unread: 0,
-                },
-              ]
-              : [
+        if (params.since) {
+          return {
+            data: {
+              items: [
                 {
                   id: 'hub-1',
                   title: 'Новая задача',
                   body: 'Добавление данных',
                   entity_type: 'task',
                   entity_id: 'task-1',
-                  created_at: `2026-03-21T10:00:0${pollCallCount}Z`,
+                  created_at: '2026-03-21T10:00:02Z',
                   unread: 1,
                 },
               ],
+              unread_counts: {
+                notifications_unread_total: 1,
+                announcements_unread: 0,
+                announcements_ack_pending: 0,
+                tasks_open_total: 1,
+                tasks_open: 1,
+                tasks_new: 1,
+                tasks_assignee_open: 1,
+                tasks_created_open: 0,
+                tasks_controller_open: 0,
+                tasks_review_required: 0,
+                tasks_overdue: 0,
+                tasks_with_unread_comments: 0,
+              },
+            },
+          };
+        }
+        return {
+          data: {
+            items: [
+              {
+                id: 'hub-read-legacy',
+                title: 'Read legacy item',
+                body: 'Should not stay in bell inbox',
+                entity_type: 'task',
+                entity_id: 'task-read',
+                created_at: '2026-03-21T09:55:00Z',
+                unread: 0,
+              },
+            ],
             unread_counts: {
               notifications_unread_total: 1,
               announcements_unread: 0,
@@ -415,6 +544,8 @@ describe('MainLayout hub Windows notifications', () => {
   });
 
   it('keeps polling in a hidden tab and opens a deep-linked system notification for new hub items', async () => {
+    installHubPollSequenceMock();
+
     render(
       <MainLayout>
         <div>Child content</div>
@@ -433,11 +564,7 @@ describe('MainLayout hub Windows notifications', () => {
       },
     });
 
-    await act(async () => {
-      vi.advanceTimersByTime(20_000);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await advanceHubPollInterval();
 
     expect(notificationInstances).toHaveLength(1);
     expect(mockMarkHubNotificationsSeen).toHaveBeenCalledWith(['hub-1']);
@@ -511,12 +638,14 @@ describe('MainLayout hub Windows notifications', () => {
 
     const appBar = container.querySelector('.MuiAppBar-root');
     expect(appBar).toBeTruthy();
-    expect(within(appBar).queryByText('HUB-IT')).not.toBeNull();
+    expect(within(appBar).queryByText('HUB-IT')).toBeNull();
+    expect(within(appBar).queryByText('Инвентарь')).not.toBeNull();
     expect(within(appBar).queryByRole('combobox')).toBeNull();
   });
 
   it('keeps polling task notifications for users with tasks access but without dashboard access', async () => {
     mockHasPermission.mockImplementation((permission) => permission === 'tasks.read');
+    installHubPollSequenceMock();
 
     render(
       <MainLayout>
@@ -529,11 +658,7 @@ describe('MainLayout hub Windows notifications', () => {
       await Promise.resolve();
     });
 
-    await act(async () => {
-      vi.advanceTimersByTime(20_000);
-      await Promise.resolve();
-      await Promise.resolve();
-    });
+    await advanceHubPollInterval();
 
     const requestedUrls = mockApiGet.mock.calls.map(([url]) => url);
     expect(requestedUrls).toContain('/hub/notifications/poll');
@@ -637,6 +762,46 @@ describe('MainLayout hub Windows notifications', () => {
 
     await act(async () => {
       window.dispatchEvent(new CustomEvent('chat-ws-message-created', { detail: activeConversationDetail }));
+      await Promise.resolve();
+    });
+
+    expect(mockNotifyInfo).not.toHaveBeenCalled();
+    expect(mockCreateChatSystemNotification).not.toHaveBeenCalled();
+  });
+
+  it('does not create a local chat notification when push can deliver it externally', async () => {
+    visibilityState = 'hidden';
+    mockGetChatNotificationState.mockReturnValue({
+      enabled: true,
+      permission: 'granted',
+      pushSubscribed: true,
+      backgroundCapable: true,
+    });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('chat-ws-message-created', {
+        detail: {
+          conversation_id: 'conv-2',
+          payload: {
+            id: 'msg-push-only',
+            conversation_id: 'conv-2',
+            body: 'Push only',
+            sender: { full_name: 'Sender' },
+            is_own: false,
+          },
+        },
+      }));
       await Promise.resolve();
     });
 
@@ -1417,6 +1582,29 @@ describe('MainLayout hub Windows notifications', () => {
     expect(shell.style.getPropertyValue('--app-shell-measured-header-offset')).toBe('0px');
   });
 
+  it('reserves a safe top inset for regular mobile pages with a hidden header', async () => {
+    const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
+
+    try {
+      render(
+        <MainLayout headerMode="hidden">
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId('main-layout-top-spacer')).toHaveStyle({
+        height: 'max(var(--app-shell-top-offset), 10px)',
+      });
+    } finally {
+      restoreMobileMatchMedia();
+    }
+  });
+
   it('uses edge-to-edge mobile content mode only on phones', async () => {
     mockLocation.pathname = '/mail';
     const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
@@ -1459,6 +1647,340 @@ describe('MainLayout hub Windows notifications', () => {
       const desktopMain = screen.getByTestId('main-layout-content');
       expect(desktopMain).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
       expect(desktopMain).toHaveAttribute('data-edge-to-edge-mobile', 'false');
+    } finally {
+      restoreDesktopMatchMedia();
+    }
+  });
+});
+
+describe('MainLayout mobile bottom navigation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    mockHasPermission.mockReset();
+    mockHasPermission.mockImplementation(() => true);
+    mockNavigate.mockReset();
+    mockApiGet.mockReset();
+    mockGetChatUnreadSummary.mockReset();
+    mockGetUnreadCount.mockReset();
+    mockLocation.pathname = '/tasks';
+    mockLocation.search = '';
+    mockPreferences.mobile_bottom_nav_items = ['/dashboard', '/tasks', '/chat', '/mail'];
+    mockApiGet.mockImplementation(async (url) => {
+      if (url === '/database/list') {
+        return { data: [{ id: 'default', name: 'Основная БД' }] };
+      }
+      if (url === '/database/current') {
+        return { data: { id: 'default', name: 'Основная БД', locked: false } };
+      }
+      if (url === '/hub/notifications/unread-counts') {
+        return {
+          data: {
+            notifications_unread_total: 0,
+            tasks_open_total: 4,
+            tasks_open: 4,
+          },
+        };
+      }
+      return { data: {} };
+    });
+    mockGetChatUnreadSummary.mockResolvedValue({ messages_unread_total: 0, conversations_unread: 0 });
+    mockGetUnreadCount.mockResolvedValue({ unread_count: 0 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('hides the global app bar on phones even with default headerMode', async () => {
+    mockLocation.pathname = '/settings';
+    const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
+
+    try {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByTestId('main-layout-app-bar')).toBeNull();
+    } finally {
+      restoreMobileMatchMedia();
+    }
+  });
+
+  it('renders the mobile bottom bar with active tab and task badge', async () => {
+    const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
+
+    try {
+      render(
+        <MainLayout mobileBottomNavMode="auto">
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        await vi.runOnlyPendingTimersAsync();
+      });
+
+      expect(screen.getByTestId('main-layout-mobile-bottom-nav')).toBeInTheDocument();
+      expect(within(screen.getByTestId('main-layout-mobile-bottom-nav')).getAllByRole('button')).toHaveLength(5);
+      expect(screen.getByTestId('main-layout-mobile-bottom-nav-dashboard')).toBeInTheDocument();
+      expect(screen.getByTestId('main-layout-mobile-bottom-nav-tasks')).toHaveClass('Mui-selected');
+      expect(within(screen.getByTestId('main-layout-mobile-bottom-nav-tasks')).getByText('4')).toBeInTheDocument();
+    } finally {
+      restoreMobileMatchMedia();
+    }
+  });
+
+  it('hides the mobile bottom bar when mobileBottomNavMode is hidden', async () => {
+    const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
+
+    try {
+      render(
+        <MainLayout mobileBottomNavMode="hidden">
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId('main-layout-mobile-bottom-nav')).toHaveAttribute('data-mobile-bottom-nav-hidden', 'true');
+    } finally {
+      restoreMobileMatchMedia();
+    }
+  });
+
+  it('does not render the mobile bottom bar on desktop', async () => {
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+
+    try {
+      render(
+        <MainLayout mobileBottomNavMode="auto">
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByTestId('main-layout-mobile-bottom-nav')).toBeNull();
+    } finally {
+      restoreDesktopMatchMedia();
+    }
+  });
+
+  it('hides configured tabs without permission and still shows menu', async () => {
+    mockHasPermission.mockImplementation((permission) => (
+      permission !== 'tasks.read'
+      && permission !== 'chat.read'
+      && permission !== 'mail.access'
+    ));
+    mockLocation.pathname = '/menu';
+    const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
+
+    try {
+      render(
+        <MainLayout mobileBottomNavMode="auto">
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId('main-layout-mobile-bottom-nav')).toBeInTheDocument();
+      expect(screen.getByTestId('main-layout-mobile-bottom-nav-menu')).toBeInTheDocument();
+      expect(screen.queryByTestId('main-layout-mobile-bottom-nav-tasks')).toBeNull();
+      expect(screen.queryByTestId('main-layout-mobile-bottom-nav-chat')).toBeNull();
+      expect(screen.queryByTestId('main-layout-mobile-bottom-nav-mail')).toBeNull();
+    } finally {
+      restoreMobileMatchMedia();
+    }
+  });
+
+  it('marks the active mobile tab from the current route', async () => {
+    mockLocation.pathname = '/chat';
+    const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
+
+    try {
+      render(
+        <MainLayout mobileBottomNavMode="auto">
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId('main-layout-mobile-bottom-nav-chat')).toHaveClass('Mui-selected');
+    } finally {
+      restoreMobileMatchMedia();
+    }
+  });
+
+  it('uses the personalized four items in system order', async () => {
+    mockPreferences.mobile_bottom_nav_items = ['/statistics', '/database', '/tickets', '/address-book'];
+    mockLocation.pathname = '/database';
+    const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
+
+    try {
+      render(
+        <MainLayout mobileBottomNavMode="auto">
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const nav = screen.getByTestId('main-layout-mobile-bottom-nav');
+      const buttons = within(nav).getAllByRole('button');
+      expect(buttons.map((button) => button.getAttribute('data-testid'))).toEqual([
+        'main-layout-mobile-bottom-nav-tickets',
+        'main-layout-mobile-bottom-nav-address-book',
+        'main-layout-mobile-bottom-nav-database',
+        'main-layout-mobile-bottom-nav-statistics',
+        'main-layout-mobile-bottom-nav-menu',
+      ]);
+      expect(screen.getByTestId('main-layout-mobile-bottom-nav-database')).toHaveClass('Mui-selected');
+    } finally {
+      restoreMobileMatchMedia();
+    }
+  });
+
+  it('marks menu active for an accessible route outside the pinned items', async () => {
+    mockLocation.pathname = '/settings';
+    const restoreMobileMatchMedia = installMatchMedia({ mobile: true });
+
+    try {
+      render(
+        <MainLayout mobileBottomNavMode="auto">
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.getByTestId('main-layout-mobile-bottom-nav-menu')).toHaveClass('Mui-selected');
+    } finally {
+      restoreMobileMatchMedia();
+    }
+  });
+});
+
+describe('MainLayout desktop account navigation', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    window.localStorage.clear();
+    mockHasPermission.mockReset();
+    mockHasPermission.mockImplementation(() => true);
+    mockNavigate.mockReset();
+    mockApiGet.mockReset();
+    mockGetChatUnreadSummary.mockReset();
+    mockGetUnreadCount.mockReset();
+    mockLocation.pathname = '/dashboard';
+    mockLocation.search = '';
+    mockPreferences.mobile_bottom_nav_items = ['/dashboard', '/tasks', '/chat', '/mail'];
+    mockApiGet.mockImplementation(async (url) => {
+      if (url === '/database/list') return { data: [{ id: 'default', name: 'Основная БД' }] };
+      if (url === '/database/current') return { data: { id: 'default', name: 'Основная БД', locked: false } };
+      if (url === '/hub/notifications/unread-counts') return { data: { notifications_unread_total: 0 } };
+      return { data: {} };
+    });
+    mockGetChatUnreadSummary.mockResolvedValue({ messages_unread_total: 0, conversations_unread: 0 });
+    mockGetUnreadCount.mockResolvedValue({ unread_count: 0 });
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('persists the tools group state', async () => {
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+    try {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      const toggle = screen.getByTestId('main-layout-sidebar-tools-toggle-desktop');
+      expect(toggle).toHaveAttribute('aria-expanded', 'true');
+      fireEvent.click(toggle);
+      expect(toggle).toHaveAttribute('aria-expanded', 'false');
+      expect(window.localStorage.getItem('sidebar_tools_expanded')).toBe('false');
+    } finally {
+      restoreDesktopMatchMedia();
+    }
+  });
+
+  it('opens the account menu and navigates to profile', async () => {
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+    try {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      fireEvent.click(screen.getByTestId('main-layout-account-button-desktop'));
+      expect(screen.getByRole('menuitem', { name: 'Администрирование' })).toBeInTheDocument();
+      fireEvent.click(screen.getByRole('menuitem', { name: 'Профиль' }));
+      expect(mockNavigate).toHaveBeenCalledWith('/profile');
+    } finally {
+      restoreDesktopMatchMedia();
+    }
+  });
+
+  it('restores the compact icon rail from local storage', async () => {
+    window.localStorage.setItem('sidebar_collapsed', 'true');
+    const restoreDesktopMatchMedia = installMatchMedia({ mobile: false });
+    try {
+      render(
+        <MainLayout>
+          <div>Child content</div>
+        </MainLayout>,
+      );
+
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(screen.queryByTestId('main-layout-account-button-mobile')).toBeNull();
+      expect(screen.getByRole('button', { name: 'Развернуть боковое меню' })).toBeInTheDocument();
+      expect(screen.getByTestId('main-layout-account-button-desktop')).toHaveAttribute('aria-label', 'Открыть меню профиля');
     } finally {
       restoreDesktopMatchMedia();
     }

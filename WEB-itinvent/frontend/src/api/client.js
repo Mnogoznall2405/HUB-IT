@@ -21,6 +21,7 @@ import { chatMessageSendingAPI } from './chatMessageSending';
 import { chatAttachmentsAPI } from './chatAttachments';
 import { chatUploadSessionsAPI } from './chatUploadSessions';
 import { chatFileUploadsAPI } from './chatFileUploads';
+import { chatFoldersAPI } from './chatFolders';
 import { equipmentComputersAPI } from './equipmentComputers';
 import { equipmentConsumablesAPI } from './equipmentConsumables';
 import { equipmentDirectoriesAPI } from './equipmentDirectories';
@@ -33,6 +34,7 @@ import { hubDashboardAPI } from './hubDashboard';
 import { hubMarkdownAPI } from './hubMarkdown';
 import { hubNotificationsAPI } from './hubNotifications';
 import { hubTaskActivityAPI } from './hubTaskActivity';
+import { hubTaskDiscussionAPI } from './hubTaskDiscussion';
 import { hubTaskAnalyticsAPI } from './hubTaskAnalytics';
 import { hubTaskFilesAPI } from './hubTaskFiles';
 import { hubTaskSupportAPI } from './hubTaskSupport';
@@ -446,6 +448,10 @@ export const authAPI = {
     return authUserAdminAPI.getTaskDelegates;
   },
 
+  get getTaskDelegatesBulk() {
+    return authUserAdminAPI.getTaskDelegatesBulk;
+  },
+
   get updateTaskDelegates() {
     return authUserAdminAPI.updateTaskDelegates;
   },
@@ -550,8 +556,16 @@ export const chatAPI = {
     return chatConversationDetailsAPI.updateConversationSettings;
   },
 
+  get deleteConversation() {
+    return chatConversationDetailsAPI.deleteConversation;
+  },
+
   get createDirectConversation() {
     return chatConversationsAPI.createDirectConversation;
+  },
+
+  get ensureNotesConversation() {
+    return chatConversationsAPI.ensureNotesConversation;
   },
 
   get createGroupConversation() {
@@ -590,8 +604,16 @@ export const chatAPI = {
     return chatThreadMessagesAPI.deleteChatMessage;
   },
 
+  get editChatMessage() {
+    return chatThreadMessagesAPI.editChatMessage;
+  },
+
   get getThreadBootstrap() {
     return chatThreadMessagesAPI.getThreadBootstrap;
+  },
+
+  get hydrateThreadMessages() {
+    return chatThreadMessagesAPI.hydrateThreadMessages;
   },
 
   get getMessages() {
@@ -664,6 +686,38 @@ export const chatAPI = {
 
   get toggleReaction() {
     return chatThreadMessagesAPI.toggleReaction;
+  },
+
+  get listChatFolders() {
+    return chatFoldersAPI.listFolders;
+  },
+
+  get createChatFolder() {
+    return chatFoldersAPI.createFolder;
+  },
+
+  get updateChatFolder() {
+    return chatFoldersAPI.updateFolder;
+  },
+
+  get deleteChatFolder() {
+    return chatFoldersAPI.deleteFolder;
+  },
+
+  get getChatFolder() {
+    return chatFoldersAPI.getFolder;
+  },
+
+  get setChatFolderConversations() {
+    return chatFoldersAPI.setFolderConversations;
+  },
+
+  get addChatFolderConversation() {
+    return chatFoldersAPI.addFolderConversation;
+  },
+
+  get removeChatFolderConversation() {
+    return chatFoldersAPI.removeFolderConversation;
   },
 };
 
@@ -810,6 +864,10 @@ export const hubAPI = {
     return hubTasksAPI.reviewTask;
   },
 
+  get reopenTask() {
+    return hubTasksAPI.reopenTask;
+  },
+
   get downloadTaskAttachment() {
     return hubTaskFilesAPI.downloadTaskAttachment;
   },
@@ -834,6 +892,14 @@ export const hubAPI = {
     return hubTaskActivityAPI.getTaskStatusLog;
   },
 
+  get getTaskDiscussion() {
+    return hubTaskDiscussionAPI.getTaskDiscussion;
+  },
+
+  get openTaskDiscussion() {
+    return hubTaskDiscussionAPI.openTaskDiscussion;
+  },
+
 };
 
 export {
@@ -854,6 +920,7 @@ export {
   chatAttachmentsAPI,
   chatUploadSessionsAPI,
   chatFileUploadsAPI,
+  chatFoldersAPI,
   equipmentComputersAPI,
   equipmentConsumablesAPI,
   equipmentDirectoriesAPI,
@@ -866,6 +933,7 @@ export {
   hubMarkdownAPI,
   hubNotificationsAPI,
   hubTaskActivityAPI,
+  hubTaskDiscussionAPI,
   hubTaskAnalyticsAPI,
   hubTaskFilesAPI,
   hubTaskSupportAPI,
@@ -963,6 +1031,10 @@ export const mailAPI = {
 
   get markAllRead() {
     return mailMessageActionsAPI.markAllRead;
+  },
+
+  get setImportance() {
+    return mailMessageActionsAPI.setImportance;
   },
 
   get saveDraftMultipart() {
@@ -1110,6 +1182,14 @@ export const equipmentAPI = {
 
   get getAgentComputerChanges() {
     return equipmentComputersAPI.getAgentComputerChanges;
+  },
+
+  get getComputersSummary() {
+    return equipmentComputersAPI.getComputersSummary;
+  },
+
+  get getAgentComputer() {
+    return equipmentComputersAPI.getAgentComputer;
   },
 
   get searchBySerial() {
@@ -1260,6 +1340,10 @@ export const equipmentAPI = {
     return equipmentConsumablesAPI.updateConsumableQty;
   },
 
+  get deleteConsumable() {
+    return equipmentConsumablesAPI.deleteConsumable;
+  },
+
   get transfer() {
     return equipmentTransferActsAPI.transfer;
   },
@@ -1358,5 +1442,4 @@ export const scanAPI = {
 };
 
 export { adUsersAPI } from './adUsers';
-export { addressBookAPI } from './addressBook';
 export { ticketsAPI } from './tickets';

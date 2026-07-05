@@ -4,8 +4,23 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import Tasks from './Tasks';
-import { hubAPI } from '../api/client';
+import hubTasksAPI from '../api/hubTasks';
+import hubTaskSupportAPI from '../api/hubTaskSupport';
+import hubTaskAnalyticsAPI from '../api/hubTaskAnalytics';
+import hubTaskActivityAPI from '../api/hubTaskActivity';
+import hubTaskFilesAPI from '../api/hubTaskFiles';
+import hubTaskDiscussionAPI from '../api/hubTaskDiscussion';
+import hubMarkdownAPI from '../api/hubMarkdown';
 import { departmentsAPI } from '../api/departments';
+
+const authState = vi.hoisted(() => ({
+  user: { id: 1, role: 'admin', username: 'admin', permissions: [] },
+}));
+
+const chatFeatureFlags = vi.hoisted(() => ({
+  chat: false,
+  taskDiscussion: false,
+}));
 
 function installMatchMedia({ mobile = false } = {}) {
   window.matchMedia = vi.fn().mockImplementation((query) => ({
@@ -20,34 +35,78 @@ function installMatchMedia({ mobile = false } = {}) {
   }));
 }
 
-vi.mock('../api/client', () => ({
-  hubAPI: {
+vi.mock('../api/hubTasks', () => ({
+  default: {
+    getTasks: vi.fn(),
+    getTask: vi.fn(),
+    createTask: vi.fn(),
+    updateTask: vi.fn(),
+    deleteTask: vi.fn(),
+    startTask: vi.fn(),
+    submitTask: vi.fn(),
+    reviewTask: vi.fn(),
+    reopenTask: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubTaskSupport', () => ({
+  default: {
     getAssignees: vi.fn(),
     getControllers: vi.fn(),
     getTaskProjects: vi.fn(),
     getTaskObjects: vi.fn(),
+    createTaskProject: vi.fn(),
+    createTaskObject: vi.fn(),
+    updateTaskProject: vi.fn(),
+    updateTaskObject: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubTaskAnalytics', () => ({
+  default: {
     getTaskAnalytics: vi.fn(),
     exportTaskAnalyticsExcel: vi.fn(),
-    getTasks: vi.fn(),
-    getTask: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubTaskActivity', () => ({
+  default: {
     getTaskComments: vi.fn(),
     getTaskStatusLog: vi.fn(),
     markTaskCommentsSeen: vi.fn(),
-    transformMarkdown: vi.fn(),
+    addTaskComment: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubTaskFiles', () => ({
+  default: {
+    uploadTaskAttachment: vi.fn(),
     downloadTaskAttachment: vi.fn(),
     downloadTaskReport: vi.fn(),
-    createTask: vi.fn(),
-    createTaskProject: vi.fn(),
-    createTaskObject: vi.fn(),
-    reviewTask: vi.fn(),
-    startTask: vi.fn(),
-    submitTask: vi.fn(),
-    deleteTask: vi.fn(),
-    updateTask: vi.fn(),
-    updateTaskProject: vi.fn(),
-    updateTaskObject: vi.fn(),
-    uploadTaskAttachment: vi.fn(),
-    addTaskComment: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubTaskDiscussion', () => ({
+  default: {
+    openTaskDiscussion: vi.fn(),
+  },
+}));
+
+vi.mock('../api/hubMarkdown', () => ({
+  default: {
+    transformMarkdown: vi.fn(),
+  },
+}));
+
+vi.mock('../lib/chatFeature', () => ({
+  get CHAT_FEATURE_ENABLED() {
+    return chatFeatureFlags.chat;
+  },
+  get TASK_DISCUSSION_CHAT_ENABLED() {
+    return chatFeatureFlags.taskDiscussion;
+  },
+  get CHAT_WS_ENABLED() {
+    return false;
   },
 }));
 
@@ -58,14 +117,40 @@ vi.mock('../api/departments', () => ({
 }));
 
 vi.mock('../contexts/AuthContext', () => ({
-  useAuth: () => ({
-    user: { id: 1, role: 'admin', username: 'admin' },
-    hasPermission: () => true,
-  }),
+  useAuth: () => {
+    const hasPermission = (permission) => {
+      const target = String(permission || '').trim();
+      if (!target) return false;
+      if (String(authState.user?.role || '').trim().toLowerCase() === 'admin') return true;
+      const permissions = Array.isArray(authState.user?.permissions) ? authState.user.permissions : [];
+      return permissions.includes(target);
+    };
+    return {
+      user: authState.user,
+      hasPermission,
+      hasAnyPermission: (permissions) => Array.isArray(permissions) && permissions.some((permission) => hasPermission(permission)),
+    };
+  },
+}));
+
+vi.mock('../components/layout/ShellNotificationsButton', () => ({
+  default: () => <button type="button" data-testid="shell-notifications-button">Уведомления</button>,
 }));
 
 vi.mock('../components/layout/MainLayout', () => ({
-  default: ({ children }) => <div data-testid="main-layout">{children}</div>,
+  default: ({
+    children,
+    contentMode = 'default',
+    mobileBottomNavMode = 'auto',
+  }) => (
+    <div
+      data-testid="main-layout"
+      data-content-mode={contentMode}
+      data-mobile-bottom-nav-mode={mobileBottomNavMode}
+    >
+      {children}
+    </div>
+  ),
 }));
 
 vi.mock('../components/layout/PageShell', () => ({
@@ -113,18 +198,43 @@ function LocationProbe() {
 async function selectAutocompleteOption(label, query, optionText, scope = screen) {
   const queries = typeof scope?.getByRole === 'function' ? scope : within(scope);
   const input = queries.getByRole('combobox', { name: label });
+  fireEvent.focus(input);
   fireEvent.change(input, { target: { value: query } });
+  fireEvent.input(input, { target: { value: query } });
   await waitFor(() => {
     expect(input.getAttribute('aria-controls')).toBeTruthy();
-  });
+  }, { timeout: 4000 });
+  await waitFor(() => {
+    const listboxId = input.getAttribute('aria-controls');
+    const listbox = document.getElementById(listboxId);
+    expect(listbox).toBeTruthy();
+    expect(within(listbox).getByText(optionText)).toBeInTheDocument();
+  }, { timeout: 3000 });
   const listboxId = input.getAttribute('aria-controls');
-  const listbox = await waitFor(() => {
-    const nextListbox = document.getElementById(listboxId);
-    expect(nextListbox).toBeTruthy();
-    return nextListbox;
-  });
+  const listbox = document.getElementById(listboxId);
   fireEvent.click(within(listbox).getByText(optionText));
   return input;
+}
+
+function toLocalDateTimeInput(value) {
+  const parsed = new Date(value);
+  const local = new Date(parsed.getTime() - (parsed.getTimezoneOffset() * 60000));
+  return local.toISOString().slice(0, 16);
+}
+
+function setRichEditorHtml(editor, html) {
+  editor.innerHTML = html;
+  fireEvent.input(editor);
+}
+
+async function selectMobileAssignee(assigneeSheet, query, optionId) {
+  fireEvent.change(within(assigneeSheet).getByTestId('create-assignees-mobile-search'), {
+    target: { value: query },
+  });
+  await waitFor(() => {
+    expect(within(assigneeSheet).getByTestId(`create-assignee-mobile-option-${optionId}`)).toBeInTheDocument();
+  }, { timeout: 2000 });
+  fireEvent.click(within(assigneeSheet).getByTestId(`create-assignee-mobile-option-${optionId}`));
 }
 
 const taskSummary = {
@@ -132,6 +242,12 @@ const taskSummary = {
   title: 'Проверить акт перемещения',
   status: 'in_progress',
   priority: 'high',
+  checklist_items: [
+    { id: 'check-1', text: 'Проверить доступ', done: false },
+    { id: 'check-2', text: 'Сообщить пользователю', done: true },
+  ],
+  checklist_total: 2,
+  checklist_done: 1,
   assignee_user_id: 1,
   assignee_full_name: 'Исполнитель И.И.',
   controller_user_id: 2,
@@ -169,7 +285,12 @@ const taskSummary = {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  window.localStorage.clear();
+  window.sessionStorage.clear();
   installMatchMedia();
+  chatFeatureFlags.chat = false;
+  chatFeatureFlags.taskDiscussion = false;
+  authState.user = { id: 1, role: 'admin', username: 'admin', permissions: [] };
   Object.defineProperty(window.URL, 'createObjectURL', {
     writable: true,
     value: vi.fn(() => 'blob:task-analytics'),
@@ -183,23 +304,40 @@ beforeEach(() => {
     value: vi.fn(),
   });
 
-  hubAPI.getAssignees.mockResolvedValue({
-    items: [
+  hubTaskSupportAPI.getAssignees.mockImplementation(async (params = {}) => {
+    const fixtures = [
       { id: 1, username: 'assignee', full_name: 'Исполнитель И.И.' },
       { id: 4, username: 'ivanov', full_name: 'Иванов И.И.' },
-    ],
+    ];
+    const ids = String(params.ids || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    if (ids.length) {
+      const items = fixtures.filter((item) => ids.includes(String(item.id)));
+      return { items, total: items.length, limit: items.length };
+    }
+    const query = String(params.q || '').trim().toLowerCase();
+    if (!query) {
+      return { items: [], total: fixtures.length, limit: 0 };
+    }
+    const items = fixtures.filter((item) => (
+      String(item.username || '').toLowerCase().includes(query)
+      || String(item.full_name || '').toLowerCase().includes(query)
+    ));
+    return { items, total: items.length, limit: 30 };
   });
-  hubAPI.getControllers.mockResolvedValue({
+  hubTaskSupportAPI.getControllers.mockResolvedValue({
     items: [{ id: 2, username: 'controller', full_name: 'Контролер К.К.' }],
   });
-  hubAPI.getTaskProjects.mockResolvedValue({
+  hubTaskSupportAPI.getTaskProjects.mockResolvedValue({
     items: [{ id: 'project-1', name: 'Проект Север', is_active: true }],
   });
-  hubAPI.getTaskObjects.mockResolvedValue({
+  hubTaskSupportAPI.getTaskObjects.mockResolvedValue({
     items: [{ id: 'object-1', project_id: 'project-1', name: 'Объект 17', is_active: true }],
   });
   departmentsAPI.list.mockResolvedValue({ items: [] });
-  hubAPI.getTaskAnalytics.mockResolvedValue({
+  hubTaskAnalyticsAPI.getTaskAnalytics.mockResolvedValue({
     summary: {
       total: 5,
       open: 3,
@@ -271,7 +409,7 @@ beforeEach(() => {
       ],
     },
   });
-  hubAPI.exportTaskAnalyticsExcel.mockResolvedValue({
+  hubTaskAnalyticsAPI.exportTaskAnalyticsExcel.mockResolvedValue({
     data: new Blob(['xlsx-bytes'], {
       type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     }),
@@ -280,20 +418,66 @@ beforeEach(() => {
       'content-type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     },
   });
-  hubAPI.getTasks.mockResolvedValue({ items: [taskSummary], total: 1 });
-  hubAPI.getTask.mockResolvedValue(taskSummary);
-  hubAPI.getTaskComments.mockResolvedValue({
+  hubTasksAPI.getTasks.mockResolvedValue({ items: [taskSummary], total: 1 });
+  hubTasksAPI.getTask.mockResolvedValue(taskSummary);
+  hubTaskActivityAPI.getTaskComments.mockResolvedValue({
     items: [{ id: 'comment-1', username: 'commenter', body: 'Комментарий', created_at: '2026-03-21T09:20:00Z' }],
   });
-  hubAPI.getTaskStatusLog.mockResolvedValue({
+  hubTaskActivityAPI.getTaskStatusLog.mockResolvedValue({
     items: [{ id: 'status-1', old_status: 'new', new_status: 'in_progress', changed_by_username: 'rev-user', changed_at: '2026-03-21T09:25:00Z' }],
   });
-  hubAPI.markTaskCommentsSeen.mockResolvedValue({});
-  hubAPI.transformMarkdown.mockImplementation(async ({ text }) => text);
-  hubAPI.createTask.mockResolvedValue({ id: 'task-created' });
+  hubTaskActivityAPI.markTaskCommentsSeen.mockResolvedValue({});
+  hubMarkdownAPI.transformMarkdown.mockImplementation(async ({ text }) => text);
+  hubTasksAPI.createTask.mockResolvedValue({ id: 'task-created' });
 });
 
 describe('Tasks page detail workspace', () => {
+  it('opens the create dialog from the dashboard quick-action URL and consumes the flag', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks?create=1']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('textbox', { name: 'Что нужно сделать' })).toBeInTheDocument();
+    await waitFor(() => {
+      expect(screen.getByTestId('location-probe').textContent).not.toContain('create=1');
+    });
+  });
+
+  it('opens the create dialog from a pending create flag stored during navigation', async () => {
+    window.sessionStorage.setItem('hub.tasks.pendingCreate', '1');
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByRole('textbox', { name: 'Что нужно сделать' })).toBeInTheDocument();
+    expect(window.sessionStorage.getItem('hub.tasks.pendingCreate')).toBeNull();
+  });
+
   it('opens full detail mode from URL and keeps active tab in search params', async () => {
     render(
       <MemoryRouter initialEntries={['/tasks?task=task-1&task_tab=history']}>
@@ -345,7 +529,7 @@ describe('Tasks page detail workspace', () => {
     expect(await screen.findByText('Статусы')).toBeInTheDocument();
     expect(screen.getByTestId('analytics-filters-panel')).toBeInTheDocument();
     expect(screen.getByText('Период отчёта')).toBeInTheDocument();
-    expect(screen.getByText('Протокол и выполнение по времени')).toBeInTheDocument();
+    expect(screen.getByText('Постановка и выполнение по времени')).toBeInTheDocument();
     expect(screen.getAllByText('По участникам').length).toBeGreaterThan(0);
     expect(screen.getByText('Выполнено без срока')).toBeInTheDocument();
 
@@ -362,7 +546,7 @@ describe('Tasks page detail workspace', () => {
     await selectAutocompleteOption('Участник', 'Испол', 'Исполнитель И.И.');
 
     await waitFor(() => {
-      expect(hubAPI.getTaskAnalytics).toHaveBeenLastCalledWith(expect.objectContaining({
+      expect(hubTaskAnalyticsAPI.getTaskAnalytics).toHaveBeenLastCalledWith(expect.objectContaining({
         participant_user_id: 1,
       }));
     });
@@ -373,13 +557,63 @@ describe('Tasks page detail workspace', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Экспорт Excel' }));
     await waitFor(() => {
-      expect(hubAPI.exportTaskAnalyticsExcel).toHaveBeenCalledWith(expect.objectContaining({
+      expect(hubTaskAnalyticsAPI.exportTaskAnalyticsExcel).toHaveBeenCalledWith(expect.objectContaining({
         participant_user_id: 1,
       }));
     });
   });
 
-  it('uses searchable people fields in board filters and create dialog', async () => {
+  it('defaults to list mode, keeps role query when switching modes, and opens a task row', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_view=creator']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const listView = await screen.findByTestId('tasks-list-view');
+    expect(within(listView).getByText('Название')).toBeInTheDocument();
+    expect(within(listView).getByText('Активность')).toBeInTheDocument();
+    expect(within(listView).getByText('Крайний срок')).toBeInTheDocument();
+    expect(within(listView).getByText('Постановщик')).toBeInTheDocument();
+    expect(within(listView).getByText('Исполнитель')).toBeInTheDocument();
+    expect(within(listView).getByText('Проект')).toBeInTheDocument();
+    expect(within(listView).getByText('Теги')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Сроки' }));
+
+    expect(await screen.findByTestId('tasks-deadlines-view')).toBeInTheDocument();
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('task_mode=deadlines');
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('task_view=creator');
+    expect(window.localStorage.getItem('hub.tasks.taskMode')).toBe('deadlines');
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Список' }));
+    expect(window.localStorage.getItem('hub.tasks.taskMode')).toBe('list');
+    const row = await screen.findByTestId('tasks-list-row-task-1');
+    fireEvent.click(row);
+
+    expect(await screen.findByRole('button', { name: 'Назад к доске' })).toBeInTheDocument();
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
+  });
+
+  it('splits list view into active and completed sections and toggles completed rows', async () => {
+    hubTasksAPI.getTasks.mockResolvedValue({
+      items: [
+        { ...taskSummary, id: 'task-open', status: 'in_progress', title: 'Активная задача' },
+        { ...taskSummary, id: 'task-done', status: 'done', title: 'Завершённая задача' },
+      ],
+      total: 2,
+    });
+
     render(
       <MemoryRouter initialEntries={['/tasks']}>
         <Routes>
@@ -388,27 +622,134 @@ describe('Tasks page detail workspace', () => {
       </MemoryRouter>,
     );
 
-    fireEvent.click(await screen.findByRole('button', { name: /Развернуть фильтры/i }));
-    await selectAutocompleteOption('Исполнитель', 'Иван', 'Иванов И.И.');
+    const listView = await screen.findByTestId('tasks-list-view');
+    expect(within(listView).getByTestId('task-section-active')).toHaveTextContent('Активные');
+    expect(within(listView).getByTestId('task-section-active')).toHaveTextContent('1');
+    expect(within(listView).getByTestId('task-section-completed-toggle')).toHaveTextContent('Завершённые');
+    expect(within(listView).getByTestId('task-section-completed-toggle')).toHaveTextContent('1');
 
-    await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
-        assignee_user_id: 4,
-      }));
-    });
+    expect(await screen.findByTestId('tasks-list-row-task-open')).toBeInTheDocument();
+    expect(screen.queryByTestId('tasks-list-row-task-done')).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole('button', { name: 'Новая задача' }));
-    const dialog = await screen.findByRole('dialog');
-
-    await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
-    expect(within(dialog).getByText('Исполнитель И.И.')).toBeInTheDocument();
-
-    const controllerInput = await selectAutocompleteOption('Контролёр', 'Контр', 'Контролер К.К.', dialog);
-    expect(controllerInput).toHaveValue('Контролер К.К.');
+    fireEvent.click(within(listView).getByTestId('task-section-completed-toggle'));
+    expect(await screen.findByTestId('tasks-list-row-task-done')).toBeInTheDocument();
+    expect(screen.getByTestId('tasks-list-row-task-open')).toBeInTheDocument();
   });
 
-  it('uses mobile list and compact detail flow on small screens', async () => {
+  it('defers task support metadata until filters or create dialog need it', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(hubTasksAPI.getTasks).toHaveBeenCalled();
+      expect(departmentsAPI.list).toHaveBeenCalled();
+    });
+    expect(hubTaskSupportAPI.getTaskProjects).not.toHaveBeenCalled();
+    expect(hubTaskSupportAPI.getTaskObjects).not.toHaveBeenCalled();
+    expect(hubTaskSupportAPI.getControllers).not.toHaveBeenCalled();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Развернуть фильтры/i }));
+    await waitFor(() => {
+      expect(hubTaskSupportAPI.getTaskProjects).toHaveBeenCalled();
+      expect(hubTaskSupportAPI.getControllers).toHaveBeenCalled();
+    });
+  });
+
+  it('prefetches project metadata when create dialog opens from dashboard shortcut', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks?create=1']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(hubTaskSupportAPI.getTaskProjects).toHaveBeenCalled();
+      expect(hubTaskSupportAPI.getTaskObjects).toHaveBeenCalled();
+      expect(hubTaskSupportAPI.getControllers).toHaveBeenCalled();
+    });
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+  });
+
+  it('shows role scope switch on desktop and switches between assignee and creator', async () => {
+    hubTasksAPI.getTasks.mockImplementation(async (params) => ({
+      items: [taskSummary],
+      total: params?.role_scope === 'creator' ? 3 : 2,
+    }));
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_view=assignee']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-role-scope-switch')).toBeInTheDocument();
+    expect(screen.getByTestId('tasks-role-assignee')).toHaveAttribute('aria-pressed', 'true');
+
+    fireEvent.click(screen.getByTestId('tasks-role-creator'));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.getTasks).toHaveBeenCalledWith(expect.objectContaining({
+        role_scope: 'creator',
+        scope: 'my',
+      }));
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('task_view=creator');
+      expect(window.localStorage.getItem('hub.tasks.personalRole')).toBe('creator');
+    });
+
+    fireEvent.click(screen.getByTestId('tasks-role-assignee'));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
+        role_scope: 'assignee',
+        scope: 'my',
+      }));
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('task_view=assignee');
+    });
+  });
+
+  it('shows role scope switch on mobile and restores personal role from localStorage', async () => {
     installMatchMedia({ mobile: true });
+    authState.user = { id: 5, role: 'user', username: 'user', permissions: ['tasks.write'] };
+    window.localStorage.setItem('hub.tasks.personalRole', 'creator');
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-header-inline')).toBeInTheDocument();
+    expect(await screen.findByTestId('tasks-role-scope-switch')).toBeInTheDocument();
+
+    await waitFor(() => {
+      expect(hubTasksAPI.getTasks).toHaveBeenCalledWith(expect.objectContaining({
+        role_scope: 'creator',
+        scope: 'my',
+      }));
+    });
+  });
+
+  it('opens the last stored task mode when URL has no task_mode', async () => {
+    window.localStorage.setItem('hub.tasks.taskMode', 'gantt');
 
     render(
       <MemoryRouter initialEntries={['/tasks']}>
@@ -426,7 +767,893 @@ describe('Tasks page detail workspace', () => {
       </MemoryRouter>,
     );
 
-    expect(await screen.findByTestId('tasks-mobile-header')).toBeInTheDocument();
+    expect(await screen.findByTestId('tasks-gantt-view')).toBeInTheDocument();
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('task_mode=gantt');
+  });
+
+  it('keeps URL task_mode above the stored task mode', async () => {
+    window.localStorage.setItem('hub.tasks.taskMode', 'gantt');
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=calendar']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-calendar-view')).toBeInTheDocument();
+    expect(window.localStorage.getItem('hub.tasks.taskMode')).toBe('calendar');
+  });
+
+  it('treats legacy task_mode=plan as list mode', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=plan']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-list-view')).toBeInTheDocument();
+    expect(screen.queryByTestId('tasks-plan-view')).not.toBeInTheDocument();
+    expect(screen.getByTestId('location-probe').textContent).not.toContain('task_mode=plan');
+  });
+
+  it('renders deadlines, calendar, and gantt task modes without the removed plan tab', async () => {
+    hubTasksAPI.getTasks.mockResolvedValue({
+      items: [
+        {
+          ...taskSummary,
+          id: 'task-1',
+          title: 'Проверить акт перемещения',
+          due_at: '2026-06-13T12:00:00',
+          protocol_date: '2026-06-10',
+        },
+        {
+          ...taskSummary,
+          id: 'task-2',
+          title: 'Задача без срока',
+          status: 'new',
+          due_at: null,
+        },
+      ],
+      total: 2,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('tab', { name: 'Сроки' }));
+    const deadlinesView = await screen.findByTestId('tasks-deadlines-view');
+    expect(within(deadlinesView).getByText('На сегодня')).toBeInTheDocument();
+    expect(within(deadlinesView).getAllByText('Без срока').length).toBeGreaterThan(0);
+    expect(screen.queryByRole('tab', { name: 'Мой план' })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Календарь' }));
+    const calendarView = await screen.findByTestId('tasks-calendar-view');
+    expect(within(calendarView).getByText('Проверить акт перемещения')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole('tab', { name: 'Гант' }));
+    const ganttView = await screen.findByTestId('tasks-gantt-view');
+    expect(within(ganttView).getByText('Проверить акт перемещения')).toBeInTheDocument();
+    expect(within(ganttView).getByText('Задача без срока')).toBeInTheDocument();
+  });
+
+  it('uses searchable people fields in board filters and create dialog', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Развернуть фильтры/i }));
+    await selectAutocompleteOption('Исполнитель', 'Иван', 'Иванов И.И.');
+
+    await waitFor(() => {
+      expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
+        assignee_user_id: 4,
+      }));
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Новая задача' }));
+    const dialog = await screen.findByRole('dialog');
+
+    await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
+    expect(within(dialog).getByText('Исполнитель И.И.')).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByText('Контролёр'));
+    const controllerInput = await selectAutocompleteOption('Контролёр', 'Контр', 'Контролер К.К.', dialog);
+    expect(controllerInput).toHaveValue('Контролер К.К.');
+  });
+
+  it('sends priority and structured checklist from the quick task dialog', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Новая задача' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(within(dialog).getByTestId('create-due-open')).toBeInTheDocument();
+
+    fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+      target: { value: 'Проверить доступ сотрудника' },
+    });
+    await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
+
+    fireEvent.click(within(dialog).getByText('В приоритете'));
+    fireEvent.click(within(dialog).getByText('Чек-листы'));
+    fireEvent.change(within(dialog).getByPlaceholderText('Пункт 1'), {
+      target: { value: 'Проверить доступ' },
+    });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Создать/ }));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Проверить доступ сотрудника',
+        controller_user_id: null,
+        priority: 'high',
+        checklist_items: [expect.objectContaining({
+          text: 'Проверить доступ',
+          done: false,
+        })],
+      }));
+    });
+  });
+
+  it('sends observer_user_ids from the quick task dialog', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+      target: { value: 'Задача с наблюдателем' },
+    });
+    fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
+    const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
+    await selectMobileAssignee(assigneeSheet, 'исполн', 1);
+    fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(within(dialog).getByText('Наблюдатели'));
+    const observerSheet = await screen.findByTestId('create-mobile-sheet');
+    fireEvent.change(within(observerSheet).getByTestId('create-observers-mobile-search'), {
+      target: { value: 'ivanov' },
+    });
+    await waitFor(() => {
+      expect(within(observerSheet).getByTestId('create-observers-mobile-option-4')).toBeInTheDocument();
+    });
+    fireEvent.click(within(observerSheet).getByTestId('create-observers-mobile-option-4'));
+    fireEvent.click(within(observerSheet).getByTestId('create-observers-mobile-done'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Задача с наблюдателем',
+        assignee_user_ids: [1],
+        observer_user_ids: [4],
+      }));
+    });
+  });
+
+  it('uploads selected files after creating a task', async () => {
+    hubTasksAPI.createTask.mockResolvedValue({
+      items: [{ id: 'task-created' }],
+      created: 1,
+    });
+    hubTaskFilesAPI.uploadTaskAttachment.mockResolvedValue({ id: 'attachment-created' });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Новая задача' }));
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+      target: { value: 'Проверить вложения' },
+    });
+    await selectAutocompleteOption('Исполнители', 'Испол', 'Исполнитель И.И.', dialog);
+
+    fireEvent.click(within(dialog).getByText('Файлы'));
+    const fileInput = within(dialog)
+      .getByText('Выбрать файлы')
+      .closest('label')
+      ?.querySelector('input[type="file"]');
+    expect(fileInput).toBeTruthy();
+
+    const files = [
+      new File(['first'], 'first.txt', { type: 'text/plain' }),
+      new File(['second'], 'second.txt', { type: 'text/plain' }),
+    ];
+    fireEvent.change(fileInput, { target: { files } });
+
+    expect(await within(dialog).findByText('first.txt')).toBeInTheDocument();
+    expect(within(dialog).getByText('second.txt')).toBeInTheDocument();
+
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        controller_user_id: null,
+      }));
+    });
+    await waitFor(() => {
+      expect(hubTaskFilesAPI.uploadTaskAttachment).toHaveBeenCalledTimes(2);
+    });
+    expect(hubTaskFilesAPI.uploadTaskAttachment).toHaveBeenNthCalledWith(1, {
+      taskId: 'task-created',
+      file: files[0],
+    });
+    expect(hubTaskFilesAPI.uploadTaskAttachment).toHaveBeenNthCalledWith(2, {
+      taskId: 'task-created',
+      file: files[1],
+    });
+  });
+
+  it('lets create-only viewers create a project from the task dialog', async () => {
+    authState.user = {
+      id: 8,
+      role: 'viewer',
+      username: 'viewer',
+      permissions: ['tasks.read', 'tasks.create'],
+    };
+    hubTaskSupportAPI.getTaskProjects
+      .mockResolvedValueOnce({
+        items: [{ id: 'project-1', name: 'Проект Север', is_active: true }],
+      })
+      .mockResolvedValueOnce({
+        items: [
+          { id: 'project-1', name: 'Проект Север', is_active: true },
+          { id: 'project-new', name: 'Новый проект', is_active: true },
+        ],
+      });
+    hubTaskSupportAPI.createTaskProject.mockResolvedValue({
+      id: 'project-new',
+      name: 'Новый проект',
+      is_active: true,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const createButton = await screen.findByRole('button', { name: 'Новая задача' });
+    expect(createButton).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Справочники' })).not.toBeInTheDocument();
+
+    fireEvent.click(createButton);
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByText(/Проект:/));
+    fireEvent.change(within(dialog).getByLabelText('Новый проект'), {
+      target: { value: 'Новый проект' },
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Добавить' }));
+
+    await waitFor(() => {
+      expect(hubTaskSupportAPI.createTaskProject).toHaveBeenCalledWith(expect.objectContaining({
+        name: 'Новый проект',
+      }));
+    });
+  });
+
+  it('updates a checklist item from task detail without editing the task body', async () => {
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-1']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const checkbox = await screen.findByRole('checkbox', { name: /Отметить пункт 1/i });
+    fireEvent.click(checkbox);
+
+    await waitFor(() => {
+      expect(hubTasksAPI.updateTask).toHaveBeenCalledWith('task-1', {
+        checklist_items: [
+          expect.objectContaining({ id: 'check-1', text: 'Проверить доступ', done: true }),
+          expect.objectContaining({ id: 'check-2', text: 'Сообщить пользователю', done: true }),
+        ],
+      });
+    });
+  });
+
+  it('shows the compact mobile feed, segmented modes, more drawer, and create fab', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const feedView = await screen.findByTestId('tasks-mobile-feed-view');
+    expect(feedView).toBeInTheDocument();
+    expect(screen.getByTestId('main-layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
+    expect(screen.queryByTestId('tasks-mobile-header')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tasks-list-view')).not.toBeInTheDocument();
+    const mobileHeader = screen.getByTestId('tasks-mobile-header-inline');
+    expect(within(mobileHeader).getByTestId('tasks-mobile-header-mode')).toHaveTextContent('Лента · 1');
+    expect(within(mobileHeader).getByTestId('tasks-mobile-open-search')).toBeInTheDocument();
+    expect(within(mobileHeader).getByTestId('tasks-mobile-open-navigation')).toBeInTheDocument();
+
+    fireEvent.click(within(mobileHeader).getByTestId('tasks-mobile-open-search'));
+    const mobileSearchInput = await within(mobileHeader).findByTestId('tasks-mobile-search-input');
+    fireEvent.change(mobileSearchInput, { target: { value: 'акт' } });
+    expect(mobileSearchInput).toHaveValue('акт');
+
+    fireEvent.click(within(mobileHeader).getByTestId('tasks-mobile-close-search'));
+    expect(within(mobileHeader).queryByTestId('tasks-mobile-search-input')).not.toBeInTheDocument();
+
+    fireEvent.click(within(mobileHeader).getByTestId('tasks-mobile-open-navigation'));
+    expect(await screen.findByTestId('tasks-mobile-navigation-drawer')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('tasks-mobile-close-navigation'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('tasks-mobile-navigation-drawer')).not.toBeInTheDocument();
+    });
+
+    const taskCard = await screen.findByTestId('mobile-task-card-task-1');
+    expect(taskCard).toBeInTheDocument();
+    expect(within(taskCard).getByTestId('mobile-task-card-description-task-1')).toHaveTextContent('Нужно загрузить');
+    expect(within(taskCard).queryByTestId('mobile-task-card-action-task-1')).not.toBeInTheDocument();
+
+    expect(screen.queryByTestId('tasks-mobile-bottom-nav')).not.toBeInTheDocument();
+    expect(screen.getByTestId('tasks-mobile-mode-segmented')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('tasks-mobile-mode-deadlines'));
+    expect(await screen.findByTestId('tasks-deadlines-view')).toBeInTheDocument();
+    expect(window.localStorage.getItem('hub.tasks.taskMode')).toBe('deadlines');
+
+    fireEvent.click(screen.getByTestId('tasks-mobile-open-navigation-segment'));
+    const navigationDrawer = await screen.findByTestId('tasks-mobile-navigation-drawer');
+    expect(within(navigationDrawer).getByRole('button', { name: /Календарь/i })).toBeInTheDocument();
+    expect(within(navigationDrawer).getByRole('button', { name: /Гант/i })).toBeInTheDocument();
+    expect(within(navigationDrawer).getByRole('button', { name: /Аналитика/i })).toBeInTheDocument();
+
+    fireEvent.click(within(navigationDrawer).getByRole('button', { name: /Календарь/i }));
+    expect(await screen.findByTestId('tasks-calendar-view')).toBeInTheDocument();
+    expect(window.localStorage.getItem('hub.tasks.taskMode')).toBe('calendar');
+
+    fireEvent.click(screen.getByTestId('tasks-mobile-mode-list'));
+    expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+
+    fireEvent.click(await screen.findByTestId('mobile-task-card-task-1'));
+    expect(await screen.findByTestId('task-detail-mobile-header')).toBeInTheDocument();
+    expect(screen.getByTestId('main-layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
+    const mobileContent = screen.getByTestId('task-mobile-content');
+    const mobileActionRail = screen.getByTestId('task-mobile-action-rail');
+    expect(mobileContent).toHaveTextContent('Проверить акт перемещения');
+    expect(screen.getByTestId('task-mobile-description')).toHaveTextContent('Нужно загрузить');
+    expect(screen.getByTestId('task-mobile-files')).toHaveTextContent('акт-перемещения.pdf');
+    expect(mobileContent.compareDocumentPosition(mobileActionRail) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(screen.getByTestId('task-mobile-checklist-summary')).toHaveTextContent('1/2 выполнено');
+    expect(screen.getByTestId('task-mobile-files-chip')).toHaveTextContent('Файлы: 2');
+    expect(mobileActionRail).toHaveTextContent('Сдать');
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
+
+    fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('task-detail-mobile-header')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.getByTestId('main-layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
+    expect(screen.getByLabelText(/Что нужно сделать/i)).toBeInTheDocument();
+  });
+
+  it('sets tomorrow due date from the mobile create due sheet', async () => {
+    installMatchMedia({ mobile: true });
+    const expectedTomorrow = new Date();
+    expectedTomorrow.setDate(expectedTomorrow.getDate() + 1);
+    expectedTomorrow.setHours(19, 0, 0, 0);
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.click(within(dialog).getByTestId('create-due-open'));
+    const sheet = await screen.findByTestId('create-due-mobile-panel');
+    expect(sheet.closest('.MuiPaper-root')).toHaveStyle({ zIndex: '1303' });
+    fireEvent.click(within(sheet).getByTestId('create-due-mobile-preset-tomorrow'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-due-mobile-panel')).not.toBeInTheDocument();
+    });
+    expect(within(dialog).getByTestId('create-due-open')).toHaveTextContent('завтра в 19:00');
+
+    fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+      target: { value: 'Проверить мобильный срок' },
+    });
+    fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
+    const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
+    await selectMobileAssignee(assigneeSheet, 'исполн', 1);
+    fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+    });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Создать' }));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Проверить мобильный срок',
+        due_at: toLocalDateTimeInput(expectedTomorrow),
+      }));
+    });
+  });
+
+  it('clears due date and exposes custom due input in the mobile create sheet', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.click(within(dialog).getByTestId('create-due-open'));
+    let sheet = await screen.findByTestId('create-due-mobile-panel');
+    fireEvent.click(within(sheet).getByTestId('create-due-mobile-preset-tomorrow'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-due-mobile-panel')).not.toBeInTheDocument();
+    });
+
+    fireEvent.click(within(dialog).getByTestId('create-due-open'));
+    sheet = await screen.findByTestId('create-due-mobile-panel');
+    fireEvent.click(within(sheet).getByTestId('create-due-mobile-preset-none'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-due-mobile-panel')).not.toBeInTheDocument();
+    });
+    expect(within(dialog).getByTestId('create-due-open')).toHaveTextContent('Без срока');
+
+    fireEvent.click(within(dialog).getByTestId('create-due-open'));
+    sheet = await screen.findByTestId('create-due-mobile-panel');
+    fireEvent.click(within(sheet).getByTestId('create-due-mobile-custom-open'));
+    const customDate = await within(sheet).findByTestId('create-due-mobile-custom-date');
+    fireEvent.change(customDate.querySelector('input'), { target: { value: '2026-06-20' } });
+    fireEvent.click(within(sheet).getByRole('button', { name: 'Готово' }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-due-mobile-panel')).not.toBeInTheDocument();
+    });
+    expect(within(dialog).getByTestId('create-due-open')).toHaveTextContent('20.06 в 19:00');
+  });
+
+  it('edits task description in a mobile bottom sheet and submits it', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.click(within(dialog).getByTestId('create-description-mobile-open'));
+    const sheet = await screen.findByTestId('create-mobile-sheet');
+    expect(within(sheet).getByText('Описание задачи')).toBeInTheDocument();
+    setRichEditorHtml(within(sheet).getByTestId('create-description-mobile-input'), 'Подробное описание для мобильной задачи');
+    fireEvent.click(within(sheet).getByTestId('create-description-mobile-done'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+    });
+    expect(within(dialog).getByTestId('create-description-mobile-open')).toHaveTextContent('Подробное описание');
+
+    fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+      target: { value: 'Создать задачу с описанием' },
+    });
+    fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
+    const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
+    await selectMobileAssignee(assigneeSheet, 'assignee', 1);
+    await selectMobileAssignee(assigneeSheet, 'ivanov', 4);
+    fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+    });
+    expect(within(dialog).getByTestId('create-assignees-mobile-open')).toHaveTextContent('Исполнитель И.И., Иванов И.И.');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Создать/ }));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+        title: 'Создать задачу с описанием',
+        description: 'Подробное описание для мобильной задачи',
+        assignee_user_ids: [1, 4],
+      }));
+    });
+  });
+
+  it('formats mobile task description visually and attaches files from the editor', async () => {
+    installMatchMedia({ mobile: true });
+    hubTasksAPI.createTask.mockResolvedValue({
+      items: [{ id: 'task-created' }],
+      created: 1,
+    });
+    hubTaskFilesAPI.uploadTaskAttachment.mockResolvedValue({ id: 'attachment-created' });
+    const originalExecCommand = document.execCommand;
+    document.execCommand = vi.fn((command) => {
+      const editor = screen.queryByTestId('create-description-mobile-input');
+      if (!editor) return true;
+      if (command === 'bold') editor.innerHTML = '<strong>важный</strong> текст';
+      if (command === 'insertUnorderedList') editor.innerHTML = '<ul><li><br></li></ul>';
+      if (command === 'insertOrderedList') editor.innerHTML = '<ol><li><br></li></ol>';
+      fireEvent.input(editor);
+      return true;
+    });
+
+    try {
+      render(
+        <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+          <Routes>
+            <Route path="/tasks" element={<Tasks />} />
+          </Routes>
+        </MemoryRouter>,
+      );
+
+      expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+      fireEvent.click(screen.getByTestId('tasks-create-fab'));
+      const dialog = await screen.findByRole('dialog');
+
+      fireEvent.click(within(dialog).getByTestId('create-description-mobile-open'));
+      const sheet = await screen.findByTestId('create-mobile-sheet');
+      expect(within(sheet).getByTestId('create-description-toolbar-scroll')).toBeInTheDocument();
+      expect(within(sheet).getByTestId('create-description-mobile-done')).toBeInTheDocument();
+      const input = within(sheet).getByTestId('create-description-mobile-input');
+
+      fireEvent.click(within(sheet).getByTestId('create-description-format-bold'));
+      await waitFor(() => {
+        expect(document.execCommand).toHaveBeenCalledWith('bold', false, null);
+      });
+      expect(input.innerHTML).toContain('<strong>');
+      expect(input.textContent).toBe('важный текст');
+
+      fireEvent.click(within(sheet).getByTestId('create-description-format-bullet'));
+      expect(document.execCommand).toHaveBeenCalledWith('insertUnorderedList', false, null);
+      expect(input.innerHTML).toContain('<ul>');
+      expect(input.textContent).not.toContain('- ');
+
+      fireEvent.click(within(sheet).getByTestId('create-description-format-numbered'));
+      expect(document.execCommand).toHaveBeenCalledWith('insertOrderedList', false, null);
+      expect(input.innerHTML).toContain('<ol>');
+      expect(input.textContent).not.toContain('1.');
+
+      const editorFileInput = within(sheet).getByTestId('create-description-file-input');
+      const file = new File(['from editor'], 'editor.txt', { type: 'text/plain' });
+      fireEvent.change(editorFileInput, { target: { files: [file] } });
+      setRichEditorHtml(input, '<strong>важный</strong> текст');
+      fireEvent.click(within(sheet).getByTestId('create-description-mobile-done'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+      });
+      expect(within(dialog).getByTestId('create-description-mobile-open')).toHaveTextContent('важный текст');
+      expect(within(dialog).getByTestId('create-description-mobile-open')).not.toHaveTextContent('**');
+      expect(within(dialog).getAllByText('Файлы: 1').length).toBeGreaterThan(0);
+
+      fireEvent.change(within(dialog).getByLabelText(/Что нужно сделать/i), {
+        target: { value: 'Создать задачу с файлом из редактора' },
+      });
+      fireEvent.click(within(dialog).getByTestId('create-assignees-mobile-open'));
+      const assigneeSheet = await screen.findByTestId('create-mobile-sheet');
+      await selectMobileAssignee(assigneeSheet, 'исполн', 1);
+      fireEvent.click(within(assigneeSheet).getByTestId('create-assignees-mobile-done'));
+      await waitFor(() => {
+        expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+      });
+      fireEvent.click(within(dialog).getByRole('button', { name: /^Создать/ }));
+
+      await waitFor(() => {
+        expect(hubTasksAPI.createTask).toHaveBeenCalledWith(expect.objectContaining({
+          description: '**важный** текст',
+        }));
+        expect(hubTaskFilesAPI.uploadTaskAttachment).toHaveBeenCalledWith({
+          taskId: 'task-created',
+          file,
+        });
+      });
+    } finally {
+      if (originalExecCommand) document.execCommand = originalExecCommand;
+      else delete document.execCommand;
+    }
+  });
+
+  it('opens mobile bottom sheets from task create chips', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
+    const dialog = await screen.findByRole('dialog');
+
+    fireEvent.click(within(dialog).getByText('В приоритете'));
+    let sheet = await screen.findByTestId('create-mobile-sheet');
+    expect(within(sheet).getByText('Приоритет')).toBeInTheDocument();
+    fireEvent.click(within(sheet).getByTestId('create-priority-mobile-high'));
+    await waitFor(() => {
+      expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+    });
+    expect(within(dialog).getByText('Высокий')).toBeInTheDocument();
+
+    const chipChecks = [
+      ['Файлы', 'Файлы'],
+      ['Чек-листы', 'Чек-лист'],
+      ['Проект: Проект Север', 'Проект'],
+      ['Контролёр', 'Контролёр'],
+      ['Полная форма', 'Полная форма'],
+    ];
+
+    for (const [chipLabel, sheetTitle] of chipChecks) {
+      fireEvent.click(within(dialog).getByText(chipLabel));
+      sheet = await screen.findByTestId('create-mobile-sheet');
+      expect(within(sheet).getAllByText(sheetTitle).length).toBeGreaterThan(0);
+      if (chipLabel === 'Контролёр') {
+        expect(within(sheet).getByTestId('create-controller-mobile-option-2')).toBeInTheDocument();
+      }
+      fireEvent.click(within(sheet).getByRole('button', { name: 'Закрыть плашку' }));
+      await waitFor(() => {
+        expect(screen.queryByTestId('create-mobile-sheet')).not.toBeInTheDocument();
+      });
+    }
+  });
+
+  it('hides the mobile create fab without create permission', async () => {
+    installMatchMedia({ mobile: true });
+    authState.user = {
+      id: 8,
+      role: 'user',
+      username: 'viewer',
+      permissions: ['tasks.read'],
+    };
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+    expect(screen.queryByTestId('tasks-create-fab')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('tasks-create-fab')).not.toBeInTheDocument();
+  });
+
+  it('shows the mobile create fab above the bottom navigation', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('tasks-mobile-feed-view')).toBeInTheDocument();
+    expect(screen.getByTestId('tasks-create-fab')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('tasks-create-fab'));
+    expect(await screen.findByRole('dialog')).toBeInTheDocument();
+    expect(screen.queryByTestId('tasks-create-fab')).not.toBeInTheDocument();
+  });
+
+  it('opens the submit dialog from the mobile detail primary action', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=list']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    const card = await screen.findByTestId('mobile-task-card-task-1');
+    expect(within(card).queryByTestId('mobile-task-card-action-task-1')).not.toBeInTheDocument();
+    fireEvent.click(card);
+    const actionRail = await screen.findByTestId('task-mobile-action-rail');
+    fireEvent.click(within(actionRail).getByRole('button', { name: 'Сдать' }));
+
+    expect(await screen.findByText('Сдать работу')).toBeInTheDocument();
+  });
+
+  it('opens a dedicated mobile checklist screen, toggles and adds checklist items', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-1']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('task-mobile-detail-screen')).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('task-mobile-checklist-summary'));
+
+    expect(await screen.findByTestId('task-mobile-checklist-screen')).toBeInTheDocument();
+    expect(screen.getByTestId('task-detail-mobile-title')).toHaveTextContent('Чек-лист');
+    expect(screen.getByTestId('task-mobile-checklist-progress')).toHaveTextContent('1/2 выполнено');
+    expect(screen.getByTestId('location-probe')).toHaveTextContent('task_mobile_view=checklist');
+
+    fireEvent.click(screen.getByLabelText('Отметить пункт 1'));
+    await waitFor(() => {
+      expect(hubTasksAPI.updateTask).toHaveBeenCalledWith('task-1', {
+        checklist_items: [
+          expect.objectContaining({ id: 'check-1', done: true }),
+          expect.objectContaining({ id: 'check-2', done: true }),
+        ],
+      });
+    });
+
+    fireEvent.click(screen.getByTestId('task-mobile-checklist-add'));
+    fireEvent.change(screen.getByTestId('task-mobile-checklist-new-input'), {
+      target: { value: 'Новый пункт' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Добавить' }));
+
+    await waitFor(() => {
+      expect(hubTasksAPI.updateTask).toHaveBeenLastCalledWith('task-1', {
+        checklist_items: [
+          expect.objectContaining({ id: 'check-1' }),
+          expect.objectContaining({ id: 'check-2' }),
+          expect.objectContaining({ text: 'Новый пункт', done: false }),
+        ],
+      });
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
+    await waitFor(() => {
+      expect(screen.getByTestId('task-mobile-detail-screen')).toBeInTheDocument();
+      expect(screen.getByTestId('location-probe')).not.toHaveTextContent('task_mobile_view=checklist');
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
+    await waitFor(() => {
+      expect(screen.queryByTestId('task-detail-mobile-header')).not.toBeInTheDocument();
+      expect(screen.queryByTestId('task-mobile-checklist-screen')).not.toBeInTheDocument();
+    });
+  });
+
+  it('hides empty mobile file and checklist cards while keeping action chips', async () => {
+    installMatchMedia({ mobile: true });
+    chatFeatureFlags.chat = true;
+    chatFeatureFlags.taskDiscussion = true;
+    hubTasksAPI.getTask.mockResolvedValueOnce({
+      ...taskSummary,
+      id: 'task-empty',
+      title: 'Пустая задача',
+      checklist_items: [],
+      checklist_total: 0,
+      checklist_done: 0,
+      attachments: [],
+      attachments_count: 0,
+      latest_report: null,
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-empty']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('task-mobile-detail-screen')).toBeInTheDocument();
+    expect(screen.queryByTestId('task-mobile-files')).not.toBeInTheDocument();
+    expect(screen.queryByTestId('task-mobile-checklist-summary')).not.toBeInTheDocument();
+    expect(screen.getByTestId('task-mobile-files-chip')).toHaveTextContent('Файлы: 0');
+    expect(screen.getByTestId('task-mobile-checklist-chip')).toHaveTextContent('Чек-лист');
+    expect(screen.getByTestId('task-mobile-chat-floating')).toBeInTheDocument();
+    expect(screen.getByTestId('task-mobile-open-chat')).toBeInTheDocument();
+  });
+
+  it('uses mobile list and compact detail flow on small screens', async () => {
+    installMatchMedia({ mobile: true });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task_mode=board']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.getByTestId('main-layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
+    expect(screen.queryByTestId('tasks-mobile-header')).not.toBeInTheDocument();
+    expect(await screen.findByTestId('tasks-mobile-header-inline')).toBeInTheDocument();
     expect(await screen.findByTestId('tasks-mobile-board')).toBeInTheDocument();
     expect(screen.queryByTestId('tasks-desktop-kanban')).not.toBeInTheDocument();
     fireEvent.click(screen.getByTestId('tasks-mobile-open-navigation'));
@@ -435,7 +1662,7 @@ describe('Tasks page detail workspace', () => {
 
     fireEvent.click(within(navigationDrawer).getByTestId('tasks-mobile-status-done'));
     await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
         status: 'done',
       }));
     });
@@ -451,7 +1678,7 @@ describe('Tasks page detail workspace', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Готово' }));
     await waitFor(() => {
-      expect(hubAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
+      expect(hubTasksAPI.getTasks).toHaveBeenLastCalledWith(expect.objectContaining({
         status: 'done',
       }));
     });
@@ -468,7 +1695,9 @@ describe('Tasks page detail workspace', () => {
 
     fireEvent.click(await screen.findByTestId('mobile-task-card-task-1'));
     expect(await screen.findByTestId('task-detail-mobile-header')).toBeInTheDocument();
-    expect(screen.getByTestId('task-context-mobile-context')).toBeInTheDocument();
+    expect(screen.getByTestId('task-mobile-content')).toHaveTextContent('Проверить акт перемещения');
+    expect(screen.getByTestId('task-mobile-detail-screen')).toBeInTheDocument();
+    expect(screen.getByTestId('task-mobile-checklist-summary')).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('task=task-1');
 
     fireEvent.click(screen.getByRole('button', { name: /Назад/i }));
@@ -477,5 +1706,76 @@ describe('Tasks page detail workspace', () => {
     });
     expect(screen.getByTestId('tasks-mobile-board')).toBeInTheDocument();
     expect(screen.getByTestId('location-probe')).toHaveTextContent('/tasks');
+  });
+
+  it('opens task discussion chat from detail banner when feature flag is enabled', async () => {
+    chatFeatureFlags.chat = true;
+    chatFeatureFlags.taskDiscussion = true;
+    hubTaskDiscussionAPI.openTaskDiscussion.mockResolvedValue({
+      conversation_id: 'conv-task-1',
+      created: true,
+      kind: 'task',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-1']}>
+        <Routes>
+          <Route
+            path="/tasks"
+            element={(
+              <>
+                <Tasks />
+                <LocationProbe />
+              </>
+            )}
+          />
+          <Route path="/chat" element={(<><div data-testid="chat-page" /><LocationProbe /></>)} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    fireEvent.click(await screen.findByTestId('task-detail-open-chat'));
+
+    await waitFor(() => {
+      expect(hubTaskDiscussionAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
+    });
+    await waitFor(() => {
+      expect(screen.getByTestId('location-probe')).toHaveTextContent('/chat?conversation=conv-task-1');
+    });
+
+    chatFeatureFlags.chat = false;
+    chatFeatureFlags.taskDiscussion = false;
+  });
+
+  it('keeps the mobile task layout and exposes a direct chat button', async () => {
+    installMatchMedia({ mobile: true });
+    chatFeatureFlags.chat = true;
+    chatFeatureFlags.taskDiscussion = true;
+    hubTaskDiscussionAPI.openTaskDiscussion.mockResolvedValue({
+      conversation_id: 'conv-task-mobile',
+      created: false,
+      kind: 'task',
+    });
+
+    render(
+      <MemoryRouter initialEntries={['/tasks?task=task-1']}>
+        <Routes>
+          <Route path="/tasks" element={<Tasks />} />
+          <Route path="/chat" element={<div data-testid="chat-page" />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(await screen.findByTestId('task-detail-mobile-header')).toBeInTheDocument();
+    const checklistSummary = screen.getByTestId('task-mobile-checklist-summary');
+    expect(screen.getByTestId('task-mobile-chat-floating')).toBeInTheDocument();
+    expect(within(checklistSummary).queryByTestId('task-mobile-open-chat')).not.toBeInTheDocument();
+    expect(within(screen.getByTestId('task-mobile-action-rail')).queryByTestId('task-mobile-open-chat')).not.toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('task-mobile-open-chat'));
+
+    await waitFor(() => {
+      expect(hubTaskDiscussionAPI.openTaskDiscussion).toHaveBeenCalledWith('task-1');
+      expect(screen.getByTestId('chat-page')).toBeInTheDocument();
+    });
   });
 });

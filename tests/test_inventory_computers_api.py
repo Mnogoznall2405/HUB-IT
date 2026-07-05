@@ -327,7 +327,15 @@ def test_get_computers_enriches_contract_and_keeps_heartbeat_safe(monkeypatch):
     assert full_row["outlook_archives_count"] == 1
     assert full_row["has_hardware_changes"] is True
     assert full_row["changes_count_30d"] == 1
-    assert len(full_row["recent_changes"]) == 1
+    assert "recent_changes" not in full_row
+
+    detail = inventory.get_computer_detail(
+        mac_address=full_row["mac_address"],
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="selected",
+    )
+    assert len(detail["recent_changes"]) == 1
 
     heartbeat_row = result[1]
     assert heartbeat_row["branch_name"] == "Тюмень"
@@ -429,3 +437,104 @@ def test_computer_search_defers_network_lookup_until_page_items(monkeypatch):
 
     assert [row["hostname"] for row in by_network["items"]] == ["PC-03"]
     assert network_calls == ["AABBCCDDEE01", "AABBCCDDEE02", "AABBCCDDEE03"]
+
+
+def test_get_computers_summary_returns_aggregate_counts(monkeypatch):
+    now_ts = 1_710_000_000
+    _patch_environment(monkeypatch, now_ts)
+
+    summary = inventory.get_computers_summary(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="all",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+        search_fields="",
+        changed_only=False,
+    )
+
+    assert summary["total"] == 3
+    assert summary["statuses"]["online"] >= 1
+    assert "Тюмень" in summary["branches"]
+
+
+def test_search_pagination_returns_page_slice_without_summary(monkeypatch):
+    now_ts = 1_710_000_000
+    _patch_environment(monkeypatch, now_ts)
+
+    page_one = inventory.search_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="all",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+        search_fields="",
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+        limit=1,
+        offset=0,
+        include_summary=False,
+    )
+    page_two = inventory.search_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="all",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+        search_fields="",
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+        limit=1,
+        offset=1,
+        include_summary=False,
+    )
+
+    assert len(page_one["items"]) == 1
+    assert len(page_two["items"]) == 1
+    assert page_one["items"][0]["hostname"] != page_two["items"][0]["hostname"]
+    assert page_one["has_more"] is True
+    assert page_two["total"] == 3
+    assert "summary" not in page_one
+
+
+def test_search_list_items_are_trimmed_and_detail_endpoint_is_full(monkeypatch):
+    now_ts = 1_710_000_000
+    _patch_environment(monkeypatch, now_ts)
+
+    page = inventory.search_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="all",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+        search_fields="",
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+        limit=1,
+        offset=0,
+        include_summary=False,
+    )
+    list_item = page["items"][0]
+    assert "recent_changes" not in list_item
+    assert "monitors" not in list_item
+
+    detail = inventory.get_computer_detail(
+        mac_address=list_item["mac_address"],
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="all",
+    )
+    assert detail["hostname"] == list_item["hostname"]
+    assert isinstance(detail.get("recent_changes"), list)
+    assert isinstance(detail.get("monitors"), list)

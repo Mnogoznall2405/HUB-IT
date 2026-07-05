@@ -3,7 +3,6 @@ Hub API: dashboard, announcements, tasks, notifications.
 """
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Optional
 
@@ -11,19 +10,32 @@ from fastapi import APIRouter, Body, Depends, File, Form, HTTPException, Query, 
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 
-from backend.api.deps import ensure_user_permission, get_current_active_user, require_permission
+from backend.api.deps import ensure_user_any_permission, ensure_user_permission, get_current_active_user, require_any_permission, require_permission
 from backend.models.auth import User
 from backend.services.authorization_service import (
     PERM_ANNOUNCEMENTS_WRITE,
     PERM_CHAT_READ,
     PERM_DASHBOARD_READ,
     PERM_MAIL_ACCESS,
+    PERM_TASKS_CREATE,
     PERM_TASKS_READ,
     PERM_TASKS_MANAGE_ALL,
     PERM_TASKS_REVIEW,
     PERM_TASKS_WRITE,
 )
-from backend.services.hub_service import hub_service
+from backend.services.access_policy_service import (
+    can_review_task,
+    user_is_department_manager,
+)
+from backend.services.hub_service import _normalize_email_deadline_remind_hours, hub_service
+from backend.services.task_email_service import task_email_service
+from backend.chat.task_discussion import (
+    delete_task_discussion,
+    ensure_task_discussion,
+    get_task_discussion,
+    is_task_discussion_chat_enabled,
+    publish_task_discussion_updated,
+)
 from backend.services.task_analytics_export_service import build_task_analytics_excel
 from backend.services.transfer_act_reminder_service import transfer_act_reminder_service
 from backend.services.markdown_transform_service import (
@@ -124,11 +136,92 @@ def _enrich_task_payload(item: Optional[dict]) -> Optional[dict]:
     return transfer_act_reminder_service.enrich_task(item)
 
 
+def _enrich_task_payload_for_user(item: Optional[dict], current_user: User) -> Optional[dict]:
+    enriched = _enrich_task_payload(item)
+    if not isinstance(enriched, dict):
+        return enriched
+
+    actor = _actor_dict(current_user)
+    actor_id = int(current_user.id)
+    status = _normalize_text(enriched.get("status")).lower()
+    is_admin = _is_admin_user(current_user)
+    is_transfer_reminder = _normalize_text(enriched.get("integration_kind")).lower() == "transfer_act_upload"
+    is_creator = int(enriched.get("created_by_user_id") or 0) == actor_id
+    is_assignee = int(enriched.get("assignee_user_id") or 0) == actor_id
+    is_controller = int(enriched.get("controller_user_id") or 0) == actor_id
+    controller_missing = int(enriched.get("controller_user_id") or 0) <= 0
+    is_department_manager = user_is_department_manager(actor, enriched.get("department_id"))
+    participant_ids = hub_service._task_participant_user_ids(enriched, include_delegates=True)
+    observer_ids = hub_service._task_observer_user_ids(enriched)
+    is_observer_only = actor_id in observer_ids and actor_id not in participant_ids
+    can_reopen = bool(
+        not is_transfer_reminder
+        and status == "done"
+        and not is_observer_only
+        and (
+            is_admin
+            or is_department_manager
+            or actor_id in participant_ids
+        )
+    )
+
+    if is_observer_only:
+        enriched["is_observer"] = True
+        enriched["capabilities"] = {
+            "can_edit": False,
+            "can_start": False,
+            "can_submit": False,
+            "can_review": False,
+            "can_reopen": False,
+            "can_upload_files": False,
+            "can_update_checklist": False,
+            "can_open_discussion": bool(is_task_discussion_chat_enabled()),
+        }
+        return enriched
+
+    enriched["is_observer"] = actor_id in observer_ids
+    enriched["capabilities"] = {
+        "can_edit": bool(is_admin or (not is_transfer_reminder and (is_creator or is_department_manager))),
+        "can_start": bool(not is_transfer_reminder and is_assignee and status == "new"),
+        "can_submit": bool(not is_transfer_reminder and is_assignee and status in {"new", "in_progress"}),
+        "can_review": bool(
+            not is_transfer_reminder
+            and status == "review"
+            and can_review_task(actor, enriched)
+        ),
+        "can_reopen": can_reopen,
+        "can_upload_files": bool(
+            not is_transfer_reminder
+            and status != "done"
+            and (
+                is_assignee
+                or is_creator
+                or is_controller
+                or (_has_permission(current_user, PERM_TASKS_REVIEW) and controller_missing)
+            )
+        ),
+        "can_update_checklist": bool(
+            status != "done"
+            and (
+                is_admin
+                or actor_id in participant_ids
+                or is_department_manager
+            )
+        ),
+        "can_open_discussion": bool(is_task_discussion_chat_enabled()),
+    }
+    return enriched
+
+
 def _enrich_task_collection(payload: dict) -> dict:
     result = dict(payload or {})
     items = result.get("items")
     if isinstance(items, list):
         result["items"] = transfer_act_reminder_service.enrich_tasks(items)
+    if "meta" not in result:
+        result["meta"] = {}
+    if isinstance(result.get("meta"), dict) and "email_deadline_soon_hours_default" not in result["meta"]:
+        result["meta"]["email_deadline_soon_hours_default"] = task_email_service.deadline_soon_hours()
     return result
 
 
@@ -423,9 +516,28 @@ async def download_announcement_attachment(
 @router.get("/users/assignees")
 async def get_assignee_users(
     department_id: str = Query("", min_length=0),
+    q: str = Query("", min_length=0, max_length=200),
+    limit: int = Query(30, ge=1, le=200),
+    ids: str = Query("", min_length=0, max_length=2000),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return {"items": hub_service.list_assignees(department_id=_normalize_text(department_id) or None)}
+    parsed_ids: list[int] = []
+    if _normalize_text(ids):
+        for part in ids.split(","):
+            token = part.strip()
+            if not token:
+                continue
+            try:
+                parsed_ids.append(int(token))
+            except ValueError:
+                continue
+    return await run_in_threadpool(
+        hub_service.search_assignees,
+        department_id=_normalize_text(department_id) or None,
+        q=_normalize_text(q),
+        limit=int(limit),
+        ids=parsed_ids or None,
+    )
 
 
 @router.get("/users/controllers")
@@ -433,7 +545,11 @@ async def get_controller_users(
     department_id: str = Query("", min_length=0),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return {"items": hub_service.list_controllers(department_id=_normalize_text(department_id) or None)}
+    items = await run_in_threadpool(
+        hub_service.list_controllers,
+        department_id=_normalize_text(department_id) or None,
+    )
+    return {"items": items}
 
 
 @router.get("/task-projects")
@@ -441,13 +557,17 @@ async def get_task_projects(
     include_inactive: bool = Query(False),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return {"items": hub_service.list_task_projects(include_inactive=bool(include_inactive))}
+    items = await run_in_threadpool(
+        hub_service.list_task_projects,
+        include_inactive=bool(include_inactive),
+    )
+    return {"items": items}
 
 
 @router.post("/task-projects")
 async def create_task_project(
     payload: dict = Body(...),
-    _: User = Depends(require_permission(PERM_TASKS_WRITE)),
+    _: User = Depends(require_any_permission((PERM_TASKS_CREATE, PERM_TASKS_WRITE))),
 ):
     try:
         return hub_service.create_task_project(
@@ -481,12 +601,12 @@ async def get_task_objects(
     include_inactive: bool = Query(False),
     _: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return {
-        "items": hub_service.list_task_objects(
-            project_ids=project_id,
-            include_inactive=bool(include_inactive),
-        )
-    }
+    items = await run_in_threadpool(
+        hub_service.list_task_objects,
+        project_ids=project_id,
+        include_inactive=bool(include_inactive),
+    )
+    return {"items": items}
 
 
 @router.post("/task-objects")
@@ -543,8 +663,10 @@ async def transform_markdown(
     if len(text) > 20000:
         raise HTTPException(status_code=413, detail="Text is too large (max 20000 symbols)")
 
-    required_permission = PERM_ANNOUNCEMENTS_WRITE if context == "announcement" else PERM_TASKS_WRITE
-    ensure_user_permission(current_user, required_permission)
+    if context == "announcement":
+        ensure_user_permission(current_user, PERM_ANNOUNCEMENTS_WRITE)
+    else:
+        ensure_user_any_permission(current_user, (PERM_TASKS_CREATE, PERM_TASKS_WRITE))
 
     try:
         return markdown_transform_service.transform_text(text=text, context=context)
@@ -563,9 +685,12 @@ async def get_tasks(
     status_filter: str = Query("", alias="status"),
     q: str = Query("", min_length=0),
     assignee_user_id: Optional[int] = Query(None, ge=1),
+    controller_user_id: Optional[int] = Query(None, ge=1),
     department_id: str = Query("", min_length=0),
     has_attachments: bool = Query(False),
     due_state: str = Query("", pattern="^(|overdue|today|upcoming|none)$"),
+    unread_comments_only: bool = Query(False),
+    focus_mode: str = Query("", pattern="^(|review|overdue|comments)$"),
     sort_by: str = Query("status", pattern="^(status|updated_at|due_at)$"),
     sort_dir: str = Query("asc", pattern="^(asc|desc)$"),
     limit: int = Query(100, ge=1, le=500),
@@ -575,16 +700,20 @@ async def get_tasks(
     allow_all = str(getattr(current_user, "role", "") or "").lower() == "admin" or _has_permission(current_user, PERM_TASKS_MANAGE_ALL)
     if scope == "all" and not allow_all:
         raise HTTPException(status_code=403, detail="Insufficient permissions: tasks.all")
-    payload = hub_service.list_tasks(
+    payload = await run_in_threadpool(
+        hub_service.list_tasks,
         user_id=int(current_user.id),
         scope=scope,
         role_scope=_normalize_text(role_scope).lower(),
         status_filter=_normalize_text(status_filter).lower(),
         q=_normalize_text(q),
         assignee_user_id=assignee_user_id,
+        controller_user_id=controller_user_id,
         department_id=_normalize_text(department_id) or None,
         has_attachments=bool(has_attachments),
         due_state=_normalize_text(due_state).lower(),
+        unread_comments_only=bool(unread_comments_only),
+        focus_mode=_normalize_text(focus_mode).lower(),
         sort_by=_normalize_text(sort_by).lower(),
         sort_dir=_normalize_text(sort_dir).lower(),
         limit=int(limit),
@@ -602,15 +731,17 @@ async def get_task_analytics(
     project_id: list[str] = Query(default=[]),
     object_id: list[str] = Query(default=[]),
     participant_user_id: list[int] = Query(default=[]),
-    _: User = Depends(require_permission(PERM_TASKS_READ)),
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    return hub_service.get_task_analytics(
+    return await run_in_threadpool(
+        hub_service.get_task_analytics,
         start_date=_normalize_text(start_date) or None,
         end_date=_normalize_text(end_date) or None,
         date_basis=_normalize_text(date_basis, "protocol_date"),
         project_ids=project_id,
         object_ids=object_id,
         participant_user_ids=participant_user_id,
+        current_user=current_user,
     )
 
 
@@ -622,9 +753,10 @@ async def export_task_analytics(
     project_id: list[str] = Query(default=[]),
     object_id: list[str] = Query(default=[]),
     participant_user_id: list[int] = Query(default=[]),
-    _: User = Depends(require_permission(PERM_TASKS_READ)),
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
-    file_bytes, filename = build_task_analytics_excel(
+    file_bytes, filename = await run_in_threadpool(
+        build_task_analytics_excel,
         hub_service_impl=hub_service,
         start_date=_normalize_text(start_date) or None,
         end_date=_normalize_text(end_date) or None,
@@ -632,6 +764,7 @@ async def export_task_analytics(
         project_ids=project_id,
         object_ids=object_id,
         participant_user_ids=participant_user_id,
+        current_user=current_user,
     )
     headers = {
         "Content-Disposition": f'attachment; filename="{filename}"',
@@ -646,13 +779,11 @@ async def export_task_analytics(
 @router.post("/tasks")
 async def create_task(
     payload: dict = Body(...),
-    current_user: User = Depends(require_permission(PERM_TASKS_WRITE)),
+    current_user: User = Depends(require_any_permission((PERM_TASKS_CREATE, PERM_TASKS_WRITE))),
 ):
     try:
         controller_raw = payload.get("controller_user_id")
-        if controller_raw in (None, "", 0, "0"):
-            raise ValueError("controller_user_id is required")
-        controller_user_id = int(controller_raw)
+        controller_user_id = 0 if controller_raw in (None, "", 0, "0") else int(controller_raw)
         assignee_ids_raw = payload.get("assignee_user_ids")
         assignee_ids: list[int] = []
         if isinstance(assignee_ids_raw, list):
@@ -670,21 +801,41 @@ async def create_task(
         if not assignee_ids:
             raise ValueError("At least one assignee is required")
 
+        observer_ids_raw = payload.get("observer_user_ids")
+        observer_ids: list[int] = []
+        if isinstance(observer_ids_raw, list):
+            for item in observer_ids_raw:
+                try:
+                    value = int(item)
+                except Exception:
+                    continue
+                if value not in observer_ids:
+                    observer_ids.append(value)
+
+        due_at_value = _normalize_text(payload.get("due_at")) or None
+        email_deadline_remind_hours = None
+        if due_at_value and "email_deadline_remind_hours" in payload:
+            email_deadline_remind_hours = _normalize_email_deadline_remind_hours(payload.get("email_deadline_remind_hours"))
+
         created_items = []
         for assignee_id in assignee_ids:
             created_items.append(
-                hub_service.create_task(
+                await run_in_threadpool(
+                    hub_service.create_task,
                     title=_normalize_text(payload.get("title")),
                     description=_normalize_text(payload.get("description")),
                     assignee_user_id=int(assignee_id),
                     controller_user_id=controller_user_id,
-                    due_at=_normalize_text(payload.get("due_at")) or None,
+                    due_at=due_at_value,
                     project_id=_normalize_text(payload.get("project_id")) or None,
                     object_id=_normalize_text(payload.get("object_id")) or None,
                     protocol_date=_normalize_text(payload.get("protocol_date")) or None,
                     priority=_normalize_text(payload.get("priority"), "normal"),
+                    checklist_items=payload.get("checklist_items") if isinstance(payload.get("checklist_items"), list) else [],
                     department_id=_normalize_text(payload.get("department_id")) or None,
                     visibility_scope=_normalize_text(payload.get("visibility_scope")) or None,
+                    email_deadline_remind_hours=email_deadline_remind_hours,
+                    observer_user_ids=observer_ids,
                     actor=_actor_dict(current_user),
                 )
             )
@@ -704,7 +855,8 @@ async def get_task(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        item = hub_service.get_task(
+        item = await run_in_threadpool(
+            hub_service.get_task,
             task_id,
             user_id=int(current_user.id),
             is_admin=_is_admin_user(current_user),
@@ -715,11 +867,12 @@ async def get_task(
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     if not item:
         raise HTTPException(status_code=404, detail="Task not found")
-    hub_service.mark_task_notifications_read(
+    await run_in_threadpool(
+        hub_service.mark_task_notifications_read,
         task_id=task_id,
         user_id=int(current_user.id),
     )
-    return _enrich_task_payload(item)
+    return _enrich_task_payload_for_user(item, current_user)
 
 
 @router.patch("/tasks/{task_id}")
@@ -729,7 +882,8 @@ async def patch_task(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        updated = hub_service.update_task(
+        updated = await run_in_threadpool(
+            hub_service.update_task,
             task_id,
             payload or {},
             actor_user_id=int(current_user.id),
@@ -741,6 +895,7 @@ async def patch_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
+    await publish_task_discussion_updated(task_id=task_id, task=updated)
     return _enrich_task_payload(updated)
 
 
@@ -751,7 +906,8 @@ async def delete_task(
 ):
     try:
         is_admin = _is_admin_user(current_user)
-        ok = hub_service.delete_task(
+        ok = await run_in_threadpool(
+            hub_service.delete_task,
             task_id=task_id,
             actor_user_id=int(current_user.id),
             is_admin=is_admin,
@@ -760,6 +916,7 @@ async def delete_task(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     if not ok:
         raise HTTPException(status_code=404, detail="Task not found")
+    await delete_task_discussion(task_id=task_id)
     return {"ok": True, "task_id": task_id}
 
 
@@ -769,18 +926,58 @@ async def start_task(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        updated = hub_service.start_task(task_id=task_id, user=_actor_dict(current_user))
+        updated = await run_in_threadpool(
+            hub_service.start_task,
+            task_id=task_id,
+            user=_actor_dict(current_user),
+        )
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
-    hub_service.mark_task_notifications_read(
+    await run_in_threadpool(
+        hub_service.mark_task_notifications_read,
         task_id=task_id,
         user_id=int(current_user.id),
     )
+    await publish_task_discussion_updated(task_id=task_id, task=updated)
     return _enrich_task_payload(updated)
+
+
+@router.post("/tasks/{task_id}/reopen")
+async def reopen_task(
+    task_id: str,
+    payload: dict = Body(default_factory=dict),
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    reopen_kwargs = {
+        "task_id": task_id,
+        "user": _actor_dict(current_user),
+        "is_admin": _is_admin_user(current_user),
+    }
+    if isinstance(payload, dict) and "due_at" in payload:
+        reopen_kwargs["due_at"] = _normalize_text(payload.get("due_at")) or None
+        reopen_kwargs["due_at_provided"] = True
+    try:
+        updated = await run_in_threadpool(
+            hub_service.reopen_task,
+            **reopen_kwargs,
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if not updated:
+        raise HTTPException(status_code=404, detail="Task not found")
+    await run_in_threadpool(
+        hub_service.mark_task_notifications_read,
+        task_id=task_id,
+        user_id=int(current_user.id),
+    )
+    await publish_task_discussion_updated(task_id=task_id, task=updated)
+    return _enrich_task_payload_for_user(updated, current_user)
 
 
 @router.post("/tasks/{task_id}/submit")
@@ -805,7 +1002,8 @@ async def submit_task(
         )
         file_bytes = payload
     try:
-        updated = hub_service.submit_task(
+        updated = await run_in_threadpool(
+            hub_service.submit_task,
             task_id=task_id,
             user=_actor_dict(current_user),
             comment=_normalize_text(comment),
@@ -819,6 +1017,7 @@ async def submit_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
+    await publish_task_discussion_updated(task_id=task_id, task=updated)
     return _enrich_task_payload(updated)
 
 
@@ -838,7 +1037,8 @@ async def upload_task_attachment(
         context="Task attachment",
     )
     try:
-        created = hub_service.add_task_attachment(
+        created = await run_in_threadpool(
+            hub_service.add_task_attachment,
             task_id=task_id,
             user=_actor_dict(current_user),
             file_name=file_name,
@@ -862,7 +1062,8 @@ async def review_task(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        updated = hub_service.review_task(
+        updated = await run_in_threadpool(
+            hub_service.review_task,
             task_id=task_id,
             reviewer=_actor_dict(current_user),
             decision=_normalize_text(payload.get("decision")),
@@ -875,6 +1076,7 @@ async def review_task(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not updated:
         raise HTTPException(status_code=404, detail="Task not found")
+    await publish_task_discussion_updated(task_id=task_id, task=updated)
     return _enrich_task_payload(updated)
 
 
@@ -939,19 +1141,61 @@ async def download_task_report(
     )
 
 
+@router.get("/tasks/{task_id}/discussion")
+async def get_task_discussion_endpoint(
+    task_id: str,
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    if not is_task_discussion_chat_enabled():
+        raise HTTPException(status_code=404, detail="Task discussion chat is disabled")
+    try:
+        return await run_in_threadpool(
+            get_task_discussion,
+            task_id=task_id,
+            actor_user_id=int(current_user.id),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post("/tasks/{task_id}/discussion")
+async def open_task_discussion_endpoint(
+    task_id: str,
+    current_user: User = Depends(require_permission(PERM_TASKS_READ)),
+):
+    if not is_task_discussion_chat_enabled():
+        raise HTTPException(status_code=404, detail="Task discussion chat is disabled")
+    try:
+        return await run_in_threadpool(
+            ensure_task_discussion,
+            task_id=task_id,
+            actor_user_id=int(current_user.id),
+        )
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+
 @router.get("/tasks/{task_id}/comments")
 async def get_task_comments(
     task_id: str,
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        return {
-            "items": hub_service.list_task_comments(
-                task_id,
-                user_id=int(current_user.id),
-                is_admin=_is_admin_user(current_user),
-            )
-        }
+        items = await run_in_threadpool(
+            hub_service.list_task_comments,
+            task_id,
+            user_id=int(current_user.id),
+            is_admin=_is_admin_user(current_user),
+        )
+        return {"items": items}
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -977,6 +1221,10 @@ async def create_task_comment(
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ValueError as exc:
+        if str(exc) == "use_task_discussion_chat":
+            raise HTTPException(status_code=400, detail="use_task_discussion_chat") from exc
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if not result:
         raise HTTPException(status_code=404, detail="Task not found")
     return result
@@ -988,12 +1236,14 @@ async def mark_task_comments_seen(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        result = hub_service.mark_task_comments_seen(
+        result = await run_in_threadpool(
+            hub_service.mark_task_comments_seen,
             task_id=task_id,
             user=_actor_dict(current_user),
             is_admin=_is_admin_user(current_user),
         )
-        hub_service.mark_task_notifications_read(
+        await run_in_threadpool(
+            hub_service.mark_task_notifications_read,
             task_id=task_id,
             user_id=int(current_user.id),
             event_types=["task.comment_added"],
@@ -1017,13 +1267,13 @@ async def get_task_status_log(
     current_user: User = Depends(require_permission(PERM_TASKS_READ)),
 ):
     try:
-        return {
-            "items": hub_service.list_task_status_log(
-                task_id,
-                user_id=int(current_user.id),
-                is_admin=_is_admin_user(current_user),
-            )
-        }
+        items = await run_in_threadpool(
+            hub_service.list_task_status_log,
+            task_id,
+            user_id=int(current_user.id),
+            is_admin=_is_admin_user(current_user),
+        )
+        return {"items": items}
     except PermissionError as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     except LookupError as exc:
@@ -1037,7 +1287,8 @@ async def poll_notifications(
     unread_only: bool = Query(False),
     current_user: User = Depends(_require_notifications_access),
 ):
-    return hub_service.poll_notifications(
+    return await run_in_threadpool(
+        hub_service.poll_notifications,
         user_id=int(current_user.id),
         since=_normalize_text(since),
         limit=int(limit),
@@ -1049,7 +1300,7 @@ async def poll_notifications(
 async def get_notification_unread_counts(
     current_user: User = Depends(_require_notifications_access),
 ):
-    return hub_service.get_unread_counts(user_id=int(current_user.id))
+    return await run_in_threadpool(hub_service.get_unread_counts, user_id=int(current_user.id))
 
 
 @router.post("/notifications/{notification_id}/read")

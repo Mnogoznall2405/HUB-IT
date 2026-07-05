@@ -68,9 +68,10 @@ describe('useDatabaseEquipmentData', () => {
     const { result } = renderHook(() => useDatabaseEquipmentData(createProps()));
 
     await waitFor(() => expect(result.current.loadedCount).toBe(2));
+    await waitFor(() => expect(result.current.initialLoading).toBe(false));
 
-    expect(result.current.equipmentTypes).toEqual([{ type_no: 1 }]);
-    expect(result.current.statuses).toEqual([{ status_no: 1 }]);
+    expect(result.current.equipmentTypes).toEqual([{ type_no: 1, type_name: '', TYPE_NAME: '' }]);
+    expect(result.current.statuses).toEqual([{ status_no: 1, status_name: '', STATUS_NAME: '' }]);
     expect(result.current.branches).toHaveLength(2);
     expect(result.current.allEquipment).toEqual({
       HQ: { Office: [firstItem] },
@@ -112,6 +113,28 @@ describe('useDatabaseEquipmentData', () => {
     expect(equipmentAPI.getAllConsumablesGrouped).toHaveBeenCalledWith({ page: 1, limit: 2 });
     expect(equipmentAPI.getAllEquipmentGrouped).not.toHaveBeenCalled();
     expect(buildCacheKey).toHaveBeenCalledWith('consumables-grouped', 'main', 1, 2);
+  });
+
+  it('restores cached mode data without refetching grouped pages', async () => {
+    const { result } = renderHook(() => useDatabaseEquipmentData(createProps({ prefetchPages: 0 })));
+
+    await waitFor(() => expect(result.current.initialLoadDone).toBe(true));
+    const equipmentCallsBeforeSwitch = equipmentAPI.getAllEquipmentGrouped.mock.calls.length;
+
+    await act(async () => {
+      await result.current.switchDataMode(DATA_MODE_CONSUMABLES);
+    });
+
+    await waitFor(() => expect(result.current.loadedCount).toBe(1));
+    expect(equipmentAPI.getAllConsumablesGrouped).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      await result.current.switchDataMode(DATA_MODE_EQUIPMENT);
+    });
+
+    expect(result.current.allEquipment).toEqual({ HQ: { Office: [firstItem] } });
+    expect(equipmentAPI.getAllEquipmentGrouped.mock.calls.length).toBe(equipmentCallsBeforeSwitch);
+    expect(result.current.modeLoading).toBe(false);
   });
 
   it('resets loaded equipment state and can force refresh', async () => {

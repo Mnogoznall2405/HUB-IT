@@ -121,7 +121,7 @@ async def build_message_created_event_jobs(
             jobs.append(
                 ChatRealtimeEventJob(
                     event_type="chat.message.created",
-                    target_scope=CHAT_EVENT_SCOPE_BOTH,
+                    target_scope=CHAT_EVENT_SCOPE_INBOX,
                     target_user_id=int(member_user_id),
                     conversation_id=normalized_conversation_id,
                     message_id=normalized_message_id,

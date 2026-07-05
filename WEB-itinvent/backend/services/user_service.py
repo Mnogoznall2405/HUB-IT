@@ -13,6 +13,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 import logging
+import time
+from threading import Lock
 
 import ldap3
 
@@ -78,6 +80,9 @@ class UserService:
         self.store = None if self._use_app_database else get_local_store(data_dir=self.file_path.parent)
         if self._use_app_database:
             initialize_app_schema(self._database_url)
+        self._users_cache: tuple[float, list[dict]] | None = None
+        self._users_cache_lock = Lock()
+        self._users_cache_ttl_sec = 60.0
         self._ensure_defaults()
 
     @staticmethod
@@ -95,7 +100,17 @@ class UserService:
             return False
         return cls.is_system_hidden_username(user.get("username"))
 
+    def _invalidate_users_cache(self) -> None:
+        with self._users_cache_lock:
+            self._users_cache = None
+
     def _load_users(self) -> list[dict]:
+        now_mono = time.monotonic()
+        with self._users_cache_lock:
+            cached = self._users_cache
+            if cached is not None and (now_mono - cached[0]) < self._users_cache_ttl_sec:
+                return list(cached[1])
+
         if self._use_app_database:
             def _load_from_app_db() -> list[dict]:
                 with app_session(self._database_url) as session:
@@ -103,9 +118,14 @@ class UserService:
                     rows = session.scalars(select(AppUser).order_by(AppUser.id.asc())).all()
                     return [self._row_to_user_dict(row) for row in rows]
 
-            return run_with_transient_lock_retry(_load_from_app_db)
-        data = self.store.load_json(self.FILE_NAME, default_content=[])
-        return data if isinstance(data, list) else []
+            users = run_with_transient_lock_retry(_load_from_app_db)
+        else:
+            data = self.store.load_json(self.FILE_NAME, default_content=[])
+            users = data if isinstance(data, list) else []
+
+        with self._users_cache_lock:
+            self._users_cache = (time.monotonic(), list(users))
+        return users
 
     def _save_users(self, users: list[dict]) -> None:
         if self._use_app_database:
@@ -126,8 +146,10 @@ class UserService:
                 for user_id, row in existing_by_id.items():
                     if user_id not in incoming_ids:
                         session.delete(row)
+            self._invalidate_users_cache()
             return
         self.store.save_json(self.FILE_NAME, users)
+        self._invalidate_users_cache()
 
     @staticmethod
     def _normalize_delegate_role_type(value: object) -> str:
@@ -360,19 +382,31 @@ class UserService:
         """Return safe user representation without password fields."""
         return self._sanitize_user(user)
 
-    def list_task_delegates(self, owner_user_id: int) -> list[dict]:
-        owner_id = int(owner_user_id or 0)
-        if owner_id <= 0:
+    def list_task_delegates_bulk(self, owner_user_ids: list[int] | set[int] | tuple[int, ...]) -> list[dict]:
+        owner_ids: list[int] = []
+        seen_owner_ids: set[int] = set()
+        for raw_owner_id in list(owner_user_ids or []):
+            try:
+                owner_id = int(raw_owner_id or 0)
+            except (TypeError, ValueError):
+                continue
+            if owner_id <= 0 or owner_id in seen_owner_ids:
+                continue
+            seen_owner_ids.add(owner_id)
+            owner_ids.append(owner_id)
+        if not owner_ids:
             return []
+
         users_by_id = {int(item.get("id", 0)): item for item in self._load_users()}
-        out: list[dict] = []
+        rows_by_owner_id: dict[int, list[dict]] = {owner_id: [] for owner_id in owner_ids}
         for item in self._load_task_delegate_links():
-            if int(item.get("owner_user_id", 0)) != owner_id:
+            owner_id = int(item.get("owner_user_id", 0))
+            if owner_id not in rows_by_owner_id:
                 continue
             delegate_user = users_by_id.get(int(item.get("delegate_user_id", 0)))
             if not delegate_user:
                 continue
-            out.append(
+            rows_by_owner_id[owner_id].append(
                 {
                     "owner_user_id": owner_id,
                     "delegate_user_id": int(delegate_user.get("id", 0)),
@@ -385,13 +419,30 @@ class UserService:
                     "delegate_is_active": bool(delegate_user.get("is_active", True)),
                 }
             )
-        out.sort(
-            key=lambda row: (
-                not bool(row.get("is_active", True)),
-                str(row.get("delegate_full_name") or row.get("delegate_username") or "").lower(),
+
+        for rows in rows_by_owner_id.values():
+            rows.sort(
+                key=lambda row: (
+                    not bool(row.get("is_active", True)),
+                    str(row.get("delegate_full_name") or row.get("delegate_username") or "").lower(),
+                )
             )
-        )
-        return out
+        return [
+            {
+                "owner_user_id": owner_id,
+                "task_delegate_links": rows_by_owner_id.get(owner_id, []),
+            }
+            for owner_id in owner_ids
+        ]
+
+    def list_task_delegates(self, owner_user_id: int) -> list[dict]:
+        owner_id = int(owner_user_id or 0)
+        if owner_id <= 0:
+            return []
+        grouped = self.list_task_delegates_bulk([owner_id])
+        if not grouped:
+            return []
+        return list(grouped[0].get("task_delegate_links") or [])
 
     def replace_task_delegates(self, owner_user_id: int, items: list[dict] | None) -> list[dict]:
         owner_id = int(owner_user_id or 0)

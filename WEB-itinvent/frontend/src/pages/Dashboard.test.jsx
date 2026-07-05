@@ -1,87 +1,63 @@
-import React from 'react';
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
-import { MemoryRouter } from 'react-router-dom';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-const authMocks = vi.hoisted(() => ({
-  hasPermission: vi.fn((permission) => permission !== 'announcements.write'),
+const mocks = vi.hoisted(() => ({
+  hasPermission: vi.fn(() => true),
+  getDashboard: vi.fn(),
+  getChatUnread: vi.fn(),
+  getMailUnread: vi.fn(),
+  savePreferences: vi.fn(),
 }));
-
-function installMatchMedia({ mobile = false } = {}) {
-  window.matchMedia = vi.fn().mockImplementation((query) => ({
-    matches: mobile ? query.includes('max-width:599.95px') : false,
-    media: query,
-    onchange: null,
-    addEventListener: () => {},
-    removeEventListener: () => {},
-    addListener: () => {},
-    removeListener: () => {},
-    dispatchEvent: () => false,
-  }));
-}
 
 vi.mock('../api/client', () => ({
   hubAPI: {
-    getDashboard: vi.fn(),
-    getAnnouncementRecipients: vi.fn(),
-    transformMarkdown: vi.fn(),
-    downloadAnnouncementAttachment: vi.fn(),
-    downloadTaskAttachment: vi.fn(),
-    downloadTaskReport: vi.fn(),
-    getAnnouncement: vi.fn(),
-    markAnnouncementRead: vi.fn(),
-    getAnnouncementReads: vi.fn(),
-    acknowledgeAnnouncement: vi.fn(),
-    createAnnouncement: vi.fn(),
-    updateAnnouncement: vi.fn(),
-    deleteAnnouncement: vi.fn(),
-    getTask: vi.fn(),
-    markTaskCommentsSeen: vi.fn(),
-    addTaskComment: vi.fn(),
+    getDashboard: (...args) => mocks.getDashboard(...args),
+  },
+}));
+
+vi.mock('../api/chatNotifications', () => ({
+  chatNotificationsAPI: {
+    getUnreadSummary: (...args) => mocks.getChatUnread(...args),
+  },
+}));
+
+vi.mock('../api/mailNotifications', () => ({
+  mailNotificationsAPI: {
+    getUnreadCount: (...args) => mocks.getMailUnread(...args),
   },
 }));
 
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: 1, role: 'admin', username: 'admin' },
-    hasPermission: authMocks.hasPermission,
+    user: {
+      id: 1,
+      username: 'ivanov',
+      full_name: 'Иван Иванов',
+      role: 'operator',
+    },
+    hasPermission: mocks.hasPermission,
   }),
 }));
 
-vi.mock('../contexts/NotificationContext', () => ({
-  useNotification: () => ({
-    notifyApiError: vi.fn(),
-    notifySuccess: vi.fn(),
-  }),
-}));
-
-const mockPreferences = {
-  dashboard_mobile_sections: ['urgent', 'announcements', 'tasks'],
+const preferences = {
+  dashboard_sections: ['attention', 'tasks', 'communication', 'news'],
+  dashboard_mobile_sections: ['urgent', 'tasks', 'announcements'],
 };
-const savePreferencesMock = vi.fn();
 
-vi.mock('../contexts/PreferencesContext', () => ({
-  DEFAULT_DASHBOARD_MOBILE_SECTIONS: ['urgent', 'announcements', 'tasks'],
-  normalizeDashboardMobileSections: (value) => {
-    const allowed = ['urgent', 'announcements', 'tasks'];
-    const source = Array.isArray(value) ? value : [];
-    const result = [];
-    source.forEach((item) => {
-      const token = String(item || '').trim().toLowerCase();
-      if (allowed.includes(token) && !result.includes(token)) {
-        result.push(token);
-      }
-    });
-    return result.length ? result : ['urgent', 'announcements', 'tasks'];
-  },
-  usePreferences: () => ({
-    preferences: mockPreferences,
-    savePreferences: savePreferencesMock,
-  }),
-}));
+vi.mock('../contexts/PreferencesContext', async () => {
+  const actual = await vi.importActual('../contexts/PreferencesContext');
+  return {
+    ...actual,
+    usePreferences: () => ({
+      preferences,
+      savePreferences: mocks.savePreferences,
+    }),
+  };
+});
 
 vi.mock('../components/layout/MainLayout', () => ({
-  default: ({ children, headerMode = 'default' }) => <div data-testid="main-layout" data-header-mode={headerMode}>{children}</div>,
+  default: ({ children }) => <div data-testid="main-layout">{children}</div>,
 }));
 
 vi.mock('../components/layout/PageShell', () => ({
@@ -90,454 +66,239 @@ vi.mock('../components/layout/PageShell', () => ({
 
 vi.mock('../lib/chatFeature', () => ({
   CHAT_FEATURE_ENABLED: true,
-  CHAT_WS_ENABLED: false,
 }));
 
-vi.mock('../components/hub/MarkdownEditor', () => ({
-  default: ({ value, onChange }) => (
-    <textarea
-      aria-label="markdown-editor"
-      value={value || ''}
-      onChange={(event) => onChange?.(event.target.value)}
-    />
-  ),
-}));
+import Dashboard, { getFirstName, getGreeting } from './Dashboard';
 
-import { hubAPI } from '../api/client';
-import Dashboard, { getAnnouncementReadSecondaryText, normalizeAnnouncementReadsPayload } from './Dashboard';
-
-const baseTask = {
-  id: 'task-card-1',
-  title: 'Добавление данных',
-  status: 'new',
-  priority: 'high',
-  assignee_full_name: 'Тестовый Исполнитель',
-  due_at: '2026-03-21T10:00:00Z',
-  description: '## Заголовок блока\n\n- Первый пункт\n- Второй пункт',
-  latest_comment_preview: '',
-  latest_comment_full_name: '',
-  latest_comment_username: '',
-  has_unread_comments: false,
-  is_overdue: false,
-  attachments_count: 0,
-  comments_count: 0,
-};
-
-const createDashboardPayload = ({ announcements = [], tasks = [baseTask], summary = {}, unread_counts = {} } = {}) => ({
-  announcements: {
-    items: announcements,
-    total: announcements.length,
-    unread_total: announcements.filter((item) => item?.is_unread).length,
-    ack_pending_total: announcements.filter((item) => item?.is_ack_pending).length,
-  },
-  my_tasks: {
-    items: tasks,
-    total: tasks.length,
-  },
-  unread_counts,
-  summary,
-});
-
-beforeEach(() => {
-  vi.clearAllMocks();
-  authMocks.hasPermission.mockImplementation((permission) => permission !== 'announcements.write');
-  installMatchMedia({ mobile: false });
-  mockPreferences.dashboard_mobile_sections = ['urgent', 'announcements', 'tasks'];
-  savePreferencesMock.mockResolvedValue({
-    dashboard_mobile_sections: ['urgent', 'announcements', 'tasks'],
-  });
-  hubAPI.getDashboard.mockResolvedValue(createDashboardPayload());
-  hubAPI.getTask.mockResolvedValue({
-    id: 'task-card-1',
-    title: 'Добавление данных',
-    status: 'review',
-    priority: 'high',
-    due_at: '2026-03-21T10:00:00Z',
-    updated_at: '2026-03-21T09:30:00Z',
-    description: 'Preview description',
-    comments: [],
-    attachments: [],
-    status_log: [],
+const tasks = [
+  {
+    id: 'overdue-1',
+    title: 'Просроченная задача',
+    status: 'in_progress',
+    due_at: '2025-01-01T08:00:00Z',
+    is_overdue: true,
     has_unread_comments: false,
+  },
+  {
+    id: 'review-1',
+    title: 'Задача на проверке',
+    status: 'review',
+    due_at: '2027-01-02T08:00:00Z',
+    created_by_user_id: 1,
+    is_overdue: false,
+    has_unread_comments: false,
+  },
+  {
+    id: 'comment-1',
+    title: 'Задача с комментарием',
+    status: 'in_progress',
+    due_at: '2027-01-03T08:00:00Z',
+    is_overdue: false,
+    has_unread_comments: true,
+  },
+];
+
+const announcements = [
+  {
+    id: 'ann-1',
+    title: 'Обязательное сообщение',
+    preview: 'Нужно подтвердить ознакомление',
+    is_ack_pending: true,
+    updated_at: '2026-06-22T08:00:00Z',
+  },
+  {
+    id: 'ann-2',
+    title: 'Обычная новость',
+    preview: 'Короткий текст новости',
+    is_ack_pending: false,
+    updated_at: '2026-06-21T08:00:00Z',
+  },
+];
+
+function installMatchMedia(mobile = false) {
+  window.matchMedia = vi.fn().mockImplementation((query) => ({
+    matches: mobile && query.includes('max-width:599.95px'),
+    media: query,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(),
+  }));
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div data-testid="location">{`${location.pathname}${location.search}`}</div>;
+}
+
+function renderDashboard(initialEntry = '/dashboard', mobile = false) {
+  installMatchMedia(mobile);
+  return render(
+    <MemoryRouter initialEntries={[initialEntry]}>
+      <Routes>
+        <Route path="/dashboard" element={<><Dashboard /><LocationProbe /></>} />
+        <Route path="/dashboard/news" element={<LocationProbe />} />
+        <Route path="*" element={<LocationProbe />} />
+      </Routes>
+    </MemoryRouter>,
+  );
+}
+
+describe('Dashboard greeting helpers', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('extracts the given name from surname-first Russian FIO', () => {
+    expect(getFirstName({ full_name: 'Козловский Максим Евгеньевич' })).toBe('Максим');
+    expect(getFirstName({ full_name: 'Иван Иванов' })).toBe('Иван');
+    expect(getFirstName({ first_name: 'Анна', full_name: 'Смирнова Анна Олеговна' })).toBe('Анна');
+  });
+
+  it('changes the greeting for morning, daytime, and evening', () => {
+    expect(getGreeting(new Date(2026, 5, 22, 9, 0))).toBe('Доброе утро');
+    expect(getGreeting(new Date(2026, 5, 22, 14, 0))).toBe('Добрый день');
+    expect(getGreeting(new Date(2026, 5, 22, 20, 0))).toBe('Добрый вечер');
   });
 });
 
-describe('Dashboard announcement reads helpers', () => {
-  it('normalizes announcement reads payload using backend contract fields', () => {
-    const payload = normalizeAnnouncementReadsPayload({
-      items: [
-        {
-          user_id: 2,
-          full_name: 'Иван Иванов',
-          is_seen: true,
-          is_acknowledged: true,
-          read_at: '2026-03-17T12:00:00Z',
-          acknowledged_at: '2026-03-17T12:05:00Z',
-        },
-        {
-          user_id: 3,
-          full_name: 'Петр Петров',
-          is_seen: false,
-          is_acknowledged: false,
-          read_at: '',
-          acknowledged_at: '',
-        },
-      ],
-      summary: {
-        recipients_total: 2,
-        seen_total: 1,
-        ack_total: 1,
-        pending_ack_total: 1,
-      },
+describe('Dashboard today page', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    preferences.dashboard_sections = ['attention', 'tasks', 'communication', 'news'];
+    preferences.dashboard_mobile_sections = ['urgent', 'tasks', 'announcements'];
+    mocks.hasPermission.mockReturnValue(true);
+    mocks.getDashboard.mockResolvedValue({
+      announcements: { items: announcements, total: announcements.length },
+      my_tasks: { items: tasks, total: tasks.length },
+      unread_counts: { notifications_unread_total: 2 },
+      summary: {},
+    });
+    mocks.getChatUnread.mockResolvedValue({ messages_unread_total: 3 });
+    mocks.getMailUnread.mockResolvedValue({ unread_count: 4 });
+    mocks.savePreferences.mockResolvedValue({
+      dashboard_sections: ['attention', 'tasks', 'communication'],
+    });
+  });
+
+  it('renders a personal today screen with attention first and one shared section order', async () => {
+    renderDashboard();
+
+    expect(await screen.findByTestId('dashboard-today-header')).toHaveTextContent('Иван');
+    expect(screen.getByTestId('dashboard-section-attention')).toBeInTheDocument();
+    expect(screen.getAllByText('Просроченная задача').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Задача на проверке').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Задача с комментарием').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Обязательное сообщение').length).toBeGreaterThan(0);
+
+    const sections = screen.getByTestId('dashboard-sections');
+    expect(sections).toHaveAttribute('data-dashboard-order', 'attention,tasks,communication,news');
+    expect(sections).toHaveAttribute('data-layout', 'desktop-focus');
+    expect(within(sections).getByTestId('dashboard-section-tasks')).toBeInTheDocument();
+    expect(within(sections).getByTestId('dashboard-section-communication')).toBeInTheDocument();
+    expect(within(sections).getByTestId('dashboard-section-news')).toBeInTheDocument();
+    expect(screen.getAllByTestId('dashboard-task-status-dot')).toHaveLength(3);
+    expect(screen.getAllByTestId('dashboard-task-row')[0]).toHaveTextContent('Просрочено');
+    expect(screen.queryByRole('tab')).toBeNull();
+  });
+
+  it('uses the same content model on mobile without tabs or swipe views', async () => {
+    renderDashboard('/dashboard', true);
+
+    expect(await screen.findByTestId('dashboard-today-header')).toBeInTheDocument();
+    expect(screen.queryByRole('tab')).toBeNull();
+    expect(screen.queryByTestId('dashboard-mobile-swipe-region')).toBeNull();
+    expect(screen.getByTestId('dashboard-sections')).toHaveAttribute(
+      'data-dashboard-order',
+      'attention,tasks,communication,news',
+    );
+    expect(screen.getByTestId('dashboard-sections')).toHaveAttribute('data-layout', 'mobile-feed');
+    expect(screen.getByTestId('dashboard-primary-action')).toHaveTextContent('Создать задачу');
+    expect(screen.getByRole('button', { name: 'Открыть чат' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Написать письмо' })).toBeInTheDocument();
+    fireEvent.click(screen.getByTestId('dashboard-primary-action'));
+    expect(await screen.findByTestId('location')).toHaveTextContent('/tasks?create=1');
+  });
+
+  it('collapses attention into a calm status bar when no action is required', async () => {
+    mocks.getDashboard.mockResolvedValueOnce({
+      announcements: { items: [], total: 0 },
+      my_tasks: { items: [], total: 0 },
+      unread_counts: { notifications_unread_total: 0 },
+      summary: {},
     });
 
-    expect(payload.summary.seen_total).toBe(1);
-    expect(payload.items[0].is_seen).toBe(true);
-    expect(payload.items[0].is_acknowledged).toBe(true);
-    expect(payload.items[1].is_seen).toBe(false);
-    expect(payload.items[1].is_acknowledged).toBe(false);
+    renderDashboard();
+
+    const attention = await screen.findByTestId('dashboard-section-attention');
+    expect(attention).toHaveAttribute('data-state', 'calm');
+    expect(attention).toHaveTextContent('Всё спокойно');
+    expect(screen.queryByText('Требует внимания')).toBeNull();
   });
 
-  it('builds readable secondary text for seen and unseen recipients', () => {
-    const formatDate = (value) => value || '-';
+  it('keeps tasks first and expands the secondary column when tasks are hidden', async () => {
+    preferences.dashboard_sections = ['attention', 'news', 'communication'];
 
-    expect(getAnnouncementReadSecondaryText(
-      { is_seen: true, is_acknowledged: true, read_at: 'READ_AT', acknowledged_at: 'ACK_AT' },
-      true,
-      formatDate,
-    )).toBe('Прочитал: READ_AT · Подтвердил: ACK_AT');
+    renderDashboard();
 
-    expect(getAnnouncementReadSecondaryText(
-      { is_seen: false, is_acknowledged: false, read_at: '', acknowledged_at: '' },
-      true,
-      formatDate,
-    )).toBe('Не открывал · Подтверждение не получено');
+    await screen.findByTestId('dashboard-today-header');
+    const sections = screen.getByTestId('dashboard-sections');
+    expect(sections).toHaveAttribute('data-dashboard-order', 'attention,news,communication');
+    expect(sections).toHaveAttribute('data-layout', 'desktop-full');
+    expect(screen.queryByTestId('dashboard-section-tasks')).toBeNull();
 
-    expect(getAnnouncementReadSecondaryText(
-      { is_seen: true, is_acknowledged: false, read_at: 'READ_AT', acknowledged_at: '' },
-      false,
-      formatDate,
-    )).toBe('Прочитал: READ_AT');
+    const secondary = screen.getByTestId('dashboard-secondary-column');
+    const news = within(secondary).getByTestId('dashboard-section-news');
+    const communication = within(secondary).getByTestId('dashboard-section-communication');
+    expect(news.compareDocumentPosition(communication) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
   });
 
-  it('does not render task description in closed dashboard cards', async () => {
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Dashboard />
-      </MemoryRouter>,
-    );
+  it('normalizes a legacy mixed order into tasks first while preserving the secondary order', async () => {
+    preferences.dashboard_sections = ['attention', 'news', 'tasks', 'communication'];
 
-    expect(await screen.findByText('Добавление данных')).toBeInTheDocument();
-    expect(screen.queryByText('Заголовок блока')).not.toBeInTheDocument();
-    expect(screen.queryByText('Показать полностью')).not.toBeInTheDocument();
-    expect(hubAPI.getTask).not.toHaveBeenCalled();
+    renderDashboard();
+
+    const sections = await screen.findByTestId('dashboard-sections');
+    expect(sections).toHaveAttribute('data-dashboard-order', 'attention,tasks,news,communication');
+    expect(sections.firstElementChild).toHaveAttribute('data-testid', 'dashboard-section-tasks');
   });
 
-  it('hides empty announcement special sections and keeps the all section', async () => {
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Dashboard />
-      </MemoryRouter>,
-    );
+  it('filters task and communication blocks by permissions', async () => {
+    mocks.hasPermission.mockImplementation((permission) => (
+      permission === 'dashboard.read'
+    ));
 
-    expect(await screen.findByText('Все заметки')).toBeInTheDocument();
-    expect(screen.getByText('По текущим фильтрам заметки не найдены.')).toBeInTheDocument();
-    expect(screen.queryByText('Требуют подтверждения')).not.toBeInTheDocument();
-    expect(screen.queryByText('Нет заметок, которые нужно подтвердить.')).not.toBeInTheDocument();
-    expect(screen.queryByText('Нет новых или обновлённых заметок.')).not.toBeInTheDocument();
-    expect(screen.queryByText('Нет закреплённых заметок.')).not.toBeInTheDocument();
+    renderDashboard();
+
+    await screen.findByTestId('dashboard-today-header');
+    expect(screen.queryByTestId('dashboard-section-tasks')).toBeNull();
+    expect(screen.queryByTestId('dashboard-section-communication')).toBeNull();
+    expect(screen.getByTestId('dashboard-section-news')).toBeInTheDocument();
+    expect(mocks.getChatUnread).not.toHaveBeenCalled();
+    expect(mocks.getMailUnread).not.toHaveBeenCalled();
   });
 
-  it('renders populated special sections and still keeps the all section', async () => {
-    hubAPI.getDashboard.mockResolvedValueOnce(createDashboardPayload({
-      announcements: [
-        {
-          id: 'ann-1',
-          title: 'Нужно подтвердить',
-          preview: 'Подтвердите получение заметки.',
-          priority: 'normal',
-          is_ack_pending: true,
-          is_unread: false,
-          is_pinned_active: false,
-          attachments_count: 0,
-          author_full_name: 'Администратор',
-          author_username: 'admin',
-        },
-      ],
-    }));
+  it('saves a canonical shared dashboard configuration', async () => {
+    renderDashboard();
 
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Dashboard />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByText('Требуют подтверждения')).toBeInTheDocument();
-    expect(screen.getByText('Все заметки')).toBeInTheDocument();
-    expect(screen.getAllByText('Нужно подтвердить').length).toBeGreaterThan(0);
-    expect(screen.queryByText('Нет заметок, которые нужно подтвердить.')).not.toBeInTheDocument();
-    expect(screen.queryByText('Нет новых или обновлённых заметок.')).not.toBeInTheDocument();
-    expect(screen.queryByText('Нет закреплённых заметок.')).not.toBeInTheDocument();
-  });
-
-  it('keeps core quick access as four even tiles and moves announcement action outside the grid', async () => {
-    authMocks.hasPermission.mockReturnValue(true);
-
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Dashboard />
-      </MemoryRouter>,
-    );
-
-    const quickAccessGrid = await screen.findByTestId('dashboard-quick-access-grid');
-
-    expect(within(quickAccessGrid).getByTestId('dashboard-quick-access-chat')).toBeInTheDocument();
-    expect(within(quickAccessGrid).getByTestId('dashboard-quick-access-mail')).toBeInTheDocument();
-    expect(within(quickAccessGrid).getByTestId('dashboard-quick-access-tasks')).toBeInTheDocument();
-    expect(within(quickAccessGrid).getByTestId('dashboard-quick-access-settings')).toBeInTheDocument();
-    expect(within(quickAccessGrid).queryByTestId('dashboard-quick-access-create-announcement')).not.toBeInTheDocument();
-    expect(screen.getByTestId('dashboard-extra-action-create-announcement')).toBeInTheDocument();
-  });
-
-  it('renders mobile dashboard with notifications-only header and the overview as default view', async () => {
-    installMatchMedia({ mobile: true });
-
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Dashboard />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByTestId('dashboard-mobile-layout')).toBeInTheDocument();
-    expect(screen.getByTestId('main-layout')).toHaveAttribute('data-header-mode', 'notifications-only');
-    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
-    expect(screen.getByTestId('dashboard-mobile-overview-section-urgent')).toBeInTheDocument();
-    expect(screen.getByTestId('dashboard-mobile-overview-section-announcements')).toBeInTheDocument();
-    expect(screen.getByTestId('dashboard-mobile-overview-section-tasks')).toBeInTheDocument();
-
-    fireEvent.click(screen.getByTestId('dashboard-mobile-tab-tasks'));
-
-    expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
-    expect(await screen.findByText('Мои задачи')).toBeInTheDocument();
-  });
-
-  it('switches mobile sections with horizontal swipes and keeps tab clicks working', async () => {
-    installMatchMedia({ mobile: true });
-
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Dashboard />
-      </MemoryRouter>,
-    );
-
-    const swipeRegion = await screen.findByTestId('dashboard-mobile-swipe-region');
-    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 260, clientY: 120 }] });
-    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 190, clientY: 126 }] });
-    expect(screen.getByTestId('dashboard-mobile-tab-announcements')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 260, clientY: 120 }] });
-    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 185, clientY: 118 }] });
-    expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 120, clientY: 120 }] });
-    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 196, clientY: 116 }] });
-    expect(screen.getByTestId('dashboard-mobile-tab-announcements')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 120, clientY: 120 }] });
-    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 194, clientY: 118 }] });
-    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.click(screen.getByTestId('dashboard-mobile-tab-tasks'));
-    expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
-  });
-
-  it('ignores vertical mobile swipes and does not move beyond edge sections', async () => {
-    installMatchMedia({ mobile: true });
-
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Dashboard />
-      </MemoryRouter>,
-    );
-
-    const swipeRegion = await screen.findByTestId('dashboard-mobile-swipe-region');
-    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 160, clientY: 80 }] });
-    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 220, clientY: 84 }] });
-    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 220, clientY: 80 }] });
-    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 185, clientY: 162 }] });
-    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 220, clientY: 80 }] });
-    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 181, clientY: 82 }] });
-    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 240, clientY: 100 }] });
-    fireEvent.touchCancel(swipeRegion);
-    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 170, clientY: 102 }] });
-    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.pointerDown(swipeRegion, { pointerType: 'touch', clientX: 240, clientY: 100 });
-    fireEvent.pointerCancel(swipeRegion, { pointerType: 'touch', clientX: 200, clientY: 102 });
-    fireEvent.pointerUp(swipeRegion, { pointerType: 'touch', clientX: 170, clientY: 102 });
-    expect(screen.getByTestId('dashboard-mobile-tab-overview')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.click(screen.getByTestId('dashboard-mobile-tab-tasks'));
-    expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.touchStart(swipeRegion, { touches: [{ clientX: 240, clientY: 120 }] });
-    fireEvent.touchEnd(swipeRegion, { changedTouches: [{ clientX: 170, clientY: 118 }] });
-    expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
-  });
-
-  it('respects mobile overview section preferences and saves customization', async () => {
-    installMatchMedia({ mobile: true });
-    mockPreferences.dashboard_mobile_sections = ['urgent', 'tasks'];
-
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Dashboard />
-      </MemoryRouter>,
-    );
-
-    expect(await screen.findByTestId('dashboard-mobile-layout')).toBeInTheDocument();
-    expect(screen.queryByTestId('dashboard-mobile-overview-section-announcements')).not.toBeInTheDocument();
-
-    const overviewSections = screen.getAllByTestId(/dashboard-mobile-overview-section-/);
-    expect(overviewSections[0]).toHaveAttribute('data-testid', 'dashboard-mobile-overview-section-urgent');
-    expect(overviewSections[1]).toHaveAttribute('data-testid', 'dashboard-mobile-overview-section-tasks');
-
-    fireEvent.click(screen.getByRole('button', { name: 'Действия главной' }));
-    fireEvent.click(await screen.findByText('Настроить экран'));
-
-    expect(await screen.findByTestId('dashboard-mobile-customize-dialog')).toBeInTheDocument();
-
-    const tasksCard = screen.getByTestId('dashboard-mobile-customize-section-tasks');
-    fireEvent.click(within(tasksCard).getByRole('button', { name: 'Скрыть' }));
-    fireEvent.click(screen.getByTestId('dashboard-mobile-customize-save'));
+    await screen.findByTestId('dashboard-today-header');
+    fireEvent.click(screen.getByRole('button', { name: 'Настроить главную' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Скрыть Последние новости' }));
+    fireEvent.click(screen.getByTestId('dashboard-customize-save'));
 
     await waitFor(() => {
-      expect(savePreferencesMock).toHaveBeenCalledWith({
-        dashboard_mobile_sections: ['urgent'],
+      expect(mocks.savePreferences).toHaveBeenCalledWith({
+        dashboard_sections: ['attention', 'tasks', 'communication'],
       });
     });
   });
 
-  it('opens mobile filters and task preview flow', async () => {
-    installMatchMedia({ mobile: true });
-    hubAPI.getDashboard.mockResolvedValueOnce(createDashboardPayload({
-      tasks: [
-        {
-          id: 'task-card-1',
-          title: 'Проверить мобильный preview',
-          status: 'review',
-          priority: 'high',
-          assignee_full_name: 'Тестовый Исполнитель',
-          due_at: '2026-03-21T10:00:00Z',
-          latest_comment_preview: 'Новый комментарий',
-          latest_comment_full_name: 'Автор',
-          has_unread_comments: true,
-          is_overdue: false,
-          attachments_count: 0,
-          comments_count: 1,
-        },
-      ],
-      summary: {
-        tasks_review_required: 1,
-      },
-      unread_counts: {
-        tasks_review_required: 1,
-      },
-    }));
-
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Dashboard />
-      </MemoryRouter>,
-    );
-
-    await screen.findByTestId('dashboard-mobile-layout');
-
-    fireEvent.click(screen.getByTestId('dashboard-mobile-tab-announcements'));
-    fireEvent.click(await screen.findByTestId('dashboard-mobile-filters-button'));
-    expect(await screen.findByText('Фильтры заметок')).toBeInTheDocument();
-    fireEvent.click(screen.getByRole('button', { name: 'Закрыть' }));
-    await waitFor(() => {
-      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
-    });
-
-    fireEvent.click(screen.getByTestId('dashboard-mobile-tab-tasks'));
-    expect(screen.getByTestId('dashboard-mobile-tab-tasks')).toHaveAttribute('aria-selected', 'true');
-
-    fireEvent.click(await screen.findByText('Проверить мобильный preview'));
+  it('redirects legacy announcement deep links to the news route', async () => {
+    renderDashboard('/dashboard?announcement=ann-1');
 
     await waitFor(() => {
-      expect(hubAPI.getTask).toHaveBeenCalledWith('task-card-1');
+      expect(screen.getByTestId('location')).toHaveTextContent('/dashboard/news?announcement=ann-1');
     });
-    expect(await screen.findByTestId('task-preview-mobile-header')).toBeInTheDocument();
-  });
-
-  it('opens announcement details in compact mobile dialog mode', async () => {
-    installMatchMedia({ mobile: true });
-    hubAPI.getDashboard.mockResolvedValueOnce(createDashboardPayload({
-      announcements: [
-        {
-          id: 'ann-1',
-          title: 'Мобильная заметка',
-          preview: 'Короткое превью для мобильного режима.',
-          priority: 'high',
-          is_ack_pending: true,
-          is_unread: true,
-          is_updated: false,
-          is_pinned_active: false,
-          requires_ack: true,
-          attachments_count: 0,
-          author_full_name: 'Администратор',
-          author_username: 'admin',
-          can_manage: true,
-        },
-      ],
-    }));
-    hubAPI.getAnnouncement.mockResolvedValueOnce({
-      id: 'ann-1',
-      title: 'Мобильная заметка',
-      preview: 'Короткое превью для мобильного режима.',
-      body: 'Полный текст заметки',
-      priority: 'high',
-      is_ack_pending: true,
-      is_unread: true,
-      is_updated: false,
-      is_pinned_active: false,
-      requires_ack: true,
-      attachments: [],
-      author_full_name: 'Администратор',
-      author_username: 'admin',
-      recipients_summary: 'Всем',
-      published_at: '2026-03-21T10:00:00Z',
-      updated_at: '2026-03-21T10:00:00Z',
-      can_manage: true,
-      version: 1,
-    });
-
-    render(
-      <MemoryRouter initialEntries={['/dashboard']}>
-        <Dashboard />
-      </MemoryRouter>,
-    );
-
-    expect((await screen.findAllByText('Мобильная заметка')).length).toBeGreaterThan(0);
-
-    fireEvent.click(screen.getAllByText('Мобильная заметка')[0]);
-
-    await waitFor(() => {
-      expect(hubAPI.getAnnouncement).toHaveBeenCalledWith('ann-1');
-    });
-    expect(await screen.findByTestId('dashboard-mobile-announcement-header')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: 'Назад к ленте заметок' })).toBeInTheDocument();
   });
 });

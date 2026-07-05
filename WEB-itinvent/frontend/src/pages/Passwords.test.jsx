@@ -10,6 +10,8 @@ const {
   mockUpdateEntry,
   mockArchiveEntry,
   mockUnlock,
+  mockUnlockSetup2fa,
+  mockUnlockVerify2faSetup,
   mockUnlockWebAuthnOptions,
   mockUnlockWebAuthnVerify,
   mockGetPasskeyAssertion,
@@ -20,6 +22,10 @@ const {
   mockNotifyWarning,
   mockNotifyApiError,
   mockUseMediaQuery,
+  mockSearchParams,
+  mockSetSearchParams,
+  mockAuthUser,
+  mockRefreshSession,
 } = vi.hoisted(() => ({
   mockGetEntries: vi.fn(),
   mockGetGroups: vi.fn(),
@@ -27,6 +33,8 @@ const {
   mockUpdateEntry: vi.fn(),
   mockArchiveEntry: vi.fn(),
   mockUnlock: vi.fn(),
+  mockUnlockSetup2fa: vi.fn(),
+  mockUnlockVerify2faSetup: vi.fn(),
   mockUnlockWebAuthnOptions: vi.fn(),
   mockUnlockWebAuthnVerify: vi.fn(),
   mockGetPasskeyAssertion: vi.fn(),
@@ -37,6 +45,16 @@ const {
   mockNotifyWarning: vi.fn(),
   mockNotifyApiError: vi.fn(),
   mockUseMediaQuery: vi.fn(() => false),
+  mockSearchParams: new URLSearchParams(),
+  mockSetSearchParams: vi.fn(),
+  mockAuthUser: {
+    id: 1,
+    username: 'admin',
+    role: 'admin',
+    trusted_devices_count: 1,
+    is_2fa_enabled: true,
+  },
+  mockRefreshSession: vi.fn(),
 }));
 
 vi.mock('@mui/material/useMediaQuery', () => ({
@@ -51,6 +69,8 @@ vi.mock('../api/passwords', () => ({
     updateEntry: mockUpdateEntry,
     archiveEntry: mockArchiveEntry,
     unlock: mockUnlock,
+    unlockSetup2fa: mockUnlockSetup2fa,
+    unlockVerify2faSetup: mockUnlockVerify2faSetup,
     unlockWebAuthnOptions: mockUnlockWebAuthnOptions,
     unlockWebAuthnVerify: mockUnlockWebAuthnVerify,
     revealEntry: mockRevealEntry,
@@ -68,8 +88,9 @@ vi.mock('../lib/passkeyWebAuthn', () => ({
 
 vi.mock('../contexts/AuthContext', () => ({
   useAuth: () => ({
-    user: { id: 1, username: 'admin', role: 'admin', trusted_devices_count: 1 },
+    user: mockAuthUser,
     hasPermission: mockHasPermission,
+    refreshSession: mockRefreshSession,
   }),
 }));
 
@@ -94,10 +115,20 @@ vi.mock('react-router-dom', async () => {
   return {
     ...actual,
     useNavigate: () => vi.fn(),
+    useSearchParams: () => [mockSearchParams, mockSetSearchParams],
   };
 });
 
-import Passwords, { generateVaultPassword, normalizeTagList } from './Passwords';
+vi.mock('../components/passwords/PasswordAdExpiryView', () => ({
+  default: () => <div data-testid="password-ad-expiry-view">AD expiry view</div>,
+}));
+
+import Passwords, {
+  appendVaultTags,
+  generateVaultPassword,
+  normalizeTagList,
+  splitVaultTagInput,
+} from './Passwords';
 
 const theme = createTheme();
 
@@ -141,6 +172,25 @@ describe('normalizeTagList', () => {
   });
 });
 
+describe('splitVaultTagInput', () => {
+  it('splits completed tags by comma and keeps remainder', () => {
+    expect(splitVaultTagInput('prod, staging')).toEqual({
+      completed: ['prod'],
+      remainder: ' staging',
+    });
+    expect(splitVaultTagInput('prod,')).toEqual({
+      completed: ['prod'],
+      remainder: '',
+    });
+  });
+});
+
+describe('appendVaultTags', () => {
+  it('merges tags without duplicates', () => {
+    expect(appendVaultTags(['prod'], ['staging', 'prod'])).toEqual(['prod', 'staging']);
+  });
+});
+
 describe('generateVaultPassword', () => {
   it('uses Web Crypto getRandomValues and respects requested length', () => {
     let value = 0;
@@ -163,12 +213,16 @@ describe('Passwords page', () => {
   beforeEach(() => {
     window.sessionStorage.clear();
     mockUseMediaQuery.mockReturnValue(false);
+    mockSearchParams.delete('section');
+    mockSetSearchParams.mockReset();
     mockGetEntries.mockReset();
     mockCreateEntry.mockReset();
     mockGetGroups.mockReset();
     mockUpdateEntry.mockReset();
     mockArchiveEntry.mockReset();
     mockUnlock.mockReset();
+    mockUnlockSetup2fa.mockReset();
+    mockUnlockVerify2faSetup.mockReset();
     mockUnlockWebAuthnOptions.mockReset();
     mockUnlockWebAuthnVerify.mockReset();
     mockGetPasskeyAssertion.mockReset();
@@ -178,6 +232,9 @@ describe('Passwords page', () => {
     mockNotifySuccess.mockReset();
     mockNotifyWarning.mockReset();
     mockNotifyApiError.mockReset();
+    mockAuthUser.is_2fa_enabled = true;
+    mockAuthUser.trusted_devices_count = 1;
+    mockRefreshSession.mockReset();
     mockGetEntries.mockResolvedValue(vaultPayload);
     mockGetGroups.mockResolvedValue({ items: [{ id: 'group-1', name: 'VPN', is_active: true, sort_order: 0 }] });
     mockGetAudit.mockResolvedValue({ items: [] });
@@ -211,6 +268,26 @@ describe('Passwords page', () => {
 
     fireEvent.change(screen.getByTestId('password-search-input'), { target: { value: 'prod' } });
     await waitFor(() => expect(mockGetEntries).toHaveBeenCalledWith(expect.objectContaining({ q: 'prod' })));
+  });
+
+  it('switches between vault and AD expiry tabs', async () => {
+    renderPage();
+
+    expect(screen.getByTestId('password-section-tabs')).toBeInTheDocument();
+    expect(screen.getByTestId('password-search-input')).toBeInTheDocument();
+    expect(screen.queryByTestId('password-ad-expiry-view')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('password-section-ad-expiry-tab'));
+    expect(mockSetSearchParams).toHaveBeenCalled();
+    const params = mockSetSearchParams.mock.calls.at(-1)?.[0];
+    expect(params?.get('section')).toBe('ad-expiry');
+  });
+
+  it('renders AD expiry view when section query is set', async () => {
+    mockSearchParams.set('section', 'ad-expiry');
+    renderPage();
+    expect(screen.getByTestId('password-ad-expiry-view')).toBeInTheDocument();
+    expect(screen.queryByTestId('password-search-input')).not.toBeInTheDocument();
   });
 
   it('searches by login and applies group/tag filters', async () => {
@@ -346,6 +423,68 @@ describe('Passwords page', () => {
 
     expect(await screen.findByRole('option', { name: 'staging' })).toBeInTheDocument();
     expect(screen.getByRole('option', { name: 'prod' })).toBeInTheDocument();
+  });
+
+  it('commits typed tag on save without pressing Enter', async () => {
+    mockUpdateEntry.mockResolvedValue({ id: 'entry-1' });
+    renderPage();
+
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+    fireEvent.click(screen.getByLabelText('Действия svc-vpn'));
+    fireEvent.click(screen.getByText('Редактировать'));
+    const dialog = await screen.findByRole('dialog');
+
+    const tagInput = within(dialog).getByTestId('password-form-tags');
+    fireEvent.input(tagInput, { target: { value: 'infra' } });
+    fireEvent.click(within(dialog).getByRole('button', { name: 'Сохранить' }));
+
+    await waitFor(() => {
+      expect(mockUpdateEntry).toHaveBeenCalledWith('entry-1', expect.objectContaining({
+        tags: ['prod', 'infra'],
+      }));
+    });
+  });
+
+  it('opens 2FA setup with QR when user has no 2FA enabled', async () => {
+    mockAuthUser.is_2fa_enabled = false;
+    mockAuthUser.trusted_devices_count = 0;
+    mockUnlockSetup2fa.mockResolvedValue({
+      setup_challenge_id: 'setup-1',
+      otpauth_uri: 'otpauth://totp/HUB-IT:admin?secret=JBSWY3DPEHPK3PXP&issuer=HUB-IT',
+      issuer: 'HUB-IT',
+      account_name: 'admin',
+      manual_entry_key: 'JBSWY3DPEHPK3PXP',
+      qr_svg: null,
+    });
+    mockUnlockVerify2faSetup.mockResolvedValue({
+      unlocked_until: new Date(Date.now() + 300_000).toISOString(),
+      backup_codes: ['BACKUP-1'],
+    });
+    mockRefreshSession.mockResolvedValue({
+      id: 1,
+      username: 'admin',
+      role: 'admin',
+      trusted_devices_count: 0,
+      is_2fa_enabled: true,
+    });
+
+    renderPage();
+    await waitFor(() => expect(screen.getByText('svc-vpn')).toBeInTheDocument());
+
+    fireEvent.click(screen.getByTestId('password-unlock-open'));
+
+    expect(await screen.findByText('Подключение 2FA')).toBeInTheDocument();
+    await waitFor(() => expect(mockUnlockSetup2fa).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByTestId('password-unlock-setup-code'), { target: { value: '123456' } });
+    fireEvent.click(screen.getByTestId('password-unlock-setup-submit'));
+
+    await waitFor(() => {
+      expect(mockUnlockVerify2faSetup).toHaveBeenCalledWith({
+        setup_challenge_id: 'setup-1',
+        totp_code: '123456',
+      });
+    });
   });
 
   it('reveals password without unlock dialog when server session is already active', async () => {

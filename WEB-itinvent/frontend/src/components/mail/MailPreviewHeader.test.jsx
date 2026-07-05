@@ -58,35 +58,16 @@ function buildProps(overrides = {}) {
 }
 
 describe('MailPreviewHeader', () => {
-  it('keeps recipients collapsed by default and exposes primary mobile actions in a bottom bar', () => {
-    const props = buildProps();
-    renderWithTheme(<MailPreviewHeader {...props} />);
+  it('keeps recipients collapsed by default and does not render the mobile bottom bar', () => {
+    renderWithTheme(<MailPreviewHeader {...buildProps()} />);
 
     expect(screen.getByLabelText('Назад к списку')).toBeTruthy();
     expect(screen.getByText('Boss Name')).toBeTruthy();
     expect(screen.queryByText(/user@example.com/i)).toBeNull();
-    expect(screen.queryByTestId('mail-preview-mobile-more')).toBeNull();
-    expect(screen.getByTestId('mail-preview-mobile-bottom-bar')).toBeVisible();
+    expect(screen.queryByTestId('mail-preview-mobile-bottom-bar')).toBeNull();
 
     fireEvent.click(screen.getByRole('button', { name: /Кому: 1 получателей/i }));
     expect(screen.getByText(/User Name <user@example\.com>/i)).toBeTruthy();
-
-    fireEvent.click(screen.getByRole('button', { name: /^Ответить$/i }));
-    expect(props.onOpenComposeFromMessage).toHaveBeenCalledWith('reply');
-
-    fireEvent.click(screen.getByRole('button', { name: /^Переслать$/i }));
-    expect(props.onOpenComposeFromMessage).toHaveBeenCalledWith('forward');
-
-    fireEvent.click(screen.getByRole('button', { name: /^Прочитано$/i }));
-    expect(props.onToggleReadState).toHaveBeenCalled();
-
-    fireEvent.click(screen.getByRole('button', { name: /^Удалить$/i }));
-    expect(props.onDeleteSelectedMessage).toHaveBeenCalledWith(false);
-
-    fireEvent.click(screen.getByRole('button', { name: /^Ещё$/i }));
-    expect(screen.getByTestId('mail-preview-mobile-actions-sheet')).toBeVisible();
-    expect(screen.getByText('Ответить всем')).toBeTruthy();
-    expect(screen.getAllByText('Архив').length).toBeGreaterThan(0);
   });
 
   it('does not render a permanent desktop action row and exposes secondary actions through the menu', () => {
@@ -98,6 +79,7 @@ describe('MailPreviewHeader', () => {
     expect(screen.getAllByText('Удалить').length).toBeGreaterThan(0);
     expect(screen.getAllByText('Заголовки').length).toBeGreaterThan(0);
   });
+
   it('opens forward compose from the dedicated preview header button', () => {
     const props = buildProps({ compactMobile: false, showBackButton: false });
     renderWithTheme(<MailPreviewHeader {...props} />);
@@ -107,26 +89,18 @@ describe('MailPreviewHeader', () => {
     expect(props.onOpenComposeFromMessage).toHaveBeenCalledWith('forward');
   });
 
-  it('opens a scrollable mobile move sheet from the message action sheet', () => {
-    const moveTargets = Array.from({ length: 14 }, (_, index) => ({
-      value: `folder-${index + 1}`,
-      label: `Folder ${index + 1}`,
-    }));
-    const props = buildProps({ moveTargets });
+  it('renders summarize button on desktop preview header', () => {
+    renderWithTheme(
+      <MailPreviewHeader
+        {...buildProps({
+          compactMobile: false,
+          showBackButton: false,
+          onSummarize: vi.fn(),
+        })}
+      />,
+    );
 
-    renderWithTheme(<MailPreviewHeader {...props} />);
-
-    fireEvent.click(screen.getByRole('button', { name: /^Ещё$/i }));
-    fireEvent.click(screen.getByTestId('mail-preview-mobile-open-move-sheet'));
-
-    const moveSheet = screen.getByTestId('mail-preview-mobile-move-sheet');
-    expect(moveSheet).toBeVisible();
-    expect(screen.getByTestId('mail-preview-mobile-move-option-folder-14')).toBeTruthy();
-
-    fireEvent.click(screen.getByTestId('mail-preview-mobile-move-option-folder-14'));
-
-    expect(props.onMoveTargetChange).toHaveBeenCalledWith('folder-14');
-    expect(props.onMoveSelectedMessage).toHaveBeenCalledWith('folder-14');
+    expect(screen.getByTestId('mail-preview-summarize')).toBeVisible();
   });
 
   it('keeps a long desktop subject clamped and lifts tiny metadata typography', () => {

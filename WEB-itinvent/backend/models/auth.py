@@ -294,6 +294,15 @@ class TaskDelegateLinksUpdateRequest(BaseModel):
     items: list[TaskDelegateLinkWrite] = Field(default_factory=list)
 
 
+class TaskDelegateLinksBulkItem(BaseModel):
+    owner_user_id: int
+    task_delegate_links: list[TaskDelegateLink] = Field(default_factory=list)
+
+
+class TaskDelegateLinksBulkResponse(BaseModel):
+    items: list[TaskDelegateLinksBulkItem] = Field(default_factory=list)
+
+
 class SessionInfo(BaseModel):
     """Active session information."""
     session_id: str

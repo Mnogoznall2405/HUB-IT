@@ -53,13 +53,15 @@ class CreateRequestBody(BaseModel):
 
     employee_id: int
     object_id: int
-    status: str = "new"
+    status: str = "not_started"
     assignee_id: Optional[int] = None
     submitted_at: Optional[str] = None
     departure_date: Optional[str] = None
     arrival_date: Optional[str] = None
     route: Optional[str] = Field(None, max_length=500)
+    note: Optional[str] = None
     total_cost: Optional[str] = None  # Decimal as string
+    refund_loss: Optional[str] = None  # Decimal as string
     is_urgent: bool = False
     source: str = "manual"
 
@@ -68,10 +70,13 @@ class UpdateRequestBody(BaseModel):
     """Body for PATCH /requests/{id}."""
 
     assignee_id: Optional[int] = None
+    submitted_at: Optional[str] = None
     departure_date: Optional[str] = None
     arrival_date: Optional[str] = None
     route: Optional[str] = Field(None, max_length=500)
+    note: Optional[str] = None
     total_cost: Optional[str] = None  # Decimal as string
+    refund_loss: Optional[str] = None  # Decimal as string
     is_urgent: Optional[bool] = None
     needs_review: Optional[bool] = None
 
@@ -106,6 +111,8 @@ class EmployeeBody(BaseModel):
     """Body for employee create/update endpoints."""
 
     full_name: Optional[str] = None
+    department: Optional[str] = None
+    position: Optional[str] = None
     phone: Optional[str] = None
     email: Optional[str] = None
     status: Optional[str] = None
@@ -285,7 +292,11 @@ async def list_requests(
     )
     pagination = Pagination(page=page, page_size=page_size)
 
-    result = tickets_service.list_requests(filters=filters, pagination=pagination)
+    result = tickets_service.list_requests(
+        filters=filters,
+        pagination=pagination,
+        user_permissions=list(current_user.permissions or []),
+    )
     return _paged_payload(result)
 
 
@@ -322,7 +333,9 @@ async def create_request(
             departure_date=_parse_date(body.departure_date),
             arrival_date=_parse_date(body.arrival_date),
             route=body.route,
+            note=body.note,
             total_cost=_parse_decimal(body.total_cost),
+            refund_loss=_parse_decimal(body.refund_loss),
             is_urgent=body.is_urgent,
             source=body.source,
         )
@@ -357,6 +370,9 @@ async def update_request(
     if "assignee_id" in raw:
         dto.assignee_id = raw["assignee_id"]
         provided_fields.add("assignee_id")
+    if "submitted_at" in raw:
+        dto.submitted_at = _parse_date(raw["submitted_at"])
+        provided_fields.add("submitted_at")
     if "departure_date" in raw:
         dto.departure_date = _parse_date(raw["departure_date"])
         provided_fields.add("departure_date")
@@ -366,9 +382,15 @@ async def update_request(
     if "route" in raw:
         dto.route = raw["route"]
         provided_fields.add("route")
+    if "note" in raw:
+        dto.note = raw["note"]
+        provided_fields.add("note")
     if "total_cost" in raw:
         dto.total_cost = _parse_decimal(raw["total_cost"])
         provided_fields.add("total_cost")
+    if "refund_loss" in raw:
+        dto.refund_loss = _parse_decimal(raw["refund_loss"])
+        provided_fields.add("refund_loss")
     if "is_urgent" in raw:
         dto.is_urgent = raw["is_urgent"]
         provided_fields.add("is_urgent")
@@ -829,7 +851,10 @@ async def export_requests(
         sort_field=sort_field,
         sort_dir=sort_dir,
     )
-    payload = tickets_service.export_requests_xlsx(filters)
+    payload = tickets_service.export_requests_xlsx(
+        filters,
+        user_permissions=list(current_user.permissions or []),
+    )
     return StreamingResponse(
         iter([payload]),
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -881,6 +906,8 @@ async def list_financial_ops(
     include_deleted: Optional[bool] = Query(False),
     current_user: User = Depends(require_permission(PERM_TICKETS_READ)),
 ):
+    from backend.services.tickets_service import _parse_date
+
     result = tickets_service.list_financial_ops(
         filters=FinOpFilters(
             request_id=request_id,

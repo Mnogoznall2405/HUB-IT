@@ -1,10 +1,13 @@
 """
 Database connection management with dynamic database switching support.
 """
-import pyodbc
 import os
+import queue
+import threading
 from contextlib import contextmanager
 from typing import Generator, Optional
+
+import pyodbc
 
 from backend.config import config
 
@@ -71,6 +74,78 @@ def configure_pyodbc_encoding(conn: pyodbc.Connection) -> None:
     conn.setencoding(encoding=sql_char_encoding, ctype=pyodbc.SQL_CHAR)
 
 
+def _env_pool_size(default: int = 10) -> int:
+    raw = str(os.getenv("SQL_SERVER_POOL_SIZE", str(default)) or "").strip()
+    try:
+        return max(1, min(32, int(raw)))
+    except (TypeError, ValueError):
+        return default
+
+
+class _PyodbcConnectionPool:
+    def __init__(self, connection_string: str, *, pool_size: int) -> None:
+        self._connection_string = connection_string
+        self._pool_size = max(1, int(pool_size))
+        self._pool: queue.Queue[pyodbc.Connection] = queue.Queue(maxsize=self._pool_size)
+        self._created = 0
+        self._lock = threading.Lock()
+
+    def _create_connection(self) -> pyodbc.Connection:
+        conn = pyodbc.connect(self._connection_string, timeout=30)
+        conn.autocommit = False
+        configure_pyodbc_encoding(conn)
+        return conn
+
+    def acquire(self) -> pyodbc.Connection:
+        try:
+            conn = self._pool.get_nowait()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT 1")
+                cursor.close()
+                return conn
+            except Exception:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                with self._lock:
+                    self._created = max(0, self._created - 1)
+        except queue.Empty:
+            pass
+
+        with self._lock:
+            if self._created < self._pool_size:
+                self._created += 1
+                return self._create_connection()
+
+        return self._pool.get(timeout=30)
+
+    def release(self, conn: pyodbc.Connection) -> None:
+        try:
+            self._pool.put_nowait(conn)
+        except queue.Full:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            with self._lock:
+                self._created = max(0, self._created - 1)
+
+
+_POOLS: dict[str, _PyodbcConnectionPool] = {}
+_POOLS_LOCK = threading.Lock()
+
+
+def _get_connection_pool(connection_string: str) -> _PyodbcConnectionPool:
+    with _POOLS_LOCK:
+        pool = _POOLS.get(connection_string)
+        if pool is None:
+            pool = _PyodbcConnectionPool(connection_string, pool_size=_env_pool_size())
+            _POOLS[connection_string] = pool
+        return pool
+
+
 class DatabaseConnectionManager:
     """Manager for SQL Server database connections with dynamic switching."""
 
@@ -81,10 +156,11 @@ class DatabaseConnectionManager:
         Args:
             db_id: Database ID to use (None for default)
         """
-        self._pool_size = 10
+        self._pool_size = _env_pool_size()
         self._db_id = db_id
         self._db_config = get_database_config(db_id)
         self._connection_string = build_connection_string(self._db_config)
+        self._pool = _get_connection_pool(self._connection_string)
 
     def get_current_database(self) -> str:
         """Get current database ID."""
@@ -102,19 +178,16 @@ class DatabaseConnectionManager:
         """
         conn = None
         try:
-            conn = pyodbc.connect(self._connection_string, timeout=30)
-            conn.autocommit = False
-            configure_pyodbc_encoding(conn)
-
+            conn = self._pool.acquire()
             yield conn
             conn.commit()
-        except Exception as e:
+        except Exception:
             if conn:
                 conn.rollback()
-            raise e
+            raise
         finally:
             if conn:
-                conn.close()
+                self._pool.release(conn)
 
     def test_connection(self) -> bool:
         """Test if database connection is working."""

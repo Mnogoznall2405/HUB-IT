@@ -289,6 +289,44 @@ describe('chatSocket client lifecycle', () => {
     await vi.runOnlyPendingTimersAsync();
 
     expect(chatSocket.connectionState).toBe('forbidden');
+    expect(chatSocket.authBlocked).toBe(true);
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('blocks connect after unauthorized close until resetAuthBlock', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 4401 });
+
+    expect(chatSocket.connectionState).toBe('unauthorized');
+    expect(chatSocket.authBlocked).toBe(true);
+
+    chatSocket.connect();
+    expect(MockWebSocket.instances).toHaveLength(1);
+
+    chatSocket.resetAuthBlock();
+    expect(chatSocket.authBlocked).toBe(false);
+    expect(MockWebSocket.instances).toHaveLength(2);
+
+    release();
+    chatSocket.close(true);
+  });
+
+  it('does not reconnect after connection limit eviction close code 4000', async () => {
+    const { chatSocket } = await loadChatSocket();
+    const release = chatSocket.retain();
+    const socket = MockWebSocket.instances[0];
+
+    socket.emitOpen();
+    socket.emitClose({ code: 4000 });
+    await vi.runOnlyPendingTimersAsync();
+
     expect(MockWebSocket.instances).toHaveLength(1);
 
     release();

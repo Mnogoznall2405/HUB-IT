@@ -136,6 +136,7 @@ def test_mail_message_serializer_preview_keeps_list_payload_shape():
         body="<p>Long body</p>",
         text_body="Long body",
         has_attachments=True,
+        attachments=[SimpleNamespace(), SimpleNamespace(), SimpleNamespace()],
         importance="unknown",
         categories=["news"],
         is_read=False,
@@ -151,5 +152,30 @@ def test_mail_message_serializer_preview_keeps_list_payload_shape():
     assert preview["sender_display"] == "Boss"
     assert preview["recipients"] == ["user@example.com"]
     assert preview["has_attachments"] is True
-    assert preview["attachments_count"] == 1
+    assert preview["attachments_count"] == 3
     assert preview["importance"] == "normal"
+
+
+def test_mail_message_serializer_preview_falls_back_to_has_attachments_flag():
+    item = SimpleNamespace(
+        id="exchange-3",
+        subject="Preview",
+        sender=_person("boss@example.com", "Boss"),
+        to_recipients=[],
+        cc_recipients=[],
+        datetime_created=datetime(2026, 5, 3, 12, 30, tzinfo=timezone.utc),
+        body="",
+        text_body="",
+        has_attachments=True,
+        importance="normal",
+        categories=[],
+        is_read=False,
+    )
+
+    preview = _serializer().serialize_message_preview(
+        item=item,
+        folder_key="inbox",
+        mailbox_id="mailbox-1",
+    )
+
+    assert preview["attachments_count"] == 1

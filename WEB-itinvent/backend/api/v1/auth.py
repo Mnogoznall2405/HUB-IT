@@ -7,14 +7,18 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 import hashlib
 import logging
+import urllib.parse
 import uuid
 
+import json
+import time
 from pathlib import Path
 
-from fastapi import APIRouter, Body, Depends, File, status, HTTPException, Request, Response, Cookie, UploadFile
+from fastapi import APIRouter, Body, Depends, File, status, HTTPException, Request, Response, Cookie, UploadFile, Query
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from pydantic import ValidationError
 
 from backend.api.deps import ensure_admin_ip_allowed, get_current_active_user, get_current_admin_user, get_current_session_id, get_current_user, require_permission
 from backend.config import config
@@ -41,6 +45,7 @@ from backend.models.auth import (
     PasskeyLoginVerifyRequest,
     UserCreateRequest,
     TaskDelegateLink,
+    TaskDelegateLinksBulkResponse,
     TaskDelegateLinksUpdateRequest,
     UserUpdateRequest,
     SessionInfo,
@@ -605,6 +610,86 @@ async def login(payload: LoginRequest, request: Request, response: Response):
         return _build_login_response(request, response, login_result)
     except AuthSecurityError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def handle_safari_password_beacon_form(request: Request) -> HTMLResponse:
+    """
+    Accept a same-origin form POST so Safari can offer to save the password.
+    Validates credentials against the active login challenge; does not persist them.
+    """
+    form = await request.form()
+    challenge_id = str(form.get("login_challenge_id") or "").strip()
+    username = str(form.get("username") or "").strip()
+    password = str(form.get("password") or "")
+    if not challenge_id or not username or not password:
+        return HTMLResponse(
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>missing</body></html>",
+            status_code=400,
+            headers={"Cache-Control": "no-store"},
+        )
+    try:
+        await run_in_threadpool(
+            auth_security_service.validate_safari_password_beacon,
+            challenge_id=challenge_id,
+            username=username,
+            password=password,
+        )
+    except AuthSecurityError:
+        return HTMLResponse(
+            "<!DOCTYPE html><html><head><meta charset=\"utf-8\"></head><body>denied</body></html>",
+            status_code=403,
+            headers={"Cache-Control": "no-store"},
+        )
+    # #region agent log
+    try:
+        log_path = Path(__file__).resolve().parents[3] / "debug-891634.log"
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "sessionId": "891634",
+                "location": "auth.py:handle_safari_password_beacon_form",
+                "message": "beacon validated",
+                "hypothesisId": "H6",
+                "data": {
+                    "usernameLength": len(username),
+                    "hasChallenge": bool(challenge_id),
+                    "path": str(request.url.path or ""),
+                },
+                "timestamp": int(time.time() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    continue_path = f"/login?resume_challenge={urllib.parse.quote(challenge_id, safe='')}"
+    # #region agent log
+    try:
+        log_path = Path(__file__).resolve().parents[3] / "debug-891634.log"
+        with log_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps({
+                "sessionId": "891634",
+                "location": "auth.py:handle_safari_password_beacon_form",
+                "message": "password save redirect",
+                "hypothesisId": "H14",
+                "data": {
+                    "continuePath": continue_path,
+                    "usernameLength": len(username),
+                    "statusCode": 303,
+                },
+                "timestamp": int(time.time() * 1000),
+            }, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
+    # #endregion
+    return RedirectResponse(
+        url=continue_path,
+        status_code=303,
+        headers={"Cache-Control": "no-store"},
+    )
+
+
+@router.post("/safari-password-beacon")
+async def safari_password_beacon(request: Request):
+    return await handle_safari_password_beacon_form(request)
 
 
 @router.get("/login-mode", response_model=LoginModeResponse)
@@ -1314,12 +1399,27 @@ async def purge_inactive_sessions(
     return result
 
 
+def _serialize_user_records(items: list[dict[str, Any]]) -> list[User]:
+    users: list[User] = []
+    for item in items:
+        try:
+            users.append(User(**item))
+        except ValidationError as exc:
+            logger.warning(
+                "Skipping invalid user record id=%s username=%r: %s",
+                item.get("id"),
+                item.get("username"),
+                exc,
+            )
+    return users
+
+
 @router.get("/users", response_model=list[User])
 async def list_users(
     _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
 ):
     """List all web users."""
-    return [User(**item) for item in user_service.list_users()]
+    return _serialize_user_records(user_service.list_users())
 
 
 @router.post("/users", response_model=User, status_code=status.HTTP_201_CREATED)
@@ -1397,14 +1497,43 @@ async def delete_user(
     return {"message": "User deleted successfully"}
 
 
+def _parse_task_delegate_owner_ids(owner_ids: str) -> list[int]:
+    parsed: list[int] = []
+    seen: set[int] = set()
+    for part in str(owner_ids or "").split(","):
+        try:
+            owner_id = int(str(part or "").strip())
+        except (TypeError, ValueError):
+            continue
+        if owner_id <= 0 or owner_id in seen:
+            continue
+        seen.add(owner_id)
+        parsed.append(owner_id)
+    return parsed
+
+
+@router.get("/task-delegates", response_model=TaskDelegateLinksBulkResponse)
+async def get_task_delegates_bulk(
+    owner_ids: str = Query("", min_length=0),
+    _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
+):
+    parsed_owner_ids = _parse_task_delegate_owner_ids(owner_ids)
+    if not parsed_owner_ids:
+        return TaskDelegateLinksBulkResponse(items=[])
+    grouped = await run_in_threadpool(user_service.list_task_delegates_bulk, parsed_owner_ids)
+    return TaskDelegateLinksBulkResponse(items=grouped)
+
+
 @router.get("/users/{user_id}/task-delegates", response_model=list[TaskDelegateLink])
 async def get_user_task_delegates(
     user_id: int,
     _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
 ):
-    if not user_service.get_by_id(user_id):
+    user = await run_in_threadpool(user_service.get_by_id, user_id)
+    if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    return [TaskDelegateLink(**item) for item in user_service.list_task_delegates(user_id)]
+    items = await run_in_threadpool(user_service.list_task_delegates, user_id)
+    return [TaskDelegateLink(**item) for item in items]
 
 
 @router.put("/users/{user_id}/task-delegates", response_model=list[TaskDelegateLink])
@@ -1414,7 +1543,8 @@ async def update_user_task_delegates(
     _: User = Depends(require_permission(PERM_SETTINGS_USERS_MANAGE)),
 ):
     try:
-        updated = user_service.replace_task_delegates(
+        updated = await run_in_threadpool(
+            user_service.replace_task_delegates,
             user_id,
             [item.model_dump() if hasattr(item, "model_dump") else item.dict() for item in payload.items],
         )

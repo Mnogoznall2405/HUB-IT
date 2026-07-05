@@ -63,7 +63,7 @@ describe('MailMessageReader', () => {
     expect(props.onRevealRemoteImages).toHaveBeenCalledWith('msg-1');
   });
 
-  it('renders attachments and calls open and download actions with message context', () => {
+  it('renders hero attachments and opens them with message context', () => {
     const reportAttachment = {
       id: 'att-1',
       name: 'quarterly-report.pdf',
@@ -71,37 +71,20 @@ describe('MailMessageReader', () => {
       content_type: 'application/pdf',
       downloadable: true,
     };
-    const imageAttachment = {
-      id: 'att-2',
-      name: 'diagram.png',
-      size: 8 * 1024,
-      content_type: 'image/png',
-      downloadable: true,
-    };
     const props = buildProps({
       renderState: {
         ...buildProps().renderState,
-        visibleAttachments: [reportAttachment, imageAttachment],
-        attachmentTotalSize: '32 KB',
+        visibleAttachments: [reportAttachment],
+        attachmentTotalSize: '24 KB',
       },
     });
 
     renderWithTheme(<MailMessageReader {...props} />);
 
-    expect(screen.getByText('quarterly-report.pdf')).toBeVisible();
-    expect(screen.getByText('diagram.png')).toBeVisible();
-    expect(screen.getByText('24 KB')).toBeVisible();
-    expect(screen.getByText('8 KB')).toBeVisible();
-
-    fireEvent.click(screen.getByText('quarterly-report.pdf').closest('button'));
+    expect(screen.getByTestId('mail-attachment-hero-item-0')).toBeVisible();
+    fireEvent.click(screen.getByTestId('mail-attachment-hero-item-0'));
     expect(props.onOpenAttachment).toHaveBeenCalledTimes(1);
     expect(props.onOpenAttachment).toHaveBeenCalledWith(props.message, reportAttachment);
-
-    fireEvent.click(screen.getByLabelText(/quarterly-report\.pdf/i));
-    fireEvent.click(within(screen.getByRole('menu')).getAllByRole('menuitem')[1]);
-
-    expect(props.onDownloadAttachment).toHaveBeenCalledTimes(1);
-    expect(props.onDownloadAttachment).toHaveBeenCalledWith(props.message, reportAttachment);
   });
 
   it('shows quoted history toggle and calls its callback', () => {
@@ -127,5 +110,28 @@ describe('MailMessageReader', () => {
     fireEvent.click(toggleButton);
 
     expect(toggleQuotedHistory).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders hybrid attachment strip for many files on desktop and mobile', () => {
+    const attachments = Array.from({ length: 5 }, (_, index) => ({
+      id: `att-${index}`,
+      name: `report-${index}.pdf`,
+      size: 16 * 1024,
+      content_type: 'application/pdf',
+    }));
+    const props = buildProps({
+      isMobile: false,
+      renderState: {
+        ...buildProps().renderState,
+        visibleAttachments: attachments,
+        attachmentTotalSize: '80 KB',
+      },
+    });
+
+    renderWithTheme(<MailMessageReader {...props} />);
+
+    expect(screen.getByTestId('mail-attachment-summary-row')).toBeVisible();
+    expect(screen.getByTestId('mail-attachment-compact-strip')).toBeVisible();
+    expect(screen.getAllByTestId(/^mail-attachment-compact-card-/)).toHaveLength(5);
   });
 });

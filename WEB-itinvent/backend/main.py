@@ -27,13 +27,20 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, ad_users, vcs, ai_bots, departments, tickets, address_book, system, passwords, my_files
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, system, passwords, my_files, debug_client_log, groups_access
+from backend.api.v1.auth import handle_safari_password_beacon_form
 from backend.services.ad_sync_service import background_ad_sync_loop
+from backend.services.ad_app_user_sync_service import background_ad_app_user_sync_loop
+from backend.services.ad_groups_access_sync_service import background_ad_groups_access_sync_loop
 from backend.services.address_book_service import background_address_book_sync_loop
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
 from backend.services.my_files_service import my_files_worker
+from backend.services.task_due_notification_worker import (
+    background_enabled as task_due_notification_background_enabled,
+    background_task_due_notification_loop,
+)
 from backend.services.request_metrics_service import request_metrics_middleware
 from backend.json_db.manager import validate_json_runtime_storage
 from backend.rate_limit import limiter, rate_limit_exception, rate_limit_exception_handler, internal_ip_bypass_middleware
@@ -55,10 +62,13 @@ def _env_positive_int(name: str, default: int, minimum: int) -> int:
 MAIL_MODULE_ENABLED = _env_flag("MAIL_MODULE_ENABLED", "0")
 MAIL_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("MAIL_NOTIFICATION_BACKGROUND_ENABLED", "1")
 LDAP_SYNC_BACKGROUND_ENABLED = _env_flag("LDAP_SYNC_BACKGROUND_ENABLED", "1")
+LDAP_APP_USER_SYNC_ENABLED = _env_flag("LDAP_APP_USER_SYNC_ENABLED", "1")
+AD_GROUPS_ACCESS_SYNC_ENABLED = _env_flag("AD_GROUPS_ACCESS_SYNC_ENABLED", "1")
 MFU_RUNTIME_MONITOR_ENABLED = _env_flag("MFU_RUNTIME_MONITOR_ENABLED", "1")
 ADDRESS_BOOK_SYNC_ENABLED = _env_flag("ADDRESS_BOOK_SYNC_ENABLED", "0")
+TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED", "1")
 SUPPRESS_NOISY_ACCESS_LOGS = _env_flag("SUPPRESS_NOISY_ACCESS_LOGS", "1")
-ANYIO_THREAD_TOKENS = _env_positive_int("ANYIO_THREAD_TOKENS", 120, 40)
+ANYIO_THREAD_TOKENS = _env_positive_int("ANYIO_THREAD_TOKENS", 200, 40)
 
 
 class _UvicornAccessNoiseFilter(logging.Filter):
@@ -155,11 +165,20 @@ async def lifespan(app: FastAPI):
     _install_application_logger_bridge()
     thread_tokens = _configure_anyio_thread_limiter()
     sync_task: asyncio.Task | None = None
+    ad_app_user_sync_task: asyncio.Task | None = None
+    ad_groups_access_sync_task: asyncio.Task | None = None
     address_book_sync_task: asyncio.Task | None = None
+    task_due_notification_task: asyncio.Task | None = None
     if LDAP_SYNC_BACKGROUND_ENABLED:
         sync_task = asyncio.create_task(background_ad_sync_loop())
+    if LDAP_APP_USER_SYNC_ENABLED:
+        ad_app_user_sync_task = asyncio.create_task(background_ad_app_user_sync_loop())
+    if AD_GROUPS_ACCESS_SYNC_ENABLED:
+        ad_groups_access_sync_task = asyncio.create_task(background_ad_groups_access_sync_loop())
     if ADDRESS_BOOK_SYNC_ENABLED:
         address_book_sync_task = asyncio.create_task(background_address_book_sync_loop())
+    if TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled():
+        task_due_notification_task = asyncio.create_task(background_task_due_notification_loop())
     if MFU_RUNTIME_MONITOR_ENABLED:
         await mfu_runtime_monitor.start()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
@@ -170,9 +189,12 @@ async def lifespan(app: FastAPI):
     print(
         "Background jobs:"
         f" ldap_sync={LDAP_SYNC_BACKGROUND_ENABLED}"
+        f" ldap_app_user_sync={LDAP_APP_USER_SYNC_ENABLED}"
+        f" ad_groups_access_sync={AD_GROUPS_ACCESS_SYNC_ENABLED}"
         f" address_book_sync={ADDRESS_BOOK_SYNC_ENABLED}"
         f" mfu_monitor={MFU_RUNTIME_MONITOR_ENABLED}"
         f" mail_notifications={MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED}"
+        f" task_due_notifications={TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled()}"
     )
     print(f"AnyIO thread tokens: {thread_tokens}")
     print(
@@ -240,8 +262,14 @@ async def lifespan(app: FastAPI):
     print("Shutting down...")
     if sync_task is not None:
         sync_task.cancel()
+    if ad_app_user_sync_task is not None:
+        ad_app_user_sync_task.cancel()
+    if ad_groups_access_sync_task is not None:
+        ad_groups_access_sync_task.cancel()
     if address_book_sync_task is not None:
         address_book_sync_task.cancel()
+    if task_due_notification_task is not None:
+        task_due_notification_task.cancel()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
         await mail_notification_service.stop()
     await my_files_worker.stop()
@@ -261,9 +289,24 @@ async def lifespan(app: FastAPI):
             await sync_task
         except asyncio.CancelledError:
             pass
+    if ad_app_user_sync_task is not None:
+        try:
+            await ad_app_user_sync_task
+        except asyncio.CancelledError:
+            pass
+    if ad_groups_access_sync_task is not None:
+        try:
+            await ad_groups_access_sync_task
+        except asyncio.CancelledError:
+            pass
     if address_book_sync_task is not None:
         try:
             await address_book_sync_task
+        except asyncio.CancelledError:
+            pass
+    if task_due_notification_task is not None:
+        try:
+            await task_due_notification_task
         except asyncio.CancelledError:
             pass
 
@@ -300,10 +343,16 @@ if rate_limit_exception is not None and rate_limit_exception_handler is not None
     app.add_exception_handler(rate_limit_exception, rate_limit_exception_handler)
 
 
-# Health check endpoint
+# Health check endpoints
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
+    """Liveness probe: cheap response without chat/outbox work."""
+    return {"status": "ok", "version": config.app.version}
+
+
+@app.get("/health/ready")
+async def health_ready():
+    """Readiness probe: includes chat runtime metrics for ops checks."""
     payload = {"status": "ok", "version": config.app.version}
     if config.chat.enabled:
         try:
@@ -318,6 +367,12 @@ async def health_check():
                 "realtime_mode": "unknown",
             }
     return payload
+
+
+@app.post("/login/save-password")
+async def login_save_password(request: Request):
+    """Same-origin login path so Safari associates saved passwords with hubit.zsgp.ru."""
+    return await handle_safari_password_beacon_form(request)
 
 
 # Exception handlers
@@ -344,7 +399,9 @@ app.include_router(mfu.router, prefix="/api/v1/mfu", tags=["MFU"])
 app.include_router(hub.router, prefix="/api/v1/hub", tags=["Hub"])
 app.include_router(departments.router, prefix="/api/v1/departments", tags=["Departments"])
 app.include_router(ad_users.router, prefix="/api/v1/ad-users", tags=["AD Users"])
+app.include_router(groups_access.router, prefix="/api/v1/groups-access", tags=["Groups Access"])
 app.include_router(mail.router, prefix="/api/v1/mail", tags=["Mail"])
+app.include_router(mailbox_quota.router, prefix="/api/v1/mail", tags=["Mail"])
 app.include_router(vcs.router, prefix="/api/v1/vcs", tags=["VCS"])
 app.include_router(ai_bots.router, prefix="/api/v1/ai-bots", tags=["AI Bots"])
 app.include_router(tickets.router, prefix="/api/v1/tickets", tags=["Tickets"])
@@ -352,6 +409,7 @@ app.include_router(address_book.router, prefix="/api/v1/address-book", tags=["Ad
 app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
 app.include_router(passwords.router, prefix="/api/v1/passwords", tags=["Passwords"])
 app.include_router(my_files.router, prefix="/api/v1/my-files", tags=["My Files"])
+app.include_router(debug_client_log.router, prefix="/api/v1/debug", tags=["Debug"])
 if config.chat.enabled:
     try:
         from backend.api.v1 import chat

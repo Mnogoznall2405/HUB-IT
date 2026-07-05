@@ -23,6 +23,7 @@ from local_store import get_local_store
 
 from backend.services.app_settings_service import app_settings_service
 from backend.services.hub_service import hub_service
+from backend.services.transfer_service import get_act_record
 
 logger = logging.getLogger(__name__)
 
@@ -318,10 +319,65 @@ class TransferActReminderService:
         lines.extend(
             [
                 "",
+                "Сформированные черновики актов прикреплены во вкладке «Файлы» задачи.",
                 "Задача закроется автоматически после загрузки и записи всех подписанных актов.",
             ]
         )
         return "\n".join(lines)
+
+    @staticmethod
+    def _mime_for_generated_act(*, file_type: str, file_name: str) -> str:
+        normalized_type = _normalize_text(file_type).lower()
+        if normalized_type == "pdf" or file_name.lower().endswith(".pdf"):
+            return "application/pdf"
+        if normalized_type == "docx" or file_name.lower().endswith(".docx"):
+            return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        return "application/octet-stream"
+
+    def _attach_generated_acts_to_task(
+        self,
+        *,
+        task_id: str,
+        reminder_groups: list[dict[str, Any]],
+        actor: dict[str, Any],
+    ) -> int:
+        normalized_task_id = _normalize_text(task_id)
+        if not normalized_task_id:
+            return 0
+
+        attached_count = 0
+        for group in reminder_groups:
+            act_id = _normalize_text(group.get("generated_act_id"))
+            if not act_id:
+                continue
+            record = get_act_record(act_id)
+            if not record:
+                logger.warning("Generated act %s not found for task %s attachment", act_id, normalized_task_id)
+                continue
+            file_path = Path(_normalize_text(record.get("file_path")))
+            if not file_path.is_file():
+                logger.warning("Generated act file missing for %s: %s", act_id, file_path)
+                continue
+            old_employee = _normalize_text(group.get("old_employee_name")) or "Без владельца"
+            file_name = _normalize_text(record.get("file_name")) or f"Акт_{old_employee}{file_path.suffix or '.pdf'}"
+            file_mime = self._mime_for_generated_act(
+                file_type=_normalize_text(record.get("file_type")),
+                file_name=file_name,
+            )
+            try:
+                hub_service.add_task_attachment_from_path(
+                    task_id=normalized_task_id,
+                    source_path=file_path,
+                    file_name=file_name,
+                    file_mime=file_mime,
+                    scope="transfer_act_generated",
+                    uploaded_by_user_id=int(actor.get("id") or 0),
+                    uploaded_by_username=_normalize_text(actor.get("username"), "system"),
+                )
+                attached_count += 1
+            except Exception:
+                logger.exception("Failed to attach generated act %s to task %s", act_id, normalized_task_id)
+        return attached_count
 
     def create_transfer_reminder(
         self,
@@ -475,11 +531,24 @@ class TransferActReminderService:
                 )
             conn.commit()
 
+        task_id_value = _normalize_text(task.get("id"))
+        attached_acts_count = self._attach_generated_acts_to_task(
+            task_id=task_id_value,
+            reminder_groups=reminder_groups,
+            actor=actor,
+        )
+        if attached_acts_count < len(reminder_groups):
+            attach_warning = (
+                f"Прикреплено актов к задаче: {attached_acts_count} из {len(reminder_groups)}."
+            )
+            warning = f"{warning} {attach_warning}".strip() if warning else attach_warning
+
         return {
             "created": True,
             "warning": warning,
-            "task_id": _normalize_text(task.get("id")) or None,
+            "task_id": task_id_value or None,
             "reminder_id": reminder_id,
+            "attached_acts_count": attached_acts_count,
             "controller_username": _normalize_text(resolved_controller.get("username")) or None,
             "controller_fallback_used": bool(controller_resolution.get("fallback_used")),
         }
@@ -561,7 +630,79 @@ class TransferActReminderService:
         return item
 
     def enrich_tasks(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        return [self.enrich_task(task) for task in (tasks or [])]
+        normalized_tasks = list(tasks or [])
+        if not normalized_tasks:
+            return []
+        if len(normalized_tasks) == 1:
+            return [self.enrich_task(normalized_tasks[0])]
+        return self._enrich_tasks_batch(normalized_tasks)
+
+    def _enrich_tasks_batch(self, tasks: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        task_ids = [_normalize_text(task.get("id")) for task in tasks if _normalize_text(task.get("id"))]
+        if not task_ids:
+            return [dict(task) for task in tasks]
+        placeholders = ", ".join(["?"] * len(task_ids))
+        with self._lock, self._connect() as conn:
+            reminder_rows = conn.execute(
+                f"""
+                SELECT *
+                FROM {self._REMINDERS_TABLE}
+                WHERE task_id IN ({placeholders})
+                """,
+                tuple(task_ids),
+            ).fetchall()
+            reminders_by_task = {
+                _normalize_text(row["task_id"]): dict(row)
+                for row in reminder_rows
+            }
+            reminder_ids = [
+                _normalize_text(row["reminder_id"])
+                for row in reminder_rows
+                if _normalize_text(row.get("reminder_id"))
+            ]
+            pending_counts: dict[str, int] = {}
+            completed_counts: dict[str, int] = {}
+            if reminder_ids:
+                group_placeholders = ", ".join(["?"] * len(reminder_ids))
+                group_rows = conn.execute(
+                    f"""
+                    SELECT reminder_id,
+                           SUM(CASE WHEN completed_at IS NULL OR completed_at = '' THEN 1 ELSE 0 END) AS pending_total,
+                           SUM(CASE WHEN completed_at IS NOT NULL AND completed_at <> '' THEN 1 ELSE 0 END) AS completed_total
+                    FROM {self._GROUPS_TABLE}
+                    WHERE reminder_id IN ({group_placeholders})
+                    GROUP BY reminder_id
+                    """,
+                    tuple(reminder_ids),
+                ).fetchall()
+                for row in group_rows:
+                    reminder_id = _normalize_text(row["reminder_id"])
+                    pending_counts[reminder_id] = int(row["pending_total"] or 0)
+                    completed_counts[reminder_id] = int(row["completed_total"] or 0)
+
+        enriched: list[dict[str, Any]] = []
+        for task in tasks:
+            item = dict(task or {})
+            reminder = reminders_by_task.get(_normalize_text(item.get("id")))
+            if not reminder:
+                item["integration_kind"] = None
+                item["integration_payload"] = None
+                enriched.append(item)
+                continue
+            reminder_id_value = _normalize_text(reminder.get("reminder_id"))
+            task_id_value = _normalize_text(reminder.get("task_id"))
+            db_id = _normalize_text(reminder.get("db_id")) or None
+            item["integration_kind"] = "transfer_act_upload"
+            item["integration_payload"] = {
+                "reminder_id": reminder_id_value,
+                "pending_groups_total": pending_counts.get(reminder_id_value, 0),
+                "completed_groups_total": completed_counts.get(reminder_id_value, 0),
+                "pending_groups": [],
+                "upload_url": self._build_upload_url(reminder_id=reminder_id_value, task_id=task_id_value, db_id=db_id),
+                "db_id": db_id,
+            }
+            enriched.append(item)
+        return enriched
 
     def _find_matching_groups(
         self,

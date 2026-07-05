@@ -19,6 +19,7 @@ from backend.database.equipment_db import invalidate_equipment_cache
 from backend.services.authorization_service import (
     PERM_DATABASE_WRITE,
     PERM_MAIL_ACCESS,
+    PERM_TASKS_CREATE,
     PERM_TASKS_READ,
     PERM_TASKS_WRITE,
     authorization_service,
@@ -111,6 +112,12 @@ def _has_permission(user: Any, permission: str) -> bool:
 def _require_permission(user: Any, permission: str) -> None:
     if not _has_permission(user, permission):
         raise PermissionError(f"Permission required: {permission}")
+
+
+def _require_any_permission(user: Any, permissions: tuple[str, ...]) -> None:
+    if any(_has_permission(user, permission) for permission in permissions):
+        return
+    raise PermissionError(f"Permission required: one of {', '.join(permissions)}")
 
 
 def _is_admin_user(user: Any) -> bool:
@@ -553,18 +560,42 @@ def get_action_card_for_message(message_id: str) -> dict[str, Any] | None:
     normalized_message_id = _normalize_text(message_id)
     if not normalized_message_id:
         return None
+    cards = get_action_cards_for_messages([normalized_message_id])
+    return cards.get(normalized_message_id)
+
+
+def get_action_cards_for_messages(message_ids: list[str]) -> dict[str, dict[str, Any]]:
+    normalized_ids = []
+    seen: set[str] = set()
+    for raw_id in list(message_ids or []):
+        normalized_message_id = _normalize_text(raw_id)
+        if not normalized_message_id or normalized_message_id in seen:
+            continue
+        seen.add(normalized_message_id)
+        normalized_ids.append(normalized_message_id)
+    if not normalized_ids:
+        return {}
+
     with app_session() as session:
-        row = session.execute(
-            select(AppAiPendingAction)
-            .where(AppAiPendingAction.message_id == normalized_message_id)
-            .order_by(AppAiPendingAction.created_at.desc())
-            .limit(1)
-        ).scalar_one_or_none()
-        if row is None:
-            return None
-        _set_expired_if_needed(row)
+        rows = list(
+            session.execute(
+                select(AppAiPendingAction)
+                .where(AppAiPendingAction.message_id.in_(normalized_ids))
+                .order_by(
+                    AppAiPendingAction.message_id.asc(),
+                    AppAiPendingAction.created_at.desc(),
+                )
+            ).scalars()
+        )
+        cards_by_message_id: dict[str, dict[str, Any]] = {}
+        for row in rows:
+            normalized_message_id = _normalize_text(row.message_id)
+            if not normalized_message_id or normalized_message_id in cards_by_message_id:
+                continue
+            _set_expired_if_needed(row)
+            cards_by_message_id[normalized_message_id] = _action_to_card(row)
         session.flush()
-        return _action_to_card(row)
+        return cards_by_message_id
 
 
 def build_transfer_draft(
@@ -1152,7 +1183,7 @@ def _execute_office_mail(*, action_type: str, payload: dict[str, Any], current_u
 
 
 def _execute_office_task_create(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
-    _require_permission(current_user, PERM_TASKS_WRITE)
+    _require_any_permission(current_user, (PERM_TASKS_CREATE, PERM_TASKS_WRITE))
     task = hub_service.create_task(
         title=_normalize_text(payload.get("title")),
         description=_normalize_text(payload.get("description")),
@@ -1170,12 +1201,29 @@ def _execute_office_task_create(*, payload: dict[str, Any], current_user: Any) -
 
 def _execute_office_task_comment(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
     _require_permission(current_user, PERM_TASKS_READ)
+    task_id = _normalize_text(payload.get("task_id"))
+    body = _normalize_text(payload.get("body"))
+    user_payload = _user_dict(current_user)
+    from backend.chat.task_discussion import is_task_discussion_chat_enabled, send_task_discussion_message
+
+    if is_task_discussion_chat_enabled():
+        message = send_task_discussion_message(
+            task_id=task_id,
+            actor_user_id=int(user_payload.get("id") or 0),
+            body=body,
+        )
+        return {
+            "success": bool(message),
+            "message": message,
+            "task_id": task_id,
+            "conversation_id": _normalize_text(message.get("conversation_id")) or None,
+        }
     comment = hub_service.add_task_comment(
-        task_id=_normalize_text(payload.get("task_id")),
-        user=_user_dict(current_user),
-        body=_normalize_text(payload.get("body")),
+        task_id=task_id,
+        user=user_payload,
+        body=body,
     )
-    return {"success": bool(comment), "comment": comment, "task_id": _normalize_text(payload.get("task_id"))}
+    return {"success": bool(comment), "comment": comment, "task_id": task_id}
 
 
 def _execute_office_task_status(*, payload: dict[str, Any], current_user: Any) -> dict[str, Any]:
@@ -1213,6 +1261,9 @@ def confirm_action(*, action_id: str, current_user: Any, payload_overrides: dict
         row = session.get(AppAiPendingAction, normalized_action_id)
         if row is None:
             raise LookupError("Action was not found")
+        current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+        if int(row.requester_user_id or 0) != current_user_id:
+            raise PermissionError("Only the action initiator can confirm it")
         if _set_expired_if_needed(row):
             session.flush()
             return _action_to_card(row)
@@ -1289,6 +1340,9 @@ def cancel_action(*, action_id: str, current_user: Any) -> dict[str, Any]:
         row = session.get(AppAiPendingAction, normalized_action_id)
         if row is None:
             raise LookupError("Action was not found")
+        current_user_id = int(_user_attr(current_user, "id", 0) or 0)
+        if int(row.requester_user_id or 0) != current_user_id and not _is_admin_user(current_user):
+            raise PermissionError("Only the action initiator can cancel it")
         _set_expired_if_needed(row)
         if row.status == ACTION_STATUS_PENDING:
             row.status = ACTION_STATUS_CANCELLED

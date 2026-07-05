@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from .config import SCAN_JOB_MAX_WORKERS_LIMIT, ScanServerConfig
 from .database import ScanStore
+from .memory_guard import memory_pressure_active
 from .ocr import is_tesseract_available, ocr_pdf_bytes
 from .patterns import allowed_pattern_ids, classify_severity, normalize_pattern_filter, scan_text
 
@@ -214,6 +215,9 @@ class ScanWorker(threading.Thread):
 
         free_slots = self._job_max_workers() - len(self._job_futures)
         if free_slots <= 0:
+            return completed > 0
+
+        if memory_pressure_active(limit_mb=int(getattr(self.config, "worker_memory_limit_mb", 0) or 0)):
             return completed > 0
 
         jobs = self._claim_next_jobs(free_slots)

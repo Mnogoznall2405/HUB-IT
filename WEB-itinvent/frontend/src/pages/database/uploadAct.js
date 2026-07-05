@@ -32,7 +32,6 @@ export const parseInvNosInput = (rawValue) => {
 };
 
 export const buildUploadActDraftFormState = (draft) => ({
-  document_title: String(draft?.document_title || '').trim(),
   from_employee: String(draft?.from_employee || '').trim(),
   to_employee: String(draft?.to_employee || '').trim(),
   doc_date: String(draft?.doc_date || '').trim(),
@@ -62,7 +61,6 @@ export const buildUploadActCommitPayload = ({ draft, form, reminderBinding } = {
     error: '',
     payload: {
       draft_id: draftId,
-      document_title: String(form?.document_title || '').trim() || undefined,
       from_employee: String(form?.from_employee || '').trim() || undefined,
       to_employee: String(form?.to_employee || '').trim() || undefined,
       doc_date: String(form?.doc_date || '').trim() || undefined,

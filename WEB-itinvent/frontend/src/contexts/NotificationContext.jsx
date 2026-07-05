@@ -5,6 +5,7 @@ import {
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import ToastViewport from '../components/feedback/ToastViewport';
@@ -21,6 +22,7 @@ const HUB_SEEN_KEY = 'itinvent_hub_seen_ids';
 const MAX_HISTORY_ITEMS = 50;
 const MAX_SEEN_IDS = 300;
 const MAX_ACTIVE_TOASTS = 4;
+const CHAT_TOAST_VISIBLE_MS = 5_200;
 const DEDUPE_WINDOW_MS = 15_000;
 const TOAST_TICK_MS = 100;
 
@@ -163,6 +165,7 @@ export function NotificationProvider({ children }) {
   const [toastHistory, setToastHistory] = useState(() => loadToastHistory());
   const [activeToasts, setActiveToasts] = useState([]);
   const [seenHubNotificationIds, setSeenHubNotificationIds] = useState(() => loadSeenHubIds());
+  const chatSerialQueueRef = useRef([]);
 
   useEffect(() => {
     persistToastHistory(toastHistory);
@@ -212,6 +215,16 @@ export function NotificationProvider({ children }) {
     };
   }, [hasRunningToastTimers]);
 
+  useEffect(() => {
+    const hasActiveChatToast = activeToasts.some((item) => String(item?.source || '').trim() === 'chat');
+    if (hasActiveChatToast) return;
+    const queue = chatSerialQueueRef.current;
+    if (!Array.isArray(queue) || queue.length === 0) return;
+    const nextChatToast = queue.shift();
+    if (!nextChatToast) return;
+    setActiveToasts((prev) => [...prev, nextChatToast]);
+  }, [activeToasts]);
+
   const dismissToast = useCallback((id) => {
     setActiveToasts((prev) => prev.filter((item) => item.id !== id));
   }, []);
@@ -233,7 +246,13 @@ export function NotificationProvider({ children }) {
   }, []);
 
   const pushToast = useCallback((severity, message, options = {}) => {
-    const next = buildToastPayload(severity, message, options);
+    const isChatSerialToast = String(options.source || '').trim() === 'chat';
+    const next = buildToastPayload(severity, message, {
+      ...options,
+      durationMs: isChatSerialToast
+        ? Math.max(1, Number(options.durationMs || CHAT_TOAST_VISIBLE_MS) || CHAT_TOAST_VISIBLE_MS)
+        : options.durationMs,
+    });
 
     setToastHistory((prev) => {
       if (next.dedupeMode === 'recent') {
@@ -254,6 +273,37 @@ export function NotificationProvider({ children }) {
     });
 
     setActiveToasts((prev) => {
+      if (isChatSerialToast) {
+        if (next.dedupeMode === 'recent') {
+          const queueMatchIndex = chatSerialQueueRef.current.findIndex((item) => item.dedupeKey === next.dedupeKey);
+          if (queueMatchIndex >= 0) {
+            chatSerialQueueRef.current[queueMatchIndex] = updateActiveToast(
+              chatSerialQueueRef.current[queueMatchIndex],
+              next,
+            );
+            return prev;
+          }
+          const activeMatch = prev.find((item) => (
+            String(item?.source || '').trim() === 'chat'
+            && item.dedupeKey === next.dedupeKey
+          ));
+          if (activeMatch) {
+            return prev.map((item) => (
+              item.id === activeMatch.id
+                ? updateActiveToast(item, next)
+                : item
+            ));
+          }
+        }
+        chatSerialQueueRef.current.push(next);
+        const hasActiveChatToast = prev.some((item) => String(item?.source || '').trim() === 'chat');
+        if (!hasActiveChatToast) {
+          const queued = chatSerialQueueRef.current.shift();
+          return queued ? [...prev, queued] : prev;
+        }
+        return prev;
+      }
+
       if (next.dedupeMode === 'recent') {
         const match = prev.find((item) => item.dedupeKey === next.dedupeKey);
         if (match) {

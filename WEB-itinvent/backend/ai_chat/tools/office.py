@@ -26,6 +26,7 @@ from backend.ai_chat.tools.context import (
 from backend.ai_chat.tools.registry import ai_tool_registry
 from backend.services.authorization_service import (
     PERM_MAIL_ACCESS,
+    PERM_TASKS_CREATE,
     PERM_TASKS_READ,
     PERM_TASKS_REVIEW,
     PERM_TASKS_WRITE,
@@ -66,6 +67,12 @@ def _has_permission(context: AiToolExecutionContext, permission: str) -> bool:
 def _require_permission(context: AiToolExecutionContext, permission: str) -> None:
     if not _has_permission(context, permission):
         raise PermissionError(f"Permission required: {permission}")
+
+
+def _require_any_permission(context: AiToolExecutionContext, permissions: tuple[str, ...]) -> None:
+    if any(_has_permission(context, permission) for permission in permissions):
+        return
+    raise PermissionError(f"Permission required: one of {', '.join(permissions)}")
 
 
 def _is_admin(context: AiToolExecutionContext) -> bool:
@@ -551,7 +558,7 @@ class TaskCreateDraftTool(AiTool):
     stage = "checking_office"
 
     def execute(self, *, context: AiToolExecutionContext, args: TaskCreateDraftArgs) -> AiToolResult:
-        _require_permission(context, PERM_TASKS_WRITE)
+        _require_any_permission(context, (PERM_TASKS_CREATE, PERM_TASKS_WRITE))
         payload = args.model_dump(mode="json")
         if not payload.get("assignee_user_id") and args.assignee_query:
             assignee = _resolve_single_user(query=args.assignee_query, candidates=hub_service.list_assignees(), kind="assignee")

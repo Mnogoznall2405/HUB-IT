@@ -6,7 +6,8 @@
 - Access token lifetime: `JWT_ACCESS_EXPIRE_MINUTES=15`.
 - Refresh token lifetime: `JWT_REFRESH_EXPIRE_DAYS=7`.
 - 2FA challenge lifetime: `AUTH_2FA_CHALLENGE_TTL_SEC=300`.
-- Session idle timeout: `SESSION_IDLE_TIMEOUT_MINUTES=30`.
+- Session idle timeout: `SESSION_IDLE_TIMEOUT_MINUTES=30` (password/TOTP sessions).
+- Trusted-device session idle timeout: `SESSION_IDLE_TIMEOUT_TRUSTED_DAYS=7` (passkey / WebAuthn login).
 - Session history retention: `SESSION_HISTORY_RETENTION_DAYS=14`.
 - Trusted device/passkey lifetime: `AUTH_TRUSTED_DEVICE_TTL_DAYS=90`.
 
@@ -31,6 +32,7 @@
 - `WEBAUTHN_ORIGIN`
 - `AUTH_PASSKEY_ALLOW_INTERNAL=0` (keep `0` so passkey stays external-only; corp `10.x` stays password-only)
 - `AUTH_TRUSTED_DEVICE_TTL_DAYS=90`
+- `SESSION_IDLE_TIMEOUT_TRUSTED_DAYS=7`
 
 ## Runtime Storage
 Auth does not require Redis.
@@ -50,6 +52,8 @@ The in-memory fallback is for dev/test only. It is not safe for multi-process pr
    - Returns `authenticated`, `2fa_required`, or `2fa_setup_required`.
 2. `POST /api/v1/auth/enable-2fa`
    - Starts TOTP enrollment for a login challenge.
+   - `otpauth_uri` uses `TOTP_ISSUER` as the display label in the path and `WEBAUTHN_RP_ID` as the `issuer` query parameter (Apple Passwords matches saved logins by domain).
+   - On iOS/macOS Safari the login UI links with `apple-otpauth://` so «Пароли» can attach the code to an existing Keychain entry; the user must save the site password first or pick the account when prompted.
 3. `POST /api/v1/auth/verify-2fa`
    - Consumes the login challenge once, enables TOTP, returns backup codes once, completes login.
 4. `POST /api/v1/auth/verify-2fa-login`

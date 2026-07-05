@@ -215,6 +215,49 @@ def test_realtime_broadcast_does_not_wait_for_slow_socket():
     asyncio.run(_exercise_broadcast())
 
 
+def test_slow_consumer_disconnect_closes_socket_and_unregisters(monkeypatch):
+    class TrackingWebSocket:
+        def __init__(self) -> None:
+            self.accepted = False
+            self.closed = False
+            self.close_code = None
+            self.close_reason = ""
+
+        async def accept(self) -> None:
+            self.accepted = True
+
+        async def close(self, code: int = 1000, reason: str = "") -> None:
+            self.closed = True
+            self.close_code = int(code)
+            self.close_reason = str(reason or "")
+
+        async def send_json(self, envelope: dict) -> None:
+            return None
+
+    async def _exercise() -> None:
+        monkeypatch.setattr(chat_realtime_module, "_OUTBOUND_QUEUE_SIZE", 1)
+        manager = chat_realtime_module.ChatRealtimeManager()
+        socket = TrackingWebSocket()
+        connection_id, _ = await manager.connect(socket, user_id=99)
+        assert manager.is_connection_registered(connection_id) is True
+
+        with manager._lock:
+            connection = manager._connections[connection_id]
+        connection.outbound_queue.put_nowait(({"type": "chat.test", "payload": {}}, None))
+
+        await manager.send_to_connection(
+            connection_id,
+            event_type="chat.message.created",
+            payload={"message_id": "msg-1"},
+        )
+
+        assert socket.closed is True
+        assert socket.close_code == 1008
+        assert manager.is_connection_registered(connection_id) is False
+
+    asyncio.run(_exercise())
+
+
 def test_complete_upload_session_reads_service_meta_inside_threadpool(monkeypatch):
     current_user = _build_chat_user()
     request_meta_var: ContextVar[dict | None] = ContextVar("chat_upload_meta_test", default=None)

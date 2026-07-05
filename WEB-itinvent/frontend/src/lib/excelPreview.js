@@ -39,6 +39,9 @@ export const sliceExcelRows = (rows = [], { maxRows, maxCols } = {}) => {
 
 const readBlobArrayBuffer = async (blob) => {
   if (blob instanceof ArrayBuffer) return blob;
+  if (ArrayBuffer.isView(blob)) {
+    return blob.buffer.slice(blob.byteOffset, blob.byteOffset + blob.byteLength);
+  }
   if (typeof blob?.arrayBuffer === 'function') return blob.arrayBuffer();
   if (typeof Response !== 'undefined') {
     return new Response(blob).arrayBuffer();

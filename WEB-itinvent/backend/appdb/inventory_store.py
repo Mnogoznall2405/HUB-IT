@@ -174,7 +174,7 @@ class AppInventoryStore:
             rows = session.scalars(stmt).all()
             return [self._row_payload(row) for row in rows]
 
-    def search_host_keys(self, query: str, search_fields: set[str]) -> set[str] | None:
+    def search_host_keys(self, query: str, search_fields: set[str], db_ids: list[str] | None = None) -> set[str] | None:
         needle = _normalize_text(query).lower()
         if not needle:
             return None
@@ -251,7 +251,34 @@ class AppInventoryStore:
                             select(AppInventoryHostSqlContext.mac_address).where(or_(*context_conditions))
                         ).all()
                     )
-        return {item for item in keys if item}
+        result = {item for item in keys if item}
+        if db_ids:
+            scoped = self.list_mac_addresses_for_db_ids(db_ids)
+            if scoped:
+                result = {item for item in result if item in scoped}
+            else:
+                return set()
+        return result
+
+    def list_mac_addresses_for_db_ids(
+        self,
+        db_ids: list[str],
+        *,
+        branch: str | None = None,
+    ) -> set[str]:
+        """Return MAC addresses linked to ITINVENT SQL contexts for the given databases."""
+        normalized_db_ids = [_normalize_text(item) for item in db_ids or [] if _normalize_text(item)]
+        if not normalized_db_ids:
+            return set()
+        branch_value = _normalize_text(branch).lower()
+        with app_session(self._database_url) as session:
+            stmt = select(AppInventoryHostSqlContext.mac_address).where(
+                AppInventoryHostSqlContext.db_id.in_(normalized_db_ids)
+            )
+            if branch_value:
+                stmt = stmt.where(func.lower(AppInventoryHostSqlContext.branch_name) == branch_value)
+            rows = session.scalars(stmt.distinct()).all()
+        return {str(item or "").strip() for item in rows if str(item or "").strip()}
 
     def get_sql_context(self, *, mac_address: str, hostname: str, db_id: str) -> Optional[dict[str, Any]]:
         normalized_mac = _normalize_mac(mac_address)

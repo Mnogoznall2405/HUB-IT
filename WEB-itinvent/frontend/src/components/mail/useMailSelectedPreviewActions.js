@@ -5,12 +5,14 @@ export default function useMailSelectedPreviewActions({
   clearSelection,
   getMailErrorDetail,
   handleMailCredentialsRequired,
+  invalidateMailClientCache,
   mailAPI,
   moveTarget = '',
   performMailReadMutation,
   selectedConversation,
   selectedMessage,
   setError,
+  setSelectedMessage,
   viewMode = 'messages',
   withActiveMailboxPayload,
 } = {}) {
@@ -95,12 +97,44 @@ export default function useMailSelectedPreviewActions({
     );
   }, [mailAPI, moveTarget, runSelectedMessageMutation, withActiveMailboxPayload]);
 
+  const handleToggleImportance = useCallback(async () => {
+    if (!selectedMessage?.id || viewMode === 'conversations') return;
+    const nextImportance = String(selectedMessage?.importance || 'normal').toLowerCase() === 'high'
+      ? 'normal'
+      : 'high';
+    setMessageActionLoading(true);
+    try {
+      await mailAPI.setImportance(
+        String(selectedMessage.id),
+        withActiveMailboxPayload({ importance: nextImportance }),
+      );
+      setSelectedMessage?.((prev) => (prev ? { ...prev, importance: nextImportance } : prev));
+      invalidateMailClientCache?.();
+      await afterListMutation();
+    } catch (requestError) {
+      await handleActionError(requestError, 'Не удалось изменить важность письма.');
+    } finally {
+      setMessageActionLoading(false);
+    }
+  }, [
+    afterListMutation,
+    handleActionError,
+    invalidateMailClientCache,
+    mailAPI,
+    selectedMessage?.id,
+    selectedMessage?.importance,
+    setSelectedMessage,
+    viewMode,
+    withActiveMailboxPayload,
+  ]);
+
   return {
     messageActionLoading,
     handleArchiveSelectedMessage,
     handleDeleteSelectedMessage,
     handleMoveSelectedMessage,
     handleRestoreSelectedMessage,
+    handleToggleImportance,
     handleToggleReadState,
   };
 }

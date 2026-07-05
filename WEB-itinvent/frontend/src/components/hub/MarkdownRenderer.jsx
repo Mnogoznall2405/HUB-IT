@@ -1,10 +1,13 @@
 import { Box } from '@mui/material';
 import { alpha, useTheme } from '@mui/material/styles';
-import { useMemo } from 'react';
+import { memo, useMemo } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeSanitize from 'rehype-sanitize';
 import { buildOfficeUiTokens } from '../../theme/officeUiTokens';
+
+const REMARK_PLUGINS = [remarkGfm];
+const REHYPE_PLUGINS = [rehypeSanitize];
 
 function MarkdownRenderer({ value, compact = false, variant = 'default', linkColor }) {
   const theme = useTheme();
@@ -156,11 +159,11 @@ function MarkdownRenderer({ value, compact = false, variant = 'default', linkCol
         } : {}),
       }}
     >
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]} components={markdownComponents}>
+      <ReactMarkdown remarkPlugins={REMARK_PLUGINS} rehypePlugins={REHYPE_PLUGINS} components={markdownComponents}>
         {text}
       </ReactMarkdown>
     </Box>
   );
 }
 
-export default MarkdownRenderer;
+export default memo(MarkdownRenderer);

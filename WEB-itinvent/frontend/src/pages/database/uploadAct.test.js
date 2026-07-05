@@ -14,13 +14,11 @@ import {
 describe('uploadAct form and payload helpers', () => {
   it('builds form state from a recognized draft', () => {
     expect(buildUploadActDraftFormState({
-      document_title: '  Акт приема-передачи  ',
       from_employee: '  Иванов И.И. ',
       to_employee: ' Петров П.П.  ',
       doc_date: ' 2026-05-02 ',
       equipment_inv_nos: [100887, '100888'],
     })).toEqual({
-      document_title: 'Акт приема-передачи',
       from_employee: 'Иванов И.И.',
       to_employee: 'Петров П.П.',
       doc_date: '2026-05-02',
@@ -28,7 +26,6 @@ describe('uploadAct form and payload helpers', () => {
     });
 
     expect(buildUploadActDraftFormState({ equipment_inv_nos: '100887' })).toEqual({
-      document_title: '',
       from_employee: '',
       to_employee: '',
       doc_date: '',
@@ -58,7 +55,6 @@ describe('uploadAct form and payload helpers', () => {
     expect(buildUploadActCommitPayload({
       draft: { draft_id: ' draft-1 ' },
       form: {
-        document_title: '  Акт №7 ',
         from_employee: ' Иванов ',
         to_employee: '',
         doc_date: ' 2026-05-02 ',
@@ -72,7 +68,6 @@ describe('uploadAct form and payload helpers', () => {
       error: '',
       payload: {
         draft_id: 'draft-1',
-        document_title: 'Акт №7',
         from_employee: 'Иванов',
         to_employee: undefined,
         doc_date: '2026-05-02',

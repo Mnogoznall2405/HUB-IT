@@ -15,7 +15,6 @@ import ChatFileUploadPanel from './ChatFileUploadPanel';
 import ChatTypingIndicator from './ChatTypingIndicator';
 import {
   buildTimelineItems,
-  getDateDividerLabel,
 } from './chatHelpers';
 
 const GROUP_WINDOW_MS = 10 * 60 * 1000;
@@ -159,6 +158,7 @@ function LoadOlderSentinel({
   loadingOlder,
   onLoadOlder,
   historyAutoLoadEnabled = false,
+  threadScrollRef,
   ui,
   servicePillBg,
 }) {
@@ -173,15 +173,16 @@ function LoadOlderSentinel({
     if (!historyAutoLoadEnabled || !node || typeof IntersectionObserver === 'undefined') return undefined;
     const observer = new IntersectionObserver(
       (entries) => {
-        if (entries[0]?.isIntersecting && !loadingOlderRef.current) {
-          onLoadOlderRef.current?.();
-        }
+        if (!entries[0]?.isIntersecting || loadingOlderRef.current) return;
+        const scrollNode = threadScrollRef?.current;
+        if (scrollNode && Number(scrollNode.scrollHeight) <= Number(scrollNode.clientHeight) + 2) return;
+        onLoadOlderRef.current?.();
       },
       { threshold: 0.1 },
     );
     observer.observe(node);
     return () => observer.disconnect();
-  }, [historyAutoLoadEnabled]);
+  }, [historyAutoLoadEnabled, threadScrollRef]);
 
   return (
     <Stack ref={sentinelRef} alignItems="center" sx={{ pb: 0.8, pt: 0.5 }}>
@@ -225,6 +226,7 @@ function LoadOlderSentinel({
 const ChatMessageList = memo(function ChatMessageList({
   theme,
   ui,
+  isMobile = false,
   compactMobile,
   mobileInteractionsEnabled = false,
   activeConversation,
@@ -236,6 +238,7 @@ const ChatMessageList = memo(function ChatMessageList({
   loadingOlder,
   onLoadOlder,
   historyAutoLoadEnabled = false,
+  threadScrollRef,
   threadContentRef,
   bottomRef,
   onOpenReads,
@@ -327,6 +330,7 @@ const ChatMessageList = memo(function ChatMessageList({
               loadingOlder={loadingOlder}
               onLoadOlder={onLoadOlder}
               historyAutoLoadEnabled={historyAutoLoadEnabled}
+              threadScrollRef={threadScrollRef}
               ui={ui}
               servicePillBg={servicePillBg}
             />
@@ -334,11 +338,12 @@ const ChatMessageList = memo(function ChatMessageList({
 
           {timelineItems.map((item) => {
             if (item.type === 'date') {
-              if (compactMobile) return null;
               return (
                 <TimelineMarker
                   key={item.key}
                   label={item.label}
+                  isDateMarker={isMobile}
+                  compactMobile={isMobile}
                   stickyOffset={10}
                   tone={{
                     bg: servicePillBg,
@@ -371,7 +376,7 @@ const ChatMessageList = memo(function ChatMessageList({
             const messageId = String(item.message?.id || '').trim();
             const selected = Boolean(messageId && selectedMessageIdSet.has(messageId));
             return (
-              <div key={item.key} data-message-id={item.message?.id} data-message-date={getDateDividerLabel(item.message?.created_at)}>
+              <div key={item.key} data-message-id={item.message?.id}>
                 <MemoChatBubble
                   conversationKind={activeConversation.kind}
                   message={item.message}

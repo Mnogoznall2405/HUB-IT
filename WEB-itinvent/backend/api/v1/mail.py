@@ -274,6 +274,11 @@ class MarkAllReadPayload(BaseModel):
     folder_scope: str = Field(default="current")
 
 
+class MessageImportancePayload(BaseModel):
+    importance: str = Field(..., min_length=3, max_length=10)
+    mailbox_id: Optional[str] = None
+
+
 class ConversationReadStatePayload(BaseModel):
     mailbox_id: str = Field(default="")
     folder: str = Field(default="inbox")
@@ -816,6 +821,58 @@ async def mark_message_unread(
             message_id=message_id,
         )
         return {"ok": ok}
+    except MailServiceError as exc:
+        raise _mail_http_exception(exc, current_user=current_user) from exc
+
+
+@router.post("/messages/{message_id}/importance")
+async def set_mail_message_importance(
+    message_id: str,
+    payload: MessageImportancePayload,
+    current_user: User = Depends(get_current_mail_user),
+):
+    try:
+        return await _run_mail_call(
+            mail_service.set_message_importance,
+            user_id=int(current_user.id),
+            mailbox_id=_normalize_text(payload.mailbox_id) or None,
+            message_id=message_id,
+            importance=payload.importance,
+        )
+    except MailServiceError as exc:
+        raise _mail_http_exception(exc, current_user=current_user) from exc
+
+
+@router.post("/messages/{message_id}/summarize")
+async def summarize_mail_message(
+    message_id: str,
+    mailbox_id: str = Query("", min_length=0),
+    current_user: User = Depends(get_current_mail_user),
+):
+    try:
+        return await _run_mail_call(
+            mail_service.summarize_message,
+            user_id=int(current_user.id),
+            mailbox_id=_normalize_text(mailbox_id) or None,
+            message_id=message_id,
+        )
+    except MailServiceError as exc:
+        raise _mail_http_exception(exc, current_user=current_user) from exc
+
+
+@router.post("/messages/{message_id}/smart-replies")
+async def smart_replies_for_mail_message(
+    message_id: str,
+    mailbox_id: str = Query("", min_length=0),
+    current_user: User = Depends(get_current_mail_user),
+):
+    try:
+        return await _run_mail_call(
+            mail_service.smart_replies_for_message,
+            user_id=int(current_user.id),
+            mailbox_id=_normalize_text(mailbox_id) or None,
+            message_id=message_id,
+        )
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 

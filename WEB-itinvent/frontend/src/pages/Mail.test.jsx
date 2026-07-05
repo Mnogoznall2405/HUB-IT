@@ -106,8 +106,18 @@ function installMatchMedia({ mobile = false } = {}) {
 }
 
 vi.mock('../components/layout/MainLayout', () => ({
-  default: ({ children, headerMode = 'default', contentMode = 'default' }) => (
-    <div data-testid="layout" data-header-mode={headerMode} data-content-mode={contentMode}>
+  default: ({
+    children,
+    headerMode = 'default',
+    contentMode = 'default',
+    mobileBottomNavMode = 'auto',
+  }) => (
+    <div
+      data-testid="layout"
+      data-header-mode={headerMode}
+      data-content-mode={contentMode}
+      data-mobile-bottom-nav-mode={mobileBottomNavMode}
+    >
       {children}
     </div>
   ),
@@ -179,25 +189,50 @@ vi.mock('../components/mail/MailAdvancedSearchDialog', () => ({
   ) : null),
 }));
 vi.mock('../components/mail/MailBulkActionBar', () => ({
-  default: ({ count, isMobile, onClear, onMarkRead, onMarkUnread, onDelete, onArchive }) => (
-    <div data-testid="mail-bulk-action-bar" data-count={String(count || 0)} data-mobile={isMobile ? 'true' : 'false'}>
-      <button type="button" data-testid="mail-bulk-mark-read" onClick={() => onMarkRead?.()}>
-        mark-read
-      </button>
-      <button type="button" data-testid="mail-bulk-mark-unread" onClick={() => onMarkUnread?.()}>
-        mark-unread
-      </button>
-      <button type="button" data-testid="mail-bulk-archive" onClick={() => onArchive?.()}>
-        archive
-      </button>
-      <button type="button" data-testid="mail-bulk-delete" onClick={() => onDelete?.()}>
-        delete
-      </button>
-      <button type="button" data-testid="mail-bulk-clear" onClick={() => onClear?.()}>
-        clear-bulk
-      </button>
-    </div>
-  ),
+  default: ({
+    count,
+    isMobile,
+    mobilePlacement = 'all',
+    onClear,
+    onMarkRead,
+    onMarkUnread,
+    onDelete,
+    onArchive,
+  }) => {
+    const testId = mobilePlacement === 'footer'
+      ? 'mail-bulk-action-bar-footer'
+      : mobilePlacement === 'header'
+        ? 'mail-bulk-action-bar-header'
+        : 'mail-bulk-action-bar';
+    return (
+      <div
+        data-testid={testId}
+        data-count={String(count || 0)}
+        data-mobile={isMobile ? 'true' : 'false'}
+        data-mobile-placement={mobilePlacement}
+      >
+        {mobilePlacement !== 'footer' ? (
+          <>
+            <button type="button" data-testid="mail-bulk-mark-read" onClick={() => onMarkRead?.()}>
+              mark-read
+            </button>
+            <button type="button" data-testid="mail-bulk-mark-unread" onClick={() => onMarkUnread?.()}>
+              mark-unread
+            </button>
+            <button type="button" data-testid="mail-bulk-archive" onClick={() => onArchive?.()}>
+              archive
+            </button>
+            <button type="button" data-testid="mail-bulk-delete" onClick={() => onDelete?.()}>
+              delete
+            </button>
+            <button type="button" data-testid="mail-bulk-clear" onClick={() => onClear?.()}>
+              clear-bulk
+            </button>
+          </>
+        ) : null}
+      </div>
+    );
+  },
 }));
 vi.mock('../components/mail/MailComposeDialog', () => ({
   default: ({
@@ -604,7 +639,9 @@ vi.mock('../hooks/useDebounce', () => ({
   default: (value) => value,
 }));
 
+import { createTheme } from '@mui/material/styles';
 import Mail from './Mail';
+import { buildMailUiTokens, getMailMobileFabBottomOffset } from '../components/mail/mailUiTokens';
 
 function buildMessage(overrides = {}) {
   return {
@@ -1462,12 +1499,13 @@ describe('Mail read-state behavior', () => {
 
     await waitFor(() => {
       expect(screen.getByText('Требуется корпоративный пароль')).toBeTruthy();
+      expect(screen.getAllByText(/пароль.*корпоративн.*компьютер/i).length).toBeGreaterThan(0);
     });
 
     expect(mockGetBootstrap).toHaveBeenCalledTimes(1);
 
     fireEvent.change(screen.getByLabelText('Логин Exchange'), { target: { value: 'user@zsgp.corp' } });
-    fireEvent.change(screen.getByLabelText('Корпоративный пароль'), { target: { value: 'Secret123!' } });
+    fireEvent.change(screen.getByLabelText('Пароль от корпоративного компьютера'), { target: { value: 'Secret123!' } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить и открыть почту' }));
 
     await waitFor(() => {
@@ -1557,10 +1595,11 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(saveForAllDevicesButton);
 
     await waitFor(() => {
-      expect(screen.getByLabelText('Корпоративный пароль')).toBeTruthy();
+      expect(screen.getByLabelText('Пароль от корпоративного компьютера')).toBeTruthy();
+      expect(screen.getAllByText(/пароль.*корпоративн.*компьютер/i).length).toBeGreaterThan(0);
     });
 
-    fireEvent.change(screen.getByLabelText('Корпоративный пароль'), { target: { value: 'SharedPass123!' } });
+    fireEvent.change(screen.getByLabelText('Пароль от корпоративного компьютера'), { target: { value: 'SharedPass123!' } });
     fireEvent.click(screen.getByRole('button', { name: 'Сохранить и открыть почту' }));
 
     await waitFor(() => {
@@ -1577,7 +1616,7 @@ describe('Mail read-state behavior', () => {
     });
 
     await waitFor(() => {
-      expect(screen.queryByLabelText('Корпоративный пароль')).toBeNull();
+      expect(screen.queryByLabelText('Пароль от корпоративного компьютера')).toBeNull();
     });
   });
 
@@ -1596,7 +1635,6 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByTestId('mail-toolbar')).toHaveAttribute('data-mobile', 'true');
     });
 
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'notifications-only');
     expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
     expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
     expect(screen.getByTestId('mail-toolbar')).toBeTruthy();
@@ -1638,8 +1676,9 @@ describe('Mail read-state behavior', () => {
       expect(mockGetMessage).toHaveBeenCalledWith('msg-42', expect.any(Object));
     });
 
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'hidden');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
     expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
     expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
     expect(screen.queryByTestId('mail-toolbar')).toBeNull();
     expect(screen.getByTestId('mail-mobile-preview-screen')).toBeTruthy();
@@ -1660,7 +1699,6 @@ describe('Mail read-state behavior', () => {
     });
 
     await waitFor(() => {
-      expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'notifications-only');
       expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
       expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
       expect(screen.queryByTestId('mail-mobile-preview-screen')).toBeNull();
@@ -1735,19 +1773,28 @@ describe('Mail read-state behavior', () => {
     fireEvent.click(screen.getByTestId('mail-item-select-msg-1'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('mail-bulk-action-bar')).toHaveAttribute('data-mobile', 'true');
+      expect(screen.getByTestId('mail-bulk-action-bar-header')).toHaveAttribute('data-mobile', 'true');
     });
-    expect(screen.getByTestId('mail-bulk-action-bar')).toHaveAttribute('data-count', '1');
-    expect(screen.getByTestId('mail-list')).toHaveAttribute('data-bottom-inset', 'calc(78px + env(safe-area-inset-bottom, 0px))');
+    expect(screen.getByTestId('mail-bulk-action-bar-header')).toHaveAttribute('data-count', '1');
+    expect(screen.getByTestId('mail-bulk-action-bar-footer')).toHaveAttribute('data-count', '1');
+    expect(screen.getByTestId('mail-list')).toHaveAttribute('data-bottom-inset', '');
     expect(screen.getByTestId('mail-compose-fab')).toHaveAttribute('data-mobile-bulk-offset', 'true');
 
     fireEvent.click(screen.getByTestId('mail-item-msg-2'));
 
     await waitFor(() => {
-      expect(screen.getByTestId('mail-bulk-action-bar')).toHaveAttribute('data-count', '2');
+      expect(screen.getByTestId('mail-bulk-action-bar-header')).toHaveAttribute('data-count', '2');
     });
     expect(screen.queryByTestId('mail-mobile-preview-screen')).toBeNull();
     expect(mockGetMessage).not.toHaveBeenCalledWith('msg-2', expect.any(Object));
+  });
+
+  it('positions mobile compose fab above bottom navigation when bulk selection is inactive', () => {
+    const theme = createTheme();
+    const tokens = buildMailUiTokens(theme);
+
+    expect(getMailMobileFabBottomOffset(tokens)).toContain('--app-shell-mobile-bottom-nav-height');
+    expect(getMailMobileFabBottomOffset(tokens, { bulkActive: true })).not.toContain('--app-shell-mobile-bottom-nav-height');
   });
 
   it('keeps vertical scrolling gestures on the mobile list from opening navigation', async () => {
@@ -1897,7 +1944,7 @@ describe('Mail read-state behavior', () => {
     });
 
     expect(screen.getByTestId('mail-mobile-preview-screen')).toBeTruthy();
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'hidden');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
   });
 
   it('keeps vertical scrolling gestures on the mobile preview from closing it', async () => {
@@ -1936,7 +1983,7 @@ describe('Mail read-state behavior', () => {
     });
 
     expect(screen.getByTestId('mail-mobile-preview-screen')).toBeTruthy();
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'hidden');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
   });
 
   it('does not close the mobile preview when the swipe starts inside a horizontal mail scroller', async () => {
@@ -2036,7 +2083,7 @@ describe('Mail read-state behavior', () => {
       expect(screen.getByText('Follow-up body')).toBeTruthy();
     });
 
-    expect(screen.getByTestId('layout')).toHaveAttribute('data-header-mode', 'hidden');
+    expect(screen.getByTestId('layout')).toHaveAttribute('data-mobile-bottom-nav-mode', 'hidden');
     expect(screen.getByTestId('layout')).toHaveAttribute('data-content-mode', 'edge-to-edge-mobile');
     expect(screen.getByTestId('page-shell')).toHaveAttribute('data-full-height', 'false');
   });
@@ -2357,11 +2404,12 @@ describe('Mail read-state behavior', () => {
 
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
+    const previewPanel = await screen.findByTestId('mail-preview-panel');
     await waitFor(() => {
-      expect(screen.getByText(/report\.txt/i)).toBeTruthy();
+      expect(within(previewPanel).getByText(/report\.txt/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/report\.txt/i));
+    fireEvent.click(within(previewPanel).getByText(/report\.txt/i));
 
     await waitFor(() => {
       expect(mockDownloadAttachment).toHaveBeenCalledWith('msg-42', 'att2_ZGVtbw', expect.any(Object));
@@ -2400,11 +2448,12 @@ describe('Mail read-state behavior', () => {
 
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
+    const previewPanel = await screen.findByTestId('mail-preview-panel');
     await waitFor(() => {
-      expect(screen.getByText(/broken\.txt/i)).toBeTruthy();
+      expect(within(previewPanel).getByText(/broken\.txt/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/broken\.txt/i));
+    fireEvent.click(within(previewPanel).getByText(/broken\.txt/i));
 
     await waitFor(() => {
       expect(screen.getByText('Вложение "broken.txt" пришло без идентификатора для скачивания.')).toBeTruthy();
@@ -2458,11 +2507,12 @@ describe('Mail read-state behavior', () => {
 
     fireEvent.click(screen.getByTestId('mail-item-msg-42'));
 
+    const previewPanel = await screen.findByTestId('mail-preview-panel');
     await waitFor(() => {
-      expect(screen.getByText(/report\.txt/i)).toBeTruthy();
+      expect(within(previewPanel).getByText(/report\.txt/i)).toBeTruthy();
     });
 
-    fireEvent.click(screen.getByText(/report\.txt/i));
+    fireEvent.click(within(previewPanel).getByText(/report\.txt/i));
 
     await waitFor(() => {
       expect(screen.getByText('Вложение недоступно для выбранного ящика.')).toBeTruthy();
@@ -2611,6 +2661,20 @@ describe('Mail read-state behavior', () => {
     });
 
     fireEvent.click(screen.getByLabelText('Написать письмо'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-compose-inline-pane')).toBeTruthy();
+    });
+  });
+
+  it('opens desktop compose from the dashboard quick-action URL', async () => {
+    render(
+      <MemoryRouter initialEntries={['/mail?compose=new']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
 
     await waitFor(() => {
       expect(screen.getByTestId('mail-compose-inline-pane')).toBeTruthy();

@@ -236,6 +236,21 @@ npx expo start
 
 **Production / сервер:** PM2 — [scripts/pm2/README.md](./scripts/pm2/README.md). Процессы: `itinvent-backend`, `itinvent-inventory`, `itinvent-scan`, `itinvent-bot`. Frontend на IIS, не под PM2.
 
+Для перезапуска backend использовать штатный скрипт:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\pm2\restart-backend.ps1
+```
+
+Если `pm2.cmd` падает с ошибкой `node is not recognized`, запускать тот же скрипт с проектным Node в PATH:
+
+```powershell
+$env:PATH='C:\Project\Image_scan\tools\node-v24.14.0-win-x64-full;' + $env:PATH
+powershell -ExecutionPolicy Bypass -File scripts\pm2\restart-backend.ps1
+```
+
+Не заменять его прямым `pm2 restart itinvent-backend`: скрипт чистит orphan `start_server.py`, освобождает порт `8001`, стартует из ecosystem-конфига и перезапускает связанные scan-процессы. Для полного контура использовать `scripts\pm2\restart-all.ps1`, для проверки — `scripts\pm2\health-check.ps1`.
+
 ---
 
 ## Тесты
@@ -268,6 +283,7 @@ npm run build
 7. **Web API client** — новые эндпоинты в отдельные файлы `frontend/src/api/`; не раздувать `client.js` без необходимости (см. TECH_DEBT_AUDIT).
 8. **Scan vs inventory** — не смешивать: scan — отдельный сервис и прокси; inventory-agent — `agent.py` / `inventory_server`.
 9. **Без native APK** — каталог `mobile-android/` и Capacitor/APK-пайплайн удалены; не добавлять обратно «для симметрии». Backend может содержать FCM/native-push API (`native_push_service.py`) — это не означает наличие Android-приложения в этом репозитории.
+10. **Перезапуск backend** — после backend-изменений использовать `powershell -ExecutionPolicy Bypass -File scripts\pm2\restart-backend.ps1`, при необходимости предварительно добавить `C:\Project\Image_scan\tools\node-v24.14.0-win-x64-full` в `PATH`, затем проверять `scripts\pm2\health-check.ps1` или `/health`.
 
 ---
 

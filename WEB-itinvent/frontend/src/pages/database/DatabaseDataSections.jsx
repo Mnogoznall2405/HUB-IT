@@ -5,6 +5,7 @@ import ExpandMoreIcon from '@mui/icons-material/ExpandMore';
 
 import EquipmentTable from './EquipmentTable';
 import ModernEquipmentCard from './ModernEquipmentCard';
+import ConsumableMobileList from './ConsumableMobileList';
 import { DATA_MODE_CONSUMABLES, toInvNo } from './equipmentModel';
 import { buildLocationKey } from './databaseListModel';
 
@@ -23,8 +24,10 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
   onSelect,
   onAction,
   onEditConsumableQty,
+  onDeleteConsumable,
   dataMode,
   canWrite,
+  canDelete = false,
   isAdmin,
   mobileSelectionMode,
   onMobileCardSelect,
@@ -81,7 +84,9 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
         onSelect={onSelect}
         onAction={onAction}
         onEditConsumableQty={onEditConsumableQty}
+        onDeleteConsumable={onDeleteConsumable}
         allowSelection={!isConsumablesMode && canWrite}
+        canDelete={canDelete}
         dataMode={dataMode}
         canWrite={canWrite}
         isAdmin={isAdmin}
@@ -89,6 +94,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
     );
   }, [
     canWrite,
+    canDelete,
     dataMode,
     isAdmin,
     isAllSelected,
@@ -98,6 +104,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
     mobileSelectionMode,
     onAction,
     onEditConsumableQty,
+    onDeleteConsumable,
     onMobileCardSelect,
     onSelect,
     onSelectAll,
@@ -109,6 +116,19 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
 
   if (Object.keys(displayData || {}).length === 0) return null;
 
+  if (isMobile && isConsumablesMode) {
+    return (
+      <ConsumableMobileList
+        displayData={displayData}
+        showBranchHeaders={Object.keys(displayData).length > 1}
+        onEditConsumableQty={onEditConsumableQty}
+        onDeleteConsumable={onDeleteConsumable}
+        canWrite={canWrite}
+        canDelete={canDelete}
+      />
+    );
+  }
+
   return Object.keys(displayData).map((branchName) => {
     const locations = displayData[branchName];
     const isBranchExpanded = expandedBranches.has(branchName);
@@ -118,7 +138,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
       <Box
         key={branchName}
         sx={{
-          mb: 1.5,
+          mb: isMobile ? 1 : 1.5,
           border: '1px solid ' + theme.palette.divider,
           borderRadius: 1,
           overflow: 'hidden',
@@ -127,7 +147,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
         <Box
           onClick={() => onToggleBranch(branchName)}
           sx={{
-            p: isMobile ? 1 : 1.2,
+            p: isMobile ? 0.65 : 1.2,
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'space-between',
@@ -141,7 +161,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
         >
           <Box sx={{ display: 'flex', alignItems: 'center', gap: 0.5 }}>
             {isBranchExpanded ? <ExpandMoreIcon fontSize="small" /> : <ChevronRightIcon fontSize="small" />}
-            <Typography variant={isMobile ? 'subtitle1' : 'h6'} sx={{ fontSize: isMobile ? '0.85rem' : undefined }}>
+            <Typography variant={isMobile ? 'subtitle1' : 'h6'} sx={{ fontSize: isMobile ? '0.78rem' : undefined }}>
               {branchName}
             </Typography>
           </Box>
@@ -163,7 +183,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
                   <Box
                     onClick={() => onToggleLocation(branchName, locationName)}
                     sx={{
-                      p: isMobile ? 0.9 : 1,
+                      p: isMobile ? 0.55 : 1,
                       display: 'flex',
                       alignItems: 'center',
                       justifyContent: 'space-between',
@@ -183,7 +203,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
                     </Box>
                   </Box>
                   <Collapse in={isLocationExpanded} timeout="auto" unmountOnExit>
-                    <Box sx={{ p: isMobile ? 0.5 : 1, borderTop: '1px solid ' + theme.palette.divider }}>
+                    <Box sx={{ p: isMobile ? 0 : 1, borderTop: '1px solid ' + theme.palette.divider }}>
                       {renderItems(locationItems)}
                     </Box>
                   </Collapse>

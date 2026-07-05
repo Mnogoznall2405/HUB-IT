@@ -4,6 +4,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import lru_cache
@@ -29,6 +30,9 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_PUSH_TTL_SEC = 90
 CHAT_PUSH_TTL_SEC = 12 * 60 * 60
+CHAT_PUSH_IDEMPOTENCY_SEC = 5 * 60
+MAX_APP_BADGE_COUNT = 999
+_recent_chat_push_deliveries: dict[tuple[int, str], float] = {}
 
 
 def _utc_now() -> datetime:
@@ -169,6 +173,50 @@ class ChatPushService:
             if device_key:
                 seen_device_keys.add(device_key)
         return kept
+
+    def _select_chat_push_subscriptions(
+        self,
+        subscriptions: list[ChatPushSubscription],
+    ) -> list[ChatPushSubscription]:
+        if len(subscriptions) <= 1:
+            return subscriptions
+
+        def _sort_key(item: ChatPushSubscription) -> tuple[int, datetime, datetime, int]:
+            install_mode = _normalize_text(getattr(item, "install_mode", "")).lower()
+            standalone_rank = 1 if install_mode == "standalone" else 0
+            last_seen = getattr(item, "last_seen_at", None) or datetime.min.replace(tzinfo=timezone.utc)
+            updated = (
+                getattr(item, "updated_at", None)
+                or getattr(item, "created_at", None)
+                or datetime.min.replace(tzinfo=timezone.utc)
+            )
+            return (standalone_rank, last_seen, updated, int(getattr(item, "id", 0) or 0))
+
+        return [max(subscriptions, key=_sort_key)]
+
+    def _has_recent_chat_push_delivery(self, *, recipient_user_id: int, message_id: str) -> bool:
+        normalized_message_id = _normalize_text(message_id)
+        normalized_user_id = int(recipient_user_id)
+        if not normalized_message_id or normalized_user_id <= 0:
+            return False
+        cache_key = (normalized_user_id, normalized_message_id)
+        now = time.monotonic()
+        previous_at = float(_recent_chat_push_deliveries.get(cache_key, 0.0) or 0.0)
+        return previous_at > 0 and (now - previous_at) < CHAT_PUSH_IDEMPOTENCY_SEC
+
+    def _record_chat_push_delivery(self, *, recipient_user_id: int, message_id: str) -> None:
+        normalized_message_id = _normalize_text(message_id)
+        normalized_user_id = int(recipient_user_id)
+        if not normalized_message_id or normalized_user_id <= 0:
+            return
+        cache_key = (normalized_user_id, normalized_message_id)
+        now = time.monotonic()
+        _recent_chat_push_deliveries[cache_key] = now
+        if len(_recent_chat_push_deliveries) > 5000:
+            stale_before = now - CHAT_PUSH_IDEMPOTENCY_SEC
+            for key, seen_at in list(_recent_chat_push_deliveries.items()):
+                if seen_at < stale_before:
+                    _recent_chat_push_deliveries.pop(key, None)
 
     @property
     def dependency_available(self) -> bool:
@@ -372,8 +420,8 @@ class ChatPushService:
                 elif conversation_id:
                     chat_route = f"/chat?conversation={conversation_id}"
             options.update({
-                "renotify": True,
-                "require_interaction": True,
+                "renotify": False,
+                "require_interaction": False,
                 "vibrate": [260, 120, 260, 120, 360],
                 "actions": [
                     {
@@ -470,6 +518,25 @@ class ChatPushService:
                     result.failed += 1
         return result
 
+    def _compute_app_badge_count(self, *, recipient_user_id: int) -> int:
+        """Bell icon badge: hub unread notifications + aggregate mail unread."""
+        hub_total = 0
+        mail_total = 0
+        try:
+            from backend.services.hub_service import hub_service
+
+            hub_counts = hub_service.get_unread_counts(user_id=int(recipient_user_id))
+            hub_total = int(hub_counts.get("notifications_unread_total") or 0)
+        except Exception:
+            logger.warning("push badge: failed to resolve hub unread counts", exc_info=True)
+        try:
+            from backend.services.mail_service import mail_service
+
+            mail_total = int(mail_service.get_unread_count(user_id=int(recipient_user_id)) or 0)
+        except Exception:
+            logger.warning("push badge: failed to resolve mail unread count", exc_info=True)
+        return min(MAX_APP_BADGE_COUNT, max(0, hub_total + mail_total))
+
     def send_notification(
         self,
         *,
@@ -483,6 +550,7 @@ class ChatPushService:
         badge: str = "/hubit-badge.svg",
         data: Optional[dict[str, Any]] = None,
         ttl: int = 90,
+        app_badge_count: Optional[int] = None,
     ) -> ChatPushSendResult:
         normalized_channel = _normalize_text(channel) or "system"
         if normalized_channel == "mail":
@@ -503,7 +571,7 @@ class ChatPushService:
             **({} if not isinstance(data, dict) else data),
         }
         normalized_tag = _normalize_text(tag) or f"{normalized_channel}:{int(recipient_user_id)}"
-        payload = {
+        payload: dict[str, Any] = {
             "title": _normalize_text(title) or "Новое уведомление",
             "body": _normalize_text(body) or "Откройте приложение, чтобы посмотреть подробности.",
             "tag": normalized_tag,
@@ -517,37 +585,51 @@ class ChatPushService:
                 data=payload_data,
             ),
         }
+        if normalized_channel == "mail" or app_badge_count is not None:
+            resolved_badge_count = (
+                min(MAX_APP_BADGE_COUNT, max(0, int(app_badge_count)))
+                if app_badge_count is not None
+                else self._compute_app_badge_count(recipient_user_id=int(recipient_user_id))
+            )
+            payload["app_badge_count"] = resolved_badge_count
         result = ChatPushSendResult()
-        if subscriptions:
+        delivery_subscriptions = subscriptions
+        if normalized_channel == "chat":
+            delivery_subscriptions = self._select_chat_push_subscriptions(subscriptions)
+        web_subscription_count = len(delivery_subscriptions)
+        if delivery_subscriptions:
             result = self._send_payload_to_subscriptions(
-                subscriptions=subscriptions,
+                subscriptions=delivery_subscriptions,
                 payload=payload,
                 ttl=ttl,
                 headers=headers or None,
             )
+        web_sent = int(result.sent or 0)
         native_tokens = 0
-        try:
-            from backend.services.native_push_service import native_push_service
+        skip_native_push = normalized_channel == "chat" and (web_sent > 0 or web_subscription_count > 0)
+        if not skip_native_push:
+            try:
+                from backend.services.native_push_service import native_push_service
 
-            native_result = native_push_service.send_notification(
-                recipient_user_id=int(recipient_user_id),
-                title=payload["title"],
-                body=payload["body"],
-                channel=normalized_channel,
-                route=normalized_route,
-                tag=normalized_tag,
-                data=payload_data,
-                ttl=ttl,
-            )
-            native_tokens = int(getattr(native_result, "tokens", 0) or 0)
-            result.sent += int(getattr(native_result, "sent", 0) or 0)
-            result.disabled += int(getattr(native_result, "disabled", 0) or 0)
-            result.failed += int(getattr(native_result, "failed", 0) or 0)
-        except Exception:
-            logger.warning("Native push send failed", exc_info=True)
-            result.failed += 1
+                native_result = native_push_service.send_notification(
+                    recipient_user_id=int(recipient_user_id),
+                    title=payload["title"],
+                    body=payload["body"],
+                    channel=normalized_channel,
+                    route=normalized_route,
+                    tag=normalized_tag,
+                    data=payload_data,
+                    ttl=ttl,
+                )
+                native_tokens = int(getattr(native_result, "tokens", 0) or 0)
+                result.sent += int(getattr(native_result, "sent", 0) or 0)
+                result.disabled += int(getattr(native_result, "disabled", 0) or 0)
+                result.failed += int(getattr(native_result, "failed", 0) or 0)
+            except Exception:
+                logger.warning("Native push send failed", exc_info=True)
+                result.failed += 1
 
-        subscription_count = len(subscriptions) + native_tokens
+        subscription_count = web_subscription_count + native_tokens
         logger.info(
             "APP_PUSH_SEND user_id=%s channel=%s subscriptions=%s sent=%s disabled=%s failed=%s tag=%s route=%s",
             int(recipient_user_id),
@@ -558,20 +640,6 @@ class ChatPushService:
             int(result.failed),
             _normalize_text(payload.get("tag")),
             _normalize_text(payload.get("data", {}).get("route")) or "/",
-        )
-        print(
-            "APP_PUSH_SEND",
-            {
-                "user_id": int(recipient_user_id),
-                "channel": normalized_channel,
-                "subscriptions": subscription_count,
-                "sent": int(result.sent),
-                "disabled": int(result.disabled),
-                "failed": int(result.failed),
-                "tag": _normalize_text(payload.get("tag")),
-                "route": _normalize_text(payload.get("data", {}).get("route")) or "/",
-            },
-            flush=True,
         )
         return result
 
@@ -588,6 +656,16 @@ class ChatPushService:
         normalized_message_id = _normalize_text(message_id)
         if not normalized_conversation_id or not normalized_message_id:
             return ChatPushSendResult()
+        if self._has_recent_chat_push_delivery(
+            recipient_user_id=int(recipient_user_id),
+            message_id=normalized_message_id,
+        ):
+            logger.info(
+                "APP_PUSH_SKIP duplicate chat delivery user_id=%s message_id=%s",
+                int(recipient_user_id),
+                normalized_message_id,
+            )
+            return ChatPushSendResult(sent=1)
         try:
             if not notification_preferences_service.is_enabled(
                 user_id=int(recipient_user_id), channel="chat"
@@ -595,19 +673,25 @@ class ChatPushService:
                 return ChatPushSendResult()
         except Exception:
             logger.warning("chat push: failed to read notification preferences", exc_info=True)
-        return self.send_notification(
+        result = self.send_notification(
             recipient_user_id=int(recipient_user_id),
             title=title,
             body=body,
             channel="chat",
             route=f"/chat?conversation={normalized_conversation_id}&message={normalized_message_id}",
-            tag=f"chat:{normalized_conversation_id}",
+            tag=f"chat:msg:{normalized_message_id}",
             data={
                 "conversation_id": normalized_conversation_id,
                 "message_id": normalized_message_id,
             },
             ttl=CHAT_PUSH_TTL_SEC,
         )
+        if int(result.sent or 0) > 0:
+            self._record_chat_push_delivery(
+                recipient_user_id=int(recipient_user_id),
+                message_id=normalized_message_id,
+            )
+        return result
 
 
 chat_push_service = ChatPushService()

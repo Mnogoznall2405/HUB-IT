@@ -1,4 +1,4 @@
-﻿"""
+"""
 Uploaded signed act service:
 - parse uploaded PDF via OpenRouter into a draft,
 - validate/edit draft,
@@ -401,42 +401,6 @@ def _format_warning_tokens(values: list[str], limit: int = 8) -> str:
     return f"{', '.join(values[:limit])} и ещё {len(values) - limit}"
 
 
-def _derive_title_from_filename(file_name: str) -> str:
-    base = os.path.splitext(os.path.basename(str(file_name or "")))[0]
-    base = re.sub(r"\s+", " ", base).strip()
-    return base or "Перемещение оборудования"
-
-
-def _to_short_fio(value: str) -> str:
-    """Convert full name to 'Фамилия И.О.'."""
-    text = str(value or "").strip()
-    if not text:
-        return ""
-
-    parts = re.findall(r"[^\W\d_]+(?:[-'][^\W\d_]+)*", text, flags=re.UNICODE)
-    if not parts:
-        return ""
-    if len(parts) == 1:
-        return parts[0]
-
-    surname = parts[0]
-    initials = "".join(f"{part[0].upper()}." for part in parts[1:3] if part)
-    if initials:
-        return f"{surname} {initials}"
-    return surname
-
-
-def _build_transfer_title(from_employee: str, to_employee: str, fallback: str) -> str:
-    """
-    Build transfer title in required format:
-    'Акт, Фамилия И.О. передал Фамилия И.О.'
-    """
-    from_short = _to_short_fio(from_employee)
-    to_short = _to_short_fio(to_employee)
-    if from_short and to_short:
-        return f"Акт, {from_short} передал {to_short}"
-    return str(fallback or "").strip() or "Акт перемещения оборудования"
-
 
 def _resolve_cyrillic_ttf_path() -> Optional[str]:
     """
@@ -716,7 +680,6 @@ def _call_openrouter_act_parser(
     user_prompt_header = (
         "Return JSON object only (without markdown) in format:\n"
         "{\n"
-        '  "document_title": "string",\n'
         '  "from_employee": "string",\n'
         '  "to_employee": "string",\n'
         '  "doc_date": "YYYY-MM-DD or empty",\n'
@@ -907,7 +870,6 @@ def _build_draft_response_payload(draft: dict) -> dict:
     return {
         "draft_id": draft["draft_id"],
         "file_name": draft["file_name"],
-        "document_title": draft.get("document_title") or "",
         "from_employee": draft.get("from_employee") or "",
         "to_employee": draft.get("to_employee") or "",
         "doc_date": draft.get("doc_date"),
@@ -944,7 +906,6 @@ def create_uploaded_act_draft(
         )
         warnings.extend(llm_warnings)
 
-    title = _derive_title_from_filename(file_name)
     from_employee = ""
     to_employee = ""
     parsed_doc_date: Optional[datetime] = None
@@ -952,7 +913,6 @@ def create_uploaded_act_draft(
     legacy_inv_nos: list[str] = []
 
     if isinstance(parsed_payload, dict):
-        title = str(parsed_payload.get("document_title") or "").strip() or title
         from_employee = str(parsed_payload.get("from_employee") or "").strip()
         to_employee = str(parsed_payload.get("to_employee") or "").strip()
         parsed_doc_date = _extract_doc_date_from_payload(parsed_payload)
@@ -979,8 +939,6 @@ def create_uploaded_act_draft(
             warnings.append("Дата акта определена из текста PDF (fallback).")
         else:
             warnings.append("Не удалось автоматически определить дату акта.")
-
-    title = _build_transfer_title(from_employee, to_employee, title)
 
     if not inv_nos:
         fallback_inv_nos = _parse_inv_nos_from_text(pdf_text)
@@ -1033,7 +991,6 @@ def create_uploaded_act_draft(
         + timedelta(minutes=int(_read_env("ACT_UPLOAD_DRAFT_TTL_MINUTES", "30") or "30")),
         "file_name": str(file_name or "").strip(),
         "file_bytes": bytes(file_bytes),
-        "document_title": title,
         "from_employee": from_employee,
         "to_employee": to_employee,
         "doc_date": parsed_doc_date.strftime("%Y-%m-%d") if parsed_doc_date else None,
@@ -1081,13 +1038,8 @@ def commit_uploaded_act_draft(
     if draft_db and current_db and draft_db != current_db:
         raise DraftValidationError("Черновик создан для другой базы данных.")
 
-    final_title = str(payload.get("document_title") or draft.get("document_title") or "").strip()
-    if not final_title:
-        final_title = _derive_title_from_filename(str(draft.get("file_name") or ""))
-
     final_from_employee = str(payload.get("from_employee") or draft.get("from_employee") or "").strip()
     final_to_employee = str(payload.get("to_employee") or draft.get("to_employee") or "").strip()
-    final_title = _build_transfer_title(final_from_employee, final_to_employee, final_title)
 
     raw_inv_nos = payload.get("equipment_inv_nos")
     if raw_inv_nos is None:
@@ -1137,7 +1089,6 @@ def commit_uploaded_act_draft(
             )
 
     result = queries.create_uploaded_transfer_act(
-        document_title=final_title,
         from_employee=final_from_employee,
         to_employee=final_to_employee,
         doc_date=parsed_doc_date,
