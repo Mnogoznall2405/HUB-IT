@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import importlib
 import json
+import sqlite3
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -98,6 +99,47 @@ def test_ingest_returns_429_when_pdf_backpressure_is_active(temp_dir, monkeypatc
         raise AssertionError("Expected HTTPException")
 
 
+def test_ingest_returns_429_when_total_backpressure_is_active_for_non_pdf(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    monkeypatch.setattr(scan_app, "store", store)
+    monkeypatch.setattr(
+        store,
+        "ingest_backpressure_status",
+        lambda **kwargs: {
+            "active": False,
+            "reasons": [],
+            "total_active": True,
+            "total_reasons": ["total_pending_limit"],
+            "total_pending": 5000,
+            "retry_after_sec": 180,
+        },
+    )
+
+    payload = IngestPayload(
+        agent_id="agent-1",
+        hostname="HOST-01",
+        file_path=r"C:\Scan\sample.txt",
+        file_name="sample.txt",
+        file_hash="hash-text-1",
+        source_kind="text",
+    )
+
+    try:
+        asyncio.run(
+            scan_app.ingest(
+                payload,
+                _fake_request("10.105.0.18"),
+                x_api_key=scan_app.config.api_keys[0],
+            )
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 429
+        assert exc.headers["Retry-After"] == "180"
+        assert exc.detail["error"] == "scan_ingest_backpressure"
+    else:
+        raise AssertionError("Expected HTTPException")
+
+
 def test_ingest_pdf_slice_accepts_multipart_metadata_and_spools_payload(temp_dir, monkeypatch):
     store = _make_store(temp_dir)
     monkeypatch.setattr(scan_app, "store", store)
@@ -126,6 +168,45 @@ def test_ingest_pdf_slice_accepts_multipart_metadata_and_spools_payload(temp_dir
     assert result["success"] is True
     job_id = result["job_id"]
     assert store.read_job_pdf_spool(job_id=job_id) == b"%PDF-1.4 multipart"
+
+
+def test_dashboard_uses_ttl_cache_and_stale_on_sqlite_lock(monkeypatch):
+    calls = {"dashboard": 0}
+
+    class _FakeStore:
+        def dashboard(self):
+            calls["dashboard"] += 1
+            if calls["dashboard"] > 1:
+                raise sqlite3.OperationalError("database is locked")
+            return {"totals": {"agents_total": 1}, "job_queue": {}}
+
+        def ingest_backpressure_status(self, **kwargs):
+            return {"active": False, "limits": kwargs}
+
+    monkeypatch.setattr(scan_app, "store", _FakeStore())
+    monkeypatch.setattr(
+        scan_app,
+        "config",
+        SimpleNamespace(dashboard_cache_ttl_sec=60, ingest_max_pending_pdf_jobs=1000, transient_max_gb=5),
+    )
+    monkeypatch.setattr(scan_app, "dashboard_cache_payload", None)
+    monkeypatch.setattr(scan_app, "dashboard_cache_ts", 0.0)
+
+    first = scan_app.dashboard(_={})
+    second = scan_app.dashboard(_={})
+    assert first["cached"] is False
+    assert second["cached"] is True
+    assert calls["dashboard"] == 1
+
+    monkeypatch.setattr(
+        scan_app,
+        "config",
+        SimpleNamespace(dashboard_cache_ttl_sec=1, ingest_max_pending_pdf_jobs=1000, transient_max_gb=5),
+    )
+    monkeypatch.setattr(scan_app, "dashboard_cache_ts", 0.0)
+    stale = scan_app.dashboard(_={})
+    assert stale["cached"] is True
+    assert stale["degraded"] is True
 
 
 def test_lifespan_purges_legacy_artifacts_before_worker_start(monkeypatch):

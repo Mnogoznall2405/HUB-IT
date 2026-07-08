@@ -68,6 +68,7 @@ const TASK_POLL_MS = 3_000;
 const DEFAULT_ROWS_PER_PAGE = 25;
 const ROWS_PER_PAGE_OPTIONS = [25, 50, 100];
 const SCAN_RUN_OBSERVATION_LIMIT = 80;
+const HOST_INCIDENTS_PAGE_SIZE = 200;
 const ACTIVE_TASK_STATUSES = new Set(['queued', 'delivered', 'acknowledged']);
 
 function normalizePatternRows(value) {
@@ -502,6 +503,7 @@ function ScanCenter() {
   const [hostIncidents, setHostIncidents] = useState([]);
   const [hostIncidentsTotal, setHostIncidentsTotal] = useState(0);
   const [hostLoading, setHostLoading] = useState(false);
+  const [hostLoadingMore, setHostLoadingMore] = useState(false);
   const [hostScanRuns, setHostScanRuns] = useState([]);
   const [hostScanRunsTotal, setHostScanRunsTotal] = useState(0);
   const [hostScanRunsLoading, setHostScanRunsLoading] = useState(false);
@@ -522,11 +524,17 @@ function ScanCenter() {
   const [busyAckInbox, setBusyAckInbox] = useState(false);
   const [selectedInboxIncidentId, setSelectedInboxIncidentId] = useState('');
   const [expandedIncidentRows, setExpandedIncidentRows] = useState({});
+  const [hostOverviewOpen, setHostOverviewOpen] = useState(false);
+  const [hostOverviewData, setHostOverviewData] = useState(null);
+  const [hostOverviewLoading, setHostOverviewLoading] = useState(false);
+  const [hostOverviewError, setHostOverviewError] = useState(false);
+  const [hostOverviewExpandedHosts, setHostOverviewExpandedHosts] = useState({});
 
   const agentsRequestIdRef = useRef(0);
   const hostsRequestIdRef = useRef(0);
   const hostIncidentRequestIdRef = useRef(0);
   const hostScanRunsRequestIdRef = useRef(0);
+  const refreshAllInFlightRef = useRef(false);
   const skipInitialAgentsEffectRef = useRef(true);
   const skipInitialHostsEffectRef = useRef(true);
 
@@ -565,6 +573,14 @@ function ScanCenter() {
   ]);
 
   const incidentInbox = useScanIncidentInbox(incidentInboxFilters, { batchSize: INCIDENT_BATCH_SIZE });
+  // Lightweight server-side count of "new" incidents matching the current filters
+  // (independent of the status tab and of how many rows are actually loaded on the page),
+  // used to correctly enable/disable bulk-ack actions and their pending counters.
+  const incidentNewCountFilters = useMemo(() => ({
+    ...incidentInboxFilters,
+    status: 'new',
+  }), [incidentInboxFilters]);
+  const incidentNewCount = useScanIncidentInbox(incidentNewCountFilters, { batchSize: 1 });
   const incidentGroups = useMemo(() => groupIncidentsByHostFile(incidentInbox.items), [incidentInbox.items]);
   const incidentRows = useMemo(
     () => flattenIncidentGroups(incidentGroups, expandedIncidentRows),
@@ -706,12 +722,17 @@ function ScanCenter() {
     }
   };
 
-  const loadHostIncidents = async ({ silent = false } = {}) => {
+  const loadHostIncidents = async ({ silent = false, append = false } = {}) => {
     const host = String(selectedHost || '').trim();
     if (!host) return;
     const requestId = hostIncidentRequestIdRef.current + 1;
     hostIncidentRequestIdRef.current = requestId;
-    if (!silent) setHostLoading(true);
+    const offset = append ? hostIncidents.length : 0;
+    if (append) {
+      setHostLoadingMore(true);
+    } else if (!silent) {
+      setHostLoading(true);
+    }
     try {
       const response = await scanAPI.getIncidents({
         hostname: host,
@@ -723,16 +744,17 @@ function ScanCenter() {
         date_from: incidentDateFrom || undefined,
         date_to: incidentDateTo || undefined,
         has_fragment: incidentHasFragment ? true : undefined,
-        limit: 5000,
-        offset: 0,
+        limit: HOST_INCIDENTS_PAGE_SIZE,
+        offset,
       });
       if (requestId !== hostIncidentRequestIdRef.current) return;
-      setHostIncidents(Array.isArray(response?.items) ? response.items : []);
+      const items = Array.isArray(response?.items) ? response.items : [];
+      setHostIncidents((prev) => (append ? [...prev, ...items] : items));
       setHostIncidentsTotal(Number(response?.total || 0));
     } catch (error) {
       console.error('Host incidents load failed', error);
       if (requestId === hostIncidentRequestIdRef.current) {
-        if (!silent) {
+        if (!silent && !append) {
           setHostIncidents([]);
           setHostIncidentsTotal(0);
         }
@@ -740,6 +762,9 @@ function ScanCenter() {
     } finally {
       if (requestId === hostIncidentRequestIdRef.current && !silent) {
         setHostLoading(false);
+      }
+      if (requestId === hostIncidentRequestIdRef.current) {
+        setHostLoadingMore(false);
       }
     }
   };
@@ -834,6 +859,8 @@ function ScanCenter() {
   };
 
   const refreshAll = async ({ silent = true } = {}) => {
+    if (refreshAllInFlightRef.current) return;
+    refreshAllInFlightRef.current = true;
     if (!silent) setRefreshing(true);
     try {
       await Promise.all([
@@ -841,13 +868,23 @@ function ScanCenter() {
         loadAgents({ silent }),
         loadHosts({ silent }),
         incidentInbox.loaded > 0 ? incidentInbox.refreshFirstPage({ silent: true }) : Promise.resolve(),
+        incidentNewCount.refreshFirstPage({ silent: true }),
         hostDrawerOpen && selectedHost ? loadHostIncidents({ silent }) : Promise.resolve(),
         hostDrawerOpen && selectedHost ? loadHostScanRuns({ silent }) : Promise.resolve(),
       ]);
     } finally {
+      refreshAllInFlightRef.current = false;
       if (!silent) setRefreshing(false);
     }
   };
+
+  // Auto-refresh interval always calls the *latest* refreshAll via this ref,
+  // so it never operates on a stale closure (e.g. incidentInbox.loaded === 0
+  // captured before the inbox finished its first load).
+  const refreshAllRef = useRef(refreshAll);
+  useEffect(() => {
+    refreshAllRef.current = refreshAll;
+  });
 
   useEffect(() => {
     loadBranchOptions();
@@ -906,10 +943,10 @@ function ScanCenter() {
   useEffect(() => {
     if (autoRefreshPaused) return undefined;
     const timer = window.setInterval(() => {
-      refreshAll({ silent: true });
+      refreshAllRef.current({ silent: true });
     }, AUTO_REFRESH_MS);
     return () => window.clearInterval(timer);
-  }, [autoRefreshPaused, hostDrawerOpen, selectedHost, debouncedBranch, debouncedAgentQ, debouncedHostQ, debouncedIncidentQ, incidentStatus, incidentSeverity, incidentSourceKind, incidentFileExt, incidentDateFrom, incidentDateTo, incidentHasFragment, agentOnline, agentTaskStatus, hostStatus, hostSeverity, agentPage, hostPage, agentRowsPerPage, hostRowsPerPage, agentSortBy, agentSortDir, hostSortBy, hostSortDir]);
+  }, [autoRefreshPaused]);
 
   const monitoredAgentIds = useMemo(() => {
     const ids = new Set(trackedTaskAgentIds);
@@ -918,6 +955,13 @@ function ScanCenter() {
     });
     return Array.from(ids).filter(Boolean);
   }, [trackedTaskAgentIds, agentRows]);
+  // `monitoredAgentIds` is a brand-new array on every render (agentRows/trackedTaskAgentIds
+  // are themselves replaced with new arrays on every poll tick), so using it directly as an
+  // effect dependency would restart the effect - and immediately re-fire `tick()` - on every
+  // single tick, turning the intended TASK_POLL_MS interval into a tight infinite polling loop.
+  // A stable, value-based key keeps the effect from restarting unless the actual set of
+  // monitored agent ids changes.
+  const monitoredAgentIdsKey = monitoredAgentIds.join(',');
 
   useEffect(() => {
     if (monitoredAgentIds.length === 0) return undefined;
@@ -962,7 +1006,8 @@ function ScanCenter() {
       cancelled = true;
       window.clearInterval(timer);
     };
-  }, [monitoredAgentIds]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitoredAgentIdsKey]);
 
   const patchHostNewCount = (hostname, delta) => {
     const host = normalizeHost(hostname);
@@ -989,10 +1034,13 @@ function ScanCenter() {
     try {
       await scanAPI.ackIncident(incidentId, 'web-user');
       if (String(incident?.status || '').toLowerCase() === 'new') {
-        patchHostNewCount(selectedHost, -1);
+        patchHostNewCount(incident?.hostname || selectedHost, -1);
       }
       await loadHostIncidents({ silent: true });
-      await incidentInbox.refreshFirstPage({ silent: true });
+      await Promise.all([
+        incidentInbox.refreshFirstPage({ silent: true }),
+        incidentNewCount.refreshFirstPage({ silent: true }),
+      ]);
     } catch (error) {
       console.error('Ack incident failed', error);
     } finally {
@@ -1026,7 +1074,10 @@ function ScanCenter() {
       const acked = Number(response?.acked_count || 0);
       if (acked > 0) patchHostNewCount(selectedHost, -acked);
       await loadHostIncidents({ silent: true });
-      await incidentInbox.reload({ silent: true });
+      await Promise.all([
+        incidentInbox.reload({ silent: true }),
+        incidentNewCount.refreshFirstPage({ silent: true }),
+      ]);
     } catch (error) {
       console.error('Ack all host incidents failed', error);
     } finally {
@@ -1036,18 +1087,16 @@ function ScanCenter() {
 
   const handleAckInboxFiltered = async () => {
     if (!canScanAck) return;
-    const pending = incidentInbox.items.filter((item) => String(item?.status || '').toLowerCase() === 'new').length;
-    if (pending <= 0) return;
+    if (incidentNewCount.total <= 0) return;
     setBusyAckInbox(true);
     try {
-      const response = await scanAPI.ackIncidentsBatch({
+      await scanAPI.ackIncidentsBatch({
         filters: buildIncidentFilters(),
         ack_by: 'web-user',
       });
-      const acked = Number(response?.acked_count || 0);
-      if (acked > 0) patchHostNewCount('', -acked);
       await Promise.all([
         incidentInbox.reload({ silent: true }),
+        incidentNewCount.reload({ silent: true }),
         loadHosts({ silent: true }),
         loadDashboard({ silent: true }),
         hostDrawerOpen && selectedHost ? loadHostIncidents({ silent: true }) : Promise.resolve(),
@@ -1057,6 +1106,46 @@ function ScanCenter() {
     } finally {
       setBusyAckInbox(false);
     }
+  };
+
+  // Server-side host/file overview: reflects the *entire* filtered incident set
+  // (not just the currently loaded inbox page), useful for navigating very large
+  // inboxes where loading every incident client-side would be wasteful.
+  const loadHostOverview = async (hostOffset = 0) => {
+    setHostOverviewLoading(true);
+    setHostOverviewError(false);
+    try {
+      const response = await scanAPI.getIncidentInboxGroups({
+        ...buildIncidentFilters(),
+        host_limit: 25,
+        host_offset: hostOffset,
+        files_per_host: 10,
+      });
+      setHostOverviewData(response);
+    } catch (error) {
+      console.error('Host overview load failed', error);
+      setHostOverviewError(true);
+      if (hostOffset === 0) setHostOverviewData(null);
+    } finally {
+      setHostOverviewLoading(false);
+    }
+  };
+
+  const handleOpenHostOverview = () => {
+    setHostOverviewOpen(true);
+    setHostOverviewExpandedHosts({});
+    loadHostOverview(0);
+  };
+
+  const toggleHostOverviewHost = (hostId) => {
+    setHostOverviewExpandedHosts((prev) => ({ ...prev, [hostId]: !prev[hostId] }));
+  };
+
+  const handleHostOverviewDrillDown = (searchValue) => {
+    const value = String(searchValue || '').trim();
+    if (!value) return;
+    setIncidentQ(value);
+    setHostOverviewOpen(false);
   };
 
   const resetIncidentFilters = () => {
@@ -1665,6 +1754,9 @@ function ScanCenter() {
                     <Button type="button" size="small" variant="outlined" onClick={resetIncidentFilters} sx={getOfficeQuietActionSx(ui, theme, 'neutral')}>
                       Сбросить фильтры
                     </Button>
+                    <Button type="button" size="small" variant="outlined" onClick={handleOpenHostOverview} sx={getOfficeQuietActionSx(ui, theme, 'primary')}>
+                      Обзор по хостам
+                    </Button>
                     <Button type="button" size="small" variant="outlined" onClick={expandAllIncidentRows} sx={getOfficeQuietActionSx(ui, theme, 'primary')}>
                       Показать все
                     </Button>
@@ -1676,9 +1768,9 @@ function ScanCenter() {
                       size="small"
                       variant="contained"
                       onClick={handleAckInboxFiltered}
-                      disabled={!canScanAck || busyAckInbox || incidentInbox.loadingInitial || incidentInbox.items.every((item) => String(item?.status || '').toLowerCase() !== 'new')}
+                      disabled={!canScanAck || busyAckInbox || incidentNewCount.loadingInitial || incidentNewCount.total <= 0}
                     >
-                      Просмотрено по фильтру
+                      {incidentNewCount.total > 0 ? `Просмотрено по фильтру (${incidentNewCount.total})` : 'Просмотрено по фильтру'}
                     </Button>
                   </Stack>
                 </Box>
@@ -1853,6 +1945,19 @@ function ScanCenter() {
                     </Paper>
                   </Grid>
                 </Grid>
+                {incidentInbox.hasMore && (
+                  <Box sx={{ display: 'flex', justifyContent: 'center' }}>
+                    <Button
+                      type="button"
+                      size="small"
+                      variant="outlined"
+                      onClick={incidentInbox.loadMore}
+                      disabled={incidentInbox.loadingInitial || incidentInbox.loadingMore}
+                    >
+                      {incidentInbox.loadingMore ? 'Загрузка...' : 'Загрузить ещё'}
+                    </Button>
+                  </Box>
+                )}
               </Stack>
             </Box>
           )}
@@ -2263,6 +2368,17 @@ function ScanCenter() {
                     {renderFragments(incident)}
                   </Paper>
                 ))}
+                {hostIncidents.length < hostIncidentsTotal && (
+                  <Button
+                    type="button"
+                    size="small"
+                    variant="outlined"
+                    onClick={() => loadHostIncidents({ silent: true, append: true })}
+                    disabled={hostLoadingMore}
+                  >
+                    {hostLoadingMore ? 'Загрузка...' : 'Загрузить ещё'}
+                  </Button>
+                )}
               </Stack>
             )}
           </Box>
@@ -2387,6 +2503,111 @@ function ScanCenter() {
             >
               Запустить
             </Button>
+          </DialogActions>
+        </Dialog>
+
+        <Dialog
+          open={hostOverviewOpen}
+          onClose={() => setHostOverviewOpen(false)}
+          fullWidth
+          maxWidth="sm"
+        >
+          <DialogTitle sx={{ pb: 1 }}>
+            Обзор по хостам
+            {hostOverviewData && (
+              <Typography variant="caption" color="text.secondary" sx={{ display: 'block', fontWeight: 400 }}>
+                {hostOverviewData.total_hosts} хостов · {hostOverviewData.total_incidents} инцидентов по текущему фильтру
+              </Typography>
+            )}
+          </DialogTitle>
+          <DialogContent dividers>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 1.5 }}>
+              Сводка считается на сервере по всему фильтру, а не только по загруженной странице инбокса. Клик по хосту или файлу подставит его в поиск инбокса.
+            </Typography>
+            {hostOverviewLoading && !hostOverviewData ? (
+              <Box sx={{ py: 3, display: 'flex', justifyContent: 'center' }}>
+                <CircularProgress size={24} />
+              </Box>
+            ) : hostOverviewError && !hostOverviewData ? (
+              <Alert severity="error">Не удалось загрузить обзор по хостам.</Alert>
+            ) : !hostOverviewData || hostOverviewData.items.length === 0 ? (
+              <Alert severity="info">По текущему фильтру нет инцидентов.</Alert>
+            ) : (
+              <Stack spacing={1}>
+                {hostOverviewData.items.map((host) => {
+                  const hostExpanded = Boolean(hostOverviewExpandedHosts[host.id]);
+                  return (
+                    <Paper key={host.id} variant="outlined" sx={{ p: 1.2, borderRadius: 1.5 }}>
+                      <Box sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1 }}>
+                        <Box
+                          sx={{ cursor: 'pointer', minWidth: 0 }}
+                          onClick={() => handleHostOverviewDrillDown(host.hostname)}
+                        >
+                          <Typography variant="subtitle2" sx={{ fontWeight: 800 }}>
+                            {host.hostname}
+                          </Typography>
+                          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                            {[host.branch, host.user].filter(Boolean).join(' · ') || '-'}
+                          </Typography>
+                        </Box>
+                        <Stack direction="row" spacing={0.6} alignItems="center" sx={{ flexShrink: 0 }}>
+                          <Chip size="small" color={host.incidents_new > 0 ? 'warning' : 'default'} label={`Новых: ${host.incidents_new}`} />
+                          <Chip size="small" variant="outlined" label={`Всего: ${host.incidents_total}`} />
+                          <Button
+                            type="button"
+                            size="small"
+                            onClick={() => toggleHostOverviewHost(host.id)}
+                            sx={{ minWidth: 0, px: 1 }}
+                          >
+                            {hostExpanded ? 'Скрыть' : 'Файлы'}
+                          </Button>
+                        </Stack>
+                      </Box>
+                      {hostExpanded && (
+                        <Stack spacing={0.8} sx={{ mt: 1, pl: 1, borderLeft: '2px solid', borderColor: 'divider' }}>
+                          {(host.files || []).map((file) => (
+                            <Box
+                              key={file.id}
+                              sx={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 1, cursor: 'pointer' }}
+                              onClick={() => handleHostOverviewDrillDown(file.file_path || file.file_name)}
+                            >
+                              <Box sx={{ minWidth: 0 }}>
+                                <Typography variant="body2" sx={{ wordBreak: 'break-all' }}>
+                                  {file.file_path || file.file_name || '-'}
+                                </Typography>
+                                {file.fragments && file.fragments.length > 0 && (
+                                  <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                    {file.fragments[0]?.snippet || file.fragments[0]?.pattern_name || ''}
+                                  </Typography>
+                                )}
+                              </Box>
+                              <Stack direction="row" spacing={0.6} sx={{ flexShrink: 0 }}>
+                                <Chip size="small" color={file.incidents_new > 0 ? 'warning' : 'default'} label={file.incidents_new} />
+                                <Chip size="small" variant="outlined" label={file.incidents_total} />
+                              </Stack>
+                            </Box>
+                          ))}
+                        </Stack>
+                      )}
+                    </Paper>
+                  );
+                })}
+                {hostOverviewData.has_more && (
+                  <Button
+                    type="button"
+                    size="small"
+                    variant="outlined"
+                    disabled={hostOverviewLoading}
+                    onClick={() => loadHostOverview(Number(hostOverviewData.host_offset || 0) + Number(hostOverviewData.host_limit || 25))}
+                  >
+                    {hostOverviewLoading ? 'Загрузка…' : 'Показать ещё хосты'}
+                  </Button>
+                )}
+              </Stack>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button type="button" onClick={() => setHostOverviewOpen(false)}>Закрыть</Button>
           </DialogActions>
         </Dialog>
       </PageShell>

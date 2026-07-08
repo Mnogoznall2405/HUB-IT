@@ -4,7 +4,7 @@ import logging
 import math
 from io import BytesIO
 from pathlib import Path
-from typing import List
+from typing import Iterator, List, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -12,6 +12,10 @@ logger = logging.getLogger(__name__)
 MAX_RENDERED_PAGE_PIXELS = 16_000_000
 # Skip OCR for absurd page boxes (malformed PDFs can report thousands of cm).
 MAX_PAGE_DIMENSION_POINTS = 5_000.0
+
+
+class OcrNonRetryableError(RuntimeError):
+    """Raised for malformed or oversized PDFs where retrying wastes resources."""
 
 try:
     import fitz  # type: ignore
@@ -61,17 +65,15 @@ def _cap_zoom_for_max_pixels(
     return max(0.01, safe_zoom * scale)
 
 
-def _render_pdf_pages(pdf_bytes: bytes, max_pages: int, dpi: int) -> List[bytes]:
+def _iter_rendered_pdf_pages(pdf_bytes: bytes, max_pages: int, dpi: int) -> Iterator[Tuple[int, bytes]]:
     if not pdf_bytes:
         logger.warning("PDF render skipped: pdf_bytes is empty")
-        return []
+        return
     if fitz is None:
         logger.warning("PDF render skipped: PyMuPDF (fitz) is not installed or failed to import")
-        return []
+        return
 
-    out: List[bytes] = []
     zoom = max(1.0, float(dpi) / 72.0)
-    matrix = fitz.Matrix(zoom, zoom)
     try:
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
             total = min(max(1, int(max_pages)), len(doc))
@@ -88,7 +90,9 @@ def _render_pdf_pages(pdf_bytes: bytes, max_pages: int, dpi: int) -> List[bytes]
                         float(rect.width),
                         float(rect.height),
                     )
-                    continue
+                    raise OcrNonRetryableError(
+                        f"PDF page box too large for OCR: {float(rect.width):.1f}x{float(rect.height):.1f} pt"
+                    )
                 effective_zoom = _cap_zoom_for_max_pixels(
                     width_points=float(rect.width),
                     height_points=float(rect.height),
@@ -107,12 +111,15 @@ def _render_pdf_pages(pdf_bytes: bytes, max_pages: int, dpi: int) -> List[bytes]
                     )
                 page_matrix = fitz.Matrix(effective_zoom, effective_zoom)
                 pix = page.get_pixmap(matrix=page_matrix, alpha=False)
-                out.append(pix.tobytes("png"))
+                raw = pix.tobytes("png")
+                del pix
+                yield idx, raw
             logger.debug("PDF rendered successfully: %d pages at %d DPI", total, dpi)
+    except OcrNonRetryableError:
+        raise
     except Exception as exc:
         logger.error("PDF render failed (fitz): %s", exc)
-        return []
-    return out
+        raise OcrNonRetryableError(f"PDF render failed: {exc}") from exc
 
 
 def ocr_pdf_bytes(
@@ -141,14 +148,11 @@ def ocr_pdf_bytes(
             return ""
         pytesseract.pytesseract.tesseract_cmd = cmd
 
-    page_images = _render_pdf_pages(pdf_bytes, max_pages=max_pages, dpi=dpi)
-    if not page_images:
-        logger.warning("OCR skipped: no page images rendered from PDF")
-        return ""
-
     text_parts: List[str] = []
     current_lang = str(lang or "rus")
-    for idx, raw in enumerate(page_images):
+    rendered_pages = 0
+    for idx, raw in _iter_rendered_pdf_pages(pdf_bytes, max_pages=max_pages, dpi=dpi):
+        rendered_pages += 1
         try:
             with Image.open(BytesIO(raw)) as image:
                 rgb_image = image.convert("RGB")
@@ -173,7 +177,11 @@ def ocr_pdf_bytes(
             logger.error("OCR failed for page %d (lang=%s): %s", idx, current_lang, exc)
             continue
 
+    if rendered_pages <= 0:
+        logger.warning("OCR skipped: no page images rendered from PDF")
+        return ""
+
     result = "\n".join(text_parts).strip()
     if not result:
-        logger.info("OCR completed but no text was extracted from %d pages", len(page_images))
+        logger.info("OCR completed but no text was extracted from %d pages", rendered_pages)
     return result

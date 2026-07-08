@@ -613,7 +613,7 @@ def test_run_scan_once_drains_outbox_once_after_failed_ingest(monkeypatch, temp_
     agent._roots = [root]
     monkeypatch.setattr(agent, "refresh_roots", lambda force=False: None)
     monkeypatch.setattr(agent, "_send_ingest", lambda payload: False)
-    monkeypatch.setattr(agent, "_outbox_enqueue", lambda payload: outbox_payloads.append(payload) or None)
+    monkeypatch.setattr(agent, "_outbox_enqueue", lambda payload, **kwargs: outbox_payloads.append(payload) or None)
     monkeypatch.setattr(agent, "_outbox_prune_limits", lambda: prune_calls.append("prune"))
     monkeypatch.setattr(agent, "_drain_outbox", lambda max_items=10: drain_calls.append(max_items) or 0)
     monkeypatch.setattr(agent, "_persist_state", lambda: None)

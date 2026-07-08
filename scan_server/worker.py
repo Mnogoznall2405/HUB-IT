@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from .config import SCAN_JOB_MAX_WORKERS_LIMIT, ScanServerConfig
 from .database import ScanStore
 from .memory_guard import memory_pressure_active
-from .ocr import is_tesseract_available, ocr_pdf_bytes
+from .ocr import OcrNonRetryableError, is_tesseract_available, ocr_pdf_bytes
 from .patterns import allowed_pattern_ids, classify_severity, normalize_pattern_filter, scan_text
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,7 @@ BLANK_PDF_NEAR_WHITE_THRESHOLD = 248
 BLANK_PDF_WHITE_RATIO = 0.63
 IS_WINDOWS = os.name == "nt"
 MISSING_TRANSIENT_PDF_PAYLOAD = "Missing transient PDF payload"
+NON_RETRYABLE_PDF_FAILURE_OUTCOMES = {"ocr_error_non_retryable", "ocr_skipped_oversize_pdf"}
 
 
 def _safe_b64decode(value: str) -> bytes:
@@ -194,7 +195,12 @@ class ScanWorker(threading.Thread):
     def _tick(self) -> bool:
         now_ts = int(time.time())
         if now_ts - self._last_cleanup_ts > 3600:
-            self.store.cleanup_retention(retention_days=self.config.retention_days)
+            self.store.cleanup_retention(
+                retention_days=self.config.retention_days,
+                clean_job_retention_days=getattr(self.config, "clean_job_retention_days", None),
+                failed_job_retention_days=getattr(self.config, "failed_job_retention_days", None),
+                incident_retention_days=getattr(self.config, "incident_retention_days", None),
+            )
             self._last_cleanup_ts = now_ts
 
         requeue_stale = getattr(self.store, "requeue_stale_processing_jobs", None)
@@ -385,7 +391,7 @@ class ScanWorker(threading.Thread):
         if detail:
             message += " detail=%s"
             args.append(detail)
-        if outcome == "ocr_error":
+        if outcome in {"ocr_error", "ocr_error_non_retryable", "ocr_skipped_oversize_pdf"}:
             logger.warning(message, *args)
             return
         if outcome in {"text_layer_clean_skip", "ocr_skipped_blank_pdf", "ocr_clean_no_match"}:
@@ -410,6 +416,9 @@ class ScanWorker(threading.Thread):
             if not text:
                 return "", "ocr_attempted_no_text"
             return text, "ocr_text_ready"
+        except OcrNonRetryableError as exc:
+            logger.warning("Inline OCR rejected non-retryable PDF artifact=%s: %s", artifact_path, exc)
+            return "", "ocr_error_non_retryable"
         except Exception as exc:
             logger.warning("Inline OCR failed for artifact=%s: %s - %s", artifact_path, type(exc).__name__, exc)
             return "", "ocr_error"
@@ -436,6 +445,9 @@ class ScanWorker(threading.Thread):
             if not text:
                 return "", "ocr_attempted_no_text"
             return text, "ocr_text_ready"
+        except OcrNonRetryableError as exc:
+            logger.warning("OCR rejected non-retryable PDF artifact=%s: %s", artifact_path, exc)
+            return "", "ocr_error_non_retryable"
         except FuturesTimeoutError:
             logger.warning("OCR timeout for artifact=%s", artifact_path)
             return "", "ocr_error"
@@ -460,6 +472,15 @@ class ScanWorker(threading.Thread):
     ) -> Dict[str, Any]:
         if not pdf_bytes:
             return {"matches": [], "outcome": "", "reason": "No PDF payload"}
+        pdf_max_bytes = int(getattr(self.config, "pdf_max_bytes", 0) or 0)
+        if pdf_max_bytes > 0 and len(pdf_bytes) > pdf_max_bytes:
+            reason = f"Skipped OCR: PDF payload exceeds {pdf_max_bytes} bytes"
+            self._log_pdf_outcome(
+                "ocr_skipped_oversize_pdf",
+                artifact_path=artifact_path,
+                detail=f"bytes={len(pdf_bytes)} limit={pdf_max_bytes}",
+            )
+            return {"matches": [], "outcome": "ocr_skipped_oversize_pdf", "reason": reason}
 
         text_layer = _extract_pdf_text(pdf_bytes, max_pages=3)
         if text_layer:
@@ -538,6 +559,10 @@ class ScanWorker(threading.Thread):
             return "No matches after OCR (ocr_attempted_no_text)"
         if outcome == "ocr_skipped_blank_pdf":
             return "Skipped OCR: blank/tiny PDF (ocr_skipped_blank_pdf)"
+        if outcome == "ocr_skipped_oversize_pdf":
+            return "Skipped OCR: oversized PDF (ocr_skipped_oversize_pdf)"
+        if outcome == "ocr_error_non_retryable":
+            return "No matches (ocr_error_non_retryable)"
         if outcome == "ocr_error":
             return "No matches (ocr_error)"
         if outcome == "ocr_clean_no_match":
@@ -556,6 +581,7 @@ class ScanWorker(threading.Thread):
         try:
             pdf_bytes = self._payload_pdf_bytes(payload, job_id=job_id)
             pdf_outcome = ""
+            pdf_reason = ""
             source_kind = str(job.get("source_kind") or "").strip().lower()
             is_pdf_job = source_kind in {"pdf", "pdf_slice"}
             requires_pdf_payload = source_kind == "pdf_slice"
@@ -589,6 +615,7 @@ class ScanWorker(threading.Thread):
                 )
                 matches.extend(pdf_result.get("matches") or [])
                 pdf_outcome = str(pdf_result.get("outcome") or "")
+                pdf_reason = str(pdf_result.get("reason") or "")
             matches = self._dedupe_matches(matches)
 
             if matches:
@@ -611,13 +638,14 @@ class ScanWorker(threading.Thread):
                 if pdf_outcome == "ocr_error":
                     attempts = int(job.get("attempt_count") or 0)
                     max_attempts = max(1, int(getattr(self.config, "scan_job_max_attempts", 3) or 3))
-                    if attempts < max_attempts:
+                    retry_limit = min(max_attempts, 2)
+                    if attempts < retry_limit:
                         requeue_retry = getattr(self.store, "requeue_job_for_retry", None)
                         if callable(requeue_retry):
                             requeue_retry(
                                 job_id=job_id,
                                 error_text="OCR timeout",
-                                summary=f"OCR retry scheduled ({attempts}/{max_attempts})",
+                                summary=f"OCR retry scheduled ({attempts}/{retry_limit})",
                             )
                             delete_spool = False
                             return
@@ -626,6 +654,14 @@ class ScanWorker(threading.Thread):
                         status="failed",
                         summary=self._pdf_outcome_summary(pdf_outcome, 0),
                         error_text="OCR timeout",
+                    )
+                    return
+                if pdf_outcome in NON_RETRYABLE_PDF_FAILURE_OUTCOMES:
+                    self.store.finalize_job(
+                        job_id=job_id,
+                        status="failed",
+                        summary=self._pdf_outcome_summary(pdf_outcome, 0),
+                        error_text=pdf_reason or self._pdf_outcome_summary(pdf_outcome, 0),
                     )
                     return
                 self.store.finalize_job(

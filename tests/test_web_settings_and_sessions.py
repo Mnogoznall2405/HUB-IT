@@ -255,6 +255,39 @@ def test_non_admin_with_manage_users_permission_can_access_users_endpoint(monkey
     assert response.json()[0]["username"] == "demo"
 
 
+def test_users_endpoint_allows_legacy_short_username(monkeypatch):
+    monkeypatch.setattr(auth.user_service, "list_users", lambda: [{
+        "id": 1,
+        "username": "1c",
+        "email": None,
+        "full_name": "1C Service",
+        "is_active": True,
+        "role": "viewer",
+        "permissions": [],
+        "use_custom_permissions": False,
+        "custom_permissions": [],
+        "auth_source": "ldap",
+        "telegram_id": None,
+        "assigned_database": None,
+        "mailbox_email": None,
+        "mailbox_login": None,
+        "mail_profile_mode": "manual",
+        "mail_signature_html": None,
+        "mail_is_configured": False,
+        "created_at": None,
+        "updated_at": None,
+        "mail_updated_at": None,
+    }])
+    app = FastAPI()
+    app.include_router(auth.router, prefix="/auth")
+    app.dependency_overrides[deps.get_current_active_user] = lambda: _make_user(permissions=["settings.users.manage"])
+
+    response = TestClient(app).get("/auth/users")
+
+    assert response.status_code == 200
+    assert response.json()[0]["username"] == "1c"
+
+
 def test_non_admin_with_manage_sessions_permission_can_access_sessions_endpoint(monkeypatch):
     monkeypatch.setattr(auth.session_service, "list_sessions", lambda active_only=True: [{
         "session_id": "active-session",

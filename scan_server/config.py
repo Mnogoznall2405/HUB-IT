@@ -55,15 +55,25 @@ class ScanServerConfig:
     db_path: Path
     archive_dir: Path
     retention_days: int
+    clean_job_retention_days: int
+    failed_job_retention_days: int
+    incident_retention_days: int
     task_ttl_days: int
     poll_limit: int
     task_ack_timeout_sec: int
     agent_online_timeout_sec: int
     resolve_agent_sql_context: bool
     ingest_max_pending_pdf_jobs: int
+    ingest_max_pending_jobs: int
     ingest_max_concurrency: int
     transient_max_gb: float
     ingest_retry_after_sec: int
+    ingest_retry_after_max_sec: int
+    dashboard_cache_ttl_sec: int
+    server_lock_wait_sec: float
+    sqlite_busy_timeout_ms: int
+    sqlite_busy_retry_attempts: int
+    sqlite_busy_retry_base_ms: int
     job_processing_timeout_sec: int
     scan_job_max_attempts: int
     scan_worker_enabled: bool
@@ -76,6 +86,7 @@ class ScanServerConfig:
     ocr_timeout_sec: int
     ocr_dpi: int
     ocr_only_if_no_text: bool
+    pdf_max_bytes: int
     worker_memory_limit_mb: int
 
     @classmethod
@@ -125,6 +136,24 @@ class ScanServerConfig:
             db_path=db_path,
             archive_dir=archive_dir,
             retention_days=max(7, _to_int(os.getenv("SCAN_RETENTION_DAYS", "90"), 90)),
+            clean_job_retention_days=max(
+                1,
+                _to_int(os.getenv("SCAN_CLEAN_JOB_RETENTION_DAYS", "14"), 14),
+            ),
+            failed_job_retention_days=max(
+                1,
+                _to_int(os.getenv("SCAN_FAILED_JOB_RETENTION_DAYS", "30"), 30),
+            ),
+            incident_retention_days=max(
+                7,
+                _to_int(
+                    os.getenv(
+                        "SCAN_INCIDENT_RETENTION_DAYS",
+                        os.getenv("SCAN_RETENTION_DAYS", "90"),
+                    ),
+                    90,
+                ),
+            ),
             task_ttl_days=max(1, _to_int(os.getenv("SCAN_TASK_TTL_DAYS", "7"), 7)),
             poll_limit=max(1, min(50, _to_int(os.getenv("SCAN_POLL_LIMIT", "10"), 10))),
             task_ack_timeout_sec=max(
@@ -142,6 +171,10 @@ class ScanServerConfig:
                 100,
                 _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_PDF_JOBS", "25000"), 25000),
             ),
+            ingest_max_pending_jobs=max(
+                100,
+                _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_JOBS", "5000"), 5000),
+            ),
             ingest_max_concurrency=max(
                 1,
                 min(32, _to_int(os.getenv("SCAN_INGEST_MAX_CONCURRENCY", "4"), 4)),
@@ -153,6 +186,30 @@ class ScanServerConfig:
             ingest_retry_after_sec=max(
                 1,
                 min(3600, _to_int(os.getenv("SCAN_INGEST_RETRY_AFTER_SEC", "60"), 60)),
+            ),
+            ingest_retry_after_max_sec=max(
+                1,
+                min(3600, _to_int(os.getenv("SCAN_INGEST_RETRY_AFTER_MAX_SEC", "600"), 600)),
+            ),
+            dashboard_cache_ttl_sec=max(
+                0,
+                min(300, _to_int(os.getenv("SCAN_DASHBOARD_CACHE_TTL_SEC", "15"), 15)),
+            ),
+            server_lock_wait_sec=max(
+                0.0,
+                _to_float(os.getenv("SCAN_SERVER_LOCK_WAIT_SEC", "30"), 30.0),
+            ),
+            sqlite_busy_timeout_ms=max(
+                1000,
+                min(300000, _to_int(os.getenv("SCAN_SQLITE_BUSY_TIMEOUT_MS", "30000"), 30000)),
+            ),
+            sqlite_busy_retry_attempts=max(
+                1,
+                min(20, _to_int(os.getenv("SCAN_SQLITE_BUSY_RETRY_ATTEMPTS", "5"), 5)),
+            ),
+            sqlite_busy_retry_base_ms=max(
+                10,
+                min(5000, _to_int(os.getenv("SCAN_SQLITE_BUSY_RETRY_BASE_MS", "100"), 100)),
             ),
             job_processing_timeout_sec=max(
                 60,
@@ -191,6 +248,10 @@ class ScanServerConfig:
             ocr_timeout_sec=max(5, min(300, _to_int(os.getenv("SCAN_OCR_TIMEOUT_SEC", "45"), 45))),
             ocr_dpi=max(100, min(600, _to_int(os.getenv("SCAN_OCR_DPI", "300"), 300))),
             ocr_only_if_no_text=_to_bool(os.getenv("SCAN_OCR_ONLY_IF_NO_TEXT", "1"), True),
+            pdf_max_bytes=max(
+                1024 * 1024,
+                _to_int(os.getenv("SCAN_PDF_MAX_BYTES", str(25 * 1024 * 1024)), 25 * 1024 * 1024),
+            ),
             worker_memory_limit_mb=max(
                 0,
                 _to_int(os.getenv("SCAN_WORKER_MEMORY_LIMIT_MB", "6144"), 6144),

@@ -6,7 +6,8 @@ param(
     [string]$InventoryUrl = 'http://127.0.0.1:8012/health',
     [string]$InventoryReadyUrl = 'http://127.0.0.1:8012/health/ready',
     [string]$ScanUrl = 'http://127.0.0.1:8011/health',
-    [switch]$RepairBackend
+    [switch]$RepairBackend,
+    [switch]$RepairScan
 )
 
 $ErrorActionPreference = 'Stop'
@@ -347,6 +348,87 @@ function Test-BackendPortMismatch {
     return [pscustomobject]@{ Mismatch = $false }
 }
 
+function Get-ScanPythonProcesses {
+    $rows = @(Get-CimInstance Win32_Process -Filter "Name = 'python.exe' OR Name = 'pythonw.exe'" -ErrorAction SilentlyContinue)
+    $api = @()
+    $worker = @()
+    foreach ($row in $rows) {
+        $cmd = [string]$row.CommandLine
+        if (-not $cmd) {
+            continue
+        }
+        if ($cmd -match '(^|\s)-m\s+scan_server(\s|$)' -and $cmd -notmatch 'scan_server\.worker_main') {
+            $api += $row
+        } elseif ($cmd -match '(^|\s)-m\s+scan_server\.worker_main(\s|$)') {
+            $worker += $row
+        }
+    }
+    return [pscustomobject]@{
+        Api = @($api)
+        Worker = @($worker)
+    }
+}
+
+function Test-ScanRuntime {
+    param($Snapshot)
+
+    $scan = $Snapshot | Where-Object { $_.Name -eq 'itinvent-scan' } | Select-Object -First 1
+    $scanWorker = $Snapshot | Where-Object { $_.Name -eq 'itinvent-scan-worker' } | Select-Object -First 1
+    $listeners = Get-PortListenerPids -ListenPort 8011
+    $processes = Get-ScanPythonProcesses
+    $failures = @()
+    $warnings = @()
+
+    if (-not $scan -or $scan.Status -ne 'online') {
+        $failures += 'PM2 itinvent-scan is not online'
+    } elseif ($listeners.Count -eq 0) {
+        $failures += 'port 8011 has no listener while PM2 scan is online'
+    } elseif ($listeners -notcontains [int]$scan.PID) {
+        $failures += "port 8011 held by PID $($listeners -join ', '), PM2 scan PID is $($scan.PID)"
+    }
+
+    if (-not $scanWorker -or $scanWorker.Status -ne 'online') {
+        $failures += 'PM2 itinvent-scan-worker is not online'
+    }
+
+    if ($processes.Api.Count -ne 1) {
+        $failures += "scan API process count is $($processes.Api.Count), expected 1"
+    }
+    if ($processes.Worker.Count -ne 1) {
+        $failures += "scan worker process count is $($processes.Worker.Count), expected 1"
+    }
+
+    $apiPids = @($processes.Api | ForEach-Object { $_.ProcessId }) -join ','
+    $workerPids = @($processes.Worker | ForEach-Object { $_.ProcessId }) -join ','
+    $details = @(
+        "port8011=$($listeners -join ',')"
+        "pm2ScanPid=$($scan.PID)"
+        "pm2WorkerPid=$($scanWorker.PID)"
+        "apiPids=$apiPids"
+        "workerPids=$workerPids"
+    ) -join ' '
+
+    if ($failures.Count -gt 0) {
+        return [pscustomobject]@{
+            Name = 'scan-runtime'
+            Status = 'fail'
+            Details = (($failures + $warnings + $details) -join '; ')
+        }
+    }
+    if ($warnings.Count -gt 0) {
+        return [pscustomobject]@{
+            Name = 'scan-runtime'
+            Status = 'warn'
+            Details = (($warnings + $details) -join '; ')
+        }
+    }
+    return [pscustomobject]@{
+        Name = 'scan-runtime'
+        Status = 'ok'
+        Details = $details
+    }
+}
+
 Write-Host 'PM2 process status:' -ForegroundColor Cyan
 $snapshot = Get-Pm2Snapshot
 if (-not $snapshot -or $snapshot.Count -eq 0) {
@@ -391,6 +473,29 @@ Write-Host 'Chat runtime checks:' -ForegroundColor Cyan
 @($chatRuntimeRows | Where-Object { $_ }) | Format-Table Name, Status, Details -AutoSize
 Write-Host 'Critical PM2 processes:' -ForegroundColor Cyan
 $pm2RuntimeRows | Format-Table Name, Status, Details -AutoSize
+
+Write-Host 'Scan runtime checks:' -ForegroundColor Cyan
+$scanRuntimeRows = @(
+    Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-scan'
+    Get-Pm2ProcessStatus -Snapshot $snapshot -Name 'itinvent-scan-worker'
+    Test-ScanRuntime -Snapshot $snapshot
+)
+$scanRuntimeRows | Format-Table Name, Status, Details -AutoSize
+if (@($scanRuntimeRows | Where-Object { $_.Name -eq 'scan-runtime' -and $_.Status -eq 'fail' }).Count -gt 0) {
+    Write-Host 'Scan runtime mismatch detected. Run recovery:' -ForegroundColor Red
+    if ($RepairScan) {
+        Write-Host 'RepairScan: restarting itinvent-scan and itinvent-scan-worker...' -ForegroundColor Cyan
+        try {
+            $pm2Cmd = Resolve-Pm2Command
+            & $pm2Cmd restart itinvent-scan itinvent-scan-worker --update-env | Out-Null
+        } catch {
+            Write-Host "RepairScan failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    } else {
+        Write-Host 'Run: pm2 restart itinvent-scan itinvent-scan-worker --update-env' -ForegroundColor Yellow
+        Write-Host 'Or:  powershell -File scripts\pm2\health-check.ps1 -RepairScan' -ForegroundColor Yellow
+    }
+}
 
 $portMismatch = Test-BackendPortMismatch -Snapshot $snapshot
 if ($portMismatch -and $portMismatch.Mismatch) {

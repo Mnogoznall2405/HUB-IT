@@ -648,7 +648,7 @@ class ScanAgent:
                 return True
         return False
 
-    def _outbox_enqueue(self, payload: Dict[str, Any]) -> Optional[Path]:
+    def _outbox_enqueue(self, payload: Dict[str, Any], *, retry_after_sec: int = 0) -> Optional[Path]:
         event_id = str(payload.get("event_id") or "").strip()
         if not event_id:
             return None
@@ -663,7 +663,7 @@ class ScanAgent:
             "created_at": now_ts,
             "payload": payload,
             "attempts": 0,
-            "next_attempt_at": 0,
+            "next_attempt_at": now_ts + max(0, int(retry_after_sec or 0)),
             "last_error": "",
         }
         try:
@@ -678,6 +678,16 @@ class ScanAgent:
         base = min(3600, 5 * (2 ** min(attempts_count - 1, 10)))
         jitter = random.uniform(0.85, 1.25)
         return max(5, int(base * jitter))
+
+    def _retry_after_seconds(self, response: Any) -> int:
+        try:
+            raw_value = response.headers.get("Retry-After")
+        except Exception:
+            raw_value = ""
+        retry_after = _to_int(raw_value, 0)
+        if retry_after <= 0:
+            return 0
+        return max(1, min(3600, retry_after))
 
     def _outbox_prune_limits(self) -> None:
         now_ts = int(time.time())
@@ -870,6 +880,14 @@ class ScanAgent:
             if response.status_code in {404, 405, 501}:
                 self._last_error = f"INGEST_PDF_SLICE_UNAVAILABLE_{response.status_code}"
                 return {"success": False, "deduped": False, "fallback": True}
+            if response.status_code == 429:
+                retry_after = self._retry_after_seconds(response)
+                logging.warning("PDF slice ingest backpressure status=429 retry_after=%s", retry_after)
+                self._last_error = f"INGEST_HTTP_429_RETRY_AFTER_{retry_after}"
+                result = {"success": False, "deduped": False, "fallback": False}
+                if retry_after > 0:
+                    result["retry_after"] = retry_after
+                return result
             if response.status_code >= 300:
                 logging.warning("PDF slice ingest failed status=%s body=%s", response.status_code, response.text[:300])
                 self._last_error = f"INGEST_HTTP_{response.status_code}"
@@ -896,6 +914,14 @@ class ScanAgent:
 
         try:
             response = self._send("POST", self._url("ingest"), json=payload)
+            if response.status_code == 429:
+                retry_after = self._retry_after_seconds(response)
+                logging.warning("Ingest backpressure status=429 retry_after=%s", retry_after)
+                self._last_error = f"INGEST_HTTP_429_RETRY_AFTER_{retry_after}"
+                result = {"success": False, "deduped": False}
+                if retry_after > 0:
+                    result["retry_after"] = retry_after
+                return result
             if response.status_code >= 300:
                 logging.warning("Ingest failed status=%s body=%s", response.status_code, response.text[:300])
                 self._last_error = f"INGEST_HTTP_{response.status_code}"
@@ -911,13 +937,14 @@ class ScanAgent:
             self._last_error = f"INGEST_ERR:{type(exc).__name__}"
             return {"success": False, "deduped": False}
 
-    def _normalize_ingest_result(self, result: Any) -> Dict[str, bool]:
+    def _normalize_ingest_result(self, result: Any) -> Dict[str, Any]:
         if isinstance(result, dict):
             return {
                 "success": bool(result.get("success")),
                 "deduped": bool(result.get("deduped")),
+                "retry_after": max(0, _to_int(result.get("retry_after"), 0)),
             }
-        return {"success": bool(result), "deduped": False}
+        return {"success": bool(result), "deduped": False, "retry_after": 0}
 
     def _drain_outbox(self, max_items: int = DEFAULT_OUTBOX_DRAIN_BATCH) -> int:
         now_ts = int(time.time())
@@ -944,7 +971,8 @@ class ScanAgent:
                 continue
             attempts = _to_int(item.get("attempts"), 0) + 1
             item["attempts"] = attempts
-            item["next_attempt_at"] = now_ts + self._outbox_backoff_seconds(attempts)
+            retry_after = max(0, _to_int(ingest_result.get("retry_after"), 0))
+            item["next_attempt_at"] = now_ts + (retry_after or self._outbox_backoff_seconds(attempts))
             item["last_error"] = self._last_error or "INGEST_FAILED"
             try:
                 self._outbox_write(path, item)
@@ -1048,7 +1076,7 @@ class ScanAgent:
                 result["queued"] += 1
             return result
 
-        self._outbox_enqueue(payload)
+        self._outbox_enqueue(payload, retry_after_sec=_to_int(ingest_result.get("retry_after"), 0))
         result["deferred"] += 1
         return result
 

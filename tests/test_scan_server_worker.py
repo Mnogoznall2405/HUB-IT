@@ -28,7 +28,12 @@ def _make_worker(temp_dir: str) -> ScanWorker:
         ocr_dpi=300,
         ocr_max_processes=1,
         scan_job_max_workers=4,
+        scan_job_max_attempts=3,
         retention_days=90,
+        clean_job_retention_days=14,
+        failed_job_retention_days=30,
+        incident_retention_days=90,
+        pdf_max_bytes=25 * 1024 * 1024,
     )
     worker._job_pool = None
     worker._job_futures = {}
@@ -40,7 +45,7 @@ def _make_worker(temp_dir: str) -> ScanWorker:
     worker.store = SimpleNamespace(
         read_job_pdf_spool=lambda job_id: spool_store.get(job_id, b""),
         delete_job_pdf_spool=lambda job_id: spool_store.pop(job_id, None) is not None,
-        cleanup_retention=lambda retention_days: None,
+        cleanup_retention=lambda **kwargs: None,
         claim_next_job=lambda: None,
     )
     worker._test_spool_store = spool_store
@@ -276,6 +281,27 @@ def test_collect_pdf_matches_skips_blank_tiny_pdf_without_ocr(monkeypatch, temp_
     assert result["reason"] == "Skipped OCR: blank/tiny PDF"
 
 
+def test_collect_pdf_matches_rejects_oversized_pdf_without_ocr(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    worker.config.pdf_max_bytes = 10
+    pdf_bytes = b"%PDF-1.4 " + (b"x" * 100)
+
+    monkeypatch.setattr(scan_worker, "_extract_pdf_text", lambda pdf_bytes, max_pages=3: "")
+    monkeypatch.setattr(
+        worker,
+        "_ocr_text_from_pdf_bytes",
+        lambda pdf_bytes, artifact_path=None: (_ for _ in ()).throw(
+            AssertionError("OCR should not run for oversized PDF")
+        ),
+    )
+
+    result = worker._collect_pdf_matches(pdf_bytes)
+
+    assert result["matches"] == []
+    assert result["outcome"] == "ocr_skipped_oversize_pdf"
+    assert "exceeds" in result["reason"]
+
+
 def test_process_job_creates_incident_for_short_text_pdf_without_ocr(monkeypatch, temp_dir):
     worker = _make_worker(temp_dir)
     calls: dict[str, object] = {}
@@ -501,6 +527,54 @@ def test_process_job_fails_when_transient_pdf_payload_is_missing(temp_dir):
     assert calls["deleted"] == "job-missing"
 
 
+def test_process_job_fails_oversized_pdf_without_retry(monkeypatch, temp_dir):
+    worker = _make_worker(temp_dir)
+    worker.config.pdf_max_bytes = 10
+    calls: dict[str, object] = {}
+
+    class _Store:
+        def read_job_pdf_spool(self, *, job_id):
+            return worker._test_spool_store.get(job_id, b"")
+
+        def delete_job_pdf_spool(self, *, job_id):
+            calls["deleted"] = job_id
+            worker._test_spool_store.pop(job_id, None)
+            return True
+
+        def requeue_job_for_retry(self, **kwargs):
+            calls["retry"] = kwargs
+
+        def finalize_job(self, **kwargs):
+            calls["finalize"] = kwargs
+
+    worker.store = _Store()
+    worker._test_spool_store["job-oversize"] = b"%PDF-1.4 " + (b"x" * 100)
+    monkeypatch.setattr(scan_worker, "_extract_pdf_text", lambda pdf_bytes, max_pages=3: "")
+    monkeypatch.setattr(scan_worker, "_is_blank_tiny_pdf", lambda pdf_bytes: False)
+    monkeypatch.setattr(
+        worker,
+        "_ocr_text_from_pdf_bytes",
+        lambda pdf_bytes, artifact_path=None: (_ for _ in ()).throw(
+            AssertionError("OCR should not run for oversized PDF")
+        ),
+    )
+
+    job = {
+        "id": "job-oversize",
+        "source_kind": "pdf_slice",
+        "attempt_count": 1,
+        "payload_json": json.dumps({"text_excerpt": "", "local_pattern_hits": []}),
+    }
+
+    worker._process_job(job)
+
+    assert "retry" not in calls
+    assert calls["finalize"]["status"] == "failed"
+    assert calls["finalize"]["summary"] == "Skipped OCR: oversized PDF (ocr_skipped_oversize_pdf)"
+    assert "exceeds" in calls["finalize"]["error_text"]
+    assert calls["deleted"] == "job-oversize"
+
+
 def test_process_job_requeues_ocr_error_until_attempt_limit(monkeypatch, temp_dir):
     worker = _make_worker(temp_dir)
     calls: dict[str, object] = {}
@@ -540,7 +614,7 @@ def test_process_job_requeues_ocr_error_until_attempt_limit(monkeypatch, temp_di
     assert calls["retry"] == {
         "job_id": "job-retry",
         "error_text": "OCR timeout",
-        "summary": "OCR retry scheduled (1/3)",
+        "summary": "OCR retry scheduled (1/2)",
     }
     assert "finalize" not in calls
     assert "deleted" not in calls
@@ -577,7 +651,7 @@ def test_process_job_fails_ocr_error_after_attempt_limit(monkeypatch, temp_dir):
     job = {
         "id": "job-final",
         "source_kind": "pdf_slice",
-        "attempt_count": 3,
+        "attempt_count": 2,
         "payload_json": json.dumps({"text_excerpt": "", "local_pattern_hits": []}),
     }
 
@@ -619,7 +693,7 @@ def test_tick_submits_queued_jobs_to_parallel_pool(temp_dir):
     processed: list[str] = []
 
     worker.store = SimpleNamespace(
-        cleanup_retention=lambda retention_days: None,
+        cleanup_retention=lambda **kwargs: None,
         claim_next_jobs=lambda limit: [jobs.pop(0) for _ in range(min(limit, len(jobs)))],
     )
     worker._process_job = lambda job: processed.append(job["id"])
@@ -647,7 +721,7 @@ def test_tick_respects_parallel_job_limit(temp_dir):
         finish_event.wait(timeout=2)
 
     worker.store = SimpleNamespace(
-        cleanup_retention=lambda retention_days: None,
+        cleanup_retention=lambda **kwargs: None,
         claim_next_jobs=claim_next_jobs,
     )
     worker._process_job = process_job

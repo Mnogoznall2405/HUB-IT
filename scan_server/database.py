@@ -3,6 +3,8 @@
 import base64
 import json
 import logging
+import os
+import random
 import re
 import sqlite3
 import sys
@@ -54,6 +56,23 @@ def _require_scan_runtime_column(table_name: Any, column_name: Any) -> tuple[str
 
 def _now_ts() -> int:
     return int(time.time())
+
+
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(str(os.getenv(name, str(default)) or "").strip())
+    except Exception:
+        return default
+
+
+def _is_sqlite_busy_error(exc: BaseException) -> bool:
+    text = str(exc or "").lower()
+    return isinstance(exc, sqlite3.OperationalError) and (
+        "database is locked" in text
+        or "database table is locked" in text
+        or "database is busy" in text
+        or "busy" == text.strip()
+    )
 
 
 def _json_dumps(value: Any) -> str:
@@ -254,6 +273,9 @@ class ScanStore:
         agent_online_timeout_sec: int = 300,
         resolve_agent_sql_context: bool = False,
         job_processing_timeout_sec: int = 1800,
+        sqlite_busy_timeout_ms: Optional[int] = None,
+        sqlite_busy_retry_attempts: Optional[int] = None,
+        sqlite_busy_retry_base_ms: Optional[int] = None,
     ) -> None:
         self.db_path = Path(db_path)
         self.archive_dir = Path(archive_dir)
@@ -263,6 +285,39 @@ class ScanStore:
         self.agent_online_timeout_sec = max(30, int(agent_online_timeout_sec))
         self.resolve_agent_sql_context = bool(resolve_agent_sql_context)
         self.job_processing_timeout_sec = max(60, int(job_processing_timeout_sec or 1800))
+        self.sqlite_busy_timeout_ms = max(
+            1000,
+            min(
+                300000,
+                int(
+                    sqlite_busy_timeout_ms
+                    if sqlite_busy_timeout_ms is not None
+                    else _env_int("SCAN_SQLITE_BUSY_TIMEOUT_MS", 30000)
+                ),
+            ),
+        )
+        self.sqlite_busy_retry_attempts = max(
+            1,
+            min(
+                20,
+                int(
+                    sqlite_busy_retry_attempts
+                    if sqlite_busy_retry_attempts is not None
+                    else _env_int("SCAN_SQLITE_BUSY_RETRY_ATTEMPTS", 5)
+                ),
+            ),
+        )
+        self.sqlite_busy_retry_base_ms = max(
+            10,
+            min(
+                5000,
+                int(
+                    sqlite_busy_retry_base_ms
+                    if sqlite_busy_retry_base_ms is not None
+                    else _env_int("SCAN_SQLITE_BUSY_RETRY_BASE_MS", 100)
+                ),
+            ),
+        )
         self._lock = threading.RLock()
         self._scan_agent_read_store = ScanAgentReadStore(
             lock=self._lock,
@@ -291,11 +346,37 @@ class ScanStore:
         self._ensure_schema()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30, check_same_thread=False)
+        busy_timeout_ms = int(self.sqlite_busy_timeout_ms)
+        conn = sqlite3.connect(
+            self.db_path,
+            timeout=max(1.0, busy_timeout_ms / 1000.0),
+            check_same_thread=False,
+        )
         conn.row_factory = sqlite3.Row
         conn.execute("PRAGMA journal_mode=WAL;")
         conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.execute(f"PRAGMA busy_timeout={busy_timeout_ms};")
         return conn
+
+    def _run_write_transaction(self, context: str, operation):
+        attempts = max(1, int(self.sqlite_busy_retry_attempts or 1))
+        base_ms = max(10, int(self.sqlite_busy_retry_base_ms or 100))
+        for attempt in range(1, attempts + 1):
+            try:
+                return operation()
+            except sqlite3.OperationalError as exc:
+                if not _is_sqlite_busy_error(exc) or attempt >= attempts:
+                    raise
+                delay_ms = min(30000, base_ms * (2 ** (attempt - 1)))
+                delay_ms += random.randint(0, base_ms)
+                logger.warning(
+                    "SQLite busy during %s; retry %s/%s in %sms",
+                    context,
+                    attempt,
+                    attempts,
+                    delay_ms,
+                )
+                time.sleep(delay_ms / 1000.0)
 
     def _ensure_schema(self) -> None:
         with self._lock, self._connect() as conn:
@@ -375,6 +456,12 @@ class ScanStore:
                 CREATE INDEX IF NOT EXISTS idx_scan_jobs_agent_created
                     ON scan_jobs(agent_id, created_at);
 
+                CREATE INDEX IF NOT EXISTS idx_scan_jobs_status_source_kind
+                    ON scan_jobs(status, source_kind);
+
+                CREATE INDEX IF NOT EXISTS idx_scan_jobs_error_text
+                    ON scan_jobs(error_text);
+
                 CREATE INDEX IF NOT EXISTS idx_scan_tasks_agent_status_ttl_updated
                     ON scan_tasks(agent_id, status, ttl_at, updated_at, created_at);
 
@@ -416,6 +503,9 @@ class ScanStore:
 
                 CREATE INDEX IF NOT EXISTS idx_scan_incidents_created
                     ON scan_incidents(created_at DESC);
+
+                CREATE INDEX IF NOT EXISTS idx_scan_incidents_severity
+                    ON scan_incidents(severity);
 
                 CREATE INDEX IF NOT EXISTS idx_scan_incidents_hostname_status_created
                     ON scan_incidents(hostname, status, created_at DESC);
@@ -577,107 +667,159 @@ class ScanStore:
         counts["pdf_completed"] = int(counts.get("pdf_done_clean", 0)) + int(counts.get("pdf_done_with_incident", 0))
         return counts
 
+    def job_status_counts(self) -> Dict[str, int]:
+        """Pending/total job counts across *all* source kinds (pdf and non-pdf)."""
+        counts: Dict[str, int] = {
+            "queued": 0,
+            "processing": 0,
+            "total": 0,
+            "pending": 0,
+        }
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                "SELECT status, COUNT(*) AS c FROM scan_jobs GROUP BY status"
+            ).fetchall()
+        for row in rows:
+            job_status = str(row["status"] or "unknown").strip().lower() or "unknown"
+            count = int(row["c"] or 0)
+            counts[job_status] = int(counts.get(job_status, 0)) + count
+            counts["total"] += count
+        counts["pending"] = int(counts.get("queued", 0)) + int(counts.get("processing", 0))
+        return counts
+
     def ingest_backpressure_status(
         self,
         *,
         max_pending_pdf_jobs: int,
         transient_max_gb: float,
+        max_pending_jobs: Optional[int] = None,
+        retry_after_base_sec: int = 60,
+        retry_after_max_sec: int = 600,
     ) -> Dict[str, Any]:
         counts = self.pdf_job_status_counts()
         spool = self.transient_pdf_spool_stats()
         pending_limit = max(1, int(max_pending_pdf_jobs or 1))
         transient_limit_gb = max(0.1, float(transient_max_gb or 0.1))
+        pdf_pending = int(counts["pdf_pending"])
+        pending_ratio = pdf_pending / pending_limit
+        transient_ratio = float(spool["gb"]) / transient_limit_gb if transient_limit_gb else 0.0
+
         reasons: List[str] = []
-        if int(counts["pdf_pending"]) >= pending_limit:
+        if pdf_pending >= pending_limit:
             reasons.append("pdf_pending_limit")
         if float(spool["gb"]) >= transient_limit_gb:
             reasons.append("transient_size_limit")
+
+        # General (all source kinds) queue-depth check, used to also throttle
+        # non-PDF ingest instead of only guarding the PDF/OCR pipeline.
+        total_counts = self.job_status_counts()
+        total_pending = int(total_counts["pending"])
+        total_limit = max(1, int(max_pending_jobs)) if max_pending_jobs else None
+        total_ratio = (total_pending / total_limit) if total_limit else 0.0
+        total_reasons: List[str] = []
+        if total_limit is not None and total_pending >= total_limit:
+            total_reasons.append("total_pending_limit")
+
+        overload_ratio = max([1.0] + [pending_ratio, transient_ratio, total_ratio])
+        base_sec = max(1, int(retry_after_base_sec))
+        max_sec = max(base_sec, int(retry_after_max_sec))
+        retry_after_sec = int(min(max_sec, round(base_sec * overload_ratio)))
+
         return {
             "active": bool(reasons),
             "reasons": reasons,
-            "pdf_pending": int(counts["pdf_pending"]),
+            "pdf_pending": pdf_pending,
             "pdf_queued": int(counts["pdf_queued"]),
             "pdf_processing": int(counts["pdf_processing"]),
             "max_pending_pdf_jobs": pending_limit,
             "transient": spool,
             "transient_max_gb": transient_limit_gb,
+            "total_active": bool(total_reasons),
+            "total_reasons": total_reasons,
+            "total_pending": total_pending,
+            "max_pending_jobs": total_limit,
+            "retry_after_sec": retry_after_sec,
         }
 
     def reconcile_job_pdf_spool(self) -> Dict[str, int]:
-        removed_orphan = 0
-        removed_final = 0
-        failed_jobs = 0
         now_ts = _now_ts()
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT id, status, source_kind, scan_task_id, started_at
-                FROM scan_jobs
-                """
-            ).fetchall()
-            existing_ids = {str(row["id"] or "").strip() for row in rows if str(row["id"] or "").strip()}
-            pending_pdf_rows = [
-                row for row in rows
-                if str(row["status"] or "").strip().lower() in PENDING_JOB_STATUSES
-                and str(row["source_kind"] or "").strip().lower() == "pdf_slice"
-            ]
-            final_ids = {
-                str(row["id"] or "").strip()
-                for row in rows
-                if str(row["status"] or "").strip().lower() in FINAL_JOB_STATUSES
+
+        def _write() -> Dict[str, int]:
+            removed_orphan = 0
+            removed_final = 0
+            failed_jobs = 0
+            with self._lock, self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT id, status, source_kind, scan_task_id, started_at
+                    FROM scan_jobs
+                    """
+                ).fetchall()
+                existing_ids = {str(row["id"] or "").strip() for row in rows if str(row["id"] or "").strip()}
+                pending_pdf_rows = [
+                    row for row in rows
+                    if str(row["status"] or "").strip().lower() in PENDING_JOB_STATUSES
+                    and str(row["source_kind"] or "").strip().lower() == "pdf_slice"
+                ]
+                final_ids = {
+                    str(row["id"] or "").strip()
+                    for row in rows
+                    if str(row["status"] or "").strip().lower() in FINAL_JOB_STATUSES
+                }
+
+                spool_paths = self._pdf_spool.list_pdf_paths()
+                spool_ids = {path.stem.strip().lower() for path in spool_paths}
+
+                for path in spool_paths:
+                    job_id = path.stem.strip().lower()
+                    if job_id not in existing_ids:
+                        if self._pdf_spool.delete_path(path, description="orphan"):
+                            removed_orphan += 1
+                        continue
+                    if job_id in final_ids:
+                        if self._pdf_spool.delete_path(path, description="stale"):
+                            removed_final += 1
+
+                missing_rows = []
+                waiting_processing_missing = 0
+                stale_before = now_ts - self.job_processing_timeout_sec
+                for row in pending_pdf_rows:
+                    if str(row["id"] or "").strip().lower() in spool_ids:
+                        continue
+                    status_value = str(row["status"] or "").strip().lower()
+                    started_at = int(row["started_at"] or 0)
+                    if status_value == "processing" and started_at > stale_before:
+                        waiting_processing_missing += 1
+                        continue
+                    missing_rows.append(row)
+                touched_task_ids = set()
+                for row in missing_rows:
+                    job_id = str(row["id"] or "").strip()
+                    if not job_id:
+                        continue
+                    conn.execute(
+                        """
+                        UPDATE scan_jobs
+                        SET status='failed', finished_at=?, error_text=?
+                        WHERE id=?
+                        """,
+                        (now_ts, "Missing transient PDF payload", job_id),
+                    )
+                    failed_jobs += 1
+                    task_id = str(row["scan_task_id"] or "").strip()
+                    if task_id:
+                        touched_task_ids.add(task_id)
+                for task_id in touched_task_ids:
+                    self._reconcile_scan_task_progress_locked(conn, task_id, now_ts=now_ts)
+                conn.commit()
+            return {
+                "removed_orphan_files": removed_orphan,
+                "removed_final_files": removed_final,
+                "failed_jobs": failed_jobs,
+                "waiting_processing_missing": waiting_processing_missing,
             }
 
-            spool_paths = self._pdf_spool.list_pdf_paths()
-            spool_ids = {path.stem.strip().lower() for path in spool_paths}
-
-            for path in spool_paths:
-                job_id = path.stem.strip().lower()
-                if job_id not in existing_ids:
-                    if self._pdf_spool.delete_path(path, description="orphan"):
-                        removed_orphan += 1
-                    continue
-                if job_id in final_ids:
-                    if self._pdf_spool.delete_path(path, description="stale"):
-                        removed_final += 1
-
-            missing_rows = []
-            waiting_processing_missing = 0
-            stale_before = now_ts - self.job_processing_timeout_sec
-            for row in pending_pdf_rows:
-                if str(row["id"] or "").strip().lower() in spool_ids:
-                    continue
-                status_value = str(row["status"] or "").strip().lower()
-                started_at = int(row["started_at"] or 0)
-                if status_value == "processing" and started_at > stale_before:
-                    waiting_processing_missing += 1
-                    continue
-                missing_rows.append(row)
-            touched_task_ids = set()
-            for row in missing_rows:
-                job_id = str(row["id"] or "").strip()
-                if not job_id:
-                    continue
-                conn.execute(
-                    """
-                    UPDATE scan_jobs
-                    SET status='failed', finished_at=?, error_text=?
-                    WHERE id=?
-                    """,
-                    (now_ts, "Missing transient PDF payload", job_id),
-                )
-                failed_jobs += 1
-                task_id = str(row["scan_task_id"] or "").strip()
-                if task_id:
-                    touched_task_ids.add(task_id)
-            for task_id in touched_task_ids:
-                self._reconcile_scan_task_progress_locked(conn, task_id, now_ts=now_ts)
-            conn.commit()
-        return {
-            "removed_orphan_files": removed_orphan,
-            "removed_final_files": removed_final,
-            "failed_jobs": failed_jobs,
-            "waiting_processing_missing": waiting_processing_missing,
-        }
+        return self._run_write_transaction("reconcile_job_pdf_spool", _write)
 
     def _normalize_linked_scan_task_id_locked(self, conn: sqlite3.Connection, task_id: Any) -> str:
         tid = str(task_id or "").strip()
@@ -859,35 +1001,38 @@ class ScanStore:
             "last_heartbeat_json": _json_dumps(payload),
             "updated_at": now_ts,
         }
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO scan_agents(
-                    agent_id, hostname, branch, ip_address, version, status, last_seen_at, last_heartbeat_json, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(agent_id) DO UPDATE SET
-                    hostname=excluded.hostname,
-                    branch=excluded.branch,
-                    ip_address=excluded.ip_address,
-                    version=excluded.version,
-                    status=excluded.status,
-                    last_seen_at=excluded.last_seen_at,
-                    last_heartbeat_json=excluded.last_heartbeat_json,
-                    updated_at=excluded.updated_at
-                """,
-                (
-                    row["agent_id"],
-                    row["hostname"],
-                    row["branch"],
-                    row["ip_address"],
-                    row["version"],
-                    row["status"],
-                    row["last_seen_at"],
-                    row["last_heartbeat_json"],
-                    row["updated_at"],
-                ),
-            )
-            conn.commit()
+        def _write() -> None:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO scan_agents(
+                        agent_id, hostname, branch, ip_address, version, status, last_seen_at, last_heartbeat_json, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(agent_id) DO UPDATE SET
+                        hostname=excluded.hostname,
+                        branch=excluded.branch,
+                        ip_address=excluded.ip_address,
+                        version=excluded.version,
+                        status=excluded.status,
+                        last_seen_at=excluded.last_seen_at,
+                        last_heartbeat_json=excluded.last_heartbeat_json,
+                        updated_at=excluded.updated_at
+                    """,
+                    (
+                        row["agent_id"],
+                        row["hostname"],
+                        row["branch"],
+                        row["ip_address"],
+                        row["version"],
+                        row["status"],
+                        row["last_seen_at"],
+                        row["last_heartbeat_json"],
+                        row["updated_at"],
+                    ),
+                )
+                conn.commit()
+
+        self._run_write_transaction("upsert_agent_heartbeat", _write)
         return row
 
     def touch_agent_presence(
@@ -971,88 +1116,91 @@ class ScanStore:
         key = str(dedupe_key or "").strip() or None
         payload_json = _json_dumps(payload or {})
 
-        with self._lock, self._connect() as conn:
-            if key:
-                existing = conn.execute(
-                    """
-                    SELECT id, command, status, created_at, ttl_at
-                    FROM scan_tasks
-                    WHERE agent_id=? AND dedupe_key=? AND status IN ('queued', 'delivered', 'acknowledged')
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    (agent_id, key),
-                ).fetchone()
-                if existing:
-                    return dict(existing)
+        def _write() -> Dict[str, Any]:
+            with self._lock, self._connect() as conn:
+                if key:
+                    existing = conn.execute(
+                        """
+                        SELECT id, command, status, created_at, ttl_at
+                        FROM scan_tasks
+                        WHERE agent_id=? AND dedupe_key=? AND status IN ('queued', 'delivered', 'acknowledged')
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (agent_id, key),
+                    ).fetchone()
+                    if existing:
+                        return dict(existing)
 
-            if command == "scan_now":
-                active_task = conn.execute(
-                    """
-                    SELECT id, command, status, created_at, ttl_at
-                    FROM scan_tasks
-                    WHERE agent_id=?
-                      AND command='scan_now'
-                      AND status IN ('queued', 'delivered', 'acknowledged')
-                      AND ttl_at > ?
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    (agent_id, now_ts),
-                ).fetchone()
-                if active_task:
-                    return dict(active_task)
+                if command == "scan_now":
+                    active_task = conn.execute(
+                        """
+                        SELECT id, command, status, created_at, ttl_at
+                        FROM scan_tasks
+                        WHERE agent_id=?
+                          AND command='scan_now'
+                          AND status IN ('queued', 'delivered', 'acknowledged')
+                          AND ttl_at > ?
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (agent_id, now_ts),
+                    ).fetchone()
+                    if active_task:
+                        return dict(active_task)
 
-                active_job = conn.execute(
-                    """
-                    SELECT id, status, created_at
-                    FROM scan_jobs
-                    WHERE agent_id=?
-                      AND status IN ('queued', 'processing')
-                    ORDER BY created_at DESC
-                    LIMIT 1
-                    """,
-                    (agent_id,),
-                ).fetchone()
-                if active_job:
-                    return {
-                        "id": str(active_job["id"] or ""),
-                        "agent_id": agent_id,
-                        "command": "scan_now",
-                        "status": "acknowledged" if str(active_job["status"] or "").lower() == "processing" else "queued",
-                        "created_at": int(active_job["created_at"] or now_ts),
-                        "ttl_at": ttl_at,
-                    }
+                    active_job = conn.execute(
+                        """
+                        SELECT id, status, created_at
+                        FROM scan_jobs
+                        WHERE agent_id=?
+                          AND status IN ('queued', 'processing')
+                        ORDER BY created_at DESC
+                        LIMIT 1
+                        """,
+                        (agent_id,),
+                    ).fetchone()
+                    if active_job:
+                        return {
+                            "id": str(active_job["id"] or ""),
+                            "agent_id": agent_id,
+                            "command": "scan_now",
+                            "status": "acknowledged" if str(active_job["status"] or "").lower() == "processing" else "queued",
+                            "created_at": int(active_job["created_at"] or now_ts),
+                            "ttl_at": ttl_at,
+                        }
 
-            task_id = uuid.uuid4().hex
-            conn.execute(
-                """
-                INSERT INTO scan_tasks(
-                    id, agent_id, command, payload_json, status, created_at, updated_at, due_at, ttl_at, next_attempt_at, dedupe_key
-                ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    task_id,
-                    agent_id,
-                    command,
-                    payload_json,
-                    now_ts,
-                    now_ts,
-                    due_at,
-                    ttl_at,
-                    now_ts,
-                    key,
-                ),
-            )
-            conn.commit()
-        return {
-            "id": task_id,
-            "agent_id": agent_id,
-            "command": command,
-            "status": "queued",
-            "created_at": now_ts,
-            "ttl_at": ttl_at,
-        }
+                task_id = uuid.uuid4().hex
+                conn.execute(
+                    """
+                    INSERT INTO scan_tasks(
+                        id, agent_id, command, payload_json, status, created_at, updated_at, due_at, ttl_at, next_attempt_at, dedupe_key
+                    ) VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        task_id,
+                        agent_id,
+                        command,
+                        payload_json,
+                        now_ts,
+                        now_ts,
+                        due_at,
+                        ttl_at,
+                        now_ts,
+                        key,
+                    ),
+                )
+                conn.commit()
+                return {
+                    "id": task_id,
+                    "agent_id": agent_id,
+                    "command": command,
+                    "status": "queued",
+                    "created_at": now_ts,
+                    "ttl_at": ttl_at,
+                }
+
+        return self._run_write_transaction("create_task", _write)
 
     def _maintain_tasks(self, conn: sqlite3.Connection, now_ts: int) -> None:
         conn.execute(
@@ -1082,52 +1230,56 @@ class ScanStore:
             return []
         request_limit = max(1, min(50, int(limit)))
         now_ts = _now_ts()
-        out: List[Dict[str, Any]] = []
-        with self._lock, self._connect() as conn:
-            self._maintain_tasks(conn, now_ts)
-            rows = conn.execute(
-                """
-                SELECT id, command, payload_json, attempt_count, created_at, ttl_at
-                FROM scan_tasks
-                WHERE agent_id=?
-                  AND status='queued'
-                  AND due_at <= ?
-                  AND next_attempt_at <= ?
-                  AND ttl_at > ?
-                ORDER BY created_at ASC
-                LIMIT ?
-                """,
-                (aid, now_ts, now_ts, now_ts, request_limit),
-            ).fetchall()
 
-            for row in rows:
-                attempts = int(row["attempt_count"] or 0) + 1
-                backoff = min(900, 30 * (2 ** min(attempts - 1, 5)))
-                next_attempt = now_ts + backoff
-                conn.execute(
+        def _write() -> List[Dict[str, Any]]:
+            out: List[Dict[str, Any]] = []
+            with self._lock, self._connect() as conn:
+                self._maintain_tasks(conn, now_ts)
+                rows = conn.execute(
                     """
-                    UPDATE scan_tasks
-                    SET status='delivered',
-                        attempt_count=?,
-                        delivered_at=?,
-                        next_attempt_at=?,
-                        updated_at=?
-                    WHERE id=?
+                    SELECT id, command, payload_json, attempt_count, created_at, ttl_at
+                    FROM scan_tasks
+                    WHERE agent_id=?
+                      AND status='queued'
+                      AND due_at <= ?
+                      AND next_attempt_at <= ?
+                      AND ttl_at > ?
+                    ORDER BY created_at ASC
+                    LIMIT ?
                     """,
-                    (attempts, now_ts, next_attempt, now_ts, row["id"]),
-                )
-                out.append(
-                    {
-                        "task_id": row["id"],
-                        "command": row["command"],
-                        "payload": _json_loads(row["payload_json"], {}),
-                        "attempt_count": attempts,
-                        "created_at": int(row["created_at"] or now_ts),
-                        "ttl_at": int(row["ttl_at"] or now_ts),
-                    }
-                )
-            conn.commit()
-        return out
+                    (aid, now_ts, now_ts, now_ts, request_limit),
+                ).fetchall()
+
+                for row in rows:
+                    attempts = int(row["attempt_count"] or 0) + 1
+                    backoff = min(900, 30 * (2 ** min(attempts - 1, 5)))
+                    next_attempt = now_ts + backoff
+                    conn.execute(
+                        """
+                        UPDATE scan_tasks
+                        SET status='delivered',
+                            attempt_count=?,
+                            delivered_at=?,
+                            next_attempt_at=?,
+                            updated_at=?
+                        WHERE id=?
+                        """,
+                        (attempts, now_ts, next_attempt, now_ts, row["id"]),
+                    )
+                    out.append(
+                        {
+                            "task_id": row["id"],
+                            "command": row["command"],
+                            "payload": _json_loads(row["payload_json"], {}),
+                            "attempt_count": attempts,
+                            "created_at": int(row["created_at"] or now_ts),
+                            "ttl_at": int(row["ttl_at"] or now_ts),
+                        }
+                    )
+                conn.commit()
+            return out
+
+        return self._run_write_transaction("poll_tasks", _write) or []
 
     def report_task_result(
         self,
@@ -1156,63 +1308,66 @@ class ScanStore:
             "acked_at": now_ts if normalized in {"acknowledged", "completed", "failed"} else None,
             "completed_at": now_ts if normalized in {"completed", "failed"} else None,
         }
-        returned_status = normalized
-        with self._lock, self._connect() as conn:
-            row = conn.execute(
-                "SELECT id, agent_id, command, status FROM scan_tasks WHERE id=?",
-                (tid,),
-            ).fetchone()
-            if row is None or str(row["agent_id"] or "").strip() != aid:
-                return None
-            current_status = str(row["status"] or "").strip().lower()
-            if current_status in FINAL_TASK_STATUSES:
-                return {"task_id": tid, "status": current_status}
+        def _write() -> Optional[Dict[str, Any]]:
+            returned_status = normalized
+            with self._lock, self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, agent_id, command, status FROM scan_tasks WHERE id=?",
+                    (tid,),
+                ).fetchone()
+                if row is None or str(row["agent_id"] or "").strip() != aid:
+                    return None
+                current_status = str(row["status"] or "").strip().lower()
+                if current_status in FINAL_TASK_STATUSES:
+                    return {"task_id": tid, "status": current_status}
 
-            conn.execute(
-                """
-                UPDATE scan_tasks
-                SET status=?,
-                    updated_at=?,
-                    result_json=?,
-                    error_text=?,
-                    acked_at=COALESCE(?, acked_at),
-                    completed_at=COALESCE(?, completed_at)
-                WHERE id=?
-                """,
-                (
-                    update_fields["status"],
-                    update_fields["updated_at"],
-                    update_fields["result_json"],
-                    update_fields["error_text"],
-                    update_fields["acked_at"],
-                    update_fields["completed_at"],
-                    tid,
-                ),
-            )
-            if (
-                str(row["command"] or "").strip().lower() == "scan_now"
-                and bool(result_payload.get("force_rescan"))
-                and normalized in {"acknowledged", "completed", "failed"}
-            ):
-                resolution_stats = self._apply_scan_resolution_events_locked(
-                    conn,
-                    task_id=tid,
-                    agent_id=aid,
-                    result=result_payload,
-                    now_ts=now_ts,
+                conn.execute(
+                    """
+                    UPDATE scan_tasks
+                    SET status=?,
+                        updated_at=?,
+                        result_json=?,
+                        error_text=?,
+                        acked_at=COALESCE(?, acked_at),
+                        completed_at=COALESCE(?, completed_at)
+                    WHERE id=?
+                    """,
+                    (
+                        update_fields["status"],
+                        update_fields["updated_at"],
+                        update_fields["result_json"],
+                        update_fields["error_text"],
+                        update_fields["acked_at"],
+                        update_fields["completed_at"],
+                        tid,
+                    ),
                 )
-                if any(int(value or 0) for value in resolution_stats.values()):
-                    result_payload.update(resolution_stats)
-                    conn.execute(
-                        "UPDATE scan_tasks SET result_json=? WHERE id=?",
-                        (_json_dumps(result_payload), tid),
+                if (
+                    str(row["command"] or "").strip().lower() == "scan_now"
+                    and bool(result_payload.get("force_rescan"))
+                    and normalized in {"acknowledged", "completed", "failed"}
+                ):
+                    resolution_stats = self._apply_scan_resolution_events_locked(
+                        conn,
+                        task_id=tid,
+                        agent_id=aid,
+                        result=result_payload,
+                        now_ts=now_ts,
                     )
-            if normalized == "acknowledged" and str(row["command"] or "").strip().lower() == "scan_now":
-                reconciled = self._reconcile_scan_task_progress_locked(conn, tid, now_ts=now_ts)
-                if isinstance(reconciled, dict):
-                    returned_status = str(reconciled.get("status") or returned_status).strip().lower() or returned_status
-            conn.commit()
-        return {"task_id": tid, "status": returned_status}
+                    if any(int(value or 0) for value in resolution_stats.values()):
+                        result_payload.update(resolution_stats)
+                        conn.execute(
+                            "UPDATE scan_tasks SET result_json=? WHERE id=?",
+                            (_json_dumps(result_payload), tid),
+                        )
+                if normalized == "acknowledged" and str(row["command"] or "").strip().lower() == "scan_now":
+                    reconciled = self._reconcile_scan_task_progress_locked(conn, tid, now_ts=now_ts)
+                    if isinstance(reconciled, dict):
+                        returned_status = str(reconciled.get("status") or returned_status).strip().lower() or returned_status
+                conn.commit()
+            return {"task_id": tid, "status": returned_status}
+
+        return self._run_write_transaction("report_task_result", _write)
 
     def _serialize_task_row(self, row: sqlite3.Row, now_ts: Optional[int] = None) -> Dict[str, Any]:
         current_ts = int(now_ts or _now_ts())
@@ -1622,63 +1777,66 @@ class ScanStore:
         if retry_existing is not None:
             retry_job_id = str(retry_existing["id"] or "").strip()
             self.write_job_pdf_spool(job_id=retry_job_id, pdf_bytes=payload_pdf_bytes)
-            with self._lock, self._connect() as conn:
-                effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
-                    conn,
-                    sanitized_payload.get("scan_task_id"),
-                )
-                sanitized_payload["scan_task_id"] = effective_scan_task_id
-                row["scan_task_id"] = effective_scan_task_id
-                row["payload_json"] = _json_dumps(sanitized_payload)
-                existing = conn.execute(
-                    """
-                    SELECT id, status, created_at, scan_task_id, error_text
-                    FROM scan_jobs
-                    WHERE id=?
-                    LIMIT 1
-                    """,
-                    (retry_job_id,),
-                ).fetchone()
-                if existing is None:
-                    self.delete_job_pdf_spool(job_id=retry_job_id)
-                    raise ValueError("Retryable scan job disappeared")
-                conn.execute(
-                    """
-                    UPDATE scan_jobs
-                    SET agent_id=?, hostname=?, branch=?, user_login=?, user_full_name=?,
-                        file_path=?, file_name=?, file_hash=?, file_size=?, source_kind=?,
-                        scan_task_id=?, status='queued', started_at=NULL, finished_at=NULL,
-                        error_text=NULL, summary=NULL, payload_json=?
-                    WHERE id=?
-                    """,
-                    (
-                        row["agent_id"],
-                        row["hostname"],
-                        row["branch"],
-                        row["user_login"],
-                        row["user_full_name"],
-                        row["file_path"],
-                        row["file_name"],
-                        row["file_hash"],
-                        row["file_size"],
-                        row["source_kind"],
-                        row["scan_task_id"],
-                        row["payload_json"],
-                        retry_job_id,
-                    ),
-                )
-                self._record_existing_job_observation_locked(
-                    conn,
-                    scan_task_id=effective_scan_task_id,
-                    row=row,
-                    existing=existing,
-                    event_id=event_id,
-                    created_at=now_ts,
-                    observation_type="found_new",
-                )
-                if effective_scan_task_id:
-                    self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
-                conn.commit()
+            def _write_retry_job() -> None:
+                with self._lock, self._connect() as conn:
+                    effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
+                        conn,
+                        sanitized_payload.get("scan_task_id"),
+                    )
+                    sanitized_payload["scan_task_id"] = effective_scan_task_id
+                    row["scan_task_id"] = effective_scan_task_id
+                    row["payload_json"] = _json_dumps(sanitized_payload)
+                    existing = conn.execute(
+                        """
+                        SELECT id, status, created_at, scan_task_id, error_text
+                        FROM scan_jobs
+                        WHERE id=?
+                        LIMIT 1
+                        """,
+                        (retry_job_id,),
+                    ).fetchone()
+                    if existing is None:
+                        self.delete_job_pdf_spool(job_id=retry_job_id)
+                        raise ValueError("Retryable scan job disappeared")
+                    conn.execute(
+                        """
+                        UPDATE scan_jobs
+                        SET agent_id=?, hostname=?, branch=?, user_login=?, user_full_name=?,
+                            file_path=?, file_name=?, file_hash=?, file_size=?, source_kind=?,
+                            scan_task_id=?, status='queued', started_at=NULL, finished_at=NULL,
+                            error_text=NULL, summary=NULL, payload_json=?
+                        WHERE id=?
+                        """,
+                        (
+                            row["agent_id"],
+                            row["hostname"],
+                            row["branch"],
+                            row["user_login"],
+                            row["user_full_name"],
+                            row["file_path"],
+                            row["file_name"],
+                            row["file_hash"],
+                            row["file_size"],
+                            row["source_kind"],
+                            row["scan_task_id"],
+                            row["payload_json"],
+                            retry_job_id,
+                        ),
+                    )
+                    self._record_existing_job_observation_locked(
+                        conn,
+                        scan_task_id=effective_scan_task_id,
+                        row=row,
+                        existing=existing,
+                        event_id=event_id,
+                        created_at=now_ts,
+                        observation_type="found_new",
+                    )
+                    if effective_scan_task_id:
+                        self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
+                    conn.commit()
+
+            self._run_write_transaction("queue_job_reopen_missing_payload", _write_retry_job)
             return {"job_id": retry_job_id, "status": "queued", "deduped": False, "reopened": True}
 
         spool_written = False
@@ -1686,57 +1844,60 @@ class ScanStore:
             self.write_job_pdf_spool(job_id=job_id, pdf_bytes=payload_pdf_bytes)
             spool_written = True
         try:
-            with self._lock, self._connect() as conn:
-                effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
-                    conn,
-                    sanitized_payload.get("scan_task_id"),
-                )
-                sanitized_payload["scan_task_id"] = effective_scan_task_id
-                row["scan_task_id"] = effective_scan_task_id
-                row["payload_json"] = _json_dumps(sanitized_payload)
-                conn.execute(
-                    """
-                    INSERT INTO scan_jobs(
-                        id, agent_id, hostname, branch, user_login, user_full_name,
-                        file_path, file_name, file_hash, file_size, source_kind, event_id, scan_task_id, status,
-                        created_at, payload_json
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        row["id"],
-                        row["agent_id"],
-                        row["hostname"],
-                        row["branch"],
-                        row["user_login"],
-                        row["user_full_name"],
-                        row["file_path"],
-                        row["file_name"],
-                        row["file_hash"],
-                        row["file_size"],
-                        row["source_kind"],
-                        row["event_id"],
-                        row["scan_task_id"],
-                        row["status"],
-                        row["created_at"],
-                        row["payload_json"],
-                    ),
-                )
-                if effective_scan_task_id:
-                    self._record_scan_observation_locked(
+            def _write_new_job() -> None:
+                with self._lock, self._connect() as conn:
+                    effective_scan_task_id = self._normalize_linked_scan_task_id_locked(
                         conn,
-                        scan_task_id=effective_scan_task_id,
-                        agent_id=row["agent_id"],
-                        hostname=row["hostname"],
-                        file_path=row["file_path"],
-                        file_hash=row["file_hash"],
-                        event_id=event_id,
-                        observation_type="found_new",
-                        linked_job_id=job_id,
-                        source_kind=row["source_kind"],
-                        created_at=now_ts,
+                        sanitized_payload.get("scan_task_id"),
                     )
-                    self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
-                conn.commit()
+                    sanitized_payload["scan_task_id"] = effective_scan_task_id
+                    row["scan_task_id"] = effective_scan_task_id
+                    row["payload_json"] = _json_dumps(sanitized_payload)
+                    conn.execute(
+                        """
+                        INSERT INTO scan_jobs(
+                            id, agent_id, hostname, branch, user_login, user_full_name,
+                            file_path, file_name, file_hash, file_size, source_kind, event_id, scan_task_id, status,
+                            created_at, payload_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            row["id"],
+                            row["agent_id"],
+                            row["hostname"],
+                            row["branch"],
+                            row["user_login"],
+                            row["user_full_name"],
+                            row["file_path"],
+                            row["file_name"],
+                            row["file_hash"],
+                            row["file_size"],
+                            row["source_kind"],
+                            row["event_id"],
+                            row["scan_task_id"],
+                            row["status"],
+                            row["created_at"],
+                            row["payload_json"],
+                        ),
+                    )
+                    if effective_scan_task_id:
+                        self._record_scan_observation_locked(
+                            conn,
+                            scan_task_id=effective_scan_task_id,
+                            agent_id=row["agent_id"],
+                            hostname=row["hostname"],
+                            file_path=row["file_path"],
+                            file_hash=row["file_hash"],
+                            event_id=event_id,
+                            observation_type="found_new",
+                            linked_job_id=job_id,
+                            source_kind=row["source_kind"],
+                            created_at=now_ts,
+                        )
+                        self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
+                    conn.commit()
+
+            self._run_write_transaction("queue_job_insert", _write_new_job)
         except sqlite3.IntegrityError:
             if spool_written:
                 self.delete_job_pdf_spool(job_id=job_id)
@@ -1775,101 +1936,111 @@ class ScanStore:
     def requeue_stale_processing_jobs(self, *, timeout_sec: Optional[int] = None) -> int:
         safe_timeout = max(60, int(timeout_sec or self.job_processing_timeout_sec))
         stale_before = _now_ts() - safe_timeout
-        with self._lock, self._connect() as conn:
-            touched_task_ids = [
-                str(row["scan_task_id"] or "").strip()
-                for row in conn.execute(
+        def _write() -> int:
+            with self._lock, self._connect() as conn:
+                touched_task_ids = [
+                    str(row["scan_task_id"] or "").strip()
+                    for row in conn.execute(
+                        """
+                        SELECT DISTINCT scan_task_id
+                        FROM scan_jobs
+                        WHERE status='processing'
+                          AND COALESCE(started_at, 0) > 0
+                          AND started_at <= ?
+                          AND scan_task_id IS NOT NULL
+                          AND scan_task_id <> ''
+                        """,
+                        (stale_before,),
+                    ).fetchall()
+                ]
+                cursor = conn.execute(
                     """
-                    SELECT DISTINCT scan_task_id
-                    FROM scan_jobs
+                    UPDATE scan_jobs
+                    SET status='queued',
+                        started_at=NULL,
+                        summary='Requeued stale processing job',
+                        error_text=NULL
                     WHERE status='processing'
                       AND COALESCE(started_at, 0) > 0
                       AND started_at <= ?
-                      AND scan_task_id IS NOT NULL
-                      AND scan_task_id <> ''
                     """,
                     (stale_before,),
-                ).fetchall()
-            ]
-            cursor = conn.execute(
-                """
-                UPDATE scan_jobs
-                SET status='queued',
-                    started_at=NULL,
-                    summary='Requeued stale processing job',
-                    error_text=NULL
-                WHERE status='processing'
-                  AND COALESCE(started_at, 0) > 0
-                  AND started_at <= ?
-                """,
-                (stale_before,),
-            )
-            for task_id in touched_task_ids:
-                self._reconcile_scan_task_progress_locked(conn, task_id)
-            conn.commit()
-            return int(cursor.rowcount or 0)
+                )
+                for task_id in touched_task_ids:
+                    self._reconcile_scan_task_progress_locked(conn, task_id)
+                conn.commit()
+                return int(cursor.rowcount or 0)
+
+        return int(self._run_write_transaction("requeue_stale_processing_jobs", _write) or 0)
 
     def requeue_job_for_retry(self, *, job_id: str, error_text: str, summary: str = "") -> None:
         normalized_job_id = str(job_id or "").strip()
         if not normalized_job_id:
             return
         now_ts = _now_ts()
-        with self._lock, self._connect() as conn:
-            job_row = conn.execute(
-                "SELECT scan_task_id FROM scan_jobs WHERE id=? LIMIT 1",
-                (normalized_job_id,),
-            ).fetchone()
-            conn.execute(
-                """
-                UPDATE scan_jobs
-                SET status='queued',
-                    started_at=NULL,
-                    finished_at=NULL,
-                    error_text=?,
-                    summary=?
-                WHERE id=?
-                """,
-                (
-                    str(error_text or "").strip() or None,
-                    str(summary or "").strip() or None,
-                    normalized_job_id,
-                ),
-            )
-            scan_task_id = str(job_row["scan_task_id"] or "").strip() if job_row is not None else ""
-            if scan_task_id:
-                self._reconcile_scan_task_progress_locked(conn, scan_task_id, now_ts=now_ts)
-            conn.commit()
+        def _write() -> None:
+            with self._lock, self._connect() as conn:
+                job_row = conn.execute(
+                    "SELECT scan_task_id FROM scan_jobs WHERE id=? LIMIT 1",
+                    (normalized_job_id,),
+                ).fetchone()
+                conn.execute(
+                    """
+                    UPDATE scan_jobs
+                    SET status='queued',
+                        started_at=NULL,
+                        finished_at=NULL,
+                        error_text=?,
+                        summary=?
+                    WHERE id=?
+                    """,
+                    (
+                        str(error_text or "").strip() or None,
+                        str(summary or "").strip() or None,
+                        normalized_job_id,
+                    ),
+                )
+                scan_task_id = str(job_row["scan_task_id"] or "").strip() if job_row is not None else ""
+                if scan_task_id:
+                    self._reconcile_scan_task_progress_locked(conn, scan_task_id, now_ts=now_ts)
+                conn.commit()
+
+        self._run_write_transaction("requeue_job_for_retry", _write)
 
     def claim_next_jobs(self, limit: int) -> List[Dict[str, Any]]:
         batch_limit = max(1, min(100, int(limit or 1)))
         now_ts = _now_ts()
-        with self._lock, self._connect() as conn:
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM scan_jobs
-                WHERE status='queued'
-                ORDER BY created_at ASC
-                LIMIT ?
-                """,
-                (batch_limit,),
-            ).fetchall()
-            if not rows:
-                return []
-            for row in rows:
-                conn.execute(
+        def _write() -> List[sqlite3.Row]:
+            with self._lock, self._connect() as conn:
+                rows = conn.execute(
                     """
-                    UPDATE scan_jobs
-                    SET status='processing',
-                        started_at=?,
-                        finished_at=NULL,
-                        error_text=NULL,
-                        attempt_count=COALESCE(attempt_count, 0) + 1
-                    WHERE id=?
+                    SELECT *
+                    FROM scan_jobs
+                    WHERE status='queued'
+                    ORDER BY created_at ASC
+                    LIMIT ?
                     """,
-                    (now_ts, row["id"]),
-                )
-            conn.commit()
+                    (batch_limit,),
+                ).fetchall()
+                if not rows:
+                    return []
+                for row in rows:
+                    conn.execute(
+                        """
+                        UPDATE scan_jobs
+                        SET status='processing',
+                            started_at=?,
+                            finished_at=NULL,
+                            error_text=NULL,
+                            attempt_count=COALESCE(attempt_count, 0) + 1
+                        WHERE id=?
+                        """,
+                        (now_ts, row["id"]),
+                    )
+                conn.commit()
+                return rows
+
+        rows = self._run_write_transaction("claim_next_jobs", _write) or []
         out: List[Dict[str, Any]] = []
         for row in rows:
             item = dict(row)
@@ -1906,59 +2077,109 @@ class ScanStore:
         error_text: Optional[str] = None,
     ) -> None:
         now_ts = _now_ts()
-        with self._lock, self._connect() as conn:
-            job_row = conn.execute(
-                "SELECT scan_task_id FROM scan_jobs WHERE id=? LIMIT 1",
-                (str(job_id or "").strip(),),
-            ).fetchone()
-            conn.execute(
-                """
-                UPDATE scan_jobs
-                SET status=?, finished_at=?, summary=?, error_text=?
-                WHERE id=?
-                """,
-                (
-                    str(status or "").strip(),
-                    now_ts,
-                    str(summary or "").strip() or None,
-                    str(error_text or "").strip() or None,
-                    str(job_id or "").strip(),
-                ),
-            )
-            scan_task_id = str(job_row["scan_task_id"] or "").strip() if job_row is not None else ""
-            if scan_task_id:
-                self._reconcile_scan_task_progress_locked(conn, scan_task_id, now_ts=now_ts)
-            conn.commit()
+        normalized_job_id = str(job_id or "").strip()
+
+        def _write() -> None:
+            with self._lock, self._connect() as conn:
+                job_row = conn.execute(
+                    "SELECT scan_task_id FROM scan_jobs WHERE id=? LIMIT 1",
+                    (normalized_job_id,),
+                ).fetchone()
+                conn.execute(
+                    """
+                    UPDATE scan_jobs
+                    SET status=?, finished_at=?, summary=?, error_text=?
+                    WHERE id=?
+                    """,
+                    (
+                        str(status or "").strip(),
+                        now_ts,
+                        str(summary or "").strip() or None,
+                        str(error_text or "").strip() or None,
+                        normalized_job_id,
+                    ),
+                )
+                scan_task_id = str(job_row["scan_task_id"] or "").strip() if job_row is not None else ""
+                if scan_task_id:
+                    self._reconcile_scan_task_progress_locked(conn, scan_task_id, now_ts=now_ts)
+                conn.commit()
+
+        self._run_write_transaction("finalize_job", _write)
         self.delete_job_pdf_spool(job_id=job_id)
 
     def add_artifact(self, *, job_id: str, artifact_type: str, storage_path: str, size_bytes: int) -> None:
         now_ts = _now_ts()
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO scan_artifacts(job_id, artifact_type, storage_path, size_bytes, created_at)
-                VALUES (?, ?, ?, ?, ?)
-                """,
-                (job_id, artifact_type, storage_path, int(size_bytes), now_ts),
-            )
-            conn.commit()
+
+        def _write() -> None:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO scan_artifacts(job_id, artifact_type, storage_path, size_bytes, created_at)
+                    VALUES (?, ?, ?, ?, ?)
+                    """,
+                    (job_id, artifact_type, storage_path, int(size_bytes), now_ts),
+                )
+                conn.commit()
+
+        self._run_write_transaction("add_artifact", _write)
 
     def purge_all_artifacts(self) -> Dict[str, int]:
-        removed_rows = 0
-        removed_files = 0
-        removed_dirs = 0
+        """Remove orphaned/legacy scan artifacts on startup.
+
+        Only artifacts whose job no longer exists (orphan) or whose job has
+        already reached a final status (done_clean/done_with_incident/failed,
+        i.e. "legacy") are purged. Artifacts still tied to a queued/processing
+        job are left untouched, so a restart during active scanning cannot
+        wipe evidence that is still in use.
+        """
         archive_root = self.archive_dir
 
-        with self._lock, self._connect() as conn:
-            row = conn.execute("SELECT COUNT(*) AS cnt FROM scan_artifacts").fetchone()
-            removed_rows = int((row or {})["cnt"] if row is not None else 0)
-            conn.execute("DELETE FROM scan_artifacts")
-            conn.commit()
+        def _write() -> Dict[str, Any]:
+            with self._lock, self._connect() as conn:
+                rows = conn.execute(
+                    """
+                    SELECT a.id, a.storage_path, j.status AS job_status
+                    FROM scan_artifacts a
+                    LEFT JOIN scan_jobs j ON j.id = a.job_id
+                    """
+                ).fetchall()
+                purge_ids: List[str] = []
+                keep_paths: set = set()
+                for row in rows:
+                    has_job = row["job_status"] is not None
+                    job_status = str(row["job_status"] or "").strip().lower()
+                    if not has_job or job_status in FINAL_JOB_STATUSES:
+                        purge_ids.append(str(row["id"]))
+                        continue
+                    storage_path = str(row["storage_path"] or "").strip()
+                    if storage_path:
+                        try:
+                            keep_paths.add(Path(storage_path).resolve())
+                        except OSError:
+                            keep_paths.add(Path(storage_path))
+                removed_rows = 0
+                if purge_ids:
+                    placeholders = ",".join(["?"] * len(purge_ids))
+                    cursor = conn.execute(
+                        f"DELETE FROM scan_artifacts WHERE id IN ({placeholders})",
+                        purge_ids,
+                    )
+                    removed_rows = cursor.rowcount if cursor.rowcount is not None else len(purge_ids)
+                conn.commit()
+            return {"removed_rows": removed_rows, "keep_paths": keep_paths}
 
+        write_result = self._run_write_transaction("purge_all_artifacts", _write) or {}
+        removed_rows = int(write_result.get("removed_rows") or 0)
+        keep_paths = write_result.get("keep_paths") or set()
+
+        removed_files = 0
+        removed_dirs = 0
         if archive_root.exists():
             for path in sorted(archive_root.rglob("*"), key=lambda item: (item.is_file(), len(item.parts)), reverse=True):
                 try:
                     if path.is_file():
+                        if path.resolve() in keep_paths:
+                            continue
                         path.unlink()
                         removed_files += 1
                     elif path.is_dir():
@@ -1986,53 +2207,56 @@ class ScanStore:
         now_ts = _now_ts()
         finding_id = uuid.uuid4().hex
         incident_id = uuid.uuid4().hex
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO scan_findings(
-                    id, job_id, severity, category, matched_patterns_json, short_reason, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    finding_id,
-                    str(job.get("id") or ""),
-                    severity,
-                    category,
-                    _json_dumps(matched_patterns),
-                    short_reason,
-                    now_ts,
-                ),
-            )
-            conn.execute(
-                """
-                INSERT INTO scan_incidents(
-                    id, finding_id, job_id, agent_id, hostname, branch, user_login, user_full_name,
-                    file_path, severity, status, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
-                """,
-                (
-                    incident_id,
-                    finding_id,
-                    str(job.get("id") or ""),
-                    str(job.get("agent_id") or ""),
-                    str(job.get("hostname") or ""),
-                    str(job.get("branch") or ""),
-                    str(job.get("user_login") or ""),
-                    str(job.get("user_full_name") or ""),
-                    str(job.get("file_path") or ""),
-                    severity,
-                    now_ts,
-                ),
-            )
-            conn.execute(
-                """
-                UPDATE scan_task_file_observations
-                SET linked_incident_id=?, severity=?
-                WHERE linked_job_id=? AND linked_incident_id=''
-                """,
-                (incident_id, severity, str(job.get("id") or "")),
-            )
-            conn.commit()
+        def _write() -> None:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO scan_findings(
+                        id, job_id, severity, category, matched_patterns_json, short_reason, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        finding_id,
+                        str(job.get("id") or ""),
+                        severity,
+                        category,
+                        _json_dumps(matched_patterns),
+                        short_reason,
+                        now_ts,
+                    ),
+                )
+                conn.execute(
+                    """
+                    INSERT INTO scan_incidents(
+                        id, finding_id, job_id, agent_id, hostname, branch, user_login, user_full_name,
+                        file_path, severity, status, created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?)
+                    """,
+                    (
+                        incident_id,
+                        finding_id,
+                        str(job.get("id") or ""),
+                        str(job.get("agent_id") or ""),
+                        str(job.get("hostname") or ""),
+                        str(job.get("branch") or ""),
+                        str(job.get("user_login") or ""),
+                        str(job.get("user_full_name") or ""),
+                        str(job.get("file_path") or ""),
+                        severity,
+                        now_ts,
+                    ),
+                )
+                conn.execute(
+                    """
+                    UPDATE scan_task_file_observations
+                    SET linked_incident_id=?, severity=?
+                    WHERE linked_job_id=? AND linked_incident_id=''
+                    """,
+                    (incident_id, severity, str(job.get("id") or "")),
+                )
+                conn.commit()
+
+        self._run_write_transaction("create_finding_and_incident", _write)
         return {"finding_id": finding_id, "incident_id": incident_id}
 
     def _build_incident_where_clause(
@@ -2432,74 +2656,76 @@ class ScanStore:
         ids = [str(item or "").strip() for item in (incident_ids or []) if str(item or "").strip()]
         filter_payload = filters if isinstance(filters, dict) else {}
 
-        with self._lock, self._connect() as conn:
-            if ids:
-                placeholders = ",".join(["?"] * len(ids))
-                total_matched = conn.execute(
-                    f"SELECT COUNT(*) FROM scan_incidents WHERE id IN ({placeholders})",
-                    ids,
-                ).fetchone()[0]
-                cursor = conn.execute(
-                    f"""
-                    UPDATE scan_incidents
-                    SET status='ack', ack_at=?, ack_by=?
-                    WHERE status='new' AND id IN ({placeholders})
-                    """,
-                    [now_ts, actor, *ids],
-                )
-                acked_count = cursor.rowcount if cursor.rowcount is not None else 0
-            else:
-                where_clause, params = self._build_incident_where_clause(
-                    status=filter_payload.get("status"),
-                    severity=filter_payload.get("severity"),
-                    branch=filter_payload.get("branch"),
-                    q=filter_payload.get("q"),
-                    hostname=filter_payload.get("hostname"),
-                    source_kind=filter_payload.get("source_kind"),
-                    file_ext=filter_payload.get("file_ext"),
-                    date_from=filter_payload.get("date_from"),
-                    date_to=filter_payload.get("date_to"),
-                    has_fragment=filter_payload.get("has_fragment"),
-                    ack_by=filter_payload.get("ack_by"),
-                )
-                total_matched = conn.execute(
-                    f"""
-                    SELECT COUNT(*)
-                    FROM scan_incidents i
-                    LEFT JOIN scan_findings f ON f.id = i.finding_id
-                    LEFT JOIN scan_jobs j ON j.id = i.job_id
-                    {where_clause}
-                    """,
-                    params,
-                ).fetchone()[0]
-                ack_where = f"{where_clause} AND i.status='new'" if where_clause else "WHERE i.status='new'"
-                rows = conn.execute(
-                    f"""
-                    SELECT i.id
-                    FROM scan_incidents i
-                    LEFT JOIN scan_findings f ON f.id = i.finding_id
-                    LEFT JOIN scan_jobs j ON j.id = i.job_id
-                    {ack_where}
-                    """,
-                    params,
-                ).fetchall()
-                ack_ids = [str(row["id"]) for row in rows]
-                if ack_ids:
-                    placeholders = ",".join(["?"] * len(ack_ids))
+        def _write() -> Dict[str, Any]:
+            with self._lock, self._connect() as conn:
+                if ids:
+                    placeholders = ",".join(["?"] * len(ids))
+                    total_matched = conn.execute(
+                        f"SELECT COUNT(*) FROM scan_incidents WHERE id IN ({placeholders})",
+                        ids,
+                    ).fetchone()[0]
                     cursor = conn.execute(
                         f"""
                         UPDATE scan_incidents
                         SET status='ack', ack_at=?, ack_by=?
-                        WHERE id IN ({placeholders})
+                        WHERE status='new' AND id IN ({placeholders})
                         """,
-                        [now_ts, actor, *ack_ids],
+                        [now_ts, actor, *ids],
                     )
-                    acked_count = cursor.rowcount if cursor.rowcount is not None else len(ack_ids)
+                    acked_count = cursor.rowcount if cursor.rowcount is not None else 0
                 else:
-                    acked_count = 0
-            conn.commit()
+                    where_clause, params = self._build_incident_where_clause(
+                        status=filter_payload.get("status"),
+                        severity=filter_payload.get("severity"),
+                        branch=filter_payload.get("branch"),
+                        q=filter_payload.get("q"),
+                        hostname=filter_payload.get("hostname"),
+                        source_kind=filter_payload.get("source_kind"),
+                        file_ext=filter_payload.get("file_ext"),
+                        date_from=filter_payload.get("date_from"),
+                        date_to=filter_payload.get("date_to"),
+                        has_fragment=filter_payload.get("has_fragment"),
+                        ack_by=filter_payload.get("ack_by"),
+                    )
+                    total_matched = conn.execute(
+                        f"""
+                        SELECT COUNT(*)
+                        FROM scan_incidents i
+                        LEFT JOIN scan_findings f ON f.id = i.finding_id
+                        LEFT JOIN scan_jobs j ON j.id = i.job_id
+                        {where_clause}
+                        """,
+                        params,
+                    ).fetchone()[0]
+                    ack_where = f"{where_clause} AND i.status='new'" if where_clause else "WHERE i.status='new'"
+                    rows = conn.execute(
+                        f"""
+                        SELECT i.id
+                        FROM scan_incidents i
+                        LEFT JOIN scan_findings f ON f.id = i.finding_id
+                        LEFT JOIN scan_jobs j ON j.id = i.job_id
+                        {ack_where}
+                        """,
+                        params,
+                    ).fetchall()
+                    ack_ids = [str(row["id"]) for row in rows]
+                    if ack_ids:
+                        placeholders = ",".join(["?"] * len(ack_ids))
+                        cursor = conn.execute(
+                            f"""
+                            UPDATE scan_incidents
+                            SET status='ack', ack_at=?, ack_by=?
+                            WHERE id IN ({placeholders})
+                            """,
+                            [now_ts, actor, *ack_ids],
+                        )
+                        acked_count = cursor.rowcount if cursor.rowcount is not None else len(ack_ids)
+                    else:
+                        acked_count = 0
+                conn.commit()
+            return {"success": True, "acked_count": int(acked_count or 0), "total_matched": int(total_matched or 0)}
 
-        return {"success": True, "acked_count": int(acked_count or 0), "total_matched": int(total_matched or 0)}
+        return self._run_write_transaction("bulk_ack_incidents", _write)
 
     def list_hosts(
         self,
@@ -2546,23 +2772,27 @@ class ScanStore:
         if not iid:
             return None
         now_ts = _now_ts()
-        with self._lock, self._connect() as conn:
-            row = conn.execute(
-                "SELECT id, status FROM scan_incidents WHERE id=?",
-                (iid,),
-            ).fetchone()
-            if row is None:
-                return None
-            conn.execute(
-                """
-                UPDATE scan_incidents
-                SET status='ack', ack_at=?, ack_by=?
-                WHERE id=?
-                """,
-                (now_ts, str(ack_by or "").strip(), iid),
-            )
-            conn.commit()
-        return {"id": iid, "status": "ack", "ack_at": now_ts}
+
+        def _write() -> Optional[Dict[str, Any]]:
+            with self._lock, self._connect() as conn:
+                row = conn.execute(
+                    "SELECT id, status FROM scan_incidents WHERE id=?",
+                    (iid,),
+                ).fetchone()
+                if row is None:
+                    return None
+                conn.execute(
+                    """
+                    UPDATE scan_incidents
+                    SET status='ack', ack_at=?, ack_by=?
+                    WHERE id=?
+                    """,
+                    (now_ts, str(ack_by or "").strip(), iid),
+                )
+                conn.commit()
+            return {"id": iid, "status": "ack", "ack_at": now_ts}
+
+        return self._run_write_transaction("ack_incident", _write)
 
     def list_host_scan_runs(self, *, hostname: str, limit: int = 30, offset: int = 0) -> Dict[str, Any]:
         return self._scan_host_read_store.list_host_scan_runs(hostname=hostname, limit=limit, offset=offset)
@@ -2770,15 +3000,118 @@ class ScanStore:
             "new_hosts": [str(row["hostname"] or "unknown") for row in new_rows],
         }
 
-    def cleanup_retention(self, *, retention_days: int) -> Dict[str, int]:
-        cutoff = _now_ts() - max(1, int(retention_days)) * 24 * 60 * 60
-        with self._lock, self._connect() as conn:
-            conn.execute(
-                "DELETE FROM scan_tasks WHERE status IN ('completed', 'failed', 'expired') AND updated_at < ?",
-                (cutoff,),
+    def _count_retention_candidates_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        table: str,
+        where_sql: str,
+        params: tuple[Any, ...],
+    ) -> int:
+        row = conn.execute(f"SELECT COUNT(*) AS cnt FROM {table} WHERE {where_sql}", params).fetchone()
+        return int(row["cnt"] if row is not None else 0)
+
+    def _delete_retention_batches_locked(
+        self,
+        conn: sqlite3.Connection,
+        *,
+        table: str,
+        where_sql: str,
+        params: tuple[Any, ...],
+        batch_size: int,
+    ) -> int:
+        total = 0
+        safe_batch_size = max(1, min(5000, int(batch_size or 1000)))
+        while True:
+            cursor = conn.execute(
+                f"""
+                DELETE FROM {table}
+                WHERE rowid IN (
+                    SELECT rowid
+                    FROM {table}
+                    WHERE {where_sql}
+                    LIMIT ?
+                )
+                """,
+                (*params, safe_batch_size),
             )
-            conn.execute("DELETE FROM scan_incidents WHERE created_at < ?", (cutoff,))
-            conn.execute("DELETE FROM scan_findings WHERE created_at < ?", (cutoff,))
-            conn.execute("DELETE FROM scan_jobs WHERE created_at < ?", (cutoff,))
+            removed = int(cursor.rowcount or 0)
+            if removed <= 0:
+                break
+            total += removed
             conn.commit()
-        return {"artifact_rows": 0, "artifact_files": 0}
+            if removed < safe_batch_size:
+                break
+        return total
+
+    def cleanup_retention(
+        self,
+        *,
+        retention_days: int,
+        clean_job_retention_days: Optional[int] = None,
+        failed_job_retention_days: Optional[int] = None,
+        incident_retention_days: Optional[int] = None,
+        batch_size: int = 1000,
+        dry_run: bool = False,
+    ) -> Dict[str, int]:
+        incident_days = max(1, int(incident_retention_days or retention_days))
+        clean_days = max(1, int(clean_job_retention_days or _env_int("SCAN_CLEAN_JOB_RETENTION_DAYS", 14)))
+        failed_days = max(1, int(failed_job_retention_days or _env_int("SCAN_FAILED_JOB_RETENTION_DAYS", 30)))
+        clean_cutoff = _now_ts() - clean_days * 24 * 60 * 60
+        failed_cutoff = _now_ts() - failed_days * 24 * 60 * 60
+        incident_cutoff = _now_ts() - incident_days * 24 * 60 * 60
+        task_cutoff = min(failed_cutoff, incident_cutoff)
+
+        specs = [
+            (
+                "tasks",
+                "scan_tasks",
+                "status IN ('completed', 'failed', 'expired') AND updated_at < ?",
+                (task_cutoff,),
+            ),
+            ("incidents", "scan_incidents", "created_at < ?", (incident_cutoff,)),
+            ("findings", "scan_findings", "created_at < ?", (incident_cutoff,)),
+            ("jobs_clean", "scan_jobs", "status='done_clean' AND created_at < ?", (clean_cutoff,)),
+            ("jobs_failed", "scan_jobs", "status='failed' AND created_at < ?", (failed_cutoff,)),
+            (
+                "jobs_with_incident",
+                "scan_jobs",
+                "status='done_with_incident' AND created_at < ?",
+                (incident_cutoff,),
+            ),
+        ]
+
+        result = {
+            "artifact_rows": 0,
+            "artifact_files": 0,
+            "tasks": 0,
+            "incidents": 0,
+            "findings": 0,
+            "jobs_clean": 0,
+            "jobs_failed": 0,
+            "jobs_with_incident": 0,
+        }
+
+        def _write() -> Dict[str, int]:
+            with self._lock, self._connect() as conn:
+                for key, table, where_sql, params in specs:
+                    if dry_run:
+                        result[key] = self._count_retention_candidates_locked(
+                            conn,
+                            table=table,
+                            where_sql=where_sql,
+                            params=params,
+                        )
+                    else:
+                        result[key] = self._delete_retention_batches_locked(
+                            conn,
+                            table=table,
+                            where_sql=where_sql,
+                            params=params,
+                            batch_size=batch_size,
+                        )
+                if not dry_run:
+                    conn.commit()
+                return dict(result)
+
+        return self._run_write_transaction("cleanup_retention", _write)

@@ -6,6 +6,7 @@ import os
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import BinaryIO, Optional
 
@@ -47,8 +48,15 @@ def _acquire_singleton_lock(lock_path: Path) -> Optional[BinaryIO]:
         return None
 
 
-def _wait_for_singleton_lock(lock_path: Path, stop_event: threading.Event) -> Optional[BinaryIO]:
+def _wait_for_singleton_lock(
+    lock_path: Path,
+    stop_event: threading.Event,
+    *,
+    timeout_sec: float,
+    poll_interval_sec: float = 5.0,
+) -> Optional[BinaryIO]:
     warned = False
+    started_at = time.monotonic()
     while not stop_event.is_set():
         handle = _acquire_singleton_lock(lock_path)
         if handle is not None:
@@ -58,7 +66,13 @@ def _wait_for_singleton_lock(lock_path: Path, stop_event: threading.Event) -> Op
         if not warned:
             logger.warning("Another scan API process is already running; waiting for lock")
             warned = True
-        stop_event.wait(5)
+        if timeout_sec > 0 and time.monotonic() - started_at >= timeout_sec:
+            logger.error(
+                "Scan API lock wait timed out after %.1fs; exiting for PM2 lifecycle recovery",
+                timeout_sec,
+            )
+            return None
+        stop_event.wait(max(0.05, float(poll_interval_sec or 5.0)))
     return None
 
 
@@ -71,7 +85,11 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
 
-    lock_handle = _wait_for_singleton_lock(config.db_path.parent / "scan_server.lock", stop_event)
+    lock_handle = _wait_for_singleton_lock(
+        config.db_path.parent / "scan_server.lock",
+        stop_event,
+        timeout_sec=float(config.server_lock_wait_sec),
+    )
     if lock_handle is None:
         return
 

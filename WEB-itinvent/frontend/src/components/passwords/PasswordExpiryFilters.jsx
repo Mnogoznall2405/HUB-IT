@@ -100,7 +100,7 @@ export default function PasswordExpiryFilters({
             sx={{ minWidth: isMobile ? 'auto' : 148, flexShrink: 0 }}
             data-testid="password-expiry-threshold-select"
           >
-            {[3, 7, 14, 21, 30].map((days) => (
+            {[3, 7, 14, 21, 30, 40].map((days) => (
               <MenuItem key={days} value={days}>{days} дн.</MenuItem>
             ))}
           </TextField>

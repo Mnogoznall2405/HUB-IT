@@ -188,6 +188,27 @@ def test_inventory_queue_cleanup_removes_old_done_and_dead_rows(temp_dir):
     assert [row["status"] for row in rows] == ["done"]
 
 
+def test_inventory_worker_defers_cleanup_after_start(temp_dir):
+    class CleanupStore:
+        def __init__(self) -> None:
+            self.cleanup_calls = 0
+
+        def cleanup_retention(self, *, done_retention_days: int, dead_retention_days: int) -> dict:
+            self.cleanup_calls += 1
+            return {"done_removed": 0, "dead_removed": 0}
+
+    store = CleanupStore()
+    config = _worker_config(temp_dir)
+    worker = InventoryWorker(store=store, config=config, stop_event=threading.Event())
+
+    worker._cleanup_if_due()
+    assert store.cleanup_calls == 0
+
+    worker._last_cleanup_at = int(time.time()) - int(config.cleanup_interval_sec) - 1
+    worker._cleanup_if_due()
+    assert store.cleanup_calls == 1
+
+
 def test_inventory_queue_vacuum_reports_size_result(temp_dir):
     store = InventoryQueueStore(db_path=Path(temp_dir) / "queue.db")
     payload = _payload(timestamp=1_710_100_004)
@@ -314,13 +335,16 @@ def test_inventory_app_enqueues_and_reports_health(temp_dir, monkeypatch):
     with TestClient(app_module.app) as client:
         post_response = client.post("/api/v1/inventory", json=_payload(timestamp=1_710_100_000))
         health_response = client.get("/health")
+        ready_response = client.get("/health/ready")
 
     assert post_response.status_code == 200
     assert post_response.json()["queued"] is True
     assert post_response.json()["duplicate"] is False
     assert health_response.status_code == 200
-    assert health_response.json()["queue_depth"] == 1
     assert health_response.json()["worker_alive"] is True
+    assert ready_response.status_code == 200
+    assert ready_response.json()["queue_depth"] == 1
+    assert ready_response.json()["worker_alive"] is True
 
 
 def test_inventory_post_starts_dead_worker_without_lifespan(temp_dir, monkeypatch):

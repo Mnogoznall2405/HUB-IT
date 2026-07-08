@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import sqlite3
 import time
 from pathlib import Path
 
@@ -1514,6 +1515,97 @@ def test_purge_all_artifacts_removes_archive_files_and_rows(temp_dir):
     assert remaining == 0
 
 
+def test_purge_all_artifacts_keeps_active_job_artifacts(temp_dir):
+    store = _make_store(temp_dir)
+    archive_day = store.archive_dir / "2026" / "04" / "07"
+    archive_day.mkdir(parents=True, exist_ok=True)
+    active_path = archive_day / "active.pdf"
+    orphan_path = archive_day / "orphan.pdf"
+    active_path.write_bytes(b"%PDF-1.4 active")
+    orphan_path.write_bytes(b"%PDF-1.4 orphan")
+
+    job = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "Tyumen",
+            "file_path": r"C:\Docs\active.pdf",
+            "file_name": "active.pdf",
+            "file_hash": "hash-active",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "pdf_slice_b64": _pdf_b64(),
+            "event_id": "active-job",
+        }
+    )
+    store.add_artifact(
+        job_id=job["job_id"],
+        artifact_type="pdf_slice",
+        storage_path=str(active_path),
+        size_bytes=active_path.stat().st_size,
+    )
+    # Orphan artifact row referencing a job that never existed.
+    store.add_artifact(
+        job_id="missing-job",
+        artifact_type="pdf_slice",
+        storage_path=str(orphan_path),
+        size_bytes=orphan_path.stat().st_size,
+    )
+
+    result = store.purge_all_artifacts()
+
+    # Only the orphan row/file is removed; the still-queued job's artifact survives.
+    assert result["artifact_rows"] == 1
+    assert result["artifact_files"] == 1
+    assert active_path.exists()
+    assert not orphan_path.exists()
+    with store._lock, store._connect() as conn:
+        remaining = conn.execute("SELECT job_id FROM scan_artifacts").fetchall()
+    assert [row["job_id"] for row in remaining] == [job["job_id"]]
+
+
+def test_ingest_backpressure_status_covers_all_source_kinds_and_scales_retry_after(temp_dir):
+    store = _make_store(temp_dir)
+    for i in range(3):
+        store.queue_job(
+            {
+                "agent_id": "agent-1",
+                "hostname": "HOST-01",
+                "branch": "Tyumen",
+                "file_path": rf"C:\Docs\text-{i}.txt",
+                "file_name": f"text-{i}.txt",
+                "file_hash": f"hash-text-{i}",
+                "file_size": 128,
+                "source_kind": "text",
+                "event_id": f"text-event-{i}",
+            }
+        )
+
+    calm = store.ingest_backpressure_status(
+        max_pending_pdf_jobs=1000,
+        transient_max_gb=100,
+        max_pending_jobs=10,
+        retry_after_base_sec=60,
+        retry_after_max_sec=600,
+    )
+    assert calm["total_active"] is False
+    assert calm["total_pending"] == 3
+    assert calm["retry_after_sec"] == 60
+
+    overloaded = store.ingest_backpressure_status(
+        max_pending_pdf_jobs=1000,
+        transient_max_gb=100,
+        max_pending_jobs=2,
+        retry_after_base_sec=60,
+        retry_after_max_sec=600,
+    )
+    assert overloaded["total_active"] is True
+    assert "total_pending_limit" in overloaded["total_reasons"]
+    # 3 pending / 2 limit == 1.5x overload ratio -> retry_after scales above the base.
+    assert overloaded["retry_after_sec"] > 60
+    assert overloaded["retry_after_sec"] <= 600
+
+
 def test_cleanup_retention_keeps_artifacts_but_removes_old_history(temp_dir):
     store = _make_store(temp_dir)
     archive_day = store.archive_dir / "2026" / "04" / "07"
@@ -1567,9 +1659,17 @@ def test_cleanup_retention_keeps_artifacts_but_removes_old_history(temp_dir):
         )
         conn.commit()
 
-    result = store.cleanup_retention(retention_days=1)
+    result = store.cleanup_retention(
+        retention_days=1,
+        clean_job_retention_days=1,
+        failed_job_retention_days=1,
+        incident_retention_days=1,
+    )
 
-    assert result == {"artifact_rows": 0, "artifact_files": 0}
+    assert result["artifact_rows"] == 0
+    assert result["artifact_files"] == 0
+    assert result["tasks"] == 1
+    assert result["jobs_clean"] == 1
     assert artifact_path.exists()
     with store._lock, store._connect() as conn:
         remaining_artifacts = conn.execute("SELECT COUNT(*) AS cnt FROM scan_artifacts").fetchone()["cnt"]
@@ -1578,6 +1678,99 @@ def test_cleanup_retention_keeps_artifacts_but_removes_old_history(temp_dir):
     assert remaining_artifacts == 1
     assert remaining_tasks == 0
     assert remaining_jobs == 0
+
+
+def test_cleanup_retention_uses_split_job_and_incident_windows(temp_dir):
+    store = _make_store(temp_dir)
+    now_ts = int(time.time())
+    clean_old = now_ts - (20 * 24 * 60 * 60)
+    incident_old = now_ts - (20 * 24 * 60 * 60)
+
+    clean_job = store.queue_job(
+        {
+            "agent_id": "agent-clean",
+            "hostname": "HOST-CLEAN",
+            "file_path": r"C:\Docs\clean.pdf",
+            "file_name": "clean.pdf",
+            "file_hash": "hash-clean",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "retention-clean-job",
+        }
+    )
+    incident = _seed_incident(
+        store,
+        agent_id="agent-incident",
+        hostname="HOST-INCIDENT",
+        branch="branch",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\incident.pdf",
+        file_name="incident.pdf",
+        source_kind="pdf_slice",
+        severity="high",
+        created_at=incident_old,
+    )
+    with store._lock, store._connect() as conn:
+        conn.execute(
+            "UPDATE scan_jobs SET status='done_clean', created_at=?, finished_at=? WHERE id=?",
+            (clean_old, clean_old, clean_job["job_id"]),
+        )
+        conn.execute(
+            "UPDATE scan_jobs SET status='done_with_incident', created_at=?, finished_at=? WHERE id=(SELECT job_id FROM scan_incidents WHERE id=?)",
+            (incident_old, incident_old, incident["incident_id"]),
+        )
+        conn.execute(
+            "UPDATE scan_findings SET created_at=? WHERE id=?",
+            (incident_old, incident["finding_id"]),
+        )
+        conn.commit()
+
+    dry_run = store.cleanup_retention(
+        retention_days=90,
+        clean_job_retention_days=14,
+        failed_job_retention_days=30,
+        incident_retention_days=90,
+        batch_size=1,
+        dry_run=True,
+    )
+    assert dry_run["jobs_clean"] == 1
+    assert dry_run["incidents"] == 0
+    assert dry_run["findings"] == 0
+    assert dry_run["jobs_with_incident"] == 0
+
+    result = store.cleanup_retention(
+        retention_days=90,
+        clean_job_retention_days=14,
+        failed_job_retention_days=30,
+        incident_retention_days=90,
+        batch_size=1,
+    )
+    assert result["jobs_clean"] == 1
+    assert result["incidents"] == 0
+    with store._lock, store._connect() as conn:
+        clean_remaining = conn.execute("SELECT COUNT(*) AS cnt FROM scan_jobs WHERE id=?", (clean_job["job_id"],)).fetchone()["cnt"]
+        incident_remaining = conn.execute("SELECT COUNT(*) AS cnt FROM scan_incidents WHERE id=?", (incident["incident_id"],)).fetchone()["cnt"]
+    assert clean_remaining == 0
+    assert incident_remaining == 1
+
+
+def test_sqlite_write_retry_handles_database_locked(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    store.sqlite_busy_retry_attempts = 3
+    store.sqlite_busy_retry_base_ms = 10
+    monkeypatch.setattr(scan_database.time, "sleep", lambda _seconds: None)
+    calls = 0
+
+    def operation():
+        nonlocal calls
+        calls += 1
+        if calls < 3:
+            raise sqlite3.OperationalError("database is locked")
+        return "ok"
+
+    assert store._run_write_transaction("test-lock", operation) == "ok"
+    assert calls == 3
 
 
 def test_reconcile_job_pdf_spool_fails_pending_pdf_jobs_without_payload(temp_dir):

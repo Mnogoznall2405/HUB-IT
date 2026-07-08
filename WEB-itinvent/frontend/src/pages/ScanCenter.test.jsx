@@ -1,8 +1,11 @@
 import React from 'react';
-import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import ScanCenter from './ScanCenter';
 import { scanAPI } from '../api/client';
+
+// Keep in sync with AUTO_REFRESH_MS in ScanCenter.jsx (not exported).
+const AUTO_REFRESH_MS = 30_000;
 
 vi.mock('../api/client', () => ({
   scanAPI: {
@@ -192,7 +195,6 @@ describe('ScanCenter page', () => {
 
   afterEach(() => {
     cleanup();
-    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -494,7 +496,7 @@ describe('ScanCenter page', () => {
       expect(scanAPI.getIncidents).toHaveBeenCalledWith(
         expect.objectContaining({
           hostname: 'HOST-01',
-          limit: 5000,
+          limit: 200,
           offset: 0,
         })
       );
@@ -533,7 +535,7 @@ describe('ScanCenter page', () => {
     expect(HTMLAnchorElement.prototype.click).toHaveBeenCalled();
   });
 
-  it('loads incident inbox in 500-row batches and renders grouped host rows', async () => {
+  it('loads incident inbox first page and loads more explicitly', async () => {
     const firstPage = Array.from({ length: 500 }, (_, idx) => ({
       ...incidentRow,
       id: `incident-${idx}`,
@@ -564,12 +566,91 @@ describe('ScanCenter page', () => {
         expect.objectContaining({ limit: 500, offset: 0 }),
         expect.objectContaining({ signal: expect.any(Object) }),
       );
+    });
+    expect(scanAPI.getIncidents).not.toHaveBeenCalledWith(
+      expect.objectContaining({ limit: 500, offset: 500 }),
+      expect.objectContaining({ signal: expect.any(Object) }),
+    );
+    expect(await screen.findByText('HOST-BATCH')).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Загрузить/i }));
+
+    await waitFor(() => {
       expect(scanAPI.getIncidents).toHaveBeenCalledWith(
         expect.objectContaining({ limit: 500, offset: 500 }),
         expect.objectContaining({ signal: expect.any(Object) }),
       );
     });
-    expect(await screen.findByText('HOST-BATCH')).toBeTruthy();
+  });
+
+  it('auto-refreshes the inbox first page after loadMore (regression for stale auto-refresh closure)', async () => {
+    // Regression test for a bug where `refreshAll` (called from the
+    // AUTO_REFRESH_MS interval) was not wrapped so the interval callback
+    // kept the version of the function captured on mount, when
+    // `incidentInbox.loaded` was still 0 - so it always skipped refreshing
+    // the inbox first page, even long after items had been loaded via
+    // "loadMore". The fix routes the interval callback through a ref that
+    // always points at the latest `refreshAll` closure.
+    const firstPage = Array.from({ length: 500 }, (_, idx) => ({
+      ...incidentRow,
+      id: `incident-${idx}`,
+      hostname: 'HOST-BATCH',
+      created_at: 1710000100 - idx,
+    }));
+    const secondPage = [{ ...incidentRow, id: 'incident-500', hostname: 'HOST-BATCH', created_at: 1709999600 }];
+    scanAPI.getIncidents.mockImplementation((params = {}) => {
+      if (Number(params.offset || 0) === 500) {
+        return Promise.resolve({ total: 501, items: secondPage, limit: 500, offset: 500, has_more: false, next_offset: null });
+      }
+      return Promise.resolve({ total: 501, items: firstPage, limit: 500, offset: 0, has_more: true, next_offset: 500 });
+    });
+
+    // Only fake setInterval/clearInterval, and do it *before* mount so the
+    // AUTO_REFRESH_MS interval created by ScanCenter's effect is itself a
+    // fake timer we can fast-forward deterministically. Testing Library's
+    // own waitFor/findBy still work because they primarily rely on a
+    // MutationObserver (unaffected by faking timers) rather than the
+    // setInterval fallback, as long as the awaited condition corresponds to
+    // an actual DOM mutation.
+    vi.useFakeTimers({ toFake: ['setInterval', 'clearInterval'] });
+    try {
+      render(<ScanCenter />);
+
+      await waitFor(() => {
+        expect(scanAPI.getIncidents).toHaveBeenCalledWith(
+          expect.objectContaining({ limit: 500, offset: 0 }),
+          expect.objectContaining({ signal: expect.any(Object) }),
+        );
+      });
+      expect(await screen.findByText('HOST-BATCH')).toBeTruthy();
+
+      fireEvent.click(await screen.findByRole('button', { name: /Загрузить/i }));
+      await waitFor(() => {
+        expect(scanAPI.getIncidents).toHaveBeenCalledWith(
+          expect.objectContaining({ limit: 500, offset: 500 }),
+          expect.objectContaining({ signal: expect.any(Object) }),
+        );
+      });
+
+      // `incidentInbox.loaded` is now 501 (> 0), so the *next* auto-refresh
+      // tick must call getIncidents again with offset 0 and the full inbox
+      // page size to refresh the first page. Match on `limit: 500` too so
+      // this doesn't accidentally count the separate, always-refreshed
+      // "new incidents count" query (batchSize 1, status 'new').
+      const isMainInboxFirstPageCall = ([params]) => (
+        Number(params?.offset || 0) === 0 && Number(params?.limit || 0) === 500
+      );
+      const offsetZeroCallsBefore = scanAPI.getIncidents.mock.calls.filter(isMainInboxFirstPageCall).length;
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(AUTO_REFRESH_MS);
+      });
+
+      const offsetZeroCallsAfter = scanAPI.getIncidents.mock.calls.filter(isMainInboxFirstPageCall).length;
+      expect(offsetZeroCallsAfter).toBeGreaterThan(offsetZeroCallsBefore);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('acknowledges the current incident inbox filter with one batch request', async () => {

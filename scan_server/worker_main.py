@@ -44,18 +44,39 @@ def _acquire_singleton_lock(lock_path: Path) -> Optional[BinaryIO]:
         return None
 
 
-def _wait_for_singleton_lock(lock_path: Path, stop_event: threading.Event) -> Optional[BinaryIO]:
+def _to_float(value: str, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _wait_for_singleton_lock(
+    lock_path: Path,
+    stop_event: threading.Event,
+    *,
+    timeout_sec: float = 30.0,
+    poll_interval_sec: float = 5.0,
+) -> Optional[BinaryIO]:
     warned = False
+    deadline = time.monotonic() + max(0.0, timeout_sec)
     while not stop_event.is_set():
         handle = _acquire_singleton_lock(lock_path)
         if handle is not None:
             if warned:
                 logger.info("Standalone scan worker lock acquired after waiting")
             return handle
+        remaining_sec = deadline - time.monotonic()
+        if remaining_sec <= 0:
+            logger.warning(
+                "Standalone scan worker lock wait timed out after %.1fs; exiting",
+                max(0.0, timeout_sec),
+            )
+            return None
         if not warned:
             logger.warning("Another standalone scan worker is already running; waiting for lock")
             warned = True
-        stop_event.wait(5)
+        stop_event.wait(min(max(0.1, poll_interval_sec), remaining_sec))
     return None
 
 
@@ -68,7 +89,15 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
 
-    lock_handle = _wait_for_singleton_lock(config.db_path.parent / "scan_worker.lock", stop_event)
+    lock_wait_sec = max(
+        0.0,
+        _to_float(os.getenv("SCAN_WORKER_LOCK_WAIT_SEC", "30"), 30.0),
+    )
+    lock_handle = _wait_for_singleton_lock(
+        config.db_path.parent / "scan_worker.lock",
+        stop_event,
+        timeout_sec=lock_wait_sec,
+    )
     if lock_handle is None:
         return
 

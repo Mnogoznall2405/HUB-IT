@@ -33,7 +33,7 @@ class InventoryWorker(threading.Thread):
         self.config = config
         self.stop_event = stop_event
         self.last_successful_flush_at: Optional[int] = None
-        self._last_cleanup_at: int = 0
+        self._last_cleanup_at: int = int(time.time())
 
     def _next_backoff(self, attempt_count: int) -> int:
         return min(int(self.config.backoff_cap_sec), max(1, 2 ** max(0, attempt_count - 1)))

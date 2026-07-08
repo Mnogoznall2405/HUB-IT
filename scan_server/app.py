@@ -5,6 +5,7 @@ import json
 import os
 import logging
 import hashlib
+import sqlite3
 import socket
 import sys
 import threading
@@ -23,6 +24,7 @@ from pydantic import BaseModel
 
 from .config import config
 from .database import ScanStore
+from .memory_guard import get_process_rss_bytes
 from .patterns import list_patterns
 from .report_export import XLSX_MEDIA_TYPE, build_scan_task_incidents_excel
 from .worker import ScanWorker
@@ -117,6 +119,9 @@ store = ScanStore(
     agent_online_timeout_sec=config.agent_online_timeout_sec,
     resolve_agent_sql_context=config.resolve_agent_sql_context,
     job_processing_timeout_sec=config.job_processing_timeout_sec,
+    sqlite_busy_timeout_ms=config.sqlite_busy_timeout_ms,
+    sqlite_busy_retry_attempts=config.sqlite_busy_retry_attempts,
+    sqlite_busy_retry_base_ms=config.sqlite_busy_retry_base_ms,
 )
 stop_event = threading.Event()
 watchdog_stop_event = threading.Event()
@@ -129,6 +134,9 @@ watchdog_thread: Optional[threading.Thread] = None
 startup_maintenance_thread: Optional[threading.Thread] = None
 ingest_semaphore: Optional[asyncio.Semaphore] = None
 ingest_semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
+dashboard_cache_lock = threading.Lock()
+dashboard_cache_payload: Optional[Dict[str, Any]] = None
+dashboard_cache_ts = 0.0
 
 
 def _key_fingerprint(value: Optional[str]) -> str:
@@ -258,31 +266,108 @@ def _request_ip(request: Optional[Request]) -> str:
     return str(host or "").strip()
 
 
+def _path_size_mb(path: Path) -> float:
+    try:
+        return round(path.stat().st_size / (1024 * 1024), 2)
+    except Exception:
+        return 0.0
+
+
+def _read_lock_pid(lock_name: str) -> int:
+    lock_path = config.db_path.parent / lock_name
+    try:
+        text = lock_path.read_text(encoding="ascii", errors="ignore").strip()
+        return int(text or 0)
+    except Exception:
+        if lock_name == "scan_server.lock":
+            return os.getpid()
+        return 0
+
+
+def _clone_jsonable(payload: Dict[str, Any]) -> Dict[str, Any]:
+    return json.loads(json.dumps(payload, ensure_ascii=False))
+
+
+def _is_sqlite_busy_error(exc: BaseException) -> bool:
+    text = str(exc or "").lower()
+    return isinstance(exc, sqlite3.OperationalError) and (
+        "database is locked" in text
+        or "database table is locked" in text
+        or "database is busy" in text
+    )
+
+
+def _get_cached_dashboard(now_value: float, ttl_sec: int) -> Optional[Dict[str, Any]]:
+    if ttl_sec <= 0:
+        return None
+    with dashboard_cache_lock:
+        if dashboard_cache_payload is None:
+            return None
+        age_sec = max(0.0, now_value - dashboard_cache_ts)
+        if age_sec > ttl_sec:
+            return None
+        payload = _clone_jsonable(dashboard_cache_payload)
+    payload["cached"] = True
+    payload["cache_age_sec"] = round(age_sec, 2)
+    return payload
+
+
+def _store_dashboard_cache(payload: Dict[str, Any], now_value: float) -> None:
+    global dashboard_cache_payload, dashboard_cache_ts
+    with dashboard_cache_lock:
+        dashboard_cache_payload = _clone_jsonable(payload)
+        dashboard_cache_ts = now_value
+
+
+def _get_stale_dashboard(now_value: float) -> Optional[Dict[str, Any]]:
+    with dashboard_cache_lock:
+        if dashboard_cache_payload is None:
+            return None
+        age_sec = max(0.0, now_value - dashboard_cache_ts)
+        payload = _clone_jsonable(dashboard_cache_payload)
+    payload["cached"] = True
+    payload["degraded"] = True
+    payload["cache_age_sec"] = round(age_sec, 2)
+    return payload
+
+
 def _is_pdf_ingest_payload(data: Dict[str, Any], pdf_bytes: Optional[bytes] = None) -> bool:
     source_kind = str(data.get("source_kind") or "").strip().lower()
     return source_kind in {"pdf", "pdf_slice"} or bool(data.get("pdf_slice_b64")) or bool(pdf_bytes)
 
 
-def _backpressure_exception(status_payload: Dict[str, Any]) -> HTTPException:
+def _backpressure_exception(status_payload: Dict[str, Any], *, is_pdf: bool) -> HTTPException:
+    retry_after_sec = int(status_payload.get("retry_after_sec") or config.ingest_retry_after_sec)
     return HTTPException(
         status_code=status.HTTP_429_TOO_MANY_REQUESTS,
         detail={
-            "error": "scan_pdf_ingest_backpressure",
-            "message": "PDF scan queue is temporarily overloaded",
+            "error": "scan_pdf_ingest_backpressure" if is_pdf else "scan_ingest_backpressure",
+            "message": (
+                "PDF scan queue is temporarily overloaded"
+                if is_pdf
+                else "Scan ingest queue is temporarily overloaded"
+            ),
             **status_payload,
         },
-        headers={"Retry-After": str(config.ingest_retry_after_sec)},
+        headers={"Retry-After": str(retry_after_sec)},
     )
 
 
 def _queue_ingest_blocking(data: Dict[str, Any], *, request_ip: str, pdf_bytes: Optional[bytes] = None) -> Dict[str, Any]:
-    if _is_pdf_ingest_payload(data, pdf_bytes=pdf_bytes):
-        pressure = store.ingest_backpressure_status(
-            max_pending_pdf_jobs=config.ingest_max_pending_pdf_jobs,
-            transient_max_gb=config.transient_max_gb,
-        )
+    is_pdf = _is_pdf_ingest_payload(data, pdf_bytes=pdf_bytes)
+    pressure = store.ingest_backpressure_status(
+        max_pending_pdf_jobs=config.ingest_max_pending_pdf_jobs,
+        transient_max_gb=config.transient_max_gb,
+        max_pending_jobs=config.ingest_max_pending_jobs,
+        retry_after_base_sec=config.ingest_retry_after_sec,
+        retry_after_max_sec=config.ingest_retry_after_max_sec,
+    )
+    if is_pdf:
         if bool(pressure.get("active")):
-            raise _backpressure_exception(pressure)
+            raise _backpressure_exception(pressure, is_pdf=True)
+    else:
+        if bool(pressure.get("total_active")):
+            raise _backpressure_exception(pressure, is_pdf=False)
     store.touch_agent_presence(
         agent_id=str(data.get("agent_id") or "").strip(),
         hostname=str(data.get("hostname") or "").strip(),
@@ -474,14 +559,23 @@ app = FastAPI(
 
 @app.get("/health")
 async def health() -> Dict[str, Any]:
+    rss_bytes = get_process_rss_bytes()
     return {
         "status": "ok",
         "time": _now_ts(),
+        "pid": os.getpid(),
+        "rss_mb": round(rss_bytes / (1024 * 1024), 1) if rss_bytes else 0.0,
+        "db_size_mb": _path_size_mb(config.db_path),
+        "wal_size_mb": _path_size_mb(Path(str(config.db_path) + "-wal")),
+        "api_lock_pid": _read_lock_pid("scan_server.lock"),
+        "worker_lock_pid": _read_lock_pid("scan_worker.lock"),
         "ingest": {
             "max_concurrency": int(config.ingest_max_concurrency),
             "max_pending_pdf_jobs": int(config.ingest_max_pending_pdf_jobs),
+            "max_pending_jobs": int(config.ingest_max_pending_jobs),
             "transient_max_gb": float(config.transient_max_gb),
             "retry_after_sec": int(config.ingest_retry_after_sec),
+            "retry_after_max_sec": int(config.ingest_retry_after_max_sec),
         },
         "watchdog": {
             "enabled": bool(config.watchdog_enabled),
@@ -737,11 +831,31 @@ def export_task_incidents(
 def dashboard(
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
-    payload = store.dashboard()
-    payload["ingest_backpressure"] = store.ingest_backpressure_status(
-        max_pending_pdf_jobs=config.ingest_max_pending_pdf_jobs,
-        transient_max_gb=config.transient_max_gb,
-    )
+    now_value = time.monotonic()
+    cached = _get_cached_dashboard(now_value, int(config.dashboard_cache_ttl_sec))
+    if cached is not None:
+        return cached
+    try:
+        payload = store.dashboard()
+        payload["ingest_backpressure"] = store.ingest_backpressure_status(
+            max_pending_pdf_jobs=config.ingest_max_pending_pdf_jobs,
+            transient_max_gb=config.transient_max_gb,
+        )
+    except Exception as exc:
+        stale = _get_stale_dashboard(now_value)
+        if stale is not None and _is_sqlite_busy_error(exc):
+            logger.warning("Scan dashboard returning stale cache after SQLite lock: %s", exc)
+            return stale
+        if _is_sqlite_busy_error(exc):
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail="Scan dashboard is temporarily busy",
+            ) from exc
+        raise
+    payload["cached"] = False
+    payload["cache_age_sec"] = 0
+    payload["degraded"] = False
+    _store_dashboard_cache(payload, now_value)
     return payload
 
 

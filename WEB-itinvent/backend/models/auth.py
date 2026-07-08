@@ -7,7 +7,7 @@ from typing import Any, Optional, Literal
 
 class UserBase(BaseModel):
     """Base user model."""
-    username: str = Field(..., min_length=3, max_length=50)
+    username: str = Field(..., min_length=1, max_length=50)
     email: Optional[EmailStr] = None
     full_name: Optional[str] = None
     department: Optional[str] = None

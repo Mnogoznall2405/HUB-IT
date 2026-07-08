@@ -34,7 +34,7 @@ export function useScanIncidentInbox(filters, options = {}) {
     }
   }, []);
 
-  const loadAll = useCallback(async ({ silent = false } = {}) => {
+  const loadFirstPage = useCallback(async ({ silent = false } = {}) => {
     cancelInFlight();
     const requestId = requestIdRef.current;
     const controller = new AbortController();
@@ -54,27 +54,6 @@ export function useScanIncidentInbox(filters, options = {}) {
       setItems(firstItems);
       setTotal(nextTotal);
       setLoaded(firstItems.length);
-      if (!silent) setLoadingInitial(false);
-
-      let nextOffset = first?.next_offset ?? firstItems.length;
-      let hasMore = Boolean(first?.has_more);
-      if (!hasMore && nextOffset < nextTotal) hasMore = true;
-      setLoadingMore(hasMore);
-
-      while (hasMore && nextOffset < nextTotal) {
-        const page = await scanAPI.getIncidents(
-          { ...normalizedFilters, limit: batchSize, offset: nextOffset },
-          { signal: controller.signal },
-        );
-        if (requestId !== requestIdRef.current) return;
-        const pageItems = Array.isArray(page?.items) ? page.items : [];
-        setItems((prev) => [...prev, ...pageItems]);
-        nextOffset = page?.next_offset ?? (nextOffset + pageItems.length);
-        hasMore = Boolean(page?.has_more);
-        if (!hasMore && nextOffset < nextTotal && pageItems.length > 0) hasMore = true;
-        if (pageItems.length === 0) hasMore = false;
-        setLoaded(Math.min(nextOffset, nextTotal));
-      }
     } catch (nextError) {
       if (nextError?.name === 'CanceledError' || nextError?.name === 'AbortError' || nextError?.code === 'ERR_CANCELED') return;
       if (requestId === requestIdRef.current) {
@@ -89,6 +68,34 @@ export function useScanIncidentInbox(filters, options = {}) {
     }
   }, [batchSize, cancelInFlight, normalizedFilters]);
 
+  const loadMore = useCallback(async () => {
+    if (loadingInitial || loadingMore) return;
+    if (loaded >= total) return;
+    const requestId = requestIdRef.current;
+    const controller = new AbortController();
+    abortRef.current = controller;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await scanAPI.getIncidents(
+        { ...normalizedFilters, limit: batchSize, offset: loaded },
+        { signal: controller.signal },
+      );
+      if (requestId !== requestIdRef.current) return;
+      const pageItems = Array.isArray(page?.items) ? page.items : [];
+      const nextOffset = page?.next_offset ?? (loaded + pageItems.length);
+      const nextTotal = Number(page?.total || total || pageItems.length || 0);
+      setItems((prev) => [...prev, ...pageItems]);
+      setTotal(nextTotal);
+      setLoaded(Math.min(nextOffset, nextTotal));
+    } catch (nextError) {
+      if (nextError?.name === 'CanceledError' || nextError?.name === 'AbortError' || nextError?.code === 'ERR_CANCELED') return;
+      if (requestId === requestIdRef.current) setError(nextError);
+    } finally {
+      if (requestId === requestIdRef.current) setLoadingMore(false);
+    }
+  }, [batchSize, loaded, loadingInitial, loadingMore, normalizedFilters, total]);
+
   const refreshFirstPage = useCallback(async ({ silent = true } = {}) => {
     const requestId = requestIdRef.current;
     if (!silent) setLoadingInitial(true);
@@ -100,9 +107,12 @@ export function useScanIncidentInbox(filters, options = {}) {
       const nextTotal = Number(first?.total || firstItems.length || 0);
       setTotal(nextTotal);
       setItems((prev) => {
-        const tail = prev.slice(firstItems.length);
-        const merged = [...firstItems, ...tail];
-        return merged.slice(0, Math.max(merged.length, firstItems.length));
+        // Keep any already-loaded pages beyond page 1 (avoid collapsing the list
+        // on a silent refresh), but drop tail entries that are now duplicated in
+        // the freshly-fetched first page (e.g. re-ordered into it, or already acked).
+        const freshIds = new Set(firstItems.map((item) => String(item?.id ?? '')));
+        const tail = prev.slice(firstItems.length).filter((item) => !freshIds.has(String(item?.id ?? '')));
+        return [...firstItems, ...tail];
       });
       setLoaded((prev) => Math.max(firstItems.length, Math.min(prev, nextTotal)));
     } catch (nextError) {
@@ -113,9 +123,9 @@ export function useScanIncidentInbox(filters, options = {}) {
   }, [batchSize, normalizedFilters]);
 
   useEffect(() => {
-    loadAll({ silent: false });
+    loadFirstPage({ silent: false });
     return () => cancelInFlight();
-  }, [filtersKey, loadAll, cancelInFlight]);
+  }, [filtersKey, loadFirstPage, cancelInFlight]);
 
   return {
     filters: normalizedFilters,
@@ -126,7 +136,9 @@ export function useScanIncidentInbox(filters, options = {}) {
     loadingInitial,
     loadingMore,
     error,
-    reload: loadAll,
+    hasMore: loaded < total,
+    reload: loadFirstPage,
+    loadMore,
     refreshFirstPage,
     cancel: cancelInFlight,
   };
