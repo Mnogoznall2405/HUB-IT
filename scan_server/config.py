@@ -199,9 +199,18 @@ class ScanServerConfig:
                 0.0,
                 _to_float(os.getenv("SCAN_SERVER_LOCK_WAIT_SEC", "30"), 30.0),
             ),
+            # Kept short on purpose: every DB call (read AND write) in this process is
+            # also serialized behind a single in-process lock (Database._lock). SQLite's
+            # own busy-wait for this many ms happens *while that lock is held*, so a large
+            # value here doesn't just delay one write - it head-of-line-blocks every other
+            # request (e.g. GET /incidents) behind it for the same duration. Real
+            # cross-process contention with the worker clears in well under a second in
+            # practice (see the busy-retry warnings, which succeed after ~100-200ms), so a
+            # short SQLite-level timeout plus our own outside-the-lock retry/backoff
+            # (sqlite_busy_retry_attempts/base_ms below) is both fast and safe.
             sqlite_busy_timeout_ms=max(
-                1000,
-                min(300000, _to_int(os.getenv("SCAN_SQLITE_BUSY_TIMEOUT_MS", "30000"), 30000)),
+                200,
+                min(300000, _to_int(os.getenv("SCAN_SQLITE_BUSY_TIMEOUT_MS", "2000"), 2000)),
             ),
             sqlite_busy_retry_attempts=max(
                 1,

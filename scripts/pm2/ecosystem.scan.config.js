@@ -28,6 +28,11 @@ module.exports = {
         SCAN_TRANSIENT_MAX_GB: '5',
         SCAN_INGEST_RETRY_AFTER_SEC: '60',
         SCAN_DASHBOARD_CACHE_TTL_SEC: '15',
+        // Kept short deliberately: this is the SQLite-internal busy wait, and it runs
+        // while the process-wide DB lock is held, so a large value here head-of-line
+        // blocks every other request (reads included) behind one contended write.
+        // See scan_server/config.py for the full rationale.
+        SCAN_SQLITE_BUSY_TIMEOUT_MS: '2000',
         SCAN_SQLITE_BUSY_RETRY_ATTEMPTS: '5',
         SCAN_SQLITE_BUSY_RETRY_BASE_MS: '100',
         SCAN_CLEAN_JOB_RETENTION_DAYS: '14',
@@ -57,6 +62,7 @@ module.exports = {
         SCAN_OCR_DPI: '200',
         SCAN_JOB_PROCESSING_TIMEOUT_SEC: '1800',
         SCAN_JOB_MAX_ATTEMPTS: '3',
+        SCAN_SQLITE_BUSY_TIMEOUT_MS: '2000',
         SCAN_SQLITE_BUSY_RETRY_ATTEMPTS: '5',
         SCAN_SQLITE_BUSY_RETRY_BASE_MS: '100',
         SCAN_CLEAN_JOB_RETENTION_DAYS: '14',
