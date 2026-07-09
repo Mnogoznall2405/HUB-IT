@@ -1216,6 +1216,10 @@ export const equipmentAPI = {
     return equipmentTransferActsAPI.getEquipmentActs;
   },
 
+  get searchActs() {
+    return equipmentTransferActsAPI.searchActs;
+  },
+
   get getEquipmentHistory() {
     return equipmentRecordsAPI.getEquipmentHistory;
   },

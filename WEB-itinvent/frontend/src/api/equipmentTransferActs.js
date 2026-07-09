@@ -8,6 +8,17 @@ export const equipmentTransferActsAPI = {
     return response.data;
   },
 
+  searchActs: async (query, { limit = 50 } = {}) => {
+    const q = String(query || '').trim();
+    const response = await apiClient.get('/equipment/acts/search', {
+      params: {
+        q,
+        limit,
+      },
+    });
+    return response.data;
+  },
+
   downloadEquipmentActFile: async (docNo, params = {}) => {
     const response = await apiClient.get(`/equipment/acts/${docNo}/file`, {
       params,

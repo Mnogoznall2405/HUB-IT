@@ -15,6 +15,7 @@ export function useDatabaseSearch({
   setSearchQuery,
   filteredData,
   setFilteredData,
+  equipmentSearchEnabled = true,
   debounceMs = 1200,
 }) {
   const debounceTimerRef = useRef(null);
@@ -35,6 +36,10 @@ export function useDatabaseSearch({
   const searchIndex = useMemo(() => buildDatabaseSearchIndex(searchSourceData), [searchSourceData]);
 
   const runSearchNow = useCallback((query) => {
+    if (!equipmentSearchEnabled) {
+      setFilteredData(null);
+      return;
+    }
     const {
       filteredData: nextFilteredData,
       expandedBranches: nextExpandedBranches,
@@ -48,7 +53,7 @@ export function useDatabaseSearch({
     if (nextExpandedLocations != null) {
       setExpandedLocations(nextExpandedLocations);
     }
-  }, [searchIndex, setExpandedBranches, setExpandedLocations, setFilteredData]);
+  }, [equipmentSearchEnabled, searchIndex, setExpandedBranches, setExpandedLocations, setFilteredData]);
 
   const applySearchDebounced = useCallback(
     (query) => {
@@ -67,6 +72,11 @@ export function useDatabaseSearch({
       setSearchQuery(query);
       searchQueryRef.current = query;
 
+      if (!equipmentSearchEnabled) {
+        cancelSearchDebounce();
+        return;
+      }
+
       if (String(query || '').trim().length < 2) {
         cancelSearchDebounce();
         runSearchNow(query);
@@ -75,17 +85,18 @@ export function useDatabaseSearch({
 
       applySearchDebounced(query);
     },
-    [applySearchDebounced, cancelSearchDebounce, runSearchNow, setSearchQuery]
+    [applySearchDebounced, cancelSearchDebounce, equipmentSearchEnabled, runSearchNow, setSearchQuery]
   );
 
   const handleSearchKeyDown = useCallback(
     (e) => {
+      if (!equipmentSearchEnabled) return;
       if (e.key !== 'Enter') return;
       e.preventDefault();
       cancelSearchDebounce();
       runSearchNow(searchQueryRef.current);
     },
-    [cancelSearchDebounce, runSearchNow]
+    [cancelSearchDebounce, equipmentSearchEnabled, runSearchNow]
   );
 
   useEffect(() => {
@@ -93,6 +104,10 @@ export function useDatabaseSearch({
   }, [searchQuery]);
 
   useEffect(() => {
+    if (!equipmentSearchEnabled) {
+      cancelSearchDebounce();
+      return;
+    }
     cancelSearchDebounce();
     const activeQuery = String(searchQueryRef.current || '').trim();
     if (activeQuery.length >= 2) {
@@ -100,7 +115,7 @@ export function useDatabaseSearch({
       return;
     }
     setFilteredData(null);
-  }, [selectedBranch, searchIndex, cancelSearchDebounce, runSearchNow, setFilteredData]);
+  }, [equipmentSearchEnabled, selectedBranch, searchIndex, cancelSearchDebounce, runSearchNow, setFilteredData]);
 
   useEffect(() => () => {
     cancelSearchDebounce();

@@ -128,6 +128,12 @@ const permissionGroups = [
     ],
   },
   {
+    group: 'Склад 1С',
+    permissions: [
+      { value: 'warehouse_1c.read', label: 'Склад 1С: просмотр' },
+    ],
+  },
+  {
     group: 'Билеты',
     permissions: [
       { value: 'tickets.read', label: 'Билеты: просмотр' },

@@ -46,6 +46,7 @@ import {
   loadTasksRoute,
   loadTicketsRoute,
   loadVcsRoute,
+  loadWarehouse1CRoute,
 } from './lib/routeLoaders';
 
 // Pages
@@ -69,6 +70,7 @@ const MobileMenu = lazy(loadMobileMenuRoute);
 const Vcs = lazy(loadVcsRoute);
 const KnowledgeBase = lazy(loadKnowledgeBaseRoute);
 const AddressBook = lazy(loadAddressBookRoute);
+const Warehouse1C = lazy(loadWarehouse1CRoute);
 const Passwords = lazy(loadPasswordsRoute);
 const GroupsAccess = lazy(loadGroupsAccessRoute);
 const MyFiles = lazy(loadMyFilesRoute);
@@ -89,6 +91,7 @@ const routePermissions = [
   { path: '/vcs', permissions: ['vcs.read'] },
   { path: '/mail', permissions: ['mail.access'] },
   { path: '/address-book', permissions: ['address_book.read'] },
+  { path: '/warehouse-1c', permissions: ['warehouse_1c.read'] },
   { path: '/passwords', permissions: ['passwords.read'] },
   { path: '/groups-access', permissions: ['groups_access.read'] },
   { path: '/my-files', permissions: ['my_files.read'] },
@@ -488,6 +491,10 @@ function App() {
                 <Route
                   path="/address-book"
                   element={<PermissionRoute permission="address_book.read"><AddressBook /></PermissionRoute>}
+                />
+                <Route
+                  path="/warehouse-1c"
+                  element={<PermissionRoute permission="warehouse_1c.read"><Warehouse1C /></PermissionRoute>}
                 />
                 <Route
                   path="/passwords"

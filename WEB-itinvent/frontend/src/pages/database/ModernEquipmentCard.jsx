@@ -17,6 +17,7 @@ import TransferIcon from '@mui/icons-material/SwapHoriz';
 
 import { DATA_MODE_EQUIPMENT, getEquipmentRowActions, toInvNo } from './equipmentModel';
 import { readFirst } from './databaseRecordModel';
+import EmployeeNameLink from './EmployeeNameLink';
 
 const getEquipmentCardActionMeta = (action) => {
   switch (action) {
@@ -89,6 +90,7 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
   item,
   theme,
   onAction,
+  onOpenEmployee = null,
   dataMode = DATA_MODE_EQUIPMENT,
   canWrite = true,
   isAdmin = false,
@@ -104,6 +106,7 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
   const model = readFirst(item, ['MODEL_NAME', 'model_name'], '—');
   const serial = readFirst(item, ['SERIAL_NO', 'serial_no'], '');
   const employee = readFirst(item, ['OWNER_DISPLAY_NAME', 'employee_name', 'OWNER_FULLNAME'], '—');
+  const employeeOwnerNo = item.EMPL_NO ?? item.empl_no ?? item.OWNER_NO ?? item.owner_no ?? null;
   const dept = readFirst(item, ['OWNER_DEPT', 'employee_dept'], '');
   const status = readFirst(item, ['STATUS_DESCR', 'status_descr', 'DESCR'], '—');
   const location = readFirst(item, ['LOCATION', 'location', 'PLACE'], '');
@@ -117,9 +120,7 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
   const typeConfig = useMemo(() => getTypeConfig(typeName), [typeName]);
   const statusColor = useMemo(() => getStatusColor(status), [status]);
 
-  const secondaryLine = [employee !== '—' ? employee : '', dept, location]
-    .filter(Boolean)
-    .join(' · ');
+  const metaLine = [dept, location].filter(Boolean).join(' · ');
 
   const handleExpandToggle = useCallback((e) => {
     e.stopPropagation();
@@ -242,22 +243,35 @@ const ModernEquipmentCard = memo(function ModernEquipmentCard({
             </Typography>
           </Box>
 
-          {secondaryLine ? (
-            <Typography
-              variant="caption"
-              color="text.secondary"
-              sx={{
-                display: 'block',
-                fontSize: '0.7rem',
-                lineHeight: 1.25,
-                mt: 0.15,
-                overflow: 'hidden',
-                textOverflow: 'ellipsis',
-                whiteSpace: 'nowrap',
-              }}
-            >
-              {secondaryLine}
-            </Typography>
+          {(employee !== '—' || metaLine) ? (
+            <Box sx={{ mt: 0.15, minWidth: 0 }}>
+              {employee !== '—' ? (
+                <EmployeeNameLink
+                  name={employee}
+                  ownerNo={employeeOwnerNo}
+                  onOpenEmployee={onOpenEmployee}
+                  variant="caption"
+                  noWrap
+                  sx={{ fontSize: '0.7rem', lineHeight: 1.25, display: 'block' }}
+                />
+              ) : null}
+              {metaLine ? (
+                <Typography
+                  variant="caption"
+                  color="text.secondary"
+                  sx={{
+                    display: 'block',
+                    fontSize: '0.7rem',
+                    lineHeight: 1.25,
+                    overflow: 'hidden',
+                    textOverflow: 'ellipsis',
+                    whiteSpace: 'nowrap',
+                  }}
+                >
+                  {metaLine}
+                </Typography>
+              ) : null}
+            </Box>
           ) : null}
         </Box>
 

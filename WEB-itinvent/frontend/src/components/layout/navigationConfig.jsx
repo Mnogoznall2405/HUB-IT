@@ -15,6 +15,7 @@ import ForumOutlinedIcon from '@mui/icons-material/ForumOutlined';
 import VpnKeyOutlinedIcon from '@mui/icons-material/VpnKeyOutlined';
 import FolderOpenOutlinedIcon from '@mui/icons-material/FolderOpenOutlined';
 import FolderSharedOutlinedIcon from '@mui/icons-material/FolderSharedOutlined';
+import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined';
 import MenuRoundedIcon from '@mui/icons-material/MenuRounded';
 import { CHAT_FEATURE_ENABLED } from '../../lib/chatFeature';
 import { INVENTORY_SECTION_LABEL } from '../../lib/appBranding';
@@ -45,6 +46,7 @@ export const navigationItems = [
   { path: '/scan-center', label: 'Scan Center', shortLabel: 'Scan', icon: <ShieldIcon />, permission: 'scan.read', group: 'tools' },
   { path: '/statistics', label: 'Статистика', shortLabel: 'Статистика', icon: <BarChartIcon />, permission: 'statistics.read', group: 'tools' },
   { path: '/kb', label: 'IT База знаний', shortLabel: 'База знаний', icon: <MenuBookIcon />, permission: 'kb.read', group: 'tools' },
+  { path: '/warehouse-1c', label: 'Склад 1С', shortLabel: 'Склад 1С', icon: <Inventory2OutlinedIcon />, permission: 'warehouse_1c.read', group: 'tools' },
 ];
 
 export const mobileMenuNavigationItem = {

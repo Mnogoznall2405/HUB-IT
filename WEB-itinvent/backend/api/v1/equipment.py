@@ -45,6 +45,7 @@ from backend.models.equipment import (
     UploadedActEmailSendRequest,
     UploadedActEmailSendResponse,
     TransferActReminderResponse,
+    EquipmentActSearchResponse,
 )
 from backend.services.transfer_service import (
     get_act_records,
@@ -1951,6 +1952,20 @@ async def send_uploaded_act_email(
         failed_count=failed_count,
         recipients=statuses,
     )
+
+
+@router.get("/acts/search", response_model=EquipmentActSearchResponse)
+async def search_equipment_acts(
+    q: str = Query("", description="Search by act number, employee, inventory or serial number"),
+    limit: int = Query(50, ge=1, le=50, description="Maximum number of documents to return"),
+    db_id: Optional[str] = Depends(get_current_database_id),
+    _: User = Depends(get_current_active_user),
+):
+    """
+    Search act/transfer documents linked to equipment items.
+    """
+    payload = queries.search_equipment_acts(q, limit=limit, db_id=db_id)
+    return EquipmentActSearchResponse(**payload)
 
 
 @router.get("/acts/{doc_no}/file")

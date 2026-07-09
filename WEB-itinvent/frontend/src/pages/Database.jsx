@@ -44,6 +44,7 @@ import AddConsumableDialog from './database/AddConsumableDialog';
 import AddEquipmentDialog from './database/AddEquipmentDialog';
 import DatabaseRecentCards from './database/DatabaseRecentCards';
 import EquipmentDetailDialog from './database/EquipmentDetailDialog';
+import EmployeeEquipmentDialog from './database/EmployeeEquipmentDialog';
 import {
   normalizeDbId,
 } from './database/databaseRecordModel';
@@ -52,6 +53,10 @@ import {
   getVisibleBranchNames,
   normalizeActionTargets,
 } from './database/databaseListModel';
+import {
+  deserializeDatabaseUiSnapshot,
+  serializeDatabaseUiSnapshot,
+} from './database/databaseReturnContext';
 import {
   formatDetailDate as formatDate,
   formatDetailHistoryTransition as formatHistoryTransition,
@@ -66,6 +71,7 @@ import {
 } from './database/databaseOptionModel';
 import { executeMaintenanceAction, getActionErrorMessage } from './database/actionExecution';
 import { useDatabaseSearch } from './database/useDatabaseSearch';
+import { useDatabaseActSearch } from './database/useDatabaseActSearch';
 import { useDatabaseLookups } from './database/useDatabaseLookups';
 import { useDatabaseSelection } from './database/useDatabaseSelection';
 import { useDatabaseAddWorkflows } from './database/useDatabaseAddWorkflows';
@@ -92,7 +98,11 @@ import {
   schedulePersistBranchFilters,
   setBranchForDatabase,
 } from './database/databaseBranchPreferences';
-import DatabaseSearchBar from './database/DatabaseSearchBar';
+import DatabaseSearchBar, {
+  SEARCH_SCOPE_ACTS,
+  SEARCH_SCOPE_EQUIPMENT,
+} from './database/DatabaseSearchBar';
+import DatabaseActSearchResults from './database/DatabaseActSearchResults';
 import DatabaseDesktopToolbar from './database/DatabaseDesktopToolbar';
 import DatabaseMobileHeader from './database/DatabaseMobileHeader';
 import DatabaseMobileControlStrip from './database/DatabaseMobileControlStrip';
@@ -140,6 +150,7 @@ const CONSUMABLES_DEFAULT_TABLE_SORT = { field: 'model', direction: 'asc' };
 
 const createDefaultUiSnapshot = (mode) => ({
   searchQuery: '',
+  searchScope: SEARCH_SCOPE_EQUIPMENT,
   filteredData: null,
   tableSort: mode === DATA_MODE_CONSUMABLES ? CONSUMABLES_DEFAULT_TABLE_SORT : DEFAULT_TABLE_SORT,
   expandedBranches: new Set(),
@@ -166,6 +177,7 @@ function Database() {
   } = useNotification();
   const canDatabaseWrite = hasPermission('database.write');
   const canDatabaseDelete = hasPermission('database.delete');
+  const canViewWarehouse1C = hasPermission('warehouse_1c.read');
   const isAdmin = String(user?.role || '').trim().toLowerCase() === 'admin';
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
@@ -204,6 +216,7 @@ function Database() {
   const [selectedBranch, setSelectedBranch] = useState('');
   const [tableSort, setTableSort] = useState(DEFAULT_TABLE_SORT);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchScope, setSearchScope] = useState(SEARCH_SCOPE_EQUIPMENT);
   const [filteredData, setFilteredData] = useState(null);
 
   const [expandedBranches, setExpandedBranches] = useState(() => new Set());
@@ -343,6 +356,20 @@ function Database() {
     setSearchQuery,
     filteredData,
     setFilteredData,
+    equipmentSearchEnabled: !isConsumablesMode && searchScope === SEARCH_SCOPE_EQUIPMENT,
+  });
+  const {
+    actResults,
+    actSearchLoading,
+    actSearchError,
+    actSearchTruncated,
+    resetActSearch,
+    runActSearchNow,
+    clearActSearchError,
+  } = useDatabaseActSearch({
+    searchQuery,
+    searchScope,
+    enabled: !isConsumablesMode,
   });
   const {
     identifyPCLoading,
@@ -357,6 +384,7 @@ function Database() {
 
   const captureUiSnapshot = useCallback(() => ({
     searchQuery,
+    searchScope,
     filteredData,
     tableSort,
     expandedBranches: new Set(expandedBranches),
@@ -369,12 +397,14 @@ function Database() {
     filteredData,
     mobileSelectionMode,
     searchQuery,
+    searchScope,
     selectedItems,
     tableSort,
   ]);
 
   const applyUiSnapshot = useCallback((snapshot) => {
     setSearchQuery(snapshot.searchQuery);
+    setSearchScope(snapshot.searchScope || SEARCH_SCOPE_EQUIPMENT);
     setFilteredData(snapshot.filteredData);
     setTableSort(snapshot.tableSort);
     setExpandedBranches(new Set(snapshot.expandedBranches));
@@ -382,6 +412,12 @@ function Database() {
     setSelectedItems([...snapshot.selectedItems]);
     setMobileSelectionMode(snapshot.mobileSelectionMode);
   }, []);
+
+  const buildWarehouseReturnContext = useCallback((partial = {}) => ({
+    returnTo: '/database',
+    ...partial,
+    uiSnapshot: serializeDatabaseUiSnapshot(captureUiSnapshot()),
+  }), [captureUiSnapshot]);
 
   const applyPersistedBranchForDatabase = useCallback((databaseId, availableBranches = branches) => {
     const dbId = normalizeDbId(databaseId);
@@ -593,6 +629,48 @@ function Database() {
     });
     openDetailView(snapshot || invNo, { invNo, loading: !snapshot });
   }, [findEquipmentByInvNo, openDetailView, touchRecentCard]);
+
+  const handleCombinedSearchKeyDown = useCallback((event) => {
+    if (!isConsumablesMode && searchScope === SEARCH_SCOPE_ACTS) {
+      if (event.key !== 'Enter') return;
+      event.preventDefault();
+      void runActSearchNow(searchQuery);
+      return;
+    }
+    handleSearchKeyDown(event);
+  }, [handleSearchKeyDown, isConsumablesMode, runActSearchNow, searchQuery, searchScope]);
+
+  const handleSearchScopeChange = useCallback((nextScope) => {
+    const normalizedScope = nextScope === SEARCH_SCOPE_ACTS ? SEARCH_SCOPE_ACTS : SEARCH_SCOPE_EQUIPMENT;
+    setSearchScope(normalizedScope);
+    if (normalizedScope === SEARCH_SCOPE_ACTS) {
+      setFilteredData(null);
+      setSelectedItems([]);
+      setMobileSelectionMode(false);
+      return;
+    }
+    resetActSearch();
+    if (String(searchQuery || '').trim().length >= 2) {
+      runSearchNow(searchQuery);
+    }
+  }, [resetActSearch, runSearchNow, searchQuery]);
+
+  const handleOpenActSearchEquipment = useCallback((act, items) => {
+    const list = Array.isArray(items)
+      ? items
+      : (Array.isArray(act?.items) ? act.items : []);
+    const firstItem = list.find((item) => String(item?.inv_no || '').trim());
+    const invNo = String(firstItem?.inv_no || '').trim();
+    if (!invNo) return;
+    const item = findEquipmentByInvNo?.(invNo);
+    openDetailView(item || invNo, {
+      invNo,
+      loading: !item,
+      initialTab: 'acts',
+    });
+  }, [findEquipmentByInvNo, openDetailView]);
+
+  const isActsScope = !isConsumablesMode && searchScope === SEARCH_SCOPE_ACTS;
 
   const statusOptions = useMemo(() => buildStatusOptions(statuses), [statuses]);
 
@@ -997,6 +1075,80 @@ function Database() {
     setActionModal({ open: true, type: 'component', invNo: null, componentKind });
   }, []);
 
+  const [employeeEquipmentDialog, setEmployeeEquipmentDialog] = useState({
+    open: false,
+    ownerNo: null,
+    employeeName: '',
+  });
+
+  const handleOpenEmployee = useCallback(({ ownerNo, employeeName }) => {
+    if (!ownerNo) return;
+    setEmployeeEquipmentDialog({
+      open: true,
+      ownerNo,
+      employeeName: String(employeeName || '').trim(),
+    });
+  }, []);
+
+  const handleCloseEmployeeEquipmentDialog = useCallback(() => {
+    setEmployeeEquipmentDialog({ open: false, ownerNo: null, employeeName: '' });
+  }, []);
+
+  const handleOpenEquipmentFromEmployee = useCallback((invNo) => {
+    const normalized = String(invNo || '').trim();
+    if (!normalized || normalized === '-') return;
+    const item = findEquipmentByInvNo?.(normalized);
+    openDetailView(item || normalized, { invNo: normalized, loading: !item });
+  }, [findEquipmentByInvNo, openDetailView]);
+
+  useEffect(() => {
+    const state = location.state;
+    if (!state || typeof state !== 'object') return;
+
+    const reopenDetail = state.reopenDetail && typeof state.reopenDetail === 'object'
+      ? state.reopenDetail
+      : null;
+    const reopenEmployee = state.reopenEmployee && typeof state.reopenEmployee === 'object'
+      ? state.reopenEmployee
+      : null;
+
+    let handled = false;
+
+    if (state.uiSnapshot && typeof state.uiSnapshot === 'object') {
+      applyUiSnapshot(deserializeDatabaseUiSnapshot(state.uiSnapshot));
+      handled = true;
+    }
+
+    if (reopenDetail?.invNo) {
+      const invNo = String(reopenDetail.invNo).trim();
+      if (invNo) {
+        const snapshot = reopenDetail.detailSnapshot && typeof reopenDetail.detailSnapshot === 'object'
+          ? reopenDetail.detailSnapshot
+          : null;
+        const item = findEquipmentByInvNo?.(invNo) || snapshot;
+        openDetailView(item || invNo, {
+          invNo,
+          data: snapshot || undefined,
+          loading: !item && !snapshot,
+          initialTab: reopenDetail.detailTab || 'warehouse1c',
+        });
+        handled = true;
+      }
+    } else if (reopenEmployee?.ownerNo || (reopenDetail?.kind === 'employee' && reopenDetail?.ownerNo)) {
+      const employee = reopenEmployee || reopenDetail;
+      setEmployeeEquipmentDialog({
+        open: true,
+        ownerNo: employee.ownerNo,
+        employeeName: String(employee.employeeName || '').trim(),
+      });
+      handled = true;
+    }
+
+    if (handled) {
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [applyUiSnapshot, findEquipmentByInvNo, location.pathname, location.state, navigate, openDetailView]);
+
   const dataSections = useMemo(() => {
     if (Object.keys(displayData).length === 0) return null;
     return (
@@ -1012,6 +1164,7 @@ function Database() {
         onSelectAll={handleSelectAll}
         onSelect={handleCheckboxChange}
         onAction={handleAction}
+        onOpenEmployee={handleOpenEmployee}
         onEditConsumableQty={canDatabaseWrite ? openEditConsumableQtyModal : null}
         onDeleteConsumable={canDatabaseDelete ? openDeleteConsumableModal : null}
         dataMode={dataMode}
@@ -1032,6 +1185,7 @@ function Database() {
     expandedBranches,
     expandedLocations,
     handleAction,
+    handleOpenEmployee,
     handleCheckboxChange,
     handleMobileCardSelect,
     handleSelectAll,
@@ -1090,7 +1244,7 @@ function Database() {
           </Tabs>
         </Paper>
 
-        {isMobile && (
+        {isMobile && !isActsScope && (
           <DatabaseMobileControlStrip
             theme={theme}
             isConsumablesMode={isConsumablesMode}
@@ -1110,14 +1264,32 @@ function Database() {
 
         <DatabaseSearchBar
           theme={theme}
+          ui={ui}
           compact={isMobile}
           isConsumablesMode={isConsumablesMode}
+          searchScope={searchScope}
+          onSearchScopeChange={handleSearchScopeChange}
           value={searchQuery}
           onChange={handleSearchChange}
-          onKeyDown={handleSearchKeyDown}
+          onKeyDown={handleCombinedSearchKeyDown}
           onClear={clearSearch}
         />
 
+        {isActsScope ? (
+          <DatabaseActSearchResults
+            theme={theme}
+            ui={ui}
+            query={searchQuery}
+            results={actResults}
+            loading={actSearchLoading}
+            error={actSearchError}
+            truncated={actSearchTruncated}
+            formatDate={formatDate}
+            onOpenEquipment={handleOpenActSearchEquipment}
+            onErrorClose={clearActSearchError}
+          />
+        ) : (
+          <>
         {!isConsumablesMode && (
           isMobile ? (
             <DatabaseRecentCardsStrip
@@ -1267,6 +1439,8 @@ function Database() {
             )}
           </Box>
         </Fade>
+          </>
+        )}
 
         <UploadActDialog
           open={uploadActModalOpen}
@@ -1393,6 +1567,7 @@ function Database() {
           saving={detailSaving}
           hasChanges={detailHasChanges}
           canWrite={canDatabaseWrite}
+          canViewWarehouse1C={canViewWarehouse1C}
           isMobile={isMobile}
           messages={{
             error: detailError,
@@ -1434,6 +1609,18 @@ function Database() {
           formatDate={formatDate}
           formatHistoryValue={formatHistoryValue}
           formatHistoryTransition={formatHistoryTransition}
+          onOpenEmployee={handleOpenEmployee}
+          buildWarehouseReturnContext={buildWarehouseReturnContext}
+        />
+
+        <EmployeeEquipmentDialog
+          open={employeeEquipmentDialog.open}
+          ownerNo={employeeEquipmentDialog.ownerNo}
+          employeeName={employeeEquipmentDialog.employeeName}
+          canViewWarehouse1C={canViewWarehouse1C}
+          onClose={handleCloseEmployeeEquipmentDialog}
+          onOpenInvNo={handleOpenEquipmentFromEmployee}
+          buildWarehouseReturnContext={buildWarehouseReturnContext}
         />
 
         <EquipmentActFieldsDialog

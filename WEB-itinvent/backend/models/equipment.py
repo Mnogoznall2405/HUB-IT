@@ -233,6 +233,35 @@ class TransferActInfo(BaseModel):
     file_type: Literal["pdf", "docx"] = Field(..., description="File extension")
 
 
+class EquipmentActSearchItem(BaseModel):
+    """Equipment row linked to a searched act/document."""
+    item_id: Optional[int] = Field(None, description="ITEMS.ID")
+    inv_no: str = Field("", description="Inventory number")
+    serial_no: str = Field("", description="Serial number")
+    model_name: str = Field("", description="Model name")
+
+
+class EquipmentActSearchResult(BaseModel):
+    """One act/document row in inventory act search."""
+    doc_no: int = Field(..., description="Internal document id (DOC_NO)")
+    doc_number: str = Field("", description="Human-readable document number")
+    doc_date: Optional[datetime] = Field(None, description="Document date")
+    type_name: str = Field("", description="Document type name")
+    branch_name: str = Field("", description="Branch name")
+    location_name: str = Field("", description="Location name")
+    employee_name: str = Field("", description="Employee name on document")
+    has_file: bool = Field(False, description="Whether a linked file exists in FILES")
+    items: List[EquipmentActSearchItem] = Field(default_factory=list, description="Linked equipment")
+
+
+class EquipmentActSearchResponse(BaseModel):
+    """Response for global act/document search on inventory page."""
+    query: str = Field("", description="Normalized search query")
+    total: int = Field(0, description="Number of matched documents")
+    truncated: bool = Field(False, description="Whether results were limited")
+    acts: List[EquipmentActSearchResult] = Field(default_factory=list, description="Matched documents")
+
+
 class TransferExecuteRequest(BaseModel):
     """Transfer request for one or multiple inventory items."""
     inv_nos: List[str] = Field(..., min_length=1, description="Inventory numbers")

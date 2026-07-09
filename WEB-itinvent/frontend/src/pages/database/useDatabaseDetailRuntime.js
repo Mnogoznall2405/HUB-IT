@@ -125,6 +125,10 @@ export function useDatabaseDetailRuntime({
     if (!invNo) return;
 
     resetDetailTransientState();
+    const initialTab = String(options?.initialTab || '').trim();
+    if (initialTab) {
+      setDetailTab(initialTab);
+    }
     setDetailModal({
       open: true,
       data,
@@ -180,11 +184,16 @@ export function useDatabaseDetailRuntime({
         const detailsMap = await loadDetailedItemsByInvNos([invNo]);
         const data = detailsMap.get(invNo) || item || null;
         if (!canceled) {
-          setDetailModal((prev) => ({ ...prev, data, loading: false }));
+          setDetailModal((prev) => ({
+            ...prev,
+            data: data || prev.data || null,
+            loading: false,
+          }));
         }
       } catch (error) {
         console.error('Error fetching equipment detail:', error);
         if (!canceled) {
+          // Keep prev.data (e.g. detailSnapshot from Warehouse1C return).
           setDetailModal((prev) => ({ ...prev, loading: false }));
         }
       }

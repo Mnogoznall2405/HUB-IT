@@ -15,6 +15,7 @@ import {
 import EditIcon from '@mui/icons-material/Edit';
 import DeleteIcon from '@mui/icons-material/Delete';
 import { ActionMenu, StatusChip } from '../../components/common';
+import EmployeeNameLink from './EmployeeNameLink';
 import {
   DATA_MODE_CONSUMABLES,
   DATA_MODE_EQUIPMENT,
@@ -40,6 +41,7 @@ const EquipmentRow = memo(function EquipmentRow({
   theme,
   onSelect,
   onAction,
+  onOpenEmployee = null,
   onEditConsumableQty = null,
   onDeleteConsumable = null,
   allowSelection = true,
@@ -52,6 +54,7 @@ const EquipmentRow = memo(function EquipmentRow({
   const itemId = toItemId(item);
   const isConsumablesMode = dataMode === DATA_MODE_CONSUMABLES;
   const employeeName = String(item.OWNER_DISPLAY_NAME || item.employee_name || '-');
+  const employeeOwnerNo = item.EMPL_NO ?? item.empl_no ?? item.OWNER_NO ?? item.owner_no ?? null;
   const employeeDept = String(item.OWNER_DEPT || item.employee_dept || '').trim();
   const modelName = String(item.MODEL_NAME || item.model_name || '-');
   const typeName = String(item.TYPE_NAME || item.type_name || '-');
@@ -186,9 +189,14 @@ const EquipmentRow = memo(function EquipmentRow({
         </TableCell>
       )}
       <TableCell sx={{ width: isMobile ? TABLE_WIDTHS.equipmentMobile.employee : TABLE_WIDTHS.equipment.employee }}>
-        <Typography variant="body2" sx={{ lineHeight: 1.2 }} noWrap>
-          {employeeName}
-        </Typography>
+        <EmployeeNameLink
+          name={employeeName}
+          ownerNo={employeeOwnerNo}
+          onOpenEmployee={onOpenEmployee}
+          variant="body2"
+          noWrap
+          sx={{ lineHeight: 1.2, display: 'block' }}
+        />
         <Typography variant="caption" color="text.secondary" sx={{ lineHeight: 1.1 }} noWrap>
           {`Отдел: ${employeeDept || '-'}`}
         </Typography>
@@ -223,6 +231,7 @@ const EquipmentTable = memo(function EquipmentTable({
   isSomeSelected,
   onSelect,
   onAction,
+  onOpenEmployee = null,
   onEditConsumableQty = null,
   onDeleteConsumable = null,
   allowSelection = true,
@@ -501,6 +510,7 @@ const EquipmentTable = memo(function EquipmentTable({
                 theme={theme}
                 onSelect={onSelect}
                 onAction={onAction}
+                onOpenEmployee={onOpenEmployee}
                 onEditConsumableQty={onEditConsumableQty}
                 onDeleteConsumable={onDeleteConsumable}
                 allowSelection={allowSelection}

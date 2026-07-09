@@ -67,6 +67,7 @@ export const loadMobileMenuRoute = defineRouteLoader(() => import('../pages/Mobi
 export const loadVcsRoute = defineRouteLoader(() => import('../pages/Vcs'));
 export const loadKnowledgeBaseRoute = defineRouteLoader(() => import('../pages/KnowledgeBase'));
 export const loadAddressBookRoute = defineRouteLoader(() => import('../pages/AddressBook'));
+export const loadWarehouse1CRoute = defineRouteLoader(() => import('../pages/Warehouse1C'));
 export const loadPasswordsRoute = defineRouteLoader(() => import('../pages/Passwords'));
 export const loadGroupsAccessRoute = defineRouteLoader(() => import('../pages/GroupsAccess'));
 export const loadMyFilesRoute = defineRouteLoader(() => {
@@ -99,6 +100,7 @@ const ROUTE_LOADERS = new Map([
   ['/vcs', loadVcsRoute],
   ['/kb', loadKnowledgeBaseRoute],
   ['/address-book', loadAddressBookRoute],
+  ['/warehouse-1c', loadWarehouse1CRoute],
   ['/passwords', loadPasswordsRoute],
   ['/groups-access', loadGroupsAccessRoute],
   ['/my-files', loadMyFilesRoute],

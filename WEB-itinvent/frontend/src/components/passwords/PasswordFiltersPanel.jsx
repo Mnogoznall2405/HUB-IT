@@ -2,13 +2,16 @@ import {
   Box,
   Chip,
   Divider,
+  IconButton,
   List,
   ListItemButton,
   ListItemText,
   Stack,
+  Tooltip,
   Typography,
 } from '@mui/material';
 import { useTheme } from '@mui/material/styles';
+import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
 
 export default function PasswordFiltersPanel({
   groups = [],
@@ -19,14 +22,23 @@ export default function PasswordFiltersPanel({
   onSelectGroup,
   onSelectTag,
   totalCount = 0,
+  canManageGroups = false,
+  onAddGroup,
 }) {
   const theme = useTheme();
 
   return (
     <Box data-testid="password-filters-panel">
-      <Box sx={{ p: 2 }}>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ pl: 2, pr: 1, py: 2 }}>
         <Typography variant="subtitle2" fontWeight={800}>Группы</Typography>
-      </Box>
+        {canManageGroups ? (
+          <Tooltip title="Добавить группу">
+            <IconButton size="small" onClick={onAddGroup} data-testid="password-add-group-button">
+              <AddOutlinedIcon fontSize="small" />
+            </IconButton>
+          </Tooltip>
+        ) : null}
+      </Stack>
       <Divider />
       <List dense disablePadding>
         <ListItemButton

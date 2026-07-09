@@ -28,6 +28,8 @@ import { LoadingSpinner, StatusChip } from '../../components/common';
 import { readFirst, toIdOrNull, toNumberOrNull } from './databaseRecordModel';
 import EquipmentDetailActsPanel from './EquipmentDetailActsPanel';
 import EquipmentDetailHistoryPanel from './EquipmentDetailHistoryPanel';
+import EquipmentDetailWarehouse1CTab from './EquipmentDetailWarehouse1CTab';
+import EmployeeNameLink from './EmployeeNameLink';
 import LocationAutocompleteField from './LocationAutocompleteField';
 
 const getOptionByNumber = (options, field, value) => {
@@ -42,6 +44,7 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
   isMobile = false,
   options = {},
   onFormPatch,
+  onOpenEmployee = null,
 }) {
   const {
     statuses = [],
@@ -281,7 +284,12 @@ const EquipmentDetailGeneralTab = memo(function EquipmentDetailGeneralTab({
             <Grid container spacing={1.25}>
               <Grid item xs={12} sm={editMode ? 12 : 6}>
                 <Typography variant="caption" color="text.secondary">Сотрудник</Typography>
-                <Typography variant="body2">{form.employee_name || '-'}</Typography>
+                <EmployeeNameLink
+                  name={form.employee_name || '-'}
+                  ownerNo={form.empl_no}
+                  onOpenEmployee={onOpenEmployee}
+                  variant="body2"
+                />
                 <Typography variant="caption" color="text.secondary">
                   Отдел: {form.employee_dept || '-'}
                 </Typography>
@@ -395,6 +403,7 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
   saving = false,
   hasChanges = false,
   canWrite = false,
+  canViewWarehouse1C = false,
   isMobile = false,
   messages = {},
   options = {},
@@ -417,8 +426,60 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
   formatDate,
   formatHistoryValue,
   formatHistoryTransition,
+  onOpenEmployee = null,
+  buildWarehouseReturnContext = null,
 }) {
   const showGeneralActions = Boolean(data) && tab === 'general';
+
+  const renderTabContent = () => (
+    <>
+      <Box sx={{ display: tab === 'general' ? 'block' : 'none' }}>
+        <EquipmentDetailGeneralTab
+          data={data}
+          form={form}
+          editMode={editMode}
+          isMobile={isMobile}
+          options={options}
+          onFormPatch={onFormPatch}
+          onOpenEmployee={onOpenEmployee}
+        />
+      </Box>
+      <Box sx={{ display: tab === 'acts' ? 'block' : 'none' }}>
+        <EquipmentDetailActsPanel
+          acts={acts.items}
+          error={messages.actsError}
+          loading={acts.loading}
+          openingDocNo={acts.openingDocNo}
+          onErrorClose={onClearActsError}
+          onOpenFields={onOpenActFields}
+          onOpenFile={onOpenActFile}
+          formatDate={formatDate}
+        />
+      </Box>
+      <Box sx={{ display: tab === 'history' ? 'block' : 'none' }}>
+        <EquipmentDetailHistoryPanel
+          history={history.items}
+          error={messages.historyError}
+          loading={history.loading}
+          isMobile={isMobile}
+          onErrorClose={onClearHistoryError}
+          formatDate={formatDate}
+          formatHistoryValue={formatHistoryValue}
+          formatHistoryTransition={formatHistoryTransition}
+        />
+      </Box>
+      {canViewWarehouse1C ? (
+        <Box sx={{ display: tab === 'warehouse1c' ? 'block' : 'none' }}>
+          <EquipmentDetailWarehouse1CTab
+            data={data}
+            active={open && tab === 'warehouse1c'}
+            detailLoading={loading}
+            buildReturnContext={buildWarehouseReturnContext}
+          />
+        </Box>
+      ) : null}
+    </>
+  );
 
   return (
     <Dialog
@@ -474,41 +535,13 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
                 <Tab label="Общее" value="general" />
                 <Tab label="Текущий акт" value="acts" disabled={editMode} />
                 <Tab label="История перемещений" value="history" disabled={editMode} />
+                {canViewWarehouse1C ? (
+                  <Tab label="1С" value="warehouse1c" disabled={editMode} />
+                ) : null}
               </Tabs>
             </Paper>
 
-            {tab === 'general' ? (
-              <EquipmentDetailGeneralTab
-                data={data}
-                form={form}
-                editMode={editMode}
-                isMobile={isMobile}
-                options={options}
-                onFormPatch={onFormPatch}
-              />
-            ) : tab === 'acts' ? (
-              <EquipmentDetailActsPanel
-                acts={acts.items}
-                error={messages.actsError}
-                loading={acts.loading}
-                openingDocNo={acts.openingDocNo}
-                onErrorClose={onClearActsError}
-                onOpenFields={onOpenActFields}
-                onOpenFile={onOpenActFile}
-                formatDate={formatDate}
-              />
-            ) : (
-              <EquipmentDetailHistoryPanel
-                history={history.items}
-                error={messages.historyError}
-                loading={history.loading}
-                isMobile={isMobile}
-                onErrorClose={onClearHistoryError}
-                formatDate={formatDate}
-                formatHistoryValue={formatHistoryValue}
-                formatHistoryTransition={formatHistoryTransition}
-              />
-            )}
+            {renderTabContent()}
           </Box>
         ) : (
           <Typography color="error">Ошибка загрузки данных</Typography>

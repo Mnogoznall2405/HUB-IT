@@ -23,6 +23,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
   onSelectAll,
   onSelect,
   onAction,
+  onOpenEmployee = null,
   onEditConsumableQty,
   onDeleteConsumable,
   dataMode,
@@ -57,6 +58,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
                 item={item}
                 theme={theme}
                 onAction={onAction}
+                onOpenEmployee={onOpenEmployee}
                 dataMode={dataMode}
                 canWrite={canWrite}
                 isAdmin={isAdmin}
@@ -83,6 +85,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
         isSomeSelected={isSomeSelected}
         onSelect={onSelect}
         onAction={onAction}
+        onOpenEmployee={onOpenEmployee}
         onEditConsumableQty={onEditConsumableQty}
         onDeleteConsumable={onDeleteConsumable}
         allowSelection={!isConsumablesMode && canWrite}
@@ -103,6 +106,7 @@ const DatabaseDataSections = memo(function DatabaseDataSections({
     isSomeSelected,
     mobileSelectionMode,
     onAction,
+    onOpenEmployee,
     onEditConsumableQty,
     onDeleteConsumable,
     onMobileCardSelect,

@@ -27,12 +27,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from backend.config import config
-from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, system, passwords, my_files, debug_client_log, groups_access
+from backend.api.v1 import auth, equipment, database, json_operations, settings, networks, discovery, inventory, kb, mfu, hub, mail, mailbox_quota, ad_users, vcs, ai_bots, departments, tickets, address_book, warehouse_1c, system, passwords, my_files, debug_client_log, groups_access
 from backend.api.v1.auth import handle_safari_password_beacon_form
 from backend.services.ad_sync_service import background_ad_sync_loop
 from backend.services.ad_app_user_sync_service import background_ad_app_user_sync_loop
 from backend.services.ad_groups_access_sync_service import background_ad_groups_access_sync_loop
 from backend.services.address_book_service import background_address_book_sync_loop
+from backend.services.warehouse_1c_service import background_warehouse_1c_catalog_sync_loop, warehouse_1c_service
 from backend.services.auth_runtime_store_service import auth_runtime_store_service
 from backend.services.mail_notification_service import mail_notification_service
 from backend.services.mfu_monitor_service import mfu_runtime_monitor
@@ -66,6 +67,7 @@ LDAP_APP_USER_SYNC_ENABLED = _env_flag("LDAP_APP_USER_SYNC_ENABLED", "1")
 AD_GROUPS_ACCESS_SYNC_ENABLED = _env_flag("AD_GROUPS_ACCESS_SYNC_ENABLED", "1")
 MFU_RUNTIME_MONITOR_ENABLED = _env_flag("MFU_RUNTIME_MONITOR_ENABLED", "1")
 ADDRESS_BOOK_SYNC_ENABLED = _env_flag("ADDRESS_BOOK_SYNC_ENABLED", "0")
+WAREHOUSE_1C_CATALOG_SYNC_ENABLED = _env_flag("WAREHOUSE_1C_CATALOG_SYNC_ENABLED", "1")
 TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED = _env_flag("TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED", "1")
 SUPPRESS_NOISY_ACCESS_LOGS = _env_flag("SUPPRESS_NOISY_ACCESS_LOGS", "1")
 ANYIO_THREAD_TOKENS = _env_positive_int("ANYIO_THREAD_TOKENS", 200, 40)
@@ -168,6 +170,7 @@ async def lifespan(app: FastAPI):
     ad_app_user_sync_task: asyncio.Task | None = None
     ad_groups_access_sync_task: asyncio.Task | None = None
     address_book_sync_task: asyncio.Task | None = None
+    warehouse_1c_catalog_sync_task: asyncio.Task | None = None
     task_due_notification_task: asyncio.Task | None = None
     if LDAP_SYNC_BACKGROUND_ENABLED:
         sync_task = asyncio.create_task(background_ad_sync_loop())
@@ -177,6 +180,8 @@ async def lifespan(app: FastAPI):
         ad_groups_access_sync_task = asyncio.create_task(background_ad_groups_access_sync_loop())
     if ADDRESS_BOOK_SYNC_ENABLED:
         address_book_sync_task = asyncio.create_task(background_address_book_sync_loop())
+    if WAREHOUSE_1C_CATALOG_SYNC_ENABLED:
+        warehouse_1c_catalog_sync_task = asyncio.create_task(background_warehouse_1c_catalog_sync_loop())
     if TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled():
         task_due_notification_task = asyncio.create_task(background_task_due_notification_loop())
     if MFU_RUNTIME_MONITOR_ENABLED:
@@ -192,6 +197,7 @@ async def lifespan(app: FastAPI):
         f" ldap_app_user_sync={LDAP_APP_USER_SYNC_ENABLED}"
         f" ad_groups_access_sync={AD_GROUPS_ACCESS_SYNC_ENABLED}"
         f" address_book_sync={ADDRESS_BOOK_SYNC_ENABLED}"
+        f" warehouse_1c_catalog_sync={WAREHOUSE_1C_CATALOG_SYNC_ENABLED}"
         f" mfu_monitor={MFU_RUNTIME_MONITOR_ENABLED}"
         f" mail_notifications={MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED}"
         f" task_due_notifications={TASK_DUE_NOTIFICATION_BACKGROUND_ENABLED and task_due_notification_background_enabled()}"
@@ -268,6 +274,8 @@ async def lifespan(app: FastAPI):
         ad_groups_access_sync_task.cancel()
     if address_book_sync_task is not None:
         address_book_sync_task.cancel()
+    if warehouse_1c_catalog_sync_task is not None:
+        warehouse_1c_catalog_sync_task.cancel()
     if task_due_notification_task is not None:
         task_due_notification_task.cancel()
     if MAIL_MODULE_ENABLED and MAIL_NOTIFICATION_BACKGROUND_ENABLED:
@@ -304,11 +312,20 @@ async def lifespan(app: FastAPI):
             await address_book_sync_task
         except asyncio.CancelledError:
             pass
+    if warehouse_1c_catalog_sync_task is not None:
+        try:
+            await warehouse_1c_catalog_sync_task
+        except asyncio.CancelledError:
+            pass
     if task_due_notification_task is not None:
         try:
             await task_due_notification_task
         except asyncio.CancelledError:
             pass
+    try:
+        await asyncio.to_thread(warehouse_1c_service.shutdown)
+    except Exception:
+        logging.getLogger(__name__).exception("Warehouse 1C connection pool shutdown failed")
 
 
 # Create FastAPI app
@@ -406,6 +423,7 @@ app.include_router(vcs.router, prefix="/api/v1/vcs", tags=["VCS"])
 app.include_router(ai_bots.router, prefix="/api/v1/ai-bots", tags=["AI Bots"])
 app.include_router(tickets.router, prefix="/api/v1/tickets", tags=["Tickets"])
 app.include_router(address_book.router, prefix="/api/v1/address-book", tags=["Address Book"])
+app.include_router(warehouse_1c.router, prefix="/api/v1/warehouse-1c", tags=["Warehouse 1C"])
 app.include_router(system.router, prefix="/api/v1/system", tags=["System"])
 app.include_router(passwords.router, prefix="/api/v1/passwords", tags=["Passwords"])
 app.include_router(my_files.router, prefix="/api/v1/my-files", tags=["My Files"])

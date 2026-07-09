@@ -14,6 +14,7 @@ from backend.utils.person_names import to_short_fio
 from backend.database.equipment_act_history_reads import (
     get_equipment_acts_by_inv as _act_history_get_equipment_acts_by_inv,
     get_equipment_history_by_inv as _act_history_get_equipment_history_by_inv,
+    search_equipment_acts as _act_history_search_equipment_acts,
 )
 from backend.database.equipment_directory_reads import (
     QUERY_GET_ALL_BRANCHES,
@@ -165,14 +166,24 @@ QUERY_COUNT_EMPLOYEES = """
 
 QUERY_GET_EQUIPMENT_BY_OWNER = """
     SELECT
-        i.INV_NO,
-        i.SERIAL_NO,
-        i.HW_SERIAL_NO,
+        CAST(i.INV_NO AS VARCHAR(64)) as inv_no,
+        i.SERIAL_NO as serial_no,
+        i.HW_SERIAL_NO as hw_serial_no,
+        i.PART_NO as part_no,
+        t.TYPE_NO as type_no,
         t.TYPE_NAME as type_name,
+        m.MODEL_NO as model_no,
         m.MODEL_NAME as model_name,
+        v.VENDOR_NO as vendor_no,
         v.VENDOR_NAME as vendor_name,
+        s.STATUS_NO as status_no,
         s.DESCR as status_name,
+        i.EMPL_NO as empl_no,
+        o.OWNER_DISPLAY_NAME as employee_name,
+        o.OWNER_DEPT as employee_dept,
+        b.BRANCH_NO as branch_no,
         b.BRANCH_NAME as branch_name,
+        l.LOC_NO as loc_no,
         l.DESCR as location_name
     FROM ITEMS i
     LEFT JOIN CI_TYPES t ON i.CI_TYPE = t.CI_TYPE AND i.TYPE_NO = t.TYPE_NO
@@ -510,6 +521,20 @@ def get_equipment_history_by_inv(inv_no: str, db_id: Optional[str] = None) -> di
         db_id=db_id,
         get_db_fn=get_db,
         equipment_by_inv_fn=get_equipment_by_inv,
+    )
+
+
+def search_equipment_acts(
+    q: str,
+    *,
+    limit: int = 50,
+    db_id: Optional[str] = None,
+) -> dict:
+    return _act_history_search_equipment_acts(
+        q,
+        limit=limit,
+        db_id=db_id,
+        get_db_fn=get_db,
     )
 
 

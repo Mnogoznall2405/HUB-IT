@@ -32,7 +32,7 @@ import AddOutlinedIcon from '@mui/icons-material/AddOutlined';
 import ContentCopyOutlinedIcon from '@mui/icons-material/ContentCopyOutlined';
 import RefreshOutlinedIcon from '@mui/icons-material/RefreshOutlined';
 import SearchOutlinedIcon from '@mui/icons-material/SearchOutlined';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useSearchParams } from 'react-router-dom';
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import PasswordAuditAccordion from '../components/passwords/PasswordAuditAccordion';
@@ -179,7 +179,6 @@ export function generateVaultPassword(options = {}, cryptoSource = globalThis.cr
 function Passwords() {
   const theme = useTheme();
   const ui = useMemo(() => buildOfficeUiTokens(theme), [theme]);
-  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const activeSection = searchParams.get('section') === 'ad-expiry' ? 'ad-expiry' : 'vault';
   const { user, hasPermission, refreshSession } = useAuth();
@@ -201,6 +200,9 @@ function Passwords() {
   const [entryDialogOpen, setEntryDialogOpen] = useState(false);
   const [formMode, setFormMode] = useState('create');
   const [form, setForm] = useState(emptyForm);
+  const [groupDialogOpen, setGroupDialogOpen] = useState(false);
+  const [newGroupName, setNewGroupName] = useState('');
+  const [groupSaving, setGroupSaving] = useState(false);
   const [tagInputValue, setTagInputValue] = useState('');
   const [unlockDialogOpen, setUnlockDialogOpen] = useState(false);
   const [unlockMode, setUnlockMode] = useState('verify');
@@ -450,6 +452,31 @@ function Passwords() {
       notifyApiError(error, 'Не удалось архивировать запись.', { dedupeMode: 'none' });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const openGroupDialog = () => {
+    setNewGroupName('');
+    setGroupDialogOpen(true);
+  };
+
+  const handleCreateGroup = async () => {
+    const name = newGroupName.trim();
+    if (!name) return;
+    setGroupSaving(true);
+    try {
+      await passwordsAPI.createGroup({ name, sort_order: groups.length });
+      notifySuccess('Группа создана.', { source: 'passwords', dedupeMode: 'none' });
+      setGroupDialogOpen(false);
+      setNewGroupName('');
+      await loadEntries();
+      if (entryDialogOpen) {
+        setForm((prev) => ({ ...prev, group: name }));
+      }
+    } catch (error) {
+      notifyApiError(error, 'Не удалось создать группу.', { dedupeMode: 'none' });
+    } finally {
+      setGroupSaving(false);
     }
   };
 
@@ -838,6 +865,8 @@ function Passwords() {
                     totalCount={visibleEntries.length}
                     onSelectGroup={setSelectedGroup}
                     onSelectTag={setSelectedTag}
+                    canManageGroups={isAdmin}
+                    onAddGroup={openGroupDialog}
                   />
                 </Paper>
               </Grid>
@@ -943,27 +972,45 @@ function Passwords() {
           <Grid container spacing={2}>
             <Grid item xs={12} md={7}>
               <Stack spacing={2} sx={{ pt: 0.5, ...passwordEntryFormFieldSx }}>
-                <FormControl fullWidth required>
-                  <InputLabel id="password-group-label" shrink>Группа</InputLabel>
-                  <Select
-                    labelId="password-group-label"
-                    label="Группа"
-                    value={form.group}
-                    onChange={(event) => setForm((prev) => ({ ...prev, group: String(event.target.value || '') }))}
-                    data-testid="password-form-group-select"
-                  >
-                    {groups.map((group) => (
-                      <MenuItem key={group} value={group}>{group}</MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
+                <Stack direction="row" spacing={1} alignItems="flex-start">
+                  <FormControl fullWidth required>
+                    <InputLabel id="password-group-label" shrink>Группа</InputLabel>
+                    <Select
+                      labelId="password-group-label"
+                      label="Группа"
+                      value={form.group}
+                      onChange={(event) => setForm((prev) => ({ ...prev, group: String(event.target.value || '') }))}
+                      data-testid="password-form-group-select"
+                    >
+                      {groups.map((group) => (
+                        <MenuItem key={group} value={group}>{group}</MenuItem>
+                      ))}
+                    </Select>
+                  </FormControl>
+                  {isAdmin ? (
+                    <Tooltip title="Добавить группу">
+                      <IconButton
+                        size="small"
+                        onClick={openGroupDialog}
+                        sx={{ mt: 0.5 }}
+                        data-testid="password-form-add-group-button"
+                      >
+                        <AddOutlinedIcon fontSize="small" />
+                      </IconButton>
+                    </Tooltip>
+                  ) : null}
+                </Stack>
                 {!groups.length ? (
                   <Alert severity="warning">
-                    Нет доступных групп. Попросите администратора добавить группы в Настройках.
+                    {isAdmin
+                      ? 'Нет доступных групп. Добавьте группу, чтобы можно было создавать записи.'
+                      : 'Нет доступных групп. Попросите администратора добавить группы.'}
                     <Box sx={{ mt: 1 }}>
-                      <Button size="small" variant="outlined" onClick={() => navigate('/admin/system#password-groups-settings')}>
-                        Открыть Настройки
-                      </Button>
+                      {isAdmin ? (
+                        <Button size="small" variant="outlined" onClick={openGroupDialog}>
+                          Добавить группу
+                        </Button>
+                      ) : null}
                     </Box>
                   </Alert>
                 ) : null}
@@ -1122,6 +1169,43 @@ function Passwords() {
         </DialogActions>
       </Dialog>
 
+      <Dialog
+        open={groupDialogOpen}
+        onClose={() => setGroupDialogOpen(false)}
+        fullWidth
+        maxWidth="xs"
+      >
+        <DialogTitle>Новая группа</DialogTitle>
+        <DialogContent dividers>
+          <TextField
+            autoFocus
+            fullWidth
+            label="Название группы"
+            value={newGroupName}
+            onChange={(event) => setNewGroupName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && newGroupName.trim()) {
+                event.preventDefault();
+                handleCreateGroup();
+              }
+            }}
+            inputProps={{ 'data-testid': 'password-group-form-name' }}
+            sx={{ mt: 0.5 }}
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setGroupDialogOpen(false)}>Отмена</Button>
+          <Button
+            variant="contained"
+            onClick={handleCreateGroup}
+            disabled={groupSaving || !newGroupName.trim()}
+            data-testid="password-group-form-save"
+          >
+            {groupSaving ? 'Сохранение...' : 'Добавить'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
       <PasswordUnlockDialog
         open={unlockDialogOpen}
         isMobile={isMobile}
@@ -1187,6 +1271,8 @@ function Passwords() {
               onSelectTag={(tag) => {
                 setSelectedTag(tag);
               }}
+              canManageGroups={isAdmin}
+              onAddGroup={openGroupDialog}
             />
           </Box>
           {isAdmin && isMobile ? (
