@@ -962,6 +962,8 @@ class Warehouse1CService:
 
         normalized_balances_limit = clamp_limit(balances_limit, BALANCES_DEFAULT_LIMIT, BALANCES_MAX_LIMIT)
 
+        from backend.services.employment_status_service import resolve_employment_status
+
         if normalized_warehouse_ref:
             warehouse = self.lookup_warehouse_ref(normalized_warehouse_ref)
             if warehouse is None:
@@ -977,6 +979,11 @@ class Warehouse1CService:
                     warehouse_ref=warehouse["ref"],
                     limit=normalized_balances_limit,
                 )
+            status_name = str(warehouse.get("name") or normalized_name or "").strip()
+            employment = resolve_employment_status(status_name)
+            result["employment_status"] = employment.get("status")
+            result["employment_label"] = employment.get("label") or ""
+            result["employment_matched_name"] = employment.get("matched_name")
             return result
 
         match = self._match_employee_warehouse(normalized_name)
@@ -991,6 +998,16 @@ class Warehouse1CService:
                 warehouse_ref=match["warehouse"]["ref"],
                 limit=normalized_balances_limit,
             )
+
+        status_name = ""
+        if match.get("warehouse"):
+            status_name = str(match["warehouse"].get("name") or "").strip()
+        if not status_name:
+            status_name = normalized_name
+        employment = resolve_employment_status(status_name)
+        result["employment_status"] = employment.get("status")
+        result["employment_label"] = employment.get("label") or ""
+        result["employment_matched_name"] = employment.get("matched_name")
         return result
 
     async def suggest_nomenclature(self, text: str = "", limit: int | None = None) -> dict[str, Any]:
@@ -1155,6 +1172,137 @@ class Warehouse1CService:
             normalize_text(text),
             normalized_limit,
         )
+
+    def _match_warehouse_to_owner(
+        self,
+        warehouse_name: str,
+        owners: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any] | None, int]:
+        best_score = 0
+        best_owner: dict[str, Any] | None = None
+        for owner in owners or []:
+            owner_name = str(
+                owner.get("OWNER_DISPLAY_NAME")
+                or owner.get("owner_display_name")
+                or ""
+            ).strip()
+            if not owner_name:
+                continue
+            score = fio_person_match_score(owner_name, warehouse_name)
+            if score > best_score:
+                best_score = score
+                best_owner = owner
+        if best_score < 50:
+            return None, 0
+        return best_owner, best_score
+
+    async def get_balances_with_hub(
+        self,
+        nomenclature_ref: str = "",
+        part_no: str = "",
+        nomenclature_code: str = "",
+        model_name: str = "",
+        hub_query: str = "",
+        hub_query_source: str = "model",
+        limit: int | None = None,
+        db_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        """Balances by nomenclature enriched with Hub count and employment status."""
+        from backend.database import queries as db_queries
+        from backend.services.employment_status_service import resolve_employment_status_batch
+
+        normalized_ref = normalize_1c_ref(nomenclature_ref)
+        if not normalized_ref:
+            raise Warehouse1CValidationError("nomenclature_ref обязателен")
+
+        balances = await self.get_balances(
+            nomenclature_ref=normalized_ref,
+            limit=limit,
+        )
+        if not balances:
+            return []
+
+        owners = db_queries.list_owners_compact(db_id=db_id)
+        owner_by_warehouse: dict[str, tuple[dict[str, Any] | None, int]] = {}
+        matched_owner_nos: list[int] = []
+        employment_names: list[str] = []
+
+        for row in balances:
+            warehouse_name = str(row.get("warehouse_name") or "").strip()
+            cache_key = warehouse_name.casefold()
+            if cache_key not in owner_by_warehouse:
+                owner_by_warehouse[cache_key] = self._match_warehouse_to_owner(
+                    warehouse_name,
+                    owners,
+                )
+            owner, score = owner_by_warehouse[cache_key]
+            if owner is not None:
+                try:
+                    owner_no = int(owner.get("OWNER_NO") or owner.get("owner_no"))
+                except (TypeError, ValueError):
+                    owner_no = None
+                if owner_no is not None and owner_no not in matched_owner_nos:
+                    matched_owner_nos.append(owner_no)
+            employment_names.append(warehouse_name)
+
+        hub_counts = db_queries.count_equipment_by_owners_hub_query(
+            matched_owner_nos,
+            part_no=part_no,
+            part_nos=[nomenclature_code] if nomenclature_code else None,
+            model_name=model_name,
+            hub_query=hub_query,
+            hub_query_source=hub_query_source,
+            db_id=db_id,
+        )
+        employment_map = resolve_employment_status_batch(employment_names)
+
+        enriched: list[dict[str, Any]] = []
+        for row in balances:
+            payload = dict(row)
+            warehouse_name = str(row.get("warehouse_name") or "").strip()
+            owner, score = owner_by_warehouse.get(warehouse_name.casefold(), (None, 0))
+            hub_owner_no = None
+            hub_employee_name = ""
+            hub_count = None
+            if owner is not None:
+                try:
+                    hub_owner_no = int(owner.get("OWNER_NO") or owner.get("owner_no"))
+                except (TypeError, ValueError):
+                    hub_owner_no = None
+                hub_employee_name = str(
+                    owner.get("OWNER_DISPLAY_NAME")
+                    or owner.get("owner_display_name")
+                    or ""
+                ).strip()
+                if hub_owner_no is not None:
+                    hub_count = int(hub_counts.get(hub_owner_no, 0))
+
+            if hub_owner_no is not None:
+                employment = employment_map.get(warehouse_name) or {
+                    "status": "unknown",
+                    "label": "",
+                    "matched_name": None,
+                }
+            else:
+                # Не персональный склад — статус занятости не применяем.
+                employment = {
+                    "status": "unknown",
+                    "label": "",
+                    "matched_name": None,
+                }
+            payload.update(
+                {
+                    "hub_owner_no": hub_owner_no,
+                    "hub_employee_name": hub_employee_name,
+                    "hub_count": hub_count,
+                    "hub_match_score": score or None,
+                    "employment_status": employment.get("status"),
+                    "employment_label": employment.get("label") or "",
+                    "employment_matched_name": employment.get("matched_name"),
+                }
+            )
+            enriched.append(payload)
+        return enriched
 
     # ------------------------------------------------------------------
     # Ведомость с деньгами (movements)

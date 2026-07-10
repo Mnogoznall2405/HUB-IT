@@ -103,6 +103,7 @@ import DatabaseSearchBar, {
   SEARCH_SCOPE_EQUIPMENT,
 } from './database/DatabaseSearchBar';
 import DatabaseActSearchResults from './database/DatabaseActSearchResults';
+import DocumentPreviewDialog from '../components/documentPreview/DocumentPreviewDialog';
 import DatabaseDesktopToolbar from './database/DatabaseDesktopToolbar';
 import DatabaseMobileHeader from './database/DatabaseMobileHeader';
 import DatabaseMobileControlStrip from './database/DatabaseMobileControlStrip';
@@ -609,6 +610,8 @@ function Database() {
     handleOpenEquipmentActFile,
     handleOpenActFields,
     handleCloseActFields,
+    actFilePreview,
+    closeActFilePreview,
   } = useDatabaseDetailRuntime({
     canDatabaseWrite,
     findEquipmentByInvNo,
@@ -655,20 +658,98 @@ function Database() {
     }
   }, [resetActSearch, runSearchNow, searchQuery]);
 
-  const handleOpenActSearchEquipment = useCallback((act, items) => {
-    const list = Array.isArray(items)
-      ? items
-      : (Array.isArray(act?.items) ? act.items : []);
-    const firstItem = list.find((item) => String(item?.inv_no || '').trim());
-    const invNo = String(firstItem?.inv_no || '').trim();
-    if (!invNo) return;
-    const item = findEquipmentByInvNo?.(invNo);
-    openDetailView(item || invNo, {
-      invNo,
-      loading: !item,
-      initialTab: 'acts',
+  // Кэш карточек для быстрого перехода из поиска актов (не ждём полный список Инвентаря).
+  const actEquipmentCacheRef = useRef(new Map());
+
+  const prefetchActSearchEquipment = useCallback(async (invNos = []) => {
+    const list = Array.from(
+      new Set((Array.isArray(invNos) ? invNos : []).map((value) => String(value || '').trim()).filter(Boolean)),
+    );
+    if (!list.length) return;
+
+    const missing = list.filter((invNo) => {
+      if (actEquipmentCacheRef.current.has(invNo)) return false;
+      if (findEquipmentByInvNo?.(invNo)) return false;
+      return true;
     });
-  }, [findEquipmentByInvNo, openDetailView]);
+    if (!missing.length) return;
+
+    try {
+      const response = await equipmentAPI.getByInvNos(missing);
+      const rows = Array.isArray(response?.equipment) ? response.equipment : [];
+      if (!rows.length) return;
+
+      const mergedRows = [];
+      rows.forEach((row) => {
+        const invNo = String(row?.INV_NO ?? row?.inv_no ?? '').trim();
+        if (!invNo) return;
+        const prev = actEquipmentCacheRef.current.get(invNo) || {};
+        const next = { ...prev, ...row };
+        actEquipmentCacheRef.current.set(invNo, next);
+        mergedRows.push(next);
+      });
+
+      // Кладём в общий индекс Инвентаря — следующие открытия мгновенные.
+      if (mergedRows.length && typeof setAllEquipment === 'function') {
+        setAllEquipment((prev) => {
+          const prevList = Array.isArray(prev) ? prev : [];
+          const byInv = new Map(
+            prevList.map((item) => [String(item?.INV_NO ?? item?.inv_no ?? '').trim(), item]),
+          );
+          mergedRows.forEach((row) => {
+            const invNo = String(row?.INV_NO ?? row?.inv_no ?? '').trim();
+            if (!invNo) return;
+            byInv.set(invNo, { ...(byInv.get(invNo) || {}), ...row });
+          });
+          return Array.from(byInv.values());
+        });
+      }
+    } catch (error) {
+      console.error('Failed to prefetch equipment from act search:', error);
+    }
+  }, [findEquipmentByInvNo, setAllEquipment]);
+
+  const handleOpenActSearchEquipment = useCallback((invNoOrAct, maybeMeta) => {
+    // Новый UI: (invNo, itemMeta). Старый: (act, items[]).
+    let invNo = '';
+    let itemMeta = null;
+    if (typeof invNoOrAct === 'string' || typeof invNoOrAct === 'number') {
+      invNo = String(invNoOrAct || '').trim();
+      if (maybeMeta && typeof maybeMeta === 'object' && !Array.isArray(maybeMeta)) {
+        itemMeta = maybeMeta;
+      }
+    } else {
+      const list = Array.isArray(maybeMeta)
+        ? maybeMeta
+        : (Array.isArray(invNoOrAct?.items) ? invNoOrAct.items : []);
+      const firstItem = list.find((item) => String(item?.inv_no || item?.invNo || '').trim());
+      invNo = String(firstItem?.inv_no || firstItem?.invNo || '').trim();
+      itemMeta = firstItem || null;
+    }
+    if (!invNo) return;
+
+    const fromIndex = findEquipmentByInvNo?.(invNo) || null;
+    const fromCache = actEquipmentCacheRef.current.get(invNo) || null;
+    const fromMeta = itemMeta
+      ? {
+        INV_NO: invNo,
+        MODEL_NAME: itemMeta.modelName || itemMeta.model_name || '',
+        SERIAL_NO: itemMeta.serialNo || itemMeta.serial_no || '',
+        ID: itemMeta.itemId || itemMeta.item_id || undefined,
+      }
+      : null;
+    const snapshot = fromIndex || fromCache || fromMeta;
+    // Открываем сразу с тем, что есть; полный fetch догрузится в фоне.
+    openDetailView(snapshot || invNo, {
+      invNo,
+      loading: false,
+      initialTab: 'general',
+    });
+    // На всякий случай догружаем карточку, если ещё не в кэше.
+    if (!fromIndex && !fromCache) {
+      void prefetchActSearchEquipment([invNo]);
+    }
+  }, [findEquipmentByInvNo, openDetailView, prefetchActSearchEquipment]);
 
   const isActsScope = !isConsumablesMode && searchScope === SEARCH_SCOPE_ACTS;
 
@@ -1286,6 +1367,7 @@ function Database() {
             truncated={actSearchTruncated}
             formatDate={formatDate}
             onOpenEquipment={handleOpenActSearchEquipment}
+            onPrefetchEquipment={prefetchActSearchEquipment}
             onErrorClose={clearActSearchError}
           />
         ) : (
@@ -1632,6 +1714,24 @@ function Database() {
           openingDocNo={detailActOpeningDocNo}
           onOpenFile={handleOpenEquipmentActFile}
           formatDate={formatDate}
+        />
+
+        <DocumentPreviewDialog
+          open={Boolean(actFilePreview?.open)}
+          title={actFilePreview?.title || 'Акт'}
+          subtitle={actFilePreview?.subtitle || ''}
+          kind={actFilePreview?.kind || 'pdf'}
+          objectUrl={actFilePreview?.objectUrl || ''}
+          loading={Boolean(actFilePreview?.loading)}
+          error={actFilePreview?.error || ''}
+          onClose={closeActFilePreview}
+          onDownloadOriginal={actFilePreview?.previewBlob && actFilePreview?.objectUrl ? () => {
+            const link = document.createElement('a');
+            link.href = actFilePreview.objectUrl;
+            link.download = actFilePreview.title || 'act.pdf';
+            link.click();
+          } : undefined}
+          canDownloadOriginal={Boolean(actFilePreview?.previewBlob)}
         />
 
         {/* QR Scanner Dialog */}

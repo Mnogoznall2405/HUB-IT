@@ -97,6 +97,23 @@ def test_uploaded_act_items_descr_matches_document_addinfo_format():
     assert ": акт №" not in line
 
 
+def test_uploaded_act_file_name_uses_act_note_and_original_extension():
+    line = queries._build_uploaded_act_addinfo(
+        1464,
+        "Санду Андрей Олегович",
+        "Козловский Андрей Михайлович",
+        datetime(2026, 6, 29),
+    )
+
+    file_name = queries._build_uploaded_act_file_name(line, "original_scan.PDF")
+
+    assert file_name == "Акт 1464 Санду А.О. - Козловский А.М. от 29.06.2026.PDF"
+
+
+def test_uploaded_act_file_name_falls_back_to_pdf_extension():
+    assert queries._build_uploaded_act_file_name("Акт 1464", "original") == "Акт 1464.pdf"
+
+
 def test_to_short_fio():
     assert to_short_fio("Иванов Иван Иванович") == "Иванов И.И."
     assert to_short_fio("Санду А.О.") == "Санду А.О."

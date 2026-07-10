@@ -1,41 +1,46 @@
-import { memo, useCallback, useMemo, useState } from 'react';
+import { memo, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
   Button,
   Chip,
+  Divider,
+  List,
+  ListItemButton,
+  ListItemText,
   Paper,
   Stack,
-  Table,
-  TableBody,
-  TableCell,
-  TableContainer,
-  TableHead,
-  TableRow,
-  Tooltip,
   Typography,
   alpha,
 } from '@mui/material';
 import DescriptionOutlinedIcon from '@mui/icons-material/DescriptionOutlined';
 import Inventory2OutlinedIcon from '@mui/icons-material/Inventory2Outlined';
+import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 
+import DocumentPreviewDialog from '../../components/documentPreview/DocumentPreviewDialog';
 import { LoadingSpinner } from '../../components/common';
-import { API_V1_BASE } from '../../api/client';
 import {
   getOfficeEmptyStateSx,
   getOfficeHeaderBandSx,
   getOfficePanelSx,
 } from '../../theme/officeUiTokens';
-import { readFirst, normalizeDbId } from './databaseRecordModel';
+import { readFirst } from './databaseRecordModel';
+import { useEquipmentActFilePreview } from './useEquipmentActFilePreview';
 
-const formatEquipmentItems = (items = []) => {
-  const normalized = (Array.isArray(items) ? items : [])
-    .map((item) => String(item?.inv_no || '').trim())
-    .filter(Boolean);
-  if (normalized.length === 0) return '-';
-  if (normalized.length <= 2) return normalized.join(', ');
-  return `${normalized.slice(0, 2).join(', ')} +${normalized.length - 2}`;
-};
+function getActKey(act) {
+  return String(readFirst(act, ['doc_no', 'DOC_NO'], '') || readFirst(act, ['doc_number', 'DOC_NUMBER'], '')).trim();
+}
+
+function normalizeActItems(items = []) {
+  return (Array.isArray(items) ? items : [])
+    .map((item) => ({
+      invNo: String(item?.inv_no || '').trim(),
+      modelName: String(item?.model_name || '').trim(),
+      serialNo: String(item?.serial_no || '').trim(),
+      itemId: item?.item_id,
+    }))
+    .filter((item) => item.invNo);
+}
 
 const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
   query = '',
@@ -45,62 +50,63 @@ const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
   truncated = false,
   formatDate = (value) => value,
   onOpenEquipment,
+  onPrefetchEquipment = null,
   onErrorClose,
   theme,
   ui,
 }) {
-  const [openingDocNo, setOpeningDocNo] = useState('');
+  const { preview, openingDocNo, openActFile, closePreview } = useEquipmentActFilePreview();
+  const [selectedKey, setSelectedKey] = useState('');
 
-  const panelSx = useMemo(
-    () => getOfficePanelSx(ui, { borderRadius: '12px', overflow: 'hidden' }),
-    [ui]
-  );
-  const emptyStateSx = useMemo(() => getOfficeEmptyStateSx(ui, { p: 2 }), [ui]);
-  const headerBandSx = useMemo(() => getOfficeHeaderBandSx(ui), [ui]);
+  const panelSx = getOfficePanelSx(ui, { borderRadius: '12px', overflow: 'hidden' });
+  const emptyStateSx = getOfficeEmptyStateSx(ui, { p: 2 });
+  const headerBandSx = getOfficeHeaderBandSx(ui);
   const textSecondary = ui?.textSecondary || theme.palette.text.secondary;
   const textPrimary = ui?.textPrimary || theme.palette.text.primary;
   const actionHover = ui?.actionHover || alpha(theme.palette.text.primary, theme.palette.mode === 'dark' ? 0.08 : 0.06);
   const borderSoft = ui?.borderSoft || theme.palette.divider;
+  const selectedBg = ui?.selectedBg || alpha(theme.palette.primary.main, 0.16);
+  const selectedBorder = ui?.selectedBorder || alpha(theme.palette.primary.main, 0.35);
+  const panelInset = ui?.panelInset || theme.palette.action.hover;
 
-  const handleOpenFile = useCallback((act) => {
-    const docNo = String(readFirst(act, ['doc_no', 'DOC_NO'], '')).trim();
-    if (!docNo) return;
+  const acts = useMemo(() => (Array.isArray(results) ? results : []), [results]);
 
-    const firstItem = Array.isArray(act?.items) ? act.items[0] : null;
-    const itemId = readFirst(firstItem || {}, ['item_id', 'ITEM_ID'], null);
-    const invNo = String(readFirst(firstItem || {}, ['inv_no', 'INV_NO'], '')).trim();
-
-    setOpeningDocNo(docNo);
-    try {
-      const selectedDb = normalizeDbId(localStorage.getItem('selected_database') || '');
-      const requestUrl = new URL(
-        `${API_V1_BASE}/equipment/acts/${encodeURIComponent(docNo)}/file`,
-        window.location.origin
-      );
-      if (itemId !== null && itemId !== undefined && itemId !== '') {
-        requestUrl.searchParams.set('item_id', String(itemId));
-      }
-      if (invNo) {
-        requestUrl.searchParams.set('inv_no', invNo);
-      }
-      if (selectedDb) {
-        requestUrl.searchParams.set('db_id', selectedDb);
-      }
-      const opened = window.open(requestUrl.toString(), '_blank', 'noopener,noreferrer');
-      if (!opened) {
-        window.location.assign(requestUrl.toString());
-      }
-    } finally {
-      setOpeningDocNo('');
+  useEffect(() => {
+    if (!acts.length) {
+      setSelectedKey('');
+      return;
     }
-  }, []);
+    const stillExists = acts.some((act) => getActKey(act) === selectedKey);
+    if (!stillExists) {
+      setSelectedKey(getActKey(acts[0]));
+    }
+  }, [acts, selectedKey]);
+
+  const selectedAct = useMemo(
+    () => acts.find((act) => getActKey(act) === selectedKey) || null,
+    [acts, selectedKey],
+  );
+  const selectedItems = useMemo(
+    () => normalizeActItems(selectedAct?.items),
+    [selectedAct],
+  );
+
+  // Prefetch карточек оборудования выбранного акта — открытие без ожидания.
+  useEffect(() => {
+    if (!selectedItems.length || typeof onPrefetchEquipment !== 'function') return undefined;
+    const invNos = selectedItems.map((item) => item.invNo);
+    const timer = window.setTimeout(() => {
+      void onPrefetchEquipment(invNos);
+    }, 0);
+    return () => window.clearTimeout(timer);
+  }, [onPrefetchEquipment, selectedItems]);
 
   const normalizedQuery = String(query || '').trim();
   if (normalizedQuery.length < 2) {
     return (
       <Paper variant="outlined" sx={{ ...emptyStateSx, mb: 2 }}>
         <Typography variant="body2" sx={{ color: textSecondary }}>
-          Введите номер акта, ФИО сотрудника или инв. №
+          Введите номер акта или фамилию сотрудника
         </Typography>
       </Paper>
     );
@@ -114,16 +120,50 @@ const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
     );
   }
 
+  const selectedDocNo = selectedAct
+    ? String(readFirst(selectedAct, ['doc_no', 'DOC_NO'], '')).trim()
+    : '';
+  const selectedDocNumber = selectedAct
+    ? (String(readFirst(selectedAct, ['doc_number', 'DOC_NUMBER'], '-')).trim() || '-')
+    : '';
+  const selectedHasFile = Boolean(selectedAct?.has_file);
+  const isOpeningSelected = Boolean(
+    selectedDocNo
+    && (openingDocNo === selectedDocNo || (preview.loading && preview.open)),
+  );
+
   return (
     <Box sx={{ mb: 2 }}>
       <Paper variant="outlined" sx={panelSx}>
         <Box sx={{ ...headerBandSx, px: 2, py: 1.25 }}>
-          <Typography variant="subtitle2" sx={{ fontWeight: 700, color: textPrimary }}>
-            Результаты поиска актов
-          </Typography>
-          <Typography variant="caption" sx={{ color: textSecondary, display: 'block', mt: 0.25 }}>
-            Запрос: {normalizedQuery}
-          </Typography>
+          <Stack
+            direction={{ xs: 'column', sm: 'row' }}
+            spacing={0.5}
+            alignItems={{ sm: 'center' }}
+            justifyContent="space-between"
+          >
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 700, color: textPrimary }}>
+                Результаты поиска актов
+              </Typography>
+              <Typography variant="caption" sx={{ color: textSecondary, display: 'block', mt: 0.25 }}>
+                Запрос: {normalizedQuery}
+                {acts.length ? ` · найдено ${acts.length}` : ''}
+              </Typography>
+            </Box>
+            {selectedAct && selectedHasFile ? (
+              <Button
+                size="small"
+                variant="contained"
+                startIcon={<DescriptionOutlinedIcon />}
+                disabled={isOpeningSelected}
+                onClick={() => void openActFile(selectedAct)}
+                sx={{ alignSelf: { xs: 'stretch', sm: 'center' } }}
+              >
+                Открыть файл акта
+              </Button>
+            ) : null}
+          </Stack>
         </Box>
 
         <Box sx={{ p: 1.5 }}>
@@ -139,118 +179,266 @@ const DatabaseActSearchResults = memo(function DatabaseActSearchResults({
             </Alert>
           ) : null}
 
-          {results.length === 0 && !error ? (
+          {acts.length === 0 && !error ? (
             <Box sx={emptyStateSx}>
               <Typography variant="body2" sx={{ color: textSecondary }}>
                 Акты не найдены
               </Typography>
             </Box>
           ) : (
-            <TableContainer sx={{ borderRadius: '10px', border: '1px solid', borderColor: borderSoft }}>
-              <Table size="small">
-                <TableHead>
-                  <TableRow sx={headerBandSx}>
-                    <TableCell sx={{ color: textSecondary, fontWeight: 700 }}>№ документа</TableCell>
-                    <TableCell sx={{ color: textSecondary, fontWeight: 700 }}>Дата</TableCell>
-                    <TableCell sx={{ color: textSecondary, fontWeight: 700 }}>Тип</TableCell>
-                    <TableCell sx={{ color: textSecondary, fontWeight: 700 }}>Сотрудник</TableCell>
-                    <TableCell sx={{ color: textSecondary, fontWeight: 700 }}>Филиал / Локация</TableCell>
-                    <TableCell sx={{ color: textSecondary, fontWeight: 700 }}>Оборудование</TableCell>
-                    <TableCell align="right" sx={{ color: textSecondary, fontWeight: 700 }}>Действия</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {results.map((act) => {
-                    const docNo = String(readFirst(act, ['doc_no', 'DOC_NO'], '')).trim();
+            <Box
+              sx={{
+                display: 'grid',
+                gridTemplateColumns: { xs: '1fr', md: 'minmax(280px, 38%) 1fr' },
+                gap: 1.5,
+                minHeight: { md: 360 },
+              }}
+            >
+              <Paper
+                variant="outlined"
+                sx={{
+                  borderColor: borderSoft,
+                  borderRadius: '10px',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  bgcolor: ui?.panelBg || 'transparent',
+                }}
+              >
+                <Box sx={{ px: 1.5, py: 1, borderBottom: '1px solid', borderColor: borderSoft }}>
+                  <Typography variant="caption" sx={{ color: textSecondary, fontWeight: 700, letterSpacing: 0.3 }}>
+                    АКТЫ
+                  </Typography>
+                </Box>
+                <List dense disablePadding sx={{ overflow: 'auto', maxHeight: { xs: 280, md: 480 } }}>
+                  {acts.map((act) => {
+                    const key = getActKey(act);
                     const docNumber = String(readFirst(act, ['doc_number', 'DOC_NUMBER'], '-')).trim() || '-';
-                    const typeName = String(readFirst(act, ['type_name', 'TYPE_NAME'], '-')).trim() || '-';
-                    const employeeName = String(readFirst(act, ['employee_name', 'EMPLOYEE_NAME'], '-')).trim() || '-';
+                    const employeeName = String(readFirst(act, ['employee_name', 'EMPLOYEE_NAME'], '')).trim();
                     const branchName = String(readFirst(act, ['branch_name', 'BRANCH_NAME'], '')).trim();
                     const locationName = String(readFirst(act, ['location_name', 'LOCATION_NAME'], '')).trim();
-                    const branchLocation = [branchName, locationName].filter(Boolean).join(' / ') || '-';
-                    const items = Array.isArray(act?.items) ? act.items : [];
-                    const equipmentLabel = formatEquipmentItems(items);
+                    const place = [branchName, locationName].filter(Boolean).join(' / ');
+                    const itemsCount = normalizeActItems(act?.items).length;
                     const hasFile = Boolean(act?.has_file);
-                    const isOpening = openingDocNo === docNo;
+                    const selected = key === selectedKey;
+                    const secondaryParts = [
+                      formatDate(readFirst(act, ['doc_date', 'DOC_DATE'], '')),
+                      place || null,
+                      employeeName || null,
+                    ].filter(Boolean);
 
                     return (
-                      <TableRow
-                        key={docNo || docNumber}
-                        hover
+                      <ListItemButton
+                        key={key || docNumber}
+                        selected={selected}
+                        onClick={() => setSelectedKey(key)}
                         sx={{
+                          alignItems: 'flex-start',
+                          py: 1.1,
+                          px: 1.5,
+                          borderLeft: '3px solid',
+                          borderLeftColor: selected ? theme.palette.primary.main : 'transparent',
+                          bgcolor: selected ? selectedBg : 'transparent',
+                          '&.Mui-selected': {
+                            bgcolor: selectedBg,
+                          },
+                          '&.Mui-selected:hover': {
+                            bgcolor: selectedBg,
+                          },
                           '&:hover': { bgcolor: actionHover },
-                          '& td': { color: textPrimary, borderColor: borderSoft },
                         }}
                       >
-                        <TableCell>
-                          <Stack direction="row" spacing={0.75} alignItems="center" useFlexGap flexWrap="wrap">
-                            <Typography variant="body2" sx={{ fontWeight: 600, color: textPrimary }}>
-                              {docNumber}
-                            </Typography>
-                            {!hasFile ? (
+                        <ListItemText
+                          primary={(
+                            <Stack direction="row" spacing={0.75} alignItems="center" useFlexGap flexWrap="wrap">
+                              <Typography variant="body2" sx={{ fontWeight: 700, color: textPrimary }}>
+                                {docNumber}
+                              </Typography>
                               <Chip
                                 size="small"
-                                label="без файла"
-                                variant="outlined"
+                                label={`${itemsCount} поз.`}
                                 sx={{
+                                  height: 22,
                                   color: textSecondary,
                                   borderColor: borderSoft,
-                                  bgcolor: ui?.panelBg || 'transparent',
+                                  bgcolor: panelInset,
                                 }}
+                                variant="outlined"
                               />
-                            ) : null}
-                          </Stack>
-                        </TableCell>
-                        <TableCell>{formatDate(readFirst(act, ['doc_date', 'DOC_DATE'], ''))}</TableCell>
-                        <TableCell>{typeName}</TableCell>
-                        <TableCell>{employeeName}</TableCell>
-                        <TableCell>{branchLocation}</TableCell>
-                        <TableCell>
-                          <Tooltip title={items.map((item) => item?.inv_no).filter(Boolean).join(', ') || '-'}>
-                            <Typography variant="body2" noWrap sx={{ maxWidth: 180, color: textPrimary }}>
-                              {equipmentLabel}
+                              {!hasFile ? (
+                                <Chip
+                                  size="small"
+                                  label="без файла"
+                                  variant="outlined"
+                                  sx={{
+                                    height: 22,
+                                    color: textSecondary,
+                                    borderColor: borderSoft,
+                                  }}
+                                />
+                              ) : null}
+                            </Stack>
+                          )}
+                          secondary={(
+                            <Typography variant="caption" sx={{ color: textSecondary, display: 'block', mt: 0.35 }}>
+                              {secondaryParts.join(' · ') || '—'}
                             </Typography>
-                          </Tooltip>
-                        </TableCell>
-                        <TableCell align="right">
-                          <Stack direction="row" spacing={0.75} justifyContent="flex-end" useFlexGap flexWrap="wrap">
-                            <Button
-                              size="small"
-                              variant="outlined"
-                              startIcon={<DescriptionOutlinedIcon />}
-                              disabled={!hasFile || isOpening}
-                              onClick={() => handleOpenFile(act)}
-                              sx={{
-                                borderColor: borderSoft,
-                                color: textPrimary,
-                                '&:hover': {
-                                  borderColor: alpha(theme.palette.primary.main, 0.45),
-                                  bgcolor: actionHover,
-                                },
-                              }}
-                            >
-                              Файл
-                            </Button>
-                            <Button
-                              size="small"
-                              variant="contained"
-                              startIcon={<Inventory2OutlinedIcon />}
-                              disabled={items.length === 0}
-                              onClick={() => onOpenEquipment?.(act, items)}
-                            >
-                              Оборудование
-                            </Button>
-                          </Stack>
-                        </TableCell>
-                      </TableRow>
+                          )}
+                        />
+                      </ListItemButton>
                     );
                   })}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                </List>
+              </Paper>
+
+              <Paper
+                variant="outlined"
+                sx={{
+                  borderColor: selectedAct ? selectedBorder : borderSoft,
+                  borderRadius: '10px',
+                  overflow: 'hidden',
+                  display: 'flex',
+                  flexDirection: 'column',
+                  minHeight: { xs: 240, md: 'auto' },
+                }}
+              >
+                <Box sx={{ px: 1.75, py: 1.25, borderBottom: '1px solid', borderColor: borderSoft }}>
+                  {selectedAct ? (
+                    <Stack spacing={0.35}>
+                      <Typography variant="caption" sx={{ color: textSecondary, fontWeight: 700, letterSpacing: 0.3 }}>
+                        ОБОРУДОВАНИЕ АКТА
+                      </Typography>
+                      <Typography variant="subtitle2" sx={{ fontWeight: 700, color: textPrimary }}>
+                        {selectedDocNumber}
+                      </Typography>
+                      <Typography variant="caption" sx={{ color: textSecondary }}>
+                        {[
+                          formatDate(readFirst(selectedAct, ['doc_date', 'DOC_DATE'], '')),
+                          [
+                            String(readFirst(selectedAct, ['branch_name', 'BRANCH_NAME'], '')).trim(),
+                            String(readFirst(selectedAct, ['location_name', 'LOCATION_NAME'], '')).trim(),
+                          ].filter(Boolean).join(' / ') || null,
+                          String(readFirst(selectedAct, ['employee_name', 'EMPLOYEE_NAME'], '')).trim() || null,
+                        ].filter(Boolean).join(' · ') || '—'}
+                      </Typography>
+                    </Stack>
+                  ) : (
+                    <Typography variant="body2" sx={{ color: textSecondary }}>
+                      Выберите акт слева
+                    </Typography>
+                  )}
+                </Box>
+
+                <Box sx={{ p: 1.25, flex: 1, overflow: 'auto', maxHeight: { xs: 360, md: 480 } }}>
+                  {!selectedAct ? (
+                    <Box sx={{ ...emptyStateSx, border: 'none' }}>
+                      <Typography variant="body2" sx={{ color: textSecondary }}>
+                        Выберите акт, чтобы увидеть оборудование
+                      </Typography>
+                    </Box>
+                  ) : selectedItems.length === 0 ? (
+                    <Box sx={{ ...emptyStateSx, border: 'none' }}>
+                      <Typography variant="body2" sx={{ color: textSecondary }}>
+                        В акте нет позиций оборудования
+                      </Typography>
+                    </Box>
+                  ) : (
+                    <Stack spacing={1} divider={<Divider flexItem sx={{ borderColor: borderSoft }} />}>
+                      {selectedItems.map((item) => (
+                        <Stack
+                          key={`${item.itemId || item.invNo}|${item.invNo}`}
+                          direction={{ xs: 'column', sm: 'row' }}
+                          spacing={1}
+                          alignItems={{ sm: 'center' }}
+                          justifyContent="space-between"
+                          sx={{
+                            px: 1,
+                            py: 0.85,
+                            borderRadius: '8px',
+                            '&:hover': { bgcolor: actionHover },
+                          }}
+                        >
+                          <Stack direction="row" spacing={1} alignItems="flex-start" sx={{ minWidth: 0 }}>
+                            <Inventory2OutlinedIcon
+                              fontSize="small"
+                              sx={{ color: textSecondary, mt: 0.25, flexShrink: 0 }}
+                            />
+                            <Box sx={{ minWidth: 0 }}>
+                              <Typography variant="body2" sx={{ fontWeight: 700, color: textPrimary }}>
+                                {item.invNo}
+                              </Typography>
+                              <Typography
+                                variant="caption"
+                                sx={{
+                                  color: textSecondary,
+                                  display: 'block',
+                                  overflow: 'hidden',
+                                  textOverflow: 'ellipsis',
+                                  whiteSpace: 'nowrap',
+                                }}
+                              >
+                                {[item.modelName, item.serialNo ? `S/N ${item.serialNo}` : '']
+                                  .filter(Boolean)
+                                  .join(' · ') || 'Модель не указана'}
+                              </Typography>
+                            </Box>
+                          </Stack>
+                          <Button
+                            size="small"
+                            variant="outlined"
+                            endIcon={<OpenInNewIcon />}
+                            onClick={() => onOpenEquipment?.(item.invNo, item)}
+                            sx={{
+                              flexShrink: 0,
+                              borderColor: borderSoft,
+                              color: textPrimary,
+                              alignSelf: { xs: 'stretch', sm: 'center' },
+                              '&:hover': {
+                                borderColor: alpha(theme.palette.primary.main, 0.45),
+                                bgcolor: actionHover,
+                              },
+                            }}
+                          >
+                            Открыть
+                          </Button>
+                        </Stack>
+                      ))}
+                    </Stack>
+                  )}
+                </Box>
+
+                {selectedAct && !selectedHasFile ? (
+                  <Box sx={{ px: 1.75, py: 1, borderTop: '1px solid', borderColor: borderSoft }}>
+                    <Typography variant="caption" sx={{ color: textSecondary }}>
+                      Файл акта не прикреплён
+                    </Typography>
+                  </Box>
+                ) : null}
+              </Paper>
+            </Box>
           )}
         </Box>
       </Paper>
+
+      <DocumentPreviewDialog
+        open={preview.open}
+        title={preview.title}
+        subtitle={preview.subtitle}
+        kind={preview.kind}
+        objectUrl={preview.objectUrl}
+        loading={preview.loading}
+        error={preview.error}
+        onClose={closePreview}
+        onDownloadOriginal={preview.previewBlob ? () => {
+          const url = preview.objectUrl;
+          if (!url) return;
+          const link = document.createElement('a');
+          link.href = url;
+          link.download = preview.title || 'act.pdf';
+          link.click();
+        } : undefined}
+        canDownloadOriginal={Boolean(preview.previewBlob)}
+      />
     </Box>
   );
 });

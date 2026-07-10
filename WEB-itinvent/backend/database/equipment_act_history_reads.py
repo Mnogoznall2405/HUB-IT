@@ -275,13 +275,12 @@ def search_equipment_acts(
         return {"query": query_text, "total": 0, "acts": [], "truncated": False}
 
     like_pattern = f"%{query_text.lower()}%"
+    # Только номер акта и ФИО/фамилия сотрудника (не инв./серийный №).
     search_conditions = [
         "LOWER(COALESCE(d.DOC_NUMBER, N'')) LIKE ?",
         "LOWER(COALESCE(o.OWNER_DISPLAY_NAME, N'')) LIKE ?",
-        "LOWER(COALESCE(CAST(i.INV_NO AS VARCHAR(64)), N'')) LIKE ?",
-        "LOWER(COALESCE(i.SERIAL_NO, N'')) LIKE ?",
     ]
-    params: List[Any] = [like_pattern, like_pattern, like_pattern, like_pattern]
+    params: List[Any] = [like_pattern, like_pattern]
     if query_text.isdigit():
         search_conditions.append("d.DOC_NO = ?")
         params.append(int(query_text))

@@ -475,6 +475,7 @@ const EquipmentDetailDialog = memo(function EquipmentDetailDialog({
             active={open && tab === 'warehouse1c'}
             detailLoading={loading}
             buildReturnContext={buildWarehouseReturnContext}
+            onOpenEmployee={onOpenEmployee}
           />
         </Box>
       ) : null}

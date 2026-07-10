@@ -81,13 +81,18 @@ def test_search_equipment_acts_matches_doc_number_and_enriches_type_name(monkeyp
     ]
 
     search_query, search_params = fake_db.calls[0]
-    assert "%перемещ%" in search_params[0]
+    assert search_params == ("%перемещ%", "%перемещ%")
+    where_sql = search_query.split("WHERE", 1)[1]
+    assert "DOC_NUMBER" in where_sql
+    assert "OWNER_DISPLAY_NAME" in where_sql
+    assert "CAST(i.INV_NO" not in where_sql
+    assert "i.SERIAL_NO" not in where_sql
     assert "FROM DOCS d" in search_query
     assert "INNER JOIN DOCS_LIST dl" in search_query
     assert "NOT LIKE N'%аннулир%'" in search_query
 
 
-def test_search_equipment_acts_matches_inventory_number_and_groups_items(monkeypatch):
+def test_search_equipment_acts_groups_multiple_items_for_one_act(monkeypatch):
     search_rows = [
         {
             "doc_no": 900,
@@ -121,14 +126,15 @@ def test_search_equipment_acts_matches_inventory_number_and_groups_items(monkeyp
     def fake_get_db(db_id=None):
         return fake_db
 
-    result = search_equipment_acts("2002", db_id="archive", get_db_fn=fake_get_db)
+    result = search_equipment_acts("Петров", db_id="archive", get_db_fn=fake_get_db)
 
     assert result["total"] == 1
     assert len(result["acts"][0]["items"]) == 2
     assert {item["inv_no"] for item in result["acts"][0]["items"]} == {"2002", "2003"}
 
     search_query, search_params = fake_db.calls[0]
-    assert "%2002%" in search_params[2]
+    assert search_params == ("%петров%", "%петров%")
+    assert "OWNER_DISPLAY_NAME" in search_query
 
 
 def test_search_equipment_acts_supports_numeric_doc_no_lookup():
@@ -140,6 +146,7 @@ def test_search_equipment_acts_supports_numeric_doc_no_lookup():
     search_equipment_acts("12345", db_id="main", get_db_fn=fake_get_db)
 
     _, search_params = fake_db.calls[0]
+    assert search_params[:2] == ("%12345%", "%12345%")
     assert 12345 in search_params
 
 

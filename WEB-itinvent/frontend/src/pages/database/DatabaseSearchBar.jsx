@@ -94,7 +94,7 @@ const DatabaseSearchBar = memo(function DatabaseSearchBar({
           isConsumablesMode
             ? 'Поиск по ID, типу, модели...'
             : isActsScope
-              ? 'Поиск по № акта, сотруднику, инв. №...'
+              ? 'Поиск по № акта или фамилии...'
               : 'Поиск по инв. №, модели, сотруднику...'
         }
         value={value}

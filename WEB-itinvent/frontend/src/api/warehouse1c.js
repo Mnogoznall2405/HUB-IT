@@ -46,6 +46,30 @@ export const warehouse1cAPI = {
     return data;
   },
 
+  getBalancesWithHub: async ({
+    nomenclatureRef = '',
+    partNo = '',
+    nomenclatureCode = '',
+    modelName = '',
+    hubQuery = '',
+    hubQuerySource = 'model',
+    limit = 200,
+  } = {}) => {
+    const { data } = await apiClient.get('/warehouse-1c/balances-with-hub', {
+      params: {
+        nomenclature_ref: normalize1cRef(nomenclatureRef),
+        part_no: partNo,
+        nomenclature_code: nomenclatureCode,
+        model_name: modelName,
+        hub_query: hubQuery,
+        hub_query_source: hubQuerySource,
+        limit,
+      },
+      timeout: WAREHOUSE_1C_QUERY_TIMEOUT_MS,
+    });
+    return data;
+  },
+
   getMovements: async ({
     nomenclatureRef,
     warehouseRef = '',

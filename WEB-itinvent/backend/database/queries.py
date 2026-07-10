@@ -748,6 +748,21 @@ def _build_uploaded_act_addinfo(
     return f"Акт {int(doc_no)} {from_short} - {to_short} от {date_str}"
 
 
+def _build_uploaded_act_file_name(act_line: str, original_file_name: str) -> str:
+    """Build a readable database file name from the uploaded-act note."""
+    raw_name = str(original_file_name or "").strip()
+    _base_name, extension = os.path.splitext(raw_name)
+    extension = extension.strip()
+    if not extension or len(extension) > 16:
+        extension = ".pdf"
+
+    max_base_len = 255 - len(extension)
+    base_name = _legacy_sqlserver_text(str(act_line or "").strip(), max_len=max_base_len).strip()
+    if not base_name:
+        base_name = "Акт"
+    return _legacy_sqlserver_text(f"{base_name}{extension}", max_len=255)
+
+
 def find_duplicate_uploaded_act(
     from_employee: str,
     to_employee: str,
@@ -851,9 +866,6 @@ def create_uploaded_transfer_act(
         _legacy_sqlserver_text(created_by or "IT-WEB", max_len=128).strip()
         or "IT-WEB"
     )
-
-    safe_file_name = str(file_name or "").strip() or f"Акт {datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-    safe_file_name = _legacy_sqlserver_text(safe_file_name, max_len=255)
 
     date_value = doc_date or datetime.now()
     from_employee_value = _legacy_sqlserver_text(str(from_employee or "").strip(), max_len=250)
@@ -1030,6 +1042,7 @@ def create_uploaded_transfer_act(
             date_value,
         )
         add_info = _legacy_sqlserver_text(act_descr_line, max_len=500)
+        safe_file_name = _build_uploaded_act_file_name(act_descr_line, file_name)
 
         cursor.execute(
             """
@@ -1106,12 +1119,10 @@ def create_uploaded_transfer_act(
 
                 existing_descr = descr_by_item.get(item_id_int) or ""
                 if existing_descr:
-                    remaining = max_descr_len - len(note_line) - 1
-                    if remaining < 0:
-                        remaining = 0
-                    existing_descr = existing_descr[:remaining]
-                    separator = "" if existing_descr.endswith(("\r\n", "\n")) else "\r\n"
-                    new_descr = f"{existing_descr}{separator}{note_line}" if existing_descr else note_line
+                    separator = "" if note_line.endswith(("\r\n", "\n")) else "\r\n"
+                    remaining = max_descr_len - len(note_line) - len(separator)
+                    existing_descr = existing_descr[:max(0, remaining)]
+                    new_descr = f"{note_line}{separator}{existing_descr}"
                 else:
                     new_descr = note_line
 
@@ -2278,6 +2289,146 @@ def search_owners(search_term: str, limit: int = 20, db_id: Optional[str] = None
         ORDER BY o.OWNER_DISPLAY_NAME
     """
     return db.execute_query(query, (pattern, pattern))
+
+
+def list_owners_compact(db_id: Optional[str] = None, limit: int = 20000) -> List[dict]:
+    """Compact OWNERS list for FIO matching against 1C warehouse names."""
+    db = get_db(db_id)
+    safe_limit = max(1, min(int(limit or 20000), 50000))
+    query = f"""
+        SELECT TOP {safe_limit}
+            o.OWNER_NO,
+            o.OWNER_DISPLAY_NAME
+        FROM OWNERS o
+        WHERE o.OWNER_DISPLAY_NAME IS NOT NULL
+          AND LTRIM(RTRIM(o.OWNER_DISPLAY_NAME)) <> ''
+        ORDER BY o.OWNER_DISPLAY_NAME
+    """
+    return db.execute_query(query, ())
+
+
+_PART_NO_UNUSABLE_SQL = """
+(
+    i.PART_NO IS NULL
+    OR LTRIM(RTRIM(i.PART_NO)) = ''
+    OR LTRIM(RTRIM(i.PART_NO)) IN ('-', N'—')
+    OR LOWER(LTRIM(RTRIM(i.PART_NO))) LIKE N'%не%найден%'
+)
+"""
+
+
+def _is_usable_hub_part_no(value: str) -> bool:
+    text = str(value or "").strip()
+    if not text or text in {"-", "—"}:
+        return False
+    if re.search(r"не\s*найден", text, flags=re.IGNORECASE):
+        return False
+    return True
+
+
+def count_equipment_by_owners_hub_query(
+    owner_nos: List[int],
+    *,
+    part_no: str = "",
+    part_nos: Optional[List[str]] = None,
+    model_name: str = "",
+    hub_query: str = "",
+    hub_query_source: str = "model",
+    db_id: Optional[str] = None,
+) -> dict[int, int]:
+    """
+    Count CI_TYPE=1 items per owner for Hub «same equipment».
+
+    Rules:
+    - if any target PART_NO is usable: count items with matching PART_NO;
+      also count items without usable PART_NO whose MODEL_NAME matches (LIKE);
+      do NOT count items with a different PART_NO even if the model name matches;
+    - if no usable target PART_NO: count by MODEL_NAME (LIKE).
+    """
+    normalized_ids: List[int] = []
+    for raw in owner_nos or []:
+        try:
+            value = int(raw)
+        except (TypeError, ValueError):
+            continue
+        if value > 0 and value not in normalized_ids:
+            normalized_ids.append(value)
+    if not normalized_ids:
+        return {}
+
+    target_parts: List[str] = []
+    seen_parts: set[str] = set()
+    for raw in [part_no, *(part_nos or [])]:
+        text = str(raw or "").strip()
+        key = text.casefold()
+        if not _is_usable_hub_part_no(text) or key in seen_parts:
+            continue
+        seen_parts.add(key)
+        target_parts.append(text)
+
+    target_model = str(model_name or "").strip()
+    # Backward-compatible fallback for older callers.
+    if not target_parts and not target_model and hub_query:
+        source = str(hub_query_source or "model").strip().lower()
+        if source == "part_no" and _is_usable_hub_part_no(hub_query):
+            target_parts = [str(hub_query).strip()]
+        else:
+            target_model = str(hub_query).strip()
+    if not target_model and hub_query and str(hub_query_source or "").strip().lower() != "part_no":
+        target_model = str(hub_query).strip()
+
+    if not target_parts and not target_model:
+        return {owner_no: 0 for owner_no in normalized_ids}
+
+    placeholders = ", ".join(["?"] * len(normalized_ids))
+    params: List[Any] = list(normalized_ids)
+    model_like = f"%{target_model.casefold()}%" if target_model else ""
+
+    if target_parts:
+        part_placeholders = ", ".join(["?"] * len(target_parts))
+        if target_model:
+            match_sql = f"""
+                (
+                    LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({part_placeholders})
+                    OR (
+                        {_PART_NO_UNUSABLE_SQL}
+                        AND LOWER(LTRIM(RTRIM(COALESCE(m.MODEL_NAME, '')))) LIKE ?
+                    )
+                )
+            """
+            params.extend(part.casefold() for part in target_parts)
+            params.append(model_like)
+        else:
+            match_sql = f"""
+                LOWER(LTRIM(RTRIM(COALESCE(i.PART_NO, '')))) IN ({part_placeholders})
+            """
+            params.extend(part.casefold() for part in target_parts)
+    else:
+        match_sql = "LOWER(LTRIM(RTRIM(COALESCE(m.MODEL_NAME, '')))) LIKE ?"
+        params.append(model_like)
+
+    sql = f"""
+        SELECT
+            i.EMPL_NO AS owner_no,
+            COUNT(*) AS hub_count
+        FROM ITEMS i
+        LEFT JOIN CI_MODELS m ON m.CI_TYPE = i.CI_TYPE AND m.MODEL_NO = i.MODEL_NO
+        WHERE i.CI_TYPE = 1
+          AND i.EMPL_NO IN ({placeholders})
+          AND ({match_sql})
+        GROUP BY i.EMPL_NO
+    """
+    db = get_db(db_id)
+    rows = db.execute_query(sql, tuple(params))
+    counts: dict[int, int] = {owner_no: 0 for owner_no in normalized_ids}
+    for row in rows or []:
+        try:
+            owner_no = int(row.get("owner_no") or row.get("OWNER_NO"))
+            hub_count = int(row.get("hub_count") or row.get("HUB_COUNT") or 0)
+        except (TypeError, ValueError):
+            continue
+        counts[owner_no] = hub_count
+    return counts
 
 
 def get_owner_departments(limit: int = 500, db_id: Optional[str] = None) -> List[str]:

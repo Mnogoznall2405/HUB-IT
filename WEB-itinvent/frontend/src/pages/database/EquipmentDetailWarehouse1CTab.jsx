@@ -22,8 +22,10 @@ import {
 import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import SearchIcon from '@mui/icons-material/Search';
 
+import EmploymentStatusChip from '../../components/EmploymentStatusChip';
 import { isMeaningful1cRef, warehouse1cAPI } from '../../api/warehouse1c';
 import { readFirst } from './databaseRecordModel';
+import EmployeeNameLink from './EmployeeNameLink';
 import {
   formatWarehouseQty,
   NomenclatureCell,
@@ -94,6 +96,7 @@ export default function EquipmentDetailWarehouse1CTab({
   active,
   detailLoading = false,
   buildReturnContext = null,
+  onOpenEmployee = null,
 }) {
   const navigate = useNavigate();
   const searchPlan = useMemo(() => buildDefaultSearchPlan(data), [data]);
@@ -112,6 +115,7 @@ export default function EquipmentDetailWarehouse1CTab({
   const [balancesError, setBalancesError] = useState('');
   const [balances, setBalances] = useState([]);
   const [autoLoaded, setAutoLoaded] = useState(false);
+  const [hubQuerySource, setHubQuerySource] = useState(searchPlan.preferredSource || 'model');
 
   useEffect(() => {
     setSearchText(defaultSearchText);
@@ -126,7 +130,8 @@ export default function EquipmentDetailWarehouse1CTab({
     setBalancesError('');
     setBalances([]);
     setAutoLoaded(false);
-  }, [data, defaultSearchText]);
+    setHubQuerySource(searchPlan.preferredSource || 'model');
+  }, [data, defaultSearchText, searchPlan.preferredSource]);
 
   const applySuggestionResults = useCallback(async (rows, tried) => {
     const list = Array.isArray(rows) ? rows : [];
@@ -176,6 +181,10 @@ export default function EquipmentDetailWarehouse1CTab({
         return applied;
       }
 
+      setHubQuerySource(
+        allowFallback && searchPlan.preferredSource === 'part_no' ? 'part_no' : 'model'
+      );
+
       if (allowFallback && searchPlan.fallbackQuery) {
         const fallback = String(searchPlan.fallbackQuery).trim();
         if (fallback && fallback !== normalized) {
@@ -184,6 +193,7 @@ export default function EquipmentDetailWarehouse1CTab({
           setSearchText(fallback);
           const fallbackApplied = await applySuggestionResults(fallbackResult.rows, fallbackResult.tried);
           if (fallbackApplied.found) {
+            setHubQuerySource('model');
             setSearchError(`По парт. номеру совпадений с остатком нет — показаны результаты по модели «${fallbackResult.tried}».`);
           }
           return fallbackApplied;
@@ -216,7 +226,12 @@ export default function EquipmentDetailWarehouse1CTab({
     } finally {
       setSearchLoading(false);
     }
-  }, [applySuggestionResults, searchNomenclatureFull, searchPlan.fallbackQuery]);
+  }, [
+    applySuggestionResults,
+    searchNomenclatureFull,
+    searchPlan.fallbackQuery,
+    searchPlan.preferredSource,
+  ]);
 
   useEffect(() => {
     if (!active || detailLoading || autoLoaded || !defaultSearchText) return;
@@ -239,8 +254,25 @@ export default function EquipmentDetailWarehouse1CTab({
     setSelectedWarehouse(null);
     setBalancesLoading(true);
     setBalancesError('');
+    const cardPartNo = String(readFirst(data, ['PART_NO', 'part_no'], '')).trim();
+    const nomenclatureCode = String(item?.code || '').trim();
+    const cardModelName = buildModelSearchText(data);
+    const hubQuery = String(triedQuery || searchText || defaultSearchText || '').trim();
+    // Парт. № для Хаба: карточка и/или код выбранной номенклатуры 1С.
+    const usableCardPart = isUsablePartNo(cardPartNo) ? cardPartNo : '';
+    const usableNomenclaturePart = isUsablePartNo(nomenclatureCode) ? nomenclatureCode : '';
+    const modelName = cardModelName || (hubQuerySource === 'model' ? hubQuery : '');
+    const source = (usableCardPart || usableNomenclaturePart) ? 'part_no' : 'model';
     try {
-      const rows = await warehouse1cAPI.getBalances({ nomenclatureRef: item.ref, limit: 200 });
+      const rows = await warehouse1cAPI.getBalancesWithHub({
+        nomenclatureRef: item.ref,
+        partNo: usableCardPart,
+        nomenclatureCode: usableNomenclaturePart,
+        modelName,
+        hubQuery,
+        hubQuerySource: source,
+        limit: 200,
+      });
       setBalances(Array.isArray(rows) ? rows : []);
     } catch (err) {
       console.error('Failed to load balances for nomenclature:', err);
@@ -249,7 +281,13 @@ export default function EquipmentDetailWarehouse1CTab({
     } finally {
       setBalancesLoading(false);
     }
-  }, []);
+  }, [
+    data,
+    defaultSearchText,
+    hubQuerySource,
+    searchText,
+    triedQuery,
+  ]);
 
   const openWarehousePage = useCallback((warehouseRow = null) => {
     if (!selected?.ref) return;
@@ -360,10 +398,17 @@ export default function EquipmentDetailWarehouse1CTab({
 
       {selected ? (
         <Box>
-          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-            <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-              Остатки по выбранной номенклатуре
-            </Typography>
+          <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }} useFlexGap flexWrap="wrap">
+            <Box>
+              <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+                Остатки по выбранной номенклатуре
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                В Хабе: совпадение парт. № (карточка / код номенклатуры 1С); если у единицы
+                парт. № нет — по модели. С другим парт. № не считаем. Статус сотрудника — по
+                адресной книге. Клик по ФИО открывает карточку сотрудника.
+              </Typography>
+            </Box>
             <Button
               size="small"
               variant="outlined"
@@ -396,13 +441,23 @@ export default function EquipmentDetailWarehouse1CTab({
               <Table size="small">
                 <TableHead>
                   <TableRow>
-                    <TableCell>Склад</TableCell>
-                    <TableCell align="right">Кол-во</TableCell>
+                    <TableCell>Склад / сотрудник</TableCell>
+                    <TableCell align="right">В 1С</TableCell>
+                    <TableCell align="right">В Хабе</TableCell>
+                    <TableCell>Сотрудник</TableCell>
                   </TableRow>
                 </TableHead>
                 <TableBody>
                   {balances.map((row, index) => {
                     const selectedRow = selectedWarehouse?.ref === row.warehouse_ref;
+                    const hubCount = row?.hub_count;
+                    const hubCountLabel = hubCount === null || hubCount === undefined
+                      ? '—'
+                      : String(hubCount);
+                    const hubOwnerNo = row?.hub_owner_no ?? null;
+                    const employeeDisplayName = String(
+                      row.hub_employee_name || row.warehouse_name || '',
+                    ).trim();
                     return (
                       <TableRow
                         key={`${row.warehouse_ref || row.warehouse_name}|${index}`}
@@ -418,8 +473,38 @@ export default function EquipmentDetailWarehouse1CTab({
                         onDoubleClick={() => openWarehousePage(row)}
                         sx={{ cursor: isMeaningful1cRef(row.warehouse_ref) ? 'pointer' : 'default' }}
                       >
-                        <TableCell>{row.warehouse_name || '-'}</TableCell>
+                        <TableCell>
+                          <Stack spacing={0.25}>
+                            {hubOwnerNo ? (
+                              <EmployeeNameLink
+                                name={row.warehouse_name || employeeDisplayName}
+                                ownerNo={hubOwnerNo}
+                                onOpenEmployee={onOpenEmployee}
+                                variant="body2"
+                              />
+                            ) : (
+                              <Typography variant="body2">{row.warehouse_name || '-'}</Typography>
+                            )}
+                            {row.hub_employee_name
+                              && row.hub_employee_name !== row.warehouse_name ? (
+                              <EmployeeNameLink
+                                name={row.hub_employee_name}
+                                ownerNo={hubOwnerNo}
+                                onOpenEmployee={onOpenEmployee}
+                                variant="caption"
+                                sx={{ color: 'text.secondary' }}
+                              />
+                            ) : null}
+                          </Stack>
+                        </TableCell>
                         <TableCell align="right">{formatWarehouseQty(row.qty_balance)}</TableCell>
+                        <TableCell align="right">{hubCountLabel}</TableCell>
+                        <TableCell>
+                          <EmploymentStatusChip
+                            status={row.employment_status}
+                            label={row.employment_label}
+                          />
+                        </TableCell>
                       </TableRow>
                     );
                   })}

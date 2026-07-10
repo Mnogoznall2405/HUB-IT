@@ -31,6 +31,7 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import { equipmentSearchAPI } from '../../api/equipmentSearch';
 import { warehouse1cAPI } from '../../api/warehouse1c';
 import { LoadingSpinner } from '../../components/common';
+import EmploymentStatusChip from '../../components/EmploymentStatusChip';
 import { readFirst } from './databaseRecordModel';
 import EmployeeNameLink from './EmployeeNameLink';
 import {
@@ -121,6 +122,8 @@ function Warehouse1CBalancesPanel({
   warehouse,
   candidates,
   balances,
+  employmentStatus = '',
+  employmentLabel = '',
   onSelectCandidate,
   onOpenWarehousePage,
   onOpenBalanceRow,
@@ -129,10 +132,13 @@ function Warehouse1CBalancesPanel({
 
   return (
     <Box>
-      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-        <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
-          Склад 1С
-        </Typography>
+      <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }} useFlexGap flexWrap="wrap">
+        <Stack direction="row" spacing={1} alignItems="center" useFlexGap flexWrap="wrap">
+          <Typography variant="subtitle2" sx={{ fontWeight: 600 }}>
+            Склад 1С
+          </Typography>
+          <EmploymentStatusChip status={employmentStatus} label={employmentLabel} />
+        </Stack>
         {status === 'matched' && warehouse?.ref ? (
           <Button
             size="small"
@@ -251,6 +257,8 @@ export default function EmployeeEquipmentDialog({
   const [warehouseCandidates, setWarehouseCandidates] = useState([]);
   const [warehouseBalances, setWarehouseBalances] = useState([]);
   const [warehouseLoaded, setWarehouseLoaded] = useState(false);
+  const [employmentStatus, setEmploymentStatus] = useState('');
+  const [employmentLabel, setEmploymentLabel] = useState('');
 
   const resetWarehouseState = useCallback(() => {
     setWarehouseLoading(false);
@@ -260,6 +268,8 @@ export default function EmployeeEquipmentDialog({
     setWarehouseCandidates([]);
     setWarehouseBalances([]);
     setWarehouseLoaded(false);
+    setEmploymentStatus('');
+    setEmploymentLabel('');
   }, []);
 
   useEffect(() => {
@@ -308,6 +318,8 @@ export default function EmployeeEquipmentDialog({
           setWarehouseInfo(data?.warehouse || null);
           setWarehouseCandidates(Array.isArray(data?.candidates) ? data.candidates : []);
           setWarehouseBalances(Array.isArray(data?.balances) ? data.balances : []);
+          setEmploymentStatus(data?.employment_status || '');
+          setEmploymentLabel(data?.employment_label || '');
           setWarehouseLoaded(true);
         })
         .catch((err) => {
@@ -318,6 +330,8 @@ export default function EmployeeEquipmentDialog({
           setWarehouseInfo(null);
           setWarehouseCandidates([]);
           setWarehouseBalances([]);
+          setEmploymentStatus('');
+          setEmploymentLabel('');
           setWarehouseLoaded(true);
         })
         .finally(() => {
@@ -348,6 +362,10 @@ export default function EmployeeEquipmentDialog({
       setWarehouseInfo(data?.warehouse || null);
       setWarehouseCandidates(Array.isArray(data?.candidates) ? data.candidates : []);
       setWarehouseBalances(Array.isArray(data?.balances) ? data.balances : []);
+      if (data?.employment_status || data?.employment_label) {
+        setEmploymentStatus(data.employment_status || '');
+        setEmploymentLabel(data.employment_label || '');
+      }
       setWarehouseLoaded(true);
     } catch (err) {
       console.error('Failed to load employee warehouse from 1C:', err);
@@ -457,6 +475,8 @@ export default function EmployeeEquipmentDialog({
                 warehouse={warehouseInfo}
                 candidates={warehouseCandidates}
                 balances={warehouseBalances}
+                employmentStatus={employmentStatus}
+                employmentLabel={employmentLabel}
                 onSelectCandidate={handleSelectCandidate}
                 onOpenWarehousePage={handleOpenWarehousePage}
                 onOpenBalanceRow={handleOpenBalanceRow}

@@ -89,6 +89,30 @@ async def get_balances(
     )
 
 
+@router.get("/balances-with-hub")
+async def get_balances_with_hub(
+    nomenclature_ref: str = Query(..., max_length=64),
+    part_no: str = Query("", max_length=200),
+    nomenclature_code: str = Query("", max_length=200),
+    model_name: str = Query("", max_length=500),
+    hub_query: str = Query("", max_length=500),
+    hub_query_source: str = Query("model", max_length=32),
+    limit: int = Query(200, ge=1, le=500),
+    _: User = Depends(require_permission(PERM_WAREHOUSE_1C_READ)),
+):
+    return await _run_or_raise(
+        warehouse_1c_service.get_balances_with_hub(
+            nomenclature_ref=nomenclature_ref,
+            part_no=part_no,
+            nomenclature_code=nomenclature_code,
+            model_name=model_name,
+            hub_query=hub_query,
+            hub_query_source=hub_query_source,
+            limit=limit,
+        )
+    )
+
+
 @router.get("/movements")
 async def get_movements(
     nomenclature_ref: str = Query(..., max_length=64),
