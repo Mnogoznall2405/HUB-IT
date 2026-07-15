@@ -28,10 +28,8 @@ export const buildOfficeAttachmentPreviewState = async ({
       const excelWorkbook = await parseExcelWorkbookFromBlob(blob);
       let pdfPreview = null;
       try {
-        const [metadata, pdfResponse] = await Promise.all([
-          mailAPI.getAttachmentPreview(messageId, attachmentRef, { mailboxId }),
-          mailAPI.downloadAttachmentPreviewPdf(messageId, attachmentRef, { mailboxId }),
-        ]);
+        const metadata = await mailAPI.getAttachmentPreview(messageId, attachmentRef, { mailboxId });
+        const pdfResponse = await mailAPI.downloadAttachmentPreviewPdf(messageId, attachmentRef, { mailboxId });
         const normalized = normalizeAttachmentPreviewMetadata(metadata);
         const { blob: previewBlob, filename: pdfFilename, contentType: pdfContentType } = buildAttachmentBlobPayload({
           response: pdfResponse,
@@ -74,10 +72,8 @@ export const buildOfficeAttachmentPreviewState = async ({
     }
   }
 
-  const [metadata, pdfResponse] = await Promise.all([
-    mailAPI.getAttachmentPreview(messageId, attachmentRef, { mailboxId }),
-    mailAPI.downloadAttachmentPreviewPdf(messageId, attachmentRef, { mailboxId }),
-  ]);
+  const metadata = await mailAPI.getAttachmentPreview(messageId, attachmentRef, { mailboxId });
+  const pdfResponse = await mailAPI.downloadAttachmentPreviewPdf(messageId, attachmentRef, { mailboxId });
   const normalized = normalizeAttachmentPreviewMetadata(metadata);
   const { blob, filename: pdfFilename, contentType: pdfContentType } = buildAttachmentBlobPayload({
     response: pdfResponse,

@@ -101,7 +101,8 @@ async def test_poll_once_offloads_candidate_discovery_and_first_snapshot_does_no
 
     await service.poll_once()
 
-    assert thread_calls == ["_candidates", "_feed_sync"]
+    assert thread_calls[:2] == ["_candidates", "_feed_sync"]
+    assert thread_calls.count("persist_notification_results") == 1
     assert send_calls == []
     assert service._snapshots[1].last_message_id == "msg-1"
     assert "candidate_count=1" in caplog.text

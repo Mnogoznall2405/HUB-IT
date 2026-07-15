@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { act, renderHook } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import useMailReadMutations from './useMailReadMutations';
@@ -67,6 +67,11 @@ const renderReadMutationHook = (options = {}) => {
     const selectedMessageRef = useRef(selectedMessage);
     const selectedConversationRef = useRef(selectedConversation);
     const localReadStateOverridesRef = useRef(new Map());
+    const folderSummaryRef = useRef(folderSummary);
+
+    useEffect(() => {
+      folderSummaryRef.current = folderSummary;
+    }, [folderSummary]);
 
     const hook = useMailReadMutations({
       ...props,
@@ -75,6 +80,7 @@ const renderReadMutationHook = (options = {}) => {
         selectedMessageRef,
         selectedConversationRef,
         localReadStateOverridesRef,
+        folderSummaryRef,
       },
       setFolderSummary,
       setListData,
@@ -88,11 +94,13 @@ const renderReadMutationHook = (options = {}) => {
       folderSummary,
       selectedMessage,
       selectedConversation,
+      setFolderSummary,
       refs: {
         listDataRef,
         selectedMessageRef,
         selectedConversationRef,
         localReadStateOverridesRef,
+        folderSummaryRef,
       },
     };
   });
@@ -145,10 +153,63 @@ describe('useMailReadMutations', () => {
       selectFirstIfSelectionMissing: true,
       force: true,
     });
-    expect(dispatchEvent).toHaveBeenCalledWith(expect.objectContaining({ type: 'mail-read' }));
+    expect(dispatchEvent).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      type: 'mail-read',
+      detail: expect.objectContaining({
+        phase: 'optimistic',
+        mode: 'messages',
+        targetId: 'msg-1',
+        unreadDelta: -1,
+        nextIsRead: true,
+      }),
+    }));
+    expect(dispatchEvent).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      type: 'mail-read',
+      detail: expect.objectContaining({
+        phase: 'confirmed',
+        mode: 'messages',
+        targetId: 'msg-1',
+        unreadDelta: 0,
+      }),
+    }));
     expect(props.settleAutoReadGuard).toHaveBeenCalledWith('messages:inbox:msg-1:auto-read', true);
 
     dispatchEvent.mockRestore();
+  });
+
+  it('reapplies the unread delta when folder summary arrives during the Exchange mutation', async () => {
+    let resolveMarkRead;
+    const markReadPromise = new Promise((resolve) => {
+      resolveMarkRead = resolve;
+    });
+    const mailAPI = createMailAPI({
+      markAsRead: vi.fn(() => markReadPromise),
+    });
+    const { result } = renderReadMutationHook({
+      mailAPI,
+      initialState: { folderSummary: {} },
+    });
+
+    let pendingMutation;
+    act(() => {
+      pendingMutation = result.current.performMailReadMutation({
+        mode: 'messages',
+        targetId: 'msg-1',
+        nextIsRead: true,
+        currentUnreadCount: 1,
+        currentMessageCount: 1,
+      });
+    });
+
+    act(() => {
+      result.current.setFolderSummary({ inbox: { total: 1, unread: 1 } });
+    });
+    await act(async () => {
+      resolveMarkRead({ ok: true });
+      await pendingMutation;
+    });
+
+    expect(result.current.folderSummary.inbox.unread).toBe(0);
   });
 
   it('applies conversation read state locally including list unread_count and selected detail items', () => {

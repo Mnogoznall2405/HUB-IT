@@ -1,3 +1,52 @@
+# Scan Center audit delta — 2026-07-14
+
+Область этого повторного прогона: `scan_server`, `scan_agent`, unified inventory-agent/MSI и новый интерфейс Scan Center. Пользователь явно разрешил agent-approved pass, поэтому старое ограничение ниже не применялось к этому прогону. Незакоммиченные изменения других подсистем не сбрасывались и не переписывались.
+
+## Главные выводы
+
+| ID | Важность | Статус | Наблюдение и доказательство | Следующее действие |
+|---|---|---|---|---|
+| SCN-001 | Critical | OPEN | Все агенты проверяются по одному из общих `api_keys`, но ключ не связан с заявленным `agent_id`; узел с действующим ключом может представиться другим узлом. `scan_server/app.py:149`, `scan_server/app.py:611`, `scan_server/config.py:54`, `scan_agent/agent.py:730`. | Ввести enrollment и отдельный отзываемый credential на `agent_id` либо mTLS; до этого считать общий ключ только сетевым барьером, не идентичностью хоста. |
+| SCN-002 | High | OPEN | Совпавшие фрагменты и OCR-snippet сохраняются в `matched_patterns_json` без шифрования приложения. Это может дублировать чувствительный текст в SQLite и резервных копиях. `scan_server/worker.py:346`, `scan_server/database.py:490`, `scan_server/database.py:2303`. | Хранить минимальный redacted excerpt или шифровать evidence отдельным ключом; определить срок хранения и аудит доступа. |
+| SCN-003 | High | PARTIAL | Создание finding/incident и перевод job в terminal state остаются двумя транзакциями; сбой между ними может оставить дубликат при повторе. `scan_server/database.py:2131`, `scan_server/database.py:2303`, `scan_server/worker.py:780`, `scan_server/worker.py:788`. Потеря transient PDF при сбое finalize уже закрыта: spool удаляется только после успешного terminal finalize. `scan_server/worker.py:640`, `scan_server/worker.py:855`, `tests/test_scan_server_worker.py:703`. | Объединить finding/incident/job-finalize в одну идемпотентную транзакцию с unique-ключом по job/rule. |
+| SCN-004 | High | OPEN | Read-models пакетируют SQLite-запросы, но SQL Server context всё ещё разрешается по отдельным уникальным хостам. На текущем снимке измерялись сотни запросов на таблицы hosts/inbox; простая миграция SQLite→PostgreSQL это не устранит. `scan_server/scan_agent_read_store.py:328`, `scan_server/scan_agent_read_store.py:467`, `scan_server/database.py:236`. | Сначала batch-resolve контекстов одним запросом на БД/порцию хостов и профилировать query count; затем решать вопрос PostgreSQL для конкурентности и HA. |
+| SCN-005 | Medium | OPEN | `/health` сообщает конфигурацию и PID/lock, но `status=ok` не зависит от доступности worker, записи в БД, Tesseract и `rus.traineddata`. `scan_server/app.py:566`, `scan_server/app.py:577`, `scan_server/app.py:590`. | Добавить отдельный `/ready` с DB write probe, живым worker heartbeat и проверкой русского traineddata. |
+| SCN-006 | Medium | OPEN | `ScanCenterPage.jsx` остаётся крупным orchestration-компонентом (~2033 строки), хотя визуальные разделы уже вынесены и скрытые вкладки размонтируются. `WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx:1`, `WEB-itinvent/frontend/src/pages/scan-center/ScanCenterPage.jsx:1620`. | Вынести controllers для task launch, host investigation и filters; не менять API компонентов одним большим рефакторингом. |
+
+## Статус существующих F031/F033/F034
+
+- **F031 — PARTIAL:** `ScanStore` по-прежнему владеет schema/mutations/dashboard, но spool, reports, hosts и agents read-models уже разделены. Следующий безопасный slice — атомарный terminal workflow, а не механическое дробление файла.
+- **F033 — PARTIAL / hardened:** две копии inventory runtime пока существуют, но текущий agent-approved pass синхронизировал их, а `tests/test_agent.py:329` запрещает drift. Канонический источник для сборки — корневой `agent.py` (`agent/setup.py:14`).
+- **F034 — PARTIAL / hardened:** installer assets всё ещё продублированы; MSI-пути покрыты тестами, а full-uninstall assets проверяются на полное совпадение (`tests/test_agent.py:638`, `tests/test_agent.py:798`). Остальные PowerShell assets ещё стоит генерировать из одного источника.
+
+## Top 5 — если продолжать исправления
+
+1. Персональные credentials/enrollment агента (SCN-001).
+2. Атомарный и идемпотентный finding→incident→finalize (SCN-003).
+3. Минимизация/шифрование evidence и политика хранения (SCN-002).
+4. Batch SQL-context lookup до миграции Scan DB на PostgreSQL (SCN-004).
+5. Реальный readiness endpoint и alert на dead worker/rus OCR (SCN-005).
+
+## Quick wins
+
+- Показывать в UI причину readiness failure и возраст последнего worker tick.
+- Добавить unique constraint/idempotency test на один incident для одного `job_id + pattern_id`.
+- Записывать query count/latency для hosts, inbox и dashboard в уже добавленные метрики.
+- Добавить CI-проверку Authenticode: текущий MSI функционален, но не подписан.
+
+## Выглядит плохо, но в текущей политике корректно
+
+- Трёхстраничный PDF-slice — осознанная граница OCR, а не потеря большого PDF: текстовый слой проверяется до 10 страниц, полный PDF не отправляется.
+- Две копии inventory `agent.py` пока являются долгом F033, но сейчас они байт-в-байт синхронизированы и защищены тестом; это не текущая причина расхождения поведения MSI/runtime.
+- Русский `rus` без `eng` выбран намеренно: документы контрольного набора русские, а ложные латинские гипотезы ухудшали точность и время.
+
+## Проверка этого прогона
+
+- Scan/Inventory/Agent: **258 passed**.
+- Scan Center + Computers frontend/API contracts: **308 passed**.
+- Vite production build: успешно.
+- Реальный контрольный OCR-набор: 6/6 файлов с обязательными паттернами, 0 пропусков обязательного правила.
+
 # Tech Debt Audit — HUB-IT (Image_scan)
 
 **Дата repeat-run:** 2026-06-29 · **Предыдущий прогон:** 2026-06-27 · **Область:** `C:\Project\Image_scan`

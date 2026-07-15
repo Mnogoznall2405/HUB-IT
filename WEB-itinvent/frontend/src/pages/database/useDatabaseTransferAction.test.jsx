@@ -196,16 +196,58 @@ describe('useDatabaseTransferAction', () => {
       await result.current.handleTransferActionSubmit();
     });
 
-    expect(equipmentAPI.transferLocation).toHaveBeenCalledWith({
+    expect(equipmentAPI.transferLocation).toHaveBeenCalledWith(expect.objectContaining({
       inv_nos: ['1001'],
       branch_no: '10',
       loc_no: '20',
-    });
+      operation_id: expect.stringMatching(/^web-/),
+    }));
     expect(equipmentAPI.transfer).not.toHaveBeenCalled();
     expect(equipmentAPI.createTransferActOnly).not.toHaveBeenCalled();
     expect(props.resetDetailHistory).toHaveBeenCalled();
     expect(props.fetchAllEquipment).toHaveBeenCalledWith({ force: true });
     expect(result.current.transferResult).toMatchObject({ success_count: 1, acts: [] });
+  });
+
+  it('retries only failed move positions under a fresh operation id', async () => {
+    equipmentAPI.transfer.mockResolvedValue({
+      success_count: 1,
+      failed_count: 0,
+      transferred: [{ inv_no: '1002' }],
+      failed: [],
+      retry_inv_nos: [],
+      acts: [],
+    });
+    const props = createProps();
+    const { result } = renderHook(() => useDatabaseTransferAction(props));
+
+    act(() => {
+      result.current.setNewEmployee('New Owner');
+      result.current.setNewEmployeeNo(99);
+      result.current.setTransferBranchNo('10');
+      result.current.setTransferLocationNo('20');
+      result.current.setTransferResult({
+        success_count: 1,
+        failed_count: 1,
+        transferred: [{ inv_no: '1001' }],
+        failed: [{ inv_no: '1002', error: 'blocked' }],
+        retry_inv_nos: ['1001', '1002'],
+        acts: [],
+      });
+    });
+
+    await act(async () => {
+      await result.current.transferActionHandlers.onRetryFailed(['1001', '1002']);
+    });
+
+    expect(equipmentAPI.transfer).toHaveBeenCalledWith(expect.objectContaining({
+      inv_nos: ['1002'],
+      new_employee: 'New Owner',
+      new_employee_no: 99,
+      branch_no: '10',
+      loc_no: '20',
+      operation_id: expect.stringMatching(/^web-/),
+    }));
   });
 
   it('loads branch locations in location-only transfer mode', async () => {

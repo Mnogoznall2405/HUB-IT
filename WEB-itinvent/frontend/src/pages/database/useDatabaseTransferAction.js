@@ -18,6 +18,7 @@ import {
   buildTransferMovePayload,
   buildTransferSourceDefaults,
   getSelectedTransferEmployeeOption,
+  getRetryOnlyFailedInvNos,
   getTransferResultActionError,
   isTransferJobPending,
   validateTransferEmployeeName,
@@ -39,6 +40,13 @@ const JOB_TIMEOUT_ERROR =
   '\u0421\u043e\u0437\u0434\u0430\u043d\u0438\u0435 \u0430\u043a\u0442\u043e\u0432 \u0432\u0441\u0435 \u0435\u0449\u0435 \u0432\u044b\u043f\u043e\u043b\u043d\u044f\u0435\u0442\u0441\u044f. \u041e\u0431\u043d\u043e\u0432\u0438\u0442\u0435 \u0441\u0442\u0430\u0442\u0443\u0441 \u043f\u043e\u0437\u0436\u0435.';
 const EMAIL_SEND_ERROR =
   '\u041e\u0448\u0438\u0431\u043a\u0430 \u043e\u0442\u043f\u0440\u0430\u0432\u043a\u0438 email.';
+
+const createTransferOperationId = () => {
+  if (typeof globalThis.crypto?.randomUUID === 'function') {
+    return `web-${globalThis.crypto.randomUUID()}`;
+  }
+  return `web-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+};
 
 const readOwners = (response) => (Array.isArray(response?.owners) ? response.owners : []);
 
@@ -94,7 +102,10 @@ export function useDatabaseTransferAction({
   const [transferEmployeeLoading, setTransferEmployeeLoading] = useState(false);
   const [transferResult, setTransferResult] = useState(null);
   const [transferJobPolling, setTransferJobPolling] = useState(false);
+  const [transferRetrySubmitting, setTransferRetrySubmitting] = useState(false);
   const transferJobPollSeqRef = useRef(0);
+  const transferOperationRef = useRef({ fingerprint: '', operationId: '' });
+  const transferRetryInFlightRef = useRef(false);
   const [transferEmailMode, setTransferEmailMode] = useState(DEFAULT_TRANSFER_EMAIL_MODE);
   const [transferManualEmail, setTransferManualEmail] = useState('');
   const [transferRecipientInput, setTransferRecipientInput] = useState('');
@@ -104,6 +115,24 @@ export function useDatabaseTransferAction({
   const [transferEmailLoading, setTransferEmailLoading] = useState(false);
   const [transferEmailStatus, setTransferEmailStatus] = useState('');
   const [transferEmailError, setTransferEmailError] = useState('');
+
+  const withTransferOperationId = useCallback((payload, forceNew = false) => {
+    const fingerprint = JSON.stringify(payload || {});
+    if (
+      forceNew ||
+      transferOperationRef.current.fingerprint !== fingerprint ||
+      !transferOperationRef.current.operationId
+    ) {
+      transferOperationRef.current = {
+        fingerprint,
+        operationId: createTransferOperationId(),
+      };
+    }
+    return {
+      ...payload,
+      operation_id: transferOperationRef.current.operationId,
+    };
+  }, []);
 
   const transferLocationOptions = useMemo(
     () => buildLocationOptions(transferLocations),
@@ -161,6 +190,8 @@ export function useDatabaseTransferAction({
     setTransferEmployeeLoading(false);
     setTransferResult(null);
     setTransferJobPolling(false);
+    setTransferRetrySubmitting(false);
+    transferRetryInFlightRef.current = false;
     setTransferEmailMode(DEFAULT_TRANSFER_EMAIL_MODE);
     setTransferManualEmail('');
     setTransferRecipientInput('');
@@ -523,7 +554,10 @@ export function useDatabaseTransferAction({
     transferRecipient,
   ]);
 
-  const handleTransferActionSubmit = useCallback(async ({ targetInvNos: explicitTargetInvNos } = {}) => {
+  const handleTransferActionSubmit = useCallback(async ({
+    targetInvNos: explicitTargetInvNos,
+    forceNewOperation = false,
+  } = {}) => {
     if (!canDatabaseWrite) {
       setActionError?.(NOT_ALLOWED_MESSAGE);
       return null;
@@ -541,7 +575,9 @@ export function useDatabaseTransferAction({
         return null;
       }
 
-      const response = await equipmentAPI.createTransferActOnly(payload);
+      const response = await equipmentAPI.createTransferActOnly(
+        withTransferOperationId(payload, forceNewOperation || Boolean(transferResult))
+      );
       setTransferResult(response);
       if (isTransferJobPending(response)) {
         void pollTransferActJob(response.job_id, {
@@ -567,11 +603,26 @@ export function useDatabaseTransferAction({
         return null;
       }
 
-      const response = await equipmentAPI.transferLocation(payload);
+      const response = await equipmentAPI.transferLocation(
+        // Keep the same idempotency key while the location job is queued or
+        // recovering after a timeout. A fresh key is reserved for an explicit
+        // retry of only server-confirmed failed positions below.
+        withTransferOperationId(payload, forceNewOperation)
+      );
       setTransferResult(response);
       setTransferEmailStatus('');
       setTransferEmailError('');
       setSelectedItems?.([]);
+
+      if (isTransferJobPending(response)) {
+        void pollTransferActJob(response.job_id, {
+          operationMode: TRANSFER_OPERATION_LOCATION_ONLY,
+          refreshEquipment: true,
+          targetInvNos,
+        });
+        setActionError?.('');
+        return response;
+      }
 
       if (
         Number(response?.success_count || 0) > 0 &&
@@ -597,7 +648,9 @@ export function useDatabaseTransferAction({
       return null;
     }
 
-    const response = await equipmentAPI.transfer(payload);
+    const response = await equipmentAPI.transfer(
+      withTransferOperationId(payload, forceNewOperation || Boolean(transferResult))
+    );
     setTransferResult(response);
     if (isTransferJobPending(response)) {
       void pollTransferActJob(response.job_id, {
@@ -640,7 +693,37 @@ export function useDatabaseTransferAction({
     transferEmployeeInput,
     transferLocationNo,
     transferOperationMode,
+    transferResult,
+    withTransferOperationId,
   ]);
+
+  const handleRetryFailed = useCallback(async (requestedInvNos) => {
+    if (transferRetryInFlightRef.current) return null;
+
+    const allowedInvNos = getRetryOnlyFailedInvNos(transferResult);
+    const requested = Array.isArray(requestedInvNos) ? requestedInvNos : allowedInvNos;
+    const retryInvNos = allowedInvNos.filter((invNo) => requested.includes(invNo));
+    if (retryInvNos.length === 0) {
+      setActionError?.('Нет позиций, которые безопасно повторить.');
+      return null;
+    }
+
+    transferRetryInFlightRef.current = true;
+    setTransferRetrySubmitting(true);
+    setActionError?.('');
+    // The original selection can already contain successfully moved items.
+    // Retry only server-confirmed failures under a fresh operation id.
+    setTransferResult(null);
+    try {
+      return await handleTransferActionSubmit({
+        targetInvNos: retryInvNos,
+        forceNewOperation: true,
+      });
+    } finally {
+      transferRetryInFlightRef.current = false;
+      setTransferRetrySubmitting(false);
+    }
+  }, [handleTransferActionSubmit, setActionError, transferResult]);
 
   const transferActionHandlers = useMemo(() => ({
     onModeChange: (nextMode) => {
@@ -716,10 +799,12 @@ export function useDatabaseTransferAction({
     onRecipientInputChange: setTransferRecipientInput,
     onRecipientChange: setTransferRecipient,
     onSendEmail: handleTransferEmailSend,
+    onRetryFailed: handleRetryFailed,
   }), [
     handleCreateTransferEmployee,
     handleTransferActDownload,
     handleTransferEmailSend,
+    handleRetryFailed,
     navigate,
     newEmployee,
     newEmployeeNo,
@@ -733,6 +818,7 @@ export function useDatabaseTransferAction({
     mode: transferOperationMode,
     result: transferResult,
     jobPolling: transferJobPolling,
+    retrySubmitting: transferRetrySubmitting,
     employeeInput: transferEmployeeInput,
     employeeInputTrimmed: transferEmployeeInputState.inputTrimmed,
     employeeOptions: transferEmployeeInputState.autocompleteOptions,
@@ -757,6 +843,7 @@ export function useDatabaseTransferAction({
     transferEmployeeInputState,
     transferEmployeeLoading,
     transferJobPolling,
+    transferRetrySubmitting,
     transferLocationNo,
     transferLocationsLoading,
     transferOperationMode,
@@ -814,6 +901,7 @@ export function useDatabaseTransferAction({
     transferResult,
     setTransferResult,
     transferJobPolling,
+    transferRetrySubmitting,
     transferEmailMode,
     setTransferEmailMode,
     transferManualEmail,
@@ -834,6 +922,7 @@ export function useDatabaseTransferAction({
     pollTransferActJob,
     handleTransferEmailSend,
     handleTransferActionSubmit,
+    handleRetryFailed,
     transferActionHandlers,
     transfer,
     email,

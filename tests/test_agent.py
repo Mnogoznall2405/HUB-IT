@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import ast
 import json
+import socket
+import subprocess
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 
 import agent
 import agent_installer
+import agent_msi_helper
 from agent_version import AGENT_VERSION as SHARED_AGENT_VERSION
 
 
@@ -184,6 +189,90 @@ def test_agent_version_is_shared_between_runtime_and_package():
     assert packaged_agent.AGENT_VERSION == SHARED_AGENT_VERSION
 
 
+def test_network_inventory_includes_disabled_wifi_and_bluetooth(monkeypatch):
+    monkeypatch.setattr(
+        agent.psutil,
+        "net_if_stats",
+        lambda: {"Ethernet": SimpleNamespace(isup=True, speed=1000)},
+    )
+    monkeypatch.setattr(
+        agent.psutil,
+        "net_if_addrs",
+        lambda: {
+            "Ethernet": [SimpleNamespace(address="10.10.1.5", family=socket.AF_INET)],
+        },
+    )
+
+    def fake_powershell(command):
+        if "Get-NetAdapter" in command:
+            return {
+                "network_adapters": [
+                    {
+                        "name": "Ethernet",
+                        "description": "Intel Ethernet Controller",
+                        "status": "Up",
+                        "admin_status": 1,
+                        "media_type": "802.3",
+                        "physical_media_type": "802.3",
+                        "mac_address": "AA-BB-CC-DD-EE-01",
+                        "link_speed": "1 Gbps",
+                        "interface_index": 10,
+                        "hardware_interface": True,
+                        "virtual": False,
+                    },
+                    {
+                        "name": "Wi-Fi",
+                        "description": "Intel Wi-Fi 6 AX201 160MHz",
+                        "status": "Disabled",
+                        "admin_status": 2,
+                        "media_type": "Native 802.11",
+                        "physical_media_type": "Native 802.11",
+                        "mac_address": "AA-BB-CC-DD-EE-02",
+                        "link_speed": "0 bps",
+                        "interface_index": 11,
+                        "hardware_interface": True,
+                        "virtual": False,
+                    },
+                ],
+                "bluetooth_devices": [
+                    {
+                        "name": "Intel Wireless Bluetooth",
+                        "status": "Error",
+                        "present": True,
+                        "pnp_device_id": "USB\\VID_8087&PID_0026",
+                        "problem_code": 22,
+                    }
+                ],
+            }
+        if "Get-NetRoute" in command:
+            return "10.10.1.1"
+        if "Get-DnsClientServerAddress" in command:
+            return ["10.10.1.2"]
+        return None
+
+    monkeypatch.setattr(agent, "_powershell_json", fake_powershell)
+
+    payload = agent.get_network_info()
+
+    assert payload["active_ipv4"] == ["10.10.1.5"]
+    assert payload["summary"] == {
+        "total": 3,
+        "enabled": 1,
+        "disabled": 2,
+        "connected": 1,
+        "by_type": {"ethernet": 1, "wifi": 1, "bluetooth": 1},
+    }
+    assert payload["devices"][0]["device_type"] == "ethernet"
+    assert payload["devices"][0]["enabled"] is True
+    assert payload["devices"][0]["ipv4"] == ["10.10.1.5"]
+    assert payload["devices"][1]["device_type"] == "wifi"
+    assert payload["devices"][1]["enabled"] is False
+    assert payload["devices"][1]["connection_status"] == "disabled"
+    assert payload["devices"][2]["device_type"] == "bluetooth"
+    assert payload["devices"][2]["enabled"] is False
+    assert payload["devices"][2]["problem_code"] == 22
+
+
 def _make_inventory_config(**overrides):
     base = {
         "server_url": "https://hubit.zsgp.ru/api/v1/inventory",
@@ -248,6 +337,13 @@ def test_runtime_and_packaged_agent_files_have_no_drift():
     )
 
     assert runtime_text == packaged_text
+
+
+def test_inventory_agent_reads_the_actual_scan_sidecar_runtime_root():
+    expected = agent.PROGRAM_DATA_ROOT / "ScanAgent"
+
+    assert agent.PROGRAM_DATA_SCAN_AGENT_ROOT == expected
+    assert packaged_agent.PROGRAM_DATA_SCAN_AGENT_ROOT == expected
 
 
 def test_prune_agent_log_files_keeps_three_total_and_ignores_other_files(temp_dir):
@@ -351,6 +447,46 @@ def test_agent_installer_build_runtime_env_values_preserves_existing_and_forces_
     assert values["ITINV_OUTLOOK_SEARCH_ROOTS"] == "D:\\"
 
 
+def test_agent_installer_fresh_install_uses_public_urls_with_embedded_keys():
+    values = agent_installer.build_runtime_env_values(
+        {},
+        {
+            "ITINV_AGENT_API_KEY": "inventory-key",
+            "SCAN_AGENT_API_KEY": "scan-key",
+        },
+    )
+
+    assert values["ITINV_AGENT_SERVER_URL"] == "https://hubit.zsgp.ru/api/v1/inventory"
+    assert values["SCAN_AGENT_SERVER_BASE"] == "https://hubit.zsgp.ru/api/v1/scan"
+    assert agent_installer.missing_required_keys(values) == []
+
+
+def test_msi_helper_cli_arguments_map_to_runtime_env_overrides():
+    namespace = agent_msi_helper.parse_args(
+        [
+            "--msi-install",
+            "--itinv-agent-server-url",
+            "https://hub.example/api/v1/inventory",
+            "--itinv-agent-api-key",
+            "inventory-key",
+            "--scan-agent-server-base",
+            "https://hub.example/api/v1/scan",
+            "--scan-agent-api-key",
+            "scan-key",
+            "--itinv-outlook-search-roots",
+            f"D:\\{agent_installer.MSI_VALUE_SENTINEL}",
+        ]
+    )
+
+    overrides = agent_installer.namespace_to_env_overrides(namespace)
+
+    assert overrides["ITINV_AGENT_SERVER_URL"] == "https://hub.example/api/v1/inventory"
+    assert overrides["ITINV_AGENT_API_KEY"] == "inventory-key"
+    assert overrides["SCAN_AGENT_SERVER_BASE"] == "https://hub.example/api/v1/scan"
+    assert overrides["SCAN_AGENT_API_KEY"] == "scan-key"
+    assert overrides["ITINV_OUTLOOK_SEARCH_ROOTS"] == "D:\\"
+
+
 def test_load_config_uses_ten_minute_agent_defaults(monkeypatch):
     monkeypatch.delenv("ITINV_AGENT_INTERVAL_SEC", raising=False)
     monkeypatch.delenv("ITINV_AGENT_HEARTBEAT_SEC", raising=False)
@@ -363,6 +499,15 @@ def test_load_config_uses_ten_minute_agent_defaults(monkeypatch):
     assert config.heartbeat_interval == 600
     assert config.heartbeat_jitter_sec == 120
     assert config.inventory_queue_batch == 5
+
+
+def test_load_config_never_falls_back_to_a_shared_legacy_key(monkeypatch):
+    monkeypatch.delenv("ITINV_AGENT_API_KEY", raising=False)
+    monkeypatch.setenv("ITINV_AGENT_ALLOW_DEFAULT_KEY", "1")
+
+    config = agent.load_config()
+
+    assert config.api_key == ""
 
 
 def test_agent_installer_upsert_env_file_updates_existing_values(temp_dir):
@@ -415,16 +560,16 @@ def test_agent_installer_run_msi_install_writes_env_and_calls_task_script(monkey
             "env_file_path": "",
             "task_name": "IT-Invent Agent",
             "repeat_minutes": 60,
-            "msi_itinv_agent_server_url": "https://hub.example/api/v1/inventory",
-            "msi_itinv_agent_api_key": "secure-token",
-            "msi_itinv_agent_interval_sec": "",
-            "msi_itinv_agent_heartbeat_sec": "",
-            "msi_itinv_agent_heartbeat_jitter_sec": "",
-            "msi_itinv_scan_enabled": "1",
-            "msi_scan_agent_server_base": "https://hub.example/api/v1/scan",
-            "msi_scan_agent_api_key": "scan-token",
-            "msi_scan_agent_poll_interval_sec": "60",
-            "msi_itinv_outlook_search_roots": "D:\\",
+            "itinv_agent_server_url": "https://hub.example/api/v1/inventory",
+            "itinv_agent_api_key": "secure-token",
+            "itinv_agent_interval_sec": "",
+            "itinv_agent_heartbeat_sec": "",
+            "itinv_agent_heartbeat_jitter_sec": "",
+            "itinv_scan_enabled": "1",
+            "scan_agent_server_base": "https://hub.example/api/v1/scan",
+            "scan_agent_api_key": "scan-token",
+            "scan_agent_poll_interval_sec": "60",
+            "itinv_outlook_search_roots": "D:\\",
         },
     )()
 
@@ -628,12 +773,144 @@ def test_agent_setup_defines_msi_custom_actions_and_script_assets():
     assert 'SCAN_AGENT_EXECUTABLE_NAME' in setup_text
     assert 'target_name=SCAN_AGENT_EXECUTABLE_NAME' in setup_text
     assert 'scan_agent" / "agent.py"' in setup_text
+    assert '"PIL"' in setup_text
+    assert '"cryptography"' in setup_text
+    assert '"fontTools"' in setup_text
     assert 'agent_msi_helper.py' in setup_text
     assert '--install-dir "[TARGETDIR]."' in setup_text
     assert '--env-file-path "[CommonAppDataFolder]IT-Invent\\\\Agent\\\\.env"' in setup_text
     assert 'lib/certifi/cacert.pem' in setup_text
     assert 'UPGRADE_CODE = "{A285621C-4B2F-4BE6-9AD3-799896D4F901}"' in setup_text
     assert '"upgrade_code": UPGRADE_CODE' in setup_text
+    assert "A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE" in setup_text
+    assert '"REMOVEOLDVERSION"' in setup_text
+    assert "1401" in setup_text
+    assert '"A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE", 34, "TARGETDIR"' in setup_text
+    assert '"[SystemFolder]WindowsPowerShell\\\\v1.0\\\\powershell.exe"' in setup_text
+    assert "Start-Process -FilePath 'schtasks.exe'" in setup_text
+    assert "-ArgumentList @('/End','/TN','IT-Invent Agent')" in setup_text
+    assert "Get-ScheduledTask" not in setup_text
+    assert "Stop-ScheduledTask" not in setup_text
+    assert "Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force" in setup_text
+    assert "Move-Item -LiteralPath $source" not in setup_text
+    assert '"A_RUN_AGENT_MSI_INSTALL",' in setup_text
+    assert "18 + 3072 + 8192," in setup_text
+    assert "MSI_HELPER_EXECUTABLE_NAME," in setup_text
+    assert "_build_install_custom_action_target()," in setup_text
+    assert "A_SET_AGENT_MSI_INSTALL_DATA" not in setup_text
+    assert "[CustomActionData]" not in setup_text
+    assert "ITINV_AGENT_API_KEY;SCAN_AGENT_API_KEY;A_RUN_AGENT_MSI_INSTALL" in setup_text
+    assert "class AgentBdistMsi(bdist_msi)" in setup_text
+    assert "TARGETDIR;REINSTALLMODE;ITINV_AGENT_API_KEY;SCAN_AGENT_API_KEY" in setup_text
+    assert 'cmdclass={"bdist_msi": AgentBdistMsi}' in setup_text
+
+
+def test_upgrade_backup_custom_action_copies_runtime_with_open_log(temp_dir):
+    if sys.platform != "win32":
+        return
+
+    import win32con
+    import win32file
+
+    powershell = Path(r"C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe")
+    if not powershell.exists():
+        return
+
+    setup_path = PROJECT_ROOT / "agent" / "setup.py"
+    setup_tree = ast.parse(setup_path.read_text(encoding="utf-8"))
+    function_node = next(
+        node
+        for node in setup_tree.body
+        if isinstance(node, ast.FunctionDef) and node.name == "_build_upgrade_backup_custom_action_target"
+    )
+    isolated_tree = ast.Module(body=[function_node], type_ignores=[])
+    ast.fix_missing_locations(isolated_tree)
+    namespace = {}
+    exec(compile(isolated_tree, str(setup_path), "exec"), namespace)
+    target = namespace["_build_upgrade_backup_custom_action_target"]()
+    script = target.split('-Command "', 1)[1].rsplit('"', 1)[0]
+
+    program_data_root = Path(temp_dir) / "IT-Invent"
+    runtime_root = program_data_root / "Agent"
+    locked_log = runtime_root / "Logs" / "itinvent_agent.log"
+    locked_log.parent.mkdir(parents=True)
+    locked_log.write_text("open log", encoding="utf-8")
+    (runtime_root / ".env").write_text("ITINV_AGENT_API_KEY=test\n", encoding="utf-8")
+
+    escaped_root = str(program_data_root).replace("'", "''")
+    script = script.replace(
+        "$root='[CommonAppDataFolder]IT-Invent';",
+        f"$root='{escaped_root}';",
+    )
+    script = script.replace("'IT-Invent Agent'", "'IT-Invent Agent Upgrade Regression Test'")
+    script = script.replace(
+        "@('ITInventAgent','ITInventScanAgent','ITInventOutlookProbe')",
+        "@('ITInventAgentUpgradeRegressionTest')",
+    )
+
+    handle = win32file.CreateFile(
+        str(locked_log),
+        win32con.GENERIC_READ | win32con.GENERIC_WRITE,
+        win32con.FILE_SHARE_READ | win32con.FILE_SHARE_WRITE,
+        None,
+        win32con.OPEN_EXISTING,
+        0,
+        None,
+    )
+    try:
+        result = subprocess.run(
+            [
+                str(powershell),
+                "-NoProfile",
+                "-NonInteractive",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                script,
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    finally:
+        handle.Close()
+
+    assert result.returncode == 0, result.stderr
+    assert (program_data_root / "AgentUpgrade" / "Agent" / ".env").exists()
+    assert runtime_root.exists()
+
+
+def test_agent_installer_restores_runtime_backup_before_upgrade_install(monkeypatch, temp_dir):
+    program_data_root = Path(temp_dir) / "IT-Invent"
+    backup_root = program_data_root / "AgentUpgrade"
+    runtime_root = program_data_root / "Agent"
+    scan_root = program_data_root / "ScanAgent"
+    (backup_root / "Agent" / "inventory_queue" / "pending").mkdir(parents=True)
+    (backup_root / "Agent" / ".env").write_text(
+        "ITINV_AGENT_API_KEY=inventory-secret\nSCAN_AGENT_API_KEY=scan-secret\n",
+        encoding="utf-8",
+    )
+    (backup_root / "Agent" / "inventory_queue" / "pending" / "event.json").write_text("{}", encoding="utf-8")
+    (backup_root / "ScanAgent" / "outbox" / "pending").mkdir(parents=True)
+    (backup_root / "ScanAgent" / "outbox" / "pending" / "scan.json").write_text("{}", encoding="utf-8")
+
+    monkeypatch.setattr(agent_installer, "DEFAULT_PROGRAM_DATA_ROOT", program_data_root)
+    monkeypatch.setattr(agent_installer, "DEFAULT_UPGRADE_BACKUP_ROOT", backup_root)
+
+    restored = agent_installer.restore_upgrade_runtime_backup(
+        runtime_root=runtime_root,
+        scan_runtime_root=scan_root,
+    )
+
+    assert restored is True
+    assert agent_installer.read_env_map(runtime_root / ".env") == {
+        "ITINV_AGENT_API_KEY": "inventory-secret",
+        "SCAN_AGENT_API_KEY": "scan-secret",
+    }
+    assert (runtime_root / "inventory_queue" / "pending" / "event.json").exists()
+    assert (scan_root / "outbox" / "pending" / "scan.json").exists()
+    assert not backup_root.exists()
 
 
 def test_agent_cleanup_setup_defines_separate_cleanup_msi():

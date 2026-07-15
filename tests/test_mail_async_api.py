@@ -71,10 +71,17 @@ def test_bootstrap_route_offloads_mail_call_and_logs_metrics(monkeypatch):
     monkeypatch.setattr(mail_api_module, "_run_mail_call_with_metrics", _fake_run_mail_call_with_metrics)
     monkeypatch.setattr(mail_api_module, "_log_request_timing", _fake_log_request_timing)
 
-    response = client.get("/mail/bootstrap", params={"limit": 25, "mailbox_id": "mbox-1"})
+    response = client.get("/mail/bootstrap", params={"limit": 25, "mailbox_id": "mbox-1", "refresh": "live"})
 
     assert response.status_code == 200
-    assert response.json() == {"mailboxes": [], "messages": []}
+    assert response.json() == {
+        "mailboxes": [],
+        "messages": [],
+        "state": "ok",
+        "source": "exchange",
+        "as_of": None,
+        "last_error": "",
+    }
     assert direct_call == {}
     assert len(helper_calls) == 1
     assert helper_calls[0]["func"] is _direct
@@ -84,6 +91,76 @@ def test_bootstrap_route_offloads_mail_call_and_logs_metrics(monkeypatch):
     assert timing_calls[0]["route_name"] == "bootstrap"
     assert timing_calls[0]["context"]["cache_hit"] is True
     assert timing_calls[0]["context"]["account_reused"] is False
+
+
+def test_bootstrap_auto_uses_only_fresh_shared_snapshot(monkeypatch):
+    client = _build_client()
+    monkeypatch.setenv("MAIL_SHARED_SNAPSHOT_READ_ENABLED", "1")
+    monkeypatch.setattr(
+        mail_api_module.mail_runtime_snapshot_service,
+        "read",
+        lambda **kwargs: {
+            "state": "ok",
+            "source": "app_snapshot",
+            "payload": {"mailboxes": [], "messages": {"items": [{"id": "snapshot-msg"}]}},
+            "as_of": "2026-07-14T16:00:00+00:00",
+            "last_error": "",
+        },
+    )
+    monkeypatch.setattr(
+        mail_api_module.mail_service,
+        "get_bootstrap",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("Exchange must not be called for a fresh snapshot")),
+    )
+
+    response = client.get("/mail/bootstrap", params={"limit": 20, "mailbox_id": "mbox-1"})
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "ok"
+    assert response.json()["source"] == "app_snapshot"
+    assert response.json()["messages"]["items"] == [{"id": "snapshot-msg"}]
+
+
+def test_bootstrap_auto_refreshes_stale_shared_snapshot(monkeypatch):
+    client = _build_client()
+    helper_calls = []
+    snapshot_writes = []
+    monkeypatch.setenv("MAIL_SHARED_SNAPSHOT_READ_ENABLED", "1")
+    monkeypatch.setattr(
+        mail_api_module.mail_runtime_snapshot_service,
+        "read",
+        lambda **kwargs: {
+            "state": "stale",
+            "source": "app_snapshot",
+            "payload": {"mailboxes": [], "messages": {"items": [{"id": "old-msg"}]}},
+            "as_of": "2026-07-14T08:00:00+00:00",
+            "last_error": "",
+        },
+    )
+
+    async def _fake_run_mail_call_with_metrics(func, /, *args, **kwargs):
+        helper_calls.append({"func": func, "kwargs": kwargs})
+        return {
+            "mailboxes": [],
+            "messages": {"items": [{"id": "fresh-msg"}]},
+        }, {"cache_hit": False}
+
+    monkeypatch.setattr(mail_api_module, "_run_mail_call_with_metrics", _fake_run_mail_call_with_metrics)
+    monkeypatch.setattr(
+        mail_api_module.mail_runtime_snapshot_service,
+        "write_success",
+        lambda **kwargs: snapshot_writes.append(kwargs),
+    )
+
+    response = client.get("/mail/bootstrap", params={"limit": 20, "mailbox_id": "mbox-1"})
+
+    assert response.status_code == 200
+    assert response.json()["state"] == "ok"
+    assert response.json()["source"] == "exchange"
+    assert response.json()["messages"]["items"] == [{"id": "fresh-msg"}]
+    assert len(helper_calls) == 1
+    assert len(snapshot_writes) == 1
+    assert snapshot_writes[0]["payload"]["messages"]["items"] == [{"id": "fresh-msg"}]
 
 
 def test_get_message_route_offloads_mail_call_and_preserves_metrics(monkeypatch):
@@ -122,6 +199,36 @@ def test_get_message_route_offloads_mail_call_and_preserves_metrics(monkeypatch)
     assert timing_calls[0]["context"]["account_reused"] is True
 
 
+def test_mark_message_read_writes_through_shared_unread_snapshot(monkeypatch):
+    client = _build_client()
+    snapshot_updates = []
+
+    async def _fake_run_mail_call(func, /, *args, **kwargs):
+        return True
+
+    monkeypatch.setattr(mail_api_module, "_run_mail_call", _fake_run_mail_call)
+    monkeypatch.setattr(
+        mail_api_module.mail_runtime_snapshot_service,
+        "apply_read_state",
+        lambda **kwargs: snapshot_updates.append(kwargs),
+    )
+
+    response = client.post("/mail/messages/msg-1/read", params={"mailbox_id": "mbox-1"})
+
+    assert response.status_code == 200
+    assert response.json() == {"ok": True}
+    assert snapshot_updates == [
+        {
+            "user_id": 100,
+            "mailbox_id": "mbox-1",
+            "unread_delta": -1,
+            "is_read": True,
+            "message_id": "msg-1",
+            "folder": "inbox",
+        }
+    ]
+
+
 def test_get_mailboxes_route_uses_metrics_boundary_and_include_unread(monkeypatch):
     client = _build_client()
     direct_call = {}
@@ -156,6 +263,71 @@ def test_get_mailboxes_route_uses_metrics_boundary_and_include_unread(monkeypatc
     assert timing_calls[0]["route_name"] == "mailboxes"
     assert timing_calls[0]["context"]["include_unread"] == 1
     assert timing_calls[0]["context"]["mailbox_unread_deferred"] == 2
+
+
+def test_unread_route_reads_shared_snapshot_without_exchange(monkeypatch):
+    client = _build_client()
+    monkeypatch.setenv("MAIL_SHARED_SNAPSHOT_READ_ENABLED", "1")
+    monkeypatch.setattr(
+        mail_api_module.mail_runtime_snapshot_service,
+        "read",
+        lambda **kwargs: {
+            "state": "stale",
+            "source": "app_snapshot",
+            "payload": {"unread_count": 9},
+            "as_of": "2026-07-14T08:00:00+00:00",
+            "last_error": "",
+        },
+    )
+    monkeypatch.setattr(
+        mail_api_module.mail_service,
+        "get_unread_count",
+        lambda **kwargs: (_ for _ in ()).throw(AssertionError("Exchange must not be called")),
+    )
+
+    response = client.get("/mail/unread-count")
+
+    assert response.status_code == 200
+    assert response.json()["unread_count"] == 9
+    assert response.json()["state"] == "stale"
+    assert response.json()["source"] == "app_snapshot"
+
+
+def test_mail_preferences_accept_persisted_pane_sizes(monkeypatch):
+    client = _build_client()
+    captured = {}
+    snapshot_updates = []
+
+    async def _fake_run_mail_call(func, /, *args, **kwargs):
+        captured.update(kwargs)
+        return kwargs["payload"]
+
+    monkeypatch.setattr(mail_api_module, "_run_mail_call", _fake_run_mail_call)
+    monkeypatch.setattr(
+        mail_api_module.mail_runtime_snapshot_service,
+        "apply_preferences",
+        lambda **kwargs: snapshot_updates.append(kwargs),
+    )
+
+    response = client.patch(
+        "/mail/preferences",
+        json={
+            "folder_pane_width": 250,
+            "message_list_width": 420,
+            "bottom_list_percent": 47,
+        },
+    )
+
+    assert response.status_code == 200
+    assert captured["payload"] == {
+        "folder_pane_width": 250,
+        "message_list_width": 420,
+        "bottom_list_percent": 47,
+    }
+    assert snapshot_updates == [{
+        "user_id": 100,
+        "preferences": captured["payload"],
+    }]
 
 
 def test_send_message_route_uses_async_boundary(monkeypatch):

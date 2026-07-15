@@ -5,6 +5,7 @@ import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import MailPdfPreviewSurface, { clampPage, normalizePreviewSheets } from './MailPdfPreviewSurface';
 
 const loadPdfDocumentFromUrl = vi.fn();
+const renderPdfPage = vi.fn();
 const resetTransformMock = vi.fn();
 
 vi.mock('./MailPdfPageTile', () => ({
@@ -16,20 +17,27 @@ vi.mock('./MailPdfPageTile', () => ({
   }),
 }));
 
-vi.mock('../../lib/pdfPreview', () => ({
-  loadPdfDocumentFromUrl: (...args) => loadPdfDocumentFromUrl(...args),
-  renderPdfPage: vi.fn(),
-  resolveInitialPdfFitZoom: () => 1,
-}));
-
 vi.mock('../../lib/useDocumentPinchPan', () => ({
   default: () => ({
     viewportRef: { current: null },
     contentRef: { current: null },
+    transform: { scale: 1, x: 0, y: 0 },
+    isZoomed: false,
     resetTransform: resetTransformMock,
     viewportSx: { overflowY: 'auto', overflowX: 'hidden' },
     contentSx: {},
   }),
+}));
+
+vi.mock('../../lib/pdfPreview', () => ({
+  loadPdfDocumentFromUrl: (...args) => loadPdfDocumentFromUrl(...args),
+  renderPdfPage: (...args) => renderPdfPage(...args),
+  isPdfRenderCancellation: (error) => (
+    error?.name === 'AbortError' || error?.name === 'RenderingCancelledException'
+  ),
+  resolveInitialPdfFitZoom: () => 1,
+  clampPdfDisplayScale: (value) => Number(value || 1),
+  normalizePdfRotation: (value = 0) => ((Number(value || 0) % 360) + 360) % 360,
 }));
 
 const renderWithTheme = (node) => render(
@@ -59,6 +67,8 @@ describe('MailPdfPreviewSurface helpers', () => {
 describe('MailPdfPreviewSurface', () => {
   beforeEach(() => {
     loadPdfDocumentFromUrl.mockReset();
+    renderPdfPage.mockReset();
+    renderPdfPage.mockResolvedValue({ width: 600, height: 800 });
     loadPdfDocumentFromUrl.mockResolvedValue({
       numPages: 4,
       getPage: vi.fn().mockResolvedValue({
@@ -92,6 +102,34 @@ describe('MailPdfPreviewSurface', () => {
     expect(screen.getByText('1 / 4')).toBeTruthy();
     expect(screen.getByTestId('mail-pdf-preview-viewport')).toBeTruthy();
     expect(screen.queryByRole('button', { name: /Увеличить/i })).toBeNull();
+  });
+
+  it('aborts an obsolete compact canvas render when rotation changes', async () => {
+    renderPdfPage
+      .mockImplementationOnce(({ signal }) => new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => {
+          const error = new Error('cancelled');
+          error.name = 'AbortError';
+          reject(error);
+        }, { once: true });
+      }))
+      .mockResolvedValueOnce({ width: 800, height: 600 });
+
+    const view = renderWithTheme(
+      <MailPdfPreviewSurface objectUrl="blob:compact" compact rotation={0} />,
+    );
+    await waitFor(() => expect(renderPdfPage).toHaveBeenCalledTimes(1));
+    const firstSignal = renderPdfPage.mock.calls[0][0].signal;
+
+    view.rerender(
+      <ThemeProvider theme={createTheme()}>
+        <MailPdfPreviewSurface objectUrl="blob:compact" compact rotation={90} />
+      </ThemeProvider>,
+    );
+
+    await waitFor(() => expect(firstSignal.aborted).toBe(true));
+    await waitFor(() => expect(renderPdfPage).toHaveBeenCalledTimes(2));
+    expect(screen.queryByText('cancelled')).toBeNull();
   });
 
   it('scrolls to the selected excel sheet page when tab is clicked', async () => {

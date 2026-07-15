@@ -592,6 +592,11 @@ class AddressBookService:
             emails = self._load_emails(connection)
             for employee in employees:
                 employee_code = employee.pop("_employee_code", "")
+                # Keep the stable ZUP key in the cache.  It is deliberately
+                # not exposed as a replacement for the display name, but it
+                # lets HUB persist verified employee/owner mappings instead
+                # of reconstructing identity from FIO every time.
+                employee["employee_code"] = employee_code
                 employee_phones = phones.get(employee_code, {"work": [], "personal": []})
                 employee_emails = emails.get(employee_code, {"work": [], "personal": []})
                 employee["work_phones"] = employee_phones.get("work", [])

@@ -55,11 +55,24 @@ _AD_LDAP_PAGE_SIZE = 1000
 _AD_PAGED_RESULTS_OID = "1.2.840.113556.1.4.319"
 
 _SERVICE_ACCOUNT_PATTERNS = re.compile(
-    r"^(healthmailbox|svc[_\-]|admin(?:[_\-.]|$)|1c|1bit|bcpexec|corp[\.\-]admin|aid$|"
+    r"^(healthmailbox|svc[_\-]|adm[_\-]|pam[_\-]|admin(?:[_\-.]|$)|1c|1bit|bcpexec|corp[\.\-]admin|aid$|"
     r"scan[_\-]|backup|test[_\-]|service|system|sql|exchange|smtp|ftp|www|http|"
     r"ldap[_\-]|bdd[\.\-]|personal$|usa$|lnk\.|lrk\.)",
     re.IGNORECASE,
 )
+
+
+def is_hub_service_account_login(login: Any) -> bool:
+    """True for service/privileged AD-style logins that must not appear in Hub people search."""
+    value = str(login or "").strip()
+    if not value:
+        return False
+    # Strip domain prefix DOMAIN\user or user@domain
+    if "\\" in value:
+        value = value.split("\\", 1)[1]
+    if "@" in value:
+        value = value.split("@", 1)[0]
+    return bool(_SERVICE_ACCOUNT_PATTERNS.match(value.strip()))
 
 
 def get_ad_password_max_age_days() -> int:
@@ -1229,7 +1242,7 @@ def list_ad_mailboxes_expiring_soon(*, days_threshold: int = 3, limit: int = 50)
     expiring_mailboxes: list[dict[str, Any]] = []
 
     _service_patterns = re.compile(
-        r"^(healthmailbox|svc[_\-]|admin|1c|1bit|bcpexec|corp[\.\-]admin|aid$|"
+        r"^(healthmailbox|svc[_\-]|adm[_\-]|pam[_\-]|admin|1c|1bit|bcpexec|corp[\.\-]admin|aid$|"
         r"scan[_\-]|backup|test[_\-]|service|system|sql|exchange|smtp|ftp|www|http|"
         r"ldap[_\-]|bdd[\.\-]|personal$|usa$|lnk\.|lrk\.)",
         re.IGNORECASE,

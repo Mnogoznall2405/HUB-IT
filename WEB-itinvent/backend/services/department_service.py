@@ -231,7 +231,14 @@ class DepartmentService:
         target_user_id = int(user_id or 0) if user_id not in (None, "") else 0
         if self._use_app_database:
             with app_session(self._database_url) as session:
-                rows = [self._membership_row(row) for row in session.scalars(select(AppDepartmentMembership)).all()]
+                statement = select(AppDepartmentMembership)
+                if active_only:
+                    statement = statement.where(AppDepartmentMembership.is_active.is_(True))
+                if target_department_id:
+                    statement = statement.where(AppDepartmentMembership.department_id == target_department_id)
+                if target_user_id > 0:
+                    statement = statement.where(AppDepartmentMembership.user_id == target_user_id)
+                rows = [self._membership_row(row) for row in session.scalars(statement).all()]
         else:
             rows = [self._membership_row(row) for row in self._load_json_memberships()]
         result = []
@@ -244,6 +251,47 @@ class DepartmentService:
                 continue
             result.append(row)
         result.sort(key=lambda row: (row["department_id"], row["role"], row["user_id"]))
+        return result
+
+    def get_user_department_role_map(
+        self,
+        user_ids: Iterable[int],
+    ) -> dict[int, dict[str, set[str]]]:
+        """Load active memberships for many users with one storage read."""
+        normalized_user_ids = {
+            int(user_id)
+            for user_id in user_ids or []
+            if str(user_id or "").strip() and int(user_id) > 0
+        }
+        result: dict[int, dict[str, set[str]]] = {
+            user_id: {} for user_id in normalized_user_ids
+        }
+        if not normalized_user_ids:
+            return result
+
+        if self._use_app_database:
+            with app_session(self._database_url) as session:
+                rows = session.scalars(
+                    select(AppDepartmentMembership).where(
+                        AppDepartmentMembership.user_id.in_(normalized_user_ids),
+                        AppDepartmentMembership.is_active.is_(True),
+                    )
+                ).all()
+                memberships = [self._membership_row(row) for row in rows]
+        else:
+            memberships = [
+                self._membership_row(row)
+                for row in self._load_json_memberships()
+                if int(row.get("user_id") or 0) in normalized_user_ids
+                and bool(row.get("is_active", True))
+            ]
+
+        for membership in memberships:
+            user_id = int(membership["user_id"])
+            role = _normalize_role(membership.get("role"))
+            department_id = str(membership.get("department_id") or "").strip()
+            if department_id:
+                result.setdefault(user_id, {}).setdefault(role, set()).add(department_id)
         return result
 
     def replace_user_ad_department(self, user_id: int, department_name: Any) -> None:

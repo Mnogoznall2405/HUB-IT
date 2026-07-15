@@ -39,7 +39,6 @@ except Exception:
 
 
 DEFAULT_SERVER_URL = "https://hubit.zsgp.ru/api/v1/inventory"
-DEFAULT_API_KEY = "gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8"
 DEFAULT_FULL_SNAPSHOT_INTERVAL = 3600
 DEFAULT_HEARTBEAT_INTERVAL = 600
 DEFAULT_HEARTBEAT_JITTER = 120
@@ -93,7 +92,7 @@ PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT
 PROGRAM_DATA_AGENT_ROOT = PROGRAM_DATA_ROOT / "Agent"
 PROGRAM_DATA_DIR = PROGRAM_DATA_AGENT_ROOT / "Logs"
 PROGRAM_DATA_SPOOL_DIR = PROGRAM_DATA_AGENT_ROOT / "Spool"
-PROGRAM_DATA_SCAN_AGENT_ROOT = PROGRAM_DATA_AGENT_ROOT / "ScanAgent"
+PROGRAM_DATA_SCAN_AGENT_ROOT = PROGRAM_DATA_ROOT / "ScanAgent"
 REBOOT_REMINDER_MESSAGE = (
     "Компьютер работает более 7 дней без перезагрузки. "
     "Рекомендуется перезагрузить его для стабильной работы и установки обновлений."
@@ -1277,14 +1276,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
 def load_config() -> AgentConfig:
     server_url = str(os.getenv("ITINV_AGENT_SERVER_URL", DEFAULT_SERVER_URL)).strip() or DEFAULT_SERVER_URL
-    allow_default_key = _to_bool(os.getenv("ITINV_AGENT_ALLOW_DEFAULT_KEY", "1"), default=True)
     api_key = str(os.getenv("ITINV_AGENT_API_KEY", "")).strip()
     if not api_key:
-        if allow_default_key:
-            api_key = DEFAULT_API_KEY
-            logging.warning("ITINV_AGENT_API_KEY is empty; using legacy default key because ITINV_AGENT_ALLOW_DEFAULT_KEY=1")
-        else:
-            logging.error("ITINV_AGENT_API_KEY is empty and ITINV_AGENT_ALLOW_DEFAULT_KEY=0; agent will not send data")
+        logging.error("ITINV_AGENT_API_KEY is empty; inventory uploads are disabled until an explicit key is configured")
 
     interval_raw = str(os.getenv("ITINV_AGENT_INTERVAL_SEC", DEFAULT_FULL_SNAPSHOT_INTERVAL)).strip()
     heartbeat_raw = str(os.getenv("ITINV_AGENT_HEARTBEAT_SEC", DEFAULT_HEARTBEAT_INTERVAL)).strip()
@@ -2657,6 +2651,146 @@ def _powershell_json(command: str) -> Any:
         return None
 
 
+def _network_device_type(item: Dict[str, Any]) -> str:
+    combined = " ".join(
+        sanitize_text(item.get(key)).lower()
+        for key in ("name", "description", "media_type", "physical_media_type")
+    )
+    if "bluetooth" in combined or "блютуз" in combined:
+        return "bluetooth"
+    if any(token in combined for token in ("wi-fi", "wifi", "wireless", "802.11", "wlan", "беспровод")):
+        return "wifi"
+    if any(token in combined for token in ("vpn", "tunnel", "tap-windows", "wintun")):
+        return "vpn"
+    if bool(item.get("virtual")):
+        return "virtual"
+    if any(token in combined for token in ("ethernet", "802.3", "gigabit", "fast ethernet")):
+        return "ethernet"
+    return "other"
+
+
+def _network_device_enabled(*, admin_status: Any, status: Any, problem_code: Any = None) -> Optional[bool]:
+    problem_value = sanitize_text(problem_code)
+    if problem_value == "22":
+        return False
+    admin_value = sanitize_text(admin_status).lower()
+    status_value = sanitize_text(status).lower()
+    if admin_value in {"1", "up", "enabled"}:
+        return True
+    if admin_value in {"2", "down", "disabled"}:
+        return False
+    if status_value in {"disabled", "not present", "not_present"}:
+        return False
+    if problem_value == "0" or status_value in {"ok", "up", "disconnected"}:
+        return True
+    return None
+
+
+def _network_connection_status(status: Any, enabled: Optional[bool]) -> str:
+    if enabled is False:
+        return "disabled"
+    value = sanitize_text(status).lower().replace(" ", "_")
+    if value in {"up", "connected", "ok"}:
+        return "up"
+    if value in {"disconnected", "media_disconnected"}:
+        return "disconnected"
+    if value in {"not_present", "absent"}:
+        return "not_present"
+    if value in {"error", "degraded", "unknown"}:
+        return value
+    return "unknown"
+
+
+def _collect_windows_network_devices() -> List[Dict[str, Any]]:
+    command = (
+        "$net=@();$bluetooth=@();"
+        "try{$net=@(Get-NetAdapter -IncludeHidden -ErrorAction Stop | "
+        "Where-Object {-not $_.Hidden} | ForEach-Object {[ordered]@{"
+        "name=$_.Name;description=$_.InterfaceDescription;status=[string]$_.Status;"
+        "admin_status=[int]$_.AdminStatus;media_type=[string]$_.MediaType;"
+        "physical_media_type=[string]$_.PhysicalMediaType;mac_address=$_.MacAddress;"
+        "link_speed=[string]$_.LinkSpeed;interface_index=[int]$_.ifIndex;"
+        "hardware_interface=[bool]$_.HardwareInterface;virtual=[bool]$_.Virtual}})}catch{};"
+        "try{$bluetooth=@(Get-CimInstance Win32_PnPEntity -Filter \"PNPClass='Bluetooth'\" -ErrorAction Stop | "
+        "Where-Object {$_.PNPDeviceID -notlike 'BTHENUM\\*' "
+        "-and $_.Name -notmatch 'Enumerator|Перечислитель'} | ForEach-Object {[ordered]@{"
+        "name=$_.Name;status=[string]$_.Status;present=[bool]$_.Present;"
+        "pnp_device_id=$_.PNPDeviceID;problem_code=[int]$_.ConfigManagerErrorCode}})}catch{};"
+        "[ordered]@{network_adapters=$net;bluetooth_devices=$bluetooth}|"
+        "ConvertTo-Json -Depth 4 -Compress"
+    )
+    payload = _powershell_json(command)
+    if not isinstance(payload, dict):
+        return []
+
+    raw_network = payload.get("network_adapters")
+    raw_bluetooth = payload.get("bluetooth_devices")
+    network_rows = raw_network if isinstance(raw_network, list) else ([raw_network] if isinstance(raw_network, dict) else [])
+    bluetooth_rows = raw_bluetooth if isinstance(raw_bluetooth, list) else ([raw_bluetooth] if isinstance(raw_bluetooth, dict) else [])
+    devices: List[Dict[str, Any]] = []
+
+    for raw in network_rows:
+        if not isinstance(raw, dict):
+            continue
+        name = sanitize_text(raw.get("name"))
+        description = sanitize_text(raw.get("description"))
+        if not name and not description:
+            continue
+        enabled = _network_device_enabled(
+            admin_status=raw.get("admin_status"),
+            status=raw.get("status"),
+        )
+        devices.append(
+            {
+                "name": name or description,
+                "description": description,
+                "device_type": _network_device_type(raw),
+                "enabled": enabled,
+                "connection_status": _network_connection_status(raw.get("status"), enabled),
+                "admin_status": sanitize_text(raw.get("admin_status")),
+                "mac_address": sanitize_text(raw.get("mac_address")),
+                "link_speed": sanitize_text(raw.get("link_speed")),
+                "interface_index": int(raw.get("interface_index") or 0),
+                "physical": bool(raw.get("hardware_interface")),
+                "virtual": bool(raw.get("virtual")),
+                "ipv4": [],
+                "ipv6": [],
+            }
+        )
+
+    for raw in bluetooth_rows:
+        if not isinstance(raw, dict):
+            continue
+        name = sanitize_text(raw.get("name"))
+        if not name:
+            continue
+        enabled = _network_device_enabled(
+            admin_status="",
+            status=raw.get("status"),
+            problem_code=raw.get("problem_code"),
+        )
+        devices.append(
+            {
+                "name": name,
+                "description": "",
+                "device_type": "bluetooth",
+                "enabled": enabled,
+                "connection_status": _network_connection_status(raw.get("status"), enabled),
+                "admin_status": "",
+                "mac_address": "",
+                "link_speed": "",
+                "interface_index": 0,
+                "physical": True,
+                "virtual": False,
+                "pnp_device_id": sanitize_text(raw.get("pnp_device_id")),
+                "problem_code": int(raw.get("problem_code") or 0),
+                "ipv4": [],
+                "ipv6": [],
+            }
+        )
+    return devices
+
+
 def get_network_info() -> Dict[str, Any]:
     adapters: List[Dict[str, Any]] = []
     primary_adapter_name = ""
@@ -2702,6 +2836,26 @@ def get_network_info() -> Dict[str, Any]:
     except Exception as exc:
         logging.warning("Network adapter enumeration failed: %s", exc)
 
+    devices = _collect_windows_network_devices()
+    active_by_name = {str(item.get("name") or "").casefold(): item for item in adapters}
+    for device in devices:
+        active = active_by_name.get(str(device.get("name") or "").casefold())
+        if active:
+            device["ipv4"] = list(active.get("ipv4") or [])
+            device["ipv6"] = list(active.get("ipv6") or [])
+
+    type_counts: Dict[str, int] = {}
+    for device in devices:
+        device_type = str(device.get("device_type") or "other")
+        type_counts[device_type] = int(type_counts.get(device_type) or 0) + 1
+    summary = {
+        "total": len(devices),
+        "enabled": sum(1 for item in devices if item.get("enabled") is True),
+        "disabled": sum(1 for item in devices if item.get("enabled") is False),
+        "connected": sum(1 for item in devices if item.get("connection_status") == "up"),
+        "by_type": type_counts,
+    }
+
     default_gateway = ""
     dns_servers: List[str] = []
     gateway_data = _powershell_json(
@@ -2726,6 +2880,8 @@ def get_network_info() -> Dict[str, Any]:
     return {
         "primary_adapter_name": primary_adapter_name,
         "adapters": adapters,
+        "devices": devices,
+        "summary": summary,
         "active_ipv4": _dedupe_preserve_order(active_ipv4),
         "active_ipv6": _dedupe_preserve_order(active_ipv6),
         "default_gateway": default_gateway,
@@ -2846,6 +3002,14 @@ def collect_inventory(report_type: str = "full_snapshot", include_full_snapshot:
         "cpu_load_percent": health_info.get("cpu_load_percent"),
         "ram_used_percent": health_info.get("ram_used_percent"),
         "last_reboot_at": health_info.get("last_reboot_at"),
+        "agent_runtime": {
+            "agent_version": AGENT_VERSION,
+            "inventory_queue_depth": _inventory_queue_depth(),
+            "inventory_dead_letter_depth": _inventory_dead_letter_depth(),
+            "scan_outbox_depth": _scan_outbox_depth(),
+            "scan_dead_letter_depth": _scan_dead_letter_depth(),
+            "last_scan_ingest_ok_at": _read_scan_last_ingest_ok_at(),
+        },
     }
 
     if include_full_snapshot:
@@ -3012,11 +3176,25 @@ def _inventory_queue_depth() -> int:
     return len(_inventory_queue_paths())
 
 
+def _inventory_dead_letter_depth() -> int:
+    root = get_inventory_queue_dead_dir()
+    if not root.exists():
+        return 0
+    return len([row for row in root.glob("*.json") if row.is_file()])
+
+
 def _scan_outbox_depth() -> int:
     outbox_pending = PROGRAM_DATA_SCAN_AGENT_ROOT / "outbox" / "pending"
     if not outbox_pending.exists():
         return 0
     return len([row for row in outbox_pending.glob("*.json") if row.is_file()])
+
+
+def _scan_dead_letter_depth() -> int:
+    dead_letter = PROGRAM_DATA_SCAN_AGENT_ROOT / "outbox" / "dead_letter"
+    if not dead_letter.exists():
+        return 0
+    return len([row for row in dead_letter.glob("*.json") if row.is_file()])
 
 
 def _read_scan_last_ingest_ok_at() -> Optional[int]:
@@ -3326,7 +3504,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         return 0 if check_configuration(config) else 1
 
     if not config.api_key:
-        logging.error("Agent API key is not configured. Set ITINV_AGENT_API_KEY or allow legacy key explicitly.")
+        logging.error("Agent API key is not configured. Set ITINV_AGENT_API_KEY explicitly.")
         return 1
 
     if not is_admin():

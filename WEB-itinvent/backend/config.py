@@ -386,7 +386,7 @@ class Config:
             ),
             app_db=AppDatabaseConfig(
                 database_url=(str(os.getenv("APP_DATABASE_URL", "") or "").strip() or None),
-                pool_size=int(os.getenv("APP_DB_POOL_SIZE", "5")),
+                pool_size=int(os.getenv("APP_DB_POOL_SIZE", "10")),
                 max_overflow=int(os.getenv("APP_DB_MAX_OVERFLOW", "10")),
                 echo=str(os.getenv("APP_DB_ECHO", "0")).strip().lower() in {"1", "true", "yes", "on"},
             ),
@@ -394,7 +394,7 @@ class Config:
                 enabled=str(os.getenv("CHAT_MODULE_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},
                 database_url=(str(os.getenv("CHAT_DATABASE_URL", "") or "").strip() or None),
                 pool_size=int(os.getenv("CHAT_DB_POOL_SIZE", "5")),
-                max_overflow=int(os.getenv("CHAT_DB_MAX_OVERFLOW", "10")),
+                max_overflow=int(os.getenv("CHAT_DB_MAX_OVERFLOW", "5")),
                 conversation_page_size=int(os.getenv("CHAT_CONVERSATION_PAGE_SIZE", "50")),
                 message_page_size=int(os.getenv("CHAT_MESSAGE_PAGE_SIZE", "100")),
                 task_discussion_enabled=str(os.getenv("TASK_DISCUSSION_CHAT_ENABLED", "0")).strip().lower() in {"1", "true", "yes", "on"},

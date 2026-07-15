@@ -248,6 +248,7 @@ def test_load_items_initializes_com_in_current_thread(monkeypatch):
     items = TestService(data_manager=MemoryDataManager())._load_items_from_1c()
 
     assert calls == ["init", "connect", "employees", "phones", "emails", "uninit"]
+    assert items[0]["employee_code"] == "E1"
     assert items[0]["work_emails"][0]["value"] == "ivanov@zsgp.ru"
     assert items[0]["work_phones"][0]["value"] == "83452384202"
 

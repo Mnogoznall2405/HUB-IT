@@ -14,6 +14,8 @@ if sys.platform == "win32":
     print(f"Using SelectorEventLoop (Python {sys.version})")
 
 _project_root = Path(__file__).resolve().parent.parent
+if str(_project_root) not in sys.path:
+    sys.path.insert(0, str(_project_root))
 _env_path = _project_root / ".env"
 if _env_path.exists():
     print(f"Loading environment from {_env_path}")

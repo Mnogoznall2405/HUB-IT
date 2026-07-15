@@ -2124,6 +2124,137 @@ class UniversalInventoryDB:
             logger.error(f"Ошибка при получении списка статусов с ID: {e}")
             return []
 
+    def resolve_transfer_item_by_id(self, item_id: int) -> Dict[str, Any]:
+        """Resolve a transferable card by its immutable ``ITEMS.ID``.
+
+        The caller stores this identifier in the transfer operation before it
+        makes any mutation.  A serial number is only a display/search value and
+        must never be the identity used by the write path.
+        """
+        result: Dict[str, Any] = {
+            "success": False,
+            "message": "",
+            "item_id": None,
+            "serial_number": "",
+        }
+        try:
+            normalized_item_id = int(item_id)
+        except (TypeError, ValueError):
+            result["message"] = "Некорректный ITEMS.ID оборудования"
+            return result
+
+        conn = None
+        cursor = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT TOP 1 ID, SERIAL_NO, HW_SERIAL_NO
+                FROM ITEMS
+                WHERE ID = ?
+                  AND CI_TYPE = 1
+                """,
+                normalized_item_id,
+            )
+            row = cursor.fetchone()
+            if not row:
+                result["message"] = f"Оборудование с ITEMS.ID={normalized_item_id} не найдено"
+                return result
+
+            serial_number = str(row[1] or row[2] or "").strip()
+            result.update(
+                {
+                    "success": True,
+                    "item_id": int(row[0]),
+                    "serial_number": serial_number,
+                }
+            )
+            return result
+        except Exception as exc:
+            logger.error("Ошибка разрешения ITEMS.ID=%s: %s", item_id, exc, exc_info=True)
+            result["message"] = f"Ошибка разрешения оборудования: {exc}"
+            return result
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+    def resolve_transfer_item_by_serial(self, serial_number: str) -> Dict[str, Any]:
+        """Resolve one exact serial/HW serial to an immutable ``ITEMS.ID``.
+
+        This exists only for legacy bot contexts that were created before an
+        item id was stored.  The mutation itself still goes through
+        :meth:`transfer_equipment_by_id_with_history`.
+        """
+        normalized_serial = str(serial_number or "").strip()
+        result: Dict[str, Any] = {
+            "success": False,
+            "message": "",
+            "item_id": None,
+            "serial_number": normalized_serial,
+        }
+        if not normalized_serial:
+            result["message"] = "Серийный номер оборудования не указан"
+            return result
+
+        conn = None
+        cursor = None
+        try:
+            conn = self._get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT TOP 2 ID, SERIAL_NO, HW_SERIAL_NO
+                FROM ITEMS
+                WHERE CI_TYPE = 1
+                  AND (SERIAL_NO = ? OR HW_SERIAL_NO = ?)
+                """,
+                normalized_serial,
+                normalized_serial,
+            )
+            matches = cursor.fetchall()
+            if not matches:
+                result["message"] = f"Оборудование с серийным номером {normalized_serial} не найдено"
+                return result
+            if len(matches) != 1:
+                result["message"] = (
+                    f"Серийный номер {normalized_serial} соответствует нескольким единицам оборудования"
+                )
+                return result
+
+            row = matches[0]
+            result.update(
+                {
+                    "success": True,
+                    "item_id": int(row[0]),
+                    "serial_number": str(row[1] or row[2] or normalized_serial).strip(),
+                }
+            )
+            return result
+        except Exception as exc:
+            logger.error("Ошибка разрешения серийного номера %s: %s", normalized_serial, exc, exc_info=True)
+            result["message"] = f"Ошибка разрешения оборудования: {exc}"
+            return result
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
     def transfer_equipment_with_history(
         self,
         serial_number: str,
@@ -2131,13 +2262,46 @@ class UniversalInventoryDB:
         new_employee_name: str,
         new_branch_no: int = None,
         new_loc_no: int = None,
-        comment: str = None
+        comment: str = None,
+        operation_id: str = "",
+    ) -> Dict[str, Any]:
+        """Legacy serial entry point; resolves once, then writes by ``ITEMS.ID``."""
+        resolved = self.resolve_transfer_item_by_serial(serial_number)
+        if not resolved.get("success"):
+            return {
+                "success": False,
+                "message": str(resolved.get("message") or "Не удалось определить оборудование"),
+                "old_employee_id": None,
+                "hist_id": None,
+                "replayed": False,
+            }
+        return self.transfer_equipment_by_id_with_history(
+            item_id=int(resolved["item_id"]),
+            display_serial=str(resolved.get("serial_number") or serial_number),
+            new_employee_id=new_employee_id,
+            new_employee_name=new_employee_name,
+            new_branch_no=new_branch_no,
+            new_loc_no=new_loc_no,
+            comment=comment,
+            operation_id=operation_id,
+        )
+
+    def transfer_equipment_by_id_with_history(
+        self,
+        item_id: int,
+        new_employee_id: int,
+        new_employee_name: str,
+        new_branch_no: int = None,
+        new_loc_no: int = None,
+        comment: str = None,
+        operation_id: str = "",
+        display_serial: str = "",
     ) -> Dict[str, Any]:
         """
         Перемещает оборудование с записью в историю CI_HISTORY
 
         Параметры:
-            serial_number: Серийный номер оборудования
+            item_id: Неизменяемый идентификатор ``ITEMS.ID`` оборудования
             new_employee_id: Новый табельный номер (EMPL_NO)
             new_employee_name: ФИО нового сотрудника (для логирования)
             new_branch_no: Новый номер филиала (BRANCH_NO) - опционально
@@ -2150,35 +2314,63 @@ class UniversalInventoryDB:
                 - message: str - сообщение о результате
                 - old_employee_id: int - старый EMPL_NO
                 - hist_id: int - ID записи в истории (если успешно)
+                - replayed: bool - операция уже была зафиксирована ранее
         """
-        from datetime import datetime
-
         result = {
             'success': False,
             'message': '',
             'old_employee_id': None,
-            'hist_id': None
+            'hist_id': None,
+            'replayed': False,
         }
 
         try:
+            normalized_item_id = int(item_id)
+        except (TypeError, ValueError):
+            result['message'] = "Некорректный ITEMS.ID оборудования"
+            return result
+
+        normalized_serial = str(display_serial or '').strip() or f"ITEMS.ID={normalized_item_id}"
+        normalized_operation_id = str(operation_id or '').strip()
+        operation_marker = (
+            f"[operation_id={normalized_operation_id}]" if normalized_operation_id else ""
+        )
+        history_comment = str(comment or '').strip()
+        if operation_marker and operation_marker not in history_comment:
+            history_comment = f"{history_comment} {operation_marker}".strip()
+        conn = None
+        cursor = None
+        original_autocommit = None
+        transaction_active = False
+
+        try:
             conn = self._get_connection()
+            original_autocommit = getattr(conn, 'autocommit', None)
+            if original_autocommit is not False:
+                conn.autocommit = False
+            transaction_active = True
             cursor = conn.cursor()
 
             # Текущая дата и время
             now = datetime.now()
 
-            # 1. Читаем текущие данные оборудования
+            # 1. The item identity was resolved and checkpointed before this
+            # write.  Do not search by serial here: a changed/reused serial
+            # must not move a different card on retry.
             cursor.execute("""
-                SELECT ID, EMPL_NO, BRANCH_NO, LOC_NO, STATUS_NO,
+                SELECT TOP 1 ID, EMPL_NO, BRANCH_NO, LOC_NO, STATUS_NO,
                        SERIAL_NO, INV_NO, TYPE_NO, MODEL_NO, CI_TYPE, QTY
-                FROM ITEMS
-                WHERE SERIAL_NO = ?
-            """, serial_number)
+                FROM ITEMS WITH (UPDLOCK, HOLDLOCK)
+                WHERE CI_TYPE = 1
+                  AND ID = ?
+            """, normalized_item_id)
 
             current = cursor.fetchone()
             if not current:
-                result['message'] = f"Оборудование с серийным номером {serial_number} не найдено"
+                result['message'] = f"Оборудование с ITEMS.ID={normalized_item_id} не найдено"
                 logger.warning(result['message'])
+                conn.rollback()
+                transaction_active = False
                 return result
 
             item_id = current[0]
@@ -2201,10 +2393,60 @@ class UniversalInventoryDB:
             # Количество всегда 1 для единицы оборудования
             new_qty = 1
 
-            logger.info(f"Перемещение {serial_number}: EMPL_NO {old_empl_no} -> {new_employee_id}, BRANCH_NO {old_branch_no} -> {final_branch_no}, LOC_NO {old_loc_no} -> {final_loc_no}, QTY {old_qty} -> {new_qty}")
+            # Повтор после сбоя между commit SQL и записью JSON-реестра не
+            # должен создать вторую историю. Ищем только наш служебный маркер
+            # в уже зафиксированном комментарии и сверяем целевое состояние:
+            # один operation_id нельзя незаметно использовать для другого
+            # перемещения.
+            if normalized_operation_id:
+                cursor.execute("""
+                    SELECT TOP 1 HIST_ID, EMPL_NO_OLD, EMPL_NO_NEW,
+                           BRANCH_NO_NEW, LOC_NO_NEW
+                    FROM CI_HISTORY WITH (UPDLOCK, HOLDLOCK)
+                    WHERE ITEM_ID = ?
+                      AND CHARINDEX(?, COALESCE(CH_COMMENT, '')) > 0
+                    ORDER BY HIST_ID DESC
+                """, item_id, operation_marker)
+                replay = cursor.fetchone()
+                if replay:
+                    replay_hist_id, replay_old_empl_no, replay_new_empl_no, replay_branch_no, replay_loc_no = replay
+                    target_conflicts = (
+                        replay_new_empl_no != new_employee_id
+                        or replay_branch_no != final_branch_no
+                        or replay_loc_no != final_loc_no
+                    )
+                    current_still_at_target = (
+                        old_empl_no == new_employee_id
+                        and old_branch_no == final_branch_no
+                        and old_loc_no == final_loc_no
+                    )
+                    if target_conflicts or not current_still_at_target:
+                        result['message'] = (
+                            f"operation_id {normalized_operation_id} уже использован для другого перемещения"
+                        )
+                        conn.rollback()
+                        transaction_active = False
+                        return result
+
+                    conn.commit()
+                    transaction_active = False
+                    result.update({
+                        'success': True,
+                        'hist_id': replay_hist_id,
+                        'old_employee_id': replay_old_empl_no,
+                        'replayed': True,
+                        'message': (
+                            f"Перемещение {normalized_serial} уже было подтверждено "
+                            f"(HIST_ID={replay_hist_id})"
+                        ),
+                    })
+                    logger.info("Повтор операции %s для ITEM_ID=%s подавлен", normalized_operation_id, item_id)
+                    return result
+
+            logger.info(f"Перемещение {normalized_serial}: EMPL_NO {old_empl_no} -> {new_employee_id}, BRANCH_NO {old_branch_no} -> {final_branch_no}, LOC_NO {old_loc_no} -> {final_loc_no}, QTY {old_qty} -> {new_qty}")
 
             # 2. Получаем следующий HIST_ID
-            cursor.execute("SELECT ISNULL(MAX(HIST_ID), 0) + 1 FROM CI_HISTORY")
+            cursor.execute("SELECT ISNULL(MAX(HIST_ID), 0) + 1 FROM CI_HISTORY WITH (TABLOCKX, HOLDLOCK)")
             next_hist_id = cursor.fetchone()[0]
 
             # 3. Добавляем запись в историю CI_HISTORY
@@ -2239,7 +2481,7 @@ class UniversalInventoryDB:
                 old_ci_type, old_ci_type,
                 0, 0,
                 old_qty, new_qty,
-                now, "IT-BOT", comment
+                now, "IT-BOT", history_comment or None
             ))
 
             # 4. Обновляем запись в ITEMS
@@ -2251,15 +2493,20 @@ class UniversalInventoryDB:
                     QTY = ?,
                     CH_DATE = ?,
                     CH_USER = ?
-                WHERE SERIAL_NO = ?
-            """, new_employee_id, final_branch_no, final_loc_no, new_qty, now, "IT-BOT", serial_number)
+                WHERE ID = ?
+                  AND CI_TYPE = 1
+            """, new_employee_id, final_branch_no, final_loc_no, new_qty, now, "IT-BOT", item_id)
+
+            if cursor.rowcount != 1:
+                raise RuntimeError(f"Не удалось обновить единственную запись оборудования ID={item_id}")
 
             conn.commit()
+            transaction_active = False
 
             result['success'] = True
             result['hist_id'] = next_hist_id
             result['message'] = (
-                f"Оборудование {serial_number} перемещено: "
+                f"Оборудование {normalized_serial} перемещено: "
                 f"EMPL_NO {old_empl_no} -> {new_employee_id} ({new_employee_name})"
             )
             if new_branch_no is not None and new_branch_no != old_branch_no:
@@ -2268,12 +2515,26 @@ class UniversalInventoryDB:
                 result['message'] += f", LOC_NO {old_loc_no} -> {new_loc_no}"
             logger.info(result['message'])
 
-            cursor.close()
-
         except Exception as e:
-            logger.error(f"Ошибка при перемещении оборудования {serial_number}: {e}", exc_info=True)
+            if conn is not None and transaction_active:
+                try:
+                    conn.rollback()
+                except Exception as rollback_error:
+                    logger.error(f"Не удалось откатить перемещение оборудования {normalized_serial}: {rollback_error}")
+            logger.error(f"Ошибка при перемещении оборудования {normalized_serial}: {e}", exc_info=True)
             result['message'] = f"Ошибка: {str(e)}"
             result['success'] = False
+        finally:
+            if cursor is not None:
+                try:
+                    cursor.close()
+                except Exception:
+                    pass
+            if conn is not None and original_autocommit is not None:
+                try:
+                    conn.autocommit = original_autocommit
+                except Exception as autocommit_error:
+                    logger.error(f"Не удалось восстановить режим autocommit: {autocommit_error}")
 
         return result
 

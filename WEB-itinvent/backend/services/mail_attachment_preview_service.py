@@ -10,6 +10,10 @@ import sys
 import tempfile
 import threading
 import time
+import zipfile
+import xml.etree.ElementTree as ET
+from collections import OrderedDict
+from concurrent.futures import Future
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -17,7 +21,9 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _CONVERT_LOCK = threading.Lock()
-_PREVIEW_CACHE: dict[str, tuple[float, "PreviewArtifact"]] = {}
+_PREVIEW_CACHE_LOCK = threading.RLock()
+_PREVIEW_CACHE: OrderedDict[str, tuple[float, "PreviewArtifact"]] = OrderedDict()
+_PREVIEW_INFLIGHT: dict[str, Future["PreviewArtifact"]] = {}
 _PREVIEW_CACHE_TTL_SEC = 600
 
 _DEFAULT_WINDOWS_SOFFICE = Path(r"C:\Program Files\LibreOffice\program\soffice.exe")
@@ -107,6 +113,14 @@ def office_preview_timeout_sec() -> int:
     return _positive_int_env("MAIL_OFFICE_PREVIEW_TIMEOUT_SEC", 120)
 
 
+def office_preview_cache_max_entries() -> int:
+    return _positive_int_env("MAIL_OFFICE_PREVIEW_CACHE_MAX_ENTRIES", 8)
+
+
+def office_preview_cache_max_bytes() -> int:
+    return _positive_int_env("MAIL_OFFICE_PREVIEW_CACHE_MAX_BYTES", 64 * 1024 * 1024)
+
+
 def _pdf_page_count(pdf_path: Path) -> int:
     from pypdf import PdfReader
 
@@ -130,8 +144,11 @@ def _merge_pdf_paths(paths: list[Path], output_path: Path) -> None:
 
 def _run_soffice_convert(*, soffice: Path, source_path: Path, output_dir: Path, timeout_sec: int) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
+    profile_dir = (output_dir / ".lo-profile").resolve()
+    profile_dir.mkdir(parents=True, exist_ok=True)
     command = [
         str(soffice),
+        f"-env:UserInstallation={profile_dir.as_uri()}",
         "--headless",
         "--nologo",
         "--nofirststartwizard",
@@ -165,45 +182,134 @@ def _run_soffice_convert(*, soffice: Path, source_path: Path, output_dir: Path, 
     raise MailAttachmentPreviewError("LibreOffice conversion produced no PDF output.")
 
 
-def _write_single_sheet_workbook(source_path: Path, *, sheet_index: int, target_path: Path) -> None:
-    from openpyxl import Workbook, load_workbook
+_EXCEL_WORKBOOK_XML = "xl/workbook.xml"
+_EXCEL_MAIN_NAMESPACE = "http://schemas.openxmlformats.org/spreadsheetml/2006/main"
 
-    source_wb = load_workbook(source_path, read_only=False, data_only=True)
+
+def _excel_sheet_descriptors(source_path: Path) -> list[dict[str, Any]]:
     try:
-        worksheets = list(source_wb.worksheets)
-        if sheet_index < 0 or sheet_index >= len(worksheets):
-            raise MailAttachmentPreviewError(f"Excel sheet index out of range: {sheet_index}")
-        sheet = worksheets[sheet_index]
-        target_wb = Workbook()
-        target_ws = target_wb.active
-        target_ws.title = sheet.title
-        for row in sheet.iter_rows(values_only=True):
-            target_ws.append(list(row))
-        target_wb.save(target_path)
-    finally:
-        source_wb.close()
+        with zipfile.ZipFile(source_path) as archive:
+            workbook_xml = archive.read(_EXCEL_WORKBOOK_XML)
+    except (KeyError, OSError, zipfile.BadZipFile) as exc:
+        raise MailAttachmentPreviewError("Excel workbook structure is invalid.") from exc
+
+    try:
+        root = ET.fromstring(workbook_xml)
+    except ET.ParseError as exc:
+        raise MailAttachmentPreviewError("Excel workbook metadata is invalid.") from exc
+
+    sheets = root.find(f"{{{_EXCEL_MAIN_NAMESPACE}}}sheets")
+    if sheets is None:
+        sheets = next((node for node in root if node.tag.rsplit("}", 1)[-1] == "sheets"), None)
+    if sheets is None:
+        return []
+
+    result: list[dict[str, Any]] = []
+    for index, sheet in enumerate(sheets):
+        if sheet.tag.rsplit("}", 1)[-1] != "sheet":
+            continue
+        state = str(sheet.attrib.get("state") or "visible").lower()
+        result.append(
+            {
+                "index": index,
+                "name": str(sheet.attrib.get("name") or f"Лист {index + 1}"),
+                "hidden": state in {"hidden", "veryhidden"},
+            }
+        )
+    return result
+
+
+def _patch_excel_sheet_visibility(workbook_xml: bytes, *, sheet_index: int) -> bytes:
+    try:
+        root = ET.fromstring(workbook_xml)
+    except ET.ParseError as exc:
+        raise MailAttachmentPreviewError("Excel workbook metadata is invalid.") from exc
+
+    sheets = root.find(f"{{{_EXCEL_MAIN_NAMESPACE}}}sheets")
+    if sheets is None:
+        sheets = next((node for node in root if node.tag.rsplit("}", 1)[-1] == "sheets"), None)
+    sheet_nodes = [
+        node for node in list(sheets or [])
+        if node.tag.rsplit("}", 1)[-1] == "sheet"
+    ]
+    if sheet_index < 0 or sheet_index >= len(sheet_nodes):
+        raise MailAttachmentPreviewError(f"Excel sheet index out of range: {sheet_index}")
+
+    for index, sheet in enumerate(sheet_nodes):
+        if index == sheet_index:
+            sheet.attrib.pop("state", None)
+        else:
+            sheet.set("state", "hidden")
+
+    workbook_namespace = root.tag.split("}", 1)[0].lstrip("{") if "}" in root.tag else _EXCEL_MAIN_NAMESPACE
+    book_views = root.find(f"{{{workbook_namespace}}}bookViews")
+    if book_views is None:
+        book_views = next(
+            (node for node in root if node.tag.rsplit("}", 1)[-1] == "bookViews"),
+            None,
+        )
+    if book_views is None:
+        book_views = ET.Element(f"{{{workbook_namespace}}}bookViews")
+        root.insert(max(0, list(root).index(sheets)), book_views)
+    workbook_view = next(
+        (node for node in book_views if node.tag.rsplit("}", 1)[-1] == "workbookView"),
+        None,
+    )
+    if workbook_view is None:
+        workbook_view = ET.SubElement(book_views, f"{{{workbook_namespace}}}workbookView")
+    workbook_view.set("activeTab", str(sheet_index))
+    workbook_view.set("firstSheet", str(sheet_index))
+
+    ET.register_namespace("", workbook_namespace)
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True)
+
+
+def _write_single_sheet_workbook(source_path: Path, *, sheet_index: int, target_path: Path) -> None:
+    """Copy an OOXML workbook while exposing only one sheet.
+
+    XLSX is a ZIP container. Rewriting only ``xl/workbook.xml`` preserves cell
+    formulas, styles, print settings, images, charts, shapes and macros without
+    materialising the whole workbook in Python memory.
+    """
+
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with zipfile.ZipFile(source_path, "r") as source_archive:
+            with zipfile.ZipFile(target_path, "w") as target_archive:
+                found_workbook = False
+                for info in source_archive.infolist():
+                    with source_archive.open(info, "r") as source_entry:
+                        if info.filename == _EXCEL_WORKBOOK_XML:
+                            found_workbook = True
+                            payload = _patch_excel_sheet_visibility(
+                                source_entry.read(),
+                                sheet_index=sheet_index,
+                            )
+                            target_archive.writestr(info, payload)
+                            continue
+                        with target_archive.open(info, "w") as target_entry:
+                            shutil.copyfileobj(source_entry, target_entry, length=1024 * 1024)
+                if not found_workbook:
+                    raise MailAttachmentPreviewError("Excel workbook metadata is missing.")
+    except (OSError, zipfile.BadZipFile) as exc:
+        raise MailAttachmentPreviewError("Excel workbook cannot be prepared for preview.") from exc
 
 
 def _excel_sheet_metadata(*, source_path: Path, work_dir: Path, soffice: Path, timeout_sec: int) -> tuple[list[dict[str, Any]], bytes]:
-    from openpyxl import load_workbook
-
-    source_wb = load_workbook(source_path, read_only=True, data_only=True)
-    try:
-        worksheets = list(source_wb.worksheets)
-    finally:
-        source_wb.close()
+    worksheets = _excel_sheet_descriptors(source_path)
 
     sheets_meta: list[dict[str, Any]] = []
     pdf_paths: list[Path] = []
     current_page = 1
 
-    for index, worksheet in enumerate(worksheets):
-        hidden = str(getattr(worksheet, "sheet_state", "visible") or "visible").lower() in {"hidden", "veryhidden"}
+    for worksheet in worksheets:
+        index = int(worksheet["index"])
+        hidden = bool(worksheet["hidden"])
         if hidden:
             sheets_meta.append(
                 {
                     "index": index,
-                    "name": str(worksheet.title or f"Лист {index + 1}"),
+                    "name": str(worksheet["name"] or f"Лист {index + 1}"),
                     "page": None,
                     "hidden": True,
                 }
@@ -223,7 +329,7 @@ def _excel_sheet_metadata(*, source_path: Path, work_dir: Path, soffice: Path, t
         sheets_meta.append(
             {
                 "index": index,
-                "name": str(worksheet.title or f"Лист {index + 1}"),
+                "name": str(worksheet["name"] or f"Лист {index + 1}"),
                 "page": current_page,
                 "page_end": page_end,
                 "page_count": page_count,
@@ -249,38 +355,56 @@ def _cache_key(*, filename: str, content: bytes) -> str:
     return f"{_file_extension(filename)}:{digest}"
 
 
-def _cache_get(key: str) -> PreviewArtifact | None:
+def _prune_cache_locked(*, now: float) -> None:
+    expired_keys = [
+        key
+        for key, (created_at, _artifact) in _PREVIEW_CACHE.items()
+        if now - created_at > _PREVIEW_CACHE_TTL_SEC
+    ]
+    for key in expired_keys:
+        _PREVIEW_CACHE.pop(key, None)
+
+
+def _cache_get_locked(key: str, *, now: float) -> PreviewArtifact | None:
+    _prune_cache_locked(now=now)
     entry = _PREVIEW_CACHE.get(key)
     if not entry:
         return None
-    created_at, artifact = entry
-    if time.monotonic() - created_at > _PREVIEW_CACHE_TTL_SEC:
-        _PREVIEW_CACHE.pop(key, None)
-        return None
+    _created_at, artifact = entry
+    _PREVIEW_CACHE.move_to_end(key)
     return artifact
 
 
+def _cache_get(key: str) -> PreviewArtifact | None:
+    with _PREVIEW_CACHE_LOCK:
+        return _cache_get_locked(key, now=time.monotonic())
+
+
 def _cache_put(key: str, artifact: PreviewArtifact) -> None:
-    _PREVIEW_CACHE[key] = (time.monotonic(), artifact)
+    artifact_size = len(artifact.pdf_bytes or b"")
+    max_bytes = office_preview_cache_max_bytes()
+    if artifact_size > max_bytes:
+        return
+
+    now = time.monotonic()
+    with _PREVIEW_CACHE_LOCK:
+        _prune_cache_locked(now=now)
+        _PREVIEW_CACHE.pop(key, None)
+        _PREVIEW_CACHE[key] = (now, artifact)
+        total_bytes = sum(len(entry.pdf_bytes or b"") for _created_at, entry in _PREVIEW_CACHE.values())
+        max_entries = office_preview_cache_max_entries()
+        while len(_PREVIEW_CACHE) > max_entries or total_bytes > max_bytes:
+            _removed_key, (_created_at, removed) = _PREVIEW_CACHE.popitem(last=False)
+            total_bytes -= len(removed.pdf_bytes or b"")
 
 
-def build_office_preview_artifact(*, filename: str, content_type: str, content: bytes) -> PreviewArtifact:
-    if not is_office_preview_enabled():
-        raise MailAttachmentPreviewError("Office attachment preview is disabled.")
-    if not content:
-        raise MailAttachmentPreviewError("Attachment is empty.")
-    if len(content) > office_preview_max_bytes():
-        raise MailAttachmentPreviewError("Attachment is too large for Office preview.")
-
-    source_kind = classify_office_source(filename=filename, content_type=content_type)
-    if not source_kind:
-        raise MailAttachmentPreviewError("Attachment type is not supported for Office preview.")
-
-    cache_key = _cache_key(filename=filename, content=content)
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        return cached
-
+def _build_office_preview_artifact_uncached(
+    *,
+    filename: str,
+    content_type: str,
+    content: bytes,
+    source_kind: str,
+) -> PreviewArtifact:
     soffice = resolve_soffice_path()
     timeout_sec = office_preview_timeout_sec()
     extension = _file_extension(filename) or ("xlsx" if source_kind == "excel" else "docx")
@@ -328,8 +452,54 @@ def build_office_preview_artifact(*, filename: str, content_type: str, content: 
             page_count=page_count,
             sheets=sheets,
         )
-        _cache_put(cache_key, artifact)
         return artifact
+
+
+def build_office_preview_artifact(*, filename: str, content_type: str, content: bytes) -> PreviewArtifact:
+    if not is_office_preview_enabled():
+        raise MailAttachmentPreviewError("Office attachment preview is disabled.")
+    if not content:
+        raise MailAttachmentPreviewError("Attachment is empty.")
+    if len(content) > office_preview_max_bytes():
+        raise MailAttachmentPreviewError("Attachment is too large for Office preview.")
+
+    source_kind = classify_office_source(filename=filename, content_type=content_type)
+    if not source_kind:
+        raise MailAttachmentPreviewError("Attachment type is not supported for Office preview.")
+
+    cache_key = _cache_key(filename=filename, content=content)
+    with _PREVIEW_CACHE_LOCK:
+        cached = _cache_get_locked(cache_key, now=time.monotonic())
+        if cached is not None:
+            return cached
+        future = _PREVIEW_INFLIGHT.get(cache_key)
+        if future is None:
+            future = Future()
+            _PREVIEW_INFLIGHT[cache_key] = future
+            is_leader = True
+        else:
+            is_leader = False
+
+    if not is_leader:
+        return future.result()
+
+    try:
+        artifact = _build_office_preview_artifact_uncached(
+            filename=filename,
+            content_type=content_type,
+            content=content,
+            source_kind=source_kind,
+        )
+        _cache_put(cache_key, artifact)
+        future.set_result(artifact)
+        return artifact
+    except Exception as exc:
+        future.set_exception(exc)
+        raise
+    finally:
+        with _PREVIEW_CACHE_LOCK:
+            if _PREVIEW_INFLIGHT.get(cache_key) is future:
+                _PREVIEW_INFLIGHT.pop(cache_key, None)
 
 
 def _pdf_page_count_from_bytes(pdf_bytes: bytes) -> int:
@@ -368,12 +538,22 @@ def describe_preview_runtime() -> dict[str, Any]:
         soffice_ready = True
     except MailAttachmentPreviewError as exc:
         error = str(exc)
+    with _PREVIEW_CACHE_LOCK:
+        _prune_cache_locked(now=time.monotonic())
+        cache_entries = len(_PREVIEW_CACHE)
+        cache_bytes = sum(len(artifact.pdf_bytes or b"") for _created_at, artifact in _PREVIEW_CACHE.values())
+        inflight = len(_PREVIEW_INFLIGHT)
     return {
         "enabled": enabled,
         "soffice_path": soffice,
         "soffice_ready": soffice_ready,
         "max_bytes": office_preview_max_bytes(),
         "timeout_sec": office_preview_timeout_sec(),
+        "cache_entries": cache_entries,
+        "cache_bytes": cache_bytes,
+        "cache_max_entries": office_preview_cache_max_entries(),
+        "cache_max_bytes": office_preview_cache_max_bytes(),
+        "inflight": inflight,
         "error": error,
         "python": sys.version.split()[0],
     }

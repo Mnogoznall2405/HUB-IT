@@ -131,6 +131,7 @@ const permissionGroups = [
     group: 'Склад 1С',
     permissions: [
       { value: 'warehouse_1c.read', label: 'Склад 1С: просмотр' },
+      { value: 'warehouse_1c.reconcile.write', label: 'Склад 1С: подтверждать PART_NO в HUB' },
     ],
   },
   {

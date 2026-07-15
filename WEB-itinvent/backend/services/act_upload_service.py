@@ -6,7 +6,6 @@ Uploaded signed act service:
 """
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -19,12 +18,13 @@ from uuid import uuid4
 from dotenv import dotenv_values
 
 from backend.database import queries
-
-try:
-    from openai import OpenAI
-except Exception:  # pragma: no cover - optional runtime dependency
-    OpenAI = None
-
+from backend.ai_chat.openrouter_client import (
+    OpenRouterClientError,
+    is_image_unsupported_error,
+    openrouter_client,
+    provider_error_text,
+    resolve_model_candidates,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[3]
 ROOT_ENV_PATH = PROJECT_ROOT / ".env"
@@ -65,31 +65,6 @@ def _cleanup_expired_drafts() -> None:
     ]
     for draft_id in expired:
         _ACT_DRAFTS.pop(draft_id, None)
-
-
-def _extract_json_payload(raw_text: str) -> Optional[dict]:
-    text = str(raw_text or "").strip()
-    if not text:
-        return None
-
-    try:
-        payload = json.loads(text)
-        if isinstance(payload, dict):
-            return payload
-    except Exception:
-        pass
-
-    start = text.find("{")
-    end = text.rfind("}")
-    if start >= 0 and end > start:
-        candidate = text[start : end + 1]
-        try:
-            payload = json.loads(candidate)
-            if isinstance(payload, dict):
-                return payload
-        except Exception:
-            return None
-    return None
 
 
 def _extract_pdf_text(file_bytes: bytes) -> tuple[str, list[str]]:
@@ -573,40 +548,6 @@ def _stamp_pdf_annulled(file_bytes: bytes, doc_no: int) -> bytes:
         return bytes(file_bytes)
 
 
-def _normalize_openrouter_base_url(raw_value: Any, default_base_url: str) -> str:
-    """
-    Normalize OpenRouter base URL to API root:
-    https://openrouter.ai/api/v1
-    """
-    raw = str(raw_value or "").strip()
-    if not raw:
-        return default_base_url
-
-    value = raw.rstrip("/")
-    lower = value.lower()
-
-    if lower.endswith("/chat/completions"):
-        value = value[: -len("/chat/completions")]
-        lower = value.lower()
-    elif lower.endswith("/completions"):
-        value = value[: -len("/completions")]
-        lower = value.lower()
-
-    if lower.endswith("/api"):
-        value = f"{value}/v1"
-        lower = value.lower()
-
-    if lower.endswith("/v1") and not lower.endswith("/api/v1"):
-        value = re.sub(r"/v1$", "", value, flags=re.IGNORECASE)
-        value = f"{value}/api/v1"
-        lower = value.lower()
-
-    if not lower.endswith("/api/v1"):
-        value = f"{value}/api/v1"
-
-    return value
-
-
 def _call_openrouter_act_parser(
     *,
     file_name: str,
@@ -615,52 +556,12 @@ def _call_openrouter_act_parser(
 ) -> tuple[Optional[dict], list[str]]:
     warnings: list[str] = []
 
-    model_candidates: list[tuple[str, str]] = []
-    for source, value in (
-        ("root/.env:ACT_PARSE_MODEL", ROOT_ENV.get("ACT_PARSE_MODEL")),
-        ("os.getenv:ACT_PARSE_MODEL", os.getenv("ACT_PARSE_MODEL")),
-        ("root/.env:OCR_MODEL", ROOT_ENV.get("OCR_MODEL")),
-        ("os.getenv:OCR_MODEL", os.getenv("OCR_MODEL")),
-    ):
-        model_name = str(value or "").strip()
-        if not model_name:
-            continue
-        if model_name not in [m for _, m in model_candidates]:
-            model_candidates.append((source, model_name))
-    default_base_url = "https://openrouter.ai/api/v1"
-
-    key_candidates: list[tuple[str, str]] = []
-    for source, value in (
-        ("root/.env:OPENROUTER_API_KEY", ROOT_ENV.get("OPENROUTER_API_KEY")),
-        ("os.getenv:OPENROUTER_API_KEY", os.getenv("OPENROUTER_API_KEY")),
-        # Fallback for environments where OpenRouter token is stored in OPENAI_API_KEY.
-        ("root/.env:OPENAI_API_KEY", ROOT_ENV.get("OPENAI_API_KEY")),
-        ("os.getenv:OPENAI_API_KEY", os.getenv("OPENAI_API_KEY")),
-    ):
-        token = str(value or "").strip()
-        if not token:
-            continue
-        if token not in [v for _, v in key_candidates]:
-            key_candidates.append((source, token))
-
-    base_candidates: list[tuple[str, str]] = []
-    for source, value in (
-        ("root/.env", ROOT_ENV.get("OPENROUTER_BASE_URL")),
-        ("os.getenv", os.getenv("OPENROUTER_BASE_URL")),
-        ("default", default_base_url),
-    ):
-        base = _normalize_openrouter_base_url(value, default_base_url)
-        if base not in [v for _, v in base_candidates]:
-            base_candidates.append((source, base))
-
-    if not key_candidates:
+    model_candidates = resolve_model_candidates("act")
+    if not openrouter_client.is_configured():
         warnings.append("OPENROUTER_API_KEY (или OPENAI_API_KEY) не задан, распознавание через модель пропущено.")
         return None, warnings
     if not model_candidates:
         warnings.append("ACT_PARSE_MODEL/OCR_MODEL не заданы, распознавание через модель пропущено.")
-        return None, warnings
-    if OpenAI is None:
-        warnings.append("Пакет openai недоступен, распознавание через модель пропущено.")
         return None, warnings
 
     text_for_model = pdf_text[:50000]
@@ -703,112 +604,100 @@ def _call_openrouter_act_parser(
             return content
         return user_prompt_header + f"Document text:\n{text_for_model}"
 
-    completion = None
-    last_exc: Optional[Exception] = None
-    logger.info(
-        "Uploaded act parse: model candidates=%s",
-        [f"{src}:{name}" for src, name in model_candidates],
+    system_prompt = (
+        "Extract structured data from a signed transfer act and return strict JSON. "
+        "Be conservative: return only exact inventory numbers and never guess."
     )
 
-    for model_source, model in model_candidates:
+    last_exc: Optional[Exception] = None
+    logger.info("Uploaded act parse: model candidates=%s", model_candidates)
+
+    for model in model_candidates:
         attempt_modes = [True, False] if image_urls else [False]
         for use_images in attempt_modes:
             if use_images and not image_urls:
                 continue
             if (not use_images) and (not text_for_model.strip()):
                 continue
-
-            image_input_unsupported = False
-            for key_source, api_key in key_candidates:
-                for base_source, base_url in base_candidates:
-                    client = OpenAI(
-                        api_key=api_key,
-                        base_url=base_url,
-                    )
-                    try:
-                        logger.info(
-                            "Uploaded act parse: sending request to OpenRouter (file=%s, model=%s, model_source=%s, text_len=%s, images=%s, key_source=%s, base_source=%s)",
-                            file_name,
-                            model,
-                            model_source,
-                            len(text_for_model),
-                            len(image_urls) if use_images else 0,
-                            key_source,
-                            base_source,
-                        )
-                        completion = client.chat.completions.create(
-                            model=model,
-                            temperature=0,
-                            response_format={"type": "json_object"},
-                            messages=[
-                                {
-                                    "role": "system",
-                                    "content": (
-                                        "Extract structured data from a signed transfer act and return strict JSON. "
-                                        "Be conservative: return only exact inventory numbers and never guess."
-                                    ),
-                                },
-                                {
-                                    "role": "user",
-                                    "content": _build_user_content(use_images),
-                                },
-                            ],
-                            max_tokens=900,
-                        )
-                        logger.info(
-                            "Uploaded act parse: OpenRouter response received (file=%s, model=%s, model_source=%s, use_images=%s)",
-                            file_name,
-                            model,
-                            model_source,
-                            use_images,
-                        )
-                        last_exc = None
-                        break
-                    except Exception as exc:
-                        last_exc = exc
-                        message = str(exc or "")
-                        if use_images and ("support image input" in message.lower()):
-                            image_input_unsupported = True
-                        logger.warning(
-                            "Uploaded act parse: OpenRouter call failed (file=%s, model=%s, model_source=%s, use_images=%s, key_source=%s, base_source=%s): %s",
-                            file_name,
-                            model,
-                            model_source,
-                            use_images,
-                            key_source,
-                            base_source,
-                            exc,
-                        )
-                        if image_input_unsupported:
-                            break
-                if completion is not None or image_input_unsupported:
-                    break
-
-            if completion is not None:
-                break
-
-            if image_input_unsupported:
-                warnings.append(
-                    f"Модель {model} не поддерживает image input, пробую следующий режим/модель."
+            try:
+                logger.info(
+                    "Uploaded act parse: sending request to OpenRouter (file=%s, model=%s, text_len=%s, images=%s)",
+                    file_name,
+                    model,
+                    len(text_for_model),
+                    len(image_urls) if use_images else 0,
                 )
-        if completion is not None:
-            break
+                payload, _usage = openrouter_client.complete_json(
+                    system_prompt=system_prompt,
+                    user_content=_build_user_content(use_images),
+                    model=model,
+                    purpose="act",
+                    temperature=0,
+                    max_tokens=900,
+                    response_schema=None,
+                    response_healing=False,
+                )
+                logger.info(
+                    "Uploaded act parse: OpenRouter response received (file=%s, model=%s, use_images=%s)",
+                    file_name,
+                    model,
+                    use_images,
+                )
+                if not isinstance(payload, dict):
+                    warnings.append("OpenRouter вернул невалидный JSON.")
+                    logger.warning("Uploaded act parse: OpenRouter returned invalid JSON (file=%s)", file_name)
+                    continue
+                if not payload:
+                    warnings.append(
+                        f"Модель {model} вернула пустой JSON, пробую следующий режим/модель."
+                    )
+                    logger.warning(
+                        "Uploaded act parse: empty JSON payload (file=%s, model=%s, use_images=%s)",
+                        file_name,
+                        model,
+                        use_images,
+                    )
+                    continue
+                logger.info("Uploaded act parse: OpenRouter JSON parsed successfully (file=%s)", file_name)
+                return payload, warnings
+            except OpenRouterClientError as exc:
+                last_exc = exc
+                if use_images and is_image_unsupported_error(exc):
+                    warnings.append(
+                        f"Модель {model} не поддерживает image input, пробую следующий режим/модель."
+                    )
+                    logger.warning(
+                        "Uploaded act parse: image input unsupported (file=%s, model=%s): %s",
+                        file_name,
+                        model,
+                        provider_error_text(exc),
+                    )
+                    break
+                logger.warning(
+                    "Uploaded act parse: OpenRouter call failed (file=%s, model=%s, use_images=%s): %s",
+                    file_name,
+                    model,
+                    use_images,
+                    provider_error_text(exc),
+                )
+            except Exception as exc:
+                last_exc = exc
+                if use_images and is_image_unsupported_error(exc):
+                    warnings.append(
+                        f"Модель {model} не поддерживает image input, пробую следующий режим/модель."
+                    )
+                    break
+                logger.warning(
+                    "Uploaded act parse: OpenRouter call failed (file=%s, model=%s, use_images=%s): %s",
+                    file_name,
+                    model,
+                    use_images,
+                    exc,
+                )
 
-    if completion is None:
-        warnings.append(f"Ошибка OpenRouter: {last_exc}" if last_exc else "Ошибка OpenRouter: пустой ответ.")
-        return None, warnings
-
-    content = ""
-    if completion and getattr(completion, "choices", None):
-        content = str(completion.choices[0].message.content or "").strip()
-
-    payload = _extract_json_payload(content)
-    if payload is None:
-        warnings.append("OpenRouter вернул невалидный JSON.")
-        logger.warning("Uploaded act parse: OpenRouter returned invalid JSON (file=%s)", file_name)
-        return None, warnings
-    logger.info("Uploaded act parse: OpenRouter JSON parsed successfully (file=%s)", file_name)
-    return payload, warnings
+    detail = provider_error_text(last_exc) if last_exc else ""
+    warnings.append(f"Ошибка OpenRouter: {detail}" if detail else "Ошибка OpenRouter: пустой ответ.")
+    return None, warnings
 
 
 def _build_resolved_items(rows: list[dict]) -> list[dict]:

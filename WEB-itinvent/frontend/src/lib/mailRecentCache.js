@@ -1,5 +1,6 @@
-const MAIL_RECENT_CACHE_STORAGE_KEY = 'mail_recent_cache_v2';
-const MAIL_RECENT_CACHE_TTL_MS = 10 * 60 * 1000;
+const MAIL_RECENT_CACHE_STORAGE_KEY = 'mail_recent_cache_v3';
+const MAIL_RECENT_CACHE_TTL_MS = 90 * 1000;
+const MAIL_RECENT_DETAIL_TTL_MS = 10 * 60 * 1000;
 const MAIL_RECENT_CACHE_MAX_CONTEXTS = 4;
 const MAIL_RECENT_CACHE_MAX_ITEMS = 50;
 const MAIL_RECENT_CACHE_MAX_DETAILS = 20;
@@ -37,23 +38,28 @@ const safeWriteStorage = (payload) => {
   }
 };
 
-const isFresh = (updatedAt) => (nowMs() - Number(updatedAt || 0)) <= MAIL_RECENT_CACHE_TTL_MS;
+const isFresh = (updatedAt, ttlMs = MAIL_RECENT_CACHE_TTL_MS) => (
+  (nowMs() - Number(updatedAt || 0)) <= ttlMs
+);
 
 const sanitizeFolderTree = (value) => (Array.isArray(value) ? value : []);
 const sanitizeFolderSummary = (value) => ((value && typeof value === 'object') ? value : {});
 
 const sanitizeListData = (value) => {
   const source = value && typeof value === 'object' ? value : {};
-  const items = Array.isArray(source.items) ? source.items.slice(0, MAIL_RECENT_CACHE_MAX_ITEMS) : [];
+  const sourceItems = Array.isArray(source.items) ? source.items : [];
+  const items = sourceItems.slice(0, MAIL_RECENT_CACHE_MAX_ITEMS);
+  const hasMore = items.length > 0 && (Boolean(source.has_more) || sourceItems.length > items.length);
+  const appendOffset = hasMore ? items.length : null;
   return {
     items,
     total: Number(source.total || items.length || 0),
-    offset: Number(source.offset || 0),
+    offset: 0,
     limit: Number(source.limit || 50),
-    has_more: Boolean(source.has_more),
-    next_offset: source.next_offset ?? null,
-    append_offset: source.append_offset ?? source.next_offset ?? null,
-    loaded_pages: Math.max(0, Number(source.loaded_pages || (items.length > 0 ? 1 : 0))),
+    has_more: hasMore,
+    next_offset: appendOffset,
+    append_offset: appendOffset,
+    loaded_pages: items.length > 0 ? 1 : 0,
     search_limited: Boolean(source.search_limited),
     searched_window: Number(source.searched_window || 0),
   };
@@ -139,7 +145,7 @@ const pruneScopeEntry = (entry) => {
     .map(([messageId, value]) => {
       const normalizedMessageId = String(messageId || '').trim();
       const updatedAt = Number(value?.updatedAt || 0);
-      if (!normalizedMessageId || !isFresh(updatedAt)) return null;
+      if (!normalizedMessageId || !isFresh(updatedAt, MAIL_RECENT_DETAIL_TTL_MS)) return null;
       return [
         normalizedMessageId,
         {
@@ -298,6 +304,7 @@ export const clearAllMailRecentCache = () => {
 export const __MAIL_RECENT_CACHE_TESTING__ = {
   MAIL_RECENT_CACHE_STORAGE_KEY,
   MAIL_RECENT_CACHE_TTL_MS,
+  MAIL_RECENT_DETAIL_TTL_MS,
   MAIL_RECENT_CACHE_MAX_CONTEXTS,
   MAIL_RECENT_CACHE_MAX_ITEMS,
   MAIL_RECENT_CACHE_MAX_DETAILS,

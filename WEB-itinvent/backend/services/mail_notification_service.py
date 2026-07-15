@@ -14,6 +14,7 @@ from backend.chat.models import ChatPushSubscription
 from backend.services.app_push_service import app_push_service
 from backend.services.authorization_service import PERM_MAIL_ACCESS, authorization_service
 from backend.services.mail_service import MailServiceError, mail_service
+from backend.services.mail_runtime_snapshot_service import mail_runtime_snapshot_service
 from backend.services.notification_preferences_service import notification_preferences_service
 from backend.services.request_auth_context_service import pop_request_session_id, push_request_session_id
 from backend.services.session_auth_context_service import session_auth_context_service
@@ -36,6 +37,10 @@ class MailNotificationService:
         self._task: asyncio.Task | None = None
         self._stop_event: asyncio.Event | None = None
         self._snapshots: dict[int, MailNotificationSnapshot] = {}
+        self._failures: dict[int, int] = {}
+        self._circuit_open_until: dict[int, float] = {}
+        self._last_poll_duration_ms = 0.0
+        self._last_error_count = 0
 
     @property
     def poll_interval_sec(self) -> int:
@@ -62,6 +67,13 @@ class MailNotificationService:
             return 8
 
     @property
+    def user_timeout_sec(self) -> int:
+        try:
+            return max(3, min(60, int(str(os.getenv("MAIL_NOTIFICATION_USER_TIMEOUT_SEC", "15")))))
+        except Exception:
+            return 15
+
+    @property
     def background_enabled(self) -> bool:
         return str(os.getenv("MAIL_NOTIFICATION_BACKGROUND_ENABLED", "1") or "").strip().lower() in {
             "1",
@@ -78,6 +90,11 @@ class MailNotificationService:
             "batch_size": self.batch_size,
             "max_concurrency": self.max_concurrency,
             "snapshot_count": len(self._snapshots),
+            "shared_snapshot": True,
+            "user_timeout_sec": self.user_timeout_sec,
+            "open_circuits": sum(1 for value in self._circuit_open_until.values() if value > time.monotonic()),
+            "last_poll_duration_ms": round(self._last_poll_duration_ms, 1),
+            "last_error_count": self._last_error_count,
         }
 
     async def start(self) -> None:
@@ -218,18 +235,29 @@ class MailNotificationService:
         user_id = int(user.get("id", 0) or 0)
         session_context = payload.get("session_context") or {}
         session_id = str(session_context.get("session_id") or "").strip() or None
+        if self._circuit_open_until.get(user_id, 0.0) > time.monotonic():
+            return {"payload": payload, "user_id": user_id, "feed": None, "error": RuntimeError("mail circuit open")}
         async with semaphore:
             try:
-                feed = await asyncio.to_thread(
-                    self._list_notification_feed_sync,
-                    user_id=user_id,
-                    session_id=session_id,
+                feed = await asyncio.wait_for(
+                    asyncio.to_thread(
+                        self._list_notification_feed_sync,
+                        user_id=user_id,
+                        session_id=session_id,
+                    ),
+                    timeout=self.user_timeout_sec,
                 )
+                self._failures.pop(user_id, None)
+                self._circuit_open_until.pop(user_id, None)
                 return {"payload": payload, "user_id": user_id, "feed": feed, "error": None}
             except MailServiceError as exc:
                 logger.debug("Mail notification poll skipped for user_id=%s error=%s", user_id, exc)
                 return {"payload": payload, "user_id": user_id, "feed": None, "error": exc}
             except Exception as exc:
+                failures = int(self._failures.get(user_id, 0)) + 1
+                self._failures[user_id] = failures
+                if failures >= 3:
+                    self._circuit_open_until[user_id] = time.monotonic() + 120.0
                 logger.warning("Mail notification poll failed for user_id=%s", user_id, exc_info=True)
                 return {"payload": payload, "user_id": user_id, "feed": None, "error": exc}
 
@@ -252,6 +280,11 @@ class MailNotificationService:
             semaphore = asyncio.Semaphore(self.max_concurrency)
             results = await asyncio.gather(
                 *(self._fetch_candidate_feed(payload, semaphore) for payload in candidates),
+            )
+            await asyncio.to_thread(
+                mail_runtime_snapshot_service.persist_notification_results,
+                results=results,
+                ttl_seconds=self.poll_interval_sec,
             )
 
             for result in results:
@@ -322,13 +355,15 @@ class MailNotificationService:
                     error_count += 1
                     logger.warning("Failed to send mail push for user_id=%s", user_id, exc_info=True)
         finally:
+            self._last_poll_duration_ms = (time.perf_counter() - started_at) * 1000.0
+            self._last_error_count = error_count
             logger.info(
                 "Mail notification poll iteration candidate_count=%s fetched_count=%s notified_count=%s error_count=%s duration_ms=%.1f",
                 candidate_count,
                 fetched_count,
                 notified_count,
                 error_count,
-                (time.perf_counter() - started_at) * 1000.0,
+                self._last_poll_duration_ms,
             )
 
 

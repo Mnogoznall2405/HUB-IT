@@ -179,6 +179,7 @@ class EquipmentDataManager:
             return False
         
         # Загружаем существующие данные
+        additional_payload = dict(additional_data or {})
         data = self._load_data(self.transfers_file)
         
         # Создаем новую запись
@@ -187,10 +188,19 @@ class EquipmentDataManager:
             'new_employee': new_employee.strip(),
             'old_employee': old_employee.strip() if old_employee else None,
             'timestamp': datetime.now().isoformat(),
-            'additional_data': additional_data or {},
-            'db_name': (additional_data or {}).get('db_name', ''),
+            'additional_data': additional_payload,
+            'db_name': additional_payload.get('db_name', ''),
             'act_pdf_path': act_pdf_path if act_pdf_path else None
         }
+        operation_id = str(additional_payload.get('operation_id') or '').strip()
+        if operation_id:
+            new_record['operation_id'] = operation_id
+        item_id = additional_payload.get('item_id')
+        if item_id is not None and str(item_id).strip():
+            new_record['item_id'] = item_id
+        one_c_sync_state = str(additional_payload.get('one_c_sync_state') or '').strip()
+        if one_c_sync_state:
+            new_record['one_c_sync_state'] = one_c_sync_state
         
         # Добавляем запись
         data.append(new_record)
@@ -205,6 +215,102 @@ class EquipmentDataManager:
     def get_equipment_transfers(self) -> List[Dict[str, Any]]:
         """Возвращает список перемещений оборудования."""
         return self._load_data(self.transfers_file)
+
+    def has_transfer_operation(self, operation_id: str) -> bool:
+        """Whether a successful ledger record already contains this operation id."""
+        expected = str(operation_id or '').strip()
+        if not expected:
+            return False
+        for record in self.get_equipment_transfers():
+            if not isinstance(record, dict):
+                continue
+            nested = record.get('additional_data')
+            nested_id = nested.get('operation_id') if isinstance(nested, dict) else None
+            recorded = str(record.get('operation_id') or nested_id or '').strip()
+            if recorded == expected:
+                return True
+        return False
+
+    @staticmethod
+    def _operation_item_key(record: Dict[str, Any]) -> tuple[str, str]:
+        """Return the durable per-item dedupe key for a transfer ledger row."""
+        additional = record.get('additional_data') if isinstance(record.get('additional_data'), dict) else {}
+        operation_id = str(record.get('operation_id') or additional.get('operation_id') or '').strip()
+        item_id = str(record.get('item_id') or additional.get('item_id') or '').strip()
+        return operation_id, item_id
+
+    def add_transfer_operation_entries_once(self, entries: List[Dict[str, Any]]) -> bool:
+        """Append all ledger rows of one confirmed operation exactly once.
+
+        The input is prepared and checkpointed before Telegram delivery.  This
+        method writes the full missing subset in one local-store commit, so a
+        process crash cannot leave a successful operation with duplicated
+        ledger entries on recovery.
+        """
+        prepared_entries = [dict(entry) for entry in entries if isinstance(entry, dict)]
+        if not prepared_entries:
+            return True
+
+        data = self._load_data(self.transfers_file)
+        existing_keys = {
+            key
+            for record in data
+            if isinstance(record, dict)
+            for key in [self._operation_item_key(record)]
+            if key[0] and key[1]
+        }
+        pending_records: List[Dict[str, Any]] = []
+
+        for entry in prepared_entries:
+            serial_number = str(entry.get('serial_number') or '').strip()
+            new_employee = str(entry.get('new_employee') or '').strip()
+            old_employee = str(entry.get('old_employee') or '').strip() or None
+            additional_payload = dict(entry.get('additional_data') or {})
+            item_id = entry.get('item_id') or additional_payload.get('item_id')
+            operation_id = str(additional_payload.get('operation_id') or entry.get('operation_id') or '').strip()
+            if not operation_id or item_id is None or str(item_id).strip() == '':
+                logger.error("Операционная запись перемещения требует operation_id и immutable item_id")
+                return False
+            if not validate_serial_number(self.extract_serial_value(serial_number)):
+                logger.error(f"Невалидный серийный номер: {serial_number}")
+                return False
+            if not self.validate_employee_name(new_employee):
+                logger.error(f"Невалидное ФИО нового сотрудника: {new_employee}")
+                return False
+            if old_employee and not self.validate_employee_name(old_employee):
+                logger.error(f"Невалидное ФИО предыдущего сотрудника: {old_employee}")
+                return False
+
+            additional_payload['operation_id'] = operation_id
+            additional_payload['item_id'] = int(item_id) if str(item_id).isdigit() else str(item_id)
+            key = (operation_id, str(additional_payload['item_id']))
+            if key in existing_keys:
+                continue
+
+            record = {
+                'serial_number': self.extract_serial_value(serial_number).strip(),
+                'new_employee': new_employee,
+                'old_employee': old_employee,
+                'timestamp': datetime.now().isoformat(),
+                'additional_data': additional_payload,
+                'db_name': additional_payload.get('db_name', ''),
+                'act_pdf_path': entry.get('act_pdf_path') or None,
+                'operation_id': operation_id,
+                'item_id': additional_payload['item_id'],
+            }
+            one_c_sync_state = str(additional_payload.get('one_c_sync_state') or '').strip()
+            if one_c_sync_state:
+                record['one_c_sync_state'] = one_c_sync_state
+            pending_records.append(record)
+            existing_keys.add(key)
+
+        if not pending_records:
+            return True
+
+        data.extend(pending_records)
+        self._save_data(self.transfers_file, data)
+        logger.info("Добавлено %s idempotent-записей операции перемещения", len(pending_records))
+        return True
     
     def export_transfers_to_text(self, output_dir: str = "exports", date_filter: str = None, db_filter: Optional[str] = None, only_new: bool = False) -> str:
         """

@@ -34,6 +34,10 @@ def test_get_balances_with_hub_enriches_rows(monkeypatch):
         ]
 
     monkeypatch.setattr(service, "get_balances", fake_get_balances)
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [{"id": "ITINVENT", "name": "ITINVENT"}],
+    )
 
     fake_queries = MagicMock()
     fake_queries.list_owners_compact.return_value = [
@@ -66,6 +70,7 @@ def test_get_balances_with_hub_enriches_rows(monkeypatch):
             nomenclature_ref="n1",
             part_no="PN-111",
             model_name="Dell P2419H",
+            db_id="ITINVENT",
         )
     )
 
@@ -73,11 +78,14 @@ def test_get_balances_with_hub_enriches_rows(monkeypatch):
     call_kwargs = fake_queries.count_equipment_by_owners_hub_query.call_args.kwargs
     assert call_kwargs["part_no"] == "PN-111"
     assert call_kwargs["model_name"] == "Dell P2419H"
+    assert call_kwargs["db_id"] == "ITINVENT"
 
     assert len(rows) == 2
     person_row = rows[0]
     assert person_row["hub_owner_no"] == 10
     assert person_row["hub_count"] == 2
+    assert person_row["exact_linked_count"] == 0
+    assert person_row["unlinked_candidate_count"] == 2
     assert person_row["employment_status"] == "active"
     assert person_row["employment_label"] == "Сотрудник работает"
 
@@ -88,10 +96,152 @@ def test_get_balances_with_hub_enriches_rows(monkeypatch):
     assert warehouse_row["employment_label"] == ""
 
 
-def test_get_balances_with_hub_requires_nomenclature_ref():
+def test_get_balances_with_hub_sums_counts_across_databases(monkeypatch):
     service = Warehouse1CService()
-    try:
-        asyncio.run(service.get_balances_with_hub(nomenclature_ref=""))
-        assert False, "expected validation error"
-    except Exception as exc:
-        assert "nomenclature_ref" in str(exc).lower() or "обязателен" in str(exc).lower()
+    monkeypatch.setenv("WAREHOUSE_1C_RECONCILE_ALLOWED_DB_IDS", "ITINVENT,MSK-ITINVENT")
+
+    async def fake_get_balances(**kwargs):
+        return [
+            {
+                "warehouse_ref": "w1",
+                "warehouse_name": "Левицкий Александр Степанович",
+                "qty_balance": 1,
+            },
+        ]
+
+    monkeypatch.setattr(service, "get_balances", fake_get_balances)
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "ITINVENT"},
+            {"id": "MSK-ITINVENT", "name": "MSK"},
+        ],
+    )
+
+    def fake_owners(db_id=None):
+        if db_id == "MSK-ITINVENT":
+            return [{"OWNER_NO": 55, "OWNER_DISPLAY_NAME": "Левицкий Александр Степанович"}]
+        return [{"OWNER_NO": 10, "OWNER_DISPLAY_NAME": "Левицкий Александр Степанович"}]
+
+    def fake_counts(owner_nos, **kwargs):
+        db_id = kwargs.get("db_id")
+        if db_id == "ITINVENT":
+            return {10: 0}
+        if db_id == "MSK-ITINVENT":
+            return {55: 1}
+        return {}
+
+    import backend.database.queries as db_queries
+
+    monkeypatch.setattr(db_queries, "list_owners_compact", fake_owners)
+    monkeypatch.setattr(db_queries, "count_equipment_by_owners_hub_query", fake_counts)
+    monkeypatch.setattr(
+        "backend.services.employment_status_service.resolve_employment_status_batch",
+        lambda names, cache=None: {
+            "Левицкий Александр Степанович": {
+                "status": "active",
+                "label": "Сотрудник работает",
+                "matched_name": "Левицкий Александр Степанович",
+            },
+        },
+    )
+
+    rows = asyncio.run(
+        service.get_balances_with_hub(
+            nomenclature_ref="n1",
+            nomenclature_code="C0000158780",
+            db_id="ITINVENT",
+            scope="all",
+        )
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["hub_count"] == 1
+    assert rows[0]["hub_owner_no"] == 10
+
+
+def test_get_balances_with_hub_defaults_to_current_database_scope(monkeypatch):
+    service = Warehouse1CService()
+
+    async def fake_get_balances(**kwargs):
+        return [{"warehouse_ref": "w1", "warehouse_name": "Иванов Иван", "qty_balance": 1}]
+
+    monkeypatch.setattr(service, "get_balances", fake_get_balances)
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [
+            {"id": "ITINVENT", "name": "ITINVENT"},
+            {"id": "MSK-ITINVENT", "name": "MSK"},
+        ],
+    )
+    calls = []
+    import backend.database.queries as db_queries
+
+    monkeypatch.setattr(
+        db_queries,
+        "list_owners_compact",
+        lambda db_id=None: calls.append(db_id) or [],
+    )
+    monkeypatch.setattr(
+        "backend.services.employment_status_service.resolve_employment_status_batch",
+        lambda names, cache=None: {},
+    )
+
+    asyncio.run(service.get_balances_with_hub(nomenclature_ref="n1", db_id="ITINVENT"))
+
+    assert calls == ["ITINVENT"]
+
+
+def test_get_balances_with_hub_sums_duplicate_fio_owners(monkeypatch):
+    """Same FIO can exist as multiple OWNER_NO — counts must include all of them."""
+    service = Warehouse1CService()
+
+    async def fake_get_balances(**kwargs):
+        return [
+            {
+                "warehouse_ref": "w1",
+                "warehouse_name": "Левицкий Александр Степанович",
+                "qty_balance": 1,
+            },
+        ]
+
+    monkeypatch.setattr(service, "get_balances", fake_get_balances)
+    monkeypatch.setattr(
+        "backend.api.v1.database.get_all_db_configs",
+        lambda: [{"id": "ITINVENT", "name": "ITINVENT"}],
+    )
+
+    def fake_owners(db_id=None):
+        return [
+            {"OWNER_NO": 4033, "OWNER_DISPLAY_NAME": "Левицкий Александр Степанович"},
+            {"OWNER_NO": 2630, "OWNER_DISPLAY_NAME": "Левицкий Александр Степанович"},
+        ]
+
+    def fake_counts(owner_nos, **kwargs):
+        return {4033: 0, 2630: 1}
+
+    import backend.database.queries as db_queries
+
+    monkeypatch.setattr(db_queries, "list_owners_compact", fake_owners)
+    monkeypatch.setattr(db_queries, "count_equipment_by_owners_hub_query", fake_counts)
+    monkeypatch.setattr(
+        "backend.services.employment_status_service.resolve_employment_status_batch",
+        lambda names, cache=None: {
+            "Левицкий Александр Степанович": {
+                "status": "active",
+                "label": "Сотрудник работает",
+                "matched_name": "Левицкий Александр Степанович",
+            },
+        },
+    )
+
+    rows = asyncio.run(
+        service.get_balances_with_hub(
+            nomenclature_ref="n1",
+            nomenclature_code="ЦБ-00104234",
+            db_id="ITINVENT",
+        )
+    )
+
+    assert rows[0]["hub_count"] == 1
+    assert rows[0]["hub_owner_no"] == 2630

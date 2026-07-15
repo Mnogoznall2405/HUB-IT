@@ -1,6 +1,6 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef, useState } from 'react';
 import { Box, CircularProgress, Skeleton } from '@mui/material';
-import { renderPdfPage } from '../../lib/pdfPreview';
+import { isPdfRenderCancellation, renderPdfPage } from '../../lib/pdfPreview';
 
 const DEFAULT_PLACEHOLDER_HEIGHT = 420;
 
@@ -8,11 +8,13 @@ const MailPdfPageTile = forwardRef(function MailPdfPageTile({
   pageNumber,
   pdf = null,
   fitScale = 1,
+  rotation = 0,
   scrollRootRef = null,
   onVisibilityChange,
 }, ref) {
   const tileRef = useRef(null);
   const canvasRef = useRef(null);
+  const layerContainerRef = useRef(null);
   const renderRequestRef = useRef(0);
   const [isNearViewport, setIsNearViewport] = useState(false);
   const [renderedHeight, setRenderedHeight] = useState(DEFAULT_PLACEHOLDER_HEIGHT);
@@ -55,6 +57,7 @@ const MailPdfPageTile = forwardRef(function MailPdfPageTile({
     let cancelled = false;
     const requestId = renderRequestRef.current + 1;
     renderRequestRef.current = requestId;
+    const abortController = new AbortController();
     setLoading(true);
     setRenderError('');
 
@@ -62,7 +65,10 @@ const MailPdfPageTile = forwardRef(function MailPdfPageTile({
       pdf,
       pageNumber,
       canvas: canvasRef.current,
+      layerContainer: layerContainerRef.current,
       scale: fitScale,
+      rotation,
+      signal: abortController.signal,
     })
       .then((result) => {
         if (cancelled || requestId !== renderRequestRef.current) return;
@@ -72,13 +78,15 @@ const MailPdfPageTile = forwardRef(function MailPdfPageTile({
       .catch((error) => {
         if (cancelled || requestId !== renderRequestRef.current) return;
         setLoading(false);
+        if (isPdfRenderCancellation(error)) return;
         setRenderError(error?.message || 'Не удалось отрисовать страницу.');
       });
 
     return () => {
       cancelled = true;
+      abortController.abort();
     };
-  }, [fitScale, isNearViewport, pageNumber, pdf]);
+  }, [fitScale, isNearViewport, pageNumber, pdf, rotation]);
 
   return (
     <Box
@@ -123,6 +131,7 @@ const MailPdfPageTile = forwardRef(function MailPdfPageTile({
                 maxWidth: '100%',
               }}
             />
+            <Box ref={layerContainerRef} aria-hidden="true" />
             {loading ? (
               <Box
                 sx={{
@@ -133,6 +142,7 @@ const MailPdfPageTile = forwardRef(function MailPdfPageTile({
                   justifyContent: 'center',
                   bgcolor: 'rgba(255,255,255,0.72)',
                   borderRadius: '4px',
+                  zIndex: 2,
                 }}
               >
                 <CircularProgress size={24} />
@@ -151,6 +161,7 @@ const MailPdfPageTile = forwardRef(function MailPdfPageTile({
                   textAlign: 'center',
                   color: 'error.main',
                   fontSize: '0.82rem',
+                  zIndex: 2,
                 }}
               >
                 {renderError}

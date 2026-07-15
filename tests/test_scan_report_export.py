@@ -93,9 +93,12 @@ def test_scan_task_incident_report_contains_linked_job_incidents(temp_dir):
     assert report["summary"]["jobs_done_with_incident"] == 1
     assert report["summary"]["incidents_total"] == 1
     assert report["summary"]["severity_counts"] == {"high": 1}
+    assert report["summary"]["scan_started_at"] == report["task"]["created_at"]
     assert report["incidents"][0]["id"] == seeded["incident"]["incident_id"]
     assert report["incidents"][0]["observation_types"] == "found_new"
     assert report["incidents"][0]["matched_patterns"][0]["pattern_name"] == "password"
+    assert report["observations"][0]["linked_incident_id"] == seeded["incident"]["incident_id"]
+    assert report["observations"][0]["file_path"] == r"C:\Docs\secret.pdf"
 
 
 def test_scan_task_incident_report_includes_duplicate_and_resolved_observations(temp_dir):
@@ -209,11 +212,47 @@ def test_scan_task_incidents_excel_has_summary_and_incident_sheet(temp_dir):
     file_bytes, filename = build_scan_task_incidents_excel(report)
     workbook = load_workbook(BytesIO(file_bytes))
 
-    assert filename.startswith("scan_incidents_HOST-01_")
-    assert workbook.sheetnames == ["Сводка", "Инциденты"]
-    assert workbook["Сводка"]["A1"].value == "Отчет по запуску скана"
+    assert filename.startswith("scan_HOST-01_")
+    assert filename.endswith(f"_{task['id'][:8]}.xlsx")
+    assert workbook.sheetnames == ["Сводка", "Инциденты", "Наблюдения"]
+    assert workbook["Сводка"]["A1"].value == "Отчёт по запуску сканирования"
+    assert workbook["Сводка"]["A3"].value == "ID запуска"
+    assert workbook["Сводка"]["B5"].value == "HOST-01"
+    assert workbook["Сводка"]["A7"].value == "Начало запуска"
+    assert workbook["Сводка"]["A8"].value == "Конец запуска"
     assert workbook["Инциденты"]["A1"].value == "Время"
+    assert workbook["Инциденты"]["H1"].value == "Критичность"
+    assert workbook["Инциденты"]["H2"].value == "Высокая"
+    assert workbook["Инциденты"]["N1"].value == "ID задания обработки"
     assert workbook["Инциденты"]["D2"].value == r"C:\Docs\secret.pdf"
+    assert workbook["Наблюдения"]["A1"].value == "Время"
+    assert workbook["Наблюдения"]["B2"].value == "Найден впервые"
+    assert workbook["Наблюдения"]["D1"].value == "Контрольная сумма"
+    assert workbook["Наблюдения"]["F1"].value == "Критичность"
+    assert workbook["Наблюдения"]["C2"].value == r"C:\Docs\secret.pdf"
+
+
+def test_scan_task_report_preserves_final_counts_after_job_retention(temp_dir):
+    store = _make_store(temp_dir)
+    task = _create_scan_task(store)
+    with store._lock, store._connect() as conn:
+        conn.execute(
+            """
+            UPDATE scan_tasks
+            SET status='completed',
+                completed_at=updated_at,
+                result_json='{"jobs_total": 9, "jobs_pending": 7, "jobs_failed": 2}'
+            WHERE id=?
+            """,
+            (task["id"],),
+        )
+        conn.commit()
+
+    report = store.get_scan_task_incident_report(task_id=task["id"])
+
+    assert report["summary"]["jobs_total"] == 9
+    assert report["summary"]["jobs_pending"] == 0
+    assert report["summary"]["jobs_failed"] == 2
 
 
 def _override_scan_read_dependency():
@@ -238,9 +277,10 @@ def test_scan_task_incidents_export_endpoint_returns_xlsx(monkeypatch, temp_dir)
 
     assert response.status_code == 200
     assert response.headers["content-type"].startswith(XLSX_MEDIA_TYPE)
-    assert "scan_incidents_HOST-01" in response.headers["content-disposition"]
+    assert "scan_HOST-01" in response.headers["content-disposition"]
     workbook = load_workbook(BytesIO(response.content))
     assert workbook["Инциденты"]["D2"].value == r"C:\Docs\secret.pdf"
+    assert workbook["Наблюдения"]["C2"].value == r"C:\Docs\secret.pdf"
 
 
 def test_scan_task_incidents_export_endpoint_returns_404_for_unknown_task(monkeypatch, temp_dir):

@@ -29,14 +29,14 @@
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /l*v "C:\Temp\itinvent_agent_install.log"
+msiexec /i "C:\Path\IT-Invent Agent-1.3.7-win64.msi" /l*v "C:\Temp\itinvent_agent_install.log"
 ```
 
 Если нужен нестандартный путь для binaries:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" INSTALLDIR="D:\Apps\IT-Invent\Agent" /l*v "C:\Temp\itinvent_agent_install.log"
+msiexec /i "C:\Path\IT-Invent Agent-1.3.7-win64.msi" INSTALLDIR="D:\Apps\IT-Invent\Agent" /l*v "C:\Temp\itinvent_agent_install.log"
 ```
 
 ## 3. Пошаговая тихая установка
@@ -45,7 +45,7 @@ msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" INSTALLDIR="D:\Apps\IT-Inve
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
+msiexec /i "C:\Path\IT-Invent Agent-1.3.7-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
   ITINV_AGENT_SERVER_URL="http://127.0.0.1:8001/api/v1/inventory" `
   ITINV_AGENT_API_KEY="YOUR_SECURE_AGENT_KEY" `
   SCAN_AGENT_SERVER_BASE="http://127.0.0.1:8011/api/v1/scan" `
@@ -56,7 +56,7 @@ msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Tem
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
+msiexec /i "C:\Path\IT-Invent Agent-1.3.7-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
   ITINV_AGENT_SERVER_URL="http://127.0.0.1:8001/api/v1/inventory" `
   ITINV_AGENT_API_KEY="YOUR_SECURE_AGENT_KEY" `
   ITINV_AGENT_INTERVAL_SEC="3600" `
@@ -74,18 +74,20 @@ msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Tem
 
 | Property | Required | Default | Purpose |
 | --- | --- | --- | --- |
-| `ITINV_AGENT_SERVER_URL` | Да | runtime default | Inventory endpoint |
-| `ITINV_AGENT_API_KEY` | Да | empty | Inventory API key |
+| `ITINV_AGENT_SERVER_URL` | Да | `https://hubit.zsgp.ru/api/v1/inventory` | Inventory endpoint |
+| `ITINV_AGENT_API_KEY` | Да | root `.env` at MSI build | Inventory API key |
 | `ITINV_AGENT_INTERVAL_SEC` | Нет | `3600` | Full snapshot interval |
 | `ITINV_AGENT_HEARTBEAT_SEC` | Нет | `600` | Heartbeat interval |
 | `ITINV_AGENT_HEARTBEAT_JITTER_SEC` | Нет | `120` | Heartbeat jitter |
 | `ITINV_SCAN_ENABLED` | Нет | `1` | Enable scan sidecar |
-| `SCAN_AGENT_SERVER_BASE` | Да | runtime default | Scan endpoint |
-| `SCAN_AGENT_API_KEY` | Да | empty | Scan API key |
+| `SCAN_AGENT_SERVER_BASE` | Да | `https://hubit.zsgp.ru/api/v1/scan` | Scan endpoint |
+| `SCAN_AGENT_API_KEY` | Да | root `.env` at MSI build | Scan API key |
 | `SCAN_AGENT_POLL_INTERVAL_SEC` | Нет | `600` | Scan poll interval |
 | `SCAN_AGENT_POLL_JITTER_SEC` | Нет | `120` | Scan poll jitter |
 | `ITINV_OUTLOOK_SEARCH_ROOTS` | Нет | `D:\` | Extra PST/OST search roots |
 | `INSTALLDIR` | Нет | `C:\Program Files\IT-Invent\Agent` | Custom install path |
+
+Deployment MSI берёт оба API-ключа из корневого `.env` во время сборки, а URL — из публичных client defaults. Обычная установка без дополнительных properties использует эти значения.
 
 ## 5. Post-install validation
 
@@ -133,14 +135,14 @@ Repair:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /fa "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
+msiexec /fa "C:\Path\IT-Invent Agent-1.3.7-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
 ```
 
 Тихое удаление:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /x "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
+msiexec /x "C:\Path\IT-Invent Agent-1.3.7-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
 ```
 
 Uninstall должен:

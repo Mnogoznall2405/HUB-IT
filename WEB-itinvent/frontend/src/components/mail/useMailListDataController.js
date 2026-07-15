@@ -120,6 +120,8 @@ export default function useMailListDataController({
       : {};
     const folderTreePayload = Array.isArray(payload?.folder_tree?.items) ? payload.folder_tree.items : [];
     const messagesPayload = payload?.messages || {};
+    const bootstrapState = String(payload?.state || '').trim().toLowerCase();
+    const bootstrapListIsFresh = !bootstrapState || bootstrapState === 'ok';
     setMailboxInfo(configPayload);
     setMailboxes(nextMailboxEntries);
     if (resolvedMailboxId && (!activeMailboxId || resolvedMailboxId === activeMailboxId)) {
@@ -142,7 +144,7 @@ export default function useMailListDataController({
       const bootstrapHasVisibleMessages = Array.isArray(normalizedMessagesPayload.items)
         && normalizedMessagesPayload.items.length > 0;
       if (skipNextListRefreshRef) {
-        skipNextListRefreshRef.current = bootstrapHasVisibleMessages;
+        skipNextListRefreshRef.current = bootstrapHasVisibleMessages && bootstrapListIsFresh;
       }
       const resolvedListData = resolveListDataReadStateOverrides(buildMailListState({
         previousListData,
@@ -172,7 +174,7 @@ export default function useMailListDataController({
         if (sameItems && sameMeta) return prev;
         return resolvedListData;
       });
-      if (bootstrapHasVisibleMessages) {
+      if (bootstrapHasVisibleMessages && bootstrapListIsFresh) {
         setSWRCache(resolvedListCacheKey, resolvedListData);
         persistRecentListSnapshot(resolvedListContextKey, resolvedListData, resolvedScope);
       }
@@ -204,10 +206,13 @@ export default function useMailListDataController({
     viewMode,
   ]);
 
-  const refreshBootstrap = useCallback(async ({ force = false } = {}) => {
+  const refreshBootstrap = useCallback(async ({ force = false, live = false } = {}) => {
     const bootstrapCacheKey = buildMailBootstrapCacheKey({ scope: mailCacheScope, limit: mailBootstrapLimit });
-    const shouldApplyBootstrapList = currentContextUsesBootstrapList;
+    const hasHydratedCurrentList = recentHydratedListContextsRef?.current?.has(currentListContextKey);
+    const shouldApplyBootstrapList = currentContextUsesBootstrapList && !hasHydratedCurrentList;
     const cachedBootstrap = peekSWRCache(bootstrapCacheKey, { staleTimeMs: mailSwrStaleTimeMs });
+    const cachedBootstrapState = String(cachedBootstrap?.data?.state || '').trim().toLowerCase();
+    const forceBootstrapFetch = force || (cachedBootstrapState && cachedBootstrapState !== 'ok');
     const hasRecentHydration = recentHydratedScope === mailCacheScope;
     if (cachedBootstrap?.data) {
       applyBootstrapPayload(cachedBootstrap.data || {}, { applyList: shouldApplyBootstrapList });
@@ -219,13 +224,17 @@ export default function useMailListDataController({
       setMailBackgroundRefreshing(true);
     }
     try {
-      const fetcher = () => mailAPI.getBootstrap({ limit: mailBootstrapLimit, mailbox_id: activeMailboxId || undefined });
+      const fetcher = () => mailAPI.getBootstrap({
+        limit: mailBootstrapLimit,
+        mailbox_id: activeMailboxId || undefined,
+        refresh: live ? 'live' : 'auto',
+      });
       const result = await getOrFetchSWR(
         bootstrapCacheKey,
         fetcher,
         {
           staleTimeMs: mailSwrStaleTimeMs,
-          force,
+          force: forceBootstrapFetch,
           revalidateStale: false,
         }
       );
@@ -267,11 +276,13 @@ export default function useMailListDataController({
     activeMailboxId,
     applyBootstrapPayload,
     currentContextUsesBootstrapList,
+    currentListContextKey,
     getMailErrorDetail,
     mailAPI,
     mailBootstrapLimit,
     mailCacheScope,
     mailSwrStaleTimeMs,
+    recentHydratedListContextsRef,
     recentHydratedScope,
     setError,
     setFolderSummary,
@@ -310,6 +321,9 @@ export default function useMailListDataController({
         setFolderSummary({});
         return {};
       }
+      if (isTransientMailRequestError(requestError)) {
+        return folderSummaryRef?.current || {};
+      }
       setFolderSummary({});
       return {};
     }
@@ -317,8 +331,10 @@ export default function useMailListDataController({
     activeMailboxId,
     currentFolderSummaryCacheKey,
     folderSummaryRefreshCompletedAtRef,
+    folderSummaryRef,
     folderTreeRef,
     handleMailCredentialsRequired,
+    isTransientMailRequestError,
     mailAPI,
     mailAccessReady,
     mailCacheScope,
@@ -352,6 +368,9 @@ export default function useMailListDataController({
         setFolderTree([]);
         return [];
       }
+      if (isTransientMailRequestError(requestError)) {
+        return folderTreeRef?.current || [];
+      }
       setFolderTree([]);
       return [];
     }
@@ -359,7 +378,9 @@ export default function useMailListDataController({
     activeMailboxId,
     currentFolderTreeCacheKey,
     folderSummaryRef,
+    folderTreeRef,
     handleMailCredentialsRequired,
+    isTransientMailRequestError,
     mailAPI,
     mailAccessReady,
     mailCacheScope,
@@ -524,7 +545,9 @@ export default function useMailListDataController({
           recentHydratedListContextsRef.current.delete(contextKey);
         }
         if (currentListKeyRef?.current === contextKey && result?.data) {
-          const nextUpdateMode = !result?.fromCache && isExpandedMailListData(listDataRef?.current)
+          const nextUpdateMode = !shouldForceHydratedRefresh
+            && !result?.fromCache
+            && isExpandedMailListData(listDataRef?.current)
             ? 'head-merge'
             : 'replace';
           applyResolvedListData(result.data, {

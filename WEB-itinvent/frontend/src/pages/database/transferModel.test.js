@@ -13,6 +13,7 @@ import {
   buildTransferMovePayload,
   buildTransferSourceDefaults,
   getSelectedTransferEmployeeOption,
+  getRetryOnlyFailedInvNos,
   getTransferEmptyTargetError,
   getTransferResultActionError,
   isTransferJobPending,
@@ -373,6 +374,21 @@ describe('transferModel', () => {
     expect(isTransferJobPending({ job_id: 'abc', job_status: 'done' })).toBe(false);
     expect(getTransferResultActionError({ success_count: 2, failed_count: 1 }, 'Перенесено'))
       .toBe('Перенесено 2, ошибок 1');
+  });
+
+  it('allows retry only for server-confirmed failed inventory numbers', () => {
+    expect(getRetryOnlyFailedInvNos({
+      failed: [
+        { inv_no: '1002', error: 'blocked' },
+        { inv_no: '1003', error: 'missing' },
+      ],
+      retry_inv_nos: ['1001', '1002', '1002'],
+    })).toEqual(['1002']);
+
+    // A pre-contract response still retries only the explicit failures.
+    expect(getRetryOnlyFailedInvNos({
+      failed: [{ inv_no: '1002', error: 'blocked' }],
+    })).toEqual(['1002']);
   });
 
   it('validates transfer employee names defensively', () => {

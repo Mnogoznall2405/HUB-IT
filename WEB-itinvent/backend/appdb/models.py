@@ -13,6 +13,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text,
 )
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -842,3 +843,269 @@ class AppAuthRuntimeItem(AppBase):
     expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppMailRuntimeSnapshot(AppBase):
+    """Shared, non-secret mail preview/count snapshot for snapshot-first reads."""
+
+    __tablename__ = "mail_runtime_snapshots"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "user_id",
+            "mailbox_id",
+            "snapshot_type",
+            "context_key",
+            name="uq_app_mail_runtime_snapshot_scope",
+        ),
+        Index("ix_app_mail_runtime_snapshots_expires", "expires_at"),
+        Index("ix_app_mail_runtime_snapshots_user_type", "user_id", "snapshot_type"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(Integer, nullable=False)
+    mailbox_id: Mapped[str] = mapped_column(String(128), nullable=False, default="aggregate")
+    snapshot_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    context_key: Mapped[str] = mapped_column(String(255), nullable=False, default="default")
+    payload_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="ok")
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    as_of: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCItemLink(AppBase):
+    """Approved (or explicitly excluded) 1C nomenclature link for one HUB item.
+
+    The legacy SQL Server ``ITEMS.PART_NO`` stays a projection during migration;
+    this app-owned row is the auditable source of truth for reconciliation.
+    """
+
+    __tablename__ = "one_c_item_links"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "hub_db_id",
+            "hub_item_id",
+            "source_base",
+            name="uq_app_one_c_item_links_hub_item_source",
+        ),
+        Index("ix_app_one_c_item_links_nomenclature", "source_base", "nomenclature_ref"),
+        Index("ix_app_one_c_item_links_status", "hub_db_id", "status"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    hub_db_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    hub_item_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False, default="buh20")
+    nomenclature_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    nomenclature_code_snapshot: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="pending")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    verified_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCWarehouseOwnerLink(AppBase):
+    """Explicit warehouse-to-HUB-owner mapping; FIO matching only suggests it."""
+
+    __tablename__ = "one_c_warehouse_owner_links"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "source_base",
+            "warehouse_ref",
+            "hub_db_id",
+            "owner_no",
+            name="uq_app_one_c_warehouse_owner_links",
+        ),
+        Index("ix_app_one_c_warehouse_owner_links_warehouse", "source_base", "warehouse_ref"),
+        Index("ix_app_one_c_warehouse_owner_links_owner", "hub_db_id", "owner_no"),
+        Index(
+            "uq_app_one_c_warehouse_owner_links_active_warehouse",
+            "source_base",
+            "warehouse_ref",
+            "hub_db_id",
+            unique=True,
+            postgresql_where=text("status = 'active'"),
+            sqlite_where=text("status = 'active'"),
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False, default="buh20")
+    warehouse_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    hub_db_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    verified_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCEmployeeOwnerLink(AppBase):
+    """Explicit ZUP employee-code to HUB-owner mapping for status enrichment."""
+
+    __tablename__ = "one_c_employee_owner_links"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "source_base",
+            "employee_code",
+            "hub_db_id",
+            "owner_no",
+            name="uq_app_one_c_employee_owner_links",
+        ),
+        Index("ix_app_one_c_employee_owner_links_employee", "source_base", "employee_code"),
+        Index("ix_app_one_c_employee_owner_links_owner", "hub_db_id", "owner_no"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False, default="zar31")
+    employee_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    hub_db_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    owner_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default="active")
+    version: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    created_by: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    verified_by: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCReconcileEvent(AppBase):
+    """Append-only audit event for a reconciliation decision or run."""
+
+    __tablename__ = "one_c_reconcile_events"
+    __table_args__ = _table_args(
+        Index("ix_app_one_c_reconcile_events_hub_item", "hub_db_id", "hub_item_id", "created_at"),
+        Index("ix_app_one_c_reconcile_events_correlation", "correlation_id"),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[str] = mapped_column(String(64), primary_key=True)
+    event_type: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    correlation_id: Mapped[str] = mapped_column(String(64), nullable=False, index=True)
+    hub_db_id: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
+    hub_item_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    actor: Mapped[str] = mapped_column(String(128), nullable=False, default="")
+    reason: Mapped[str | None] = mapped_column(Text, nullable=True)
+    before_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    after_json: Mapped[str] = mapped_column(Text, nullable=False, default="{}")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCCatalogSnapshot(AppBase):
+    """Current app-owned, read-only snapshot state for a 1C directory source.
+
+    The first ``active_generation`` is committed only after a complete import.
+    Later small diffs are applied in one MVCC transaction, so readers still
+    never observe a partially imported 1C catalogue.
+    """
+
+    __tablename__ = "one_c_catalog_snapshots"
+    __table_args__ = _table_args(schema=APP_SCHEMA)
+
+    source_base: Mapped[str] = mapped_column(String(64), primary_key=True)
+    active_generation: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    nomenclature_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    warehouses_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    nomenclature_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    warehouses_truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    nomenclature_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    warehouses_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False, default="")
+    updated_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_attempt_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_error: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCCatalogEntry(AppBase):
+    """One indexed catalogue entry in the atomically maintained snapshot."""
+
+    __tablename__ = "one_c_catalog_entries"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "source_base",
+            "generation",
+            "catalog_type",
+            "ref",
+            name="uq_app_one_c_catalog_entries_generation_ref",
+        ),
+        Index(
+            "ix_app_one_c_catalog_entries_ref",
+            "source_base",
+            "generation",
+            "catalog_type",
+            "ref",
+        ),
+        Index(
+            "ix_app_one_c_catalog_entries_name",
+            "source_base",
+            "generation",
+            "catalog_type",
+            "name_normalized",
+        ),
+        Index(
+            "ix_app_one_c_catalog_entries_code",
+            "source_base",
+            "generation",
+            "catalog_type",
+            "code_normalized",
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    catalog_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    code: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    name: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    code_normalized: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    name_normalized: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+
+class AppOneCCatalogToken(AppBase):
+    """Token index for directory autocomplete without a Python-wide index."""
+
+    __tablename__ = "one_c_catalog_tokens"
+    __table_args__ = _table_args(
+        UniqueConstraint(
+            "source_base",
+            "generation",
+            "catalog_type",
+            "entry_ref",
+            "token",
+            name="uq_app_one_c_catalog_tokens_entry_token",
+        ),
+        Index(
+            "ix_app_one_c_catalog_tokens_lookup",
+            "source_base",
+            "generation",
+            "catalog_type",
+            "token",
+            "entry_ref",
+        ),
+        schema=APP_SCHEMA,
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source_base: Mapped[str] = mapped_column(String(64), nullable=False)
+    generation: Mapped[int] = mapped_column(Integer, nullable=False)
+    catalog_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    entry_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    token: Mapped[str] = mapped_column(String(200), nullable=False)

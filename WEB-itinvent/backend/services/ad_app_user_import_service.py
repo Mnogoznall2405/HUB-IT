@@ -5,12 +5,15 @@ import json
 import logging
 import os
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Iterable
 
 from ldap3 import ALL, SUBTREE, Connection, Server
+from sqlalchemy import text
 
+from backend.appdb.db import get_app_engine, is_app_database_configured
 from backend.config import config
 from backend.services.department_service import department_service
 from backend.services.session_auth_context_service import normalize_exchange_login
@@ -20,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 _SYNC_STATE_FILE = "ad_app_user_sync_state.json"
 _sync_lock = threading.Lock()
+_AD_SYNC_LEASE_KEY = 0x41445F53594E43
 
 
 AD_IMPORT_STATUS_NEW = "new"
@@ -504,6 +508,7 @@ class AdAppUserImportService:
     ) -> None:
         from backend.services.session_service import session_service
 
+        candidates: list[tuple[int, str, dict[str, Any]]] = []
         for user in self._users.list_users():
             login = _normalize_login(user.get("username"))
             if not login:
@@ -534,7 +539,16 @@ class AdAppUserImportService:
             user_id = int(user.get("id") or 0)
             if user_id <= 0:
                 continue
-            updated = self._users.update_user(user_id, is_active=False)
+            candidates.append((user_id, login, user))
+
+        bulk_deactivate = getattr(self._users, "deactivate_ldap_users_bulk", None)
+        updated_by_id = bulk_deactivate([item[0] for item in candidates]) if callable(bulk_deactivate) else None
+        for user_id, login, user in candidates:
+            updated = (
+                updated_by_id.get(user_id)
+                if isinstance(updated_by_id, dict)
+                else self._users.update_user(user_id, is_active=False)
+            )
             if not updated:
                 continue
             closed_sessions = int(session_service.close_user_sessions(user_id) or 0)
@@ -551,6 +565,8 @@ class AdAppUserImportService:
                 "message": "AD app-user sync is already in progress",
             }
 
+        lease_connection = None
+        started_at = time.perf_counter()
         result: dict[str, Any] = {
             "status": "success",
             "created": 0,
@@ -579,6 +595,22 @@ class AdAppUserImportService:
         }
 
         try:
+            if is_app_database_configured():
+                engine = get_app_engine()
+                if engine.dialect.name == "postgresql":
+                    lease_connection = engine.connect()
+                    acquired = bool(
+                        lease_connection.execute(
+                            text("SELECT pg_try_advisory_lock(:lock_key)"),
+                            {"lock_key": _AD_SYNC_LEASE_KEY},
+                        ).scalar()
+                    )
+                    if not acquired:
+                        return {
+                            "status": "already_running",
+                            "message": "AD app-user sync is owned by another backend instance",
+                        }
+
             fetch_result = self._fetch_ad_users()
             ad_users = fetch_result["users"]
             raw_ad_logins = set(fetch_result["raw_logins"])
@@ -600,6 +632,7 @@ class AdAppUserImportService:
                     "AD app-user full sync skipped: LDAP query failed (%s)",
                     fetch_result.get("error"),
                 )
+                result["duration_ms"] = round((time.perf_counter() - started_at) * 1000.0, 1)
                 _save_ad_app_user_sync_state(status="warning", result=result)
                 return result
 
@@ -610,6 +643,7 @@ class AdAppUserImportService:
                     "to prevent accidental mass lockout"
                 )
                 logger.warning("AD app-user full sync skipped: empty LDAP result")
+                result["duration_ms"] = round((time.perf_counter() - started_at) * 1000.0, 1)
                 _save_ad_app_user_sync_state(status="warning", result=result)
                 return result
 
@@ -624,43 +658,114 @@ class AdAppUserImportService:
                     result["raw_ad_users"],
                 )
 
-            for ad_user in ad_users:
-                login = _normalize_login(ad_user.get("login"))
-                if not login:
-                    continue
-                existing = self._users.get_by_username(login)
-                was_inactive = bool(existing and not bool(existing.get("is_active", True)))
-                action, user, warnings = self._upsert_ad_user(ad_user)
-                if action == AD_IMPORT_STATUS_LOCAL_CONFLICT:
-                    result["skipped_conflicts"] += 1
-                    result["conflicts"].append({
-                        "login": login,
-                        "existing_user_id": int((user or {}).get("id") or 0),
-                        "auth_source": str((user or {}).get("auth_source") or "local"),
+            bulk_sync = getattr(self._users, "sync_ldap_users_bulk", None)
+            bulk_outcomes = None
+            if callable(bulk_sync):
+                existing_by_username = {
+                    _normalize_login(user.get("username")): user
+                    for user in self._users.list_users()
+                    if _normalize_login(user.get("username"))
+                }
+                prepared: list[dict[str, Any]] = []
+                warnings_by_login: dict[str, list[str]] = {}
+                for ad_user in ad_users:
+                    login = _normalize_login(ad_user.get("login"))
+                    if not login:
+                        continue
+                    if not _is_valid_app_username(login):
+                        result["skipped_invalid_logins"] += 1
+                        result["invalid_logins"].append(login)
+                        continue
+                    if not _is_importable_person_ad_user(login, ad_user.get("display_name")):
+                        result["skipped_non_person"] += 1
+                        result["skipped_non_person_logins"].append(login)
+                        continue
+                    department = _clean_text(ad_user.get("department")) or None
+                    email = _clean_text(ad_user.get("mail")) or None
+                    warnings = []
+                    if not email:
+                        warnings.append(AD_IMPORT_WARNING_MISSING_MAIL)
+                    if not department:
+                        warnings.append(AD_IMPORT_WARNING_MISSING_DEPARTMENT)
+                    warnings_by_login[login] = warnings
+                    prepared.append({
+                        "username": login,
+                        "email": email,
+                        "full_name": _clean_text(ad_user.get("display_name")) or login,
+                        "department": department,
+                        "job_title": _clean_text(ad_user.get("title")) or None,
+                        "mailbox_email": email,
+                        "mailbox_login": self._mailbox_login(ad_user) or None,
                     })
-                    continue
-                if action == "invalid_login":
-                    result["skipped_invalid_logins"] += 1
-                    result["invalid_logins"].append(login)
-                    continue
-                if action == "non_person_account":
-                    result["skipped_non_person"] += 1
-                    result["skipped_non_person_logins"].append(login)
-                    continue
-                self._record_upsert_stats(
-                    result,
-                    login=login,
-                    action=action,
-                    user=user,
-                    warnings=warnings,
-                    was_inactive=was_inactive,
-                )
+                bulk_outcomes = bulk_sync(prepared)
+                if bulk_outcomes is not None:
+                    for outcome in bulk_outcomes:
+                        login = _normalize_login(outcome.get("login"))
+                        action = str(outcome.get("action") or "unchanged")
+                        user = outcome.get("user")
+                        if action == AD_IMPORT_STATUS_LOCAL_CONFLICT:
+                            result["skipped_conflicts"] += 1
+                            result["conflicts"].append({
+                                "login": login,
+                                "existing_user_id": int((user or {}).get("id") or 0),
+                                "auth_source": str((user or {}).get("auth_source") or "local"),
+                            })
+                            continue
+                        existing = existing_by_username.get(login)
+                        self._record_upsert_stats(
+                            result,
+                            login=login,
+                            action=action,
+                            user=user,
+                            warnings=warnings_by_login.get(login, []),
+                            was_inactive=bool(existing and not bool(existing.get("is_active", True))),
+                        )
+
+            if bulk_outcomes is None:
+                for ad_user in ad_users:
+                    login = _normalize_login(ad_user.get("login"))
+                    if not login:
+                        continue
+                    existing = self._users.get_by_username(login)
+                    was_inactive = bool(existing and not bool(existing.get("is_active", True)))
+                    action, user, warnings = self._upsert_ad_user(ad_user)
+                    if action == AD_IMPORT_STATUS_LOCAL_CONFLICT:
+                        result["skipped_conflicts"] += 1
+                        result["conflicts"].append({
+                            "login": login,
+                            "existing_user_id": int((user or {}).get("id") or 0),
+                            "auth_source": str((user or {}).get("auth_source") or "local"),
+                        })
+                        continue
+                    if action == "invalid_login":
+                        result["skipped_invalid_logins"] += 1
+                        result["invalid_logins"].append(login)
+                        continue
+                    if action == "non_person_account":
+                        result["skipped_non_person"] += 1
+                        result["skipped_non_person_logins"].append(login)
+                        continue
+                    self._record_upsert_stats(
+                        result,
+                        login=login,
+                        action=action,
+                        user=user,
+                        warnings=warnings,
+                        was_inactive=was_inactive,
+                    )
 
             self._deactivate_missing_ldap_users(
                 result,
                 importable_logins=importable_logins,
                 raw_ad_logins=raw_ad_logins,
             )
+            try:
+                from backend.services.hub_service import hub_service
+
+                hub_service.invalidate_user_directory_cache()
+            except Exception:
+                logger.debug("Failed to invalidate HUB user directory cache", exc_info=True)
+            result["duration_ms"] = round((time.perf_counter() - started_at) * 1000.0, 1)
             _save_ad_app_user_sync_state(status=str(result["status"]), result=result)
             logger.info(
                 "AD app-user full sync completed: created=%s updated=%s reactivated=%s "
@@ -676,6 +781,7 @@ class AdAppUserImportService:
             return result
         except Exception as exc:
             logger.exception("AD app-user full sync failed")
+            result["duration_ms"] = round((time.perf_counter() - started_at) * 1000.0, 1)
             _save_ad_app_user_sync_state(status="error", result=result, error=str(exc))
             return {
                 **result,
@@ -683,6 +789,16 @@ class AdAppUserImportService:
                 "message": str(exc),
             }
         finally:
+            if lease_connection is not None:
+                try:
+                    lease_connection.execute(
+                        text("SELECT pg_advisory_unlock(:lock_key)"),
+                        {"lock_key": _AD_SYNC_LEASE_KEY},
+                    )
+                except Exception:
+                    logger.warning("Failed to release AD sync advisory lease", exc_info=True)
+                finally:
+                    lease_connection.close()
             self._sync_lock.release()
 
     def get_sync_status(self) -> dict[str, Any]:

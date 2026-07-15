@@ -38,7 +38,12 @@ from backend.services.access_policy_service import (
     user_is_department_member,
 )
 from backend.services.authorization_service import PERM_TASKS_REVIEW, authorization_service
-from backend.services.department_service import DEPARTMENT_MANAGER_ROLE, DEPARTMENT_MEMBER_ROLE, department_service
+from backend.services.department_service import (
+    DEPARTMENT_MANAGER_ROLE,
+    DEPARTMENT_MEMBER_ROLE,
+    department_id_from_name,
+    department_service,
+)
 from backend.services.notification_preferences_service import notification_preferences_service
 from backend.services.task_email_outbox_service import (
     TaskEmailOutboxMixin,
@@ -1484,7 +1489,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         return _normalize_text(value).lower() == "admin"
 
     def _active_users(self) -> list[dict[str, Any]]:
-        return [row for row in user_service.list_users() if bool(row.get("is_active", True))]
+        from backend.services.ad_users_service import is_hub_service_account_login
+
+        return [
+            row
+            for row in user_service.list_users()
+            if bool(row.get("is_active", True)) and not is_hub_service_account_login(row.get("username"))
+        ]
 
     def _users_by_id(self) -> dict[int, dict[str, Any]]:
         users = self._get_cached_user_directory("active_users", self._active_users)
@@ -2497,9 +2508,13 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         }
 
     def _iter_assignee_source_rows(self, *, department_id: Optional[str] = None):
+        from backend.services.ad_users_service import is_hub_service_account_login
+
         normalized_department_id = _normalize_text(department_id)
         for row in user_service.list_users():
             if not bool(row.get("is_active", True)):
+                continue
+            if is_hub_service_account_login(row.get("username")):
                 continue
             if normalized_department_id and not (
                 user_is_department_member(row, normalized_department_id)
@@ -2528,27 +2543,46 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
         return out
 
     def _build_controllers_list(self, *, department_id: Optional[str] = None) -> list[dict[str, Any]]:
+        from backend.services.ad_users_service import is_hub_service_account_login
+
         normalized_department_id = _normalize_text(department_id)
         users = user_service.list_users()
+        membership_map = department_service.get_user_department_role_map(
+            [self._as_int(row.get("id")) for row in users]
+        )
         out: list[dict[str, Any]] = []
         for row in users:
-            is_any_department_manager = bool(department_service.get_user_department_ids(row, roles=[DEPARTMENT_MANAGER_ROLE]))
-            if not (self._user_can_review_tasks(row) or is_any_department_manager or (normalized_department_id and user_is_department_manager(row, normalized_department_id))):
+            if is_hub_service_account_login(row.get("username")):
+                continue
+            user_id = self._as_int(row.get("id"))
+            role_memberships = membership_map.get(user_id, {})
+            manager_department_ids = role_memberships.get(DEPARTMENT_MANAGER_ROLE, set())
+            member_department_ids = role_memberships.get(DEPARTMENT_MEMBER_ROLE, set())
+            is_any_department_manager = bool(manager_department_ids)
+            is_target_department_manager = bool(
+                normalized_department_id and normalized_department_id in manager_department_ids
+            )
+            if not (self._user_can_review_tasks(row) or is_any_department_manager or is_target_department_manager):
                 continue
             if normalized_department_id and not (
                 str(row.get("role") or "").strip().lower() == "admin"
-                or user_is_department_manager(row, normalized_department_id)
+                or is_target_department_manager
                 or self._user_can_review_tasks(row)
             ):
                 continue
+            primary_department_id = (
+                sorted(member_department_ids)[0]
+                if member_department_ids
+                else department_id_from_name(row.get("department")) or ""
+            )
             out.append(
                 {
-                    "id": self._as_int(row.get("id")),
+                    "id": user_id,
                     "username": _normalize_text(row.get("username")),
                     "full_name": _normalize_text(row.get("full_name")) or _normalize_text(row.get("username")),
                     "role": _normalize_text(row.get("role"), "viewer"),
                     "department": _normalize_text(row.get("department")),
-                    "department_id": department_service.get_user_primary_department_id(row) or "",
+                    "department_id": primary_department_id,
                 }
             )
         out.sort(key=lambda item: (item.get("full_name") or "", item.get("username") or ""))
@@ -2569,6 +2603,10 @@ class HubService(TaskEmailOutboxMixin, TaskParticipantMixin):
             cache_key,
             lambda: self._build_controllers_list(department_id=normalized_department_id or None),
         )
+
+    def invalidate_user_directory_cache(self) -> None:
+        with self._user_directory_cache_lock:
+            self._user_directory_cache.clear()
 
     @staticmethod
     def _user_directory_search_text(row: dict[str, Any]) -> str:

@@ -111,7 +111,7 @@ const SIDEBAR_COLLAPSED_KEY = 'sidebar_collapsed';
 const SIDEBAR_TOOLS_EXPANDED_KEY = 'sidebar_tools_expanded';
 const normalizeDbId = (value) => String(value ?? '').trim();
 const MAIL_LOCAL_DEDUPE_WINDOW_MS = 30_000;
-const MAIL_ROUTE_UNREAD_REFRESH_TTL_MS = 120_000;
+const MAIL_UNREAD_REFRESH_TTL_MS = 90_000;
 const PUSH_FOREGROUND_NOTIFICATION_EVENT = 'itinvent:push-foreground-notification';
 
 const groupItemsByRelativeDate = (items, dateKey) => {
@@ -198,6 +198,8 @@ function MainLayout({
     chat_messages_unread_total: 0,
     chat_conversations_unread: 0,
     mail_unread: 0,
+    mail_state: 'unknown',
+    mail_as_of: null,
   });
   const [windowsNotificationState, setWindowsNotificationState] = useState(() => getWindowsNotificationState());
   const [pwaState, setPwaState] = useState(() => getPwaInstallState());
@@ -217,6 +219,7 @@ function MainLayout({
   const fetchUnreadCountsRef = useRef(null);
   const fetchUnreadCountsInFlightRef = useRef(null);
   const refreshBellInboxRef = useRef(null);
+  const mailUnreadMutationVersionRef = useRef(0);
   const hubPollBackoffUntilRef = useRef(0);
   const hubPollFailureCountRef = useRef(0);
   const hubPollLastWarnAtRef = useRef(0);
@@ -954,6 +957,7 @@ useEffect(() => {
     const run = (async () => {
       try {
         const previousCounts = unreadCountsRef.current || {};
+        const mailUnreadMutationVersionAtStart = mailUnreadMutationVersionRef.current;
         let notifTotal = 0;
         let annUnread = 0;
         let annAckPending = 0;
@@ -969,6 +973,8 @@ useEffect(() => {
         let chatMessagesUnreadTotal = Number(chatUnreadSummaryRef.current?.messages_unread_total || 0);
         let chatConversationsUnread = Number(chatUnreadSummaryRef.current?.conversations_unread || 0);
         let mailUnread = 0;
+        let mailState = String(previousCounts.mail_state || 'unknown');
+        let mailAsOf = previousCounts.mail_as_of || null;
         let mailUnreadResolved = !hasMailPermission;
 
         const applyHubCounts = (data) => {
@@ -1001,22 +1007,33 @@ useEffect(() => {
         if (hasMailPermission) {
           const now = Date.now();
           const shouldReuseMailUnread = Boolean(
-            isMailRoute
-            && document.visibilityState === 'visible'
-            && !forceMailUnread
+            !forceMailUnread
             && mailUnreadFetchedAtRef.current > 0
-            && ['auto', 'hub-poll', 'timer', 'visibility'].includes(String(reason || ''))
-            && (now - Number(mailUnreadFetchedAtRef.current || 0)) < MAIL_ROUTE_UNREAD_REFRESH_TTL_MS
+            && (now - Number(mailUnreadFetchedAtRef.current || 0)) < MAIL_UNREAD_REFRESH_TTL_MS
           );
 
           if (shouldReuseMailUnread) {
             mailUnread = Number(previousCounts.mail_unread || 0);
+            mailState = String(previousCounts.mail_state || 'unknown');
+            mailAsOf = previousCounts.mail_as_of || null;
             mailUnreadResolved = true;
           } else {
             promises.push(mailAPI.getUnreadCount({
               force: forceMailUnread,
             }).then((data) => {
-              mailUnread = Number(data?.unread_count || 0);
+              if (mailUnreadMutationVersionRef.current !== mailUnreadMutationVersionAtStart) {
+                const currentCounts = unreadCountsRef.current || {};
+                mailUnread = Number(currentCounts.mail_unread || 0);
+                mailState = String(currentCounts.mail_state || 'unknown');
+                mailAsOf = currentCounts.mail_as_of || null;
+              } else {
+                const nextState = String(data?.state || 'ok');
+                mailUnread = ['unknown', 'error'].includes(nextState) && !data?.as_of
+                  ? Number(previousCounts.mail_unread || 0)
+                  : Number(data?.unread_count || 0);
+                mailState = nextState;
+                mailAsOf = data?.as_of || null;
+              }
               mailUnreadResolved = true;
               mailUnreadFetchedAtRef.current = Date.now();
             }));
@@ -1048,6 +1065,8 @@ useEffect(() => {
           chat_messages_unread_total: CHAT_WS_ENABLED ? Number(previousCounts.chat_messages_unread_total || 0) : chatMessagesUnreadTotal,
           chat_conversations_unread: CHAT_WS_ENABLED ? Number(previousCounts.chat_conversations_unread || 0) : chatConversationsUnread,
           mail_unread: mailUnread,
+          mail_state: mailState,
+          mail_as_of: mailAsOf,
         };
         unreadCountsRef.current = nextCounts;
         const previousMailUnread = Number(previousCounts.mail_unread || 0);
@@ -1085,6 +1104,42 @@ useEffect(() => {
     isMailRoute,
     showMailArrivalNotifications,
   ]);
+
+  const applyMailUnreadDelta = useCallback((detail = {}) => {
+    const unreadDelta = Number(detail?.unreadDelta || 0);
+    if (Number.isFinite(unreadDelta) && unreadDelta !== 0) {
+      mailUnreadMutationVersionRef.current += 1;
+      const previousCounts = unreadCountsRef.current || {};
+      const previousMailUnread = Math.max(0, Number(previousCounts.mail_unread || 0));
+      const nextMailUnread = Math.max(0, previousMailUnread + unreadDelta);
+      const hubUnread = Math.max(
+        0,
+        Number(previousCounts.notifications_unread_total || 0) - previousMailUnread,
+      );
+      const nextCounts = {
+        ...previousCounts,
+        notifications_unread_total: hubUnread + nextMailUnread,
+        mail_unread: nextMailUnread,
+      };
+      unreadCountsRef.current = nextCounts;
+      mailUnreadFetchedAtRef.current = Date.now();
+      mailUnreadBaselineReadyRef.current = true;
+      setUnreadCounts(nextCounts);
+    }
+
+    if (Boolean(detail?.nextIsRead)) {
+      const targetId = String(detail?.targetId || '').trim();
+      const mode = String(detail?.mode || 'messages').trim();
+      if (targetId) {
+        setMailNotifications((previous) => (Array.isArray(previous) ? previous.filter((item) => {
+          if (mode === 'conversations') {
+            return String(item?.conversation_id || '').trim() !== targetId;
+          }
+          return String(item?.id || item?.message_id || '').trim() !== targetId;
+        }) : []));
+      }
+    }
+  }, []);
 
   const refreshBellInbox = useCallback(async () => {
     if (!hasHubNotificationPermission && !hasMailPermission) {
@@ -1153,8 +1208,8 @@ useEffect(() => {
   useEffect(() => {
     if (!hasMailPermission) return undefined;
     const onVisibilityChange = () => {
-      if (document.visibilityState !== 'hidden') return;
-      fetchUnreadCountsRef.current?.(null, { reason: 'visibility-hidden', forceMailUnread: true });
+      if (document.visibilityState !== 'visible') return;
+      fetchUnreadCountsRef.current?.(null, { reason: 'visibility' });
     };
     document.addEventListener('visibilitychange', onVisibilityChange);
     return () => {
@@ -1181,7 +1236,7 @@ useEffect(() => {
       );
       if (document.visibilityState !== 'visible' && !allowBackgroundPolling) {
         if (hasMailPermission) {
-          await fetchUnreadCounts(null, { reason: 'hub-poll-mail-only', forceMailUnread: true });
+          await fetchUnreadCounts(null, { reason: 'hub-poll-mail-only' });
         }
         return;
       }
@@ -1335,11 +1390,21 @@ useEffect(() => {
       }, HUB_POLL_INTERVAL_MS);
     }
 
-    const onMailChange = () => {
-      fetchUnreadCounts(null, { reason: 'mail-change', forceMailUnread: true });
-      if (notificationsOpenRef.current) {
-        refreshBellInboxRef.current?.();
+    const onMailChange = (event) => {
+      const detail = event?.detail;
+      const phase = String(detail?.phase || '').trim();
+      if (detail && ['optimistic', 'confirmed', 'rollback'].includes(phase)) {
+        applyMailUnreadDelta(detail);
+        if (phase === 'rollback') {
+          fetchUnreadCounts(null, { reason: 'mail-read-rollback', forceMailUnread: true });
+          if (notificationsOpenRef.current) {
+            refreshBellInboxRef.current?.();
+          }
+        }
+        return;
       }
+      fetchUnreadCounts(null, { reason: 'mail-change', forceMailUnread: true });
+      if (notificationsOpenRef.current) refreshBellInboxRef.current?.();
     };
     const onChatUnreadRefresh = () => {
       fetchUnreadCounts(null, { reason: 'chat-unread' });
@@ -1361,6 +1426,7 @@ useEffect(() => {
       window.removeEventListener('chat-unread-needs-refresh', onChatUnreadRefresh);
     };
   }, [
+    applyMailUnreadDelta,
     fetchUnreadCounts,
     hasDashboardPermission,
     hasTasksPermission,
@@ -1632,6 +1698,9 @@ useEffect(() => {
     const selected = !item.externalUrl && isItemActive(item.path, activeNavigationPath);
     const pending = !item.externalUrl && String(pendingNavigation?.path || '').trim() === String(item.path || '').trim();
     const badgeCount = getNavigationBadgeCount(item.path, unreadCounts);
+    const mailSnapshotState = item.path === '/mail' ? String(unreadCounts?.mail_state || 'unknown') : 'ok';
+    const mailStateNeedsAttention = ['stale', 'unknown', 'error'].includes(mailSnapshotState);
+    const badgeContent = mailStateNeedsAttention ? (badgeCount > 0 ? badgeCount : '?') : badgeCount;
     const button = (
       <ListItemButton
         data-testid={`main-layout-sidebar-${item.path.replace(/^\//, '')}`}
@@ -1675,8 +1744,12 @@ useEffect(() => {
         }}
       >
         <ListItemIcon>
-          {badgeCount > 0 ? (
-            <Badge color="error" badgeContent={badgeCount}>
+          {badgeCount > 0 || mailStateNeedsAttention ? (
+            <Badge
+              color={mailStateNeedsAttention ? 'warning' : 'error'}
+              badgeContent={badgeContent}
+              title={mailStateNeedsAttention ? `Почтовый снимок: ${mailSnapshotState}` : undefined}
+            >
               {item.icon}
             </Badge>
           ) : item.icon}
@@ -2431,8 +2504,15 @@ useEffect(() => {
           >
             {visibleMobileNavigationItems.map((item) => {
               const badgeCount = getNavigationBadgeCount(item.path, unreadCounts);
-              const icon = badgeCount > 0 ? (
-                <Badge color="error" badgeContent={badgeCount}>
+              const mailSnapshotState = item.path === '/mail' ? String(unreadCounts?.mail_state || 'unknown') : 'ok';
+              const mailStateNeedsAttention = ['stale', 'unknown', 'error'].includes(mailSnapshotState);
+              const badgeContent = mailStateNeedsAttention ? (badgeCount > 0 ? badgeCount : '?') : badgeCount;
+              const icon = badgeCount > 0 || mailStateNeedsAttention ? (
+                <Badge
+                  color={mailStateNeedsAttention ? 'warning' : 'error'}
+                  badgeContent={badgeContent}
+                  title={mailStateNeedsAttention ? `Почтовый снимок: ${mailSnapshotState}` : undefined}
+                >
                   {item.icon}
                 </Badge>
               ) : item.icon;

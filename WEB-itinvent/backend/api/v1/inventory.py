@@ -1,4 +1,5 @@
 ﻿import logging
+import ipaddress
 import re
 import sqlite3
 import time
@@ -34,9 +35,6 @@ def _env_positive_int(name: str, default: int, minimum: int) -> int:
     except Exception:
         return max(int(default), int(minimum))
 
-DEFAULT_AGENT_API_KEY = "gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8"
-_DEFAULT_KEY_WARNED = False
-
 INVENTORY_FILE = "agent_inventory_cache.json"
 CHANGES_FILE = "agent_inventory_changes.json"
 HISTORY_RETENTION_DAYS = 90
@@ -50,6 +48,7 @@ OUTLOOK_ALLOWED_SOURCE = {"user_helper_com", "system_scan", "none"}
 COMPUTER_SEARCH_FIELDS = {"identity", "user", "profiles", "outlook", "network", "location", "database"}
 COMPUTER_SEARCH_DEFAULT_FIELDS = set(COMPUTER_SEARCH_FIELDS)
 COMPUTER_SEARCH_DYNAMIC_FIELDS = {"network", "location", "database"}
+DEFAULT_INVENTORY_NETWORK_SCOPE_MAP = "10.105.6.0/24=ITINVENT|г.Тюмень, Велижанский тракт 6"
 INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS = _env_positive_int(
     "ITINV_INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS",
     default=_env_positive_int(
@@ -66,6 +65,28 @@ _NETWORK_LOOKUP_TABLES = {
     "network_ports",
     "network_sockets",
 }
+
+
+def _parse_inventory_network_scope_map(raw: Any) -> List[Tuple[Any, str, str]]:
+    rules: List[Tuple[Any, str, str]] = []
+    for item in str(raw or "").split(";"):
+        cidr, separator, target = item.strip().partition("=")
+        if not separator:
+            continue
+        database_id, _, branch_name = target.partition("|")
+        try:
+            network = ipaddress.ip_network(cidr.strip(), strict=False)
+        except ValueError:
+            continue
+        normalized_database_id = database_id.strip()
+        if normalized_database_id:
+            rules.append((network, normalized_database_id, branch_name.strip()))
+    return rules
+
+
+INVENTORY_NETWORK_SCOPE_RULES = _parse_inventory_network_scope_map(
+    os.getenv("ITINV_INVENTORY_NETWORK_SCOPE_MAP", DEFAULT_INVENTORY_NETWORK_SCOPE_MAP)
+)
 
 
 def _inventory_database_url() -> Optional[str]:
@@ -217,7 +238,6 @@ def _api_key_fingerprint(value: Optional[str]) -> str:
 
 
 def _load_agent_api_keys() -> List[str]:
-    global _DEFAULT_KEY_WARNED
     keys: List[str] = []
     ring_raw = str(os.getenv("ITINV_AGENT_API_KEYS", "") or "").strip()
     if ring_raw:
@@ -229,13 +249,6 @@ def _load_agent_api_keys() -> List[str]:
     legacy_key = str(os.getenv("ITINV_AGENT_API_KEY", "") or "").strip()
     if legacy_key and legacy_key not in keys:
         keys.append(legacy_key)
-    elif not keys:
-        keys.append(DEFAULT_AGENT_API_KEY)
-        if not _DEFAULT_KEY_WARNED:
-            logger.warning(
-                "Inventory API is using built-in default key fallback. Configure ITINV_AGENT_API_KEYS for explicit key management."
-            )
-            _DEFAULT_KEY_WARNED = True
     return keys
 
 
@@ -275,6 +288,7 @@ class InventoryPayload(BaseModel):
     updates: Optional[Dict[str, Any]] = None
     outlook: Optional[Dict[str, Any]] = None
     user_profile_sizes: Optional[Dict[str, Any]] = None
+    agent_runtime: Optional[Dict[str, Any]] = None
     timestamp: int
 
 
@@ -411,6 +425,24 @@ def _extract_ip_fields(record: Dict[str, Any]) -> Tuple[str, List[str]]:
     if ip_primary and ip_primary not in ip_list:
         ip_list.insert(0, ip_primary)
     return ip_primary, ip_list
+
+
+def _resolve_inventory_network_scope(record: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    ip_primary, ip_list = _extract_ip_fields(record)
+    candidates = _dedupe_strings([ip_primary, *ip_list])
+    for raw_ip in candidates:
+        try:
+            ip_value = ipaddress.ip_address(raw_ip)
+        except ValueError:
+            continue
+        for network, database_id, branch_name in INVENTORY_NETWORK_SCOPE_RULES:
+            if ip_value in network:
+                return {
+                    "database_id": database_id,
+                    "branch_name": branch_name,
+                    "ip_address": raw_ip,
+                }
+    return None
 
 
 def _network_link_payload(row: sqlite3.Row) -> Dict[str, Any]:
@@ -1344,7 +1376,11 @@ def _enrich_outlook_fields_light(record: Dict[str, Any]) -> None:
     record["outlook_archives_count"] = len([row for row in archives if isinstance(row, dict)])
 
 
-def _trim_computer_list_record(record: Dict[str, Any]) -> Dict[str, Any]:
+def _trim_computer_list_record(
+    record: Dict[str, Any],
+    *,
+    include_profile_rows: bool = False,
+) -> Dict[str, Any]:
     outlook_raw = record.get("outlook") if isinstance(record.get("outlook"), dict) else {}
     profile_sizes = record.get("user_profile_sizes") if isinstance(record.get("user_profile_sizes"), dict) else {}
     storage_rows = record.get("storage") if isinstance(record.get("storage"), list) else []
@@ -1364,12 +1400,15 @@ def _trim_computer_list_record(record: Dict[str, Any]) -> Dict[str, Any]:
         "active_store": outlook_raw.get("active_store") if isinstance(outlook_raw.get("active_store"), dict) else None,
         "total_outlook_size_bytes": record.get("outlook_total_size_bytes"),
     }
-    trimmed["user_profile_sizes"] = {
-        "collected_at": profile_sizes.get("collected_at"),
-        "profiles_count": profile_sizes.get("profiles_count") or record.get("user_profile_sizes_profiles_count"),
-        "total_size_bytes": profile_sizes.get("total_size_bytes") or record.get("user_profile_sizes_total_bytes"),
-        "partial": profile_sizes.get("partial") or record.get("user_profile_sizes_partial"),
-    }
+    if include_profile_rows:
+        trimmed["user_profile_sizes"] = profile_sizes
+    else:
+        trimmed["user_profile_sizes"] = {
+            "collected_at": profile_sizes.get("collected_at"),
+            "profiles_count": profile_sizes.get("profiles_count") or record.get("user_profile_sizes_profiles_count"),
+            "total_size_bytes": profile_sizes.get("total_size_bytes") or record.get("user_profile_sizes_total_bytes"),
+            "partial": profile_sizes.get("partial") or record.get("user_profile_sizes_partial"),
+        }
     return trimmed
 
 
@@ -1378,6 +1417,7 @@ def _heavy_enrich_computer_records(
     *,
     changes_index: Dict[str, Dict[str, Any]],
     attach_network: Any,
+    include_profile_rows: bool = False,
 ) -> None:
     for record in records:
         _enrich_outlook_fields(record)
@@ -1387,7 +1427,10 @@ def _heavy_enrich_computer_records(
         record["recent_changes"] = change_meta.get("recent_changes") or []
     attach_network(records)
     for index, record in enumerate(records):
-        records[index] = _trim_computer_list_record(record)
+        records[index] = _trim_computer_list_record(
+            record,
+            include_profile_rows=include_profile_rows,
+        )
 
 
 def _search_network_mac_keys(
@@ -1449,47 +1492,17 @@ def _computer_sort_key(item: Dict[str, Any], normalized_sort_by: str) -> Any:
 def _resolve_scoped_host_keys(
     *,
     app_store: Optional[AppInventoryStore],
-    db_candidates: List[str],
-    branch: Optional[str],
     q: Optional[str],
     fields: set[str],
-    network_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None,
 ) -> Optional[set[str]]:
-    scoped_keys: Optional[set[str]] = None
-    if app_store is not None and db_candidates:
-        scoped_keys = app_store.list_mac_addresses_for_db_ids(db_candidates, branch=branch)
-
     needle = _normalize_text(q).lower()
-    if not needle:
-        return scoped_keys
-
-    search_keys: set[str] = set()
-    prefilter_attempted = False
-    sql_fields = set(fields) - {"network"}
-    if app_store is not None and sql_fields:
-        try:
-            indexed_keys = app_store.search_host_keys(needle, sql_fields, db_ids=db_candidates)
-            if indexed_keys is not None:
-                prefilter_attempted = True
-                search_keys.update(indexed_keys)
-        except Exception as exc:
-            logger.debug("Inventory indexed host search skipped: %s", exc)
-
-    if "network" in fields:
-        network_keys = _search_network_mac_keys(network_index, needle)
-        if network_keys:
-            prefilter_attempted = True
-            search_keys.update(network_keys)
-
-    if prefilter_attempted and not search_keys:
-        return set()
-
-    if not search_keys:
-        return scoped_keys
-
-    if scoped_keys is None:
-        return search_keys
-    return {item for item in search_keys if item in scoped_keys}
+    if not needle or app_store is None or fields & COMPUTER_SEARCH_DYNAMIC_FIELDS:
+        return None
+    try:
+        return app_store.search_host_keys(needle, fields, db_ids=None)
+    except Exception as exc:
+        logger.debug("Inventory indexed host search skipped: %s", exc)
+        return None
 
 
 def _collect_scoped_computer_records(
@@ -1508,37 +1521,19 @@ def _collect_scoped_computer_records(
 ) -> List[Dict[str, Any]]:
     fields = _parse_computer_search_fields(search_fields)
     app_store = _get_inventory_app_store()
+    requested_scope = _normalize_scope(scope)
     db_candidates = _resolve_computer_db_candidates(
         current_user=current_user,
         db_id_selected=db_id_selected,
         scope=scope,
     )
 
-    network_conn: Optional[Any] = None
-    network_index: Optional[Dict[str, Dict[str, Dict[str, Any]]]] = None
-    needs_network_for_search = bool(_normalize_text(q) and "network" in fields)
-    if needs_network_for_search:
-        try:
-            network_conn = _open_network_lookup_connection()
-            if network_conn is not None:
-                network_index = _load_network_lookup_index(network_conn)
-        except Exception:
-            network_index = None
-
     scoped_keys = _resolve_scoped_host_keys(
         app_store=app_store,
-        db_candidates=db_candidates,
-        branch=branch,
         q=q,
         fields=fields,
-        network_index=network_index,
     )
     if scoped_keys is not None and len(scoped_keys) == 0:
-        if network_conn is not None:
-            try:
-                network_conn.close()
-            except Exception:
-                pass
         return []
 
     current_data = _load_inventory_snapshot(host_keys=scoped_keys)
@@ -1552,15 +1547,24 @@ def _collect_scoped_computer_records(
 
     sql_cache: Dict[str, Optional[Dict[str, Any]]] = {}
     prefetched_sql_contexts: Dict[tuple[str, str, str], Dict[str, Any]] = {}
-    if app_store is not None and current_data and db_candidates:
+    context_db_ids = list(db_candidates)
+    if app_store is not None and requested_scope == "selected":
+        for database_id in _get_accessible_db_ids(current_user):
+            normalized_database_id = _normalize_text(database_id)
+            if normalized_database_id and normalized_database_id not in context_db_ids:
+                context_db_ids.append(normalized_database_id)
+    if app_store is not None and current_data and context_db_ids:
         try:
             prefetched_sql_contexts = app_store.list_sql_contexts(
                 hosts=[item for item in current_data.values() if isinstance(item, dict)],
-                db_ids=db_candidates,
+                db_ids=context_db_ids,
             )
         except Exception as exc:
             logger.debug("Inventory SQL context prefetch skipped: %s", exc)
             prefetched_sql_contexts = {}
+    allow_sync_context_resolution = app_store is None or (
+        not prefetched_sql_contexts and len(current_data) <= 10
+    )
 
     def _get_prefetched_sql_context(mac_address: str, hostname: str, db_id: str) -> Optional[Dict[str, Any]]:
         normalized_mac = _normalize_mac(mac_address)
@@ -1572,9 +1576,7 @@ def _collect_scoped_computer_records(
             ("", normalized_hostname, normalized_db_id),
         ):
             cached_context = prefetched_sql_contexts.get(key)
-            if isinstance(cached_context, dict) and (
-                _normalize_text(cached_context.get("inv_no")) or _normalize_text(cached_context.get("model_name"))
-            ):
+            if isinstance(cached_context, dict):
                 return dict(cached_context)
         return None
 
@@ -1591,35 +1593,75 @@ def _collect_scoped_computer_records(
 
             mac_address = _normalize_text(record.get("mac_address"))
             hostname = _normalize_text(record.get("hostname"))
-            cache_key = f"{_normalize_mac(mac_address)}|{hostname.lower()}|{','.join(db_candidates)}"
+            cache_key = f"{_normalize_mac(mac_address)}|{hostname.lower()}|{','.join(context_db_ids)}"
             if cache_key not in sql_cache:
-                resolved_context: Optional[Dict[str, Any]] = None
-                for candidate_db in db_candidates:
+                selected_context: Optional[Dict[str, Any]] = None
+                any_context: Optional[Dict[str, Any]] = None
+                for candidate_db in context_db_ids:
                     context = _get_prefetched_sql_context(mac_address, hostname, candidate_db)
-                    if not isinstance(context, dict):
+                    if not isinstance(context, dict) and allow_sync_context_resolution:
                         context = _resolve_sql_context_cached(app_store, mac_address, hostname, candidate_db)
                     if not isinstance(context, dict):
                         continue
-                    resolved_context = dict(context)
-                    resolved_context["database_id"] = candidate_db
-                    resolved_context["database_name"] = database_name_map.get(candidate_db, candidate_db)
-                    break
-                sql_cache[cache_key] = resolved_context
+                    enriched_context = dict(context)
+                    enriched_context["database_id"] = candidate_db
+                    enriched_context["database_name"] = database_name_map.get(candidate_db, candidate_db)
+                    enriched_context["assignment_source"] = "sql"
+                    if any_context is None:
+                        any_context = enriched_context
+                    if candidate_db in db_candidates and selected_context is None:
+                        selected_context = enriched_context
+
+                resolved_context = any_context if requested_scope == "all" else selected_context
+                assigned_elsewhere = requested_scope == "selected" and selected_context is None and any_context is not None
+                network_scope = _resolve_inventory_network_scope(record)
+                if resolved_context is None and not assigned_elsewhere and isinstance(network_scope, dict):
+                    network_database_id = _normalize_text(network_scope.get("database_id"))
+                    if requested_scope == "all" or network_database_id in db_candidates:
+                        resolved_context = {
+                            "branch_name": _normalize_text(network_scope.get("branch_name")),
+                            "ip_address": _normalize_text(network_scope.get("ip_address")),
+                            "database_id": network_database_id,
+                            "database_name": database_name_map.get(network_database_id, network_database_id),
+                            "assignment_source": "network_scope",
+                        }
+                    else:
+                        assigned_elsewhere = True
+
+                if assigned_elsewhere or (resolved_context is None and app_store is None):
+                    sql_cache[cache_key] = {"_excluded": True}
+                else:
+                    sql_cache[cache_key] = resolved_context
 
             sql_context = sql_cache.get(cache_key)
-            if not isinstance(sql_context, dict):
+            if isinstance(sql_context, dict) and sql_context.get("_excluded"):
                 continue
 
-            record["branch_no"] = sql_context.get("branch_no")
-            record["branch_name"] = _normalize_text(sql_context.get("branch_name"))
-            record["location_name"] = _normalize_text(sql_context.get("location_name"))
-            record["branch_source"] = "sql"
-            record["inventory_inv_no"] = _normalize_text(sql_context.get("inv_no"))
-            record["inventory_model_name"] = _normalize_text(sql_context.get("model_name"))
-            record["database_id"] = _normalize_text(sql_context.get("database_id"))
-            record["database_name"] = _normalize_text(sql_context.get("database_name")) or record["database_id"]
-            if not record.get("user_full_name"):
-                record["user_full_name"] = _normalize_person_name(sql_context.get("employee_name"))
+            if isinstance(sql_context, dict):
+                assignment_source = _normalize_text(sql_context.get("assignment_source")) or "sql"
+                record["branch_no"] = sql_context.get("branch_no")
+                record["branch_name"] = _normalize_text(sql_context.get("branch_name"))
+                record["location_name"] = _normalize_text(sql_context.get("location_name"))
+                record["branch_source"] = assignment_source
+                record["assignment_source"] = assignment_source
+                record["is_unassigned"] = False
+                record["inventory_inv_no"] = _normalize_text(sql_context.get("inv_no"))
+                record["inventory_model_name"] = _normalize_text(sql_context.get("model_name"))
+                record["database_id"] = _normalize_text(sql_context.get("database_id"))
+                record["database_name"] = _normalize_text(sql_context.get("database_name")) or record["database_id"]
+                if not record.get("user_full_name"):
+                    record["user_full_name"] = _normalize_person_name(sql_context.get("employee_name"))
+            else:
+                record["branch_no"] = None
+                record["branch_name"] = "Без привязки"
+                record["location_name"] = ""
+                record["branch_source"] = "unassigned"
+                record["assignment_source"] = "unassigned"
+                record["is_unassigned"] = True
+                record["inventory_inv_no"] = ""
+                record["inventory_model_name"] = ""
+                record["database_id"] = ""
+                record["database_name"] = "Без привязки"
 
             ip_primary = _normalize_text(record.get("ip_primary"))
             ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
@@ -1638,13 +1680,9 @@ def _collect_scoped_computer_records(
             record.pop("_hardware_signature", None)
             records.append(record)
     finally:
-        if network_conn is not None:
-            try:
-                network_conn.close()
-            except Exception:
-                pass
+        pass
 
-    if branch and not (app_store is not None and db_candidates):
+    if branch:
         branch_value = _normalize_text(branch).lower()
         records = [item for item in records if _normalize_text(item.get("branch_name")).lower() == branch_value]
 
@@ -1673,6 +1711,7 @@ def _computer_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
     status_counts = {"online": 0, "stale": 0, "offline": 0, "unknown": 0}
     branch_counts: Dict[str, int] = {}
     outlook_counts = {"ok": 0, "warning": 0, "critical": 0, "unknown": 0}
+    unassigned_count = 0
     for item in records:
         status_key = _normalize_text(item.get("status")).lower() or "unknown"
         if status_key not in status_counts:
@@ -1684,8 +1723,11 @@ def _computer_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:
         if outlook_key not in outlook_counts:
             outlook_key = "unknown"
         outlook_counts[outlook_key] += 1
+        if bool(item.get("is_unassigned")):
+            unassigned_count += 1
     return {
         "total": len(records),
+        "unassigned": unassigned_count,
         "statuses": status_counts,
         "branches": branch_counts,
         "outlook": outlook_counts,
@@ -1918,6 +1960,7 @@ def _build_computers_search_payload(
                 page_items,
                 changes_index=changes_index,
                 attach_network=_attach_network_fields,
+                include_profile_rows=bool(_normalize_text(q) and "profiles" in fields),
             )
         finally:
             if network_conn is not None:
@@ -1979,40 +2022,94 @@ def _build_computer_detail_payload(
 
     mac_value = _normalize_text(record.get("mac_address"))
     hostname = _normalize_text(record.get("hostname"))
-    sql_context: Optional[Dict[str, Any]] = None
-    for candidate_db in db_candidates:
+    context_db_ids = list(db_candidates)
+    if app_store is not None and requested_scope == "selected":
+        for database_id in _get_accessible_db_ids(current_user):
+            normalized_database_id = _normalize_text(database_id)
+            if normalized_database_id and normalized_database_id not in context_db_ids:
+                context_db_ids.append(normalized_database_id)
+
+    contexts: Dict[tuple[str, str, str], Dict[str, Any]] = {}
+    if app_store is not None:
+        try:
+            contexts = app_store.list_sql_contexts(hosts=[record], db_ids=context_db_ids)
+        except Exception:
+            contexts = {}
+
+    selected_context: Optional[Dict[str, Any]] = None
+    any_context: Optional[Dict[str, Any]] = None
+    normalized_hostname = hostname.lower()
+    normalized_mac_value = _normalize_mac(mac_value)
+    for candidate_db in context_db_ids:
         context = None
-        if app_store is not None:
-            try:
-                context = app_store.get_sql_context(mac_address=mac_value, hostname=hostname, db_id=candidate_db)
-            except Exception:
-                context = None
-        if not isinstance(context, dict):
-            context = _resolve_sql_context_cached(app_store, mac_value, hostname, candidate_db)
+        for key in (
+            (normalized_mac_value, normalized_hostname, candidate_db),
+            (normalized_mac_value, "", candidate_db),
+            ("", normalized_hostname, candidate_db),
+        ):
+            if isinstance(contexts.get(key), dict):
+                context = dict(contexts[key])
+                break
+        if not isinstance(context, dict) and app_store is None:
+            context = _resolve_sql_context_cached(None, mac_value, hostname, candidate_db)
         if not isinstance(context, dict):
             continue
-        sql_context = dict(context)
-        sql_context["database_id"] = candidate_db
-        sql_context["database_name"] = database_name_map.get(candidate_db, candidate_db)
-        break
+        context["database_id"] = candidate_db
+        context["database_name"] = database_name_map.get(candidate_db, candidate_db)
+        context["assignment_source"] = "sql"
+        if any_context is None:
+            any_context = context
+        if candidate_db in db_candidates and selected_context is None:
+            selected_context = context
 
-    if not isinstance(sql_context, dict):
+    sql_context = any_context if requested_scope == "all" else selected_context
+    assigned_elsewhere = requested_scope == "selected" and selected_context is None and any_context is not None
+    network_scope = _resolve_inventory_network_scope(record)
+    if sql_context is None and not assigned_elsewhere and isinstance(network_scope, dict):
+        network_database_id = _normalize_text(network_scope.get("database_id"))
+        if requested_scope == "all" or network_database_id in db_candidates:
+            sql_context = {
+                "branch_name": _normalize_text(network_scope.get("branch_name")),
+                "ip_address": _normalize_text(network_scope.get("ip_address")),
+                "database_id": network_database_id,
+                "database_name": database_name_map.get(network_database_id, network_database_id),
+                "assignment_source": "network_scope",
+            }
+        else:
+            assigned_elsewhere = True
+
+    if assigned_elsewhere or (sql_context is None and app_store is None):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Computer not found")
 
-    record["branch_no"] = sql_context.get("branch_no")
-    record["branch_name"] = _normalize_text(sql_context.get("branch_name"))
-    record["location_name"] = _normalize_text(sql_context.get("location_name"))
-    record["branch_source"] = "sql"
-    record["inventory_inv_no"] = _normalize_text(sql_context.get("inv_no"))
-    record["inventory_model_name"] = _normalize_text(sql_context.get("model_name"))
-    record["database_id"] = _normalize_text(sql_context.get("database_id"))
-    record["database_name"] = _normalize_text(sql_context.get("database_name")) or record["database_id"]
-    if not record.get("user_full_name"):
-        record["user_full_name"] = _normalize_person_name(sql_context.get("employee_name"))
+    if isinstance(sql_context, dict):
+        assignment_source = _normalize_text(sql_context.get("assignment_source")) or "sql"
+        record["branch_no"] = sql_context.get("branch_no")
+        record["branch_name"] = _normalize_text(sql_context.get("branch_name"))
+        record["location_name"] = _normalize_text(sql_context.get("location_name"))
+        record["branch_source"] = assignment_source
+        record["assignment_source"] = assignment_source
+        record["is_unassigned"] = False
+        record["inventory_inv_no"] = _normalize_text(sql_context.get("inv_no"))
+        record["inventory_model_name"] = _normalize_text(sql_context.get("model_name"))
+        record["database_id"] = _normalize_text(sql_context.get("database_id"))
+        record["database_name"] = _normalize_text(sql_context.get("database_name")) or record["database_id"]
+        if not record.get("user_full_name"):
+            record["user_full_name"] = _normalize_person_name(sql_context.get("employee_name"))
+    else:
+        record["branch_no"] = None
+        record["branch_name"] = "Без привязки"
+        record["location_name"] = ""
+        record["branch_source"] = "unassigned"
+        record["assignment_source"] = "unassigned"
+        record["is_unassigned"] = True
+        record["inventory_inv_no"] = ""
+        record["inventory_model_name"] = ""
+        record["database_id"] = ""
+        record["database_name"] = "Без привязки"
 
     ip_primary = _normalize_text(record.get("ip_primary"))
     ip_list = record.get("ip_list") if isinstance(record.get("ip_list"), list) else []
-    if not ip_primary:
+    if not ip_primary and isinstance(sql_context, dict):
         ip_primary = _extract_first_ipv4(sql_context.get("ip_address"))
     if ip_primary and ip_primary not in ip_list:
         ip_list = [ip_primary] + [item for item in ip_list if _normalize_text(item) and _normalize_text(item) != ip_primary]

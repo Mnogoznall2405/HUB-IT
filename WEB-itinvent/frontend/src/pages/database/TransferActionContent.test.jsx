@@ -35,6 +35,7 @@ const renderTransferActionContent = (props = {}) => {
     onRecipientInputChange: vi.fn(),
     onRecipientChange: vi.fn(),
     onSendEmail: vi.fn(),
+    onRetryFailed: vi.fn(),
     ...(props.actions || {}),
   };
 
@@ -169,6 +170,25 @@ describe('TransferActionContent', () => {
 
     expect(screen.getByText('Перемещено: 1, ошибок: 0')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Отправить акт' })).not.toBeInTheDocument();
+  });
+
+  it('retries only the server-confirmed failed inventory numbers', () => {
+    const { actions } = renderTransferActionContent({
+      transfer: {
+        result: {
+          success_count: 1,
+          failed_count: 1,
+          transferred: [{ inv_no: '1001' }],
+          failed: [{ inv_no: '1002', error: 'blocked' }],
+          retry_inv_nos: ['1001', '1002'],
+          acts: [],
+        },
+      },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Повторить только неуспешные/ }));
+
+    expect(actions.onRetryFailed).toHaveBeenCalledWith(['1002']);
   });
 
   it('emits employee input changes without touching APIs', () => {

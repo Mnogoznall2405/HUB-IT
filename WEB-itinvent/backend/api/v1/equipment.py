@@ -8,6 +8,7 @@ from fastapi.responses import FileResponse, StreamingResponse, RedirectResponse
 from pydantic import BaseModel, Field
 import os
 import re
+import threading
 
 from backend.api.deps import get_current_active_user, get_current_admin_user, get_current_database_id, require_permission
 from backend.database import queries
@@ -57,6 +58,7 @@ from backend.services.transfer_service import (
 from backend.services.equipment_transfer_execution_service import (
     EquipmentTransferExecutionError,
     execute_equipment_transfer,
+    execute_equipment_location_transfer,
 )
 from backend.services.equipment_recent_cards_service import equipment_recent_cards_service
 from backend.services import transfer_act_job_service
@@ -144,21 +146,50 @@ def _item_inv_no(item: Any) -> str:
 
 
 def _queued_transfer_response(job: dict[str, Any]) -> TransferExecuteResponse:
+    operation = str(job.get("operation") or "").strip()
+    status_text = str(job.get("status_text") or "Акты создаются, обновите статус через несколько секунд")
+    if operation == "location_transfer" and str(job.get("status") or "") == "queued":
+        status_text = "Смена местоположения поставлена в очередь"
     return TransferExecuteResponse(
         success_count=0,
         failed_count=0,
         transferred=[],
         failed=[],
+        retry_inv_nos=[],
         acts=[],
         job_id=str(job.get("id") or ""),
+        operation_id=str(job.get("id") or "") or None,
         job_status=str(job.get("status") or "queued"),
-        job_status_text=str(job.get("status_text") or "Акты создаются, обновите статус через несколько секунд"),
-        job_operation=str(job.get("operation") or ""),
+        job_status_text=status_text,
+        job_operation=operation,
         job_request_count=int(job.get("request_count") or 0),
         job_created_at=job.get("created_at"),
         job_started_at=job.get("started_at"),
         job_completed_at=job.get("completed_at"),
+        one_c_sync_state="not_requested" if operation in {"transfer", "location_transfer"} else None,
     )
+
+
+def _create_transfer_job_or_raise(**kwargs: Any) -> dict[str, Any]:
+    try:
+        return transfer_act_job_service.create_job(**kwargs)
+    except transfer_act_job_service.TransferOperationConflict as exc:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "transfer_operation_conflict", "message": str(exc)},
+        ) from exc
+
+
+def _can_read_transfer_job(*, job: dict[str, Any], current_user: Any, db_id: Optional[str]) -> bool:
+    if str(getattr(current_user, "role", "") or "").strip().lower() == "admin":
+        return True
+    try:
+        job_user_id = int(job.get("user_id") or 0)
+    except (TypeError, ValueError):
+        return False
+    if _current_user_id(current_user) <= 0 or _current_user_id(current_user) != job_user_id:
+        return False
+    return (str(job.get("db_id") or "").strip() or None) == (str(db_id or "").strip() or None)
 
 
 def _result_with_act_records(result: dict[str, Any]) -> dict[str, Any]:
@@ -166,6 +197,38 @@ def _result_with_act_records(result: dict[str, Any]) -> dict[str, Any]:
     act_ids = [str(act.get("act_id") or "").strip() for act in list(payload.get("acts") or [])]
     payload["_act_records"] = get_act_records([act_id for act_id in act_ids if act_id])
     return payload
+
+
+def _start_transfer_job_lease_heartbeat(job_id: str):
+    """Keep a running transfer job recoverable after a real backend restart.
+
+    The durable job service only requeues a ``processing`` record after its
+    lease expires.  A tiny daemon heartbeat prevents a slow but live PDF/SQL
+    operation from being mistaken for a crashed worker by a duplicate request.
+    """
+    stop = threading.Event()
+    interval = transfer_act_job_service.execution_lease_heartbeat_seconds()
+
+    def _renew() -> None:
+        while not stop.wait(interval):
+            try:
+                if not transfer_act_job_service.touch_execution_lease(job_id):
+                    return
+            except Exception:
+                logger.warning("Failed to renew transfer job lease job_id=%s", job_id, exc_info=True)
+
+    worker = threading.Thread(
+        target=_renew,
+        name=f"transfer-job-lease-{str(job_id)[:24]}",
+        daemon=True,
+    )
+    worker.start()
+
+    def _stop() -> None:
+        stop.set()
+        worker.join(timeout=1)
+
+    return _stop
 
 
 def _run_transfer_job(
@@ -176,13 +239,43 @@ def _run_transfer_job(
     current_user: User,
 ) -> None:
     logger.info("Transfer act job started job_id=%s operation=transfer inv_count=%s", job_id, len(payload.inv_nos or []))
-    transfer_act_job_service.mark_processing(job_id, "Выполняется перемещение и создание актов")
+    if not transfer_act_job_service.claim_for_execution(job_id, "Выполняется перемещение и создание актов"):
+        logger.info("Transfer act job already claimed or completed job_id=%s", job_id)
+        return
+    stop_lease_heartbeat = _start_transfer_job_lease_heartbeat(job_id)
     try:
+        # The durable job id is the canonical idempotency key even when an
+        # older client omitted operation_id.  Keep it with every SQL item
+        # mutation so a recovered lease can identify a prior commit.
+        # Preserve the typed payload object for the shared execution service
+        # (and existing callers), but make the durable job id canonical for
+        # every per-item SQL mutation.
+        execution_payload: Any = payload
+        if isinstance(execution_payload, dict):
+            execution_payload["operation_id"] = job_id
+        else:
+            try:
+                setattr(execution_payload, "operation_id", job_id)
+            except (AttributeError, TypeError):
+                execution_payload = dict(vars(payload))
+                execution_payload["operation_id"] = job_id
+        current_job = transfer_act_job_service.get_job(job_id) or {}
+        recovered_result = dict(current_job.get("result") or {})
+
+        def _checkpoint(stage_result: dict[str, Any]) -> None:
+            if not transfer_act_job_service.checkpoint_processing_result(job_id, stage_result):
+                # Do not publish a task/reminder whose durable operation no
+                # longer owns the lease.  A retry will reuse the same
+                # operation-scoped act files rather than creating duplicates.
+                raise RuntimeError("Не удалось сохранить checkpoint операции переноса")
+
         result = execute_equipment_transfer(
-            payload=payload,
+            payload=execution_payload,
             db_id=db_id,
             current_user=current_user,
             allow_create_owner=True,
+            checkpoint=_checkpoint,
+            recovered_result=recovered_result,
         )
         for item in result.get("transferred") or []:
             _touch_recent_card_safely(
@@ -192,7 +285,21 @@ def _run_transfer_job(
                 action_type="transfer",
                 snapshot=item,
             )
-        transfer_act_job_service.mark_done(job_id, _result_with_act_records(result))
+        if result.get("failed_count"):
+            if result.get("success_count"):
+                transfer_act_job_service.mark_done(
+                    job_id,
+                    _result_with_act_records(result),
+                    "Перемещение выполнено частично; акты не созданы",
+                )
+            else:
+                transfer_act_job_service.mark_failed(
+                    job_id,
+                    "Не удалось переместить оборудование; акты не созданы",
+                    _result_with_act_records(result),
+                )
+        else:
+            transfer_act_job_service.mark_done(job_id, _result_with_act_records(result))
         logger.info(
             "Transfer act job done job_id=%s operation=transfer success=%s failed=%s acts=%s",
             job_id,
@@ -210,12 +317,108 @@ def _run_transfer_job(
                 "failed_count": 1,
                 "transferred": [],
                 "failed": [{"inv_no": "", "error": exc.detail}],
+                "retry_inv_nos": [],
                 "acts": [],
             },
         )
     except Exception as exc:
         logger.exception("Transfer act job failed job_id=%s", job_id)
-        transfer_act_job_service.mark_failed(job_id, str(exc))
+        checkpointed = transfer_act_job_service.get_job(job_id) or {}
+        persisted_result = dict(checkpointed.get("result") or {})
+        transfer_act_job_service.mark_failed(job_id, str(exc), persisted_result or None)
+    finally:
+        stop_lease_heartbeat()
+
+
+def _run_location_transfer_job(
+    *,
+    job_id: str,
+    payload: TransferLocationRequest,
+    db_id: Optional[str],
+    current_user: User,
+) -> None:
+    """Execute a durable location-only transfer under the common command contract."""
+    logger.info(
+        "Transfer job started job_id=%s operation=location_transfer inv_count=%s",
+        job_id,
+        len(payload.inv_nos or []),
+    )
+    if not transfer_act_job_service.claim_for_execution(job_id, "Выполняется смена местоположения"):
+        logger.info("Location transfer job already claimed or completed job_id=%s", job_id)
+        return
+
+    stop_lease_heartbeat = _start_transfer_job_lease_heartbeat(job_id)
+    try:
+        # The durable job id, rather than an optional client key, is written
+        # into each CI_HISTORY marker.  A recovered job can therefore replay
+        # a SQL commit made before the worker saved the final job result.
+        result = execute_equipment_location_transfer(
+            payload=payload,
+            db_id=db_id,
+            current_user=current_user,
+            operation_id=job_id,
+        )
+        for item in result.get("transferred") or []:
+            _touch_recent_card_safely(
+                current_user=current_user,
+                db_id=db_id,
+                inv_no=_item_inv_no(item),
+                action_type="location_transfer",
+                snapshot=item,
+            )
+
+        if result.get("failed_count"):
+            if result.get("success_count"):
+                transfer_act_job_service.mark_done(
+                    job_id,
+                    result,
+                    "Смена местоположения выполнена частично",
+                )
+            else:
+                transfer_act_job_service.mark_failed(
+                    job_id,
+                    "Не удалось изменить местоположение оборудования",
+                    result,
+                )
+        else:
+            transfer_act_job_service.mark_done(
+                job_id,
+                result,
+                "Местоположение оборудования изменено",
+            )
+        logger.info(
+            "Transfer job done job_id=%s operation=location_transfer success=%s failed=%s",
+            job_id,
+            result.get("success_count"),
+            result.get("failed_count"),
+        )
+    except EquipmentTransferExecutionError as exc:
+        logger.warning(
+            "Location transfer job failed job_id=%s status=%s detail=%s",
+            job_id,
+            exc.status_code,
+            exc.detail,
+        )
+        transfer_act_job_service.mark_failed(
+            job_id,
+            exc.detail,
+            {
+                "success_count": 0,
+                "failed_count": 1,
+                "transferred": [],
+                "failed": [{"inv_no": "", "error": exc.detail, "retryable": False}],
+                "retry_inv_nos": [],
+                "acts": [],
+                "one_c_sync_state": "not_requested",
+            },
+        )
+    except Exception as exc:
+        logger.exception("Location transfer job failed job_id=%s", job_id)
+        checkpointed = transfer_act_job_service.get_job(job_id) or {}
+        persisted_result = dict(checkpointed.get("result") or {})
+        transfer_act_job_service.mark_failed(job_id, str(exc), persisted_result or None)
+    finally:
+        stop_lease_heartbeat()
 
 
 def _run_act_only_job(
@@ -227,8 +430,13 @@ def _run_act_only_job(
 ) -> None:
     inv_nos = _normalize_inv_nos(payload.inv_nos)
     logger.info("Transfer act job started job_id=%s operation=act_only inv_count=%s", job_id, len(inv_nos))
-    transfer_act_job_service.mark_processing(job_id, "Создаются акты без перемещения")
+    if not transfer_act_job_service.claim_for_execution(job_id, "Создаются акты без перемещения"):
+        logger.info("Document-only job already claimed or completed job_id=%s", job_id)
+        return
+    stop_lease_heartbeat = _start_transfer_job_lease_heartbeat(job_id)
     try:
+        recovered_job = transfer_act_job_service.get_job(job_id) or {}
+        recovered_result = dict(recovered_job.get("result") or {})
         issuer_name = str(payload.issuer_employee or "").strip() or "Без владельца"
         issuer_email: Optional[str] = None
         issuer_owner_no = _to_int(payload.issuer_owner_no)
@@ -268,22 +476,30 @@ def _run_act_only_job(
             else:
                 failed.append({"inv_no": inv_no, "error": f"Equipment with INV_NO {inv_no} not found"})
 
-        acts = []
+        acts = [dict(act) for act in list(recovered_result.get("acts") or []) if isinstance(act, dict)]
         if resolved_items:
-            acts = generate_transfer_acts_without_move(
-                items=resolved_items,
-                issuer_name=issuer_name,
-                issuer_email=issuer_email,
-                db_id=db_id,
-            )
+            if not acts:
+                acts = generate_transfer_acts_without_move(
+                    items=resolved_items,
+                    issuer_name=issuer_name,
+                    issuer_email=issuer_email,
+                    db_id=db_id,
+                    operation_id=job_id,
+                )
 
         result = {
             "success_count": len(resolved_items),
             "failed_count": len(failed),
             "transferred": [],
             "failed": failed,
+            "retry_inv_nos": _normalize_inv_nos(item.get("inv_no") for item in failed),
             "acts": acts,
         }
+        if acts and not transfer_act_job_service.checkpoint_processing_result(
+            job_id,
+            _result_with_act_records({**result, "execution_stage": "acts_generated"}),
+        ):
+            raise RuntimeError("Не удалось сохранить checkpoint операции формирования актов")
         for item in resolved_items:
             _touch_recent_card_safely(
                 current_user=current_user,
@@ -311,12 +527,17 @@ def _run_act_only_job(
                 "failed_count": 1,
                 "transferred": [],
                 "failed": [{"inv_no": "", "error": detail}],
+                "retry_inv_nos": [],
                 "acts": [],
             },
         )
     except Exception as exc:
         logger.exception("Transfer act job failed job_id=%s", job_id)
-        transfer_act_job_service.mark_failed(job_id, str(exc))
+        checkpointed = transfer_act_job_service.get_job(job_id) or {}
+        persisted_result = dict(checkpointed.get("result") or {})
+        transfer_act_job_service.mark_failed(job_id, str(exc), persisted_result or None)
+    finally:
+        stop_lease_heartbeat()
 
 
 def _ascii_safe_filename(file_name: str) -> str:
@@ -520,19 +741,35 @@ async def search_by_employee(
 @router.get("/employee/{owner_no}/items", response_model=EquipmentSearchResponse)
 async def get_employee_equipment(
     owner_no: int,
+    all_databases: bool = Query(False, description="Search across all configured Hub databases"),
+    employee_name: str = Query("", max_length=200, description="FIO used to resolve owner in other DBs"),
     db_id: Optional[str] = Depends(get_current_database_id),
-    _: User = Depends(get_current_active_user)
+    current_user: User = Depends(get_current_active_user)
 ):
     """
     Get all equipment assigned to a specific employee.
 
     Args:
         owner_no: Employee ID (OWNER_NO)
+        all_databases: When true, also match the same person by FIO in other Hub DBs
+        employee_name: Display name for cross-DB FIO matching
 
     Returns:
         EquipmentSearchResponse with employee's equipment
     """
-    equipment = queries.get_equipment_by_owner(owner_no, db_id)
+    if all_databases:
+        if str(current_user.role or "").strip().lower() != "admin":
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cross-DB equipment lookup is available to administrators only",
+            )
+        equipment = queries.get_equipment_by_owner_all_databases(
+            owner_no,
+            employee_name=employee_name,
+            current_db_id=db_id,
+        )
+    else:
+        equipment = queries.get_equipment_by_owner(owner_no, db_id)
 
     return EquipmentSearchResponse(
         found=len(equipment) > 0,
@@ -1464,26 +1701,29 @@ async def transfer_equipment(
     if not inv_nos:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="No inventory numbers provided")
 
-    job = transfer_act_job_service.create_job(
+    job = _create_transfer_job_or_raise(
         operation="transfer",
         payload=payload.model_dump(mode="json"),
         db_id=db_id,
         user=current_user,
         request_count=len(inv_nos),
+        operation_id=payload.operation_id,
     )
-    background_tasks.add_task(
-        _run_transfer_job,
-        job_id=str(job.get("id") or ""),
-        payload=payload,
-        db_id=db_id,
-        current_user=current_user,
-    )
+    if str(job.get("status") or "") == "queued":
+        background_tasks.add_task(
+            _run_transfer_job,
+            job_id=str(job.get("id") or ""),
+            payload=payload,
+            db_id=db_id,
+            current_user=current_user,
+        )
     return _queued_transfer_response(job)
 
 
 @router.post("/transfer/location", response_model=TransferExecuteResponse)
 async def transfer_equipment_location(
     payload: TransferLocationRequest,
+    background_tasks: BackgroundTasks,
     db_id: Optional[str] = Depends(get_current_database_id),
     current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
@@ -1512,45 +1752,23 @@ async def transfer_equipment_location(
             detail="loc_no does not belong to branch_no",
         )
 
-    changed_by = current_user.username if current_user else "IT-WEB"
-    transferred: list[dict[str, Any]] = []
-    failed: list[dict[str, Any]] = []
-
-    for inv_no in inv_nos:
-        result = queries.transfer_equipment_location_by_inv_with_history(
-            inv_no=inv_no,
-            new_branch_no=branch_no,
-            new_loc_no=loc_no,
-            changed_by=changed_by,
-            comment=payload.comment,
-            db_id=db_id,
-        )
-        if result.get("success"):
-            transferred.append(result)
-        else:
-            failed.append({
-                "inv_no": inv_no,
-                "error": result.get("message") or "Location transfer failed",
-            })
-
-    if transferred:
-        for item in transferred:
-            _touch_recent_card_safely(
-                current_user=current_user,
-                db_id=db_id,
-                inv_no=_item_inv_no(item),
-                action_type="location_transfer",
-                snapshot=item,
-            )
-        invalidate_equipment_cache(db_id)
-
-    return TransferExecuteResponse(
-        success_count=len(transferred),
-        failed_count=len(failed),
-        transferred=transferred,
-        failed=failed,
-        acts=[],
+    job = _create_transfer_job_or_raise(
+        operation="location_transfer",
+        payload=payload.model_dump(mode="json"),
+        db_id=db_id,
+        user=current_user,
+        request_count=len(inv_nos),
+        operation_id=payload.operation_id,
     )
+    if str(job.get("status") or "") == "queued":
+        background_tasks.add_task(
+            _run_location_transfer_job,
+            job_id=str(job.get("id") or ""),
+            payload=payload,
+            db_id=db_id,
+            current_user=current_user,
+        )
+    return _queued_transfer_response(job)
 
 
 @router.post("/transfer/act-only", response_model=TransferExecuteResponse)
@@ -1573,28 +1791,34 @@ async def create_transfer_act_without_move(
             detail="No inventory numbers provided",
         )
 
-    job = transfer_act_job_service.create_job(
+    job = _create_transfer_job_or_raise(
         operation="act_only",
         payload=payload.model_dump(mode="json"),
         db_id=db_id,
         user=current_user,
         request_count=len(inv_nos),
+        operation_id=payload.operation_id,
     )
-    background_tasks.add_task(
-        _run_act_only_job,
-        job_id=str(job.get("id") or ""),
-        payload=payload,
-        db_id=db_id,
-        current_user=current_user,
-    )
+    if str(job.get("status") or "") == "queued":
+        background_tasks.add_task(
+            _run_act_only_job,
+            job_id=str(job.get("id") or ""),
+            payload=payload,
+            db_id=db_id,
+            current_user=current_user,
+        )
     return _queued_transfer_response(job)
 
 
 @router.get("/transfer/act-jobs/{job_id}", response_model=TransferExecuteResponse)
 async def get_transfer_act_job(
     job_id: str,
-    _: User = Depends(require_permission(PERM_DATABASE_WRITE)),
+    db_id: Optional[str] = Depends(get_current_database_id),
+    current_user: User = Depends(require_permission(PERM_DATABASE_WRITE)),
 ):
+    job = transfer_act_job_service.get_job(job_id)
+    if job is None or not _can_read_transfer_job(job=job, current_user=current_user, db_id=db_id):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer act job not found")
     payload = transfer_act_job_service.response_payload(job_id)
     if payload is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Transfer act job not found")

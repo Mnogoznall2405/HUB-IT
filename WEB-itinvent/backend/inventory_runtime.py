@@ -25,7 +25,6 @@ def _env_positive_int(name: str, default: int, minimum: int) -> int:
         return max(int(default), int(minimum))
 
 
-DEFAULT_AGENT_API_KEY = "gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8"
 INVENTORY_FILE = "agent_inventory_cache.json"
 CHANGES_FILE = "agent_inventory_changes.json"
 HISTORY_RETENTION_DAYS = 90
@@ -46,7 +45,6 @@ INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS = _env_positive_int(
     minimum=15,
 )
 
-_DEFAULT_KEY_WARNED = False
 
 
 def configure_runtime_hooks(**overrides: Any) -> None:
@@ -83,6 +81,7 @@ class InventoryPayload(BaseModel):
     updates: Optional[Dict[str, Any]] = None
     outlook: Optional[Dict[str, Any]] = None
     user_profile_sizes: Optional[Dict[str, Any]] = None
+    agent_runtime: Optional[Dict[str, Any]] = None
     timestamp: int
 
 
@@ -95,7 +94,6 @@ def _api_key_fingerprint(value: Optional[str]) -> str:
 
 
 def _load_agent_api_keys() -> List[str]:
-    global _DEFAULT_KEY_WARNED
     keys: List[str] = []
     ring_raw = str(os.getenv("ITINV_AGENT_API_KEYS", "") or "").strip()
     if ring_raw:
@@ -107,13 +105,6 @@ def _load_agent_api_keys() -> List[str]:
     legacy_key = str(os.getenv("ITINV_AGENT_API_KEY", "") or "").strip()
     if legacy_key and legacy_key not in keys:
         keys.append(legacy_key)
-    elif not keys:
-        keys.append(DEFAULT_AGENT_API_KEY)
-        if not _DEFAULT_KEY_WARNED:
-            logger.warning(
-                "Inventory API is using built-in default key fallback. Configure ITINV_AGENT_API_KEYS for explicit key management."
-            )
-            _DEFAULT_KEY_WARNED = True
     return keys
 
 
@@ -934,7 +925,6 @@ def process_inventory_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 __all__ = [
     "CHANGES_FILE",
     "CHANGES_WINDOW_DAYS",
-    "DEFAULT_AGENT_API_KEY",
     "HISTORY_RETENTION_DAYS",
     "INVENTORY_FILE",
     "INVENTORY_HEARTBEAT_DEFER_WINDOW_SECONDS",

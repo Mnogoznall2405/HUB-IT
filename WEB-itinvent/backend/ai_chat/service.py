@@ -775,6 +775,7 @@ def _route_tool_groups(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             model=model,
+            purpose="chat",
             temperature=0.0,
             max_tokens=_ROUTING_MAX_TOKENS,
             response_schema=AI_ROUTING_SCHEMA,
@@ -2863,10 +2864,12 @@ class AiChatService:
                     system_prompt=current_system_prompt,
                     user_prompt=current_user_prompt,
                     model=_normalize_text(bot.model),
+                    purpose="chat",
                     temperature=float(bot.temperature or 0.2),
                     max_tokens=int(bot.max_tokens or 2000),
                     response_schema=response_schema,
                     schema_name=schema_name,
+                    response_healing=False,
                 )
             except OpenRouterClientError as exc:
                 raise RuntimeError(str(exc)) from exc

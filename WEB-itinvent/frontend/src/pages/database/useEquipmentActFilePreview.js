@@ -1,39 +1,15 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { equipmentTransferActsAPI } from '../../api/equipmentTransferActs';
+import {
+  fileNameFromContentDisposition,
+  resolveDocumentPreviewKind,
+  sniffBlobKind,
+} from '../../lib/documentPreviewKind';
 import { normalizeDbId, readFirst, toNumberOrNull } from './databaseRecordModel';
 
 export const ACT_DOC_NO_ERROR = 'У акта отсутствует DOC_NO, открыть файл невозможно.';
 const ACT_OPEN_ERROR = 'Не удалось открыть файл акта.';
-
-function inferPreviewKind(contentType = '', fileName = '') {
-  const mime = String(contentType || '').toLowerCase();
-  const name = String(fileName || '').toLowerCase();
-  if (mime.includes('pdf') || name.endsWith('.pdf')) return 'pdf';
-  if (
-    mime.includes('spreadsheet')
-    || mime.includes('excel')
-    || name.endsWith('.xlsx')
-    || name.endsWith('.xls')
-  ) {
-    return 'office_excel';
-  }
-  return 'pdf';
-}
-
-function fileNameFromContentDisposition(headerValue = '') {
-  const text = String(headerValue || '');
-  const utfMatch = text.match(/filename\*=UTF-8''([^;]+)/i);
-  if (utfMatch?.[1]) {
-    try {
-      return decodeURIComponent(utfMatch[1].trim());
-    } catch {
-      return utfMatch[1].trim();
-    }
-  }
-  const plainMatch = text.match(/filename="?([^";]+)"?/i);
-  return plainMatch?.[1]?.trim() || '';
-}
 
 const createEmptyPreviewState = () => ({
   open: false,
@@ -104,12 +80,42 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
       if (selectedDb) params.db_id = selectedDb;
 
       const response = await equipmentTransferActsAPI.downloadEquipmentActFile(docNo, params);
-      const contentType = String(response?.headers?.['content-type'] || 'application/pdf');
+      const contentType = String(response?.headers?.['content-type'] || 'application/octet-stream');
       const fileName = fileNameFromContentDisposition(response?.headers?.['content-disposition'])
         || `act_${docNo}.pdf`;
       const blob = response?.data instanceof Blob
         ? response.data
         : new Blob([response?.data], { type: contentType });
+
+      if (!blob.size) {
+        throw new Error('Файл акта пустой или недоступен на сервере.');
+      }
+
+      const sniff = await sniffBlobKind(blob);
+      const resolved = resolveDocumentPreviewKind({
+        contentType,
+        fileName,
+        sniff,
+      });
+
+      if (resolved.kind !== 'pdf') {
+        const objectUrl = typeof window !== 'undefined' && window.URL?.createObjectURL
+          ? window.URL.createObjectURL(blob)
+          : '';
+        objectUrlRef.current = objectUrl;
+        setPreview({
+          open: true,
+          loading: false,
+          error: resolved.error || 'Формат файла не поддерживается в предпросмотре.',
+          title: fileName || `Акт ${docNumber}`,
+          subtitle: invNo ? `Инв. № ${invNo}` : '',
+          kind: 'unsupported',
+          objectUrl,
+          previewBlob: blob,
+        });
+        return { ok: false, error: resolved.error };
+      }
+
       const objectUrl = typeof window !== 'undefined' && window.URL?.createObjectURL
         ? window.URL.createObjectURL(blob)
         : '';
@@ -121,7 +127,7 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
         error: '',
         title: fileName || `Акт ${docNumber}`,
         subtitle: invNo ? `Инв. № ${invNo}` : '',
-        kind: inferPreviewKind(contentType, fileName),
+        kind: 'pdf',
         objectUrl,
         previewBlob: blob,
       });
@@ -129,7 +135,7 @@ export function useEquipmentActFilePreview({ fallbackInvNo = '' } = {}) {
     } catch (error) {
       console.error('Error opening equipment act file preview:', error);
       const apiDetail = error?.response?.data?.detail;
-      let detail = typeof apiDetail === 'string' ? apiDetail : ACT_OPEN_ERROR;
+      let detail = typeof apiDetail === 'string' ? apiDetail : (error?.message || ACT_OPEN_ERROR);
       if (apiDetail instanceof Blob) {
         try {
           const text = await apiDetail.text();

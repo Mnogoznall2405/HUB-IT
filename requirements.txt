@@ -12,6 +12,7 @@ pyodbc>=4.0.0
 python-docx>=0.8.11
 docx2pdf>=0.1.8
 transliterate>=1.10.2
+psutil>=7.1.1
 
 # Тестирование (опционально)
 pytest>=9.0.3

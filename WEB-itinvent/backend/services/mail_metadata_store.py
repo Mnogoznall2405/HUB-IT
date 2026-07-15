@@ -19,6 +19,14 @@ def _normalize_text(value: Any, default: str = "") -> str:
     return text or default
 
 
+def _clamp_int(value: Any, fallback: Any, minimum: int, maximum: int) -> int:
+    try:
+        normalized = int(value)
+    except (TypeError, ValueError):
+        normalized = int(fallback)
+    return max(int(minimum), min(int(maximum), normalized))
+
+
 class MailMetadataStore:
     def __init__(
         self,
@@ -323,6 +331,14 @@ class MailMetadataStore:
         for key in ("mark_read_on_select", "show_preview_snippets", "show_favorites_first"):
             if key in (payload or {}):
                 next_prefs[key] = bool((payload or {}).get(key))
+        numeric_preferences = {
+            "folder_pane_width": (180, 360),
+            "message_list_width": (280, 720),
+            "bottom_list_percent": (25, 75),
+        }
+        for key, (minimum, maximum) in numeric_preferences.items():
+            if key in (payload or {}) and key in next_prefs:
+                next_prefs[key] = _clamp_int((payload or {}).get(key), next_prefs[key], minimum, maximum)
         now_iso = _utc_now_iso()
         with self._lock, self._connect() as conn:
             conn.execute(

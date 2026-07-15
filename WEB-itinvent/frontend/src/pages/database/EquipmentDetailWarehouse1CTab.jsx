@@ -23,23 +23,28 @@ import OpenInNewIcon from '@mui/icons-material/OpenInNew';
 import SearchIcon from '@mui/icons-material/Search';
 
 import EmploymentStatusChip from '../../components/EmploymentStatusChip';
-import { isMeaningful1cRef, warehouse1cAPI } from '../../api/warehouse1c';
+import {
+  isMeaningful1cRef,
+  isWarehouse1cListIncomplete,
+  normalizeWarehouse1cListResponse,
+  warehouse1cAPI,
+} from '../../api/warehouse1c';
 import { readFirst } from './databaseRecordModel';
 import EmployeeNameLink from './EmployeeNameLink';
 import {
+  filterBalancesByText,
   formatWarehouseQty,
+  isUsableHubPartNo,
   NomenclatureCell,
   resolveWarehouseErrorMessage,
+  sortBalancesByWarehouse,
 } from './warehouse1cShared';
 
-const PART_NO_PLACEHOLDER_RE = /не\s*найден/i;
 const NOMENCLATURE_SEARCH_LIMIT = 50;
+const BALANCE_BATCH_PER_NOMENCLATURE_LIMIT = 20;
 
 function isUsablePartNo(value) {
-  const text = String(value || '').trim();
-  if (!text || text === '-' || text === '—') return false;
-  if (PART_NO_PLACEHOLDER_RE.test(text)) return false;
-  return true;
+  return isUsableHubPartNo(value);
 }
 
 function buildModelSearchText(data) {
@@ -67,28 +72,64 @@ function buildDefaultSearchPlan(data) {
   };
 }
 
-async function filterSuggestionsWithPositiveBalances(items, { concurrency = 4 } = {}) {
+export async function filterSuggestionsWithPositiveBalances(items) {
   const list = Array.isArray(items) ? items.filter((item) => isMeaningful1cRef(item?.ref)) : [];
-  if (!list.length) return [];
+  if (!list.length) return { items: [], hasUnverified: false };
 
-  const kept = [];
-  for (let i = 0; i < list.length; i += concurrency) {
-    const chunk = list.slice(i, i + concurrency);
-    const checks = await Promise.all(chunk.map(async (item) => {
-      try {
-        const rows = await warehouse1cAPI.getBalances({
-          nomenclatureRef: item.ref,
-          limit: 20,
-        });
-        return Array.isArray(rows) && rows.length > 0 ? item : null;
-      } catch (err) {
-        console.warn('Failed to check balances for nomenclature', item?.ref, err);
-        return null;
-      }
-    }));
-    kept.push(...checks.filter(Boolean));
+  const refs = Array.from(new Set(list.map((item) => String(item.ref).trim())));
+  const requestedRefs = refs.slice(0, NOMENCLATURE_SEARCH_LIMIT);
+  const unqueriedRefs = new Set(refs.slice(NOMENCLATURE_SEARCH_LIMIT));
+
+  try {
+    const data = await warehouse1cAPI.getBalancesBatch({
+      nomenclatureRefs: requestedRefs,
+      limitPerNomenclature: BALANCE_BATCH_PER_NOMENCLATURE_LIMIT,
+    });
+    const response = normalizeWarehouse1cListResponse(data);
+    const responseIsIndeterminate = isWarehouse1cListIncomplete(response.meta)
+      || response.items.some((row) => isWarehouse1cListIncomplete(row));
+    if (responseIsIndeterminate) {
+      // A timeout/truncation is not evidence of a zero balance.  Preserve all
+      // candidates for manual selection and make the uncertainty visible.
+      return { items: list, hasUnverified: true };
+    }
+
+    const refsWithPositiveBalance = new Set(
+      response.items
+        .filter((row) => Number(row?.qty_1c_total ?? row?.qty_balance ?? 0) > 0)
+        .map((row) => String(row?.nomenclature_ref || '').trim())
+        .filter(Boolean),
+    );
+    return {
+      items: list.filter((item) => {
+        const ref = String(item.ref).trim();
+        return refsWithPositiveBalance.has(ref) || unqueriedRefs.has(ref);
+      }),
+      hasUnverified: unqueriedRefs.size > 0,
+    };
+  } catch (err) {
+    console.warn('Failed to batch-check 1C balances for nomenclature suggestions', err);
+    // The batch is deliberately all-or-nothing: a failed read must keep the
+    // candidates available rather than silently filtering them as zero stock.
+    return { items: list, hasUnverified: true };
   }
-  return kept;
+}
+
+function BalancesMetadataNotice({ meta }) {
+  if (!isWarehouse1cListIncomplete(meta)) return null;
+
+  const status = String(meta?.status || '').trim().toLowerCase();
+  const message = status === 'error' || status === 'unknown'
+    ? 'Не удалось подтвердить полноту остатков 1С. Это не означает, что остаток равен нулю.'
+    : 'Показана неполная выборка остатков 1С. Не используйте её как итоговую сверку.';
+
+  return <Alert severity="warning">{message}</Alert>;
+}
+
+function formatWarehouseTimestamp(value) {
+  if (!value) return '';
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleString('ru-RU');
 }
 
 export default function EquipmentDetailWarehouse1CTab({
@@ -114,8 +155,10 @@ export default function EquipmentDetailWarehouse1CTab({
   const [balancesLoading, setBalancesLoading] = useState(false);
   const [balancesError, setBalancesError] = useState('');
   const [balances, setBalances] = useState([]);
+  const [balancesMeta, setBalancesMeta] = useState({});
   const [autoLoaded, setAutoLoaded] = useState(false);
   const [hubQuerySource, setHubQuerySource] = useState(searchPlan.preferredSource || 'model');
+  const [warehouseFilterText, setWarehouseFilterText] = useState('');
 
   useEffect(() => {
     setSearchText(defaultSearchText);
@@ -129,14 +172,23 @@ export default function EquipmentDetailWarehouse1CTab({
     setBalancesLoading(false);
     setBalancesError('');
     setBalances([]);
+    setBalancesMeta({});
     setAutoLoaded(false);
     setHubQuerySource(searchPlan.preferredSource || 'model');
+    setWarehouseFilterText('');
   }, [data, defaultSearchText, searchPlan.preferredSource]);
+
+  const visibleWarehouseBalances = useMemo(
+    () => filterBalancesByText(balances, warehouseFilterText),
+    [balances, warehouseFilterText],
+  );
+  const balancesIncomplete = isWarehouse1cListIncomplete(balancesMeta);
 
   const applySuggestionResults = useCallback(async (rows, tried) => {
     const list = Array.isArray(rows) ? rows : [];
     setRawResultCount(list.length);
-    const filtered = await filterSuggestionsWithPositiveBalances(list);
+    const filteredResult = await filterSuggestionsWithPositiveBalances(list);
+    const filtered = filteredResult.items;
     setTriedQuery(tried);
     setSuggestions(filtered);
     if (!list.length) {
@@ -144,19 +196,27 @@ export default function EquipmentDetailWarehouse1CTab({
       return { found: false, tried, onlyWithStock: false };
     }
     if (!filtered.length) {
+      if (filteredResult.hasUnverified) {
+        setSearchError('Не удалось подтвердить остатки части номенклатуры 1С. Это не означает нулевой остаток — выберите позицию и повторите запрос.');
+        return { found: false, tried, onlyWithStock: false };
+      }
       setSearchError('Найдены совпадения в справочнике 1С, но у всех нулевой остаток. Показаны только позиции с ненулевым остатком.');
       return { found: false, tried, onlyWithStock: true };
     }
-    setSearchError('');
+    setSearchError(filteredResult.hasUnverified
+      ? 'Часть позиций показана без проверки остатка: 1С вернула неполный ответ или не ответила вовремя.'
+      : '');
     return { found: true, tried, onlyWithStock: true };
   }, []);
 
   const searchNomenclatureFull = useCallback(async (text) => {
     const normalized = String(text || '').trim();
     if (!normalized) return { rows: [], tried: '' };
-    const rows = await warehouse1cAPI.searchNomenclature(normalized, NOMENCLATURE_SEARCH_LIMIT);
+    const response = normalizeWarehouse1cListResponse(
+      await warehouse1cAPI.searchNomenclature(normalized, NOMENCLATURE_SEARCH_LIMIT),
+    );
     return {
-      rows: Array.isArray(rows) ? rows : [],
+      rows: response.items,
       tried: normalized,
     };
   }, []);
@@ -254,6 +314,7 @@ export default function EquipmentDetailWarehouse1CTab({
     setSelectedWarehouse(null);
     setBalancesLoading(true);
     setBalancesError('');
+    setBalancesMeta({});
     const cardPartNo = String(readFirst(data, ['PART_NO', 'part_no'], '')).trim();
     const nomenclatureCode = String(item?.code || '').trim();
     const cardModelName = buildModelSearchText(data);
@@ -264,7 +325,7 @@ export default function EquipmentDetailWarehouse1CTab({
     const modelName = cardModelName || (hubQuerySource === 'model' ? hubQuery : '');
     const source = (usableCardPart || usableNomenclaturePart) ? 'part_no' : 'model';
     try {
-      const rows = await warehouse1cAPI.getBalancesWithHub({
+      const data = await warehouse1cAPI.getBalancesWithHub({
         nomenclatureRef: item.ref,
         partNo: usableCardPart,
         nomenclatureCode: usableNomenclaturePart,
@@ -273,11 +334,14 @@ export default function EquipmentDetailWarehouse1CTab({
         hubQuerySource: source,
         limit: 200,
       });
-      setBalances(Array.isArray(rows) ? rows : []);
+      const response = normalizeWarehouse1cListResponse(data);
+      setBalances(sortBalancesByWarehouse(response.items));
+      setBalancesMeta(response.meta);
     } catch (err) {
       console.error('Failed to load balances for nomenclature:', err);
       setBalancesError(resolveWarehouseErrorMessage(err, 'Не удалось загрузить остатки по номенклатуре.'));
       setBalances([]);
+      setBalancesMeta({});
     } finally {
       setBalancesLoading(false);
     }
@@ -290,6 +354,40 @@ export default function EquipmentDetailWarehouse1CTab({
   ]);
 
   const openWarehousePage = useCallback((warehouseRow = null) => {
+    const warehouseRef = warehouseRow?.warehouse_ref || selectedWarehouse?.ref || '';
+    const warehouseName = warehouseRow?.warehouse_name || selectedWarehouse?.name || '';
+    const openPersonWarehouse = Boolean(warehouseRow && isMeaningful1cRef(warehouseRef));
+
+    // Склад конкретного человека — открываем с фильтром только по этому складу
+    // (вся номенклатура склада, по алфавиту на стороне списка остатков).
+    if (openPersonWarehouse) {
+      const params = new URLSearchParams({
+        tab: 'balances',
+        warehouseRef,
+      });
+      if (warehouseName) params.set('warehouseName', warehouseName);
+      const fallbackState = {
+        returnTo: '/database',
+        returnLabel: invNo ? 'Назад к карточке' : 'Назад в Инвентарь',
+        reopenDetail: invNo
+          ? {
+            kind: 'equipment',
+            invNo,
+            detailTab: 'warehouse1c',
+            detailSnapshot: data || null,
+          }
+          : null,
+      };
+      const state = typeof buildReturnContext === 'function'
+        ? buildReturnContext({
+          returnLabel: fallbackState.returnLabel,
+          reopenDetail: fallbackState.reopenDetail,
+        })
+        : fallbackState;
+      navigate(`/warehouse-1c?${params.toString()}`, { state });
+      return;
+    }
+
     if (!selected?.ref) return;
     const params = new URLSearchParams({
       tab: 'balances',
@@ -297,8 +395,6 @@ export default function EquipmentDetailWarehouse1CTab({
       nomenclatureName: selected.name || '',
       nomenclatureCode: selected.code || '',
     });
-    const warehouseRef = warehouseRow?.warehouse_ref || selectedWarehouse?.ref || '';
-    const warehouseName = warehouseRow?.warehouse_name || selectedWarehouse?.name || '';
     if (isMeaningful1cRef(warehouseRef)) {
       params.set('warehouseRef', warehouseRef);
       if (warehouseName) params.set('warehouseName', warehouseName);
@@ -408,6 +504,11 @@ export default function EquipmentDetailWarehouse1CTab({
                 парт. № нет — по модели. С другим парт. № не считаем. Статус сотрудника — по
                 адресной книге. Клик по ФИО открывает карточку сотрудника.
               </Typography>
+              {balancesMeta?.asOf ? (
+                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.25 }}>
+                  Данные 1С на: {formatWarehouseTimestamp(balancesMeta.asOf)}
+                </Typography>
+              ) : null}
             </Box>
             <Button
               size="small"
@@ -429,26 +530,45 @@ export default function EquipmentDetailWarehouse1CTab({
           ) : null}
 
           {balancesError ? <Alert severity="error">{balancesError}</Alert> : null}
+          {!balancesLoading && !balancesError ? <BalancesMetadataNotice meta={balancesMeta} /> : null}
 
-          {!balancesLoading && !balancesError && balances.length === 0 ? (
+          {!balancesLoading && !balancesError && !balancesIncomplete && balances.length === 0 ? (
             <Typography variant="body2" color="text.secondary">
               На складе нет позиций с ненулевым конечным остатком.
             </Typography>
           ) : null}
 
           {!balancesLoading && balances.length > 0 ? (
-            <TableContainer component={Paper} variant="outlined">
-              <Table size="small">
-                <TableHead>
-                  <TableRow>
-                    <TableCell>Склад / сотрудник</TableCell>
-                    <TableCell align="right">В 1С</TableCell>
-                    <TableCell align="right">В Хабе</TableCell>
-                    <TableCell>Сотрудник</TableCell>
-                  </TableRow>
-                </TableHead>
-                <TableBody>
-                  {balances.map((row, index) => {
+            <Stack spacing={1}>
+              <TextField
+                size="small"
+                fullWidth
+                label="Фильтр по складу / сотруднику"
+                placeholder="ФИО или название склада"
+                value={warehouseFilterText}
+                onChange={(event) => setWarehouseFilterText(event.target.value)}
+              />
+              <TableContainer component={Paper} variant="outlined">
+                <Table size="small">
+                  <TableHead>
+                    <TableRow>
+                      <TableCell>Склад / сотрудник</TableCell>
+                      <TableCell align="right">В 1С</TableCell>
+                      <TableCell align="right">В Хабе</TableCell>
+                      <TableCell>Сотрудник</TableCell>
+                    </TableRow>
+                  </TableHead>
+                  <TableBody>
+                    {visibleWarehouseBalances.length === 0 ? (
+                      <TableRow>
+                        <TableCell colSpan={4}>
+                          <Typography variant="body2" color="text.secondary">
+                            По фильтру ничего не найдено.
+                          </Typography>
+                        </TableCell>
+                      </TableRow>
+                    ) : null}
+                    {visibleWarehouseBalances.map((row, index) => {
                     const selectedRow = selectedWarehouse?.ref === row.warehouse_ref;
                     const hubCount = row?.hub_count;
                     const hubCountLabel = hubCount === null || hubCount === undefined
@@ -508,9 +628,10 @@ export default function EquipmentDetailWarehouse1CTab({
                       </TableRow>
                     );
                   })}
-                </TableBody>
-              </Table>
-            </TableContainer>
+                  </TableBody>
+                </Table>
+              </TableContainer>
+            </Stack>
           ) : null}
         </Box>
       ) : null}

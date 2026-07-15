@@ -14,6 +14,7 @@ import {
 import MainLayout from '../components/layout/MainLayout';
 import PageShell from '../components/layout/PageShell';
 import { equipmentAPI, settingsAPI } from '../api/client';
+import { databaseAPI } from '../api/database';
 import jsonAPI from '../api/json_client';
 import { LoadingSpinner } from '../components/common';
 import { useAuth } from '../contexts/AuthContext';
@@ -795,6 +796,7 @@ function Database() {
     transferUsesManualEmployee,
     transferResult,
     transferJobPolling,
+    transferRetrySubmitting,
     transferEmailMode,
     transferManualEmail,
     transferRecipientInput,
@@ -1175,12 +1177,27 @@ function Database() {
     setEmployeeEquipmentDialog({ open: false, ownerNo: null, employeeName: '' });
   }, []);
 
-  const handleOpenEquipmentFromEmployee = useCallback((invNo) => {
+  const handleOpenEquipmentFromEmployee = useCallback(async (invNo, meta = {}) => {
     const normalized = String(invNo || '').trim();
     if (!normalized || normalized === '-') return;
+
+    const targetDb = normalizeDbId(meta?.databaseId || '');
+    const current = normalizeDbId(db_name || currentDb?.id || localStorage.getItem('selected_database') || '');
+    if (targetDb && targetDb !== current) {
+      try {
+        await databaseAPI.switchDatabase(targetDb);
+        localStorage.setItem('selected_database', targetDb);
+        window.dispatchEvent(new CustomEvent('database-changed', { detail: { databaseId: targetDb } }));
+      } catch (error) {
+        console.error('Failed to switch database for Hub match open:', error);
+        notifyDatabaseError?.(error?.response?.data?.detail || 'Не удалось переключить базу для открытия карточки.');
+        return;
+      }
+    }
+
     const item = findEquipmentByInvNo?.(normalized);
     openDetailView(item || normalized, { invNo: normalized, loading: !item });
-  }, [findEquipmentByInvNo, openDetailView]);
+  }, [currentDb?.id, db_name, findEquipmentByInvNo, notifyDatabaseError, openDetailView]);
 
   useEffect(() => {
     const state = location.state;
@@ -1203,16 +1220,37 @@ function Database() {
     if (reopenDetail?.invNo) {
       const invNo = String(reopenDetail.invNo).trim();
       if (invNo) {
-        const snapshot = reopenDetail.detailSnapshot && typeof reopenDetail.detailSnapshot === 'object'
-          ? reopenDetail.detailSnapshot
-          : null;
-        const item = findEquipmentByInvNo?.(invNo) || snapshot;
-        openDetailView(item || invNo, {
-          invNo,
-          data: snapshot || undefined,
-          loading: !item && !snapshot,
-          initialTab: reopenDetail.detailTab || 'warehouse1c',
-        });
+        const targetDb = normalizeDbId(reopenDetail.databaseId || '');
+        const current = normalizeDbId(db_name || currentDb?.id || localStorage.getItem('selected_database') || '');
+        const openReopenedDetail = () => {
+          const snapshot = reopenDetail.detailSnapshot && typeof reopenDetail.detailSnapshot === 'object'
+            ? reopenDetail.detailSnapshot
+            : null;
+          const item = findEquipmentByInvNo?.(invNo) || snapshot;
+          openDetailView(item || invNo, {
+            invNo,
+            data: snapshot || undefined,
+            loading: !item && !snapshot,
+            initialTab: reopenDetail.detailTab || 'warehouse1c',
+          });
+        };
+
+        if (targetDb && targetDb !== current) {
+          (async () => {
+            try {
+              await databaseAPI.switchDatabase(targetDb);
+              localStorage.setItem('selected_database', targetDb);
+              window.dispatchEvent(new CustomEvent('database-changed', { detail: { databaseId: targetDb } }));
+            } catch (error) {
+              console.error('Failed to switch database for reopenDetail:', error);
+              notifyDatabaseError?.(error?.response?.data?.detail || 'Не удалось переключить базу для открытия карточки.');
+              return;
+            }
+            openReopenedDetail();
+          })();
+        } else {
+          openReopenedDetail();
+        }
         handled = true;
       }
     } else if (reopenEmployee?.ownerNo || (reopenDetail?.kind === 'employee' && reopenDetail?.ownerNo)) {
@@ -1228,7 +1266,7 @@ function Database() {
     if (handled) {
       navigate(location.pathname, { replace: true, state: {} });
     }
-  }, [applyUiSnapshot, findEquipmentByInvNo, location.pathname, location.state, navigate, openDetailView]);
+  }, [applyUiSnapshot, currentDb?.id, db_name, findEquipmentByInvNo, location.pathname, location.state, navigate, notifyDatabaseError, openDetailView]);
 
   const dataSections = useMemo(() => {
     if (Object.keys(displayData).length === 0) return null;
@@ -1700,6 +1738,7 @@ function Database() {
           ownerNo={employeeEquipmentDialog.ownerNo}
           employeeName={employeeEquipmentDialog.employeeName}
           canViewWarehouse1C={canViewWarehouse1C}
+          allowCrossDatabase={isAdmin}
           onClose={handleCloseEmployeeEquipmentDialog}
           onOpenInvNo={handleOpenEquipmentFromEmployee}
           buildWarehouseReturnContext={buildWarehouseReturnContext}
@@ -1796,6 +1835,7 @@ function Database() {
               mode: transferOperationMode,
               result: transferResult,
               jobPolling: transferJobPolling,
+              retrySubmitting: transferRetrySubmitting,
               employeeInput: transferEmployeeInput,
               employeeInputTrimmed: transferEmployeeInputTrimmed,
               employeeOptions: transferEmployeeAutocompleteOptions,

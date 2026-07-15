@@ -56,6 +56,7 @@ import { scanAgentsAPI } from './scanAgents';
 import { scanHostsAPI } from './scanHosts';
 import { scanIncidentsAPI } from './scanIncidents';
 import { scanOverviewAPI } from './scanOverview';
+import { scanReviewAPI } from './scanReview';
 import { scanTasksAPI } from './scanTasks';
 import { workspaceDiscoveryAPI } from './workspaceDiscovery';
 
@@ -955,6 +956,7 @@ export {
   scanHostsAPI,
   scanIncidentsAPI,
   scanOverviewAPI,
+  scanReviewAPI,
   scanTasksAPI,
   workspaceDiscoveryAPI,
   UPLOADED_ACT_PARSE_TIMEOUT_MS,
@@ -1378,6 +1380,10 @@ export { mfuAPI } from './mfu';
 export const scanAPI = {
   get getDashboard() {
     return scanOverviewAPI.getDashboard;
+  },
+
+  get getReviewItems() {
+    return scanReviewAPI.getReviewItems;
   },
 
   get getBranches() {

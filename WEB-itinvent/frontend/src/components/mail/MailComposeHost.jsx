@@ -48,6 +48,9 @@ export default function MailComposeHost({
   const [closeDraftPromptOpen, setCloseDraftPromptOpen] = useState(false);
   const composeStateRef = useRef(composeState);
   const composeUploadAbortRef = useRef(null);
+  const draftSaveInFlightRef = useRef(null);
+  const draftSaveQueuedRef = useRef(false);
+  const draftSaveIncludeFilesRef = useRef(false);
   const notifiedComposeWarningsRef = useRef(new Set());
   const mountedRef = useRef(true);
   const debouncedComposeToSearch = useDebounce(composeToSearch, 400);
@@ -166,6 +169,34 @@ export default function MailComposeHost({
       composeState.composeToValues,
     ],
   );
+
+  const composeAutosaveKey = useMemo(() => JSON.stringify({
+    composeMode: composeState.composeMode,
+    fromMailboxId: resolveComposeMailboxId(composeState.composeFromMailboxId),
+    to: toRecipientEmails(composeState.composeToValues),
+    cc: toRecipientEmails(composeState.composeCcValues),
+    bcc: toRecipientEmails(composeState.composeBccValues),
+    subject: String(composeState.composeSubject || ''),
+    body: String(getComposeCombinedBody(composeState) || ''),
+    replyToMessageId: String(composeState.composeReplyToMessageId || ''),
+    forwardMessageId: String(composeState.composeForwardMessageId || ''),
+    retainedAttachments: composeState.composeDraftAttachments
+      .map((item) => item?.download_token || item?.id)
+      .filter(Boolean),
+  }), [
+    composeState.composeBccValues,
+    composeState.composeBody,
+    composeState.composeCcValues,
+    composeState.composeDraftAttachments,
+    composeState.composeForwardMessageId,
+    composeState.composeFromMailboxId,
+    composeState.composeMode,
+    composeState.composeQuotedOriginalHtml,
+    composeState.composeReplyToMessageId,
+    composeState.composeSubject,
+    composeState.composeToValues,
+    resolveComposeMailboxId,
+  ]);
 
   const composeSignaturePreviewHtml = useMemo(() => {
     const composeMailboxId = resolveComposeMailboxId(composeState.composeFromMailboxId || activeMailboxId);
@@ -295,40 +326,64 @@ export default function MailComposeHost({
     }
   }, [composeDraftKey, resolveComposeMailboxId]);
 
-  const flushComposeDraft = useCallback(async ({ includeFiles = false } = {}) => {
-    const state = composeStateRef.current;
-    if (!composeStateHasContent(state) && !state.composeDraftId) return null;
-    patchComposeState({ draftSyncState: 'saving' });
-    try {
-      const data = await mailAPI.saveDraftMultipart({
-        fromMailboxId: resolveComposeMailboxId(state.composeFromMailboxId),
-        draftId: state.composeDraftId,
-        composeMode: state.composeMode,
-        to: toRecipientEmails(state.composeToValues),
-        cc: toRecipientEmails(state.composeCcValues),
-        bcc: toRecipientEmails(state.composeBccValues),
-        subject: String(state.composeSubject || ''),
-        body: String(getComposeCombinedBody(state) || ''),
-        isHtml: true,
-        replyToMessageId: state.composeReplyToMessageId,
-        forwardMessageId: state.composeForwardMessageId,
-        retainExistingAttachments: state.composeDraftAttachments.map((item) => item?.download_token || item?.id).filter(Boolean),
-        files: includeFiles ? state.composeFiles : [],
-      });
-      patchComposeState((current) => ({
-        composeDraftId: String(data?.draft_id || current.composeDraftId || ''),
-        composeDraftAttachments: Array.isArray(data?.attachments) ? data.attachments : current.composeDraftAttachments,
-        composeFiles: includeFiles && current.composeFiles.length > 0 ? [] : current.composeFiles,
-        draftSavedAt: String(data?.saved_at || new Date().toISOString()),
-        draftSyncState: 'synced',
-      }));
-      clearStoredComposeDraft();
-      return data;
-    } catch (requestError) {
-      persistLocalComposeDraft(state);
-      patchComposeState({ draftSyncState: 'local_only' });
-      throw requestError;
-    }
+  const flushComposeDraft = useCallback(({ includeFiles = false } = {}) => {
+    draftSaveQueuedRef.current = true;
+    if (includeFiles) draftSaveIncludeFilesRef.current = true;
+    if (draftSaveInFlightRef.current) return draftSaveInFlightRef.current;
+
+    const drainDraftSaveQueue = async () => {
+      let lastResult = null;
+      while (draftSaveQueuedRef.current) {
+        const shouldIncludeFiles = draftSaveIncludeFilesRef.current;
+        draftSaveQueuedRef.current = false;
+        draftSaveIncludeFilesRef.current = false;
+        const state = composeStateRef.current;
+        if (!composeStateHasContent(state) && !state.composeDraftId) continue;
+
+        patchComposeState({ draftSyncState: 'saving' });
+        try {
+          const data = await mailAPI.saveDraftMultipart({
+            fromMailboxId: resolveComposeMailboxId(state.composeFromMailboxId),
+            draftId: state.composeDraftId,
+            composeMode: state.composeMode,
+            to: toRecipientEmails(state.composeToValues),
+            cc: toRecipientEmails(state.composeCcValues),
+            bcc: toRecipientEmails(state.composeBccValues),
+            subject: String(state.composeSubject || ''),
+            body: String(getComposeCombinedBody(state) || ''),
+            isHtml: true,
+            replyToMessageId: state.composeReplyToMessageId,
+            forwardMessageId: state.composeForwardMessageId,
+            retainExistingAttachments: state.composeDraftAttachments.map((item) => item?.download_token || item?.id).filter(Boolean),
+            files: shouldIncludeFiles ? state.composeFiles : [],
+          });
+          patchComposeState((current) => ({
+            composeDraftId: String(data?.draft_id || current.composeDraftId || ''),
+            composeDraftAttachments: Array.isArray(data?.attachments) ? data.attachments : current.composeDraftAttachments,
+            composeFiles: shouldIncludeFiles && current.composeFiles.length > 0 ? [] : current.composeFiles,
+            draftSavedAt: String(data?.saved_at || new Date().toISOString()),
+            draftSyncState: 'synced',
+          }));
+          clearStoredComposeDraft();
+          lastResult = data;
+        } catch (requestError) {
+          draftSaveQueuedRef.current = false;
+          draftSaveIncludeFilesRef.current = false;
+          persistLocalComposeDraft(composeStateRef.current);
+          patchComposeState({ draftSyncState: 'local_only' });
+          throw requestError;
+        }
+      }
+      return lastResult;
+    };
+
+    const pending = drainDraftSaveQueue().finally(() => {
+      if (draftSaveInFlightRef.current === pending) {
+        draftSaveInFlightRef.current = null;
+      }
+    });
+    draftSaveInFlightRef.current = pending;
+    return pending;
   }, [clearStoredComposeDraft, patchComposeState, persistLocalComposeDraft, resolveComposeMailboxId]);
 
   const discardComposeDraft = useCallback(async (state) => {
@@ -348,7 +403,7 @@ export default function MailComposeHost({
       flushComposeDraft({ includeFiles: false }).catch(() => {});
     }, 1500);
     return () => clearTimeout(timer);
-  }, [composeState, flushComposeDraft, hasComposeContent]);
+  }, [composeAutosaveKey, composeState.composeSending, flushComposeDraft, hasComposeContent]);
 
   const handleCloseCompose = useCallback(async () => {
     const state = composeStateRef.current;

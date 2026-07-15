@@ -3,7 +3,19 @@ from __future__ import annotations
 import threading
 import time
 
+import pytest
+
 import scan_server.__main__ as scan_main
+from scan_server.config import ScanServerConfig
+
+
+def test_scan_server_requires_explicit_api_key_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("SCAN_SERVER_API_KEYS", "")
+    monkeypatch.setenv("SCAN_SERVER_API_KEY", "")
+
+    with pytest.raises(RuntimeError, match="SCAN_SERVER_API_KEYS"):
+        ScanServerConfig.from_env()
 
 
 def test_wait_for_singleton_lock_times_out_when_api_lock_is_busy(monkeypatch, tmp_path):

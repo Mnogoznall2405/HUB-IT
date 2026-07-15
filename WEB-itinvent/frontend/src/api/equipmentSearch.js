@@ -22,8 +22,13 @@ export const equipmentSearchAPI = {
     return response.data;
   },
 
-  getEmployeeEquipment: async (ownerNo) => {
-    const response = await apiClient.get(`/equipment/employee/${ownerNo}/items`);
+  getEmployeeEquipment: async (ownerNo, { employeeName = '', allDatabases = false } = {}) => {
+    const response = await apiClient.get(`/equipment/employee/${ownerNo}/items`, {
+      params: {
+        all_databases: allDatabases || undefined,
+        employee_name: employeeName || undefined,
+      },
+    });
     return response.data;
   },
 };

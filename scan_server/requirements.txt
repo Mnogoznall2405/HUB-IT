@@ -8,3 +8,4 @@ PyYAML
 pytesseract
 Pillow>=12.2.0
 python-multipart>=0.0.26
+psutil>=7.1.1

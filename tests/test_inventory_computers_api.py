@@ -43,7 +43,30 @@ def _make_records(now_ts):
         "mac_address": "AA-BB-CC-DD-EE-01",
         "current_user": "CORP\\petrov_aa",
         "user_full_name": "Петров А.А.",
-        "network": {"active_ipv4": ["10.10.1.11"]},
+        "network": {
+            "active_ipv4": ["10.10.1.11"],
+            "summary": {"total": 3, "enabled": 1, "disabled": 2, "connected": 1},
+            "devices": [
+                {
+                    "name": "Ethernet 1",
+                    "device_type": "ethernet",
+                    "enabled": True,
+                    "connection_status": "up",
+                },
+                {
+                    "name": "Intel Wi-Fi 6 AX201",
+                    "device_type": "wifi",
+                    "enabled": False,
+                    "connection_status": "disabled",
+                },
+                {
+                    "name": "Intel Wireless Bluetooth",
+                    "device_type": "bluetooth",
+                    "enabled": False,
+                    "connection_status": "disabled",
+                },
+            ],
+        },
         "report_type": "full_snapshot",
         "timestamp": now_ts - 60,
         "last_seen_at": now_ts - 60,
@@ -336,6 +359,17 @@ def test_get_computers_enriches_contract_and_keeps_heartbeat_safe(monkeypatch):
         scope="selected",
     )
     assert len(detail["recent_changes"]) == 1
+    assert detail["network"]["summary"] == {
+        "total": 3,
+        "enabled": 1,
+        "disabled": 2,
+        "connected": 1,
+    }
+    assert [item["device_type"] for item in detail["network"]["devices"]] == [
+        "ethernet",
+        "wifi",
+        "bluetooth",
+    ]
 
     heartbeat_row = result[1]
     assert heartbeat_row["branch_name"] == "Тюмень"

@@ -5,7 +5,7 @@ import tempfile
 from pathlib import Path
 
 import certifi
-from cx_Freeze import Executable, setup
+from cx_Freeze import Executable, bdist_msi, setup
 
 sys.setrecursionlimit(10000)
 
@@ -23,12 +23,60 @@ from agent_installer import (
     DEFAULT_REPEAT_MINUTES,
     DEFAULT_TASK_NAME,
     EXECUTABLE_NAME,
+    MSI_VALUE_SENTINEL,
     MSI_HELPER_EXECUTABLE_NAME,
     SCAN_AGENT_EXECUTABLE_NAME,
 )
 from agent_version import AGENT_VERSION
 
 UPGRADE_CODE = "{A285621C-4B2F-4BE6-9AD3-799896D4F901}"
+EMBEDDED_MSI_PROPERTY_NAMES = (
+    "ITINV_AGENT_API_KEY",
+    "SCAN_AGENT_API_KEY",
+)
+SECURE_MSI_PROPERTIES = "TARGETDIR;REINSTALLMODE;ITINV_AGENT_API_KEY;SCAN_AGENT_API_KEY"
+
+
+class AgentBdistMsi(bdist_msi):
+    def add_config(self) -> None:
+        super().add_config()
+        view = self.db.OpenView(
+            "UPDATE `Property` SET `Value`='"
+            + SECURE_MSI_PROPERTIES
+            + "' WHERE `Property`='SecureCustomProperties'"
+        )
+        try:
+            view.Execute(None)
+        finally:
+            view.Close()
+
+
+def _read_build_env(path: Path) -> dict[str, str]:
+    values: dict[str, str] = {}
+    if not path.exists():
+        return values
+    for line in path.read_text(encoding="utf-8-sig").splitlines():
+        row = line.strip()
+        if not row or row.startswith("#") or "=" not in row:
+            continue
+        key, value = row.split("=", 1)
+        key = key.strip()
+        value = value.strip()
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in {'"', "'"}:
+            value = value[1:-1]
+        values[key] = value
+    return values
+
+
+def _load_embedded_msi_properties() -> list[tuple[str, str]]:
+    build_env = _read_build_env(REPO_ROOT / ".env")
+    missing = [name for name in EMBEDDED_MSI_PROPERTY_NAMES if not build_env.get(name)]
+    if missing:
+        raise RuntimeError(
+            "Cannot build deployment MSI: missing required values in root .env: "
+            + ", ".join(missing)
+        )
+    return [(name, build_env[name]) for name in EMBEDDED_MSI_PROPERTY_NAMES]
 
 # Use a unique project-local temp path to avoid stale locks from previous cx_Freeze runs.
 BUILD_TMP_ROOT = REPO_ROOT / "tmp" / "cxfreeze"
@@ -85,6 +133,16 @@ build_exe_options = {
         "pytz",
         "pandas",
         "numpy",
+        # Optional integrations pulled in by requests/PyMuPDF are not used by
+        # the agent. OCR and image preprocessing run only on scan_server.
+        "PIL",
+        "fontTools",
+        "bcrypt",
+        "cryptography",
+        "OpenSSL",
+        "chardet",
+        "lxml",
+        "defusedxml",
     ],
     "packages": ["wmi", "psutil", "requests", "scan_agent", "yaml", "itinvent_agent", "watchdog", "certifi"],
     "includes": ["scan_agent.agent", "fitz", "watchdog.events", "watchdog.observers", "agent_installer"],
@@ -105,7 +163,7 @@ build_exe_options = {
 
 
 def _format_property_arg(flag: str, property_name: str) -> str:
-    return f'{flag} "[{property_name}]"'
+    return f'{flag} "[{property_name}]{MSI_VALUE_SENTINEL}"'
 
 
 def _build_install_custom_action_target() -> str:
@@ -140,14 +198,45 @@ def _build_uninstall_custom_action_target() -> str:
     )
 
 
+def _build_upgrade_backup_custom_action_target() -> str:
+    script = (
+        "$ErrorActionPreference='Stop';"
+        "$root='[CommonAppDataFolder]IT-Invent';"
+        "$backup=Join-Path $root 'AgentUpgrade';"
+        "Start-Process -FilePath 'schtasks.exe' "
+        "-ArgumentList @('/End','/TN','IT-Invent Agent') "
+        "-WindowStyle Hidden -Wait -ErrorAction SilentlyContinue|Out-Null;"
+        "foreach($processName in @('ITInventAgent','ITInventScanAgent','ITInventOutlookProbe')){"
+        "Get-Process -Name $processName -ErrorAction SilentlyContinue|"
+        "Stop-Process -Force -ErrorAction SilentlyContinue};"
+        "New-Item -ItemType Directory -Force -Path $backup|Out-Null;"
+        "foreach($name in @('Agent','ScanAgent')){"
+        "$source=Join-Path $root $name;$destination=Join-Path $backup $name;"
+        "if(Test-Path -LiteralPath $source){"
+        "if(Test-Path -LiteralPath $destination){Remove-Item -LiteralPath $destination -Recurse -Force};"
+        "Copy-Item -LiteralPath $source -Destination $destination -Recurse -Force}}"
+    )
+    return (
+        '"[SystemFolder]WindowsPowerShell\\v1.0\\powershell.exe" -NoProfile -NonInteractive '
+        f'-ExecutionPolicy Bypass -WindowStyle Hidden -Command "{script}"'
+    )
+
+
 msi_data = {
     "CustomAction": [
         ("A_SET_TARGETDIR_FROM_INSTALLDIR", 256 + 51, "TARGETDIR", "[INSTALLDIR]"),
-        ("A_RUN_AGENT_MSI_INSTALL", 18 + 3072, MSI_HELPER_EXECUTABLE_NAME, _build_install_custom_action_target()),
+        ("A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE", 34, "TARGETDIR", _build_upgrade_backup_custom_action_target()),
+        (
+            "A_RUN_AGENT_MSI_INSTALL",
+            18 + 3072 + 8192,
+            MSI_HELPER_EXECUTABLE_NAME,
+            _build_install_custom_action_target(),
+        ),
         ("A_RUN_AGENT_MSI_UNINSTALL", 18 + 3072, MSI_HELPER_EXECUTABLE_NAME, _build_uninstall_custom_action_target()),
     ],
     "InstallExecuteSequence": [
         ("A_SET_TARGETDIR_FROM_INSTALLDIR", 'NOT INSTALLDIR=""', 403),
+        ("A_BACKUP_AGENT_RUNTIME_FOR_UPGRADE", "REMOVEOLDVERSION", 1401),
         ("A_RUN_AGENT_MSI_UNINSTALL", 'REMOVE="ALL"', 3499),
         ("A_RUN_AGENT_MSI_INSTALL", 'NOT REMOVE="ALL"', 6501),
     ],
@@ -155,6 +244,12 @@ msi_data = {
         ("A_SET_TARGETDIR_FROM_INSTALLDIR", 'NOT INSTALLDIR=""', 403),
     ],
 }
+
+if any(arg.lower() == "bdist_msi" for arg in sys.argv[1:]):
+    msi_data["Property"] = [
+        *_load_embedded_msi_properties(),
+        ("MsiHiddenProperties", "ITINV_AGENT_API_KEY;SCAN_AGENT_API_KEY;A_RUN_AGENT_MSI_INSTALL"),
+    ]
 
 bdist_msi_options = {
     "add_to_path": False,
@@ -173,5 +268,6 @@ setup(
         "build_exe": build_exe_options,
         "bdist_msi": bdist_msi_options,
     },
+    cmdclass={"bdist_msi": AgentBdistMsi},
     executables=executables,
 )

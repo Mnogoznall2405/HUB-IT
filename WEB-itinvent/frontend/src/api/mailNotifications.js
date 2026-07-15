@@ -1,6 +1,6 @@
 import apiClient, { getCachedGet } from './client';
 
-const MAIL_UNREAD_COUNT_STALE_TIME_MS = 60_000;
+const MAIL_UNREAD_COUNT_STALE_TIME_MS = 90_000;
 
 const normalizeMailboxId = (value) => {
   const normalized = String(value || '').trim();

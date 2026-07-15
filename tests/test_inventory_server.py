@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 import sys
 
+import pytest
 from fastapi.testclient import TestClient
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -20,6 +21,17 @@ from inventory_server import app as app_module
 from inventory_server.config import InventoryServerConfig
 from inventory_server.database import InventoryQueueStore
 from inventory_server.worker import InventoryWorker
+
+
+def test_inventory_server_requires_explicit_api_key_in_production(monkeypatch):
+    monkeypatch.setenv("APP_ENV", "production")
+    monkeypatch.setenv("INVENTORY_SERVER_API_KEYS", "")
+    monkeypatch.setenv("ITINV_AGENT_API_KEYS", "")
+    monkeypatch.setenv("INVENTORY_SERVER_API_KEY", "")
+    monkeypatch.setenv("ITINV_AGENT_API_KEY", "")
+
+    with pytest.raises(RuntimeError, match="INVENTORY_SERVER_API_KEYS"):
+        InventoryServerConfig.from_env()
 
 
 def _sqlite_url(temp_dir: str) -> str:

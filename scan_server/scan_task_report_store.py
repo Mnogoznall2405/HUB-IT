@@ -85,6 +85,7 @@ class ScanTaskIncidentReportStore:
                     SUM(CASE WHEN status IN ('queued', 'processing') THEN 1 ELSE 0 END) AS jobs_pending,
                     SUM(CASE WHEN status='done_clean' THEN 1 ELSE 0 END) AS jobs_done_clean,
                     SUM(CASE WHEN status='done_with_incident' THEN 1 ELSE 0 END) AS jobs_done_with_incident,
+                    SUM(CASE WHEN status='analysis_incomplete' THEN 1 ELSE 0 END) AS jobs_incomplete,
                     SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS jobs_failed
                 FROM scan_jobs
                 WHERE scan_task_id=?
@@ -107,13 +108,27 @@ class ScanTaskIncidentReportStore:
             ).fetchone()
             observation_rows = conn.execute(
                 """
-                SELECT linked_incident_id, observation_type, created_at
+                SELECT
+                    id,
+                    scan_task_id,
+                    agent_id,
+                    hostname,
+                    file_path,
+                    file_hash,
+                    event_id,
+                    observation_type,
+                    linked_job_id,
+                    linked_incident_id,
+                    source_kind,
+                    severity,
+                    created_at
                 FROM scan_task_file_observations
-                WHERE scan_task_id=? AND linked_incident_id <> ''
+                WHERE scan_task_id=?
                 ORDER BY created_at DESC
                 """,
                 (normalized_task_id,),
             ).fetchall()
+            observations = [dict(row) for row in observation_rows]
             observation_map: Dict[str, Dict[str, Any]] = {}
             for row in observation_rows:
                 incident_id = str(row["linked_incident_id"] or "").strip()
@@ -187,16 +202,47 @@ class ScanTaskIncidentReportStore:
             status_counts[status_value] = int(status_counts.get(status_value, 0) + 1)
             incidents.append(item)
 
+        scan_started_at = int(task.get("created_at") or 0)
+        scan_finished_at = int(task.get("completed_at") or task.get("updated_at") or 0)
         result = task.get("result") if isinstance(task.get("result"), dict) else {}
+        db_jobs_total = int((job_counts_row or {})["jobs_total"] or 0)
+        db_jobs_pending = int((job_counts_row or {})["jobs_pending"] or 0)
+        db_jobs_clean = int((job_counts_row or {})["jobs_done_clean"] or 0)
+        db_jobs_with_incident = int((job_counts_row or {})["jobs_done_with_incident"] or 0)
+        db_jobs_incomplete = int((job_counts_row or {})["jobs_incomplete"] or 0)
+        db_jobs_failed = int((job_counts_row or {})["jobs_failed"] or 0)
+        task_is_final = str(task.get("status") or "").strip().lower() in {"completed", "failed", "expired"}
+        if task_is_final:
+            jobs_pending = db_jobs_pending
+            jobs_clean = max(db_jobs_clean, int(result.get("jobs_done_clean") or 0))
+            jobs_with_incident = max(
+                db_jobs_with_incident,
+                int(result.get("jobs_done_with_incident") or 0),
+            )
+            jobs_failed = max(db_jobs_failed, int(result.get("jobs_failed") or 0))
+            jobs_incomplete = max(db_jobs_incomplete, int(result.get("jobs_incomplete") or 0))
+            jobs_total = max(
+                db_jobs_total,
+                int(result.get("jobs_total") or 0),
+                jobs_pending + jobs_clean + jobs_with_incident + jobs_incomplete + jobs_failed,
+            )
+        else:
+            jobs_total = db_jobs_total
+            jobs_pending = db_jobs_pending
+            jobs_clean = db_jobs_clean
+            jobs_with_incident = db_jobs_with_incident
+            jobs_failed = db_jobs_failed
+            jobs_incomplete = db_jobs_incomplete
         summary = {
             "hostname": task.get("hostname") or "",
-            "jobs_total": int((job_counts_row or {})["jobs_total"] or result.get("jobs_total") or 0),
-            "jobs_pending": int((job_counts_row or {})["jobs_pending"] or result.get("jobs_pending") or 0),
-            "jobs_done_clean": int((job_counts_row or {})["jobs_done_clean"] or result.get("jobs_done_clean") or 0),
-            "jobs_done_with_incident": int(
-                (job_counts_row or {})["jobs_done_with_incident"] or result.get("jobs_done_with_incident") or 0
-            ),
-            "jobs_failed": int((job_counts_row or {})["jobs_failed"] or result.get("jobs_failed") or 0),
+            "scan_started_at": scan_started_at,
+            "scan_finished_at": scan_finished_at,
+            "jobs_total": jobs_total,
+            "jobs_pending": jobs_pending,
+            "jobs_done_clean": jobs_clean,
+            "jobs_done_with_incident": jobs_with_incident,
+            "jobs_failed": jobs_failed,
+            "jobs_incomplete": jobs_incomplete,
             "found_new": int((observation_counts_row or {})["found_new"] or 0),
             "found_duplicate": int((observation_counts_row or {})["found_duplicate"] or 0),
             "deleted": int((observation_counts_row or {})["deleted_count"] or 0),
@@ -207,4 +253,9 @@ class ScanTaskIncidentReportStore:
             "severity_counts": severity_counts,
             "status_counts": status_counts,
         }
-        return {"task": task, "summary": summary, "incidents": incidents}
+        return {
+            "task": task,
+            "summary": summary,
+            "incidents": incidents,
+            "observations": observations,
+        }

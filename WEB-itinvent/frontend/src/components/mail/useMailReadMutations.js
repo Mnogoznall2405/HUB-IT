@@ -34,30 +34,33 @@ export default function useMailReadMutations({
     selectedMessageRef,
     selectedConversationRef,
     localReadStateOverridesRef,
+    folderSummaryRef,
   } = refs;
 
-  const emitMailUnreadRefresh = useCallback(() => {
-    window.dispatchEvent(new CustomEvent('mail-read'));
+  const emitMailUnreadChange = useCallback((detail = {}) => {
+    window.dispatchEvent(new CustomEvent('mail-read', { detail }));
   }, []);
 
   const updateCurrentFolderUnread = useCallback((delta) => {
-    if (!delta) return;
-    setFolderSummary((prev) => {
-      const current = prev?.[folder];
-      if (!current) return prev;
-      return {
-        ...(prev || {}),
-        [folder]: {
-          ...(current || {}),
-          unread: Math.max(0, Number(current?.unread || 0) + Number(delta || 0)),
-        },
-      };
-    });
-  }, [folder, setFolderSummary]);
+    if (!delta) return true;
+    const currentSummary = folderSummaryRef?.current;
+    const current = currentSummary?.[folder];
+    if (!current) return false;
+    const nextSummary = {
+      ...(currentSummary || {}),
+      [folder]: {
+        ...(current || {}),
+        unread: Math.max(0, Number(current?.unread || 0) + Number(delta || 0)),
+      },
+    };
+    folderSummaryRef.current = nextSummary;
+    setFolderSummary(nextSummary);
+    return true;
+  }, [folder, folderSummaryRef, setFolderSummary]);
 
   const applyMessageReadStateLocally = useCallback(({ messageId, isRead, unreadDelta = 0 }) => {
     const normalizedMessageId = String(messageId || '');
-    if (!normalizedMessageId) return;
+    if (!normalizedMessageId) return false;
     const applyToList = (source) => ({
       ...(source || {}),
       items: (Array.isArray(source?.items) ? source.items : []).map((item) => (
@@ -85,7 +88,7 @@ export default function useMailReadMutations({
         is_read: Boolean(isRead),
       });
     }
-    updateCurrentFolderUnread(unreadDelta);
+    return updateCurrentFolderUnread(unreadDelta);
   }, [
     getRecentMessageDetailSnapshot,
     listDataRef,
@@ -104,7 +107,7 @@ export default function useMailReadMutations({
     unreadDelta = 0,
   }) => {
     const normalizedConversationId = String(conversationId || '');
-    if (!normalizedConversationId) return;
+    if (!normalizedConversationId) return false;
     const finalUnreadCount = getConversationReadUnreadCount({
       isRead,
       unreadCount,
@@ -156,7 +159,7 @@ export default function useMailReadMutations({
         is_read: Boolean(isRead),
       };
     }
-    updateCurrentFolderUnread(unreadDelta);
+    return updateCurrentFolderUnread(unreadDelta);
   }, [
     listDataRef,
     selectedConversationRef,
@@ -200,21 +203,28 @@ export default function useMailReadMutations({
       now: Date.now(),
       ttlMs: readStateOverrideTtlMs,
     });
-    if (normalizedMode === 'conversations') {
-      applyConversationReadStateLocally({
+    const folderUnreadApplied = normalizedMode === 'conversations'
+      ? applyConversationReadStateLocally({
         conversationId: normalizedTargetId,
         isRead: nextIsRead,
         unreadCount: normalizedUnreadCount,
         messageCount: normalizedMessageCount,
         unreadDelta,
-      });
-    } else {
-      applyMessageReadStateLocally({
+      })
+      : applyMessageReadStateLocally({
         messageId: normalizedTargetId,
         isRead: nextIsRead,
         unreadDelta,
       });
-    }
+    emitMailUnreadChange({
+      phase: 'optimistic',
+      mode: normalizedMode,
+      targetId: normalizedTargetId,
+      mailboxId: activeMailboxId || '',
+      folder,
+      unreadDelta,
+      nextIsRead: Boolean(nextIsRead),
+    });
 
     let mutationSucceeded = false;
     try {
@@ -236,8 +246,19 @@ export default function useMailReadMutations({
         else await mailAPI.markAsUnread(normalizedTargetId);
       }
 
+      if (!folderUnreadApplied) {
+        updateCurrentFolderUnread(unreadDelta);
+      }
       invalidateMailClientCache(['bootstrap', 'list', 'notification-feed']);
-      emitMailUnreadRefresh();
+      emitMailUnreadChange({
+        phase: 'confirmed',
+        mode: normalizedMode,
+        targetId: normalizedTargetId,
+        mailboxId: activeMailboxId || '',
+        folder,
+        unreadDelta: 0,
+        nextIsRead: Boolean(nextIsRead),
+      });
       const refreshTasks = [];
       if (unreadOnly) {
         refreshTasks.unshift(
@@ -254,6 +275,15 @@ export default function useMailReadMutations({
       mutationSucceeded = true;
       return true;
     } catch (requestError) {
+      emitMailUnreadChange({
+        phase: 'rollback',
+        mode: normalizedMode,
+        targetId: normalizedTargetId,
+        mailboxId: activeMailboxId || '',
+        folder,
+        unreadDelta: -unreadDelta,
+        nextIsRead: !Boolean(nextIsRead),
+      });
       localReadStateOverridesRef.current = clearLocalReadStateOverride({
         mode: normalizedMode,
         targetId: normalizedTargetId,
@@ -276,7 +306,7 @@ export default function useMailReadMutations({
     advancedFiltersApplied,
     applyConversationReadStateLocally,
     applyMessageReadStateLocally,
-    emitMailUnreadRefresh,
+    emitMailUnreadChange,
     folder,
     getMailErrorDetail,
     handleMailCredentialsRequired,
@@ -287,6 +317,7 @@ export default function useMailReadMutations({
     refreshFolderSummary,
     refreshList,
     settleAutoReadGuard,
+    updateCurrentFolderUnread,
     unreadOnly,
     withActiveMailboxPayload,
     setError,

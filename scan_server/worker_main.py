@@ -19,6 +19,32 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 logger = logging.getLogger("scan-worker")
+BELOW_NORMAL_PRIORITY_CLASS = 0x00004000
+
+
+def _set_below_normal_priority(*, platform_name: str = os.name, kernel32: object = None) -> bool:
+    if platform_name != "nt":
+        return False
+    try:
+        if kernel32 is None:
+            import ctypes
+            from ctypes import wintypes
+
+            kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            kernel32.GetCurrentProcess.argtypes = []  # type: ignore[attr-defined]
+            kernel32.GetCurrentProcess.restype = wintypes.HANDLE  # type: ignore[attr-defined]
+            kernel32.SetPriorityClass.argtypes = [wintypes.HANDLE, wintypes.DWORD]  # type: ignore[attr-defined]
+            kernel32.SetPriorityClass.restype = wintypes.BOOL  # type: ignore[attr-defined]
+        process_handle = kernel32.GetCurrentProcess()  # type: ignore[attr-defined]
+        return bool(
+            kernel32.SetPriorityClass(  # type: ignore[attr-defined]
+                process_handle,
+                BELOW_NORMAL_PRIORITY_CLASS,
+            )
+        )
+    except Exception as exc:
+        logger.warning("Failed to set scan worker priority to BelowNormal: %s", exc)
+        return False
 
 
 def _acquire_singleton_lock(lock_path: Path) -> Optional[BinaryIO]:
@@ -88,6 +114,9 @@ def main() -> None:
 
     signal.signal(signal.SIGTERM, _request_stop)
     signal.signal(signal.SIGINT, _request_stop)
+
+    if _set_below_normal_priority():
+        logger.info("Scan worker process priority set to BelowNormal")
 
     lock_wait_sec = max(
         0.0,

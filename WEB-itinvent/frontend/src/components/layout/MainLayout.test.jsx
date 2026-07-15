@@ -1177,6 +1177,56 @@ describe('MainLayout hub Windows notifications', () => {
     expect(screen.getByText('Нет непрочитанных уведомлений')).toBeTruthy();
   });
 
+  it('applies an optimistic mail unread delta without rereading a stale snapshot', async () => {
+    mockHasPermission.mockImplementation((permission) => permission === 'mail.access');
+    mockGetUnreadCount.mockResolvedValue({
+      unread_count: 1,
+      state: 'ok',
+      source: 'app_snapshot',
+      as_of: '2026-07-15T05:00:00+00:00',
+    });
+
+    render(
+      <MainLayout>
+        <div>Child content</div>
+      </MainLayout>,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const mailNavigation = screen.getByTestId('main-layout-sidebar-mail');
+    expect(mailNavigation.querySelector('.MuiBadge-badge')?.textContent).toBe('1');
+    const callsBeforeRead = mockGetUnreadCount.mock.calls.length;
+
+    await act(async () => {
+      window.dispatchEvent(new CustomEvent('mail-read', {
+        detail: {
+          phase: 'optimistic',
+          mode: 'messages',
+          targetId: 'mail-1',
+          unreadDelta: -1,
+          nextIsRead: true,
+        },
+      }));
+      window.dispatchEvent(new CustomEvent('mail-read', {
+        detail: {
+          phase: 'confirmed',
+          mode: 'messages',
+          targetId: 'mail-1',
+          unreadDelta: 0,
+          nextIsRead: true,
+        },
+      }));
+      await Promise.resolve();
+    });
+
+    expect(mailNavigation.querySelector('.MuiBadge-badge')).toBeNull();
+    expect(mockGetUnreadCount).toHaveBeenCalledTimes(callsBeforeRead);
+  });
+
   it('uses a single in-app mail toast when the app is visible', async () => {
     visibilityState = 'visible';
     mockHasPermission.mockImplementation((permission) => permission === 'mail.access');
@@ -1200,7 +1250,7 @@ describe('MainLayout hub Windows notifications', () => {
     mockGetUnreadCount.mockResolvedValue({ unread_count: 1 });
 
     await act(async () => {
-      vi.advanceTimersByTime(20_000);
+      await vi.advanceTimersByTimeAsync(100_000);
       await Promise.resolve();
       await Promise.resolve();
     });
@@ -1260,7 +1310,7 @@ describe('MainLayout hub Windows notifications', () => {
     mockGetUnreadCount.mockResolvedValue({ unread_count: 1 });
 
     await act(async () => {
-      vi.advanceTimersByTime(20_000);
+      await vi.advanceTimersByTimeAsync(100_000);
       await Promise.resolve();
       await Promise.resolve();
     });

@@ -21,6 +21,7 @@ import {
   TRANSFER_OPERATION_MOVE,
 } from './equipmentModel';
 import {
+  getRetryOnlyFailedInvNos,
   toTransferNumberOrNull,
   toTransferOwnerOption,
 } from './transferModel';
@@ -81,6 +82,14 @@ const TransferActionContent = memo(function TransferActionContent({
   const isActOnly = mode === TRANSFER_OPERATION_ACT_ONLY;
   const isLocationOnly = mode === TRANSFER_OPERATION_LOCATION_ONLY;
   const usesLocationFields = mode === TRANSFER_OPERATION_MOVE || isLocationOnly;
+  const retryInvNos = getRetryOnlyFailedInvNos(result);
+  const canRetryFailed = (
+    canDatabaseWrite &&
+    !transfer.jobPolling &&
+    !isTransferResultPending(result) &&
+    !transfer.retrySubmitting &&
+    retryInvNos.length > 0
+  );
   const createLabel = `Добавить сотрудника: ${transfer.employeeInputTrimmed || ''}`;
 
   return (
@@ -333,6 +342,16 @@ const TransferActionContent = memo(function TransferActionContent({
                   {failedItem.inv_no}: {failedItem.error}
                 </Typography>
               ))}
+              {canRetryFailed && (
+                <Button
+                  size="small"
+                  variant="outlined"
+                  sx={{ mt: 1 }}
+                  onClick={() => actions.onRetryFailed?.(retryInvNos)}
+                >
+                  Повторить только неуспешные ({retryInvNos.length})
+                </Button>
+              )}
             </Box>
           )}
 

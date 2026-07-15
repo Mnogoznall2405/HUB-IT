@@ -995,6 +995,8 @@ class ChatService:
         return _normalize_text(getattr(attachment, "message_id", None))
 
     def list_available_users(self, *, current_user_id: int, q: str = "", limit: int = 50) -> list[dict]:
+        from backend.services.ad_users_service import is_hub_service_account_login
+
         search = _normalize_text(q).lower()
         page_size = max(1, int(limit))
         users = []
@@ -1003,6 +1005,8 @@ class ChatService:
             if user_id <= 0 or user_id == int(current_user_id):
                 continue
             if not bool(item.get("is_active", True)):
+                continue
+            if is_hub_service_account_login(item.get("username")):
                 continue
             haystack = " ".join([
                 _normalize_text(item.get("username")),
@@ -1036,11 +1040,15 @@ class ChatService:
         name_norm = re.sub(r"\s+", " ", _normalize_text(full_name)).casefold()
 
         candidates: list[dict[str, Any]] = []
+        from backend.services.ad_users_service import is_hub_service_account_login
+
         for item in user_service.list_users():
             user_id = int(item.get("id", 0) or 0)
             if user_id <= 0 or user_id == int(current_user_id):
                 continue
             if not bool(item.get("is_active", True)):
+                continue
+            if is_hub_service_account_login(item.get("username")):
                 continue
             candidates.append(dict(item))
 

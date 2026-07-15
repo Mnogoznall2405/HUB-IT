@@ -82,6 +82,17 @@ describe('SETTINGS_PERMISSION_GROUPS', () => {
       expect.objectContaining({ value: 'tasks.create', label: 'Задачи: создание' }),
     ]));
   });
+
+  it('exposes the explicit HUB-side PART_NO reconcile permission', () => {
+    const flattened = SETTINGS_PERMISSION_GROUPS.flatMap((group) => group.permissions || []);
+
+    expect(flattened).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        value: 'warehouse_1c.reconcile.write',
+        label: 'Склад 1С: подтверждать PART_NO в HUB',
+      }),
+    ]));
+  });
 });
 
 describe('AiBotsAdminSection', () => {

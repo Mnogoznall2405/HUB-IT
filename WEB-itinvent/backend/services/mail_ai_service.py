@@ -1,20 +1,12 @@
 from __future__ import annotations
 
 import logging
-import os
 import re
-from pathlib import Path
 from typing import Any
 
-from dotenv import dotenv_values
-
-from backend.ai_chat.openrouter_client import OpenRouterClientError, openrouter_client
+from backend.ai_chat.openrouter_client import OpenRouterClientError, openrouter_client, resolve_model
 
 logger = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-ROOT_ENV_PATH = PROJECT_ROOT / ".env"
-ROOT_ENV = dotenv_values(str(ROOT_ENV_PATH)) if ROOT_ENV_PATH.exists() else {}
 
 MAX_BODY_CHARS = 6000
 MAX_SUBJECT_CHARS = 300
@@ -47,16 +39,6 @@ class MailAiServiceError(Exception):
     pass
 
 
-def _read_env(name: str, default: str = "") -> str:
-    value = os.getenv(name)
-    if value not in (None, ""):
-        return str(value).strip()
-    root_value = ROOT_ENV.get(name)
-    if root_value not in (None, ""):
-        return str(root_value).strip()
-    return default
-
-
 def _normalize_text(value: Any, default: str = "") -> str:
     if value is None:
         return default
@@ -73,13 +55,7 @@ def _strip_html(value: str) -> str:
 
 
 def _resolve_mail_model() -> str:
-    return (
-        _read_env("OPENROUTER_MODEL_MAIL")
-        or _read_env("OPENROUTER_MODEL_CHAT")
-        or _read_env("OPENROUTER_MODEL_MARKDOWN")
-        or _read_env("ACT_PARSE_MODEL")
-        or ""
-    )
+    return resolve_model("mail")
 
 
 def _build_message_prompt(message: dict[str, Any]) -> tuple[str, str]:
@@ -120,6 +96,7 @@ class MailAiService:
         request_kwargs: dict[str, Any] = {
             "system_prompt": system_prompt,
             "user_prompt": user_prompt,
+            "purpose": "mail",
             "temperature": temperature,
             "max_tokens": max_tokens,
             "response_schema": response_schema,

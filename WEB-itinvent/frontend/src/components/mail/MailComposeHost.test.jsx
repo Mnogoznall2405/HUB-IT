@@ -1,5 +1,5 @@
 import { Suspense } from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import MailComposeHost from './MailComposeHost';
 
@@ -43,6 +43,7 @@ vi.mock('./MailComposeDialog', () => ({
     draftSyncState,
     onCancelComposeUpload,
     onClose,
+    onComposeBodyChange,
     onSendCompose,
   }) => (open ? (
     <div
@@ -74,6 +75,9 @@ vi.mock('./MailComposeDialog', () => ({
       </button>
       <button type="button" data-testid="mail-compose-host-cancel-upload" onClick={() => onCancelComposeUpload?.()}>
         cancel-upload
+      </button>
+      <button type="button" data-testid="mail-compose-host-change-body" onClick={() => onComposeBodyChange?.('<p>Latest body</p>')}>
+        change-body
       </button>
     </div>
   ) : null),
@@ -121,6 +125,54 @@ afterEach(() => {
 });
 
 describe('MailComposeHost', () => {
+  it('coalesces autosave changes while one draft save is still running', async () => {
+    vi.useFakeTimers();
+    let resolveFirstSave;
+    const firstSave = new Promise((resolve) => {
+      resolveFirstSave = resolve;
+    });
+    mockSaveDraftMultipart
+      .mockImplementationOnce(() => firstSave)
+      .mockResolvedValue({ draft_id: 'draft-1', attachments: [] });
+
+    try {
+      renderHost();
+      await act(async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(mockSaveDraftMultipart).toHaveBeenCalledTimes(1);
+
+      fireEvent.click(screen.getByTestId('mail-compose-host-change-body'));
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(1500);
+      });
+      expect(mockSaveDraftMultipart).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        resolveFirstSave({ draft_id: 'draft-1', attachments: [] });
+        await Promise.resolve();
+        await Promise.resolve();
+      });
+
+      expect(mockSaveDraftMultipart).toHaveBeenCalledTimes(2);
+      expect(mockSaveDraftMultipart).toHaveBeenLastCalledWith(expect.objectContaining({
+        body: '<p>Latest body</p>',
+      }));
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(5000);
+      });
+      expect(mockSaveDraftMultipart).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('feeds initial compose state and mailbox defaults into the lazy compose dialog', async () => {
     renderHost();
 

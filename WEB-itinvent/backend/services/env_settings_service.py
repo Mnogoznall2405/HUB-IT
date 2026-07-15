@@ -58,10 +58,17 @@ _DIRECT_DESCRIPTIONS = {
     "TELEGRAM_BOT_TOKEN": ("Telegram bot", "Токен Telegram-бота для подключения к Bot API."),
     "ALLOWED_GROUP_ID": ("Telegram bot", "ID группы Telegram, из которой бот принимает команды."),
     "ALLOWED_USERS": ("Telegram bot", "Список user_id, которым разрешён доступ к Telegram-боту."),
-    "OPENROUTER_API_KEY": ("ИИ и интеграции", "Ключ доступа к OpenRouter API для ИИ-запросов."),
-    "OPENROUTER_BASE_URL": ("ИИ и интеграции", "Базовый URL OpenRouter API."),
-    "OCR_MODEL": ("ИИ и интеграции", "Модель OCR для распознавания текста и серийных номеров."),
-    "CARTRIDGE_ANALYSIS_MODEL": ("ИИ и интеграции", "Модель для анализа картриджей и расходников."),
+    "OPENROUTER_API_KEY": ("ИИ и интеграции", "Ключ OpenRouter. Нужен restart backend, ai-chat-worker и telegram bot."),
+    "OPENROUTER_BASE_URL": ("ИИ и интеграции", "Базовый URL OpenRouter API. Restart backend/worker/bot после изменения."),
+    "OPENROUTER_MODEL_MAIL": ("ИИ и интеграции", "Модель для mail AI (summarize / smart replies)."),
+    "OPENROUTER_MODEL_CHAT": ("ИИ и интеграции", "Модель по умолчанию для AI-чата."),
+    "OPENROUTER_MODEL_MARKDOWN": ("ИИ и интеграции", "Модель для преобразования текста в Markdown."),
+    "ACT_PARSE_MODEL": ("ИИ и интеграции", "Модель для парсинга загруженных PDF-актов."),
+    "OCR_MODEL": ("ИИ и интеграции", "Модель OCR / vision (серийники, fallback act parse)."),
+    "AI_OPENROUTER_MAX_RETRIES": ("ИИ и интеграции", "Число retry при transient-ошибках OpenRouter (default 3)."),
+    "AI_OPENROUTER_RETRY_BASE_DELAY": ("ИИ и интеграции", "Базовая задержка retry OpenRouter в секундах (default 0.8)."),
+    "AI_OPENROUTER_RETRY_MAX_DELAY": ("ИИ и интеграции", "Максимальная задержка retry OpenRouter в секундах (default 8)."),
+    "CARTRIDGE_ANALYSIS_MODEL": ("ИИ и интеграции", "Не используется кодом (зарезервировано)."),
     "SQL_SERVER_HOST": ("База данных", "Основной SQL Server для backend."),
     "SQL_SERVER_DATABASE": ("База данных", "Основная база данных SQL Server."),
     "SQL_SERVER_USERNAME": ("База данных", "Логин подключения к SQL Server."),
@@ -301,8 +308,11 @@ def _build_targets(key: str) -> tuple[list[str], bool]:
         return [TARGET_BACKEND, TARGET_INVENTORY_BACKEND], False
     if upper_key.startswith("SCAN_") or upper_key.startswith("MFU_"):
         return [TARGET_SCAN_BACKEND], False
-    if upper_key.startswith("TELEGRAM_") or upper_key.startswith("BOT_") or upper_key.startswith("OPENROUTER_"):
+    if upper_key.startswith("TELEGRAM_") or upper_key.startswith("BOT_"):
         return [TARGET_TELEGRAM_BOT], False
+    if upper_key.startswith("OPENROUTER_") or upper_key.startswith("AI_OPENROUTER_"):
+        # Used by backend (mail/markdown/act/ai_chat), ai-chat-worker, and telegram bot OCR.
+        return [TARGET_BACKEND, TARGET_TELEGRAM_BOT], False
     if upper_key.startswith("ALLOWED_GROUP") or upper_key.startswith("ALLOWED_USERS"):
         return [TARGET_TELEGRAM_BOT], False
     if upper_key.startswith("SMTP_") or upper_key.startswith("EMAIL_") or upper_key.startswith("TRANSFER_") or upper_key == "MAX_TRANSFER_PHOTOS":

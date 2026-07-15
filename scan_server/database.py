@@ -13,8 +13,11 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional
 
+from agent_version import AGENT_VERSION
+
+from .pattern_filters import expand_incident_pattern_filter
 from .pdf_spool import PdfSpoolStore
 from .scan_agent_read_store import ScanAgentReadStore
 from .scan_host_read_store import ScanHostReadStore
@@ -30,10 +33,10 @@ if web_root.exists() and str(web_root) not in sys.path:
 ACTIVE_TASK_STATUSES = ("queued", "delivered", "acknowledged")
 FINAL_TASK_STATUSES = ("completed", "failed", "expired")
 PENDING_JOB_STATUSES = ("queued", "processing")
-FINAL_JOB_STATUSES = ("done_clean", "done_with_incident", "failed")
+FINAL_JOB_STATUSES = ("done_clean", "done_with_incident", "analysis_incomplete", "failed")
 _SQLITE_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _SCAN_RUNTIME_COLUMNS = {
-    "scan_jobs": {"event_id", "scan_task_id", "attempt_count"},
+    "scan_jobs": {"event_id", "scan_task_id", "attempt_count", "metrics_json"},
     "scan_incidents": {"resolved_at", "resolved_reason", "resolved_by_task_id"},
 }
 
@@ -56,6 +59,14 @@ def _require_scan_runtime_column(table_name: Any, column_name: Any) -> tuple[str
 
 def _now_ts() -> int:
     return int(time.time())
+
+
+def _percentile(values: List[float], fraction: float) -> Optional[float]:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    index = min(len(ordered) - 1, max(0, round((len(ordered) - 1) * float(fraction))))
+    return round(ordered[index], 1)
 
 
 def _env_int(name: str, default: int) -> int:
@@ -423,6 +434,28 @@ class ScanStore:
                 CREATE INDEX IF NOT EXISTS idx_scan_tasks_dedupe
                     ON scan_tasks(agent_id, dedupe_key);
 
+                CREATE TABLE IF NOT EXISTS scan_task_system_metrics (
+                    scan_task_id TEXT NOT NULL,
+                    captured_at INTEGER NOT NULL,
+                    cpu_percent REAL NOT NULL DEFAULT 0,
+                    memory_percent REAL NOT NULL DEFAULT 0,
+                    memory_used_bytes INTEGER NOT NULL DEFAULT 0,
+                    memory_available_bytes INTEGER NOT NULL DEFAULT 0,
+                    disk_read_bytes INTEGER NOT NULL DEFAULT 0,
+                    disk_write_bytes INTEGER NOT NULL DEFAULT 0,
+                    disk_read_bps REAL NOT NULL DEFAULT 0,
+                    disk_write_bps REAL NOT NULL DEFAULT 0,
+                    network_sent_bytes INTEGER NOT NULL DEFAULT 0,
+                    network_received_bytes INTEGER NOT NULL DEFAULT 0,
+                    network_sent_bps REAL NOT NULL DEFAULT 0,
+                    network_received_bps REAL NOT NULL DEFAULT 0,
+                    process_rss_bytes INTEGER NOT NULL DEFAULT 0,
+                    PRIMARY KEY (scan_task_id, captured_at)
+                );
+
+                CREATE INDEX IF NOT EXISTS idx_scan_task_system_metrics_captured
+                    ON scan_task_system_metrics(captured_at);
+
                 CREATE TABLE IF NOT EXISTS scan_jobs (
                     id TEXT PRIMARY KEY,
                     agent_id TEXT NOT NULL DEFAULT '',
@@ -444,7 +477,8 @@ class ScanStore:
                     error_text TEXT NULL,
                     summary TEXT NULL,
                     attempt_count INTEGER NOT NULL DEFAULT 0,
-                    payload_json TEXT NOT NULL DEFAULT '{}'
+                    payload_json TEXT NOT NULL DEFAULT '{}',
+                    metrics_json TEXT NOT NULL DEFAULT '{}'
                 );
 
                 CREATE INDEX IF NOT EXISTS idx_scan_jobs_status_created
@@ -455,6 +489,12 @@ class ScanStore:
 
                 CREATE INDEX IF NOT EXISTS idx_scan_jobs_agent_created
                     ON scan_jobs(agent_id, created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_scan_jobs_created_at
+                    ON scan_jobs(created_at);
+
+                CREATE INDEX IF NOT EXISTS idx_scan_jobs_finished_at
+                    ON scan_jobs(finished_at);
 
                 CREATE INDEX IF NOT EXISTS idx_scan_jobs_status_source_kind
                     ON scan_jobs(status, source_kind);
@@ -513,6 +553,9 @@ class ScanStore:
                 CREATE INDEX IF NOT EXISTS idx_scan_incidents_status_hostname_created
                     ON scan_incidents(status, hostname, created_at DESC);
 
+                CREATE INDEX IF NOT EXISTS idx_scan_incidents_job
+                    ON scan_incidents(job_id);
+
                 CREATE TABLE IF NOT EXISTS scan_task_file_observations (
                     id TEXT PRIMARY KEY,
                     scan_task_id TEXT NOT NULL DEFAULT '',
@@ -537,6 +580,14 @@ class ScanStore:
 
                 CREATE INDEX IF NOT EXISTS idx_scan_observations_task_hash
                     ON scan_task_file_observations(scan_task_id, file_hash);
+
+                CREATE INDEX IF NOT EXISTS idx_scan_observations_linked_job
+                    ON scan_task_file_observations(linked_job_id)
+                    WHERE linked_job_id <> '';
+
+                CREATE INDEX IF NOT EXISTS idx_scan_observations_linked_incident
+                    ON scan_task_file_observations(linked_incident_id)
+                    WHERE linked_incident_id <> '';
 
                 CREATE TABLE IF NOT EXISTS scan_artifacts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -579,6 +630,12 @@ class ScanStore:
                 table_name="scan_jobs",
                 column_name="attempt_count",
                 ddl="ALTER TABLE scan_jobs ADD COLUMN attempt_count INTEGER NOT NULL DEFAULT 0",
+            )
+            self._ensure_column(
+                conn,
+                table_name="scan_jobs",
+                column_name="metrics_json",
+                ddl="ALTER TABLE scan_jobs ADD COLUMN metrics_json TEXT NOT NULL DEFAULT '{}'",
             )
             self._ensure_column(
                 conn,
@@ -645,6 +702,7 @@ class ScanStore:
             "pdf_done_clean": 0,
             "pdf_done_with_incident": 0,
             "pdf_failed": 0,
+            "pdf_analysis_incomplete": 0,
             "pdf_total": 0,
             "pdf_pending": 0,
             "pdf_completed": 0,
@@ -654,7 +712,7 @@ class ScanStore:
                 """
                 SELECT status, COUNT(*) AS c
                 FROM scan_jobs
-                WHERE source_kind IN ('pdf', 'pdf_slice')
+                WHERE source_kind IN ('pdf', 'pdf_slice', 'image', 'office')
                 GROUP BY status
                 """
             ).fetchall()
@@ -759,7 +817,7 @@ class ScanStore:
                 pending_pdf_rows = [
                     row for row in rows
                     if str(row["status"] or "").strip().lower() in PENDING_JOB_STATUSES
-                    and str(row["source_kind"] or "").strip().lower() == "pdf_slice"
+                    and str(row["source_kind"] or "").strip().lower() in {"pdf_slice", "image", "office"}
                 ]
                 final_ids = {
                     str(row["id"] or "").strip()
@@ -800,7 +858,7 @@ class ScanStore:
                     conn.execute(
                         """
                         UPDATE scan_jobs
-                        SET status='failed', finished_at=?, error_text=?
+                        SET status='analysis_incomplete', finished_at=?, error_text=?
                         WHERE id=?
                         """,
                         (now_ts, "Missing transient PDF payload", job_id),
@@ -833,8 +891,6 @@ class ScanStore:
             return ""
         if str(row["command"] or "").strip().lower() != "scan_now":
             return ""
-        if str(row["status"] or "").strip().lower() in FINAL_TASK_STATUSES:
-            return ""
         return tid
 
     def _scan_task_job_counts(self, conn: sqlite3.Connection, task_id: str) -> Dict[str, int]:
@@ -845,6 +901,7 @@ class ScanStore:
                 SUM(CASE WHEN status IN ('queued', 'processing') THEN 1 ELSE 0 END) AS jobs_pending,
                 SUM(CASE WHEN status = 'done_clean' THEN 1 ELSE 0 END) AS jobs_done_clean,
                 SUM(CASE WHEN status = 'done_with_incident' THEN 1 ELSE 0 END) AS jobs_done_with_incident,
+                SUM(CASE WHEN status = 'analysis_incomplete' THEN 1 ELSE 0 END) AS jobs_incomplete,
                 SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) AS jobs_failed
             FROM scan_jobs
             WHERE scan_task_id = ?
@@ -857,6 +914,7 @@ class ScanStore:
                 "jobs_pending": 0,
                 "jobs_done_clean": 0,
                 "jobs_done_with_incident": 0,
+                "jobs_incomplete": 0,
                 "jobs_failed": 0,
             }
         return {
@@ -864,6 +922,7 @@ class ScanStore:
             "jobs_pending": int(row["jobs_pending"] or 0),
             "jobs_done_clean": int(row["jobs_done_clean"] or 0),
             "jobs_done_with_incident": int(row["jobs_done_with_incident"] or 0),
+            "jobs_incomplete": int(row["jobs_incomplete"] or 0),
             "jobs_failed": int(row["jobs_failed"] or 0),
         }
 
@@ -893,8 +952,20 @@ class ScanStore:
         if not isinstance(current_result, dict):
             current_result = {}
         counts = self._scan_task_job_counts(conn, tid)
+        if status_value in FINAL_TASK_STATUSES:
+            phase = str(current_result.get("phase") or status_value).strip().lower() or status_value
+            return {"status": status_value, "phase": phase, **counts}
+
         merged_result = dict(current_result)
         merged_result.update(counts)
+        merged_result["clean"] = int(current_result.get("local_clean", current_result.get("clean", 0)) or 0) + int(
+            counts.get("jobs_done_clean") or 0
+        )
+        merged_result["incidents"] = int(counts.get("jobs_done_with_incident") or 0)
+        merged_result["incomplete"] = max(
+            int(current_result.get("local_incomplete", current_result.get("incomplete", 0)) or 0),
+            int(counts.get("jobs_incomplete") or 0) + int(counts.get("jobs_failed") or 0),
+        )
 
         phase = str(merged_result.get("phase") or "").strip().lower()
         if not phase:
@@ -906,38 +977,25 @@ class ScanStore:
                 phase = "server_processing"
             else:
                 phase = "local_scan"
-        elif status_value == "acknowledged" and counts["jobs_total"] > 0 and phase == "local_scan":
-            phase = "server_processing"
-
-        if status_value in FINAL_TASK_STATUSES:
-            if merged_result != current_result:
-                merged_result["phase"] = phase
-                conn.execute(
-                    """
-                    UPDATE scan_tasks
-                    SET updated_at=?, result_json=?
-                    WHERE id=?
-                    """,
-                    (
-                        int(now_ts or _now_ts()),
-                        _json_dumps(merged_result),
-                        tid,
-                    ),
-                )
-            return {"status": status_value, "phase": phase, **counts}
 
         next_status = status_value
         next_error = str(row["error_text"] or "").strip() or None
         next_completed_at = None
         stale_before = update_now = int(now_ts or _now_ts())
         local_scan_stale_before = stale_before - self.task_ack_timeout_sec
-        if status_value == "acknowledged" and phase == "server_processing":
-            if counts["jobs_failed"] > 0:
+        ingest_complete = merged_result.get("ingest_complete") is True
+        legacy_ingest_complete = "ingest_complete" not in merged_result and phase in {"server_processing", "completed"}
+        if (
+            status_value == "acknowledged"
+            and phase in {"server_processing", "completed"}
+            and (ingest_complete or legacy_ingest_complete)
+        ):
+            if counts["jobs_failed"] > 0 or counts["jobs_incomplete"] > 0:
                 next_status = "failed"
                 phase = "failed"
-                next_error = "Linked OCR jobs failed"
+                next_error = "Linked scan jobs are incomplete or failed"
                 next_completed_at = int(now_ts or _now_ts())
-            elif counts["jobs_total"] > 0 and counts["jobs_pending"] == 0:
+            elif counts["jobs_pending"] == 0 and (counts["jobs_total"] > 0 or phase == "completed"):
                 next_status = "completed"
                 phase = "completed"
                 next_error = None
@@ -1162,10 +1220,13 @@ class ScanStore:
                     ).fetchone()
                     if active_job:
                         return {
-                            "id": str(active_job["id"] or ""),
                             "agent_id": agent_id,
                             "command": "scan_now",
-                            "status": "acknowledged" if str(active_job["status"] or "").lower() == "processing" else "queued",
+                            "status": "blocked",
+                            "blocked": True,
+                            "blocking_job_id": str(active_job["id"] or ""),
+                            "blocking_job_status": str(active_job["status"] or "").strip().lower(),
+                            "reason": "agent_has_active_scan_job",
                             "created_at": int(active_job["created_at"] or now_ts),
                             "ttl_at": ttl_at,
                         }
@@ -1321,6 +1382,10 @@ class ScanStore:
                 if current_status in FINAL_TASK_STATUSES:
                     return {"task_id": tid, "status": current_status}
 
+                is_scan_now = str(row["command"] or "").strip().lower() == "scan_now"
+                stored_status = "acknowledged" if is_scan_now and normalized == "completed" else normalized
+                stored_completed_at = None if stored_status == "acknowledged" else update_fields["completed_at"]
+
                 conn.execute(
                     """
                     UPDATE scan_tasks
@@ -1333,12 +1398,12 @@ class ScanStore:
                     WHERE id=?
                     """,
                     (
-                        update_fields["status"],
+                        stored_status,
                         update_fields["updated_at"],
                         update_fields["result_json"],
                         update_fields["error_text"],
                         update_fields["acked_at"],
-                        update_fields["completed_at"],
+                        stored_completed_at,
                         tid,
                     ),
                 )
@@ -1360,7 +1425,7 @@ class ScanStore:
                             "UPDATE scan_tasks SET result_json=? WHERE id=?",
                             (_json_dumps(result_payload), tid),
                         )
-                if normalized == "acknowledged" and str(row["command"] or "").strip().lower() == "scan_now":
+                if stored_status == "acknowledged" and is_scan_now:
                     reconciled = self._reconcile_scan_task_progress_locked(conn, tid, now_ts=now_ts)
                     if isinstance(reconciled, dict):
                         returned_status = str(reconciled.get("status") or returned_status).strip().lower() or returned_status
@@ -1448,6 +1513,147 @@ class ScanStore:
             "items": [self._serialize_task_row(row, now_ts=now_ts) for row in rows],
         }
 
+    def active_scan_task_ids(self) -> List[str]:
+        now_ts = _now_ts()
+        with self._lock, self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT id
+                FROM scan_tasks
+                WHERE command='scan_now'
+                  AND status='acknowledged'
+                  AND ttl_at > ?
+                ORDER BY created_at ASC
+                """,
+                (now_ts,),
+            ).fetchall()
+        return [str(row["id"] or "").strip() for row in rows if str(row["id"] or "").strip()]
+
+    def record_system_metric_samples(self, *, task_ids: Iterable[str], sample: Dict[str, Any]) -> int:
+        normalized_ids = sorted({str(value or "").strip() for value in task_ids if str(value or "").strip()})
+        if not normalized_ids or not isinstance(sample, dict):
+            return 0
+        captured_at = int(sample.get("captured_at") or _now_ts())
+        values = (
+            captured_at,
+            float(sample.get("cpu_percent") or 0.0),
+            float(sample.get("memory_percent") or 0.0),
+            int(sample.get("memory_used_bytes") or 0),
+            int(sample.get("memory_available_bytes") or 0),
+            int(sample.get("disk_read_bytes") or 0),
+            int(sample.get("disk_write_bytes") or 0),
+            float(sample.get("disk_read_bps") or 0.0),
+            float(sample.get("disk_write_bps") or 0.0),
+            int(sample.get("network_sent_bytes") or 0),
+            int(sample.get("network_received_bytes") or 0),
+            float(sample.get("network_sent_bps") or 0.0),
+            float(sample.get("network_received_bps") or 0.0),
+            int(sample.get("process_rss_bytes") or 0),
+        )
+
+        def _write() -> int:
+            with self._lock, self._connect() as conn:
+                conn.executemany(
+                    """
+                    INSERT OR REPLACE INTO scan_task_system_metrics(
+                        scan_task_id, captured_at, cpu_percent, memory_percent,
+                        memory_used_bytes, memory_available_bytes,
+                        disk_read_bytes, disk_write_bytes, disk_read_bps, disk_write_bps,
+                        network_sent_bytes, network_received_bytes,
+                        network_sent_bps, network_received_bps, process_rss_bytes
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [(task_id, *values) for task_id in normalized_ids],
+                )
+                conn.commit()
+            return len(normalized_ids)
+
+        return int(self._run_write_transaction("record_system_metric_samples", _write) or 0)
+
+    def list_task_system_metrics(
+        self,
+        *,
+        task_id: str,
+        limit: int = 5000,
+        offset: int = 0,
+    ) -> Dict[str, Any]:
+        normalized_task_id = str(task_id or "").strip()
+        if not normalized_task_id:
+            return {"task_id": "", "total": 0, "items": [], "summary": {}}
+        safe_limit = max(1, min(20000, int(limit or 5000)))
+        safe_offset = max(0, int(offset or 0))
+        with self._lock, self._connect() as conn:
+            total = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM scan_task_system_metrics WHERE scan_task_id=?",
+                    (normalized_task_id,),
+                ).fetchone()["c"]
+                or 0
+            )
+            rows = conn.execute(
+                """
+                SELECT *
+                FROM scan_task_system_metrics
+                WHERE scan_task_id=?
+                ORDER BY captured_at ASC
+                LIMIT ? OFFSET ?
+                """,
+                (normalized_task_id, safe_limit, safe_offset),
+            ).fetchall()
+            aggregate = conn.execute(
+                """
+                SELECT
+                    AVG(cpu_percent) AS cpu_percent_avg,
+                    MAX(cpu_percent) AS cpu_percent_max,
+                    MAX(memory_percent) AS memory_percent_max,
+                    MAX(memory_used_bytes) AS memory_used_bytes_max,
+                    MAX(process_rss_bytes) AS process_rss_bytes_max,
+                    MAX(disk_read_bps) AS disk_read_bps_max,
+                    MAX(disk_write_bps) AS disk_write_bps_max,
+                    MAX(network_sent_bps) AS network_sent_bps_max,
+                    MAX(network_received_bps) AS network_received_bps_max,
+                    MIN(captured_at) AS started_at,
+                    MAX(captured_at) AS finished_at
+                FROM scan_task_system_metrics
+                WHERE scan_task_id=?
+                """,
+                (normalized_task_id,),
+            ).fetchone()
+            first = conn.execute(
+                "SELECT * FROM scan_task_system_metrics WHERE scan_task_id=? ORDER BY captured_at ASC LIMIT 1",
+                (normalized_task_id,),
+            ).fetchone()
+            last = conn.execute(
+                "SELECT * FROM scan_task_system_metrics WHERE scan_task_id=? ORDER BY captured_at DESC LIMIT 1",
+                (normalized_task_id,),
+            ).fetchone()
+
+        summary: Dict[str, Any] = {}
+        if total and aggregate is not None and first is not None and last is not None:
+            summary = {
+                "cpu_percent_avg": round(float(aggregate["cpu_percent_avg"] or 0.0), 2),
+                "cpu_percent_max": round(float(aggregate["cpu_percent_max"] or 0.0), 2),
+                "memory_percent_max": round(float(aggregate["memory_percent_max"] or 0.0), 2),
+                "memory_used_bytes_max": int(aggregate["memory_used_bytes_max"] or 0),
+                "process_rss_bytes_max": int(aggregate["process_rss_bytes_max"] or 0),
+                "disk_read_bps_max": round(float(aggregate["disk_read_bps_max"] or 0.0), 2),
+                "disk_write_bps_max": round(float(aggregate["disk_write_bps_max"] or 0.0), 2),
+                "network_sent_bps_max": round(float(aggregate["network_sent_bps_max"] or 0.0), 2),
+                "network_received_bps_max": round(float(aggregate["network_received_bps_max"] or 0.0), 2),
+                "started_at": int(aggregate["started_at"] or 0),
+                "finished_at": int(aggregate["finished_at"] or 0),
+                "disk_read_bytes_delta": max(0, int(last["disk_read_bytes"] or 0) - int(first["disk_read_bytes"] or 0)),
+                "disk_write_bytes_delta": max(0, int(last["disk_write_bytes"] or 0) - int(first["disk_write_bytes"] or 0)),
+                "network_sent_bytes_delta": max(0, int(last["network_sent_bytes"] or 0) - int(first["network_sent_bytes"] or 0)),
+                "network_received_bytes_delta": max(0, int(last["network_received_bytes"] or 0) - int(first["network_received_bytes"] or 0)),
+            }
+        return {
+            "task_id": normalized_task_id,
+            "total": total,
+            "items": [dict(row) for row in rows],
+            "summary": summary,
+        }
+
     def _find_incident_for_job_locked(self, conn: sqlite3.Connection, job_id: str) -> Optional[sqlite3.Row]:
         normalized_job_id = str(job_id or "").strip()
         if not normalized_job_id:
@@ -1526,6 +1732,8 @@ class ScanStore:
             return
         existing_job_id = str(existing["id"] or "").strip()
         incident = self._find_incident_for_job_locked(conn, existing_job_id)
+        if incident is None:
+            return
         self._record_scan_observation_locked(
             conn,
             scan_task_id=effective_scan_task_id,
@@ -1672,9 +1880,8 @@ class ScanStore:
         found_hash_rows = conn.execute(
             """
             SELECT file_hash, file_path
-            FROM scan_task_file_observations
-            WHERE scan_task_id=? AND observation_type IN ('found_new', 'found_duplicate')
-              AND file_hash <> ''
+            FROM scan_jobs
+            WHERE scan_task_id=? AND file_hash <> '' AND status <> 'failed'
             """,
             (normalized_task_id,),
         ).fetchall()
@@ -1751,7 +1958,7 @@ class ScanStore:
                 ).fetchone()
                 if existing is not None:
                     is_retryable_missing_payload = (
-                        str(existing["status"] or "").strip().lower() == "failed"
+                        str(existing["status"] or "").strip().lower() in {"failed", "analysis_incomplete"}
                         and str(existing["error_text"] or "").strip() == "Missing transient PDF payload"
                         and bool(payload_pdf_bytes)
                     )
@@ -1881,19 +2088,6 @@ class ScanStore:
                         ),
                     )
                     if effective_scan_task_id:
-                        self._record_scan_observation_locked(
-                            conn,
-                            scan_task_id=effective_scan_task_id,
-                            agent_id=row["agent_id"],
-                            hostname=row["hostname"],
-                            file_path=row["file_path"],
-                            file_hash=row["file_hash"],
-                            event_id=event_id,
-                            observation_type="found_new",
-                            linked_job_id=job_id,
-                            source_kind=row["source_kind"],
-                            created_at=now_ts,
-                        )
                         self._reconcile_scan_task_progress_locked(conn, effective_scan_task_id, now_ts=now_ts)
                     conn.commit()
 
@@ -1972,6 +2166,44 @@ class ScanStore:
                 return int(cursor.rowcount or 0)
 
         return int(self._run_write_transaction("requeue_stale_processing_jobs", _write) or 0)
+
+    def requeue_interrupted_processing_jobs(self) -> int:
+        """Recover jobs owned by the previous worker instance immediately on startup."""
+        def _write() -> int:
+            with self._lock, self._connect() as conn:
+                touched_task_ids = [
+                    str(row["scan_task_id"] or "").strip()
+                    for row in conn.execute(
+                        """
+                        SELECT DISTINCT scan_task_id
+                        FROM scan_jobs
+                        WHERE status='processing'
+                          AND scan_task_id IS NOT NULL
+                          AND scan_task_id <> ''
+                        """
+                    ).fetchall()
+                ]
+                cursor = conn.execute(
+                    """
+                    UPDATE scan_jobs
+                    SET status='queued',
+                        started_at=NULL,
+                        finished_at=NULL,
+                        summary='Recovered after scan worker restart',
+                        error_text=NULL,
+                        attempt_count=CASE
+                            WHEN COALESCE(attempt_count, 0) > 0 THEN attempt_count - 1
+                            ELSE 0
+                        END
+                    WHERE status='processing'
+                    """
+                )
+                for task_id in touched_task_ids:
+                    self._reconcile_scan_task_progress_locked(conn, task_id)
+                conn.commit()
+                return int(cursor.rowcount or 0)
+
+        return int(self._run_write_transaction("requeue_interrupted_processing_jobs", _write) or 0)
 
     def requeue_job_for_retry(self, *, job_id: str, error_text: str, summary: str = "") -> None:
         normalized_job_id = str(job_id or "").strip()
@@ -2106,6 +2338,51 @@ class ScanStore:
 
         self._run_write_transaction("finalize_job", _write)
         self.delete_job_pdf_spool(job_id=job_id)
+
+    def record_job_metrics(self, *, job_id: str, metrics: Dict[str, Any]) -> None:
+        normalized_job_id = str(job_id or "").strip()
+        if not normalized_job_id or not isinstance(metrics, dict):
+            return
+        encoded = _json_dumps(metrics)
+
+        def _write() -> None:
+            with self._lock, self._connect() as conn:
+                conn.execute(
+                    "UPDATE scan_jobs SET metrics_json=? WHERE id=?",
+                    (encoded, normalized_job_id),
+                )
+                conn.commit()
+
+        self._run_write_transaction("record_job_metrics", _write)
+
+    def append_job_extraction_outcome(self, *, job_id: str, outcome: Dict[str, Any]) -> None:
+        normalized_job_id = str(job_id or "").strip()
+        if not normalized_job_id or not isinstance(outcome, dict):
+            return
+
+        def _write() -> None:
+            with self._lock, self._connect() as conn:
+                row = conn.execute(
+                    "SELECT payload_json FROM scan_jobs WHERE id=? LIMIT 1",
+                    (normalized_job_id,),
+                ).fetchone()
+                if row is None:
+                    return
+                payload = _json_loads(row["payload_json"], {})
+                if not isinstance(payload, dict):
+                    payload = {}
+                metadata = payload.get("metadata") if isinstance(payload.get("metadata"), dict) else {}
+                outcomes = metadata.get("extraction_outcomes") if isinstance(metadata.get("extraction_outcomes"), list) else []
+                outcomes.append(dict(outcome))
+                metadata["extraction_outcomes"] = outcomes[-50:]
+                payload["metadata"] = metadata
+                conn.execute(
+                    "UPDATE scan_jobs SET payload_json=? WHERE id=?",
+                    (_json_dumps(payload), normalized_job_id),
+                )
+                conn.commit()
+
+        self._run_write_transaction("append_job_extraction_outcome", _write)
 
     def add_artifact(self, *, job_id: str, artifact_type: str, storage_path: str, size_bytes: int) -> None:
         now_ts = _now_ts()
@@ -2246,7 +2523,7 @@ class ScanStore:
                         now_ts,
                     ),
                 )
-                conn.execute(
+                observation_update = conn.execute(
                     """
                     UPDATE scan_task_file_observations
                     SET linked_incident_id=?, severity=?
@@ -2254,6 +2531,23 @@ class ScanStore:
                     """,
                     (incident_id, severity, str(job.get("id") or "")),
                 )
+                scan_task_id = str(job.get("scan_task_id") or "").strip()
+                if int(observation_update.rowcount or 0) == 0 and scan_task_id:
+                    self._record_scan_observation_locked(
+                        conn,
+                        scan_task_id=scan_task_id,
+                        agent_id=str(job.get("agent_id") or ""),
+                        hostname=str(job.get("hostname") or ""),
+                        file_path=str(job.get("file_path") or ""),
+                        file_hash=str(job.get("file_hash") or ""),
+                        event_id=str(job.get("event_id") or ""),
+                        observation_type="found_new",
+                        linked_job_id=str(job.get("id") or ""),
+                        linked_incident_id=incident_id,
+                        source_kind=str(job.get("source_kind") or ""),
+                        severity=severity,
+                        created_at=now_ts,
+                    )
                 conn.commit()
 
         self._run_write_transaction("create_finding_and_incident", _write)
@@ -2273,6 +2567,7 @@ class ScanStore:
         date_to: Optional[str] = None,
         has_fragment: Optional[bool] = None,
         ack_by: Optional[str] = None,
+        pattern_id: Optional[str] = None,
         table_alias: str = "i",
     ) -> tuple[str, List[Any]]:
         i_alias = str(table_alias or "i").strip() or "i"
@@ -2315,6 +2610,22 @@ class ScanStore:
         if ack_by:
             conditions.append(f"LOWER(COALESCE({i_alias}.ack_by, '')) LIKE ?")
             params.append(f"%{str(ack_by).strip().lower()}%")
+        incident_pattern_ids = expand_incident_pattern_filter(pattern_id)
+        if incident_pattern_ids:
+            placeholders = ", ".join("?" for _ in incident_pattern_ids)
+            conditions.append(
+                "EXISTS ("
+                "SELECT 1 FROM json_each("
+                "CASE WHEN json_valid(COALESCE(f.matched_patterns_json, '[]')) "
+                "THEN COALESCE(f.matched_patterns_json, '[]') ELSE '[]' END"
+                ") pattern_row "
+                "WHERE LOWER(COALESCE("
+                "json_extract(pattern_row.value, '$.pattern'), "
+                "json_extract(pattern_row.value, '$.pattern_id'), ''"
+                f")) IN ({placeholders})"
+                ")"
+            )
+            params.extend(incident_pattern_ids)
         if q:
             needle = f"%{str(q).strip().lower()}%"
             conditions.append(
@@ -2338,12 +2649,14 @@ class ScanStore:
         branch: Optional[str] = None,
         q: Optional[str] = None,
         hostname: Optional[str] = None,
+        task_id: Optional[str] = None,
         source_kind: Optional[str] = None,
         file_ext: Optional[str] = None,
         date_from: Optional[str] = None,
         date_to: Optional[str] = None,
         has_fragment: Optional[bool] = None,
         ack_by: Optional[str] = None,
+        pattern_id: Optional[str] = None,
         limit: int = 100,
         offset: int = 0,
     ) -> Dict[str, Any]:
@@ -2359,7 +2672,16 @@ class ScanStore:
             date_to=date_to,
             has_fragment=has_fragment,
             ack_by=ack_by,
+            pattern_id=pattern_id,
         )
+        normalized_task_id = str(task_id or "").strip()
+        if normalized_task_id:
+            task_condition = "i.job_id IN (SELECT id FROM scan_jobs WHERE scan_task_id = ?)"
+            if where_clause:
+                where_clause = f"{where_clause} AND {task_condition}"
+            else:
+                where_clause = f"WHERE {task_condition}"
+            params.append(normalized_task_id)
         safe_limit = max(1, min(5000, int(limit)))
         safe_offset = max(0, int(offset))
 
@@ -2431,6 +2753,7 @@ class ScanStore:
         date_to: Optional[str] = None,
         has_fragment: Optional[bool] = None,
         ack_by: Optional[str] = None,
+        pattern_id: Optional[str] = None,
         host_limit: int = 25,
         host_offset: int = 0,
         files_per_host: int = 25,
@@ -2447,6 +2770,7 @@ class ScanStore:
             date_to=date_to,
             has_fragment=has_fragment,
             ack_by=ack_by,
+            pattern_id=pattern_id,
         )
         safe_host_limit = max(1, min(100, int(host_limit)))
         safe_host_offset = max(0, int(host_offset))
@@ -2686,6 +3010,7 @@ class ScanStore:
                         date_to=filter_payload.get("date_to"),
                         has_fragment=filter_payload.get("has_fragment"),
                         ack_by=filter_payload.get("ack_by"),
+                        pattern_id=filter_payload.get("pattern_id"),
                     )
                     total_matched = conn.execute(
                         f"""
@@ -2781,16 +3106,19 @@ class ScanStore:
                 ).fetchone()
                 if row is None:
                     return None
+                current_status = str(row["status"] or "").strip().lower()
+                if current_status != "new":
+                    return {"id": iid, "status": current_status, "changed": False}
                 conn.execute(
                     """
                     UPDATE scan_incidents
                     SET status='ack', ack_at=?, ack_by=?
-                    WHERE id=?
+                    WHERE id=? AND status='new'
                     """,
                     (now_ts, str(ack_by or "").strip(), iid),
                 )
                 conn.commit()
-            return {"id": iid, "status": "ack", "ack_at": now_ts}
+            return {"id": iid, "status": "ack", "ack_at": now_ts, "ack_by": str(ack_by or "").strip(), "changed": True}
 
         return self._run_write_transaction("ack_incident", _write)
 
@@ -2841,16 +3169,57 @@ class ScanStore:
     def list_branches(self) -> List[str]:
         return self._scan_agent_read_store.list_branches()
 
+    def list_incomplete_jobs(self, *, limit: int = 100, offset: int = 0) -> Dict[str, Any]:
+        safe_limit = max(1, min(500, int(limit)))
+        safe_offset = max(0, int(offset))
+        with self._lock, self._connect() as conn:
+            total = int(
+                conn.execute(
+                    "SELECT COUNT(*) AS c FROM scan_jobs WHERE status IN ('analysis_incomplete', 'failed')"
+                ).fetchone()["c"]
+                or 0
+            )
+            rows = conn.execute(
+                """
+                SELECT id, agent_id, hostname, branch, file_path, file_name, source_kind,
+                       status, summary, error_text, created_at, finished_at, payload_json
+                FROM scan_jobs
+                WHERE status IN ('analysis_incomplete', 'failed')
+                ORDER BY COALESCE(finished_at, created_at) DESC
+                LIMIT ? OFFSET ?
+                """,
+                (safe_limit, safe_offset),
+            ).fetchall()
+        items: List[Dict[str, Any]] = []
+        for row in rows:
+            item = dict(row)
+            payload = _json_loads(item.pop("payload_json", "{}"), {})
+            metadata = payload.get("metadata") if isinstance(payload, dict) and isinstance(payload.get("metadata"), dict) else {}
+            item["analysis_version"] = str(metadata.get("analysis_version") or "")
+            item["extraction_outcomes"] = metadata.get("extraction_outcomes") if isinstance(metadata.get("extraction_outcomes"), list) else []
+            item["reason"] = str(item.get("error_text") or item.get("summary") or "analysis_incomplete")
+            items.append(item)
+        return {"items": items, "total": total, "limit": safe_limit, "offset": safe_offset}
+
     def dashboard(self) -> Dict[str, Any]:
         now_ts = _now_ts()
         day_seconds = 24 * 60 * 60
         window_start = now_ts - 29 * day_seconds
+        performance_start = now_ts - day_seconds
         with self._lock, self._connect() as conn:
             agents_total = conn.execute("SELECT COUNT(*) as c FROM scan_agents").fetchone()["c"]
             agents_online = conn.execute(
                 "SELECT COUNT(*) as c FROM scan_agents WHERE last_seen_at >= ?",
                 (now_ts - self.agent_online_timeout_sec,),
             ).fetchone()["c"]
+            agent_version_rows = conn.execute(
+                """
+                SELECT COALESCE(NULLIF(TRIM(version), ''), 'unknown') AS version, COUNT(*) AS c
+                FROM scan_agents
+                GROUP BY COALESCE(NULLIF(TRIM(version), ''), 'unknown')
+                ORDER BY c DESC, version ASC
+                """
+            ).fetchall()
             incidents_total = conn.execute(
                 "SELECT COUNT(*) as c FROM scan_incidents",
             ).fetchone()["c"]
@@ -2922,8 +3291,42 @@ class ScanStore:
                 WHERE error_text='OCR timeout'
                 """
             ).fetchone()["c"]
+            incomplete_rows = conn.execute(
+                """
+                SELECT file_name, COUNT(*) AS c
+                FROM scan_jobs
+                WHERE status IN ('analysis_incomplete', 'failed')
+                GROUP BY file_name
+                """
+            ).fetchall()
+            recent_task_results = conn.execute(
+                """
+                SELECT result_json
+                FROM scan_tasks
+                WHERE created_at >= ? AND command='scan_now'
+                """,
+                (window_start,),
+            ).fetchall()
+            performance_rows = conn.execute(
+                """
+                SELECT status, source_kind, created_at, started_at, finished_at, metrics_json
+                FROM scan_jobs
+                WHERE created_at >= ?
+                   OR COALESCE(finished_at, 0) >= ?
+                   OR status IN ('queued', 'processing')
+                """,
+                (performance_start, performance_start),
+            ).fetchall()
 
         transient_stats = self.transient_pdf_spool_stats()
+        agent_versions = [
+            {"version": str(row["version"] or "unknown"), "count": int(row["c"] or 0)}
+            for row in agent_version_rows
+        ]
+        agents_current = sum(
+            item["count"] for item in agent_versions if item["version"] == AGENT_VERSION
+        )
+        agents_outdated = max(0, int(agents_total) - int(agents_current))
         daily_map = {str(row["day_key"]): int(row["c"] or 0) for row in day_rows}
         daily: List[Dict[str, Any]] = []
         start_day = window_start - (window_start % day_seconds)
@@ -2938,12 +3341,14 @@ class ScanStore:
             "done_clean": 0,
             "done_with_incident": 0,
             "failed": 0,
+            "analysis_incomplete": 0,
             "total": 0,
             "pdf_queued": 0,
             "pdf_processing": 0,
             "pdf_done_clean": 0,
             "pdf_done_with_incident": 0,
             "pdf_failed": 0,
+            "pdf_analysis_incomplete": 0,
             "pdf_total": 0,
             "text_queued": 0,
             "text_processing": 0,
@@ -2954,7 +3359,7 @@ class ScanStore:
             count = int(row["c"] or 0)
             job_counts[status] = int(job_counts.get(status, 0)) + count
             job_counts["total"] += count
-            if source_kind in {"pdf", "pdf_slice"}:
+            if source_kind in {"pdf", "pdf_slice", "image", "office"}:
                 key = f"pdf_{status}"
                 job_counts[key] = int(job_counts.get(key, 0)) + count
                 job_counts["pdf_total"] += count
@@ -2966,12 +3371,103 @@ class ScanStore:
         job_counts["completed"] = int(job_counts.get("done_clean", 0)) + int(job_counts.get("done_with_incident", 0))
         job_counts["pdf_pending"] = int(job_counts.get("pdf_queued", 0)) + int(job_counts.get("pdf_processing", 0))
         job_counts["pdf_completed"] = int(job_counts.get("pdf_done_clean", 0)) + int(job_counts.get("pdf_done_with_incident", 0))
+        incomplete_by_extension: Dict[str, int] = {}
+        for row in incomplete_rows:
+            suffix = Path(str(row["file_name"] or "")).suffix.lower() or "<none>"
+            incomplete_by_extension[suffix] = int(incomplete_by_extension.get(suffix) or 0) + int(row["c"] or 0)
+        unsupported_files = 0
+        deferred_files = 0
+        skipped_by_extension: Dict[str, int] = {}
+        for row in recent_task_results:
+            result = _json_loads(row["result_json"], {})
+            if not isinstance(result, dict):
+                continue
+            unsupported_files += int(result.get("unsupported") or 0)
+            deferred_files += int(result.get("deferred") or 0)
+            excluded_extensions = result.get("excluded_by_extension")
+            if isinstance(excluded_extensions, dict):
+                for extension, count in excluded_extensions.items():
+                    key = str(extension or "<none>")
+                    skipped_by_extension[key] = int(skipped_by_extension.get(key) or 0) + int(count or 0)
+
+        queue_wait_values: List[float] = []
+        processing_values: List[float] = []
+        ocr_values: List[float] = []
+        conversion_values: List[float] = []
+        full_dpi_values: List[float] = []
+        focused_dpi_values: List[float] = []
+        completed_24h = 0
+        downscaled_large_pages = 0
+        pending_oldest_age_sec = 0
+        for row in performance_rows:
+            status = str(row["status"] or "").strip().lower()
+            created_at = int(row["created_at"] or 0)
+            started_at = int(row["started_at"] or 0)
+            finished_at = int(row["finished_at"] or 0)
+            metrics = _json_loads(row["metrics_json"], {})
+            if not isinstance(metrics, dict):
+                metrics = {}
+            queue_wait_ms = metrics.get("queue_wait_ms")
+            if queue_wait_ms is None and created_at and started_at:
+                queue_wait_ms = max(0, started_at - created_at) * 1000
+            if queue_wait_ms is not None:
+                queue_wait_values.append(float(queue_wait_ms))
+            processing_ms = metrics.get("processing_ms")
+            if processing_ms is None and started_at and finished_at:
+                processing_ms = max(0, finished_at - started_at) * 1000
+            if processing_ms is not None:
+                processing_values.append(float(processing_ms))
+            if metrics.get("ocr_ms") is not None:
+                ocr_values.append(float(metrics["ocr_ms"]))
+            if metrics.get("conversion_ms") is not None:
+                conversion_values.append(float(metrics["conversion_ms"]))
+            ocr_metrics = metrics.get("ocr") if isinstance(metrics.get("ocr"), dict) else {}
+            full_dpi = ocr_metrics.get("full_effective_dpi_min")
+            focused_dpi = ocr_metrics.get("focused_effective_dpi_min")
+            if full_dpi is not None:
+                full_dpi_values.append(float(full_dpi))
+                downscaled_large_pages += int(float(full_dpi) < 299.0)
+            if focused_dpi is not None:
+                focused_dpi_values.append(float(focused_dpi))
+            if status in FINAL_JOB_STATUSES and finished_at >= performance_start:
+                completed_24h += 1
+            if status in PENDING_JOB_STATUSES and created_at:
+                pending_oldest_age_sec = max(pending_oldest_age_sec, now_ts - created_at)
+
+        performance = {
+            "window_hours": 24,
+            "samples": len(performance_rows),
+            "completed": completed_24h,
+            "throughput_per_hour": round(completed_24h / 24.0, 1),
+            "pending_oldest_age_sec": max(0, pending_oldest_age_sec),
+            "queue_wait_ms": {
+                "p50": _percentile(queue_wait_values, 0.50),
+                "p95": _percentile(queue_wait_values, 0.95),
+            },
+            "processing_ms": {
+                "p50": _percentile(processing_values, 0.50),
+                "p95": _percentile(processing_values, 0.95),
+            },
+            "ocr_ms": {
+                "p50": _percentile(ocr_values, 0.50),
+                "p95": _percentile(ocr_values, 0.95),
+            },
+            "conversion_ms": {
+                "p50": _percentile(conversion_values, 0.50),
+                "p95": _percentile(conversion_values, 0.95),
+            },
+            "large_pages_downscaled": downscaled_large_pages,
+            "full_effective_dpi_min": min(full_dpi_values) if full_dpi_values else None,
+            "focused_effective_dpi_min": min(focused_dpi_values) if focused_dpi_values else None,
+        }
 
         return {
             "totals": {
                 "agents_total": int(agents_total),
                 "agents_online": int(agents_online),
                 "agents_offline": int(max(0, agents_total - agents_online)),
+                "agents_current_version": int(agents_current),
+                "agents_outdated": int(agents_outdated),
                 "incidents_total": int(incidents_total),
                 "incidents_new": int(incidents_new),
                 "queue_active": int(queue_active),
@@ -2986,18 +3482,33 @@ class ScanStore:
                 "server_pdf_done_clean": int(job_counts["pdf_done_clean"]),
                 "server_pdf_done_with_incident": int(job_counts["pdf_done_with_incident"]),
                 "server_pdf_failed": int(job_counts["pdf_failed"]),
+                "server_pdf_incomplete": int(job_counts["pdf_analysis_incomplete"]),
                 "server_jobs_processed": int(job_counts["completed"]),
                 "server_jobs_failed": int(job_counts["failed"]),
+                "analysis_incomplete": int(job_counts["analysis_incomplete"]),
+                "unsupported_files": unsupported_files,
+                "deferred_files": deferred_files,
                 "transient_pdf_count": int(transient_stats["count"]),
                 "transient_pdf_gb": float(transient_stats["gb"]),
                 "ocr_timeout_jobs": int(ocr_timeout_jobs or 0),
             },
             "job_queue": job_counts,
+            "expected_agent_version": AGENT_VERSION,
+            "agent_versions": agent_versions,
+            "performance": performance,
             "transient_pdf_spool": transient_stats,
             "by_severity": [{"severity": str(row["severity"] or "unknown"), "count": int(row["c"] or 0)} for row in sev_rows],
             "by_branch": [{"branch": str(row["branch"] or "Без филиала"), "count": int(row["c"] or 0)} for row in branch_rows],
             "daily": daily,
             "new_hosts": [str(row["hostname"] or "unknown") for row in new_rows],
+            "incomplete_by_extension": [
+                {"extension": extension, "count": count}
+                for extension, count in sorted(incomplete_by_extension.items(), key=lambda item: (-item[1], item[0]))
+            ],
+            "skipped_by_extension": [
+                {"extension": extension, "count": count}
+                for extension, count in sorted(skipped_by_extension.items(), key=lambda item: (-item[1], item[0]))
+            ],
         }
 
     def _count_retention_candidates_locked(
@@ -3064,6 +3575,12 @@ class ScanStore:
 
         specs = [
             (
+                "system_metrics",
+                "scan_task_system_metrics",
+                "scan_task_id IN (SELECT id FROM scan_tasks WHERE status IN ('completed', 'failed', 'expired') AND updated_at < ?)",
+                (task_cutoff,),
+            ),
+            (
                 "tasks",
                 "scan_tasks",
                 "status IN ('completed', 'failed', 'expired') AND updated_at < ?",
@@ -3071,8 +3588,24 @@ class ScanStore:
             ),
             ("incidents", "scan_incidents", "created_at < ?", (incident_cutoff,)),
             ("findings", "scan_findings", "created_at < ?", (incident_cutoff,)),
-            ("jobs_clean", "scan_jobs", "status='done_clean' AND created_at < ?", (clean_cutoff,)),
-            ("jobs_failed", "scan_jobs", "status='failed' AND created_at < ?", (failed_cutoff,)),
+            (
+                "jobs_clean",
+                "scan_jobs",
+                """
+                status='done_clean' AND created_at < ?
+                AND NOT EXISTS (SELECT 1 FROM scan_incidents i WHERE i.job_id=scan_jobs.id)
+                """,
+                (clean_cutoff,),
+            ),
+            (
+                "jobs_failed",
+                "scan_jobs",
+                """
+                status IN ('failed', 'analysis_incomplete') AND created_at < ?
+                AND NOT EXISTS (SELECT 1 FROM scan_incidents i WHERE i.job_id=scan_jobs.id)
+                """,
+                (failed_cutoff,),
+            ),
             (
                 "jobs_with_incident",
                 "scan_jobs",
@@ -3084,6 +3617,8 @@ class ScanStore:
         result = {
             "artifact_rows": 0,
             "artifact_files": 0,
+            "observations": 0,
+            "system_metrics": 0,
             "tasks": 0,
             "incidents": 0,
             "findings": 0,
@@ -3094,6 +3629,53 @@ class ScanStore:
 
         def _write() -> Dict[str, int]:
             with self._lock, self._connect() as conn:
+                observation_where = """
+                    scan_task_id IN (
+                        SELECT id FROM scan_tasks
+                        WHERE status IN ('completed', 'failed', 'expired') AND updated_at < ?
+                    )
+                    OR linked_incident_id IN (
+                        SELECT id FROM scan_incidents WHERE created_at < ?
+                    )
+                    OR linked_job_id IN (
+                        SELECT id FROM scan_jobs
+                        WHERE (
+                            status='done_clean' AND created_at < ?
+                            AND NOT EXISTS (
+                                SELECT 1 FROM scan_incidents i WHERE i.job_id=scan_jobs.id
+                            )
+                        ) OR (
+                            status IN ('failed', 'analysis_incomplete') AND created_at < ?
+                            AND NOT EXISTS (
+                                SELECT 1 FROM scan_incidents i WHERE i.job_id=scan_jobs.id
+                            )
+                        ) OR (
+                            status='done_with_incident' AND created_at < ?
+                        )
+                    )
+                """
+                observation_params = (
+                    task_cutoff,
+                    incident_cutoff,
+                    clean_cutoff,
+                    failed_cutoff,
+                    incident_cutoff,
+                )
+                if dry_run:
+                    result["observations"] = self._count_retention_candidates_locked(
+                        conn,
+                        table="scan_task_file_observations",
+                        where_sql=observation_where,
+                        params=observation_params,
+                    )
+                else:
+                    result["observations"] = self._delete_retention_batches_locked(
+                        conn,
+                        table="scan_task_file_observations",
+                        where_sql=observation_where,
+                        params=observation_params,
+                        batch_size=batch_size,
+                    )
                 for key, table, where_sql, params in specs:
                     if dry_run:
                         result[key] = self._count_retention_candidates_locked(

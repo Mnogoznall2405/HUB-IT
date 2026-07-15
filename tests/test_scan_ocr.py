@@ -4,11 +4,14 @@ import pytest
 
 import scan_server.ocr as scan_ocr
 from scan_server.ocr import (
+    FOCUSED_REGION_DPI,
+    MAX_FOCUSED_REGION_PIXELS,
     MAX_PAGE_DIMENSION_POINTS,
     MAX_RENDERED_PAGE_PIXELS,
     OcrNonRetryableError,
     _cap_zoom_for_max_pixels,
     _iter_rendered_pdf_pages,
+    ocr_pdf_bytes_detailed,
 )
 
 
@@ -74,3 +77,93 @@ def test_iter_rendered_pdf_pages_rejects_oversized_page_box(monkeypatch):
 
     with pytest.raises(OcrNonRetryableError):
         list(_iter_rendered_pdf_pages(b"%PDF-1.4", max_pages=1, dpi=300))
+
+
+def test_nonblank_page_without_ocr_text_is_incomplete(monkeypatch):
+    configs = []
+
+    class _ImageValue:
+        size = (1200, 1800)
+
+        def convert(self, _mode):
+            return self
+
+        def crop(self, _box):
+            return self
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def getextrema(self):
+            return ((0, 255), (0, 255), (0, 255))
+
+    class _ImageModule:
+        @staticmethod
+        def open(_stream):
+            return _ImageValue()
+
+    class _Tesseract:
+        class pytesseract:
+            tesseract_cmd = ""
+
+        @staticmethod
+        def image_to_string(*_args, **_kwargs):
+            configs.append(str(_kwargs.get("config") or ""))
+            return ""
+
+    monkeypatch.setattr(scan_ocr, "Image", _ImageModule)
+    monkeypatch.setattr(scan_ocr, "pytesseract", _Tesseract)
+    monkeypatch.setattr(scan_ocr, "_iter_rendered_pdf_pages", lambda *_args, **_kwargs: iter([(0, b"png")]))
+    monkeypatch.setattr(
+        scan_ocr,
+        "_pdf_page_full_render_metrics",
+        lambda *_args, **_kwargs: {"effective_dpi": 300.0, "downscaled": False},
+    )
+    monkeypatch.setattr(
+        scan_ocr,
+        "_iter_rendered_pdf_focus_regions",
+        lambda *_args, **_kwargs: iter(
+            (
+                (f"region-{index}", b"png", {
+                    "requested_dpi": 400,
+                    "effective_dpi": 400.0,
+                    "rendered_pixels": 100,
+                    "full_effective_dpi": 300.0,
+                })
+                for index in range(4)
+            )
+        ),
+    )
+
+    result = ocr_pdf_bytes_detailed(
+        b"%PDF-1.4",
+        lang="rus",
+        tesseract_cmd="",
+        max_pages=3,
+    )
+
+    assert result["complete"] is False
+    assert result["pages"][0]["outcome"] == "nonblank_no_text"
+    assert configs[0] == "--psm 6"
+    assert configs.count("--psm 11") == 4
+
+
+def test_focused_render_keeps_more_detail_than_full_a0_page():
+    page_width = 2384.0
+    page_height = 3370.0
+    full_zoom = _cap_zoom_for_max_pixels(
+        width_points=page_width,
+        height_points=page_height,
+        zoom=300.0 / 72.0,
+    )
+    focused_zoom = _cap_zoom_for_max_pixels(
+        width_points=page_width * 0.55,
+        height_points=page_height * 0.25,
+        zoom=FOCUSED_REGION_DPI / 72.0,
+        max_pixels=MAX_FOCUSED_REGION_PIXELS,
+    )
+
+    assert focused_zoom > full_zoom * 2

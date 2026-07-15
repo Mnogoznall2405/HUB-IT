@@ -269,6 +269,86 @@ describe('useMailListDataController', () => {
     expect(result.current.state.selectedMailboxId).toBe('shared');
   });
 
+  it('keeps a recently hydrated list while bootstrap refreshes mailbox metadata', async () => {
+    const requestContext = buildMailListRequestContext({
+      scope: 'mailbox-1',
+      folder: 'inbox',
+      viewMode: 'messages',
+      advancedFilters: { folder_scope: 'current' },
+      limit: 50,
+      offset: 0,
+    });
+    const hydratedList = {
+      items: [createMessage('cached-msg')],
+      total: 324,
+      offset: 0,
+      limit: 50,
+      has_more: true,
+      next_offset: 50,
+      append_offset: 50,
+      loaded_pages: 1,
+    };
+    const mailAPI = createMailAPI({
+      getBootstrap: vi.fn(async () => ({
+        selected_mailbox: { id: 'mailbox-1', mailbox_email: 'mailbox@example.com' },
+        mailboxes: [{ id: 'mailbox-1', label: 'Mailbox' }],
+        folder_summary: { inbox: { total: 324, unread: 1 } },
+        folder_tree: { items: [{ id: 'inbox', label: 'Inbox' }] },
+        messages: {
+          items: [createMessage('older-bootstrap-msg')],
+          total: 324,
+          offset: 0,
+          limit: 20,
+          has_more: true,
+          next_offset: 20,
+        },
+      })),
+    });
+    const { result } = renderController({
+      mailAPI,
+      initialCurrentListKey: requestContext.contextKey,
+      initialState: { listData: hydratedList },
+      recentHydratedListContexts: [requestContext.contextKey],
+    });
+
+    await act(async () => {
+      await result.current.controller.refreshBootstrap({ force: true });
+    });
+
+    expect(result.current.state.listData).toEqual(hydratedList);
+    expect(result.current.refs.skipNextListRefreshRef.current).toBe(false);
+    expect(result.current.state.folderSummary).toEqual({ inbox: { total: 324, unread: 1 } });
+  });
+
+  it('does not treat a stale bootstrap list as a fresh list', async () => {
+    const mailAPI = createMailAPI({
+      getBootstrap: vi.fn(async () => ({
+        state: 'stale',
+        source: 'app_snapshot',
+        selected_mailbox: { id: 'mailbox-1', mailbox_email: 'mailbox@example.com' },
+        mailboxes: [{ id: 'mailbox-1', label: 'Mailbox' }],
+        folder_summary: { inbox: { total: 324, unread: 1 } },
+        folder_tree: { items: [{ id: 'inbox', label: 'Inbox' }] },
+        messages: {
+          items: [createMessage('stale-bootstrap-msg')],
+          total: 324,
+          limit: 20,
+          has_more: true,
+          next_offset: 20,
+        },
+      })),
+    });
+    const { result } = renderController({ mailAPI });
+
+    await act(async () => {
+      await result.current.controller.refreshBootstrap({ force: true });
+    });
+
+    expect(result.current.state.listData.items).toEqual([createMessage('stale-bootstrap-msg')]);
+    expect(result.current.refs.skipNextListRefreshRef.current).toBe(false);
+    expect(result.current.props.persistRecentListSnapshot).not.toHaveBeenCalled();
+  });
+
   it('preserves visible items during a silent transient list refresh failure', async () => {
     const visibleList = {
       items: [createMessage('msg-visible')],
@@ -302,6 +382,34 @@ describe('useMailListDataController', () => {
     expect(refreshResult.items).toEqual([createMessage('msg-visible')]);
     expect(result.current.state.listData.items).toEqual([createMessage('msg-visible')]);
     expect(result.current.props.setError).not.toHaveBeenCalled();
+  });
+
+  it('preserves folder metadata during a transient background refresh failure', async () => {
+    const requestError = { response: { status: 503 } };
+    const mailAPI = createMailAPI({
+      getFolderSummary: vi.fn(async () => { throw requestError; }),
+      getFolderTree: vi.fn(async () => { throw requestError; }),
+    });
+    const initialFolderSummary = { inbox: { unread: 7 } };
+    const initialFolderTree = [{ id: 'inbox', label: 'Входящие' }];
+    const { result } = renderController({
+      mailAPI,
+      initialState: {
+        folderSummary: initialFolderSummary,
+        folderTree: initialFolderTree,
+      },
+      props: {
+        isTransientMailRequestError: vi.fn(() => true),
+      },
+    });
+
+    await act(async () => {
+      await result.current.controller.refreshFolderSummary({ force: true });
+      await result.current.controller.refreshFolderTree({ force: true });
+    });
+
+    expect(result.current.state.folderSummary).toEqual(initialFolderSummary);
+    expect(result.current.state.folderTree).toEqual(initialFolderTree);
   });
 
   it('loads more messages with append offset and appends the response', async () => {
@@ -347,6 +455,54 @@ describe('useMailListDataController', () => {
       createMessage('msg-2'),
     ]);
     expect(result.current.state.loadingMore).toBe(false);
+  });
+
+  it('replaces a hydrated expanded list before continuing pagination', async () => {
+    const requestContext = buildMailListRequestContext({
+      scope: 'mailbox-1',
+      folder: 'inbox',
+      viewMode: 'messages',
+      advancedFilters: { folder_scope: 'current' },
+      limit: 50,
+      offset: 0,
+    });
+    const hydratedList = {
+      items: [createMessage('msg-1'), createMessage('stale-msg-251')],
+      total: 500,
+      offset: 0,
+      limit: 50,
+      has_more: true,
+      next_offset: 300,
+      append_offset: 300,
+      loaded_pages: 6,
+    };
+    const freshHead = {
+      items: [createMessage('msg-1'), createMessage('msg-2')],
+      total: 500,
+      offset: 0,
+      limit: 50,
+      has_more: true,
+      next_offset: 50,
+      append_offset: 50,
+      loaded_pages: 1,
+    };
+    const mailAPI = createMailAPI({
+      getMessages: vi.fn(async () => freshHead),
+    });
+    const { result } = renderController({
+      mailAPI,
+      initialCurrentListKey: requestContext.contextKey,
+      initialState: { listData: hydratedList },
+      recentHydratedListContexts: [requestContext.contextKey],
+    });
+
+    await act(async () => {
+      await result.current.controller.refreshList({ force: true });
+    });
+
+    expect(result.current.state.listData.items).toEqual(freshHead.items);
+    expect(result.current.state.listData.append_offset).toBe(50);
+    expect(result.current.refs.recentHydratedListContextsRef.current.has(requestContext.contextKey)).toBe(false);
   });
 
   it('clears visible items but preserves list metadata when credentials are required', async () => {

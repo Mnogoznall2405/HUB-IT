@@ -42,12 +42,31 @@ patterns:
     flags:
       - ignorecase
 
-  - id: dsp_with_exclusion
-    name: ДСП с контекстом документа
+  - id: dsp_ocr_variant
+    name: ДСП (OCR-искажённая фраза, требует проверки)
     category: Грифы и секретность
     type: regex
-    pattern: '(?i)Для\s+служебного\s+пользования(?:\s+(?:Экз\.|Экз\.?|№|N|#|экземпляр|с\s+контекстом))?(?!(?:\s+плита|\s+лист|\s*[:\-]\s*\d+мм|\s+\d+мм|.*?ДСП\s+22\s+мм|.*?столешница\s+ДСП|.*?стол\s+ДСП))'
-    weight: 1.0
+    pattern: '(?i)\bд[лпl1i][яаи]\s+(?:с[лпl1i]|т)?уж(?:е[бй]|а\s*б)\s*н[оo0]г[оo0]\s+п[оo0]льз[оo0]ван(?:и|i|1|l)?[яа]\b'
+    weight: 0.8
+    flags:
+      - ignorecase
+
+  - id: dsp_ocr_context
+    name: ДСП (повреждённый OCR-гриф с контекстом, требует проверки)
+    category: Грифы и секретность
+    type: regex
+    pattern: '(?is)(?:для\s+служебн[оo0]г[оo0]|п[оo0]льз[оo0]ван(?:и|i|1|l)?[яа])(?=.{0,180}(?:перечн[яи]\s+сведени|экз\.?\s*(?:№|n|#)))'
+    weight: 0.8
+    flags:
+      - ignorecase
+      - dotall
+
+  - id: dsp_with_exclusion
+    name: ДСП (сокращение, требует проверки)
+    category: Грифы и секретность
+    type: regex
+    pattern: '(?i)\b(?:ДСП|D[СC][ПP]|Д[СC][ПP])\b'
+    weight: 0.8
     flags:
       - ignorecase
 
@@ -55,7 +74,7 @@ patterns:
     name: Секретно / Конфиденциально
     category: Грифы и секретность
     type: regex
-    pattern: '(?i)(?:совершенно\s+секретно|top\s+secret|strictly\s+confidential|гриф\s*[:=]?\s*(?:секретно|secret))'
+    pattern: '(?i)(?:совершенно\s+секретно|\bсекретно\b|\bконфиденциально\b|top\s+secret|strictly\s+confidential|гриф\s*[:=]?\s*(?:секретно|secret))'
     weight: 1.0
 
   - id: trade_secret_strict

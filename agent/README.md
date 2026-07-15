@@ -68,18 +68,20 @@ C:\ProgramData\IT-Invent\Agent\ScanAgent
 
 | Property | Required | Default | Example | Purpose |
 | --- | --- | --- | --- | --- |
-| `ITINV_AGENT_SERVER_URL` | Да | runtime default | `https://hubit.zsgp.ru/api/v1/inventory` | URL inventory endpoint |
-| `ITINV_AGENT_API_KEY` | Да | empty | `YOUR_SECURE_AGENT_KEY` | API key inventory-agent |
+| `ITINV_AGENT_SERVER_URL` | Да | `https://hubit.zsgp.ru/api/v1/inventory` | `https://hubit.zsgp.ru/api/v1/inventory` | URL inventory endpoint |
+| `ITINV_AGENT_API_KEY` | Да | root `.env` at MSI build | `YOUR_SECURE_AGENT_KEY` | API key inventory-agent |
 | `ITINV_AGENT_INTERVAL_SEC` | Нет | `3600` | `3600` | Full snapshot interval |
 | `ITINV_AGENT_HEARTBEAT_SEC` | Нет | `600` | `600` | Heartbeat interval |
 | `ITINV_AGENT_HEARTBEAT_JITTER_SEC` | Нет | `120` | `120` | Heartbeat jitter |
 | `ITINV_SCAN_ENABLED` | Нет | `1` | `1` | Enables embedded scan sidecar |
-| `SCAN_AGENT_SERVER_BASE` | Да | runtime default | `https://hubit.zsgp.ru/api/v1/scan` | URL scan endpoint |
-| `SCAN_AGENT_API_KEY` | Да | empty | `YOUR_SECURE_AGENT_KEY` | API key scan-agent |
+| `SCAN_AGENT_SERVER_BASE` | Да | `https://hubit.zsgp.ru/api/v1/scan` | `https://hubit.zsgp.ru/api/v1/scan` | URL scan endpoint |
+| `SCAN_AGENT_API_KEY` | Да | root `.env` at MSI build | `YOUR_SECURE_AGENT_KEY` | API key scan-agent |
 | `SCAN_AGENT_POLL_INTERVAL_SEC` | Нет | `600` | `600` | Scan task poll interval |
 | `SCAN_AGENT_POLL_JITTER_SEC` | Нет | `120` | `120` | Scan task poll jitter |
 | `ITINV_OUTLOOK_SEARCH_ROOTS` | Нет | `D:\` | `D:\` | Extra Outlook PST/OST search roots |
 | `INSTALLDIR` | Нет | `C:\Program Files\IT-Invent\Agent` | `D:\Apps\IT-Invent\Agent` | Custom install path |
+
+Deployment MSI берёт оба API-ключа из корневого `.env` во время сборки, а для URL использует публичные client defaults. Сборка завершается ошибкой, если одного из ключей нет; переданные в `msiexec` properties по-прежнему могут переопределить встроенные значения.
 
 Фиксированные значения v1, не выносятся в MSI properties:
 
@@ -93,21 +95,21 @@ C:\ProgramData\IT-Invent\Agent\ScanAgent
 Тихая установка на встроенных значениях:
 
 ```powershell
-msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart
+msiexec /i "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart
 ```
 
 Тихая установка с логом:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log"
+msiexec /i "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log"
 ```
 
 Минимально рекомендуемая тихая установка:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
+msiexec /i "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
   ITINV_AGENT_SERVER_URL="http://127.0.0.1:8001/api/v1/inventory" `
   ITINV_AGENT_API_KEY="YOUR_SECURE_AGENT_KEY" `
   SCAN_AGENT_SERVER_BASE="http://127.0.0.1:8011/api/v1/scan" `
@@ -118,7 +120,7 @@ msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Tem
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
+msiexec /i "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
   ITINV_AGENT_SERVER_URL="http://127.0.0.1:8001/api/v1/inventory" `
   ITINV_AGENT_API_KEY="YOUR_SECURE_AGENT_KEY" `
   ITINV_AGENT_INTERVAL_SEC="3600" `
@@ -136,14 +138,14 @@ msiexec /i "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Tem
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /x "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
+msiexec /x "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
 ```
 
 Тихий repair:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /fa "C:\Path\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
+msiexec /fa "C:\Path\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
 ```
 
 ## Что проверить после установки

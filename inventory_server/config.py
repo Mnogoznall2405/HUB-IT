@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
@@ -15,9 +16,6 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 ROOT_ENV_PATH = PROJECT_ROOT / ".env"
 if load_dotenv is not None and ROOT_ENV_PATH.exists():
     load_dotenv(str(ROOT_ENV_PATH))
-
-
-DEFAULT_AGENT_API_KEY = "gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8"
 
 
 def _to_int(value: str, default: int) -> int:
@@ -72,7 +70,12 @@ class InventoryServerConfig:
                 keys.append(legacy_key)
 
         if not keys:
-            keys.append(DEFAULT_AGENT_API_KEY)
+            app_env = str(os.getenv("APP_ENV", "development") or "development").strip().lower()
+            if app_env in {"production", "prod"}:
+                raise RuntimeError(
+                    "INVENTORY_SERVER_API_KEYS (or ITINV_AGENT_API_KEYS) must be configured in production"
+                )
+            keys.append(secrets.token_urlsafe(48))
 
         return cls(
             host=str(os.getenv("INVENTORY_SERVER_HOST", "127.0.0.1")).strip() or "127.0.0.1",

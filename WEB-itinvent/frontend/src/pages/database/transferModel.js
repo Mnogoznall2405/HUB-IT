@@ -306,6 +306,24 @@ export const isTransferJobPending = (response) =>
   Boolean(response?.job_id) &&
   ['queued', 'processing'].includes(String(response?.job_status || '').toLowerCase());
 
+export const getRetryOnlyFailedInvNos = (response) => {
+  const failedInvNos = [];
+  for (const item of (Array.isArray(response?.failed) ? response.failed : [])) {
+    const invNo = String(item?.inv_no || '').trim();
+    if (invNo && !failedInvNos.includes(invNo)) {
+      failedInvNos.push(invNo);
+    }
+  }
+
+  // The server provides this explicit field. Intersect it with the failed
+  // rows anyway: a stale client response must never re-send a success.
+  if (!Array.isArray(response?.retry_inv_nos)) return failedInvNos;
+  const requested = response.retry_inv_nos
+    .map((value) => String(value || '').trim())
+    .filter(Boolean);
+  return failedInvNos.filter((invNo) => requested.includes(invNo));
+};
+
 export const getTransferResultActionError = (response, successLabel) =>
   Number(response?.failed_count || 0) > 0
     ? `${successLabel} ${response.success_count}, ошибок ${response.failed_count}`

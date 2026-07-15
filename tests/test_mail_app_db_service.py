@@ -73,11 +73,17 @@ def test_mail_service_supports_app_db_backend(temp_dir, monkeypatch):
             "reading_pane": "bottom",
             "density": "compact",
             "mark_read_on_select": True,
+            "folder_pane_width": 246,
+            "message_list_width": 428,
+            "bottom_list_percent": 48,
         },
     )
     assert updated_prefs["preferences"]["reading_pane"] == "bottom"
     assert updated_prefs["preferences"]["density"] == "compact"
     assert updated_prefs["preferences"]["mark_read_on_select"] is True
+    assert updated_prefs["preferences"]["folder_pane_width"] == 246
+    assert updated_prefs["preferences"]["message_list_width"] == 428
+    assert updated_prefs["preferences"]["bottom_list_percent"] == 48
 
     service._set_restore_hint(
         user_id=7,
@@ -139,6 +145,18 @@ def test_mail_service_caches_message_detail_payload(temp_dir, monkeypatch):
     service.invalidate_user_cache(user_id=7, prefixes=("message_detail",))
     service.get_message(user_id=7, message_id="msg-1")
     assert calls["context"] == 2
+
+
+def test_mail_service_uses_bounded_ten_minute_detail_cache(temp_dir, monkeypatch):
+    monkeypatch.setenv("MAIL_DETAIL_CACHE_TTL_SEC", "600")
+    service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
+
+    assert service.mail_detail_cache_ttl_sec == 600
+    detail_policy = service._cache_policy("message_detail")
+    assert detail_policy.ttl_sec == 600
+    assert detail_policy.max_entries == 300
+    assert detail_policy.max_total_bytes == 64 * 1024 * 1024
+    assert detail_policy.max_entry_bytes == 2 * 1024 * 1024
 
 
 def test_mail_service_caches_conversation_detail_payload(temp_dir, monkeypatch):

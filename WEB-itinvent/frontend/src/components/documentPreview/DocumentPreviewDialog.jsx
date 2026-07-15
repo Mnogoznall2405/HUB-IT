@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from 'react';
 import {
   Alert,
   Box,
@@ -22,6 +22,8 @@ import CloseRoundedIcon from '@mui/icons-material/CloseRounded';
 import DownloadRoundedIcon from '@mui/icons-material/DownloadRounded';
 import PictureAsPdfRoundedIcon from '@mui/icons-material/PictureAsPdfRounded';
 import RefreshRoundedIcon from '@mui/icons-material/RefreshRounded';
+import RotateLeftRoundedIcon from '@mui/icons-material/RotateLeftRounded';
+import RotateRightRoundedIcon from '@mui/icons-material/RotateRightRounded';
 
 const MailPdfPreviewSurface = lazy(() => import('../mail/MailPdfPreviewSurface'));
 const MailExcelPreviewGrid = lazy(() => import('../mail/MailExcelPreviewGrid'));
@@ -62,10 +64,23 @@ export default function DocumentPreviewDialog({
   const hasPdfPreview = Boolean(objectUrl && (kind === 'pdf' || kind === 'office_pdf' || isExcel));
   const preferredMode = hasExcelTable ? 'table' : 'pdf';
   const [mode, setMode] = useState(preferredMode);
+  const [rotation, setRotation] = useState(0);
 
   useEffect(() => {
     if (open) setMode(preferredMode);
   }, [open, preferredMode]);
+
+  useEffect(() => {
+    if (open) setRotation(0);
+  }, [objectUrl, open]);
+
+  const rotateLeft = useCallback(() => {
+    setRotation((current) => (current + 270) % 360);
+  }, []);
+
+  const rotateRight = useCallback(() => {
+    setRotation((current) => (current + 90) % 360);
+  }, []);
 
   const showModeTabs = hasExcelTable && hasPdfPreview;
   const resolvedMode = hasExcelTable && mode === 'table' ? 'table' : 'pdf';
@@ -131,6 +146,7 @@ export default function DocumentPreviewDialog({
               initialPage={1}
               compact={false}
               fillContainer
+              rotation={rotation}
             />
           </Suspense>
         </Box>
@@ -155,6 +171,7 @@ export default function DocumentPreviewDialog({
     onRefresh,
     pageCount,
     resolvedMode,
+    rotation,
     sheets,
     sourceKind,
     objectUrl,
@@ -207,6 +224,24 @@ export default function DocumentPreviewDialog({
             </Typography>
           </Box>
           <Stack direction="row" spacing={0.75} alignItems="center">
+            {hasPdfPreview && resolvedMode === 'pdf' ? (
+              <>
+                <Tooltip title="Повернуть влево">
+                  <span>
+                    <IconButton onClick={rotateLeft} disabled={loading} aria-label="Повернуть влево">
+                      <RotateLeftRoundedIcon />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+                <Tooltip title="Повернуть вправо">
+                  <span>
+                    <IconButton onClick={rotateRight} disabled={loading} aria-label="Повернуть вправо">
+                      <RotateRightRoundedIcon />
+                    </IconButton>
+                  </span>
+                </Tooltip>
+              </>
+            ) : null}
             {onRefresh ? (
               <Tooltip title="Обновить">
                 <span>

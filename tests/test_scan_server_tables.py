@@ -7,6 +7,7 @@ import time
 from pathlib import Path
 
 import scan_server.database as scan_database
+from agent_version import AGENT_VERSION
 from scan_server.database import ScanStore
 from scan_server.maintenance import scrub_scan_job_pdf_payloads
 
@@ -55,6 +56,7 @@ def _seed_incident(
     file_name: str,
     source_kind: str,
     severity: str,
+    pattern_id: str = "password",
     status: str = "new",
     created_at: int | None = None,
 ) -> dict:
@@ -78,7 +80,7 @@ def _seed_incident(
         job=job,
         severity=severity,
         category="secrets",
-        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        matched_patterns=[{"pattern": pattern_id, "pattern_name": pattern_id, "value": "secret"}],
         short_reason="pattern match",
     )
     if created_at is not None:
@@ -86,6 +88,98 @@ def _seed_incident(
     if status == "ack":
         store.ack_incident(incident_id=result["incident_id"], ack_by="tester")
     return result
+
+
+def test_ack_incident_does_not_overwrite_resolved_status(temp_dir):
+    store = _make_store(temp_dir)
+    incident = _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\resolved.pdf",
+        file_name="resolved.pdf",
+        source_kind="pdf_slice",
+        severity="high",
+    )
+    with store._lock, store._connect() as conn:
+        conn.execute("UPDATE scan_incidents SET status='resolved_clean' WHERE id=?", (incident["incident_id"],))
+        conn.commit()
+
+    result = store.ack_incident(incident_id=incident["incident_id"], ack_by="operator")
+
+    assert result == {"id": incident["incident_id"], "status": "resolved_clean", "changed": False}
+
+
+def test_incident_pattern_filter_returns_only_selected_rule_for_host(temp_dir):
+    store = _make_store(temp_dir)
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\dsp.pdf",
+        file_name="dsp.pdf",
+        source_kind="pdf_slice",
+        severity="high",
+        pattern_id="dsp_official_use",
+    )
+    _seed_incident(
+        store,
+        agent_id="agent-1",
+        hostname="HOST-01",
+        branch="Тюмень",
+        user_login="user",
+        user_full_name="User",
+        file_path=r"C:\Docs\loan.pdf",
+        file_name="loan.pdf",
+        source_kind="pdf_slice",
+        severity="medium",
+        pattern_id="loan_keyword",
+    )
+
+    result = store.list_incidents(hostname="HOST-01", pattern_id="dsp_official_use", limit=20)
+
+    assert result["total"] == 1
+    assert result["items"][0]["file_name"] == "dsp.pdf"
+
+
+def test_incident_pattern_filter_group_returns_all_dsp_rules(temp_dir):
+    store = _make_store(temp_dir)
+    for file_name, pattern_id in (
+        ("dsp-exact.pdf", "dsp_official_use"),
+        ("dsp-ocr.pdf", "dsp_ocr_variant"),
+        ("dsp-context.pdf", "dsp_ocr_context"),
+        ("dsp-short.pdf", "dsp_with_exclusion"),
+        ("loan.pdf", "loan_keyword"),
+    ):
+        _seed_incident(
+            store,
+            agent_id="agent-1",
+            hostname="HOST-01",
+            branch="Тюмень",
+            user_login="user",
+            user_full_name="User",
+            file_path=rf"C:\Docs\{file_name}",
+            file_name=file_name,
+            source_kind="pdf_slice",
+            severity="high",
+            pattern_id=pattern_id,
+        )
+
+    result = store.list_incidents(hostname="HOST-01", pattern_id="dsp", limit=20)
+
+    assert result["total"] == 4
+    assert {item["file_name"] for item in result["items"]} == {
+        "dsp-exact.pdf",
+        "dsp-ocr.pdf",
+        "dsp-context.pdf",
+        "dsp-short.pdf",
+    }
 
 
 def test_list_agents_table_and_tasks_include_active_and_last_task(temp_dir):
@@ -176,7 +270,7 @@ def test_create_scan_task_returns_existing_active_scan_for_agent(temp_dir):
     assert total == 1
 
 
-def test_create_scan_task_returns_active_unlinked_job_for_agent(temp_dir):
+def test_create_scan_task_reports_blocking_unlinked_job_without_fake_task_id(temp_dir):
     store = _make_store(temp_dir)
     queued = store.queue_job(
         {
@@ -194,9 +288,11 @@ def test_create_scan_task_returns_active_unlinked_job_for_agent(temp_dir):
 
     created = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now_force:agent-1")
 
-    assert created["id"] == queued["job_id"]
+    assert "id" not in created
+    assert created["blocked"] is True
+    assert created["blocking_job_id"] == queued["job_id"]
     assert created["command"] == "scan_now"
-    assert created["status"] == "queued"
+    assert created["status"] == "blocked"
     with store._lock, store._connect() as conn:
         total = conn.execute("SELECT COUNT(*) FROM scan_tasks WHERE agent_id='agent-1'").fetchone()[0]
     assert total == 0
@@ -423,6 +519,52 @@ def test_list_incidents_pages_beyond_500_and_returns_page_metadata(temp_dir):
     assert second["next_offset"] is None
 
 
+def test_list_incidents_filters_by_scan_task_with_other_filters(temp_dir):
+    store = _make_store(temp_dir)
+    first_task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan:agent-1")
+    second_task = store.create_task(agent_id="agent-2", command="scan_now", dedupe_key="scan:agent-2")
+
+    incident_ids = []
+    for agent_id, task_id, file_name, severity in (
+        ("agent-1", first_task["id"], "first-secret.txt", "high"),
+        ("agent-2", second_task["id"], "second-secret.txt", "high"),
+        ("agent-1", first_task["id"], "first-low.txt", "low"),
+    ):
+        queued = store.queue_job(
+            {
+                "agent_id": agent_id,
+                "hostname": "HOST-01",
+                "branch": "Тюмень",
+                "file_path": rf"C:\Docs\{file_name}",
+                "file_name": file_name,
+                "file_hash": f"hash-{file_name}",
+                "file_size": 100,
+                "source_kind": "text",
+                "event_id": f"event-{file_name}",
+                "scan_task_id": task_id,
+            }
+        )
+        incident = store.create_finding_and_incident(
+            job=_get_job(store, queued["job_id"]),
+            severity=severity,
+            category="secrets",
+            matched_patterns=[{"pattern_name": "secret", "value": file_name}],
+            short_reason="secret match",
+        )
+        incident_ids.append(incident["incident_id"])
+
+    result = store.list_incidents(
+        task_id=first_task["id"],
+        hostname="HOST-01",
+        severity="high",
+        q="first-secret",
+        limit=10,
+    )
+
+    assert result["total"] == 1
+    assert [item["id"] for item in result["items"]] == [incident_ids[0]]
+
+
 def test_bulk_ack_incidents_by_ids_only_updates_selected_new_rows(temp_dir):
     store = _make_store(temp_dir)
     now_ts = int(time.time())
@@ -573,6 +715,9 @@ def test_agent_online_timeout_is_used_for_agents_and_dashboard(temp_dir):
     assert dashboard["totals"]["agents_total"] == 2
     assert dashboard["totals"]["agents_online"] == 1
     assert dashboard["totals"]["agents_offline"] == 1
+    assert dashboard["totals"]["agents_outdated"] == 2
+    assert dashboard["totals"]["agents_current_version"] == 0
+    assert dashboard["expected_agent_version"] == AGENT_VERSION
 
 
 def test_dashboard_reports_server_pdf_job_queue(temp_dir):
@@ -635,6 +780,18 @@ def test_dashboard_reports_server_pdf_job_queue(temp_dir):
     assert dashboard["totals"]["server_pdf_failed"] == 0
 
     store.finalize_job(job_id=first["job_id"], status="done_clean", summary="clean")
+    store.record_job_metrics(
+        job_id=first["job_id"],
+        metrics={
+            "queue_wait_ms": 1200.0,
+            "processing_ms": 4800.0,
+            "ocr_ms": 4100.0,
+            "ocr": {
+                "full_effective_dpi_min": 280.0,
+                "focused_effective_dpi_min": 400.0,
+            },
+        },
+    )
 
     dashboard = store.dashboard()
     assert dashboard["totals"]["server_pdf_pending"] == 1
@@ -644,6 +801,12 @@ def test_dashboard_reports_server_pdf_job_queue(temp_dir):
     assert dashboard["totals"]["server_pdf_done_clean"] == 1
     assert dashboard["totals"]["server_pdf_done_with_incident"] == 0
     assert dashboard["totals"]["server_pdf_failed"] == 0
+    assert dashboard["performance"]["completed"] == 1
+    assert dashboard["performance"]["queue_wait_ms"]["p95"] == 1200.0
+    assert dashboard["performance"]["processing_ms"]["p95"] == 4800.0
+    assert dashboard["performance"]["ocr_ms"]["p95"] == 4100.0
+    assert dashboard["performance"]["large_pages_downscaled"] == 1
+    assert dashboard["performance"]["focused_effective_dpi_min"] == 400.0
 
 
 def test_scan_task_progress_tracks_linked_jobs_until_all_ocr_finishes(temp_dir):
@@ -725,6 +888,62 @@ def test_scan_task_progress_tracks_linked_jobs_until_all_ocr_finishes(temp_dir):
     assert task_result["phase"] == "completed"
     assert task_result["jobs_pending"] == 0
     assert task_result["jobs_done_with_incident"] == 1
+
+
+def test_scan_task_system_metrics_are_stored_and_summarized(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now")
+
+    store.record_system_metric_samples(
+        task_ids=[task["id"]],
+        sample={
+            "captured_at": 100,
+            "cpu_percent": 25.0,
+            "memory_percent": 50.0,
+            "memory_used_bytes": 1000,
+            "memory_available_bytes": 1000,
+            "disk_read_bytes": 100,
+            "disk_write_bytes": 200,
+            "disk_read_bps": 10.0,
+            "disk_write_bps": 20.0,
+            "network_sent_bytes": 300,
+            "network_received_bytes": 400,
+            "network_sent_bps": 30.0,
+            "network_received_bps": 40.0,
+            "process_rss_bytes": 500,
+        },
+    )
+    store.record_system_metric_samples(
+        task_ids=[task["id"]],
+        sample={
+            "captured_at": 105,
+            "cpu_percent": 75.0,
+            "memory_percent": 60.0,
+            "memory_used_bytes": 1200,
+            "memory_available_bytes": 800,
+            "disk_read_bytes": 200,
+            "disk_write_bytes": 400,
+            "disk_read_bps": 20.0,
+            "disk_write_bps": 40.0,
+            "network_sent_bytes": 500,
+            "network_received_bytes": 700,
+            "network_sent_bps": 40.0,
+            "network_received_bps": 60.0,
+            "process_rss_bytes": 600,
+        },
+    )
+
+    report = store.list_task_system_metrics(task_id=task["id"])
+
+    assert report["total"] == 2
+    assert [item["captured_at"] for item in report["items"]] == [100, 105]
+    assert report["summary"]["cpu_percent_avg"] == 50.0
+    assert report["summary"]["cpu_percent_max"] == 75.0
+    assert report["summary"]["memory_percent_max"] == 60.0
+    assert report["summary"]["disk_read_bytes_delta"] == 100
+    assert report["summary"]["disk_write_bytes_delta"] == 200
+    assert report["summary"]["network_sent_bytes_delta"] == 200
+    assert report["summary"]["network_received_bytes_delta"] == 300
 
 
 def test_queue_job_strips_pdf_from_payload_json_and_writes_transient_spool(temp_dir):
@@ -830,6 +1049,36 @@ def test_claim_next_job_compatibility_and_finalize_deletes_only_finished_spool(t
 
     assert store.read_job_pdf_spool(job_id=first["job_id"]) == b""
     assert store.read_job_pdf_spool(job_id=second["job_id"]) == b"%PDF-1.4 second"
+
+
+def test_worker_startup_requeues_interrupted_jobs_without_losing_spool(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "branch",
+            "file_path": r"C:\Docs\interrupted.pdf",
+            "file_name": "interrupted.pdf",
+            "file_hash": "hash-interrupted",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "pdf-spool-interrupted",
+            "pdf_slice_b64": _pdf_b64(b"%PDF-1.4 interrupted"),
+        }
+    )
+
+    claimed = store.claim_next_job()
+    assert claimed is not None
+    assert claimed["id"] == queued["job_id"]
+    assert _get_job(store, queued["job_id"])["attempt_count"] == 1
+
+    assert store.requeue_interrupted_processing_jobs() == 1
+
+    recovered = _get_job(store, queued["job_id"])
+    assert recovered["status"] == "queued"
+    assert recovered["attempt_count"] == 0
+    assert store.read_job_pdf_spool(job_id=queued["job_id"]) == b"%PDF-1.4 interrupted"
 
 
 def test_queue_job_dedupes_stable_event_id_without_new_incident(temp_dir):
@@ -953,8 +1202,9 @@ def test_force_scan_deleted_event_resolves_incident_and_run_history(temp_dir):
     assert runs["items"][0]["observation_counts"]["deleted"] == 1
 
 
-def test_list_host_scan_runs_includes_observation_only_host(temp_dir):
+def test_clean_queued_job_does_not_create_false_finding_observation(temp_dir):
     store = _make_store(temp_dir)
+    store.upsert_agent_heartbeat({"agent_id": "agent-obs", "hostname": "HOST-OBS", "last_seen_at": int(time.time())})
     task = store.create_task(
         agent_id="agent-obs",
         command="scan_now",
@@ -979,13 +1229,12 @@ def test_list_host_scan_runs_includes_observation_only_host(temp_dir):
     )
 
     observations = store.list_task_observations(task_id=task["id"])
-    assert observations["total"] == 1
-    assert observations["items"][0]["observation_type"] == "found_new"
+    assert observations["total"] == 0
 
     runs = store.list_host_scan_runs(hostname="HOST-OBS")
     assert runs["total"] == 1
     assert runs["items"][0]["id"] == task["id"]
-    assert runs["items"][0]["observation_counts"]["found_new"] == 1
+    assert runs["items"][0]["observation_counts"]["found_new"] == 0
 
 
 def test_force_scan_cleaned_event_resolves_incident(temp_dir):
@@ -1189,7 +1438,7 @@ def test_deduped_previous_job_does_not_complete_new_force_scan_task(temp_dir):
     assert task_result["jobs_done_with_incident"] == 0
 
 
-def test_acknowledged_local_scan_task_switches_to_server_processing_when_jobs_exist(temp_dir):
+def test_local_scan_waits_for_ingest_complete_before_finishing_linked_jobs(temp_dir):
     store = _make_store(temp_dir)
     task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
     store.report_task_result(
@@ -1198,6 +1447,7 @@ def test_acknowledged_local_scan_task_switches_to_server_processing_when_jobs_ex
         status="acknowledged",
         result={
             "phase": "local_scan",
+            "ingest_complete": False,
             "scanned": 2,
             "queued": 2,
             "skipped": 0,
@@ -1222,7 +1472,7 @@ def test_acknowledged_local_scan_task_switches_to_server_processing_when_jobs_ex
         )
         conn.commit()
 
-    store.queue_job(
+    queued = store.queue_job(
         {
             "agent_id": "agent-1",
             "hostname": "HOST-01",
@@ -1241,12 +1491,78 @@ def test_acknowledged_local_scan_task_switches_to_server_processing_when_jobs_ex
     task_row = _get_task(store, task["id"])
     task_result = json.loads(task_row["result_json"])
     assert task_row["status"] == "acknowledged"
-    assert task_result["phase"] == "server_processing"
+    assert task_result["phase"] == "local_scan"
     assert task_result["jobs_total"] == 1
     assert task_result["jobs_pending"] == 1
 
+    store.finalize_job(job_id=queued["job_id"], status="done_clean", summary="clean")
 
-def test_queue_job_does_not_link_new_job_to_final_scan_task(temp_dir):
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "acknowledged"
+    assert task_result["phase"] == "local_scan"
+    assert task_result["jobs_pending"] == 0
+
+    store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="acknowledged",
+        result={
+            "phase": "server_processing",
+            "ingest_complete": True,
+            "jobs_total": 1,
+            "jobs_pending": 1,
+        },
+        error_text="",
+    )
+
+    task_row = _get_task(store, task["id"])
+    task_result = json.loads(task_row["result_json"])
+    assert task_row["status"] == "completed"
+    assert task_result["phase"] == "completed"
+    assert task_result["ingest_complete"] is True
+
+
+def test_agent_completed_signal_waits_until_declared_job_is_processed(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now")
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": r"C:\Docs\pending.pdf",
+            "file_name": "pending.pdf",
+            "file_hash": "hash-pending",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "pending-event",
+            "scan_task_id": task["id"],
+            "pdf_slice_b64": _pdf_b64(),
+        }
+    )
+
+    reported = store.report_task_result(
+        agent_id="agent-1",
+        task_id=task["id"],
+        status="completed",
+        result={
+            "phase": "server_processing",
+            "ingest_complete": True,
+            "jobs_total": 1,
+            "jobs_pending": 1,
+        },
+        error_text="",
+    )
+
+    assert reported["status"] == "acknowledged"
+    assert _get_task(store, task["id"])["status"] == "acknowledged"
+
+    store.finalize_job(job_id=queued["job_id"], status="done_clean", summary="clean")
+
+    assert _get_task(store, task["id"])["status"] == "completed"
+
+
+def test_queue_job_links_late_job_to_final_scan_task_without_reopening_task(temp_dir):
     store = _make_store(temp_dir)
     task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
     store.report_task_result(
@@ -1275,9 +1591,47 @@ def test_queue_job_does_not_link_new_job_to_final_scan_task(temp_dir):
 
     job_row = _get_job(store, queued["job_id"])
     task_row = _get_task(store, task["id"])
-    assert job_row["scan_task_id"] in (None, "")
+    task_result = json.loads(task_row["result_json"])
+    observations = store.list_task_observations(task_id=task["id"])
+
+    assert job_row["scan_task_id"] == task["id"]
     assert task_row["status"] == "failed"
     assert task_row["error_text"] == "Deferred to outbox: 1"
+    assert task_result["jobs_total"] == 0
+    assert observations["total"] == 0
+
+
+def test_create_finding_links_pending_scan_observation_to_incident(temp_dir):
+    store = _make_store(temp_dir)
+    task = store.create_task(agent_id="agent-1", command="scan_now", dedupe_key="scan_now:agent-1")
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "branch": "Тюмень",
+            "file_path": r"C:\Docs\linked.pdf",
+            "file_name": "linked.pdf",
+            "file_hash": "hash-linked",
+            "file_size": 2048,
+            "source_kind": "pdf_slice",
+            "event_id": "linked-observation",
+            "scan_task_id": task["id"],
+        }
+    )
+
+    before = store.list_task_observations(task_id=task["id"])
+    incident = store.create_finding_and_incident(
+        job=_get_job(store, queued["job_id"]),
+        severity="high",
+        category="secrets",
+        matched_patterns=[{"pattern_name": "password", "value": "secret"}],
+        short_reason="pattern match",
+    )
+    after = store.list_task_observations(task_id=task["id"])["items"][0]
+
+    assert before["total"] == 0
+    assert after["linked_incident_id"] == incident["incident_id"]
+    assert after["severity"] == "high"
 
 
 def test_report_task_result_ignores_late_updates_for_final_task(temp_dir):
@@ -1348,9 +1702,10 @@ def test_scan_task_fails_when_any_linked_job_fails(temp_dir):
     task_row = _get_task(store, task["id"])
     task_result = json.loads(task_row["result_json"])
     assert task_row["status"] == "failed"
-    assert task_row["error_text"] == "Linked OCR jobs failed"
+    assert task_row["error_text"] == "Linked scan jobs are incomplete or failed"
     assert task_result["phase"] == "failed"
     assert task_result["jobs_failed"] == 1
+    assert task_result["jobs_incomplete"] == 0
 
 
 def test_store_reconcile_completes_acknowledged_scan_task_after_restart(temp_dir):
@@ -1657,6 +2012,17 @@ def test_cleanup_retention_keeps_artifacts_but_removes_old_history(temp_dir):
             "UPDATE scan_artifacts SET created_at=? WHERE job_id=?",
             (old_ts, job["job_id"]),
         )
+        conn.execute(
+            """
+            INSERT INTO scan_task_file_observations(
+                id, scan_task_id, agent_id, hostname, file_path, file_hash, event_id,
+                observation_type, linked_job_id, linked_incident_id, source_kind,
+                severity, created_at
+            ) VALUES ('old-observation', ?, 'agent-1', 'HOST-01', 'C:\\Docs\\old.pdf',
+                      'hash-old', 'old-job', 'found_new', ?, '', 'pdf_slice', '', ?)
+            """,
+            (task["id"], job["job_id"], old_ts),
+        )
         conn.commit()
 
     result = store.cleanup_retention(
@@ -1670,14 +2036,19 @@ def test_cleanup_retention_keeps_artifacts_but_removes_old_history(temp_dir):
     assert result["artifact_files"] == 0
     assert result["tasks"] == 1
     assert result["jobs_clean"] == 1
+    assert result["observations"] == 1
     assert artifact_path.exists()
     with store._lock, store._connect() as conn:
         remaining_artifacts = conn.execute("SELECT COUNT(*) AS cnt FROM scan_artifacts").fetchone()["cnt"]
         remaining_tasks = conn.execute("SELECT COUNT(*) AS cnt FROM scan_tasks").fetchone()["cnt"]
         remaining_jobs = conn.execute("SELECT COUNT(*) AS cnt FROM scan_jobs").fetchone()["cnt"]
+        remaining_observations = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM scan_task_file_observations"
+        ).fetchone()["cnt"]
     assert remaining_artifacts == 1
     assert remaining_tasks == 0
     assert remaining_jobs == 0
+    assert remaining_observations == 0
 
 
 def test_cleanup_retention_uses_split_job_and_incident_windows(temp_dir):
@@ -1717,7 +2088,7 @@ def test_cleanup_retention_uses_split_job_and_incident_windows(temp_dir):
             (clean_old, clean_old, clean_job["job_id"]),
         )
         conn.execute(
-            "UPDATE scan_jobs SET status='done_with_incident', created_at=?, finished_at=? WHERE id=(SELECT job_id FROM scan_incidents WHERE id=?)",
+            "UPDATE scan_jobs SET status='done_clean', created_at=?, finished_at=? WHERE id=(SELECT job_id FROM scan_incidents WHERE id=?)",
             (incident_old, incident_old, incident["incident_id"]),
         )
         conn.execute(
@@ -1751,8 +2122,13 @@ def test_cleanup_retention_uses_split_job_and_incident_windows(temp_dir):
     with store._lock, store._connect() as conn:
         clean_remaining = conn.execute("SELECT COUNT(*) AS cnt FROM scan_jobs WHERE id=?", (clean_job["job_id"],)).fetchone()["cnt"]
         incident_remaining = conn.execute("SELECT COUNT(*) AS cnt FROM scan_incidents WHERE id=?", (incident["incident_id"],)).fetchone()["cnt"]
+        incident_job_remaining = conn.execute(
+            "SELECT COUNT(*) AS cnt FROM scan_jobs WHERE id=(SELECT job_id FROM scan_incidents WHERE id=?)",
+            (incident["incident_id"],),
+        ).fetchone()["cnt"]
     assert clean_remaining == 0
     assert incident_remaining == 1
+    assert incident_job_remaining == 1
 
 
 def test_sqlite_write_retry_handles_database_locked(temp_dir, monkeypatch):
@@ -1813,10 +2189,11 @@ def test_reconcile_job_pdf_spool_fails_pending_pdf_jobs_without_payload(temp_dir
     task_row = _get_task(store, task["id"])
     task_result = json.loads(task_row["result_json"])
     assert result["failed_jobs"] == 1
-    assert job_row["status"] == "failed"
+    assert job_row["status"] == "analysis_incomplete"
     assert job_row["error_text"] == "Missing transient PDF payload"
     assert task_row["status"] == "failed"
-    assert task_result["jobs_failed"] == 1
+    assert task_result["jobs_failed"] == 0
+    assert task_result["jobs_incomplete"] == 1
 
 
 def test_reconcile_job_pdf_spool_waits_for_fresh_processing_job_without_payload(temp_dir):
@@ -1873,7 +2250,7 @@ def test_reconcile_job_pdf_spool_fails_stale_processing_job_without_payload(temp
     job_row = _get_job(store, queued["job_id"])
 
     assert result["failed_jobs"] == 1
-    assert job_row["status"] == "failed"
+    assert job_row["status"] == "analysis_incomplete"
     assert job_row["error_text"] == "Missing transient PDF payload"
 
 

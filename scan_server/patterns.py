@@ -4,9 +4,12 @@ import logging
 import os
 from pathlib import Path
 import re
+import unicodedata
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import yaml
+
+from .pattern_filters import incident_pattern_filter_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -155,13 +158,17 @@ def list_patterns() -> List[Dict[str, Any]]:
         pattern_id = str(item.get("id") or "").strip()
         if not pattern_id:
             continue
+        pattern_name = str(item.get("name") or pattern_id)
+        incident_filter = incident_pattern_filter_metadata(pattern_id, pattern_name)
         out.append(
             {
                 "id": pattern_id,
-                "name": str(item.get("name") or pattern_id),
+                "name": pattern_name,
                 "category": _normalize_pattern_category(item.get("category")),
                 "weight": float(item.get("weight") or 1.0),
                 "enabled_by_default": _normalize_enabled_by_default(item.get("enabled_by_default")),
+                "incident_filter_id": incident_filter["id"],
+                "incident_filter_name": incident_filter["name"],
             }
         )
     return out
@@ -173,12 +180,44 @@ def _snippet(text: str, start: int, end: int, radius: int = 36) -> str:
     return text[left:right].replace("\n", " ").strip()
 
 
+_SPACED_DSP_PHRASE_RE = re.compile(
+    r"(?i)д\s*л\s*я\s*с\s*л\s*у\s*ж\s*е\s*б\s*н\s*о\s*г\s*о\s*п\s*о\s*л\s*ь\s*з\s*о\s*в\s*а\s*н\s*и\s*я"
+)
+_SPACED_CYRILLIC_WORD_RE = re.compile(r"(?<!\w)(?:[а-яё][ \t]){3,}[а-яё](?!\w)", re.IGNORECASE)
+_DSP_FURNITURE_RE = re.compile(r"(?i)(?:столешниц|мебел|плит|лист|дсп\s*22\s*мм|\b\d+\s*мм\b)")
+_OCR_LATIN_TO_CYRILLIC = str.maketrans(
+    "AaBCcEeHKMOoPpTXYxyD",
+    "АаВСсЕеНКМОоРрТХУхуД",
+)
+
+
+def normalize_scan_text(value: Any) -> str:
+    """Normalize OCR noise without changing the original evidence snippets."""
+    text = unicodedata.normalize("NFKC", str(value or "")).replace("ё", "е").replace("Ё", "Е")
+    text = text.replace("\u00ad", "").replace("\u200b", "")
+    text = re.sub(r"(?<=\w)[\-‐‑–—]\s*(?=\w)", "", text)
+    text = _SPACED_DSP_PHRASE_RE.sub("Для служебного пользования", text)
+    text = _SPACED_CYRILLIC_WORD_RE.sub(lambda match: re.sub(r"\s+", "", match.group(0)), text)
+    return re.sub(r"\s+", " ", text.translate(_OCR_LATIN_TO_CYRILLIC)).strip()
+
+
+def _is_excluded_dsp_context(text: str, start: int, end: int) -> bool:
+    left = max(0, start - 80)
+    right = min(len(text), end + 80)
+    return bool(_DSP_FURNITURE_RE.search(text[left:right]))
+
+
 def scan_text(text: str, allowed_pattern_ids: Optional[Iterable[Any]] = None) -> List[Dict[str, str]]:
     source = str(text or "")
     if not source.strip():
         return []
     allowed = normalize_pattern_filter(allowed_pattern_ids)
+    normalized_source = normalize_scan_text(source)
+    sources = [source]
+    if normalized_source and normalized_source != source:
+        sources.append(normalized_source)
     out: List[Dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
     for item in PATTERN_DEFS:
         pattern_id = str(item.get("id") or "")
         if allowed is not None and pattern_id not in allowed:
@@ -188,18 +227,39 @@ def scan_text(text: str, allowed_pattern_ids: Optional[Iterable[Any]] = None) ->
         regex = item.get("regex")
         if not pattern_id or regex is None:
             continue
-        for match in regex.finditer(source):
-            out.append(
-                {
-                    "pattern": pattern_id,
-                    "pattern_name": name,
-                    "weight": str(weight),
-                    "value": match.group(0),
-                    "snippet": _snippet(source, match.start(), match.end()),
-                }
-            )
-            if len(out) >= 200:
-                return out
+        for candidate in sources:
+            for match in regex.finditer(candidate):
+                if pattern_id == "dsp_with_exclusion" and _is_excluded_dsp_context(
+                    candidate, match.start(), match.end()
+                ):
+                    continue
+                key = (
+                    pattern_id,
+                    normalize_scan_text(match.group(0)).casefold(),
+                    normalize_scan_text(_snippet(candidate, match.start(), match.end())).casefold(),
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                out.append(
+                    {
+                        "pattern": pattern_id,
+                        "pattern_name": name,
+                        "weight": str(weight),
+                        "value": match.group(0),
+                        "snippet": _snippet(candidate, match.start(), match.end()),
+                    }
+                )
+                if len(out) >= 200:
+                    return out
+    matched_ids = {str(item.get("pattern") or "") for item in out}
+    if "dsp_official_use" in matched_ids:
+        out = [
+            item for item in out
+            if item.get("pattern") not in {"dsp_ocr_variant", "dsp_ocr_context"}
+        ]
+    elif "dsp_ocr_variant" in matched_ids:
+        out = [item for item in out if item.get("pattern") != "dsp_ocr_context"]
     return out
 
 
@@ -207,8 +267,12 @@ def classify_severity(matches: List[Dict[str, str]]) -> str:
     if not matches:
         return "none"
     total_score = 0.0
-    for item in matches:
-        pattern_id = str(item.get("pattern") or "")
+    unique_pattern_ids = {
+        str(item.get("pattern") or "")
+        for item in matches
+        if str(item.get("pattern") or "")
+    }
+    for pattern_id in unique_pattern_ids:
         total_score += float(PATTERN_WEIGHTS.get(pattern_id, 0.0))
 
     if total_score >= float(THRESHOLDS.get("dsp") or 1.0):

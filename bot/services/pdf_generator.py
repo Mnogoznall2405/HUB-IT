@@ -8,6 +8,7 @@ import os
 import asyncio
 import time
 import gc
+import hashlib
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
@@ -76,7 +77,8 @@ async def generate_transfer_act_pdf(
     new_employee_dept: str,
     old_employee: str,
     serials_data: List[Dict[str, Any]],
-    db_name: str
+    db_name: str,
+    operation_id: Optional[str] = None,
 ) -> Optional[str]:
     """
     Генерирует PDF-акт приема-передачи оборудования из шаблона
@@ -202,11 +204,23 @@ async def generate_transfer_act_pdf(
         # Импортируем sanitize_filename
         from bot.services.equipment_grouper import sanitize_filename
         
-        # Сохраняем DOCX
-        timestamp = current_date.strftime('%Y%m%d_%H%M%S')
+        # A retry of the same transfer must reuse the same artifact.  Do not
+        # put the raw operation id into a filename; it can contain characters
+        # unsuitable for the filesystem.
+        if operation_id:
+            artifact_seed = f"{operation_id}|{old_employee}".encode("utf-8")
+            timestamp = hashlib.sha256(artifact_seed).hexdigest()[:20]
+        else:
+            timestamp = current_date.strftime('%Y%m%d_%H%M%S')
         old_employee_sanitized = sanitize_filename(old_employee)
         docx_filename = f'transfer_act_{timestamp}_{old_employee_sanitized}.docx'
         docx_path = os.path.join(acts_dir, docx_filename)
+
+        pdf_filename = f'transfer_act_{timestamp}_{old_employee_sanitized}.pdf'
+        pdf_path = os.path.join(acts_dir, pdf_filename)
+        if operation_id and os.path.exists(pdf_path):
+            logger.info("Переиспользуется PDF-акт операции %s: %s", operation_id, pdf_path)
+            return pdf_path
 
         # Сохраняем DOCX
         doc.save(docx_path)
@@ -215,10 +229,6 @@ async def generate_transfer_act_pdf(
         # Освобождаем ресурсы перед конвертацией
         del doc
         gc.collect()
-
-        # Конвертируем в PDF
-        pdf_filename = f'transfer_act_{timestamp}_{old_employee_sanitized}.pdf'
-        pdf_path = os.path.join(acts_dir, pdf_filename)
 
         try:
             # Запускаем конвертацию в отдельном потоке с таймаутом
@@ -263,7 +273,8 @@ async def generate_multiple_transfer_acts(
     new_employee: str,
     new_employee_dept: str,
     grouped_equipment: Dict[str, List[Dict[str, Any]]],
-    db_name: str
+    db_name: str,
+    operation_id: Optional[str] = None,
 ) -> List[Dict[str, Any]]:
     """
     Генерирует отдельный PDF-акт для каждой группы оборудования
@@ -302,7 +313,8 @@ async def generate_multiple_transfer_acts(
             new_employee_dept=new_employee_dept,
             old_employee=old_employee,
             serials_data=equipment_list,
-            db_name=db_name
+            db_name=db_name,
+            operation_id=operation_id,
         )
         tasks.append(task)
     

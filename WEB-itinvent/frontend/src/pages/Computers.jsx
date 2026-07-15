@@ -199,6 +199,43 @@ function resolvePcIp(pc) {
   return firstIpv4(pc?.network_link?.endpoint_ip_raw);
 }
 
+const NETWORK_DEVICE_TYPE_LABELS = {
+  ethernet: 'Ethernet',
+  wifi: 'Wi-Fi',
+  bluetooth: 'Bluetooth',
+  vpn: 'VPN / туннель',
+  virtual: 'Виртуальный',
+  other: 'Другое',
+};
+
+function resolveNetworkDevices(pc) {
+  const rows = pc?.network?.devices;
+  return Array.isArray(rows) ? rows.filter((item) => item && typeof item === 'object') : [];
+}
+
+function networkDeviceStatusMeta(device) {
+  if (device?.enabled === false) return { label: 'Отключён', color: 'error' };
+  const connectionStatus = String(device?.connection_status || '').trim().toLowerCase();
+  if (device?.enabled === true && connectionStatus === 'up') {
+    return { label: 'Включён · подключён', color: 'success' };
+  }
+  if (device?.enabled === true && connectionStatus === 'disconnected') {
+    return { label: 'Включён · нет подключения', color: 'warning' };
+  }
+  if (device?.enabled === true) return { label: 'Включён', color: 'success' };
+  if (connectionStatus === 'not_present') return { label: 'Не найден', color: 'default' };
+  return { label: 'Состояние неизвестно', color: 'default' };
+}
+
+function networkDeviceDetails(device) {
+  const values = [];
+  const ipv4 = Array.isArray(device?.ipv4) ? device.ipv4.filter(Boolean) : [];
+  if (ipv4.length > 0) values.push(`IP: ${ipv4.join(', ')}`);
+  if (device?.mac_address) values.push(`MAC: ${device.mac_address}`);
+  if (device?.link_speed) values.push(`Скорость: ${device.link_speed}`);
+  return values.join(' · ');
+}
+
 function toIntOrNull(value) {
   const parsed = Number(value);
   if (!Number.isFinite(parsed) || parsed <= 0) return null;
@@ -588,7 +625,9 @@ function Computers() {
   const [outlookStatus, setOutlookStatus] = useState('all');
   const [branch, setBranch] = useState('all');
   const [changedOnly, setChangedOnly] = useState(false);
-  const [showAllComputers, setShowAllComputers] = useState(false);
+  const [showAllComputers, setShowAllComputers] = useState(
+    () => localStorage.getItem('computers_scope_all') !== '0',
+  );
   const [showDashboard, setShowDashboard] = useState(() => localStorage.getItem('computers_show_dashboard') !== '0');
   const [showLocation, setShowLocation] = useState(() => localStorage.getItem('computers_show_location') !== '0');
   const [hideSystemUserProfileFolders, setHideSystemUserProfileFolders] = useState(() => localStorage.getItem(USER_PROFILE_HIDE_SYSTEM_FOLDERS_STORAGE_KEY) === '1');
@@ -597,6 +636,7 @@ function Computers() {
   const [seenChangesByPc, setSeenChangesByPc] = useState(() => readSeenChangesMap());
 
   const inFlightRef = useRef(false);
+  const loadMoreSentinelRef = useRef(null);
   const pollTimerRef = useRef(null);
   const loadedCountRef = useRef(0);
   const retryDelaySecRef = useRef(AUTO_REFRESH_BASE_SEC);
@@ -728,6 +768,24 @@ function Computers() {
     await load({ withLoader: false, append: true, offset: nextOffset, limit: COMPUTERS_PAGE_SIZE });
   }, [computers.length, load, loadingMore, searchMeta.has_more, searchMeta.next_offset]);
 
+  useEffect(() => {
+    const sentinel = loadMoreSentinelRef.current;
+    if (!sentinel || loading || loadingMore || !searchMeta.has_more) return undefined;
+    if (typeof IntersectionObserver !== 'function') return undefined;
+
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        void handleLoadMore();
+      }
+    }, {
+      root: null,
+      rootMargin: '480px 0px',
+      threshold: 0.01,
+    });
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [handleLoadMore, loading, loadingMore, searchMeta.has_more]);
+
   const openComputerDetail = useCallback(async (pc) => {
     if (!pc) return;
     setSelected(pc);
@@ -848,6 +906,11 @@ function Computers() {
     if (canViewAllComputers) return;
     setShowAllComputers(false);
   }, [canViewAllComputers]);
+
+  useEffect(() => {
+    if (!canViewAllComputers) return;
+    localStorage.setItem('computers_scope_all', showAllComputers ? '1' : '0');
+  }, [canViewAllComputers, showAllComputers]);
 
   useEffect(() => {
     if (!selected) return;
@@ -994,6 +1057,7 @@ function Computers() {
   const selectedOutlookUsage = useMemo(() => resolveOutlookArchiveUsage(selectedOutlook), [selectedOutlook]);
   const selectedOutlookFiles = useMemo(() => resolveOutlookFiles(selectedOutlook), [selectedOutlook]);
   const selectedUserProfileSizes = useMemo(() => resolveUserProfileSizes(selected), [selected]);
+  const selectedNetworkDevices = useMemo(() => resolveNetworkDevices(selected), [selected]);
   const toggleLocationGroup = useCallback((branchName, locationName) => {
     const key = `${branchName}__${locationName}`;
     setExpandedLocations((prev) => ({ ...(prev || {}), [key]: !Boolean(prev?.[key]) }));
@@ -1012,7 +1076,7 @@ function Computers() {
               <FormControlLabel
                 sx={{ m: 0 }}
                 control={<Switch checked={showAllComputers} onChange={(e) => setShowAllComputers(e.target.checked)} />}
-                label={showAllComputers ? 'Все БД' : 'Текущая БД'}
+                label={showAllComputers ? 'Показаны все базы' : 'Только текущая база'}
               />
             )}
             <FormControlLabel
@@ -1060,16 +1124,19 @@ function Computers() {
         {showDashboard && (
           <>
             <Grid container spacing={2} sx={{ mb: 2 }}>
-              <Grid item xs={12} sm={6} md={3}>
+              <Grid item xs={12} sm={6} md={2.4}>
                 <StatCard title="Всего ПК" value={Number(searchSummary?.total ?? searchMeta.total ?? filtered.length)} helper="по текущим фильтрам" />
               </Grid>
-              <Grid item xs={12} sm={6} md={3}>
+              <Grid item xs={12} sm={6} md={2.4}>
                 <StatCard title="В сети" value={statusRows[0]?.value || 0} helper="heartbeat до 12 минут" color="success.main" />
               </Grid>
-              <Grid item xs={12} sm={6} md={3}>
+              <Grid item xs={12} sm={6} md={2.4}>
                 <StatCard title="Оффлайн" value={statusRows[2]?.value || 0} helper="более 60 минут" color="error.main" />
               </Grid>
-              <Grid item xs={12} sm={6} md={3}>
+              <Grid item xs={12} sm={6} md={2.4}>
+                <StatCard title="Без привязки" value={Number(searchSummary?.unassigned || 0)} helper="агент виден, база не определена" color="warning.main" />
+              </Grid>
+              <Grid item xs={12} sm={6} md={2.4}>
                 <StatCard title="С изменениями" value={Number(totals.changed_30d || 0)} helper="уникальные ПК за 30 дней" color="warning.main" />
               </Grid>
             </Grid>
@@ -1236,6 +1303,10 @@ function Computers() {
                                       <Chip size="small" color={statusColor(pc.status)} label={statusLabel(pc.status)} />
                                     </Box>
 
+                                    {pc.is_unassigned && (
+                                      <Chip size="small" color="warning" variant="outlined" label="Без привязки" sx={{ mb: 0.7 }} />
+                                    )}
+
                                     <Typography variant="caption" sx={{ fontWeight: 600, display: 'block', wordBreak: 'break-word' }}>
                                       {pc.user_full_name || 'ФИО не определено'}
                                     </Typography>
@@ -1318,18 +1389,21 @@ function Computers() {
               </Paper>
             ))}
             {searchMeta.has_more ? (
-              <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 1, py: 1.5 }}>
+              <Box
+                ref={loadMoreSentinelRef}
+                data-testid="computers-load-more-sentinel"
+                aria-live="polite"
+                sx={{ minHeight: 52, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 0.7, py: 1 }}
+              >
                 <Typography variant="caption" color="text.secondary">
                   Показано {computers.length} из {searchMeta.total}
                 </Typography>
-                <Button
-                  variant="outlined"
-                  onClick={handleLoadMore}
-                  disabled={loadingMore}
-                  sx={{ minWidth: 220 }}
-                >
-                  {loadingMore ? 'Загрузка…' : `Загрузить ещё ${Math.min(COMPUTERS_PAGE_SIZE, Math.max(0, searchMeta.total - computers.length))}`}
-                </Button>
+                <Stack direction="row" spacing={0.8} alignItems="center">
+                  {loadingMore ? <CircularProgress size={16} thickness={5} /> : null}
+                  <Typography variant="caption" color="text.secondary">
+                    {loadingMore ? 'Подгружаем компьютеры в фоне…' : 'Следующие компьютеры подгрузятся автоматически'}
+                  </Typography>
+                </Stack>
               </Box>
             ) : searchMeta.total > computers.length ? (
               <Typography variant="caption" color="text.secondary" sx={{ textAlign: 'center', py: 1 }}>
@@ -1398,6 +1472,52 @@ function Computers() {
                   <Typography variant="body2">
                     Подключение: {selected.network_link?.device_code ? `${selected.network_link.device_code} / ${selected.network_link.port_name || 'порт ?'} / ${selected.network_link.socket_code || 'розетка ?'}` : 'не определено'}
                   </Typography>
+                  <Box sx={{ borderTop: 1, borderColor: 'divider', mt: 1.1, pt: 1.1 }}>
+                    <Typography variant="body2" sx={{ fontWeight: 700, mb: selectedNetworkDevices.length > 0 ? 0.8 : 0 }}>
+                      Сетевые устройства: {selectedNetworkDevices.length || 'нет данных'}
+                    </Typography>
+                    {selectedNetworkDevices.length > 0 ? (
+                      <Stack spacing={0.7}>
+                        {selectedNetworkDevices.map((device, idx) => {
+                          const status = networkDeviceStatusMeta(device);
+                          const details = networkDeviceDetails(device);
+                          return (
+                            <Paper
+                              key={`${device.name || device.description || 'network-device'}-${device.interface_index || idx}`}
+                              variant="outlined"
+                              sx={{ p: 0.8 }}
+                            >
+                              <Stack direction="row" spacing={0.8} justifyContent="space-between" alignItems="flex-start">
+                                <Box sx={{ minWidth: 0, flex: 1 }}>
+                                  <Typography variant="caption" sx={{ display: 'block', fontWeight: 700 }}>
+                                    {device.name || device.description || 'Без названия'}
+                                  </Typography>
+                                  {device.description && device.description !== device.name ? (
+                                    <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+                                      {device.description}
+                                    </Typography>
+                                  ) : null}
+                                </Box>
+                                <Stack direction="row" spacing={0.5} flexWrap="wrap" justifyContent="flex-end" useFlexGap>
+                                  <Chip
+                                    size="small"
+                                    variant="outlined"
+                                    label={NETWORK_DEVICE_TYPE_LABELS[device.device_type] || NETWORK_DEVICE_TYPE_LABELS.other}
+                                  />
+                                  <Chip size="small" color={status.color} label={status.label} />
+                                </Stack>
+                              </Stack>
+                              {details ? (
+                                <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 0.45 }}>
+                                  {details}
+                                </Typography>
+                              ) : null}
+                            </Paper>
+                          );
+                        })}
+                      </Stack>
+                    ) : null}
+                  </Box>
                 </Paper>
 
                 <Typography variant="subtitle2" sx={{ fontWeight: 700 }}>Профили пользователей</Typography>

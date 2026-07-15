@@ -44,6 +44,20 @@ def _make_pattern_defs(pattern: str) -> list[dict]:
     return [{"id": "p1", "name": "pattern", "weight": 1.0, "regex": re.compile(pattern)}]
 
 
+def test_agent_patterns_detect_real_dsp_ocr_distortions():
+    definitions = scan_agent._load_pattern_defs(Path(__file__).parents[1] / "patterns_strict.yaml")
+    samples = {
+        "Для служейного пользования": "dsp_ocr_variant",
+        "Дли служа бного пользования": "dsp_ocr_variant",
+        "Для служебного mn oA\nп. 37 Перечня сведений ВС\nЭкз. № 2": "dsp_ocr_context",
+        "Tina ¢ тужеб ного пользования\nп. 161 Перечни сведений ac РФ": "dsp_ocr_context",
+    }
+
+    for sample, expected_rule in samples.items():
+        matches = scan_agent.scan_text(sample, definitions)
+        assert any(item["pattern"] == expected_rule for item in matches)
+
+
 def test_read_env_defaults_to_on_demand(monkeypatch):
     monkeypatch.delenv("SCAN_AGENT_SCAN_ON_START", raising=False)
     monkeypatch.delenv("SCAN_AGENT_WATCHDOG_ENABLED", raising=False)
@@ -59,6 +73,31 @@ def test_read_env_defaults_to_on_demand(monkeypatch):
     assert config["poll_interval"] == 600
     assert config["poll_jitter_sec"] == 120
     assert config["outbox_drain_batch"] == 10
+
+
+def test_read_env_never_falls_back_to_a_shared_legacy_key(monkeypatch):
+    monkeypatch.delenv("SCAN_AGENT_API_KEY", raising=False)
+    monkeypatch.setenv("ITINV_AGENT_ALLOW_DEFAULT_KEY", "1")
+
+    config = scan_agent._read_env()
+
+    assert config["api_key"] == ""
+
+
+def test_iter_files_keeps_unreadable_paths_for_incomplete_accounting(monkeypatch, tmp_path):
+    root = tmp_path / "root"
+    inaccessible = root / "locked.pdf"
+    monkeypatch.setattr(scan_agent.os, "walk", lambda value: [(str(root), [], [inaccessible.name])])
+    original_stat = Path.stat
+
+    def fake_stat(path, *args, **kwargs):
+        if path == inaccessible:
+            raise PermissionError("access denied")
+        return original_stat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "stat", fake_stat)
+
+    assert list(scan_agent._iter_files([root], 1024)) == [inaccessible]
 
 
 def test_send_ingest_uses_multipart_endpoint_for_pdf_slice(monkeypatch):
@@ -149,6 +188,7 @@ def test_poll_tasks_scan_now_keeps_task_acknowledged_until_server_processing_fin
     sent_payloads = []
     run_stats = {
         "phase": "server_processing",
+        "ingest_complete": True,
         "scanned": 2,
         "queued": 2,
         "skipped": 1,
@@ -176,7 +216,9 @@ def test_poll_tasks_scan_now_keeps_task_acknowledged_until_server_processing_fin
     acknowledged_payloads = [payload for _, _, payload in sent_payloads if payload and payload.get("status") == "acknowledged"]
     assert len(acknowledged_payloads) == 2
     assert acknowledged_payloads[0]["result"]["phase"] == "local_scan"
+    assert acknowledged_payloads[0]["result"]["ingest_complete"] is False
     assert acknowledged_payloads[1]["result"] == run_stats
+    assert acknowledged_payloads[1]["result"]["ingest_complete"] is True
     assert not any(payload and payload.get("status") == "completed" for _, _, payload in sent_payloads)
 
 
@@ -212,11 +254,12 @@ def test_poll_tasks_scan_now_completes_immediately_when_server_has_no_jobs(monke
     assert any(payload and payload.get("status") == "completed" and payload.get("result") == run_stats for _, _, payload in sent_payloads)
 
 
-def test_poll_tasks_scan_now_fails_when_files_are_deferred_to_outbox(monkeypatch):
+def test_poll_tasks_scan_now_stays_acknowledged_when_files_are_deferred_to_outbox(monkeypatch):
     agent = scan_agent.ScanAgent(_make_config())
     sent_payloads = []
     run_stats = {
-        "phase": "failed",
+        "phase": "processing",
+        "ingest_complete": False,
         "scanned": 2,
         "queued": 1,
         "skipped": 0,
@@ -243,9 +286,8 @@ def test_poll_tasks_scan_now_fails_when_files_are_deferred_to_outbox(monkeypatch
 
     assert any(
         payload
-        and payload.get("status") == "failed"
+        and payload.get("status") == "acknowledged"
         and payload.get("result") == run_stats
-        and payload.get("error_text") == "Deferred to outbox: 1"
         for _, _, payload in sent_payloads
     )
 
@@ -277,15 +319,26 @@ def test_poll_tasks_passes_force_rescan_payload_to_scan_once(monkeypatch):
                         {
                             "task_id": "task-force",
                             "command": "scan_now",
-                            "payload": {"force_rescan": True},
+                            "payload": {
+                                "force_rescan": True,
+                                "agent_pattern_ids": ["dsp_official_use", "dsp_ocr_variant"],
+                                "scan_extensions": ["PDF", ".txt", ".docx", ".exe"],
+                            },
                         }
                     ]
                 }
             )
         return _DummyResponse()
 
-    def fake_run_scan_once(scan_task_id=None, force_rescan=False):
-        calls.append({"scan_task_id": scan_task_id, "force_rescan": force_rescan})
+    def fake_run_scan_once(scan_task_id=None, force_rescan=False, pattern_ids=None, scan_extensions=None):
+        calls.append(
+            {
+                "scan_task_id": scan_task_id,
+                "force_rescan": force_rescan,
+                "pattern_ids": pattern_ids,
+                "scan_extensions": scan_extensions,
+            }
+        )
         return run_stats
 
     monkeypatch.setattr(agent, "_send", fake_send)
@@ -293,7 +346,14 @@ def test_poll_tasks_passes_force_rescan_payload_to_scan_once(monkeypatch):
 
     agent.poll_tasks()
 
-    assert calls == [{"scan_task_id": "task-force", "force_rescan": True}]
+    assert calls == [
+        {
+            "scan_task_id": "task-force",
+            "force_rescan": True,
+            "pattern_ids": ["dsp_ocr_variant", "dsp_official_use"],
+            "scan_extensions": [".docx", ".pdf", ".txt"],
+        }
+    ]
 
 
 def test_run_forever_does_not_scan_on_start_by_default(monkeypatch):
@@ -409,8 +469,8 @@ def test_scan_agent_service_installer_forces_on_demand_defaults():
 
 def test_unsupported_file_skips_hashing(monkeypatch, temp_dir):
     agent = scan_agent.ScanAgent(_make_config())
-    image_path = Path(temp_dir) / "photo.jpg"
-    image_path.write_bytes(b"image-bytes")
+    image_path = Path(temp_dir) / "program.exe"
+    image_path.write_bytes(b"binary-bytes")
 
     monkeypatch.setattr(scan_agent, "_sha256_file", lambda path: (_ for _ in ()).throw(AssertionError("hash should not be called")))
 
@@ -421,8 +481,8 @@ def test_unsupported_file_skips_hashing(monkeypatch, temp_dir):
 
 def test_scan_path_can_report_skip_reasons(monkeypatch, temp_dir):
     agent = scan_agent.ScanAgent(_make_config())
-    image_path = Path(temp_dir) / "photo.jpg"
-    image_path.write_bytes(b"image-bytes")
+    image_path = Path(temp_dir) / "program.exe"
+    image_path.write_bytes(b"binary-bytes")
 
     monkeypatch.setattr(scan_agent, "_sha256_file", lambda path: (_ for _ in ()).throw(AssertionError("hash should not be called")))
 
@@ -431,6 +491,21 @@ def test_scan_path_can_report_skip_reasons(monkeypatch, temp_dir):
     assert result["files_seen"] == 1
     assert result["skipped"] == 1
     assert result["skipped_reasons"] == {"unsupported_extension": 1}
+
+
+def test_scan_path_skips_supported_extension_excluded_by_task(temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    office_path = Path(temp_dir) / "document.docx"
+    office_path.write_bytes(b"office-payload")
+
+    result = agent._scan_path(
+        office_path,
+        include_reasons=True,
+        scan_extensions=[".pdf", ".txt"],
+    )
+
+    assert result["scanned"] == 0
+    assert result["skipped_reasons"] == {"excluded_extension": 1}
 
 
 def test_cp1251_text_file_detects_patterns(monkeypatch, temp_dir):
@@ -483,6 +558,43 @@ def test_event_id_is_stable_across_scan_tasks(temp_dir):
     second = agent._build_event_id(path, file_hash, stat_result, scan_task_id="task-2")
 
     assert first == second
+
+
+def test_event_id_changes_for_a_different_pattern_scope(temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    path = Path(temp_dir) / "match.txt"
+    path.write_text("secret-token", encoding="utf-8")
+    stat_result = path.stat()
+    file_hash = scan_agent._sha256_file(path)
+
+    dsp_only = agent._build_event_id(
+        path,
+        file_hash,
+        stat_result,
+        pattern_ids=["dsp_official_use"],
+    )
+    loan_only = agent._build_event_id(
+        path,
+        file_hash,
+        stat_result,
+        pattern_ids=["loan_keyword"],
+    )
+
+    assert dsp_only != loan_only
+
+
+def test_event_id_changes_with_analysis_version(monkeypatch, temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    path = Path(temp_dir) / "match.txt"
+    path.write_text("secret-token", encoding="utf-8")
+    stat_result = path.stat()
+    file_hash = scan_agent._sha256_file(path)
+
+    first = agent._build_event_id(path, file_hash, stat_result)
+    monkeypatch.setattr(scan_agent, "ANALYSIS_VERSION", "next-analysis-version")
+    second = agent._build_event_id(path, file_hash, stat_result)
+
+    assert first != second
 
 
 def test_force_rescan_ignores_scanned_state(monkeypatch, temp_dir):
@@ -613,7 +725,7 @@ def test_run_scan_once_drains_outbox_once_after_failed_ingest(monkeypatch, temp_
     agent._roots = [root]
     monkeypatch.setattr(agent, "refresh_roots", lambda force=False: None)
     monkeypatch.setattr(agent, "_send_ingest", lambda payload: False)
-    monkeypatch.setattr(agent, "_outbox_enqueue", lambda payload, **kwargs: outbox_payloads.append(payload) or None)
+    monkeypatch.setattr(agent, "_outbox_enqueue", lambda payload, **kwargs: outbox_payloads.append(payload) or (root / "queued.json"))
     monkeypatch.setattr(agent, "_outbox_prune_limits", lambda: prune_calls.append("prune"))
     monkeypatch.setattr(agent, "_drain_outbox", lambda max_items=10: drain_calls.append(max_items) or 0)
     monkeypatch.setattr(agent, "_persist_state", lambda: None)
@@ -623,11 +735,68 @@ def test_run_scan_once_drains_outbox_once_after_failed_ingest(monkeypatch, temp_
 
     assert summary["scanned"] == 2
     assert summary["deferred"] == 2
-    assert summary["phase"] == "failed"
-    assert summary["jobs_total"] == 0
+    assert summary["phase"] == "agent_outbox"
+    assert summary["ingest_complete"] is False
+    assert summary["jobs_total"] == 2
     assert len(outbox_payloads) == 2
     assert prune_calls == ["prune"]
     assert drain_calls == [10]
+
+
+def test_failed_outbox_persistence_is_reported_as_incomplete(monkeypatch, temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    agent.pattern_defs = _make_pattern_defs("classified")
+    path = Path(temp_dir) / "classified.txt"
+    path.write_text("classified", encoding="utf-8")
+    monkeypatch.setattr(agent, "_send_ingest", lambda payload: False)
+    monkeypatch.setattr(agent, "_outbox_enqueue", lambda payload, **kwargs: None)
+
+    result = agent._scan_path(path, include_reasons=True)
+
+    assert result["deferred"] == 0
+    assert result["persistence_failed"] == 1
+    assert result["skipped_reasons"] == {"outbox_persistence_failed": 1}
+
+
+def test_last_outbox_upload_sends_ingest_complete_before_removing_item(monkeypatch, temp_dir):
+    pending = Path(temp_dir) / "outbox" / "pending"
+    dead = Path(temp_dir) / "outbox" / "dead"
+    pending.mkdir(parents=True)
+    dead.mkdir(parents=True)
+    monkeypatch.setattr(scan_agent, "OUTBOX_PENDING_PATH", pending)
+    monkeypatch.setattr(scan_agent, "OUTBOX_DEAD_PATH", dead)
+
+    agent = scan_agent.ScanAgent(_make_config())
+    task_results = []
+    payload = {
+        "event_id": "event-1",
+        "scan_task_id": "task-1",
+        "source_kind": "text",
+        "file_path": r"C:\Docs\classified.txt",
+        "file_hash": "hash-1",
+    }
+    assert agent._outbox_enqueue(payload) is not None
+    agent._attach_task_result_to_outbox(
+        "task-1",
+        {"phase": "agent_outbox", "ingest_complete": False, "jobs_total": 1},
+    )
+    monkeypatch.setattr(agent, "_send_ingest", lambda value: {"success": True})
+    monkeypatch.setattr(agent, "_register_scanned_from_payload", lambda value: None)
+    monkeypatch.setattr(
+        agent,
+        "_task_result",
+        lambda task_id, status_value, result=None, error_text="": task_results.append(
+            (task_id, status_value, result)
+        )
+        or True,
+    )
+
+    assert agent._drain_outbox(max_items=10) == 1
+    assert agent._outbox_depth() == 0
+    assert len(task_results) == 1
+    assert task_results[0][0:2] == ("task-1", "acknowledged")
+    assert task_results[0][2]["phase"] == "server_processing"
+    assert task_results[0][2]["ingest_complete"] is True
 
 
 def test_heartbeat_reports_shared_agent_version(monkeypatch):
@@ -643,3 +812,186 @@ def test_heartbeat_reports_shared_agent_version(monkeypatch):
     agent.heartbeat()
 
     assert sent_payloads[0]["version"] == SHARED_AGENT_VERSION
+
+
+def test_pdf_with_usable_text_layer_always_builds_three_page_ocr_slice(monkeypatch, temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    pdf_path = Path(temp_dir) / "document.pdf"
+    pdf_path.write_bytes(b"%PDF-placeholder")
+
+    monkeypatch.setattr(scan_agent, "_extract_pdf_text", lambda path, max_pages=10: "ordinary text " * 30)
+    monkeypatch.setattr(scan_agent, "_first_pdf_pages_b64", lambda path, pages=3: "c2xpY2U=")
+    monkeypatch.setattr(scan_agent, "_pdf_pages_in_slice", lambda path, pages=3: 3)
+
+    payload = agent._analyze_file(pdf_path, "hash", pdf_path.stat())
+
+    assert payload is not None
+    assert payload["source_kind"] == "pdf_slice"
+    assert payload["pdf_slice_b64"] == "c2xpY2U="
+    assert payload["metadata"]["ocr_page_limit"] == 3
+    assert payload["metadata"]["text_page_limit"] == 10
+    assert payload["metadata"]["pages_in_slice"] == 3
+    assert payload["metadata"]["analysis_version"] == scan_agent.ANALYSIS_VERSION
+
+
+def test_pdf_short_text_layer_is_still_checked_for_exact_dsp_phrase(monkeypatch, temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    agent.pattern_defs = _make_pattern_defs("Для служебного пользования")
+    pdf_path = Path(temp_dir) / "short-stamp.pdf"
+    pdf_path.write_bytes(b"%PDF-placeholder")
+
+    monkeypatch.setattr(scan_agent, "_extract_pdf_text", lambda path, max_pages=10: "Для служебного пользования")
+    monkeypatch.setattr(scan_agent, "_first_pdf_pages_b64", lambda path, pages=3: "c2xpY2U=")
+    monkeypatch.setattr(scan_agent, "_pdf_pages_in_slice", lambda path, pages=3: 3)
+
+    payload = agent._analyze_file(pdf_path, "hash", pdf_path.stat())
+
+    assert payload is not None
+    assert payload["local_pattern_hits"][0]["value"] == "Для служебного пользования"
+    assert payload["metadata"]["extraction_outcomes"][0]["outcome"] == "text_extracted_low_quality"
+
+
+def test_pdf_larger_than_upload_limit_is_still_analyzed_as_bounded_slice(monkeypatch, temp_dir):
+    config = _make_config()
+    config["max_file_bytes"] = 1
+    agent = scan_agent.ScanAgent(config)
+    pdf_path = Path(temp_dir) / "large-drawing.pdf"
+    pdf_path.write_bytes(b"%PDF-placeholder")
+    sent_payloads = []
+
+    monkeypatch.setattr(scan_agent, "_sha256_file", lambda path: "hash")
+    monkeypatch.setattr(scan_agent, "_extract_pdf_text", lambda path, max_pages=10: "ordinary text")
+    monkeypatch.setattr(scan_agent, "_first_pdf_pages_b64", lambda path, pages=3: "c2xpY2U=")
+    monkeypatch.setattr(scan_agent, "_pdf_pages_in_slice", lambda path, pages=3: 3)
+    monkeypatch.setattr(agent, "_send_ingest", lambda payload: sent_payloads.append(payload) or True)
+
+    result = agent._scan_path(pdf_path, force_rescan=True)
+
+    assert result["scanned"] == 1
+    assert result["queued"] == 1
+    assert sent_payloads[0]["source_kind"] == "pdf_slice"
+    assert sent_payloads[0]["metadata"]["pages_in_slice"] == 3
+
+
+def test_agent_pattern_selection_filters_local_text_matches(temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    agent.pattern_defs = [
+        {"id": "dsp_official_use", "name": "DSP", "weight": 10.0, "regex": re.compile("DSP")},
+        {"id": "loan_keyword", "name": "Loan", "weight": 5.0, "regex": re.compile("LOAN")},
+    ]
+    text_path = Path(temp_dir) / "selected-patterns.txt"
+    text_path.write_text("DSP and LOAN", encoding="utf-8")
+
+    payload = agent._analyze_file(
+        text_path,
+        "hash",
+        text_path.stat(),
+        pattern_ids=["dsp_official_use"],
+    )
+
+    assert payload is not None
+    assert [item["pattern"] for item in payload["local_pattern_hits"]] == ["dsp_official_use"]
+    assert payload["metadata"]["agent_pattern_ids"] == ["dsp_official_use"]
+
+
+def test_text_file_without_available_patterns_is_not_marked_clean(temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    agent.pattern_defs = []
+    text_path = Path(temp_dir) / "unchecked.txt"
+    text_path.write_text("Для служебного пользования", encoding="utf-8")
+
+    payload = agent._analyze_file(text_path, "hash", text_path.stat())
+
+    assert payload is not None
+    assert payload["source_kind"] == "analysis_incomplete"
+    assert payload["metadata"]["analysis_incomplete_reason"] == "patterns_unavailable"
+
+
+def test_text_reader_scans_past_legacy_two_megabyte_limit(temp_dir):
+    text_path = Path(temp_dir) / "large.txt"
+    text_path.write_bytes((b"x" * (2 * 1024 * 1024 + 256)) + " Для служебного пользования".encode("utf-8"))
+
+    text = scan_agent._read_text_file(text_path)
+
+    assert "Для служебного пользования" in text
+
+
+def test_scan_path_detects_match_after_first_two_megabytes(monkeypatch, temp_dir):
+    config = _make_config()
+    config["max_file_bytes"] = 4 * 1024 * 1024
+    agent = scan_agent.ScanAgent(config)
+    agent.pattern_defs = _make_pattern_defs("Для служебного пользования")
+    text_path = Path(temp_dir) / "large-match.txt"
+    text_path.write_bytes((b"x" * (2 * 1024 * 1024 + 256)) + " Для служебного пользования".encode("utf-8"))
+    payloads = []
+    monkeypatch.setattr(agent, "_send_ingest", lambda payload: payloads.append(payload) or True)
+
+    result = agent._scan_path(text_path)
+
+    assert result["queued"] == 1
+    assert payloads[0]["local_pattern_hits"][0]["value"] == "Для служебного пользования"
+
+
+def test_text_reader_supports_utf16(temp_dir):
+    text_path = Path(temp_dir) / "utf16.txt"
+    text_path.write_bytes("Для служебного пользования".encode("utf-16"))
+
+    assert "Для служебного пользования" in scan_agent._read_text_file(text_path)
+
+
+def test_document_upload_uses_multipart_endpoint(monkeypatch):
+    agent = scan_agent.ScanAgent(_make_config())
+    calls = []
+    payload = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "file_path": r"C:\Docs\stamp.jpg",
+        "file_name": "stamp.jpg",
+        "file_hash": "hash-1",
+        "source_kind": "image",
+        "document_b64": "aW1hZ2U=",
+    }
+
+    def fake_send(method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        return _DummyResponse(data={"job_id": "job-1", "deduped": False})
+
+    monkeypatch.setattr(agent, "_send", fake_send)
+
+    result = agent._send_ingest(payload)
+
+    assert result["success"] is True
+    assert calls[0][1].endswith("/ingest/document")
+    assert calls[0][2]["files"]["document"][1] == b"image"
+
+
+def test_image_is_prepared_for_server_ocr(temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    image_path = Path(temp_dir) / "stamp.jpg"
+    image_path.write_bytes(b"image-bytes")
+
+    payload = agent._analyze_file(image_path, "hash", image_path.stat())
+
+    assert payload["source_kind"] == "image"
+    assert payload["document_b64"] == "aW1hZ2UtYnl0ZXM="
+
+
+def test_analysis_version_invalidates_old_scan_state(temp_dir):
+    agent = scan_agent.ScanAgent(_make_config())
+    path = Path(temp_dir) / "match.txt"
+    path.write_text("ordinary", encoding="utf-8")
+    stat_result = path.stat()
+    file_hash = scan_agent._sha256_file(path)
+    agent.state = {
+        "files": {
+            scan_agent._norm_path(path): {
+                "hash": file_hash,
+                "mtime": int(stat_result.st_mtime),
+                "size": int(stat_result.st_size),
+                "analysis_version": "old-rules",
+            }
+        },
+        "hashes": {file_hash: 1},
+    }
+
+    assert agent._already_scanned(path, stat_result) is False

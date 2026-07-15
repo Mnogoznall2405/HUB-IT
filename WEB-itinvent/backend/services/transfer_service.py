@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
-from uuid import uuid4
+from uuid import NAMESPACE_URL, uuid4, uuid5
 
 from dotenv import dotenv_values
 
@@ -81,6 +81,46 @@ def _safe_filename(name: str) -> str:
     return value[:48] or "Unknown"
 
 
+def _operation_act_id(
+    *,
+    operation_id: Optional[str],
+    mode: str,
+    db_id: Optional[str],
+    old_employee: str,
+    new_employee: str,
+    items: list[dict[str, Any]],
+) -> str:
+    """Return a stable act identity for a durable transfer operation.
+
+    A transfer worker may be restarted after the item/history transaction but
+    before its job is marked done.  The operation key is therefore also the
+    identity of every generated document group: retries reuse its file and
+    ``act_id`` instead of creating a second act for the same move.
+    """
+    normalized_operation = str(operation_id or "").strip()
+    if not normalized_operation:
+        return str(uuid4())
+    inv_nos = sorted(
+        {
+            _to_inv_text(item.get("inv_no") or item.get("INV_NO"))
+            for item in items or []
+            if _to_inv_text(item.get("inv_no") or item.get("INV_NO"))
+        }
+    )
+    signature = "|".join(
+        [
+            "hub-transfer-act-v1",
+            normalized_operation,
+            str(mode or "transfer").strip().casefold(),
+            str(db_id or "").strip().casefold(),
+            str(old_employee or "").strip().casefold(),
+            str(new_employee or "").strip().casefold(),
+            *inv_nos,
+        ]
+    )
+    return str(uuid5(NAMESPACE_URL, signature))
+
+
 def _to_inv_text(value: Any) -> str:
     if value is None:
         return ""
@@ -95,6 +135,8 @@ def _build_docx_act(
     new_employee: str,
     new_employee_dept: str,
     items: list[dict[str, Any]],
+    *,
+    deterministic_act_id: Optional[str] = None,
 ) -> tuple[Path, str]:
     try:
         from docx import Document
@@ -106,6 +148,25 @@ def _build_docx_act(
         raise RuntimeError(f"Act template not found: {template_path}")
 
     DEFAULT_ACTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    safe_old = _safe_filename(old_employee)
+    normalized_act_id = str(deterministic_act_id or "").strip()
+    if normalized_act_id:
+        # The same durable operation must always address the same output
+        # file.  Prefer a completed PDF, then an already persisted DOCX.
+        # This makes a recovery safe even if it happens after file generation
+        # but before the job result was persisted.
+        docx_name = f"transfer_act_{_safe_filename(normalized_act_id)}_{safe_old}.docx"
+        docx_path = DEFAULT_ACTS_DIR / docx_name
+        pdf_path = docx_path.with_suffix(".pdf")
+        if pdf_path.is_file():
+            return pdf_path, "pdf"
+        if docx_path.is_file():
+            return docx_path, "docx"
+    else:
+        now_for_name = datetime.now()
+        docx_name = f"transfer_act_{now_for_name.strftime('%Y%m%d_%H%M%S')}_{safe_old}.docx"
+        docx_path = DEFAULT_ACTS_DIR / docx_name
 
     doc = Document(str(template_path))
     now = datetime.now()
@@ -154,15 +215,28 @@ def _build_docx_act(
                 valign.set(qn("w:val"), "center")
                 tc_pr.append(valign)
 
-    timestamp = now.strftime("%Y%m%d_%H%M%S")
-    safe_old = _safe_filename(old_employee)
-    docx_name = f"transfer_act_{timestamp}_{safe_old}.docx"
-    docx_path = DEFAULT_ACTS_DIR / docx_name
-    doc.save(str(docx_path))
+    if normalized_act_id:
+        # A process crash must not leave a final-looking half-written file for
+        # the retry to reuse.  The final name appears only after an atomic
+        # replace in the same directory.
+        tmp_path = docx_path.with_name(f".{docx_path.stem}.{uuid4().hex}.tmp.docx")
+        try:
+            doc.save(str(tmp_path))
+            os.replace(tmp_path, docx_path)
+        finally:
+            try:
+                tmp_path.unlink(missing_ok=True)
+            except Exception:
+                pass
+    else:
+        doc.save(str(docx_path))
     return docx_path, "docx"
 
 
 def _try_convert_to_pdf(docx_path: Path) -> tuple[Path, str]:
+    pdf_path = docx_path.with_suffix(".pdf")
+    if pdf_path.is_file():
+        return pdf_path, "pdf"
     try:
         from docx2pdf import convert  # type: ignore
     except ImportError:
@@ -170,7 +244,6 @@ def _try_convert_to_pdf(docx_path: Path) -> tuple[Path, str]:
     except Exception:
         return docx_path, "docx"
 
-    pdf_path = docx_path.with_suffix(".pdf")
     timeout_sec = max(5, int(_read_env("TRANSFER_ACT_PDF_TIMEOUT_SEC", "45") or "45"))
     started = time.monotonic()
     try:
@@ -244,6 +317,7 @@ def generate_transfer_acts(
     new_employee_dept: str,
     new_employee_email: Optional[str],
     db_id: Optional[str],
+    operation_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """
     Generate transfer acts grouped by old employee.
@@ -258,6 +332,14 @@ def generate_transfer_acts(
     acts: list[dict[str, Any]] = []
 
     for old_employee, items in grouped.items():
+        act_id = _operation_act_id(
+            operation_id=operation_id,
+            mode="inventory_transfer",
+            db_id=db_id,
+            old_employee=old_employee,
+            new_employee=new_employee_name,
+            items=items,
+        )
         old_employee_email = None
         for item in items:
             candidate = (item.get("old_employee_email") or "").strip()
@@ -271,13 +353,14 @@ def generate_transfer_acts(
                 new_employee=new_employee_name,
                 new_employee_dept=new_employee_dept or "",
                 items=items,
+                deterministic_act_id=act_id if operation_id else None,
             )
-            file_path, file_type = _try_convert_to_pdf(file_path)
+            if file_type == "docx":
+                file_path, file_type = _try_convert_to_pdf(file_path)
         except Exception as exc:
             logger.error("Failed to generate act for %s: %s", old_employee, exc)
             continue
 
-        act_id = str(uuid4())
         record = {
             "act_id": act_id,
             "file_path": str(file_path),
@@ -290,6 +373,7 @@ def generate_transfer_acts(
             "equipment_count": len(items),
             "db_id": db_id,
             "created_at": datetime.now().isoformat(),
+            "operation_id": str(operation_id or "").strip() or None,
         }
         _ACT_STORE[act_id] = record
         acts.append(
@@ -311,6 +395,7 @@ def generate_transfer_acts_without_move(
     issuer_name: str,
     issuer_email: Optional[str],
     db_id: Optional[str],
+    operation_id: Optional[str] = None,
 ) -> list[dict[str, Any]]:
     """
     Generate handover acts for current holders without updating inventory data.
@@ -363,6 +448,14 @@ def generate_transfer_acts_without_move(
         act_items = list(bucket.get("items") or [])
         if not act_items:
             continue
+        act_id = _operation_act_id(
+            operation_id=operation_id,
+            mode="document_only",
+            db_id=db_id,
+            old_employee=safe_issuer,
+            new_employee=holder,
+            items=act_items,
+        )
 
         try:
             file_path, file_type = _build_docx_act(
@@ -370,13 +463,14 @@ def generate_transfer_acts_without_move(
                 new_employee=holder,
                 new_employee_dept=str(bucket.get("holder_dept") or ""),
                 items=act_items,
+                deterministic_act_id=act_id if operation_id else None,
             )
-            file_path, file_type = _try_convert_to_pdf(file_path)
+            if file_type == "docx":
+                file_path, file_type = _try_convert_to_pdf(file_path)
         except Exception as exc:
             logger.error("Failed to generate act without move for %s: %s", holder, exc)
             continue
 
-        act_id = str(uuid4())
         record = {
             "act_id": act_id,
             "file_path": str(file_path),
@@ -390,6 +484,7 @@ def generate_transfer_acts_without_move(
             "db_id": db_id,
             "created_at": datetime.now().isoformat(),
             "act_mode": "without_move",
+            "operation_id": str(operation_id or "").strip() or None,
         }
         _ACT_STORE[act_id] = record
         acts.append(

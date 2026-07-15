@@ -236,7 +236,10 @@ def register_handlers(application: Application) -> None:
                 MessageHandler(filters.TEXT & ~filters.COMMAND & ~MAIN_MENU_BUTTONS_FILTER, receive_transfer_location)
             ],
             States.TRANSFER_CONFIRMATION: [
-                CallbackQueryHandler(handle_transfer_confirmation, pattern="^(confirm|cancel)_transfer$")
+                CallbackQueryHandler(
+                    handle_transfer_confirmation,
+                    pattern="^(confirm_transfer(?::[^:]+)?|cancel_transfer)$",
+                )
             ]
         },
         fallbacks=[
@@ -378,6 +381,17 @@ def register_handlers(application: Application) -> None:
     application.add_handler(database_conv_handler)
     application.add_handler(export_conv_handler)
     application.add_handler(work_conv_handler)
+
+    # A transfer act may already be durably checkpointed when the bot process
+    # restarts.  The operation id is embedded in its original callback, so
+    # this global recovery handler can finish a safe checkpoint even though
+    # the non-persistent conversation state no longer exists.
+    application.add_handler(
+        CallbackQueryHandler(
+            handle_transfer_confirmation,
+            pattern="^confirm_transfer:[^:]+$",
+        )
+    )
 
     # Обработчики для повторного запуска работ (кнопка "Обработать ещё")
     from bot.handlers.work import handle_restart_work, handle_back_to_main_external

@@ -785,7 +785,12 @@ describe('equipmentSearchAPI contract', () => {
     expect(apiClientMock.get).toHaveBeenNthCalledWith(2, '/equipment/search/employee', {
       params: { q: 'Petrov', page: 1, limit: 50 },
     });
-    expect(apiClientMock.get).toHaveBeenNthCalledWith(3, '/equipment/employee/OWN/42 A/items');
+    expect(apiClientMock.get).toHaveBeenNthCalledWith(3, '/equipment/employee/OWN/42 A/items', {
+      params: {
+        all_databases: undefined,
+        employee_name: undefined,
+      },
+    });
   });
 
   it('keeps client equipment search compatibility through the dedicated module and getters', async () => {
@@ -5895,15 +5900,13 @@ describe('scanIncidentsAPI contract', () => {
     });
   });
 
-  it('acks one incident with encoded incident ids and the backend ack payload', async () => {
+  it('acks one incident without trusting a client-supplied actor', async () => {
     const { scanIncidentsAPI } = await importScanIncidentsAPI();
 
-    await expect(scanIncidentsAPI.ackIncident('incident/1 A', 'petrov'))
+    await expect(scanIncidentsAPI.ackIncident('incident/1 A'))
       .resolves.toEqual({ ok: true });
 
-    expect(apiClientMock.post).toHaveBeenCalledWith('/scan/incidents/incident%2F1%20A/ack', {
-      ack_by: 'petrov',
-    });
+    expect(apiClientMock.post).toHaveBeenCalledWith('/scan/incidents/incident%2F1%20A/ack', {});
   });
 
   it('posts bulk ack payloads unchanged through the dedicated scan incidents module', async () => {

@@ -3,6 +3,8 @@ import importlib.util
 from pathlib import Path
 import sys
 
+import pytest
+
 BACKEND_ROOT = Path(__file__).resolve().parents[1] / "WEB-itinvent"
 if str(BACKEND_ROOT) not in sys.path:
     sys.path.insert(0, str(BACKEND_ROOT))
@@ -13,6 +15,22 @@ SPEC = importlib.util.spec_from_file_location("inventory_app_db_module", MODULE_
 inventory = importlib.util.module_from_spec(SPEC)
 assert SPEC is not None and SPEC.loader is not None
 SPEC.loader.exec_module(inventory)
+
+TEST_AGENT_API_KEY = "test-inventory-agent-key"
+
+
+@pytest.fixture(autouse=True)
+def _configure_agent_key(monkeypatch):
+    monkeypatch.setenv("ITINV_AGENT_API_KEYS", TEST_AGENT_API_KEY)
+    monkeypatch.setenv("ITINV_AGENT_API_KEY", "")
+
+
+def test_inventory_api_has_no_shared_default_key(monkeypatch):
+    monkeypatch.setenv("ITINV_AGENT_API_KEYS", "")
+    monkeypatch.setenv("ITINV_AGENT_API_KEY", "")
+
+    assert inventory._load_agent_api_keys() == []
+    assert inventory._is_valid_agent_api_key(TEST_AGENT_API_KEY) is False
 
 
 def _sqlite_url(temp_dir: str) -> str:
@@ -88,8 +106,8 @@ def test_inventory_endpoints_support_app_db_backend(temp_dir, monkeypatch):
         timestamp=1_710_000_120,
     )
 
-    assert inventory.receive_inventory(first_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)["success"] is True
-    assert inventory.receive_inventory(second_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)["success"] is True
+    assert inventory.receive_inventory(first_payload, x_api_key=TEST_AGENT_API_KEY)["success"] is True
+    assert inventory.receive_inventory(second_payload, x_api_key=TEST_AGENT_API_KEY)["success"] is True
 
     changes = inventory.get_inventory_changes(limit=10)
     assert changes["totals"]["changed_24h"] == 1
@@ -165,8 +183,8 @@ def test_inventory_heartbeat_deferred_updates_presence_without_full_rewrite(temp
         health={"cpu_load_percent": 33},
     )
 
-    first_result = inventory.receive_inventory(first_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)
-    deferred_result = inventory.receive_inventory(deferred_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)
+    first_result = inventory.receive_inventory(first_payload, x_api_key=TEST_AGENT_API_KEY)
+    deferred_result = inventory.receive_inventory(deferred_payload, x_api_key=TEST_AGENT_API_KEY)
     host = inventory._get_inventory_host("AA-BB-CC-DD-EE-02")
 
     assert first_result["success"] is True
@@ -217,8 +235,8 @@ def test_inventory_heartbeat_after_defer_window_persists_full_write(temp_dir, mo
         health={"cpu_load_percent": 19},
     )
 
-    inventory.receive_inventory(first_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)
-    second_result = inventory.receive_inventory(second_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)
+    inventory.receive_inventory(first_payload, x_api_key=TEST_AGENT_API_KEY)
+    second_result = inventory.receive_inventory(second_payload, x_api_key=TEST_AGENT_API_KEY)
     host = inventory._get_inventory_host("AA-BB-CC-DD-EE-03")
 
     assert second_result["success"] is True
@@ -309,8 +327,8 @@ def test_inventory_app_db_indexes_profiles_and_outlook_files_for_fielded_search(
         timestamp=1_710_000_200,
     )
 
-    assert inventory.receive_inventory(full_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)["success"] is True
-    assert inventory.receive_inventory(heartbeat_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)["success"] is True
+    assert inventory.receive_inventory(full_payload, x_api_key=TEST_AGENT_API_KEY)["success"] is True
+    assert inventory.receive_inventory(heartbeat_payload, x_api_key=TEST_AGENT_API_KEY)["success"] is True
 
     by_profile = inventory.search_computers(
         current_user=_user(),
@@ -434,8 +452,8 @@ def test_inventory_computers_uses_overlay_last_seen_after_deferred_heartbeat(tem
         health={"cpu_load_percent": 15},
     )
 
-    inventory.receive_inventory(first_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)
-    inventory.receive_inventory(deferred_payload, x_api_key=inventory.DEFAULT_AGENT_API_KEY)
+    inventory.receive_inventory(first_payload, x_api_key=TEST_AGENT_API_KEY)
+    inventory.receive_inventory(deferred_payload, x_api_key=TEST_AGENT_API_KEY)
 
     computers = inventory.get_computers(
         current_user=_user(),
@@ -454,3 +472,118 @@ def test_inventory_computers_uses_overlay_last_seen_after_deferred_heartbeat(tem
     assert computers[0]["hostname"] == "PC-04"
     assert computers[0]["last_seen_at"] == 1_710_000_200
     assert computers[0]["status"] == "online"
+
+
+def test_inventory_partial_sql_context_cache_keeps_unassigned_hosts_visible(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+
+    monkeypatch.setattr(inventory, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory, "get_app_database_url", lambda: database_url)
+    monkeypatch.setattr(inventory, "get_local_store", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local_store should not be used")))
+    monkeypatch.setattr(inventory.time, "time", lambda: 1_710_000_500)
+    monkeypatch.setattr(inventory, "ensure_user_permission", lambda *args, **kwargs: None)
+    monkeypatch.setattr(inventory, "_get_database_name_map", lambda: {"DB1": "Main DB", "DB2": "Other DB"})
+    monkeypatch.setattr(inventory, "_get_accessible_db_ids", lambda current_user: ["DB1", "DB2"])
+    monkeypatch.setattr(inventory, "_open_network_lookup_connection", lambda: None)
+
+    for suffix in ("81", "82"):
+        payload = inventory.InventoryPayload(
+            hostname=f"PC-{suffix}",
+            mac_address=f"AA-BB-CC-DD-EE-{suffix}",
+            ip_primary=f"10.10.1.{int(suffix)}",
+            ip_list=[f"10.10.1.{int(suffix)}"],
+            report_type="heartbeat",
+            timestamp=1_710_000_000,
+        )
+        assert inventory.receive_inventory(payload, x_api_key=TEST_AGENT_API_KEY)["success"] is True
+
+    inventory.AppInventoryStore(database_url=database_url).upsert_sql_context(
+        mac_address="AA-BB-CC-DD-EE-81",
+        hostname="PC-81",
+        db_id="DB1",
+        context={
+            "branch_name": "Tyumen",
+            "inv_no": "INV-81",
+            "model_name": "Model 81",
+        },
+    )
+
+    resolver_calls = []
+    monkeypatch.setattr(
+        inventory,
+        "_resolve_sql_context",
+        lambda mac_address, hostname, db_id: resolver_calls.append((mac_address, hostname, db_id)),
+    )
+
+    computers = inventory.get_computers(
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="selected",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+    )
+
+    assert [row["hostname"] for row in computers] == ["PC-81", "PC-82"]
+    assert computers[0]["is_unassigned"] is False
+    assert computers[1]["is_unassigned"] is True
+    assert computers[1]["database_name"] == "Без привязки"
+    assert resolver_calls == []
+
+    detail = inventory.get_computer_detail(
+        "AA-BB-CC-DD-EE-82",
+        current_user=_user(),
+        db_id_selected="DB1",
+        scope="selected",
+    )
+    assert detail["hostname"] == "PC-82"
+    assert detail["is_unassigned"] is True
+    assert detail["database_name"] == "Без привязки"
+    assert resolver_calls == []
+
+
+def test_inventory_network_scope_maps_velg_subnet_without_sql_context(temp_dir, monkeypatch):
+    database_url = _sqlite_url(temp_dir)
+
+    monkeypatch.setattr(inventory, "is_app_database_configured", lambda: True)
+    monkeypatch.setattr(inventory, "get_app_database_url", lambda: database_url)
+    monkeypatch.setattr(inventory, "get_local_store", lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("local_store should not be used")))
+    monkeypatch.setattr(inventory.time, "time", lambda: 1_710_000_500)
+    monkeypatch.setattr(inventory, "ensure_user_permission", lambda *args, **kwargs: None)
+    monkeypatch.setattr(inventory, "_get_database_name_map", lambda: {"ITINVENT": "ITINVENT"})
+    monkeypatch.setattr(inventory, "_get_accessible_db_ids", lambda current_user: ["ITINVENT"])
+    monkeypatch.setattr(inventory, "_open_network_lookup_connection", lambda: None)
+    monkeypatch.setattr(inventory, "_resolve_sql_context", lambda *args, **kwargs: None)
+
+    payload = inventory.InventoryPayload(
+        hostname="velg-acc-0099",
+        mac_address="AA-BB-CC-DD-EE-99",
+        ip_primary="10.105.6.99",
+        ip_list=["10.105.6.99"],
+        report_type="heartbeat",
+        timestamp=1_710_000_000,
+    )
+    assert inventory.receive_inventory(payload, x_api_key=TEST_AGENT_API_KEY)["success"] is True
+
+    computers = inventory.get_computers(
+        current_user=_user(),
+        db_id_selected="ITINVENT",
+        scope="selected",
+        branch=None,
+        status_filter=None,
+        outlook_status=None,
+        q=None,
+        sort_by="hostname",
+        sort_dir="asc",
+        changed_only=False,
+    )
+
+    assert len(computers) == 1
+    assert computers[0]["database_id"] == "ITINVENT"
+    assert computers[0]["branch_name"] == "г.Тюмень, Велижанский тракт 6"
+    assert computers[0]["assignment_source"] == "network_scope"
+    assert computers[0]["is_unassigned"] is False

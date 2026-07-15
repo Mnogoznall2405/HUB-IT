@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
@@ -51,6 +52,9 @@ class ScanServerConfig:
     watchdog_failures: int
     watchdog_startup_grace_sec: int
     api_keys: Tuple[str, ...]
+    web_auth_me_url: str
+    web_auth_timeout_sec: int
+    web_auth_cache_ttl_sec: int
     data_dir: Path
     db_path: Path
     archive_dir: Path
@@ -112,7 +116,14 @@ class ScanServerConfig:
         if legacy_key and legacy_key not in keys:
             keys.append(legacy_key)
         if not keys:
-            keys.append("gT2CfK1S-TlCsIY0gDcYtGEGaI9esB72HTfZfq666w27F_REx_ygD_HGYiGU8C-8")
+            app_env = str(os.getenv("APP_ENV", "development") or "development").strip().lower()
+            if app_env in {"production", "prod"}:
+                raise RuntimeError(
+                    "SCAN_SERVER_API_KEYS (or SCAN_SERVER_API_KEY) must be configured in production"
+                )
+            # A process-local key keeps development/test startup possible without
+            # shipping a credential that would be shared by every installation.
+            keys.append(secrets.token_urlsafe(48))
 
         return cls(
             host=str(os.getenv("SCAN_SERVER_HOST", "127.0.0.1")).strip() or "127.0.0.1",
@@ -132,6 +143,17 @@ class ScanServerConfig:
                 min(600, _to_int(os.getenv("SCAN_SERVER_WATCHDOG_STARTUP_GRACE_SEC", "20"), 20)),
             ),
             api_keys=tuple(keys),
+            web_auth_me_url=str(
+                os.getenv("SCAN_WEB_AUTH_ME_URL", "http://127.0.0.1:8001/api/v1/auth/me")
+            ).strip() or "http://127.0.0.1:8001/api/v1/auth/me",
+            web_auth_timeout_sec=max(
+                1,
+                min(30, _to_int(os.getenv("SCAN_WEB_AUTH_TIMEOUT_SEC", "5"), 5)),
+            ),
+            web_auth_cache_ttl_sec=max(
+                0,
+                min(30, _to_int(os.getenv("SCAN_WEB_AUTH_CACHE_TTL_SEC", "5"), 5)),
+            ),
             data_dir=data_dir,
             db_path=db_path,
             archive_dir=archive_dir,
@@ -169,11 +191,11 @@ class ScanServerConfig:
             ),
             ingest_max_pending_pdf_jobs=max(
                 100,
-                _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_PDF_JOBS", "25000"), 25000),
+                _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_PDF_JOBS", "200"), 200),
             ),
             ingest_max_pending_jobs=max(
                 100,
-                _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_JOBS", "5000"), 5000),
+                _to_int(os.getenv("SCAN_INGEST_MAX_PENDING_JOBS", "200"), 200),
             ),
             ingest_max_concurrency=max(
                 1,
@@ -259,7 +281,7 @@ class ScanServerConfig:
             ocr_only_if_no_text=_to_bool(os.getenv("SCAN_OCR_ONLY_IF_NO_TEXT", "1"), True),
             pdf_max_bytes=max(
                 1024 * 1024,
-                _to_int(os.getenv("SCAN_PDF_MAX_BYTES", str(25 * 1024 * 1024)), 25 * 1024 * 1024),
+                _to_int(os.getenv("SCAN_PDF_MAX_BYTES", str(50 * 1024 * 1024)), 50 * 1024 * 1024),
             ),
             worker_memory_limit_mb=max(
                 0,

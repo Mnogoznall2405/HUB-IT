@@ -19,6 +19,7 @@ from backend.services.ad_app_user_import_service import (
     _should_deactivate_ldap_user,
     load_ad_app_user_sync_state,
 )
+from backend.services.user_service import UserService
 
 
 def _fetch_payload(
@@ -365,3 +366,33 @@ def test_sync_all_from_ad_already_running():
 def test_load_ad_app_user_sync_state_default():
     payload = load_ad_app_user_sync_state()
     assert payload["status"] in {"never", "error", "success", "warning"}
+
+
+def test_bulk_ldap_sync_skips_unchanged_users_and_updates_membership(tmp_path):
+    database_url = f"sqlite+pysqlite:///{(tmp_path / 'app.db').as_posix()}"
+    service = UserService(database_url=database_url)
+    payload = [{
+        "username": "bulk_user",
+        "email": "bulk@example.com",
+        "full_name": "Bulk User",
+        "department": "IT",
+        "job_title": "Engineer",
+        "mailbox_email": "bulk@example.com",
+        "mailbox_login": "bulk@example.com",
+    }, {
+        "username": "bulk_user_two",
+        "email": "bulk2@example.com",
+        "full_name": "Bulk User Two",
+        "department": "IT",
+        "job_title": "Engineer",
+        "mailbox_email": "bulk2@example.com",
+        "mailbox_login": "bulk2@example.com",
+    }]
+
+    first = service.sync_ldap_users_bulk(payload)
+    second = service.sync_ldap_users_bulk(payload)
+
+    assert first and [item["action"] for item in first] == ["created", "created"]
+    assert second and [item["action"] for item in second] == ["unchanged", "unchanged"]
+    deactivated = service.deactivate_ldap_users_bulk([first[0]["user"]["id"]])
+    assert deactivated and deactivated[first[0]["user"]["id"]]["is_active"] is False

@@ -314,13 +314,19 @@ class MailService:
     _INLINE_ATTACHMENT_EMBED_MAX_SIZE = 256 * 1024
     _MAIL_LOG_RETENTION_DAYS_DEFAULT = 90
     _MAIL_CACHE_TTL_SEC_DEFAULT = 90
+    _MAIL_DETAIL_CACHE_TTL_SEC_DEFAULT = 600
     _MAIL_BOOTSTRAP_DEFAULT_LIMIT = 20
     _CACHE_BUCKET_POLICIES = {
         "folder_summary": RuntimeCachePolicy(max_entries=200, ttl_sec=90),
         "folder_tree": RuntimeCachePolicy(max_entries=100, ttl_sec=90),
         "unread_count": RuntimeCachePolicy(max_entries=200, ttl_sec=60),
         "messages": RuntimeCachePolicy(max_entries=300, ttl_sec=90),
-        "message_detail": RuntimeCachePolicy(max_entries=300, ttl_sec=180),
+        "message_detail": RuntimeCachePolicy(
+            max_entries=300,
+            ttl_sec=600,
+            max_total_bytes=64 * 1024 * 1024,
+            max_entry_bytes=2 * 1024 * 1024,
+        ),
         "conversation_detail": RuntimeCachePolicy(max_entries=100, ttl_sec=120),
         "attachment_content": RuntimeCachePolicy(
             max_entries=32,
@@ -345,6 +351,9 @@ class MailService:
         "mark_read_on_select": False,
         "show_preview_snippets": True,
         "show_favorites_first": True,
+        "folder_pane_width": 220,
+        "message_list_width": 360,
+        "bottom_list_percent": 42,
     }
     _ACTIVE_MAILBOX_PREF_KEY = "active_mailbox_id"
     _PASSWORD_REQUIRED_MESSAGES = {
@@ -545,6 +554,17 @@ class MailService:
             return self._MAIL_CACHE_TTL_SEC_DEFAULT
 
     @property
+    def mail_detail_cache_ttl_sec(self) -> int:
+        raw = _normalize_text(
+            os.getenv("MAIL_DETAIL_CACHE_TTL_SEC"),
+            str(self._MAIL_DETAIL_CACHE_TTL_SEC_DEFAULT),
+        )
+        try:
+            return max(60, min(1800, int(raw)))
+        except Exception:
+            return self._MAIL_DETAIL_CACHE_TTL_SEC_DEFAULT
+
+    @property
     def mail_bootstrap_default_limit(self) -> int:
         raw = _normalize_text(
             os.getenv("MAIL_BOOTSTRAP_DEFAULT_LIMIT"),
@@ -557,6 +577,14 @@ class MailService:
 
     def _cache_policy(self, bucket: str) -> RuntimeCachePolicy:
         normalized_bucket = _normalize_text(bucket)
+        if normalized_bucket == "message_detail":
+            default_policy = self._CACHE_BUCKET_POLICIES["message_detail"]
+            return RuntimeCachePolicy(
+                max_entries=default_policy.max_entries,
+                ttl_sec=self.mail_detail_cache_ttl_sec,
+                max_total_bytes=default_policy.max_total_bytes,
+                max_entry_bytes=default_policy.max_entry_bytes,
+            )
         return self._CACHE_BUCKET_POLICIES.get(
             normalized_bucket,
             RuntimeCachePolicy(max_entries=100, ttl_sec=self.mail_cache_ttl_sec),
@@ -1923,6 +1951,41 @@ class MailService:
             mapping["archive"] = archive_inbox
         return {key: value for key, value in mapping.items() if value is not None}
 
+    @staticmethod
+    def _standard_folder_attr_name(alias: str) -> str:
+        return "archive_inbox" if alias == "archive" else alias
+
+    def _resolve_standard_folder(self, account, alias: str):
+        attr_name = self._standard_folder_attr_name(alias)
+        last_error: Exception | None = None
+        for attempt in range(2):
+            if attempt:
+                try:
+                    delattr(account, attr_name)
+                except Exception:
+                    pass
+            try:
+                folder_obj = getattr(account, attr_name, None)
+            except Exception as exc:
+                last_error = exc
+                continue
+            if folder_obj is not None:
+                return folder_obj
+            break
+
+        if last_error is not None:
+            logger.warning(
+                "Temporary Exchange folder resolution failure: alias=%s error=%s",
+                alias,
+                last_error,
+            )
+            raise MailServiceError(
+                f"Почтовая папка {alias} временно недоступна из-за ошибки Exchange. Повторите попытку.",
+                code="MAIL_FOLDER_TEMPORARILY_UNAVAILABLE",
+                status_code=503,
+            ) from last_error
+        return None
+
     def _list_favorite_folder_ids(self, *, user_id: int, mailbox_id: str | None = None) -> set[str]:
         return self._metadata_store.list_favorite_folder_ids(user_id=int(user_id), mailbox_id=mailbox_id)
 
@@ -2035,7 +2098,6 @@ class MailService:
     def _resolve_folder(self, account, folder: str):
         key = _normalize_text(folder, "inbox")
         normalized = key.lower()
-        standard = self._standard_folders(account)
         aliases = {
             "inbox": "inbox",
             "sent": "sent",
@@ -2048,9 +2110,10 @@ class MailService:
             "archive": "archive",
         }
         alias = aliases.get(normalized)
-        if alias and alias in standard:
-            return standard[alias], alias
-        if alias and alias not in standard:
+        if alias:
+            folder_obj = self._resolve_standard_folder(account, alias)
+            if folder_obj is not None:
+                return folder_obj, alias
             raise MailServiceError(f"Folder is not available: {alias}")
 
         scope_key, exchange_id = self._decode_folder_id(key)
@@ -2799,7 +2862,6 @@ class MailService:
             item = context["item"]
             folder_key = context["folder_key"]
             profile = context["profile"]
-            account = context.get("account")
             exchange_id = context["exchange_id"]
             detail_mailbox_id = _normalize_text((profile or {}).get("mailbox_id")) or resolved_mailbox_id
             restore_hint = (
@@ -2820,8 +2882,6 @@ class MailService:
                 if folder_key == "drafts"
                 else None
             )
-            if account is not None:
-                self._prefetch_inline_attachment_content(item=item, account=account)
             detail = self._serialize_message_detail(
                 item=item,
                 folder_key=folder_key,
@@ -2829,14 +2889,14 @@ class MailService:
                 mailbox_email=profile["email"],
                 restore_hint_folder=(restore_hint or {}).get("restore_folder"),
                 draft_context=draft_context,
-                include_inline_data_urls=True,
+                include_inline_data_urls=False,
             )
             return self._cache_set(
                 user_id=int(user_id),
                 bucket="message_detail",
                 extra=_normalize_text(message_id),
                 value=detail,
-                ttl_sec=max(60, min(self.mail_cache_ttl_sec * 4, 180)),
+                ttl_sec=self.mail_detail_cache_ttl_sec,
                 mailbox_scope=detail_mailbox_id,
             )
 

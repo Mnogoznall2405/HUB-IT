@@ -7,6 +7,7 @@ import logging
 import os
 import re
 import time
+import uuid
 from collections import Counter, deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -15,6 +16,7 @@ from typing import Any, Awaitable, Callable
 
 from starlette.requests import Request
 from starlette.responses import Response
+import anyio
 
 
 logger = logging.getLogger("backend.request_metrics")
@@ -217,7 +219,78 @@ class RequestMetricsService:
             "sort_by": sort_key,
             "routes": limited_routes,
             "hotspots": self._build_hotspots(routes),
+            "pools": self._pool_status(),
+            "background_jobs": self._background_job_status(),
         }
+
+    @staticmethod
+    def _engine_pool_status(engine) -> dict[str, Any]:
+        pool = engine.pool
+        payload = {"status": str(pool.status())}
+        for name in ("size", "checkedin", "checkedout", "overflow"):
+            method = getattr(pool, name, None)
+            if callable(method):
+                try:
+                    payload[name] = int(method())
+                except Exception:
+                    pass
+        return payload
+
+    def _pool_status(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        try:
+            from backend.appdb.db import get_app_engine, is_app_database_configured
+            if is_app_database_configured():
+                payload["app"] = self._engine_pool_status(get_app_engine())
+        except Exception as exc:
+            payload["app"] = {"error": type(exc).__name__}
+        try:
+            from backend.chat.db import get_chat_engine, is_chat_enabled
+            if is_chat_enabled():
+                payload["chat"] = self._engine_pool_status(get_chat_engine())
+        except Exception as exc:
+            payload["chat"] = {"error": type(exc).__name__}
+        return payload
+
+    @staticmethod
+    def _background_job_status() -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        try:
+            from backend.services.ad_app_user_import_service import load_ad_app_user_sync_state
+            payload["ad_sync"] = load_ad_app_user_sync_state()
+        except Exception as exc:
+            payload["ad_sync"] = {"status": "error", "error": type(exc).__name__}
+        try:
+            from backend.services.mail_notification_service import mail_notification_service
+            mail_status = mail_notification_service.get_runtime_status()
+            try:
+                from sqlalchemy import func, select
+                from backend.appdb.db import app_session, is_app_database_configured
+                from backend.appdb.models import AppMailRuntimeSnapshot
+                if is_app_database_configured():
+                    with app_session() as session:
+                        rows = session.execute(
+                            select(
+                                AppMailRuntimeSnapshot.snapshot_type,
+                                func.count(AppMailRuntimeSnapshot.id),
+                                func.max(AppMailRuntimeSnapshot.as_of),
+                                func.max(AppMailRuntimeSnapshot.updated_at),
+                            ).group_by(AppMailRuntimeSnapshot.snapshot_type)
+                        ).all()
+                    mail_status["shared_snapshots"] = {
+                        str(snapshot_type): {
+                            "count": int(count or 0),
+                            "last_success_at": last_success_at.isoformat() if last_success_at else None,
+                            "last_update_at": last_update_at.isoformat() if last_update_at else None,
+                        }
+                        for snapshot_type, count, last_success_at, last_update_at in rows
+                    }
+            except Exception as exc:
+                mail_status["shared_snapshot_error"] = type(exc).__name__
+            payload["mail_sync"] = mail_status
+        except Exception as exc:
+            payload["mail_sync"] = {"status": "error", "error": type(exc).__name__}
+        return payload
 
     def _build_hotspots(self, routes: list[dict[str, Any]]) -> list[dict[str, Any]]:
         total = sum(int(item.get("count") or 0) for item in routes)
@@ -270,15 +343,22 @@ async def request_metrics_middleware(
 ) -> Response:
     started_at = time.perf_counter()
     status_code = 500
+    correlation_id = str(request.headers.get("X-Correlation-ID") or request.headers.get("X-Request-ID") or uuid.uuid4())
+    borrowed_tokens = None
     try:
         response = await call_next(request)
         status_code = int(getattr(response, "status_code", 500) or 500)
+        response.headers["X-Correlation-ID"] = correlation_id
         return response
     except Exception:
         status_code = 500
         raise
     finally:
         duration_ms = (time.perf_counter() - started_at) * 1000.0
+        try:
+            borrowed_tokens = int(anyio.to_thread.current_default_thread_limiter().borrowed_tokens)
+        except Exception:
+            borrowed_tokens = None
         path = request_metrics_service.route_path_for_request(request)
         request_metrics_service.record(
             method=request.method,
@@ -288,9 +368,13 @@ async def request_metrics_middleware(
         )
         if request_metrics_service.should_log_slow(duration_ms):
             logger.warning(
-                "http.slow method=%s path=%s status=%s took_ms=%.1f",
+                "http.slow timestamp=%s correlation_id=%s method=%s path=%s status=%s took_ms=%.1f anyio_borrowed_tokens=%s pools=%s",
+                _utc_iso(time.time()),
+                correlation_id,
                 request.method,
                 path,
                 status_code,
                 duration_ms,
+                borrowed_tokens,
+                request_metrics_service._pool_status(),
             )

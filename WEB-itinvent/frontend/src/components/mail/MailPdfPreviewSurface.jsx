@@ -11,12 +11,16 @@ import {
 import MailPdfPageTile from './MailPdfPageTile';
 import {
   loadPdfDocumentFromUrl,
+  isPdfRenderCancellation,
+  normalizePdfRotation,
   renderPdfPage,
   resolveInitialPdfFitZoom,
+  clampPdfDisplayScale,
 } from '../../lib/pdfPreview';
 import useDocumentPinchPan from '../../lib/useDocumentPinchPan';
 
 const EMPTY_PREVIEW_SHEETS = Object.freeze([]);
+const RENDER_ZOOM_SETTLE_MS = 140;
 
 export const clampPage = (value, totalPages = 1) => {
   const total = Math.max(1, Number(totalPages || 1));
@@ -66,6 +70,7 @@ function CompactPdfPreview({
   fitScale,
   previewContainerRef,
   canvasRef,
+  layerContainerRef,
   loadingPdf,
   renderingPage,
   previewError,
@@ -103,6 +108,7 @@ function CompactPdfPreview({
               boxShadow: '0 10px 28px rgba(15, 23, 42, 0.18)',
             }}
           />
+          <Box ref={layerContainerRef} aria-hidden="true" />
           {(loadingPdf || renderingPage) ? (
             <Box
               sx={{
@@ -113,6 +119,7 @@ function CompactPdfPreview({
                 justifyContent: 'center',
                 bgcolor: 'rgba(255,255,255,0.72)',
                 borderRadius: '4px',
+                zIndex: 2,
               }}
             >
               <CircularProgress size={26} />
@@ -138,6 +145,7 @@ export default function MailPdfPreviewSurface({
   pageCount = 0,
   compact = false,
   fillContainer = false,
+  rotation = 0,
 }) {
   const visibleSheets = useMemo(() => normalizePreviewSheets(sheets), [sheets]);
   const excelSheetMode = sourceKind === 'excel' && visibleSheets.length > 0;
@@ -152,7 +160,9 @@ export default function MailPdfPreviewSurface({
   const [loadingPdf, setLoadingPdf] = useState(false);
   const [renderingPage, setRenderingPage] = useState(false);
   const [previewError, setPreviewError] = useState('');
+  const resolvedRotation = normalizePdfRotation(rotation);
   const canvasRef = useRef(null);
+  const compactLayerContainerRef = useRef(null);
   const previewContainerRef = useRef(null);
   const pageAnchorRefs = useRef({});
   const visibilityRatiosRef = useRef(new Map());
@@ -161,12 +171,39 @@ export default function MailPdfPreviewSurface({
   const {
     viewportRef,
     contentRef,
+    transform,
+    isZoomed,
     resetTransform,
     viewportSx,
-    contentSx,
   } = useDocumentPinchPan({
     enabled: !compact,
   });
+
+  const liveZoom = Number(transform?.scale || 1);
+  const [renderZoom, setRenderZoom] = useState(1);
+
+  useEffect(() => {
+    if (compact) return undefined;
+    const timer = window.setTimeout(() => {
+      setRenderZoom(liveZoom);
+    }, RENDER_ZOOM_SETTLE_MS);
+    return () => window.clearTimeout(timer);
+  }, [compact, liveZoom]);
+
+  useEffect(() => {
+    setRenderZoom(1);
+  }, [objectUrl, resolvedRotation]);
+
+  const pageRenderScale = clampPdfDisplayScale(fitScale * renderZoom);
+  const interimCssScale = liveZoom / Math.max(renderZoom, 0.001);
+  const contentSx = useMemo(() => {
+    if (!isZoomed && renderZoom <= 1.001) return {};
+    return {
+      transform: `translate3d(${transform.x || 0}px, ${transform.y || 0}px, 0) scale(${interimCssScale})`,
+      transformOrigin: '0 0',
+      willChange: 'transform',
+    };
+  }, [interimCssScale, isZoomed, renderZoom, transform.x, transform.y]);
 
   const scrollRootRef = compact ? previewContainerRef : viewportRef;
   const pageNumbers = useMemo(
@@ -259,29 +296,6 @@ export default function MailPdfPreviewSurface({
         setVisiblePage((current) => clampPage(current, nextPageCount));
         setLoadingPdf(false);
 
-        try {
-          const firstPage = await pdf.getPage(clampPage(initialPage, nextPageCount));
-          const viewport = firstPage.getViewport({ scale: 1 });
-          const measureFitZoom = () => resolveInitialPdfFitZoom({
-            pageWidth: viewport.width,
-            containerWidth: (compact ? previewContainerRef.current : viewportRef.current)?.clientWidth || 0,
-            horizontalPadding: compact ? 16 : 24,
-          });
-          let nextFitScale = measureFitZoom();
-          if (nextFitScale === 1 && typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
-            await new Promise((resolve) => {
-              window.requestAnimationFrame(resolve);
-            });
-            if (!cancelled && requestId === renderRequestRef.current) {
-              nextFitScale = measureFitZoom();
-            }
-          }
-          if (!cancelled && requestId === renderRequestRef.current) {
-            setFitScale(nextFitScale);
-          }
-        } catch {
-          // Keep default fit scale when measurement is unavailable.
-        }
       })
       .catch((error) => {
         if (cancelled || requestId !== renderRequestRef.current) return;
@@ -296,7 +310,39 @@ export default function MailPdfPreviewSurface({
         loadedPdf.destroy();
       }
     };
-  }, [compact, initialPage, objectUrl, pageCount]);
+  }, [initialPage, objectUrl, pageCount]);
+
+  useEffect(() => {
+    if (!pdfDoc) return undefined;
+    let cancelled = false;
+    resetTransform();
+    setFitScale(1);
+
+    pdfDoc.getPage(clampPage(initialPage, resolvedPageCount))
+      .then(async (firstPage) => {
+        const viewport = firstPage.getViewport({ scale: 1, rotation: resolvedRotation });
+        const measureFitZoom = () => resolveInitialPdfFitZoom({
+          pageWidth: viewport.width,
+          containerWidth: (compact ? previewContainerRef.current : viewportRef.current)?.clientWidth || 0,
+          horizontalPadding: compact ? 16 : 24,
+        });
+        let nextFitScale = measureFitZoom();
+        if (nextFitScale === 1 && typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+          await new Promise((resolve) => {
+            window.requestAnimationFrame(resolve);
+          });
+          if (!cancelled) nextFitScale = measureFitZoom();
+        }
+        if (!cancelled) setFitScale(nextFitScale);
+      })
+      .catch(() => {
+        if (!cancelled) setFitScale(1);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [compact, initialPage, pdfDoc, resetTransform, resolvedPageCount, resolvedRotation]);
 
   useEffect(() => {
     if (!compact || !pdfDoc || !canvasRef.current) return undefined;
@@ -304,6 +350,7 @@ export default function MailPdfPreviewSurface({
     let cancelled = false;
     const requestId = renderRequestRef.current + 1;
     renderRequestRef.current = requestId;
+    const abortController = new AbortController();
     setRenderingPage(true);
     setPreviewError('');
 
@@ -311,7 +358,10 @@ export default function MailPdfPreviewSurface({
       pdf: pdfDoc,
       pageNumber: 1,
       canvas: canvasRef.current,
+      layerContainer: compactLayerContainerRef.current,
       scale: fitScale,
+      rotation: resolvedRotation,
+      signal: abortController.signal,
     })
       .then(() => {
         if (!cancelled && requestId === renderRequestRef.current) {
@@ -321,13 +371,15 @@ export default function MailPdfPreviewSurface({
       .catch((error) => {
         if (cancelled || requestId !== renderRequestRef.current) return;
         setRenderingPage(false);
+        if (isPdfRenderCancellation(error)) return;
         setPreviewError(error?.message || 'Не удалось отрисовать страницу предпросмотра.');
       });
 
     return () => {
       cancelled = true;
+      abortController.abort();
     };
-  }, [compact, fitScale, pdfDoc]);
+  }, [compact, fitScale, pdfDoc, resolvedRotation]);
 
   const pageCounterLabel = `${clampPage(visiblePage, resolvedPageCount)} / ${Math.max(1, resolvedPageCount)}`;
 
@@ -339,6 +391,7 @@ export default function MailPdfPreviewSurface({
         fitScale={fitScale}
         previewContainerRef={previewContainerRef}
         canvasRef={canvasRef}
+        layerContainerRef={compactLayerContainerRef}
         loadingPdf={loadingPdf}
         renderingPage={renderingPage}
         previewError={previewError}
@@ -446,7 +499,8 @@ export default function MailPdfPreviewSurface({
                   }}
                   pageNumber={pageNumber}
                   pdf={pdfDoc}
-                  fitScale={fitScale}
+                  fitScale={pageRenderScale}
+                  rotation={resolvedRotation}
                   scrollRootRef={scrollRootRef}
                   onVisibilityChange={handlePageVisibilityChange}
                 />

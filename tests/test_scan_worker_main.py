@@ -6,6 +6,21 @@ import time
 import scan_server.worker_main as worker_main
 
 
+def test_worker_sets_windows_below_normal_priority():
+    calls = []
+
+    class _Kernel32:
+        def GetCurrentProcess(self):
+            return 123
+
+        def SetPriorityClass(self, handle, priority_class):
+            calls.append((handle, priority_class))
+            return 1
+
+    assert worker_main._set_below_normal_priority(platform_name="nt", kernel32=_Kernel32()) is True
+    assert calls == [(123, 0x00004000)]
+
+
 def test_wait_for_singleton_lock_times_out_when_lock_is_busy(monkeypatch, tmp_path):
     attempts = 0
 

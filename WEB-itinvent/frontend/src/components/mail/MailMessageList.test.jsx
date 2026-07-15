@@ -232,6 +232,35 @@ describe('MailMessageList', () => {
     expect(screen.getByText('4')).toBeVisible();
   });
 
+  it('renders month headings for the full list after another page is appended', () => {
+    const props = buildProps({
+      listData: {
+        items: [
+          {
+            id: 'may',
+            sender_display: 'May Sender',
+            subject: 'May message',
+            received_at: '2026-05-12T10:00:00Z',
+            is_read: true,
+          },
+          {
+            id: 'april',
+            sender_display: 'April Sender',
+            subject: 'April message',
+            received_at: '2026-04-30T10:00:00Z',
+            is_read: true,
+          },
+        ],
+        has_more: true,
+      },
+    });
+
+    renderWithTheme(<MailMessageList {...props} />);
+
+    expect(screen.getByText('Май 2026')).toBeVisible();
+    expect(screen.getByText('Апрель 2026')).toBeVisible();
+  });
+
   it('keeps swipe labels hidden at rest, reveals parked actions and commits full swipe on mobile', () => {
     vi.useFakeTimers();
     const props = buildProps();

@@ -117,6 +117,9 @@ def _build_store(temp_dir: str):
             "mark_read_on_select": False,
             "show_preview_snippets": True,
             "show_favorites_first": True,
+            "folder_pane_width": 220,
+            "message_list_width": 360,
+            "bottom_list_percent": 42,
         },
     )
     return store, connect
@@ -247,12 +250,18 @@ def test_metadata_store_preferences_validate_shape_and_merge_defaults(temp_dir):
             "density": "bad",
             "mark_read_on_select": True,
             "show_preview_snippets": False,
+            "folder_pane_width": 999,
+            "message_list_width": 100,
+            "bottom_list_percent": 90,
         },
     )
     assert updated["preferences"]["reading_pane"] == "bottom"
     assert updated["preferences"]["density"] == "comfortable"
     assert updated["preferences"]["mark_read_on_select"] is True
     assert updated["preferences"]["show_preview_snippets"] is False
+    assert updated["preferences"]["folder_pane_width"] == 360
+    assert updated["preferences"]["message_list_width"] == 280
+    assert updated["preferences"]["bottom_list_percent"] == 75
     assert updated["updated_at"]
 
 

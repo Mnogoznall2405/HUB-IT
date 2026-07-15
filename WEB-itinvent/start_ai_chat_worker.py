@@ -7,8 +7,26 @@ from pathlib import Path
 import sys
 
 project_root = Path(__file__).resolve().parent
+monorepo_root = project_root.parent
 if str(project_root) not in sys.path:
     sys.path.insert(0, str(project_root))
+if str(monorepo_root) not in sys.path:
+    sys.path.insert(0, str(monorepo_root))
+
+_env_path = monorepo_root / ".env"
+if _env_path.exists():
+    try:
+        from dotenv import load_dotenv
+
+        # Let PM2/system environment override .env values.
+        load_dotenv(_env_path, override=False)
+    except ImportError:
+        with open(_env_path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line and not line.startswith("#") and "=" in line:
+                    key, _, value = line.partition("=")
+                    os.environ.setdefault(key.strip(), value.strip().strip('"').strip("'"))
 
 from backend.ai_chat.service import ai_chat_service
 

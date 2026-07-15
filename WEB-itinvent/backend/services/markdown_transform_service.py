@@ -4,27 +4,13 @@ Service for converting plain text into Markdown using OpenRouter.
 from __future__ import annotations
 
 import logging
-import os
 import re
-from pathlib import Path
 from typing import Any, Optional
 
-from dotenv import dotenv_values
-
-try:
-    from openai import OpenAI
-except Exception:  # pragma: no cover - optional dependency at runtime
-    OpenAI = None
+from backend.ai_chat.openrouter_client import OpenRouterClientError, openrouter_client, resolve_model
 
 
 logger = logging.getLogger(__name__)
-
-PROJECT_ROOT = Path(__file__).resolve().parents[3]
-ROOT_ENV_PATH = PROJECT_ROOT / ".env"
-ROOT_ENV = dotenv_values(str(ROOT_ENV_PATH)) if ROOT_ENV_PATH.exists() else {}
-
-DEFAULT_OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
-DEFAULT_MARKDOWN_MODEL = "openai/gpt-4o-mini"
 
 
 class MarkdownTransformConfigError(RuntimeError):
@@ -33,46 +19,6 @@ class MarkdownTransformConfigError(RuntimeError):
 
 class MarkdownTransformError(RuntimeError):
     """Raised when LLM request fails or returns invalid payload."""
-
-
-def _read_env(name: str, default: Optional[str] = None) -> Optional[str]:
-    value = os.getenv(name)
-    if value not in (None, ""):
-        return str(value).strip()
-    root_value = ROOT_ENV.get(name)
-    if root_value not in (None, ""):
-        return str(root_value).strip()
-    return default
-
-
-def _normalize_openrouter_base_url(raw_value: Any, default_base_url: str) -> str:
-    raw = str(raw_value or "").strip()
-    if not raw:
-        return default_base_url
-
-    value = raw.rstrip("/")
-    lower = value.lower()
-
-    if lower.endswith("/chat/completions"):
-        value = value[: -len("/chat/completions")]
-        lower = value.lower()
-    elif lower.endswith("/completions"):
-        value = value[: -len("/completions")]
-        lower = value.lower()
-
-    if lower.endswith("/api"):
-        value = f"{value}/v1"
-        lower = value.lower()
-
-    if lower.endswith("/v1") and not lower.endswith("/api/v1"):
-        value = re.sub(r"/v1$", "", value, flags=re.IGNORECASE)
-        value = f"{value}/api/v1"
-        lower = value.lower()
-
-    if not lower.endswith("/api/v1"):
-        value = f"{value}/api/v1"
-
-    return value
 
 
 def _to_int(value: Any) -> Optional[int]:
@@ -94,49 +40,9 @@ def _cleanup_markdown_wrapper(text: str) -> str:
     return normalized
 
 
-def _extract_completion_text(completion: Any) -> str:
-    try:
-        message = completion.choices[0].message
-    except Exception:
-        return ""
-
-    content = getattr(message, "content", "")
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts: list[str] = []
-        for item in content:
-            if isinstance(item, dict):
-                token = item.get("text") or item.get("content")
-            else:
-                token = getattr(item, "text", None) or getattr(item, "content", None)
-            if token:
-                parts.append(str(token))
-        return "\n".join(parts).strip()
-    return str(content or "").strip()
-
-
 class MarkdownTransformService:
     def __init__(self, *, request_timeout_sec: float = 20.0) -> None:
         self.request_timeout_sec = float(request_timeout_sec)
-
-    def _resolve_key(self) -> str:
-        key = _read_env("OPENROUTER_API_KEY") or _read_env("OPENAI_API_KEY")
-        if not key:
-            raise MarkdownTransformConfigError("OPENROUTER_API_KEY не задан.")
-        return key
-
-    def _resolve_base_url(self) -> str:
-        raw = _read_env("OPENROUTER_BASE_URL", DEFAULT_OPENROUTER_BASE_URL)
-        return _normalize_openrouter_base_url(raw, DEFAULT_OPENROUTER_BASE_URL)
-
-    def _resolve_model(self) -> str:
-        return (
-            _read_env("OPENROUTER_MODEL_MARKDOWN")
-            or _read_env("ACT_PARSE_MODEL")
-            or _read_env("OCR_MODEL")
-            or DEFAULT_MARKDOWN_MODEL
-        )
 
     def transform_text(self, *, text: str, context: str) -> dict[str, Any]:
         normalized_text = str(text or "").strip()
@@ -149,13 +55,10 @@ class MarkdownTransformService:
         if normalized_context not in {"announcement", "task"}:
             raise ValueError("Неверный context. Допустимо: announcement или task.")
 
-        if OpenAI is None:
-            raise MarkdownTransformConfigError("Пакет openai не установлен.")
+        if not openrouter_client.is_configured():
+            raise MarkdownTransformConfigError("OPENROUTER_API_KEY не задан.")
 
-        api_key = self._resolve_key()
-        base_url = self._resolve_base_url()
-        model = self._resolve_model()
-        client = OpenAI(api_key=api_key, base_url=base_url, timeout=self.request_timeout_sec)
+        model = resolve_model("markdown")
 
         if normalized_context == "announcement":
             context_emoji_rule = (
@@ -190,28 +93,27 @@ class MarkdownTransformService:
         )
 
         try:
-            completion = client.chat.completions.create(
+            markdown_raw, usage = openrouter_client.complete_text(
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
                 model=model,
+                purpose="markdown",
                 temperature=0.2,
                 max_tokens=3000,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt},
-                ],
+                timeout=self.request_timeout_sec,
             )
-        except Exception as exc:
+        except OpenRouterClientError as exc:
             logger.warning("Markdown transform request failed: context=%s error=%s", normalized_context, exc)
             raise MarkdownTransformError("Не удалось обратиться к LLM для преобразования текста.") from exc
 
-        markdown = _cleanup_markdown_wrapper(_extract_completion_text(completion))
+        markdown = _cleanup_markdown_wrapper(markdown_raw)
         if not markdown:
             raise MarkdownTransformError("LLM вернул пустой ответ.")
 
-        usage = getattr(completion, "usage", None)
         usage_payload = {
-            "prompt_tokens": _to_int(getattr(usage, "prompt_tokens", None) if usage is not None else None),
-            "completion_tokens": _to_int(getattr(usage, "completion_tokens", None) if usage is not None else None),
-            "total_tokens": _to_int(getattr(usage, "total_tokens", None) if usage is not None else None),
+            "prompt_tokens": _to_int(usage.get("prompt_tokens")),
+            "completion_tokens": _to_int(usage.get("completion_tokens")),
+            "total_tokens": _to_int(usage.get("total_tokens")),
         }
         usage_payload = {k: v for k, v in usage_payload.items() if v is not None}
 

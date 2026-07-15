@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -15,6 +16,7 @@ DEFAULT_REPEAT_MINUTES = 60
 DEFAULT_INSTALL_DIR = Path(r"C:\Program Files\IT-Invent\Agent")
 DEFAULT_PROGRAM_DATA_ROOT = Path(os.environ.get("ProgramData", r"C:\ProgramData")) / "IT-Invent"
 DEFAULT_RUNTIME_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "Agent"
+DEFAULT_UPGRADE_BACKUP_ROOT = DEFAULT_PROGRAM_DATA_ROOT / "AgentUpgrade"
 EXECUTABLE_NAME = "ITInventAgent.exe"
 SCAN_AGENT_EXECUTABLE_NAME = "ITInventScanAgent.exe"
 MSI_HELPER_EXECUTABLE_NAME = "ITInventAgentMsiHelper.exe"
@@ -41,10 +43,12 @@ FORCED_SCAN_ENV_VALUES = {
     "SCAN_AGENT_WATCHDOG_ENABLED": "0",
 }
 MSI_DEFAULT_ENV_VALUES = {
+    "ITINV_AGENT_SERVER_URL": "https://hubit.zsgp.ru/api/v1/inventory",
     "ITINV_AGENT_INTERVAL_SEC": "3600",
     "ITINV_AGENT_HEARTBEAT_SEC": "600",
     "ITINV_AGENT_HEARTBEAT_JITTER_SEC": "120",
     "ITINV_SCAN_ENABLED": "1",
+    "SCAN_AGENT_SERVER_BASE": "https://hubit.zsgp.ru/api/v1/scan",
     "SCAN_AGENT_POLL_INTERVAL_SEC": "600",
     "SCAN_AGENT_POLL_JITTER_SEC": "120",
     "ITINV_OUTLOOK_SEARCH_ROOTS": "D:\\",
@@ -55,17 +59,18 @@ MSI_REQUIRED_SILENT_KEYS = (
     "SCAN_AGENT_SERVER_BASE",
     "SCAN_AGENT_API_KEY",
 )
+MSI_VALUE_SENTINEL = "__ITINV_MSI_VALUE_END__"
 MSI_ARG_TO_ENV_KEY = {
-    "msi_itinv_agent_server_url": "ITINV_AGENT_SERVER_URL",
-    "msi_itinv_agent_api_key": "ITINV_AGENT_API_KEY",
-    "msi_itinv_agent_interval_sec": "ITINV_AGENT_INTERVAL_SEC",
-    "msi_itinv_agent_heartbeat_sec": "ITINV_AGENT_HEARTBEAT_SEC",
-    "msi_itinv_agent_heartbeat_jitter_sec": "ITINV_AGENT_HEARTBEAT_JITTER_SEC",
-    "msi_itinv_scan_enabled": "ITINV_SCAN_ENABLED",
-    "msi_scan_agent_server_base": "SCAN_AGENT_SERVER_BASE",
-    "msi_scan_agent_api_key": "SCAN_AGENT_API_KEY",
-    "msi_scan_agent_poll_interval_sec": "SCAN_AGENT_POLL_INTERVAL_SEC",
-    "msi_itinv_outlook_search_roots": "ITINV_OUTLOOK_SEARCH_ROOTS",
+    "itinv_agent_server_url": "ITINV_AGENT_SERVER_URL",
+    "itinv_agent_api_key": "ITINV_AGENT_API_KEY",
+    "itinv_agent_interval_sec": "ITINV_AGENT_INTERVAL_SEC",
+    "itinv_agent_heartbeat_sec": "ITINV_AGENT_HEARTBEAT_SEC",
+    "itinv_agent_heartbeat_jitter_sec": "ITINV_AGENT_HEARTBEAT_JITTER_SEC",
+    "itinv_scan_enabled": "ITINV_SCAN_ENABLED",
+    "scan_agent_server_base": "SCAN_AGENT_SERVER_BASE",
+    "scan_agent_api_key": "SCAN_AGENT_API_KEY",
+    "scan_agent_poll_interval_sec": "SCAN_AGENT_POLL_INTERVAL_SEC",
+    "itinv_outlook_search_roots": "ITINV_OUTLOOK_SEARCH_ROOTS",
 }
 POWERSHELL_CANDIDATES = (
     Path(r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe"),
@@ -239,6 +244,41 @@ def cleanup_legacy_env_files(install_dir: Path, env_file_path: Path, logger) -> 
             logger.warning("Failed to remove legacy runtime env file %s: %s", legacy_path, exc)
 
 
+def _restore_directory_contents(source: Path, target: Path) -> None:
+    if not source.exists() or not source.is_dir():
+        return
+    target.mkdir(parents=True, exist_ok=True)
+    for item in source.iterdir():
+        destination = target / item.name
+        if item.is_dir() and destination.exists() and destination.is_dir():
+            _restore_directory_contents(item, destination)
+            continue
+        if destination.exists():
+            if destination.is_dir():
+                shutil.rmtree(destination)
+            else:
+                destination.unlink()
+        shutil.move(str(item), str(destination))
+    source.rmdir()
+
+
+def restore_upgrade_runtime_backup(
+    *,
+    runtime_root: Optional[Path] = None,
+    scan_runtime_root: Optional[Path] = None,
+) -> bool:
+    backup_root = Path(DEFAULT_UPGRADE_BACKUP_ROOT)
+    if not backup_root.exists() or not backup_root.is_dir():
+        return False
+    inventory_target = Path(runtime_root or DEFAULT_RUNTIME_ROOT)
+    scan_target = Path(scan_runtime_root or (DEFAULT_PROGRAM_DATA_ROOT / "ScanAgent"))
+    _restore_directory_contents(backup_root / "Agent", inventory_target)
+    _restore_directory_contents(backup_root / "ScanAgent", scan_target)
+    if backup_root.exists() and not any(backup_root.iterdir()):
+        backup_root.rmdir()
+    return True
+
+
 def build_runtime_env_values(existing: Mapping[str, str], overrides: Mapping[str, str]) -> Dict[str, str]:
     merged: Dict[str, str] = {}
     ordered_keys: List[str] = []
@@ -305,7 +345,10 @@ def namespace_to_env_overrides(namespace) -> Dict[str, str]:
         raw_value = getattr(namespace, attr_name, "")
         if raw_value is None:
             continue
-        overrides[env_key] = str(raw_value).strip()
+        normalized = str(raw_value).strip()
+        if normalized.endswith(MSI_VALUE_SENTINEL):
+            normalized = normalized[: -len(MSI_VALUE_SENTINEL)]
+        overrides[env_key] = normalized
     return overrides
 
 
@@ -435,6 +478,12 @@ def run_msi_install(namespace, logger) -> int:
     stopped_pids = stop_agent_processes(skip_pid=os.getpid())
     if stopped_pids:
         logger.info("Stopped old IT-Invent agent processes before install: %s", stopped_pids)
+
+    if restore_upgrade_runtime_backup(
+        runtime_root=env_file_path.parent,
+        scan_runtime_root=DEFAULT_PROGRAM_DATA_ROOT / "ScanAgent",
+    ):
+        logger.info("Restored preserved agent runtime after MSI major upgrade")
 
     overrides = namespace_to_env_overrides(namespace)
     existing = read_runtime_env_map(env_file_path, install_dir)

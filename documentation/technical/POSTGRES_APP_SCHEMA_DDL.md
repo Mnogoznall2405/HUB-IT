@@ -1,13 +1,13 @@
 # PostgreSQL — DDL snapshot (live introspection)
 
-_Сгенерировано: 2026-07-09 12:51 UTC_  
+_Сгенерировано: 2026-07-15 11:14 UTC_
 _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:***@127.0.0.1:5432/hubit_chat` (`127.0.0.1:5432/hubit_chat`)_
 
 Автообновляется после `alembic upgrade` и dev-инициализации PostgreSQL. Обзор: [POSTGRES_APP_SCHEMA.md](./POSTGRES_APP_SCHEMA.md).
 
 ---
 
-## Schema `app` (86 tables)
+## Schema `app` (94 tables)
 
 ### `app.ad_user_branch_overrides`
 
@@ -863,6 +863,31 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
 
 ---
 
+### `app.mail_runtime_snapshots`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.mail_runtime_snapshots_id_seq'::regclass)` |
+| `user_id` | integer | no | `` |
+| `mailbox_id` | varchar(128) | no | `` |
+| `snapshot_type` | varchar(32) | no | `` |
+| `context_key` | varchar(255) | no | `` |
+| `payload_json` | text | no | `` |
+| `status` | varchar(16) | no | `` |
+| `last_error` | text | no | `` |
+| `as_of` | timestamptz | yes | `` |
+| `expires_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_mail_runtime_snapshots_expires`: (expires_at)
+  - `ix_app_mail_runtime_snapshots_user_type`: (user_id, snapshot_type)
+  - `uq_app_mail_runtime_snapshot_scope` UNIQUE: (user_id, mailbox_id, snapshot_type, context_key)
+
+---
+
 ### `app.mail_user_preferences`
 
 | Column | Type | Nullable | Default |
@@ -1390,6 +1415,175 @@ _Источник: `APP_DATABASE_URL` → `postgresql+psycopg://hubit_chat_app:*
   - `idx_network_sockets_branch_code`: (branch_id, socket_code)
   - `idx_network_sockets_port`: (port_id)
   - `network_sockets_branch_id_socket_code_key` UNIQUE: (branch_id, socket_code)
+
+---
+
+### `app.one_c_catalog_entries`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.one_c_catalog_entries_id_seq'::regclass)` |
+| `source_base` | varchar(64) | no | `` |
+| `generation` | integer | no | `` |
+| `catalog_type` | varchar(16) | no | `` |
+| `ref` | varchar(64) | no | `` |
+| `code` | varchar(200) | no | `` |
+| `name` | text | no | `` |
+| `code_normalized` | varchar(200) | no | `` |
+| `name_normalized` | text | no | `` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_one_c_catalog_entries_code`: (source_base, generation, catalog_type, code_normalized)
+  - `ix_app_one_c_catalog_entries_name`: (source_base, generation, catalog_type, name_normalized)
+  - `ix_app_one_c_catalog_entries_ref`: (source_base, generation, catalog_type, ref)
+  - `uq_app_one_c_catalog_entries_generation_ref` UNIQUE: (source_base, generation, catalog_type, ref)
+
+---
+
+### `app.one_c_catalog_snapshots`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `source_base` **PK** | varchar(64) | no | `` |
+| `active_generation` | integer | no | `` |
+| `nomenclature_count` | integer | no | `` |
+| `warehouses_count` | integer | no | `` |
+| `nomenclature_truncated` | boolean | no | `` |
+| `warehouses_truncated` | boolean | no | `` |
+| `updated_at` | timestamptz | yes | `` |
+| `last_attempt_at` | timestamptz | yes | `` |
+| `last_error` | text | no | `` |
+| `created_at` | timestamptz | no | `` |
+| `nomenclature_fingerprint` | varchar(64) | no | `''::character varying` |
+| `warehouses_fingerprint` | varchar(64) | no | `''::character varying` |
+
+- **Primary key:** `source_base`
+
+---
+
+### `app.one_c_catalog_tokens`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.one_c_catalog_tokens_id_seq'::regclass)` |
+| `source_base` | varchar(64) | no | `` |
+| `generation` | integer | no | `` |
+| `catalog_type` | varchar(16) | no | `` |
+| `entry_ref` | varchar(64) | no | `` |
+| `token` | varchar(200) | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_one_c_catalog_tokens_lookup`: (source_base, generation, catalog_type, token, entry_ref)
+  - `ix_app_one_c_catalog_tokens_token_trgm`: (token)
+  - `uq_app_one_c_catalog_tokens_entry_token` UNIQUE: (source_base, generation, catalog_type, entry_ref, token)
+
+---
+
+### `app.one_c_employee_owner_links`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.one_c_employee_owner_links_id_seq'::regclass)` |
+| `source_base` | varchar(64) | no | `` |
+| `employee_code` | varchar(128) | no | `` |
+| `hub_db_id` | varchar(128) | no | `` |
+| `owner_no` | integer | no | `` |
+| `status` | varchar(16) | no | `` |
+| `created_by` | varchar(128) | no | `` |
+| `verified_by` | varchar(128) | yes | `` |
+| `verified_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+| `version` | integer | no | `1` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_one_c_employee_owner_links_employee`: (source_base, employee_code)
+  - `ix_app_one_c_employee_owner_links_owner`: (hub_db_id, owner_no)
+  - `uq_app_one_c_employee_owner_links` UNIQUE: (source_base, employee_code, hub_db_id, owner_no)
+
+---
+
+### `app.one_c_item_links`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.one_c_item_links_id_seq'::regclass)` |
+| `hub_db_id` | varchar(128) | no | `` |
+| `hub_item_id` | varchar(64) | no | `` |
+| `source_base` | varchar(64) | no | `` |
+| `nomenclature_ref` | varchar(64) | yes | `` |
+| `nomenclature_code_snapshot` | varchar(200) | yes | `` |
+| `status` | varchar(16) | no | `` |
+| `reason` | text | yes | `` |
+| `version` | integer | no | `` |
+| `created_by` | varchar(128) | no | `` |
+| `verified_by` | varchar(128) | yes | `` |
+| `verified_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_one_c_item_links_nomenclature`: (source_base, nomenclature_ref)
+  - `ix_app_one_c_item_links_status`: (hub_db_id, status)
+  - `uq_app_one_c_item_links_hub_item_source` UNIQUE: (hub_db_id, hub_item_id, source_base)
+
+---
+
+### `app.one_c_reconcile_events`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | varchar(64) | no | `` |
+| `event_type` | varchar(64) | no | `` |
+| `correlation_id` | varchar(64) | no | `` |
+| `hub_db_id` | varchar(128) | yes | `` |
+| `hub_item_id` | varchar(64) | yes | `` |
+| `actor` | varchar(128) | no | `` |
+| `reason` | text | yes | `` |
+| `before_json` | text | no | `` |
+| `after_json` | text | no | `` |
+| `created_at` | timestamptz | no | `` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_one_c_reconcile_events_correlation`: (correlation_id)
+  - `ix_app_one_c_reconcile_events_correlation_id`: (correlation_id)
+  - `ix_app_one_c_reconcile_events_event_type`: (event_type)
+  - `ix_app_one_c_reconcile_events_hub_db_id`: (hub_db_id)
+  - `ix_app_one_c_reconcile_events_hub_item`: (hub_db_id, hub_item_id, created_at)
+  - `ix_app_one_c_reconcile_events_hub_item_id`: (hub_item_id)
+
+---
+
+### `app.one_c_warehouse_owner_links`
+
+| Column | Type | Nullable | Default |
+|--------|------|----------|---------|
+| `id` **PK** | integer | no | `nextval('app.one_c_warehouse_owner_links_id_seq'::regclass)` |
+| `source_base` | varchar(64) | no | `` |
+| `warehouse_ref` | varchar(64) | no | `` |
+| `hub_db_id` | varchar(128) | no | `` |
+| `owner_no` | integer | no | `` |
+| `status` | varchar(16) | no | `` |
+| `reason` | text | yes | `` |
+| `created_by` | varchar(128) | no | `` |
+| `verified_by` | varchar(128) | yes | `` |
+| `verified_at` | timestamptz | yes | `` |
+| `created_at` | timestamptz | no | `` |
+| `updated_at` | timestamptz | no | `` |
+| `version` | integer | no | `1` |
+
+- **Primary key:** `id`
+- **Indexes:**
+  - `ix_app_one_c_warehouse_owner_links_owner`: (hub_db_id, owner_no)
+  - `ix_app_one_c_warehouse_owner_links_warehouse`: (source_base, warehouse_ref)
+  - `uq_app_one_c_warehouse_owner_links` UNIQUE: (source_base, warehouse_ref, hub_db_id, owner_no)
+  - `uq_app_one_c_warehouse_owner_links_active_warehouse` UNIQUE: (source_base, warehouse_ref, hub_db_id)
 
 ---
 

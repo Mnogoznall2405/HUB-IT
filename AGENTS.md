@@ -23,6 +23,7 @@
 | **scan_server** | Очередь задач, инциденты, OCR/PDF pipeline |
 | **inventory_server** | Ingest/очередь inventory на отдельном порту |
 | **data/** | Общие JSON-файлы (web + bot) |
+| **shared/llm** | Единый OpenRouter LLM gateway (chat, mail, markdown, act parse, bot OCR) |
 | **documentation/** | Пользовательские и технические гайды |
 | **scripts/** | PM2, миграции, install/uninstall, утилиты |
 | **tests/** | Python-тесты backend, bot, scan, inventory |
@@ -37,6 +38,8 @@
 
 ```text
 Image_scan/
+├── shared/
+│   └── llm/              # Единый OpenRouter gateway (все LLM-вызовы)
 ├── WEB-itinvent/
 │   ├── backend/          # FastAPI, порт dev ~8001
 │   │   ├── main.py       # Точка входа, include_router
@@ -281,9 +284,10 @@ npm run build
 5. **Коммиты** — только по явной просьбе пользователя.
 6. **Язык ответов пользователю** — русский (если не попросили иное).
 7. **Web API client** — новые эндпоинты в отдельные файлы `frontend/src/api/`; не раздувать `client.js` без необходимости (см. TECH_DEBT_AUDIT).
-8. **Scan vs inventory** — не смешивать: scan — отдельный сервис и прокси; inventory-agent — `agent.py` / `inventory_server`.
-9. **Без native APK** — каталог `mobile-android/` и Capacitor/APK-пайплайн удалены; не добавлять обратно «для симметрии». Backend может содержать FCM/native-push API (`native_push_service.py`) — это не означает наличие Android-приложения в этом репозитории.
-10. **Перезапуск backend** — после backend-изменений использовать `powershell -ExecutionPolicy Bypass -File scripts\pm2\restart-backend.ps1`, при необходимости предварительно добавить `C:\Project\Image_scan\tools\node-v24.14.0-win-x64-full` в `PATH`, затем проверять `scripts\pm2\health-check.ps1` или `/health`.
+8. **LLM / OpenRouter** — все вызовы только через `shared/llm` (не создавать локальные `OpenAI()` клиенты в services/bot).
+9. **Scan vs inventory** — не смешивать: scan — отдельный сервис и прокси; inventory-agent — `agent.py` / `inventory_server`.
+10. **Без native APK** — каталог `mobile-android/` и Capacitor/APK-пайплайн удалены; не добавлять обратно «для симметрии». Backend может содержать FCM/native-push API (`native_push_service.py`) — это не означает наличие Android-приложения в этом репозитории.
+11. **Перезапуск backend** — после backend-изменений использовать `powershell -ExecutionPolicy Bypass -File scripts\pm2\restart-backend.ps1`, при необходимости предварительно добавить `C:\Project\Image_scan\tools\node-v24.14.0-win-x64-full` в `PATH`, затем проверять `scripts\pm2\health-check.ps1` или `/health`.
 
 ---
 
@@ -297,7 +301,7 @@ npm run build
 | Оборудование, акты | `equipment.py`, `json_operations.py`, `data/equipment_transfers.json` |
 | Hub / задачи | `hub.py`, `services/hub_service.py`, `frontend/src/api/hub*.js` |
 | Почта | `mail.py`, `services/mail_*.py` |
-| Чат | `chat.py`, `WEB-itinvent/backend/ai_chat/` (если есть), `frontend/src/api/chat*.js` |
+| Чат / AI | `shared/llm` (OpenRouter gateway), `WEB-itinvent/backend/ai_chat/`, `frontend/src/api/chat*.js` |
 | Scan Center | `ScanCenter.jsx`, `api/scan*.js`, `scan_server/`, SCAN_ARCHITECTURE.md |
 | Telegram сценарий | `bot/handlers/<name>.py` |
 | Агент на ПК | `agent.py`, `scan_agent/agent.py`, `agent/docs/` |

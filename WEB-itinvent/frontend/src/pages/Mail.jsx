@@ -48,6 +48,7 @@ import MailConversationReader from '../components/mail/MailConversationReader';
 import MailFolderRail from '../components/mail/MailFolderRail';
 import MailInitialLoadingState from '../components/mail/MailInitialLoadingState';
 import MailMessageList from '../components/mail/MailMessageList';
+import MailPaneResizeHandle from '../components/mail/MailPaneResizeHandle';
 import MailMessageReader from '../components/mail/MailMessageReader';
 import MailMobilePreviewChrome from '../components/mail/MailMobilePreviewChrome';
 import MailPreviewHeader from '../components/mail/MailPreviewHeader';
@@ -98,6 +99,7 @@ import {
   createEmptyListData,
   normalizeMailListResponse,
 } from '../components/mail/mailListModel';
+import { formatMailListDateLabel } from '../components/mail/mailDateGrouping';
 import {
   buildMailRoute,
   normalizeMailFolder,
@@ -148,6 +150,13 @@ import {
 } from '../components/mail/mailUiTokens';
 import { getMailPersonDisplay, getMailPersonEmail } from '../components/mail/mailPeople';
 import { splitQuotedHistoryHtml } from '../components/mail/mailQuotedHistory';
+import {
+  MAIL_PANE_DEFAULTS,
+  MAIL_PANE_LIMITS,
+  clampMailPaneSize,
+  getMailPaneCssValue,
+  getMailPaneSizes,
+} from '../components/mail/mailPaneLayout';
 
 const MAIL_SHELL_SECTION_KEY = 'mail_shell_section';
 const MAIL_COMPUTER_PASSWORD_LABEL = 'Пароль от корпоративного компьютера';
@@ -180,10 +189,10 @@ const MailTemplatesDialog = lazy(() => import('../components/mail/MailTemplatesD
 const MAIL_ACTIVE_REFRESH_INTERVAL_MS = 90000;
 const MAIL_VIEW_REFRESH_COOLDOWN_MS = 4000;
 const MAIL_SWR_STALE_TIME_MS = 45000;
-const MAIL_DETAIL_SWR_STALE_TIME_MS = 120000;
+const MAIL_DETAIL_SWR_STALE_TIME_MS = 10 * 60 * 1000;
 const MAIL_FOLDER_SUMMARY_REFRESH_COOLDOWN_MS = 120000;
 const MAIL_AUTO_READ_GUARD_TTL_MS = 120000;
-const MAIL_DETAIL_PREFETCH_LIMIT = 0;
+const MAIL_DETAIL_PREFETCH_LIMIT = 2;
 const MAIL_DETAIL_PREFETCH_COOLDOWN_MS = 600000;
 const MAIL_RENDERED_CONTENT_LAYOUT_SX = {
   width: '100%',
@@ -331,19 +340,11 @@ const DEFAULT_MAIL_PREFERENCES = {
   density: 'compact',
   show_preview_snippets: true,
   show_favorites_first: true,
+  ...MAIL_PANE_DEFAULTS,
 };
 
-const MAIL_DESKTOP_FOLDER_RAIL_WIDTH = 188;
-const MAIL_DESKTOP_MESSAGE_LIST_COLUMNS = 'minmax(280px, 332px)';
-
 const formatTime = (isoStr) => {
-  if (!isoStr) return '';
-  const date = new Date(isoStr);
-  const now = new Date();
-  if (date.toDateString() === now.toDateString()) {
-    return date.toLocaleTimeString('ru-RU', { hour: '2-digit', minute: '2-digit' });
-  }
-  return date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'short' });
+  return formatMailListDateLabel(isoStr);
 };
 
 const formatFullDate = (isoStr) => {
@@ -584,6 +585,8 @@ function Mail() {
   const composeOpen = Boolean(composeSession);
 
   const messageListRef = useRef(null);
+  const desktopMailAreaRef = useRef(null);
+  const mailPaneSaveChainRef = useRef(Promise.resolve());
   const loadMoreSentinelRef = useRef(null);
   const conversationScrollRef = useRef(null);
   const searchInputRef = useRef(null);
@@ -970,7 +973,7 @@ function Mail() {
           )
         : mailAPI.getMessage(normalizedId, { mailboxId: activeMailboxId })
     );
-    void getOrFetchSWR(
+    return getOrFetchSWR(
       detailCacheKey,
       fetcher,
       {
@@ -1518,6 +1521,7 @@ function Mail() {
       selectedMessageRef,
       selectedConversationRef,
       localReadStateOverridesRef,
+      folderSummaryRef,
     },
     setError,
     setFolderSummary,
@@ -1742,7 +1746,12 @@ function Mail() {
     let cancelled = false;
     const runPrefetch = () => {
       if (cancelled) return;
-      candidateIds.forEach((id) => prefetchMailDetail(id, { mode: 'messages' }));
+      void (async () => {
+        for (const id of candidateIds) {
+          if (cancelled) return;
+          await prefetchMailDetail(id, { mode: 'messages' });
+        }
+      })();
     };
     let timeoutId = null;
     let idleId = null;
@@ -1986,7 +1995,7 @@ function Mail() {
       setError('');
       notifyMailSuccess('Корпоративный пароль сохранён в профиле. Этот ящик доступен на всех ваших устройствах.');
       invalidateMailClientCache();
-      await refreshBootstrap({ force: true });
+      await refreshBootstrap({ force: true, live: true });
     } catch (requestError) {
       setMailCredentialsError(getMailErrorDetail(requestError, 'Не удалось сохранить корпоративный пароль.'));
     } finally {
@@ -2036,7 +2045,7 @@ function Mail() {
     setMailPreferencesSaving(true);
     try {
       const data = await mailAPI.updatePreferences(mailPreferencesDraft);
-      const nextValue = { ...DEFAULT_MAIL_PREFERENCES, ...(data || {}) };
+      const nextValue = { ...DEFAULT_MAIL_PREFERENCES, ...((data?.preferences || data) || {}) };
       setMailPreferences(nextValue);
       setMailPreferencesDraft(nextValue);
       setMailPreferencesOpen(false);
@@ -2410,6 +2419,44 @@ function Mail() {
   const noResultsHint = useMemo(() => (!hasActiveFilters ? (viewMode === 'conversations' ? 'Нет диалогов' : 'Нет писем') : 'Ничего не найдено. Измените фильтры.'), [hasActiveFilters, viewMode]);
   const currentFolderLabel = folderLabelMap.get(String(folder || '')) || FOLDER_LABELS[folder] || 'Письма';
   const readingPaneMode = isMobile ? 'stacked' : (mailPreferences?.reading_pane || 'right');
+  const mailPaneSizes = useMemo(() => getMailPaneSizes(mailPreferences), [
+    mailPreferences?.bottom_list_percent,
+    mailPreferences?.folder_pane_width,
+    mailPreferences?.message_list_width,
+  ]);
+  const persistMailPaneSize = useCallback((key, value) => {
+    const normalizedValue = clampMailPaneSize(key, value);
+    const patch = { [key]: normalizedValue };
+    setMailPreferences((previous) => ({ ...(previous || {}), ...patch }));
+    setMailPreferencesDraft((previous) => ({ ...(previous || {}), ...patch }));
+    mailPaneSaveChainRef.current = mailPaneSaveChainRef.current
+      .catch(() => undefined)
+      .then(() => mailAPI.updatePreferences(patch))
+      .catch((requestError) => {
+        setError(requestError?.response?.data?.detail || 'Не удалось сохранить размер почтовой панели.');
+      });
+  }, []);
+  const applyMailPaneResize = useCallback((key, value, { commit = false } = {}) => {
+    const normalizedValue = clampMailPaneSize(key, value);
+    const cssVariable = {
+      folder_pane_width: '--mail-folder-pane-width',
+      message_list_width: '--mail-message-list-width',
+      bottom_list_percent: '--mail-bottom-list-percent',
+    }[key];
+    if (cssVariable) {
+      desktopMailAreaRef.current?.style.setProperty(cssVariable, getMailPaneCssValue(key, normalizedValue));
+    }
+    if (commit) persistMailPaneSize(key, normalizedValue);
+  }, [persistMailPaneSize]);
+  const handleFolderPaneResize = useCallback((value, options) => {
+    applyMailPaneResize('folder_pane_width', value, options);
+  }, [applyMailPaneResize]);
+  const handleMessageListResize = useCallback((value, options) => {
+    applyMailPaneResize('message_list_width', value, options);
+  }, [applyMailPaneResize]);
+  const handleBottomListResize = useCallback((value, options) => {
+    applyMailPaneResize('bottom_list_percent', value, options);
+  }, [applyMailPaneResize]);
   const mailboxPrimaryDomain = useMemo(() => {
     const primary = Array.from(mailboxEmails)[0] || '';
     return String(primary.split('@')[1] || '').trim().toLowerCase();
@@ -3038,12 +3085,20 @@ function Mail() {
   );
   const desktopMailArea = readingPaneMode === 'right' ? (
     <Box
+      ref={desktopMailAreaRef}
+      data-testid="mail-desktop-area"
+      data-folder-pane-width={mailPaneSizes.folder_pane_width}
+      data-message-list-width={mailPaneSizes.message_list_width}
+      data-bottom-list-percent={mailPaneSizes.bottom_list_percent}
       sx={{
+        '--mail-folder-pane-width': getMailPaneCssValue('folder_pane_width', mailPaneSizes.folder_pane_width),
+        '--mail-message-list-width': getMailPaneCssValue('message_list_width', mailPaneSizes.message_list_width),
+        '--mail-bottom-list-percent': getMailPaneCssValue('bottom_list_percent', mailPaneSizes.bottom_list_percent),
         display: 'grid',
         gap: 0,
         gridTemplateColumns: {
           xs: '1fr',
-          md: `${MAIL_DESKTOP_FOLDER_RAIL_WIDTH}px ${MAIL_DESKTOP_MESSAGE_LIST_COLUMNS} minmax(0, 1fr)`,
+          md: 'minmax(180px, min(var(--mail-folder-pane-width), 32%)) 7px minmax(280px, min(var(--mail-message-list-width), 46%)) 7px minmax(0, 1fr)',
         },
         flex: 1,
         minHeight: 0,
@@ -3052,15 +3107,45 @@ function Mail() {
       }}
     >
       {renderFolderRail}
+      <MailPaneResizeHandle
+        testId="mail-folder-pane-resizer"
+        label="Изменить ширину панели папок"
+        orientation="vertical"
+        value={mailPaneSizes.folder_pane_width}
+        min={MAIL_PANE_LIMITS.folder_pane_width.min}
+        max={MAIL_PANE_LIMITS.folder_pane_width.max}
+        step={MAIL_PANE_LIMITS.folder_pane_width.step}
+        defaultValue={MAIL_PANE_DEFAULTS.folder_pane_width}
+        onResize={handleFolderPaneResize}
+      />
       {listPanel}
+      <MailPaneResizeHandle
+        testId="mail-message-list-resizer"
+        label="Изменить ширину списка писем"
+        orientation="vertical"
+        value={mailPaneSizes.message_list_width}
+        min={MAIL_PANE_LIMITS.message_list_width.min}
+        max={MAIL_PANE_LIMITS.message_list_width.max}
+        step={MAIL_PANE_LIMITS.message_list_width.step}
+        defaultValue={MAIL_PANE_DEFAULTS.message_list_width}
+        onResize={handleMessageListResize}
+      />
       {previewPanel}
     </Box>
   ) : (
     <Box
+      ref={desktopMailAreaRef}
+      data-testid="mail-desktop-area"
+      data-folder-pane-width={mailPaneSizes.folder_pane_width}
+      data-message-list-width={mailPaneSizes.message_list_width}
+      data-bottom-list-percent={mailPaneSizes.bottom_list_percent}
       sx={{
+        '--mail-folder-pane-width': getMailPaneCssValue('folder_pane_width', mailPaneSizes.folder_pane_width),
+        '--mail-message-list-width': getMailPaneCssValue('message_list_width', mailPaneSizes.message_list_width),
+        '--mail-bottom-list-percent': getMailPaneCssValue('bottom_list_percent', mailPaneSizes.bottom_list_percent),
         display: 'grid',
         gap: 0,
-        gridTemplateColumns: { xs: '1fr', md: `${MAIL_DESKTOP_FOLDER_RAIL_WIDTH}px minmax(0, 1fr)` },
+        gridTemplateColumns: { xs: '1fr', md: 'minmax(180px, min(var(--mail-folder-pane-width), 32%)) 7px minmax(0, 1fr)' },
         flex: 1,
         minHeight: 0,
         overflow: 'hidden',
@@ -3068,6 +3153,17 @@ function Mail() {
       }}
     >
       {renderFolderRail}
+      <MailPaneResizeHandle
+        testId="mail-folder-pane-resizer"
+        label="Изменить ширину панели папок"
+        orientation="vertical"
+        value={mailPaneSizes.folder_pane_width}
+        min={MAIL_PANE_LIMITS.folder_pane_width.min}
+        max={MAIL_PANE_LIMITS.folder_pane_width.max}
+        step={MAIL_PANE_LIMITS.folder_pane_width.step}
+        defaultValue={MAIL_PANE_DEFAULTS.folder_pane_width}
+        onResize={handleFolderPaneResize}
+      />
       {readingPaneMode === 'bottom' ? (
         <Box
           sx={{
@@ -3075,10 +3171,21 @@ function Mail() {
             height: '100%',
             display: 'grid',
             gap: 0,
-            gridTemplateRows: 'minmax(260px, 42%) minmax(0, 1fr)',
+            gridTemplateRows: 'minmax(220px, var(--mail-bottom-list-percent)) 7px minmax(0, 1fr)',
           }}
         >
           {listPanel}
+          <MailPaneResizeHandle
+            testId="mail-bottom-list-resizer"
+            label="Изменить высоту списка писем"
+            orientation="horizontal"
+            value={mailPaneSizes.bottom_list_percent}
+            min={MAIL_PANE_LIMITS.bottom_list_percent.min}
+            max={MAIL_PANE_LIMITS.bottom_list_percent.max}
+            step={MAIL_PANE_LIMITS.bottom_list_percent.step}
+            defaultValue={MAIL_PANE_DEFAULTS.bottom_list_percent}
+            onResize={handleBottomListResize}
+          />
           {previewPanel}
         </Box>
       ) : (

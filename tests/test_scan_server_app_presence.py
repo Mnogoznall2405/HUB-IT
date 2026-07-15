@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import json
 import sqlite3
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +28,17 @@ def _make_store(temp_dir: str) -> ScanStore:
 
 def _fake_request(ip_address: str):
     return SimpleNamespace(client=SimpleNamespace(host=ip_address))
+
+
+def test_health_exposes_ocr_capacity_and_large_page_limits():
+    payload = asyncio.run(scan_app.health())
+
+    assert payload["analysis"]["ocr_page_limit"] == 3
+    assert payload["analysis"]["text_page_limit"] == 10
+    assert payload["analysis"]["focused_ocr_dpi"] >= 400
+    assert payload["analysis"]["full_page_max_pixels"] >= 20_000_000
+    assert payload["analysis"]["focused_region_max_pixels"] >= 12_000_000
+    assert payload["analysis"]["pdf_max_bytes"] >= 25 * 1024 * 1024
 
 
 def test_ingest_touches_agent_presence_and_exposes_active_work(temp_dir, monkeypatch):
@@ -170,6 +182,143 @@ def test_ingest_pdf_slice_accepts_multipart_metadata_and_spools_payload(temp_dir
     assert store.read_job_pdf_spool(job_id=job_id) == b"%PDF-1.4 multipart"
 
 
+def test_ingest_pdf_slice_bounds_upload_and_records_incomplete_job(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    monkeypatch.setattr(scan_app, "store", store)
+    monkeypatch.setattr(scan_app, "config", replace(scan_app.config, pdf_max_bytes=4))
+    metadata = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "file_path": r"C:\Scan\oversize.pdf",
+        "file_name": "oversize.pdf",
+        "file_hash": "hash-oversize",
+        "source_kind": "pdf_slice",
+        "event_id": "oversize-event",
+    }
+    upload = UploadFile(filename="oversize.pdf", file=BytesIO(b"12345-more-bytes"))
+
+    result = asyncio.run(
+        scan_app.ingest_pdf_slice(
+            _fake_request("10.105.0.18"),
+            metadata_json=json.dumps(metadata),
+            pdf_slice=upload,
+            x_api_key=scan_app.config.api_keys[0],
+        )
+    )
+
+    assert result["success"] is True
+    assert store.read_job_pdf_spool(job_id=result["job_id"]) == b""
+    item = store.list_incomplete_jobs(limit=10, offset=0)
+    assert item["total"] == 0
+    with store._lock, store._connect() as conn:
+        row = conn.execute("SELECT source_kind, payload_json FROM scan_jobs WHERE id=?", (result["job_id"],)).fetchone()
+    assert row["source_kind"] == "analysis_incomplete"
+    assert json.loads(row["payload_json"])["metadata"]["analysis_incomplete_reason"] == "pdf_slice_payload_too_large"
+
+
+def test_ingest_document_accepts_supported_image_and_spools_payload(temp_dir, monkeypatch):
+    store = _make_store(temp_dir)
+    monkeypatch.setattr(scan_app, "store", store)
+    metadata = {
+        "agent_id": "agent-1",
+        "hostname": "HOST-01",
+        "file_path": r"C:\Scan\stamp.jpg",
+        "file_name": "stamp.jpg",
+        "file_hash": "hash-image",
+        "file_size": 11,
+        "source_kind": "image",
+        "event_id": "image-event",
+        "metadata": {"analysis_version": "scan-ocr3-text10-v2"},
+    }
+    upload = UploadFile(filename="stamp.jpg", file=BytesIO(b"image-bytes"))
+
+    result = asyncio.run(
+        scan_app.ingest_document(
+            _fake_request("10.105.0.18"),
+            metadata_json=json.dumps(metadata),
+            document=upload,
+            x_api_key=scan_app.config.api_keys[0],
+        )
+    )
+
+    assert result["success"] is True
+    assert store.read_job_pdf_spool(job_id=result["job_id"]) == b"image-bytes"
+
+
+def test_incident_ack_uses_authenticated_actor_not_client_value(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(
+        scan_app,
+        "store",
+        SimpleNamespace(ack_incident=lambda **kwargs: calls.setdefault("ack", kwargs) or {"id": "inc-1"}),
+    )
+
+    result = scan_app.ack_incident(
+        "inc-1",
+        scan_app.IncidentAckPayload(ack_by="spoofed-user"),
+        {"id": "user-1", "username": "real-user"},
+    )
+
+    assert result["success"] is True
+    assert calls["ack"]["ack_by"] == "real-user"
+
+
+def test_bulk_ack_rejects_accidental_unfiltered_request(monkeypatch):
+    monkeypatch.setattr(scan_app, "store", SimpleNamespace(bulk_ack_incidents=lambda **kwargs: kwargs))
+
+    try:
+        scan_app.bulk_ack_incidents(
+            scan_app.IncidentBulkAckPayload(),
+            {"id": "user-1", "username": "real-user"},
+        )
+    except HTTPException as exc:
+        assert exc.status_code == 400
+    else:
+        raise AssertionError("Expected HTTPException")
+
+
+def test_bulk_ack_all_requires_explicit_confirmation_and_uses_authenticated_actor(monkeypatch):
+    calls = {}
+    monkeypatch.setattr(
+        scan_app,
+        "store",
+        SimpleNamespace(bulk_ack_incidents=lambda **kwargs: calls.setdefault("bulk", kwargs) or {"success": True}),
+    )
+
+    scan_app.bulk_ack_incidents(
+        scan_app.IncidentBulkAckPayload(confirm_all=True, ack_by="spoofed-user"),
+        {"id": "user-1", "username": "real-user"},
+    )
+
+    assert calls["bulk"]["ack_by"] == "real-user"
+
+
+def test_review_items_returns_incomplete_file_reason(temp_dir):
+    store = _make_store(temp_dir)
+    queued = store.queue_job(
+        {
+            "agent_id": "agent-1",
+            "hostname": "HOST-01",
+            "file_path": r"C:\Scan\broken.pdf",
+            "file_name": "broken.pdf",
+            "file_hash": "hash-broken",
+            "source_kind": "analysis_incomplete",
+            "metadata": {"analysis_version": "scan-ocr3-text10-v2"},
+        }
+    )
+    store.finalize_job(
+        job_id=queued["job_id"],
+        status="analysis_incomplete",
+        error_text="pdf_slice_creation_failed",
+    )
+
+    result = store.list_incomplete_jobs(limit=10, offset=0)
+
+    assert result["total"] == 1
+    assert result["items"][0]["hostname"] == "HOST-01"
+    assert result["items"][0]["reason"] == "pdf_slice_creation_failed"
+
+
 def test_dashboard_uses_ttl_cache_and_stale_on_sqlite_lock(monkeypatch):
     calls = {"dashboard": 0}
 
@@ -275,17 +424,22 @@ def test_patterns_endpoint_returns_yaml_patterns():
     assert any(item["id"] == "loan_keyword" for item in result["items"])
 
 
-def test_scan_auth_runtime_loads_service_singletons_after_submodule_imports():
-    importlib.import_module("backend.services.authorization_service")
-    importlib.import_module("backend.services.session_service")
-    importlib.import_module("backend.services.user_service")
-    scan_app._load_web_auth_runtime.cache_clear()
+def test_scan_auth_uses_web_backend_http_boundary(monkeypatch):
+    seen = []
+    monkeypatch.setattr(
+        scan_app,
+        "_fetch_web_user",
+        lambda token: seen.append(token) or {"id": 1, "is_active": True, "permissions": [scan_app.PERM_SCAN_READ]},
+    )
+    dependency = scan_app.require_web_permission(scan_app.PERM_SCAN_READ)
 
-    runtime = scan_app._load_web_auth_runtime()
+    user = dependency(
+        credentials=scan_app.HTTPAuthorizationCredentials(scheme="Bearer", credentials="web-token"),
+        access_token_cookie=None,
+    )
 
-    assert hasattr(runtime["authorization_service"], "has_permission")
-    assert hasattr(runtime["session_service"], "is_session_active")
-    assert hasattr(runtime["user_service"], "get_by_id")
+    assert user["id"] == 1
+    assert seen == ["web-token"]
 
 
 def test_authorization_module_keeps_has_permission_compatibility_facade():

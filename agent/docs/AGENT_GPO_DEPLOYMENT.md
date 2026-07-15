@@ -23,6 +23,22 @@ python agent/setup.py bdist_msi
   - `SCAN_AGENT_SCAN_ON_START=0`
   - `SCAN_AGENT_WATCHDOG_ENABLED=0`
 
+### Обновление 1.3.0–1.3.7 → 1.3.8
+
+Запускай новый MSI поверх установленной версии, без предварительного удаления:
+
+```powershell
+msiexec /i "\\server\share\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_upgrade.log"
+```
+
+У MSI сохранён постоянный `UpgradeCode`. Перед удалением старого продукта обновление временно сохраняет и затем восстанавливает:
+
+- `C:\ProgramData\IT-Invent\Agent\.env` и другие runtime-файлы;
+- локальную очередь inventory-agent;
+- состояние, outbox и очередь ScanAgent.
+
+Явный `msiexec /x` остаётся полным удалением и эти данные не сохраняет.
+
 Дополнительный post-install шаг через `install_agent_task.ps1` больше не обязателен.
 
 ## 3. Silent install для массового развёртывания
@@ -31,7 +47,7 @@ python agent/setup.py bdist_msi
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /i "\\server\share\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
+msiexec /i "\\server\share\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_install.log" `
   ITINV_AGENT_SERVER_URL="http://127.0.0.1:8001/api/v1/inventory" `
   ITINV_AGENT_API_KEY="YOUR_SECURE_AGENT_KEY" `
   ITINV_AGENT_INTERVAL_SEC="3600" `
@@ -45,7 +61,7 @@ msiexec /i "\\server\share\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v 
   ITINV_OUTLOOK_SEARCH_ROOTS="D:\"
 ```
 
-Минимально рекомендуемые обязательные параметры:
+Обязательные значения: ключи встраиваются из корневого `.env`, публичные URL задаются client defaults; все значения при необходимости переопределяются через MSI properties:
 
 - `ITINV_AGENT_SERVER_URL`
 - `ITINV_AGENT_API_KEY`
@@ -56,14 +72,14 @@ msiexec /i "\\server\share\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v 
 
 | Property | Required | Default | Example | Purpose |
 | --- | --- | --- | --- | --- |
-| `ITINV_AGENT_SERVER_URL` | Да | runtime default | `https://hubit.zsgp.ru/api/v1/inventory` | Inventory endpoint |
-| `ITINV_AGENT_API_KEY` | Да | empty | `YOUR_SECURE_AGENT_KEY` | Inventory API key |
+| `ITINV_AGENT_SERVER_URL` | Да | `https://hubit.zsgp.ru/api/v1/inventory` | `https://hubit.zsgp.ru/api/v1/inventory` | Inventory endpoint |
+| `ITINV_AGENT_API_KEY` | Да | root `.env` at MSI build | `YOUR_SECURE_AGENT_KEY` | Inventory API key |
 | `ITINV_AGENT_INTERVAL_SEC` | Нет | `3600` | `3600` | Snapshot interval |
 | `ITINV_AGENT_HEARTBEAT_SEC` | Нет | `600` | `600` | Heartbeat interval |
 | `ITINV_AGENT_HEARTBEAT_JITTER_SEC` | Нет | `120` | `120` | Heartbeat jitter |
 | `ITINV_SCAN_ENABLED` | Нет | `1` | `1` | Enable scan sidecar |
-| `SCAN_AGENT_SERVER_BASE` | Да | runtime default | `https://hubit.zsgp.ru/api/v1/scan` | Scan endpoint |
-| `SCAN_AGENT_API_KEY` | Да | empty | `YOUR_SECURE_AGENT_KEY` | Scan API key |
+| `SCAN_AGENT_SERVER_BASE` | Да | `https://hubit.zsgp.ru/api/v1/scan` | `https://hubit.zsgp.ru/api/v1/scan` | Scan endpoint |
+| `SCAN_AGENT_API_KEY` | Да | root `.env` at MSI build | `YOUR_SECURE_AGENT_KEY` | Scan API key |
 | `SCAN_AGENT_POLL_INTERVAL_SEC` | Нет | `600` | `600` | Scan poll interval |
 | `SCAN_AGENT_POLL_JITTER_SEC` | Нет | `120` | `120` | Scan poll jitter |
 | `ITINV_OUTLOOK_SEARCH_ROOTS` | Нет | `D:\` | `D:\` | Extra PST/OST roots |
@@ -83,11 +99,11 @@ msiexec /i "\\server\share\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v 
 2. Укажи UNC-путь к MSI
 3. Выбери `Assigned`
 
-Если нужно прокинуть MSI properties, используй deployment script или другой orchestration-слой, потому что стандартный GPO MSI assignment плохо подходит для длинной строки `msiexec` с параметрами.
+Обычный GPO MSI assignment использует встроенные URL и ключи. Если их нужно переопределить для отдельной группы ПК, используй deployment script или другой orchestration-слой.
 
 ### SCCM / MECM / Intune
 
-Для этих систем предпочитай явную команду `msiexec /i ... /qn ...`, а не только "голый" MSI, чтобы контролировать API URLs, keys и logging.
+Для этих систем используй `msiexec /i ... /qn ...` с логированием; URL и ключи можно не передавать, если подходят встроенные значения.
 
 ## 6. Логирование установки
 
@@ -150,14 +166,14 @@ Repair:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /fa "\\server\share\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
+msiexec /fa "\\server\share\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_repair.log"
 ```
 
 Тихое удаление:
 
 ```powershell
 New-Item -ItemType Directory -Force -Path C:\Temp | Out-Null
-msiexec /x "\\server\share\IT-Invent Agent-1.2.3-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
+msiexec /x "\\server\share\IT-Invent Agent-1.3.8-win64.msi" /qn /norestart /l*v "C:\Temp\itinvent_agent_uninstall.log"
 ```
 
 Uninstall должен:

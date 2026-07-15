@@ -31,6 +31,10 @@ class EquipmentBase(BaseModel):
     date_create: Optional[datetime] = Field(None, description="Creation date")
     date_last_modify: Optional[datetime] = Field(None, description="Last modification date")
     description: Optional[str] = Field(None, description="Description")
+    hub_db_id: Optional[str] = Field(None, description="Hub database id when multi-db")
+    hub_db_name: Optional[str] = Field(None, description="Hub database display name")
+    is_current_db: Optional[bool] = Field(None, description="True if row is from current Hub DB")
+    hub_owner_no: Optional[int] = Field(None, description="Resolved OWNER_NO in that Hub DB")
 
 
 class EmployeeSummary(BaseModel):
@@ -264,6 +268,13 @@ class EquipmentActSearchResponse(BaseModel):
 
 class TransferExecuteRequest(BaseModel):
     """Transfer request for one or multiple inventory items."""
+    operation_id: Optional[str] = Field(
+        None,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description="Client-generated idempotency key for this inventory transfer",
+    )
     inv_nos: List[str] = Field(..., min_length=1, description="Inventory numbers")
     new_employee: str = Field(..., min_length=2, description="Target employee full name")
     new_employee_no: Optional[int] = Field(None, description="Optional target employee OWNER_NO")
@@ -275,6 +286,13 @@ class TransferExecuteRequest(BaseModel):
 
 class TransferActOnlyRequest(BaseModel):
     """Generate transfer-like act without changing equipment ownership/location."""
+    operation_id: Optional[str] = Field(
+        None,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description="Client-generated idempotency key for this document-only operation",
+    )
     inv_nos: List[str] = Field(..., min_length=1, description="Inventory numbers")
     issuer_employee: str = Field(..., min_length=1, description="Employee/person who issued equipment")
     issuer_owner_no: Optional[int] = Field(None, description="Optional OWNER_NO for issuer")
@@ -283,6 +301,13 @@ class TransferActOnlyRequest(BaseModel):
 
 class TransferLocationRequest(BaseModel):
     """Move equipment to another branch/location without changing owner or creating acts."""
+    operation_id: str = Field(
+        ...,
+        min_length=8,
+        max_length=64,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]*$",
+        description="Client-generated idempotency key for this location-only transfer",
+    )
     inv_nos: List[str] = Field(..., min_length=1, description="Inventory numbers")
     branch_no: int | str = Field(..., description="Target BRANCH_NO")
     loc_no: int | str = Field(..., description="Target LOC_NO")
@@ -295,6 +320,10 @@ class TransferExecuteResponse(BaseModel):
     failed_count: int = Field(..., description="Failed transfers")
     transferred: List[TransferItemResult] = Field(default_factory=list, description="Transferred items")
     failed: List[TransferFailedItem] = Field(default_factory=list, description="Failed items")
+    retry_inv_nos: List[str] = Field(
+        default_factory=list,
+        description="Only inventory numbers whose transfer failed and may be retried",
+    )
     acts: List[TransferActInfo] = Field(default_factory=list, description="Generated acts")
     upload_reminder_created: bool = Field(False, description="Whether upload reminder task was created")
     upload_reminder_task_id: Optional[str] = Field(None, description="Hub task id for upload reminder")
@@ -303,6 +332,11 @@ class TransferExecuteResponse(BaseModel):
     upload_reminder_controller_username: Optional[str] = Field(None, description="Resolved reminder controller username")
     upload_reminder_controller_fallback_used: bool = Field(False, description="Whether controller fallback was used")
     job_id: Optional[str] = Field(None, description="Background transfer-act job id")
+    operation_id: Optional[str] = Field(None, description="Idempotency key of the requested operation")
+    one_c_sync_state: Optional[Literal["not_requested"]] = Field(
+        None,
+        description="1C outbound state; this read-only integration never submits it automatically",
+    )
     job_status: Optional[Literal["queued", "processing", "done", "failed"]] = Field(None, description="Background job status")
     job_status_text: Optional[str] = Field(None, description="Human-readable background job status")
     job_error: Optional[str] = Field(None, description="Background job error")

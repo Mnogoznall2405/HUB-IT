@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
+import os
 
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import Session, sessionmaker
@@ -9,6 +10,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.chat.models import Base, CHAT_SCHEMA, ChatEventOutbox, ChatPushOutbox
 from backend.config import config
 from backend.db_migrations import upgrade_internal_database
+from backend.services.sql_observability import attach_slow_sql_logging
 
 
 class ChatConfigurationError(RuntimeError):
@@ -95,7 +97,9 @@ def _build_engine(database_url: str):
         "future": True,
     }
     if database_url.startswith("sqlite"):
-        return create_engine(database_url, **engine_kwargs).execution_options(
+        engine = create_engine(database_url, **engine_kwargs)
+        attach_slow_sql_logging(engine, source="chat")
+        return engine.execution_options(
             schema_translate_map={
                 "app": None,
                 "system": None,
@@ -105,7 +109,11 @@ def _build_engine(database_url: str):
 
     engine_kwargs["pool_size"] = max(1, int(config.chat.pool_size))
     engine_kwargs["max_overflow"] = max(0, int(config.chat.max_overflow))
+    engine_kwargs["connect_args"] = {
+        "application_name": str(os.getenv("CHAT_DB_APPLICATION_NAME", "itinvent-backend-chat")).strip() or "itinvent-backend-chat",
+    }
     engine = create_engine(database_url, **engine_kwargs)
+    attach_slow_sql_logging(engine, source="chat")
     if _should_use_legacy_public_chat_schema(engine):
         return engine.execution_options(
             schema_translate_map={

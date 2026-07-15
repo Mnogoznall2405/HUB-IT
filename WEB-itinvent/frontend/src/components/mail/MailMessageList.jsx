@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Avatar,
   Box,
@@ -39,6 +39,7 @@ import {
   getMailSurfaceButtonSx,
 } from './mailUiTokens';
 import { formatMailPeopleLine, getMailPersonDisplay } from './mailPeople';
+import { buildMailMonthGroups } from './mailDateGrouping';
 
 const LONG_PRESS_MS = 420;
 const SWIPE_AXIS_LOCK_THRESHOLD = 10;
@@ -412,7 +413,12 @@ function MessageRow({
   return (
     <Box
       data-testid={`mail-row-shell-${rowId}`}
-      sx={{ position: 'relative', overflow: 'hidden' }}
+      sx={{
+        position: 'relative',
+        overflow: 'hidden',
+        contentVisibility: 'auto',
+        containIntrinsicSize: compact ? '64px' : '72px',
+      }}
       onMouseEnter={() => onHoverChange?.(rowId)}
       onMouseLeave={() => {
         onHoverChange?.('');
@@ -1021,6 +1027,10 @@ export default function MailMessageList({
     item: null,
     rowId: '',
   });
+  const groupedListItems = useMemo(
+    () => buildMailMonthGroups(listData?.items, viewMode),
+    [listData?.items, viewMode],
+  );
 
   const closeActiveSwipe = useCallback(() => {
     setActiveSwipeState({ rowId: '', side: '' });
@@ -1224,7 +1234,7 @@ export default function MailMessageList({
           </Box>
         ) : (
           <>
-            {listData.items.map((item) => {
+            {groupedListItems.map(({ item, monthKey, monthLabel }) => {
               const rowId = String(
                 viewMode === 'conversations'
                   ? (item.conversation_id || item.id || '')
@@ -1236,8 +1246,31 @@ export default function MailMessageList({
                 : !item.is_read;
 
               return (
-                <MessageRow
-                  key={rowId || `${item.subject}_${item.sender}`}
+                <Fragment key={rowId || `${item.subject}_${item.sender}`}>
+                  {monthLabel ? (
+                    <Box
+                      data-testid={`mail-month-group-${monthKey}`}
+                      sx={{
+                        px: { xs: 1.2, md: 1.5 },
+                        pt: 1.05,
+                        pb: 0.55,
+                        bgcolor: tokens.panelBg,
+                        borderBottom: '1px solid',
+                        borderBottomColor: tokens.panelBorder,
+                      }}
+                    >
+                      <Typography
+                        sx={getMailMetaTextSx(tokens, {
+                          color: tokens.textSecondary,
+                          fontWeight: 800,
+                          letterSpacing: '0.02em',
+                        })}
+                      >
+                        {monthLabel}
+                      </Typography>
+                    </Box>
+                  ) : null}
+                  <MessageRow
                   item={item}
                   rowId={rowId}
                   selected={selected}
@@ -1267,7 +1300,8 @@ export default function MailMessageList({
                   showPreviewSnippets={showPreviewSnippets}
                   isMobile={isMobile}
                   tokens={tokens}
-                />
+                  />
+                </Fragment>
               );
             })}
 

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import sys
 import threading
 import time
@@ -17,6 +18,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from backend.appdb.models import APP_SCHEMA, AppBase, SYSTEM_SCHEMA
 from backend.config import config
 from backend.db_migrations import upgrade_internal_database
+from backend.services.sql_observability import attach_slow_sql_logging
 
 
 class AppDatabaseConfigurationError(RuntimeError):
@@ -56,7 +58,9 @@ def _build_engine(database_url: str):
     }
     if database_url.startswith("sqlite"):
         engine_kwargs["connect_args"] = {"check_same_thread": False}
-        return create_engine(database_url, **engine_kwargs).execution_options(
+        engine = create_engine(database_url, **engine_kwargs)
+        attach_slow_sql_logging(engine, source="app")
+        return engine.execution_options(
             schema_translate_map={
                 APP_SCHEMA: None,
                 SYSTEM_SCHEMA: None,
@@ -66,7 +70,12 @@ def _build_engine(database_url: str):
 
     engine_kwargs["pool_size"] = max(1, int(config.app_db.pool_size))
     engine_kwargs["max_overflow"] = max(0, int(config.app_db.max_overflow))
-    return create_engine(database_url, **engine_kwargs)
+    engine_kwargs["connect_args"] = {
+        "application_name": str(os.getenv("APP_DB_APPLICATION_NAME", "itinvent-backend")).strip() or "itinvent-backend",
+    }
+    engine = create_engine(database_url, **engine_kwargs)
+    attach_slow_sql_logging(engine, source="app")
+    return engine
 
 
 def get_app_engine(database_url: str | None = None):

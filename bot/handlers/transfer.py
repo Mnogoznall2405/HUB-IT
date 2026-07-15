@@ -5,9 +5,12 @@
 Загрузка фотографий, распознавание серийных номеров, генерация PDF-акта.
 """
 import asyncio
+import copy
 import logging
 import os
 from datetime import datetime
+from typing import Any
+from uuid import uuid4
 from telegram import Update, ReplyKeyboardRemove, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import ContextTypes, ConversationHandler
 from telegram.error import TimedOut
@@ -18,11 +21,61 @@ from bot.services.input_identifier_service import detect_identifiers_from_image,
 from bot.services.validation import validate_employee_name, validate_serial_number
 from bot.database_manager import database_manager
 from bot.equipment_data_manager import EquipmentDataManager
+from bot.services.transfer_operation_store import (
+    BotTransferOperationStore,
+    TransferOperationConflict,
+)
+from shared.transfer_command import TransferCommandOutcome, run_transfer_command
 
 logger = logging.getLogger(__name__)
 
 # Глобальный менеджер данных
 equipment_manager = EquipmentDataManager()
+transfer_operation_store = BotTransferOperationStore()
+
+
+TRANSFER_OPERATION_ID_KEY = "transfer_operation_id"
+TRANSFER_OPERATION_STATE_KEY = "transfer_operation_state"
+TRANSFER_RETRY_SERIALS_KEY = "transfer_retry_serials"
+ONE_C_SYNC_STATE_NOT_REQUESTED = "not_requested"
+TRANSFER_CONFIRM_CALLBACK_PREFIX = "confirm_transfer:"
+
+
+def _new_transfer_operation_id() -> str:
+    """Return an idempotency key compatible with the Web transfer contract."""
+    return f"bot-{uuid4()}"
+
+
+def _ensure_transfer_operation_id(context: ContextTypes.DEFAULT_TYPE) -> str:
+    operation_id = str(context.user_data.get(TRANSFER_OPERATION_ID_KEY) or "").strip()
+    if operation_id:
+        return operation_id
+
+    operation_id = _new_transfer_operation_id()
+    context.user_data[TRANSFER_OPERATION_ID_KEY] = operation_id
+    context.user_data.setdefault(TRANSFER_OPERATION_STATE_KEY, "draft")
+    return operation_id
+
+
+def _operation_id_from_callback(callback_data: str) -> str:
+    value = str(callback_data or "")
+    if not value.startswith(TRANSFER_CONFIRM_CALLBACK_PREFIX):
+        return ""
+    return value[len(TRANSFER_CONFIRM_CALLBACK_PREFIX):].strip()
+
+
+def _is_confirm_transfer_callback(callback_data: str) -> bool:
+    value = str(callback_data or "")
+    return value == "confirm_transfer" or bool(_operation_id_from_callback(value))
+
+
+def _has_recorded_transfer_operation(operation_id: str) -> bool:
+    """Check the local ledger without blocking a new transfer on a read error."""
+    try:
+        return equipment_manager.has_transfer_operation(operation_id)
+    except Exception as exc:
+        logger.warning("Не удалось проверить operation_id=%s в журнале перемещений: %s", operation_id, exc)
+        return False
 
 
 # ============================ ОБРАБОТЧИК ПАГИНАЦИИ ============================
@@ -86,6 +139,287 @@ async def send_document_with_retry(
     return False
 
 
+def _coerce_item_id(value: Any) -> int | None:
+    try:
+        item_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return item_id if item_id > 0 else None
+
+
+def _resolve_grouped_equipment_item_ids(
+    transfer_db,
+    grouped_equipment: dict[str, list[dict]],
+) -> tuple[dict[str, list[dict]], list[dict[str, Any]]]:
+    """Resolve every selected card before the first inventory mutation.
+
+    The scan result normally already contains ``ITEMS.ID``.  It is still
+    checked against the database so a deleted/non-equipment card cannot enter
+    a transfer.  Legacy contexts without an id are resolved once by serial and
+    immediately converted to an immutable id.
+    """
+    resolved_groups: dict[str, list[dict]] = {}
+    failures: list[dict[str, Any]] = []
+    seen_item_ids: set[int] = set()
+
+    for old_employee, equipment_list in grouped_equipment.items():
+        for raw_item in equipment_list:
+            item = copy.deepcopy(raw_item if isinstance(raw_item, dict) else {})
+            equipment = item.get("equipment") if isinstance(item.get("equipment"), dict) else {}
+            serial = str(item.get("serial") or equipment.get("SERIAL_NO") or equipment.get("HW_SERIAL_NO") or "").strip()
+            requested_item_id = _coerce_item_id(item.get("item_id") or equipment.get("ID") or equipment.get("id"))
+
+            try:
+                if requested_item_id is not None:
+                    resolved = transfer_db.resolve_transfer_item_by_id(requested_item_id)
+                else:
+                    resolved = transfer_db.resolve_transfer_item_by_serial(serial)
+            except Exception as exc:
+                logger.error("Не удалось разрешить ITEMS.ID для %s: %s", serial or requested_item_id, exc, exc_info=True)
+                resolved = {"success": False, "message": str(exc)}
+
+            if not resolved.get("success"):
+                failures.append(
+                    {
+                        "item_id": requested_item_id or "",
+                        "serial": serial,
+                        "error": str(resolved.get("message") or "Не удалось определить ITEMS.ID"),
+                        "retryable": True,
+                    }
+                )
+                continue
+
+            item_id = _coerce_item_id(resolved.get("item_id"))
+            if item_id is None:
+                failures.append(
+                    {
+                        "item_id": "",
+                        "serial": serial,
+                        "error": "База не вернула корректный ITEMS.ID",
+                        "retryable": False,
+                    }
+                )
+                continue
+            if item_id in seen_item_ids:
+                failures.append(
+                    {
+                        "item_id": item_id,
+                        "serial": serial,
+                        "error": "Одна карточка ITEMS.ID повторяется в операции",
+                        "retryable": False,
+                    }
+                )
+                continue
+
+            seen_item_ids.add(item_id)
+            item["item_id"] = item_id
+            item["serial"] = serial or str(resolved.get("serial_number") or "")
+            copied_equipment = dict(equipment)
+            copied_equipment["ID"] = item_id
+            item["equipment"] = copied_equipment
+            resolved_groups.setdefault(str(old_employee), []).append(item)
+
+    # A failed resolve is preflight: no selected item is allowed to mutate.
+    if failures:
+        return {}, failures
+    return resolved_groups, []
+
+
+def _operation_payload(
+    *,
+    chat_id: int,
+    db_name: str,
+    grouped_equipment: dict[str, list[dict]],
+    new_employee: str,
+    new_employee_dept: str,
+    new_employee_id: int,
+    new_branch: str,
+    new_branch_no: int | None,
+    new_location: str,
+    new_loc_no: int | None,
+) -> dict[str, Any]:
+    items: list[dict[str, Any]] = []
+    for old_employee, equipment_list in grouped_equipment.items():
+        for item in equipment_list:
+            items.append(
+                {
+                    "item_id": int(item["item_id"]),
+                    "serial": str(item.get("serial") or ""),
+                    "old_employee": str(old_employee),
+                }
+            )
+    return {
+        "chat_id": int(chat_id),
+        "db_name": str(db_name or ""),
+        "new_employee": str(new_employee or ""),
+        "new_employee_dept": str(new_employee_dept or ""),
+        "new_employee_id": int(new_employee_id),
+        "new_branch": str(new_branch or ""),
+        "new_branch_no": new_branch_no,
+        "new_location": str(new_location or ""),
+        "new_loc_no": new_loc_no,
+        "grouped_equipment": copy.deepcopy(grouped_equipment),
+        "items": items,
+    }
+
+
+def _restore_operation_payload(context: ContextTypes.DEFAULT_TYPE, payload: dict[str, Any]) -> dict[str, list[dict]]:
+    """Restore a persisted operation when a callback arrives after restart."""
+    grouped_equipment = payload.get("grouped_equipment")
+    if not isinstance(grouped_equipment, dict):
+        return {}
+    context.user_data.setdefault("grouped_equipment", copy.deepcopy(grouped_equipment))
+    for key in ("new_employee", "new_employee_dept", "new_branch", "new_location"):
+        if key in payload:
+            context.user_data.setdefault(key, payload[key])
+    restored = context.user_data.get("grouped_equipment")
+    return restored if isinstance(restored, dict) else {}
+
+
+def _operation_outcome_for_preflight_failures(failures: list[dict[str, Any]]) -> TransferCommandOutcome[dict]:
+    outcome: TransferCommandOutcome[dict] = TransferCommandOutcome(item_id_key="item_id")
+    outcome.failed.extend(copy.deepcopy(failures))
+    return outcome
+
+
+def _attach_serials_to_outcome(
+    outcome: TransferCommandOutcome[dict],
+    grouped_equipment: dict[str, list[dict]],
+) -> None:
+    serial_by_item_id = {
+        str(item.get("item_id")): str(item.get("serial") or "")
+        for equipment_list in grouped_equipment.values()
+        for item in equipment_list
+        if isinstance(item, dict)
+    }
+    for failure in outcome.failed:
+        failure.setdefault("serial", serial_by_item_id.get(str(failure.get("item_id") or ""), ""))
+
+
+def _operation_ledger_entries(
+    *,
+    transferred_groups: dict[str, list[dict]],
+    acts: list[dict[str, Any]],
+    db_name: str,
+    new_employee: str,
+    new_branch: str,
+    new_location: str,
+    operation_id: str,
+) -> list[dict[str, Any]]:
+    act_path_by_owner = {
+        str(act.get("old_employee") or ""): str(act.get("pdf_path") or "")
+        for act in acts
+        if isinstance(act, dict)
+    }
+    entries: list[dict[str, Any]] = []
+    for old_employee, equipment_list in transferred_groups.items():
+        act_pdf_path = act_path_by_owner.get(str(old_employee), "")
+        for item in equipment_list:
+            equipment = item.get("equipment") if isinstance(item.get("equipment"), dict) else {}
+            item_id = _coerce_item_id(item.get("item_id"))
+            if item_id is None:
+                raise ValueError("Нельзя записать transfer ledger без ITEMS.ID")
+            additional_data = dict(equipment)
+            additional_data.update(
+                {
+                    "db_name": db_name,
+                    "branch": new_branch,
+                    "location": new_location,
+                    "operation_id": operation_id,
+                    "item_id": item_id,
+                    "one_c_sync_state": ONE_C_SYNC_STATE_NOT_REQUESTED,
+                }
+            )
+            entries.append(
+                {
+                    "serial_number": str(item.get("serial") or ""),
+                    "new_employee": new_employee,
+                    "old_employee": old_employee,
+                    "item_id": item_id,
+                    "operation_id": operation_id,
+                    "additional_data": additional_data,
+                    "act_pdf_path": act_pdf_path,
+                }
+            )
+    return entries
+
+
+def _transfer_operation_before_acts(
+    transfer_db,
+    grouped_equipment: dict[str, list[dict]],
+    new_employee: str,
+    new_employee_id: int,
+    new_branch_no=None,
+    new_loc_no=None,
+    operation_id: str = "",
+) -> tuple[dict[str, list[dict]], TransferCommandOutcome[dict]]:
+    """Confirm the whole bot operation before any act or JSON-ledger work.
+
+    A bot transfer can contain several old owners, but it remains one command.
+    Consequently a failure in *any* group prevents documents and ledger rows
+    for every group.  Confirmed item moves are still returned to the caller so
+    it can report the exact retryable serials without creating duplicate acts.
+    """
+
+    operation_items: list[dict] = []
+    for old_employee, equipment_list in grouped_equipment.items():
+        for equipment in equipment_list:
+            operation_items.append(
+                {
+                    "old_employee": old_employee,
+                    "equipment": equipment,
+                }
+            )
+
+    def _execute_item(operation_item: dict, item_id: str) -> dict:
+        old_employee = str(operation_item.get("old_employee") or "")
+        equipment = operation_item.get("equipment") or {}
+        serial = str(equipment.get("serial") or "")
+        comment = f"Перемещение оборудования: {old_employee} -> {new_employee}"
+        if operation_id:
+            comment = f"{comment} [operation_id={operation_id}]"
+        try:
+            result = transfer_db.transfer_equipment_by_id_with_history(
+                item_id=int(item_id),
+                display_serial=serial,
+                new_employee_id=new_employee_id,
+                new_employee_name=new_employee,
+                new_branch_no=new_branch_no,
+                new_loc_no=new_loc_no,
+                comment=comment,
+                operation_id=operation_id,
+            )
+        except Exception as exc:
+            logger.error(f"Ошибка обновления БД для {serial}: {exc}", exc_info=True)
+            # An exception is an unknown state, not an explicit SQL refusal.
+            # Suppress automatic retry until the operation is investigated.
+            return {"success": False, "message": str(exc), "retryable": False}
+
+        if result.get('success'):
+            logger.info(f"✅ База обновлена: {result.get('message')}")
+        else:
+            error = str(result.get('message') or 'Не удалось обновить БД')
+            logger.warning(f"⚠️ Не удалось обновить БД для {serial}: {error}")
+        return result
+
+    outcome = run_transfer_command(
+        operation_items,
+        item_id_getter=lambda item: (item.get("equipment") or {}).get("item_id"),
+        item_id_key="item_id",
+        execute=_execute_item,
+        invalid_item_error="Не указан ITEMS.ID",
+        duplicate_item_error="ITEMS.ID повторяется в операции",
+        unknown_result_error="Не удалось подтвердить перенос в базе данных",
+    )
+    transferred_groups: dict[str, list[dict]] = {}
+    for success in outcome.successes:
+        old_employee = str(success.item.get("old_employee") or "")
+        transferred_groups.setdefault(old_employee, []).append(success.item.get("equipment") or {})
+
+    _attach_serials_to_outcome(outcome, grouped_equipment)
+    return transferred_groups, outcome
+
+
 @require_user_access
 async def start_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """
@@ -101,6 +435,12 @@ async def start_transfer(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Инициализируем контекст для хранения данных о перемещении
     context.user_data[StorageKeys.TEMP_PHOTOS] = []
     context.user_data[StorageKeys.TEMP_SERIALS] = []
+    context.user_data[TRANSFER_OPERATION_ID_KEY] = _new_transfer_operation_id()
+    context.user_data[TRANSFER_OPERATION_STATE_KEY] = "draft"
+    # A retry list belongs only to the previous partial command; never mix it
+    # into a newly scanned transfer.
+    context.user_data.pop(TRANSFER_RETRY_SERIALS_KEY, None)
+    context.user_data.pop('act_files_info', None)
     
     await update.message.reply_text(
         "📦 <b>Перемещение оборудования с актом</b>\n\n"
@@ -250,6 +590,7 @@ async def receive_transfer_photos(update: Update, context: ContextTypes.DEFAULT_
             context.user_data[StorageKeys.TEMP_SERIALS].append({
                 'serial': serial_to_save,
                 'serial_input': search_target,
+                'item_id': _coerce_item_id(equipment.get('ID') or equipment.get('id')),
                 'current_employee': employee_name,
                 'equipment': equipment,
                 'search_source': source_label,
@@ -432,6 +773,7 @@ async def receive_transfer_photos(update: Update, context: ContextTypes.DEFAULT_
                 context.user_data[StorageKeys.TEMP_SERIALS].append({
                     'serial': serial_to_save,  # Используем реальный серийный номер из БД при наличии
                     'serial_input': search_target,  # Сохраняем фактический идентификатор поиска
+                    'item_id': _coerce_item_id(equipment.get('ID') or equipment.get('id')),
                     'current_employee': employee_name,
                     'equipment': equipment,
                     'search_source': source_label,
@@ -695,6 +1037,7 @@ async def show_transfer_confirmation(update: Update, context: ContextTypes.DEFAU
     
     # Сохраняем сгруппированные данные в контексте
     context.user_data['grouped_equipment'] = grouped_equipment
+    _ensure_transfer_operation_id(context)
 
     # Подсчитываем общее количество единиц и групп
     total_count = len(serials_data)
@@ -730,7 +1073,10 @@ async def show_transfer_confirmation(update: Update, context: ContextTypes.DEFAU
     # Создаем клавиатуру подтверждения
     keyboard = [
         [
-            InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_transfer"),
+            InlineKeyboardButton(
+                "✅ Подтвердить",
+                callback_data=f"{TRANSFER_CONFIRM_CALLBACK_PREFIX}{_ensure_transfer_operation_id(context)}",
+            ),
             InlineKeyboardButton("❌ Отменить", callback_data="cancel_transfer")
         ]
     ]
@@ -752,267 +1098,411 @@ async def show_transfer_confirmation(update: Update, context: ContextTypes.DEFAU
 
 @handle_errors
 async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """
-    Обработчик подтверждения/отмены перемещения с генерацией множественных актов
-    
-    Параметры:
-        update: Объект обновления от Telegram API
-        context: Контекст выполнения
-        
-    Возвращает:
-        int: ConversationHandler.END
+    """Confirm one durable transfer command and then deliver its acts.
+
+    Inventory mutations are all attempted before any document, Telegram send
+    or JSON-ledger side effect.  A checkpoint records the immutable command
+    and every delivery transition, so a restart cannot retarget a reused
+    serial number or silently create a second ledger entry.
     """
     query = update.callback_query
     await query.answer()
-    
-    if query.data == "confirm_transfer":
-        # Получаем сгруппированные данные
-        grouped_equipment = context.user_data.get('grouped_equipment', {})
-        
-        if not grouped_equipment:
-            await query.edit_message_text("❌ Ошибка: данные о группировке не найдены.")
+
+    if _is_confirm_transfer_callback(query.data):
+        callback_operation_id = _operation_id_from_callback(query.data)
+        if callback_operation_id:
+            context.user_data[TRANSFER_OPERATION_ID_KEY] = callback_operation_id
+        operation_id = callback_operation_id or _ensure_transfer_operation_id(context)
+        operation_state = str(context.user_data.get(TRANSFER_OPERATION_STATE_KEY) or "draft")
+        if operation_state == "processing":
+            logger.info("Повторное подтверждение уже выполняемой операции %s подавлено", operation_id)
+            return ConversationHandler.END
+
+        checkpoint = transfer_operation_store.get(operation_id)
+        if checkpoint and str(checkpoint.get("status") or "") == "completed":
+            logger.info("Повторное подтверждение завершённой операции %s подавлено", operation_id)
+            await query.edit_message_text("ℹ️ Это перемещение уже было завершено. Повторный перенос не выполнен.")
             clear_transfer_data(context)
             return ConversationHandler.END
-        
-        # Генерируем акты приема-передачи
-        await query.edit_message_text("🛠️ Создание актов приема-передачи...")
-        
+        if checkpoint and str(checkpoint.get("status") or "") == "partial":
+            # The original command already had a non-confirmed item.  It is
+            # intentionally terminal: retry must be a new command containing
+            # only explicitly failed serials, never a continuation that could
+            # create acts/ledger for a previously partial operation.
+            await query.edit_message_text(
+                "⚠️ Эта операция уже завершилась частично. Акты и JSON-журнал для неё запрещены; "
+                "создайте новую операцию только для неуспешных позиций."
+            )
+            clear_transfer_data(context, preserve_retry_serials=True)
+            return ConversationHandler.END
+        if not checkpoint and (operation_state == "completed" or _has_recorded_transfer_operation(operation_id)):
+            logger.info("Повторное подтверждение завершённой операции %s подавлено", operation_id)
+            await query.edit_message_text(
+                "ℹ️ Это перемещение уже было подтверждено. Повторный перенос не выполнен."
+            )
+            clear_transfer_data(context)
+            return ConversationHandler.END
+
+        context.user_data[TRANSFER_OPERATION_STATE_KEY] = "processing"
+        if checkpoint:
+            grouped_equipment = _restore_operation_payload(
+                context,
+                checkpoint.get("payload") if isinstance(checkpoint.get("payload"), dict) else {},
+            )
+        else:
+            grouped_equipment = context.user_data.get('grouped_equipment', {})
+
+        if not grouped_equipment:
+            await query.edit_message_text("❌ Ошибка: данные операции перемещения не найдены.")
+            clear_transfer_data(context)
+            return ConversationHandler.END
+
+        await query.edit_message_text("🛠️ Проверка перемещения и создание актов приема-передачи...")
+        retry_serials: list[str] = []
         try:
-            # Получаем данные
             new_employee = context.user_data.get('new_employee', '')
             new_employee_dept = context.user_data.get('new_employee_dept', '')
             new_branch = context.user_data.get('new_branch', '')
             new_location = context.user_data.get('new_location', '')
             user_id = update.effective_user.id
-            db_name = database_manager.get_user_database(user_id)
-            
-            # Генерируем множественные PDF-акты
-            from bot.services.pdf_generator import generate_multiple_transfer_acts
-            
-            acts_info = await generate_multiple_transfer_acts(
-                new_employee=new_employee,
-                new_employee_dept=new_employee_dept,
-                grouped_equipment=grouped_equipment,
-                db_name=db_name
-            )
-            
-            # Отправляем каждый созданный PDF в Telegram
-            successful_acts = []
-            failed_acts = []
-            
-            for idx, act_info in enumerate(acts_info, 1):
-                old_employee = act_info.get('old_employee', 'Неизвестен')
-                equipment_count = act_info.get('equipment_count', 0)
-                
-                # Показываем прогресс с деталями
+            checkpoint_payload = checkpoint.get("payload") if checkpoint and isinstance(checkpoint.get("payload"), dict) else {}
+            db_name = str(checkpoint_payload.get("db_name") or database_manager.get_user_database(user_id) or "")
+
+            successful_acts: list[dict] = []
+            failed_acts: list[str] = []
+            transferred_groups: dict[str, list[dict]] = {}
+            transfer_confirmed = False
+            operation_outcome: TransferCommandOutcome[dict] | None = None
+            transfer_problem: str | None = None
+
+            checkpoint_status = str(checkpoint.get("status") or "") if checkpoint else ""
+            if checkpoint_status in {
+                "inventory_confirmed",
+                "acts_ready",
+                "acts_failed",
+                "delivery_pending",
+                "delivery_unknown",
+                "ledger_recorded",
+            }:
+                transferred_groups = copy.deepcopy(checkpoint_payload.get("grouped_equipment") or {})
+                transfer_confirmed = bool(transferred_groups)
+                new_employee = checkpoint_payload.get("new_employee", new_employee)
+                new_employee_dept = checkpoint_payload.get("new_employee_dept", new_employee_dept)
+                new_branch = checkpoint_payload.get("new_branch", new_branch)
+                new_location = checkpoint_payload.get("new_location", new_location)
+            else:
+                transfer_db = None
+                if (
+                    checkpoint_status == "resolved"
+                    and db_name
+                    and str(database_manager.get_user_database(user_id) or "") != db_name
+                ):
+                    transfer_problem = (
+                        "Текущая HUB-база отличается от базы, в которой была подтверждена операция. "
+                        "Переключитесь обратно на исходную базу перед восстановлением."
+                    )
+                else:
+                    transfer_db = database_manager.create_database_connection(user_id)
+                if not transfer_db:
+                    if not transfer_problem:
+                        logger.error("Не удалось подключиться к базе данных для перемещения")
+                        transfer_problem = "Не удалось подключиться к базе данных для перемещения."
+                else:
+                    try:
+                        if checkpoint_status == "resolved" and checkpoint_payload:
+                            resolved_groups = copy.deepcopy(checkpoint_payload.get("grouped_equipment") or {})
+                            new_employee_id = checkpoint_payload.get("new_employee_id")
+                            new_branch_no = checkpoint_payload.get("new_branch_no")
+                            new_loc_no = checkpoint_payload.get("new_loc_no")
+                            new_employee = checkpoint_payload.get("new_employee", new_employee)
+                            new_employee_dept = checkpoint_payload.get("new_employee_dept", new_employee_dept)
+                            new_branch = checkpoint_payload.get("new_branch", new_branch)
+                            new_location = checkpoint_payload.get("new_location", new_location)
+                        else:
+                            new_employee_id = transfer_db.get_owner_no_by_name(new_employee, strict=True)
+                            if not new_employee_id:
+                                new_employee_id = transfer_db.get_owner_no_by_name(new_employee, strict=False)
+                            if not new_employee_id:
+                                logger.info("Сотрудник '%s' не найден в OWNERS, создаём новую запись", new_employee)
+                                new_employee_id = transfer_db.create_owner(
+                                    employee_name=new_employee,
+                                    department=new_employee_dept,
+                                )
+                            new_branch_no = transfer_db.get_branch_no_by_name(new_branch) if new_branch else None
+                            new_loc_no = transfer_db.get_loc_no_by_descr(new_location) if new_location else None
+                            resolved_groups, resolve_failures = _resolve_grouped_equipment_item_ids(
+                                transfer_db,
+                                grouped_equipment,
+                            )
+                            if resolve_failures:
+                                operation_outcome = _operation_outcome_for_preflight_failures(resolve_failures)
+                                transfer_problem = "Не удалось безопасно определить все ITEMS.ID до перемещения."
+                                resolved_groups = {}
+
+                        if not new_employee_id:
+                            logger.error("Не удалось создать владельца для '%s'", new_employee)
+                            transfer_problem = "Не удалось определить или создать нового владельца."
+                        elif operation_outcome is None:
+                            if checkpoint is None:
+                                payload = _operation_payload(
+                                    chat_id=query.message.chat_id,
+                                    db_name=db_name,
+                                    grouped_equipment=resolved_groups,
+                                    new_employee=new_employee,
+                                    new_employee_dept=new_employee_dept,
+                                    new_employee_id=int(new_employee_id),
+                                    new_branch=new_branch,
+                                    new_branch_no=new_branch_no,
+                                    new_location=new_location,
+                                    new_loc_no=new_loc_no,
+                                )
+                                checkpoint = transfer_operation_store.create_or_get(operation_id, payload)
+                            for idx, (old_employee, equipment_list) in enumerate(resolved_groups.items(), 1):
+                                await context.bot.send_message(
+                                    chat_id=query.message.chat_id,
+                                    text=(
+                                        f"🛠️ Проверка перемещения {idx} из {len(resolved_groups)}...\n"
+                                        f"От: {old_employee}\n"
+                                        f"Единиц оборудования: {len(equipment_list)}"
+                                    ),
+                                )
+                            transferred_groups, operation_outcome = _transfer_operation_before_acts(
+                                transfer_db=transfer_db,
+                                grouped_equipment=resolved_groups,
+                                new_employee=new_employee,
+                                new_employee_id=int(new_employee_id),
+                                new_branch_no=new_branch_no,
+                                new_loc_no=new_loc_no,
+                                operation_id=operation_id,
+                            )
+                            transfer_confirmed = operation_outcome.is_complete
+                            retry_serials = [
+                                str(failure.get("serial") or "").strip()
+                                for failure in operation_outcome.failed
+                                if bool(failure.get("retryable")) and str(failure.get("serial") or "").strip()
+                            ]
+                            if transfer_confirmed:
+                                checkpoint = transfer_operation_store.checkpoint(
+                                    operation_id,
+                                    status="inventory_confirmed",
+                                    note="all item ids confirmed in HUB",
+                                    outcome={"success_count": len(operation_outcome.successes), "failed": []},
+                                )
+                            else:
+                                transfer_operation_store.checkpoint(
+                                    operation_id,
+                                    status="partial",
+                                    note="inventory command is incomplete; acts and ledger are prohibited",
+                                    outcome={
+                                        "success_count": len(operation_outcome.successes),
+                                        "failed": copy.deepcopy(operation_outcome.failed),
+                                    },
+                                )
+                                transferred_groups = {}
+                    except TransferOperationConflict as exc:
+                        transfer_problem = str(exc)
+                    except Exception as exc:
+                        logger.error("Ошибка при обновлении базы данных: %s", exc, exc_info=True)
+                        transfer_problem = "Во время подтверждения перемещения произошла техническая ошибка."
+                    finally:
+                        transfer_db.close_connection()
+
+            if operation_outcome is not None and not transfer_confirmed:
+                context.user_data.pop('act_files_info', None)
+                if retry_serials:
+                    context.user_data[TRANSFER_RETRY_SERIALS_KEY] = retry_serials
+                else:
+                    context.user_data.pop(TRANSFER_RETRY_SERIALS_KEY, None)
+                retry_details = [
+                    failure
+                    for failure in operation_outcome.failed
+                    if bool(failure.get("retryable")) and str(failure.get("serial") or "").strip()
+                ]
+                result_text = (
+                    "⚠️ <b>Перемещение подтверждено не полностью.</b>\n\n"
+                    "Акты, отправка документов и записи JSON-журнала не созданы ни для одной группы.\n"
+                    "Уже подтверждённые позиции не включены в повтор, чтобы не создать дубликаты.\n\n"
+                )
+                if retry_details:
+                    result_text += "Повторить можно только эти серийные номера:\n"
+                    for failure in retry_details:
+                        result_text += f"  • {failure['serial']} — {failure.get('error') or 'Не удалось подтвердить перенос'}\n"
+                else:
+                    result_text += "Проверьте состояние операции в HUB перед новой попыткой."
+                await context.bot.send_message(chat_id=query.message.chat_id, text=result_text, parse_mode='HTML')
+                return ConversationHandler.END
+
+            if not transfer_confirmed or not transferred_groups:
                 await context.bot.send_message(
                     chat_id=query.message.chat_id,
-                    text=f"🛠️ Создание акта {idx} из {len(acts_info)}...\n"
-                         f"От: {old_employee}\n"
-                         f"Единиц оборудования: {equipment_count}"
+                    text=(
+                        "❌ <b>Не удалось подтвердить перемещение.</b>\n\n"
+                        f"{transfer_problem or 'Не получен подтверждённый результат изменения имущества.'}\n\n"
+                        "Акты, отправка документов и записи JSON-журнала не созданы."
+                    ),
+                    parse_mode='HTML',
                 )
-                
-                if act_info.get('success') and act_info.get('pdf_path'):
-                    pdf_path = act_info['pdf_path']
+                return ConversationHandler.END
 
-                    if os.path.exists(pdf_path):
-                        # Отправляем PDF с автоматическим retry при timed out
-                        caption = f"✅ Акт приема-передачи\nОт: {old_employee}\nКому: {new_employee}"
-                        filename = act_info.get('filename', os.path.basename(pdf_path))
+            checkpoint = transfer_operation_store.get(operation_id)
+            acts = copy.deepcopy(checkpoint.get("acts") or []) if checkpoint else []
+            if not acts or checkpoint_status == "acts_failed":
+                from bot.services.pdf_generator import generate_multiple_transfer_acts
 
-                        sent = await send_document_with_retry(
-                            context=context,
-                            chat_id=query.message.chat_id,
-                            document_path=pdf_path,
-                            filename=filename,
-                            caption=caption,
-                            max_retries=3
-                        )
+                generated_acts = await generate_multiple_transfer_acts(
+                    new_employee=new_employee,
+                    new_employee_dept=new_employee_dept,
+                    grouped_equipment=transferred_groups,
+                    db_name=db_name,
+                    operation_id=operation_id,
+                )
+                failed_acts = [
+                    str(act.get("old_employee") or "Неизвестен")
+                    for act in generated_acts
+                    if not act.get("success") or not act.get("pdf_path") or not os.path.exists(str(act.get("pdf_path") or ""))
+                ]
+                if failed_acts:
+                    transfer_operation_store.checkpoint(
+                        operation_id,
+                        status="acts_failed",
+                        note="all document/ledger delivery is prohibited until every act exists",
+                        acts=generated_acts,
+                    )
+                    await context.bot.send_message(
+                        chat_id=query.message.chat_id,
+                        text=(
+                            "❌ <b>Не удалось подготовить все акты.</b>\n\n"
+                            "Ни один акт не отправлен и JSON-журнал не изменён.\n"
+                            + "\n".join(f"  • {owner}" for owner in failed_acts)
+                        ),
+                        parse_mode='HTML',
+                    )
+                    return ConversationHandler.END
+                acts = [dict(act, delivery_status="pending") for act in generated_acts]
+                checkpoint = transfer_operation_store.checkpoint(
+                    operation_id,
+                    status="acts_ready",
+                    note="all deterministic act files are ready",
+                    acts=acts,
+                    ledger_entries=_operation_ledger_entries(
+                        transferred_groups=transferred_groups,
+                        acts=acts,
+                        db_name=db_name,
+                        new_employee=new_employee,
+                        new_branch=new_branch,
+                        new_location=new_location,
+                        operation_id=operation_id,
+                    ),
+                )
+            else:
+                checkpoint_status = str(checkpoint.get("status") or "") if checkpoint else ""
 
-                        if sent:
-                            successful_acts.append(act_info)
-
-                            # Сохраняем информацию о перемещениях для этой группы
-                            equipment_list = grouped_equipment.get(old_employee, [])
-
-                            # Получаем EMPL_NO, BRANCH_NO и LOC_NO для нового размещения
-                            new_employee_id = None
-                            new_branch_no = None
-                            new_loc_no = None
-
-                            transfer_db = database_manager.create_database_connection(user_id)
-                            if transfer_db:
-                                try:
-                                    # Получаем EMPL_NO нового сотрудника
-                                    new_employee_id = transfer_db.get_owner_no_by_name(new_employee, strict=True)
-                                    if not new_employee_id:
-                                        new_employee_id = transfer_db.get_owner_no_by_name(new_employee, strict=False)
-
-                                    # Если сотрудник не найден - создаём его
-                                    if not new_employee_id:
-                                        logger.info(f"Сотрудник '{new_employee}' не найден в OWNERS, создаём новую запись")
-                                        new_employee_id = transfer_db.create_owner(
-                                            employee_name=new_employee,
-                                            department=new_employee_dept
-                                        )
-                                        if new_employee_id:
-                                            logger.info(f"✅ Создан новый владелец: {new_employee} (OWNER_NO={new_employee_id})")
-                                        else:
-                                            logger.error(f"❌ Не удалось создать владельца для '{new_employee}'")
-
-                                    logger.info(f"Используем EMPL_NO для '{new_employee}': {new_employee_id}")
-
-                                    # Получаем BRANCH_NO по названию филиала
-                                    if new_branch:
-                                        new_branch_no = transfer_db.get_branch_no_by_name(new_branch)
-                                        logger.info(f"Найден BRANCH_NO для '{new_branch}': {new_branch_no}")
-
-                                    # Получаем LOC_NO по описанию локации
-                                    if new_location:
-                                        new_loc_no = transfer_db.get_loc_no_by_descr(new_location)
-                                        logger.info(f"Найден LOC_NO для '{new_location}': {new_loc_no}")
-
-                                    # Обновляем оборудование в базе данных и добавляем запись в историю
-                                    if new_employee_id:
-                                        for item in equipment_list:
-                                            serial = item.get('serial', '')
-                                            comment = f"Перемещение оборудования: {old_employee} -> {new_employee}"
-
-                                            try:
-                                                result = transfer_db.transfer_equipment_with_history(
-                                                    serial_number=serial,
-                                                    new_employee_id=new_employee_id,
-                                                    new_employee_name=new_employee,
-                                                    new_branch_no=new_branch_no,
-                                                    new_loc_no=new_loc_no,
-                                                    comment=comment
-                                                )
-
-                                                if result.get('success'):
-                                                    logger.info(f"✅ База обновлена: {result.get('message')}")
-                                                else:
-                                                    logger.warning(f"⚠️ Не удалось обновить БД для {serial}: {result.get('message')}")
-
-                                            except Exception as e:
-                                                logger.error(f"❌ Ошибка обновления БД для {serial}: {e}", exc_info=True)
-
-                                except Exception as e:
-                                    logger.error(f"Ошибка при обновлении базы данных: {e}", exc_info=True)
-                                finally:
-                                    transfer_db.close_connection()
-
-                            # Сохраняем информацию о перемещениях в JSON (для обратной совместимости)
-                            for item in equipment_list:
-                                # Добавляем db_name, branch и location в additional_data
-                                additional_data = item.get('equipment', {}).copy()
-                                additional_data['db_name'] = db_name
-                                additional_data['branch'] = new_branch
-                                additional_data['location'] = new_location
-
-                                equipment_manager.add_equipment_transfer(
-                                    serial_number=item.get('serial', ''),
-                                    new_employee=new_employee,
-                                    old_employee=old_employee,
-                                    additional_data=additional_data,
-                                    act_pdf_path=pdf_path
-                                )
-                        else:
-                            # Не удалось отправить ни одной попыткой
-                            logger.error(f"Не удалось отправить акт для {old_employee} после всех попыток")
-                            failed_acts.append(old_employee)
-                    else:
-                        logger.error(f"PDF файл не найден: {pdf_path}")
-                        failed_acts.append(old_employee)
-                else:
-                    # Акт не был создан
-                    error_msg = act_info.get('error', 'Неизвестная ошибка')
-                    logger.error(f"Не удалось создать акт для {old_employee}: {error_msg}")
+            # The per-act `sending` checkpoint is written before the Telegram
+            # side effect.  A restart in this state intentionally does not
+            # re-send an ambiguous document and cannot duplicate its ledger.
+            delivery_unknown = False
+            for index, act in enumerate(acts):
+                delivery_status = str(act.get("delivery_status") or "pending")
+                old_employee = str(act.get("old_employee") or "Неизвестен")
+                if delivery_status == "sent":
+                    successful_acts.append(act)
+                    continue
+                if delivery_status in {"sending", "failed"}:
+                    delivery_unknown = True
                     failed_acts.append(old_employee)
-            
-            # Сохраняем информацию о всех актах для возможной отправки на email
-            if successful_acts:
-                context.user_data['act_files_info'] = {
-                    'acts': successful_acts,
-                    'new_employee': new_employee,
-                    'new_employee_dept': new_employee_dept,
-                    'total_equipment': sum(act.get('equipment_count', 0) for act in successful_acts),
-                    'db_name': db_name
-                }
-            
-            # Формируем итоговое сообщение
-            if successful_acts and not failed_acts:
-                # Все акты созданы успешно
-                total_equipment = sum(act.get('equipment_count', 0) for act in successful_acts)
-                result_text = (
-                    f"✅ <b>Перемещение оборудования завершено!</b>\n\n"
+                    continue
+
+                updated_acts = copy.deepcopy(acts)
+                updated_acts[index]["delivery_status"] = "sending"
+                transfer_operation_store.checkpoint(
+                    operation_id,
+                    status="delivery_pending",
+                    note=f"document dispatch started for {old_employee}",
+                    acts=updated_acts,
+                )
+                acts = updated_acts
+                pdf_path = str(act.get("pdf_path") or "")
+                caption = f"✅ Акт приема-передачи\nОт: {old_employee}\nКому: {new_employee}"
+                sent = await send_document_with_retry(
+                    context=context,
+                    chat_id=query.message.chat_id,
+                    document_path=pdf_path,
+                    filename=str(act.get("filename") or os.path.basename(pdf_path)),
+                    caption=caption,
+                    max_retries=3,
+                )
+                updated_acts = copy.deepcopy(acts)
+                updated_acts[index]["delivery_status"] = "sent" if sent else "failed"
+                checkpoint = transfer_operation_store.checkpoint(
+                    operation_id,
+                    status="delivery_pending" if sent else "delivery_unknown",
+                    note=("document delivered" if sent else "document delivery failed or is unknown"),
+                    acts=updated_acts,
+                )
+                acts = updated_acts
+                if sent:
+                    successful_acts.append(acts[index])
+                else:
+                    failed_acts.append(old_employee)
+                    delivery_unknown = True
+
+            if delivery_unknown:
+                await context.bot.send_message(
+                    chat_id=query.message.chat_id,
+                    text=(
+                        "⚠️ <b>Перемещение подтверждено, но доставка актов не завершена.</b>\n\n"
+                        "JSON-журнал не изменён: повторная отправка документов автоматически запрещена, "
+                        "пока не будет проверен checkpoint операции.\n"
+                        + "\n".join(f"  • {owner}" for owner in failed_acts)
+                    ),
+                    parse_mode='HTML',
+                )
+                return ConversationHandler.END
+
+            checkpoint = transfer_operation_store.get(operation_id)
+            ledger_entries = copy.deepcopy(checkpoint.get("ledger_entries") or []) if checkpoint else []
+            if not checkpoint or not bool(checkpoint.get("ledger_written")):
+                if not equipment_manager.add_transfer_operation_entries_once(ledger_entries):
+                    raise RuntimeError("Не удалось зафиксировать JSON-журнал перемещения")
+                checkpoint = transfer_operation_store.checkpoint(
+                    operation_id,
+                    status="ledger_recorded",
+                    note="all documents delivered; ledger written exactly once",
+                    ledger_written=True,
+                )
+            transfer_operation_store.checkpoint(
+                operation_id,
+                status="completed",
+                note="transfer delivery and ledger completed",
+            )
+            context.user_data[TRANSFER_OPERATION_STATE_KEY] = "completed"
+            context.user_data['act_files_info'] = {
+                'acts': successful_acts,
+                'new_employee': new_employee,
+                'new_employee_dept': new_employee_dept,
+                'total_equipment': sum(act.get('equipment_count', 0) for act in successful_acts),
+                'db_name': db_name,
+                'operation_id': operation_id,
+                'one_c_sync_state': ONE_C_SYNC_STATE_NOT_REQUESTED,
+            }
+            total_equipment = sum(act.get('equipment_count', 0) for act in successful_acts)
+            keyboard = [
+                [InlineKeyboardButton("📧 Отправить старым владельцам", callback_data="act:email_owners")],
+                [InlineKeyboardButton("✉️ Ввести email вручную", callback_data="act:email")],
+                [InlineKeyboardButton("⏭ Пропустить", callback_data="act:skip")],
+            ]
+            await context.bot.send_message(
+                chat_id=query.message.chat_id,
+                text=(
+                    "✅ <b>Перемещение оборудования завершено!</b>\n\n"
                     f"📄 Создано актов: {len(successful_acts)}\n"
                     f"📦 Всего единиц оборудования: {total_equipment}\n"
                     f"👤 Новый владелец: {new_employee}\n\n"
-                    "Все акты отправлены вам в чат.\n\n"
-                    "Хотите отправить все акты на email?"
-                )
-                
-                # Предлагаем отправить акты на email
-                keyboard = [
-                    [InlineKeyboardButton("📧 Отправить старым владельцам", callback_data="act:email_owners")],
-                    [InlineKeyboardButton("✉️ Ввести email вручную", callback_data="act:email")],
-                    [InlineKeyboardButton("⏭ Пропустить", callback_data="act:skip")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await context.bot.send_message(
-                    chat_id=query.message.chat_id,
-                    text=result_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
-            elif successful_acts and failed_acts:
-                # Частичный успех
-                total_equipment = sum(act.get('equipment_count', 0) for act in successful_acts)
-                result_text = (
-                    f"⚠️ <b>Перемещение завершено с ошибками</b>\n\n"
-                    f"✅ Создано актов: {len(successful_acts)}\n"
-                    f"📦 Перемещено единиц: {total_equipment}\n"
-                    f"❌ Не удалось создать акты для:\n"
-                )
-                for failed_emp in failed_acts:
-                    result_text += f"  • {failed_emp}\n"
-                
-                result_text += (
-                    "\n💡 <i>Рекомендация: Попробуйте создать акты для этих сотрудников отдельно.</i>\n\n"
-                    "Хотите отправить созданные акты на email?"
-                )
-                
-                # Предлагаем отправить успешные акты на email
-                keyboard = [
-                    [InlineKeyboardButton("📧 Отправить старым владельцам", callback_data="act:email_owners")],
-                    [InlineKeyboardButton("✉️ Ввести email вручную", callback_data="act:email")],
-                    [InlineKeyboardButton("⏭ Пропустить", callback_data="act:skip")]
-                ]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                
-                await context.bot.send_message(
-                    chat_id=query.message.chat_id,
-                    text=result_text,
-                    reply_markup=reply_markup,
-                    parse_mode='HTML'
-                )
-            else:
-                # Все акты не созданы
-                result_text = (
-                    "❌ <b>Не удалось создать ни одного акта</b>\n\n"
-                    "Возможные причины:\n"
-                    "• Проблемы с шаблоном акта\n"
-                    "• Ошибка конвертации в PDF\n"
-                    "• Недостаточно прав доступа\n\n"
-                    "💡 <i>Рекомендация: Попробуйте позже или обратитесь к администратору.</i>"
-                )
-                await context.bot.send_message(
-                    chat_id=query.message.chat_id,
-                    text=result_text,
-                    parse_mode='HTML'
-                )
-            
+                    "Все акты отправлены вам в чат.\n\nХотите отправить все акты на email?"
+                ),
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode='HTML',
+            )
         except Exception as e:
             logger.error(f"Ошибка при создании актов: {e}", exc_info=True)
             await context.bot.send_message(
@@ -1029,9 +1519,8 @@ async def handle_transfer_confirmation(update: Update, context: ContextTypes.DEF
                 parse_mode='HTML'
             )
         finally:
-            # Очищаем временные данные
-            clear_transfer_data(context)
-    
+            clear_transfer_data(context, preserve_retry_serials=bool(retry_serials))
+
     elif query.data == "cancel_transfer":
         await query.edit_message_text("❌ Перемещение оборудования отменено.")
         clear_transfer_data(context)
@@ -1078,7 +1567,11 @@ def cleanup_temp_file(file_path: str) -> None:
         logger.warning(f"Не удалось удалить временный файл {file_path}: {e}")
 
 
-def clear_transfer_data(context: ContextTypes.DEFAULT_TYPE) -> None:
+def clear_transfer_data(
+    context: ContextTypes.DEFAULT_TYPE,
+    *,
+    preserve_retry_serials: bool = False,
+) -> None:
     """
     Очищает временные данные перемещения из контекста
     
@@ -1096,8 +1589,12 @@ def clear_transfer_data(context: ContextTypes.DEFAULT_TYPE) -> None:
         StorageKeys.TEMP_SERIALS,
         'new_employee',
         'new_employee_dept',
-        'grouped_equipment'
+        'grouped_equipment',
+        TRANSFER_OPERATION_ID_KEY,
+        TRANSFER_OPERATION_STATE_KEY,
     ]
+    if not preserve_retry_serials:
+        keys_to_clear.append(TRANSFER_RETRY_SERIALS_KEY)
     
     for key in keys_to_clear:
         context.user_data.pop(key, None)
@@ -1323,6 +1820,7 @@ async def show_transfer_confirmation_after_callback(query, context: ContextTypes
     
     # Сохраняем сгруппированные данные в контексте
     context.user_data['grouped_equipment'] = grouped_equipment
+    _ensure_transfer_operation_id(context)
 
     # Подсчитываем общее количество единиц и групп
     total_count = len(serials_data)
@@ -1358,7 +1856,10 @@ async def show_transfer_confirmation_after_callback(query, context: ContextTypes
     # Создаем клавиатуру подтверждения
     keyboard = [
         [
-            InlineKeyboardButton("✅ Подтвердить", callback_data="confirm_transfer"),
+            InlineKeyboardButton(
+                "✅ Подтвердить",
+                callback_data=f"{TRANSFER_CONFIRM_CALLBACK_PREFIX}{_ensure_transfer_operation_id(context)}",
+            ),
             InlineKeyboardButton("❌ Отменить", callback_data="cancel_transfer")
         ]
     ]

@@ -11,29 +11,26 @@ import sys
 import threading
 import time
 from contextlib import asynccontextmanager
-from functools import lru_cache
 from io import BytesIO
-from importlib import import_module
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.error import HTTPError, URLError
+from urllib.request import Request as UrlRequest, urlopen
 
 from fastapi import Cookie, Depends, FastAPI, File, Form, Header, HTTPException, Query, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from pydantic import BaseModel
+from agent_version import SCAN_ANALYSIS_VERSION, SCAN_OCR_PAGE_LIMIT, SCAN_TEXT_PAGE_LIMIT
 
 from .config import config
 from .database import ScanStore
 from .memory_guard import get_process_rss_bytes
+from .ocr import FOCUSED_REGION_DPI, MAX_FOCUSED_REGION_PIXELS, MAX_RENDERED_PAGE_PIXELS
 from .patterns import list_patterns
 from .report_export import XLSX_MEDIA_TYPE, build_scan_task_incidents_excel
+from .system_metrics import SystemMetricsSampler
 from .worker import ScanWorker
-
-# Enable imports from WEB-itinvent backend for shared auth/permission logic.
-project_root = Path(__file__).resolve().parent.parent
-web_root = project_root / "WEB-itinvent"
-if web_root.exists() and str(web_root) not in sys.path:
-    sys.path.insert(0, str(web_root))
 
 logging.basicConfig(
     level=logging.INFO,
@@ -72,6 +69,7 @@ class IngestPayload(BaseModel):
     scan_task_id: Optional[str] = ""
     text_excerpt: Optional[str] = ""
     pdf_slice_b64: Optional[str] = ""
+    document_b64: Optional[str] = ""
     local_pattern_hits: Optional[List[Dict[str, Any]]] = None
     metadata: Optional[Dict[str, Any]] = None
 
@@ -110,6 +108,7 @@ class IncidentBulkAckPayload(BaseModel):
     incident_ids: Optional[List[str]] = None
     filters: Optional[Dict[str, Any]] = None
     ack_by: Optional[str] = ""
+    confirm_all: bool = False
 
 
 store = ScanStore(
@@ -137,6 +136,10 @@ ingest_semaphore_loop: Optional[asyncio.AbstractEventLoop] = None
 dashboard_cache_lock = threading.Lock()
 dashboard_cache_payload: Optional[Dict[str, Any]] = None
 dashboard_cache_ts = 0.0
+web_auth_cache_lock = threading.Lock()
+web_auth_cache: Dict[str, tuple[float, Dict[str, Any]]] = {}
+SYSTEM_METRICS_INTERVAL_SEC = 5.0
+metrics_sampler: Optional[SystemMetricsSampler] = None
 
 
 def _key_fingerprint(value: Optional[str]) -> str:
@@ -182,19 +185,52 @@ def _forbidden_exception(permission: str) -> HTTPException:
     )
 
 
-@lru_cache(maxsize=1)
-def _load_web_auth_runtime() -> Dict[str, Any]:
-    """Import WEB-itinvent auth services only when a protected UI route is hit."""
-    authorization_module = import_module("backend.services.authorization_service")
-    session_module = import_module("backend.services.session_service")
-    user_module = import_module("backend.services.user_service")
-    security_module = import_module("backend.utils.security")
-    return {
-        "authorization_service": getattr(authorization_module, "authorization_service"),
-        "session_service": getattr(session_module, "session_service"),
-        "user_service": getattr(user_module, "user_service"),
-        "decode_access_token": getattr(security_module, "decode_access_token"),
-    }
+def _fetch_web_user(token: str) -> Dict[str, Any]:
+    cache_key = hashlib.sha256(token.encode("utf-8", errors="ignore")).hexdigest()
+    now_value = time.monotonic()
+    with web_auth_cache_lock:
+        cached = web_auth_cache.get(cache_key)
+        if cached is not None and cached[0] > now_value:
+            return dict(cached[1])
+
+    request = UrlRequest(
+        config.web_auth_me_url,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/json",
+        },
+        method="GET",
+    )
+    try:
+        with urlopen(request, timeout=config.web_auth_timeout_sec) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except HTTPError as exc:
+        if exc.code in {status.HTTP_401_UNAUTHORIZED, status.HTTP_403_FORBIDDEN}:
+            raise _credentials_exception() from exc
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Web auth service unavailable",
+        ) from exc
+    except (URLError, TimeoutError, OSError, ValueError, json.JSONDecodeError) as exc:
+        logger.warning("Web auth request failed: %s", exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Web auth service unavailable",
+        ) from exc
+
+    if not isinstance(payload, dict) or not payload.get("id") or not bool(payload.get("is_active", True)):
+        raise _credentials_exception()
+    ttl = int(config.web_auth_cache_ttl_sec)
+    if ttl > 0:
+        with web_auth_cache_lock:
+            if len(web_auth_cache) >= 512:
+                expired = [key for key, value in web_auth_cache.items() if value[0] <= now_value]
+                for key in expired:
+                    web_auth_cache.pop(key, None)
+                if len(web_auth_cache) >= 512:
+                    web_auth_cache.pop(next(iter(web_auth_cache)), None)
+            web_auth_cache[cache_key] = (now_value + ttl, dict(payload))
+    return payload
 
 
 def require_web_permission(permission: str):
@@ -202,51 +238,16 @@ def require_web_permission(permission: str):
         credentials: Optional[HTTPAuthorizationCredentials] = Depends(security_optional),
         access_token_cookie: Optional[str] = Cookie(None, alias=AUTH_COOKIE_NAME),
     ) -> Dict[str, Any]:
-        try:
-            auth_runtime = _load_web_auth_runtime()
-        except Exception as exc:
-            logger.exception("Failed to load WEB-itinvent auth runtime for scan permission checks: %s", exc)
-            raise HTTPException(
-                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-                detail="Web auth runtime unavailable",
-            ) from exc
-
-        decode_access_token = auth_runtime["decode_access_token"]
-        session_service = auth_runtime["session_service"]
-        user_service = auth_runtime["user_service"]
-        authorization_service = auth_runtime["authorization_service"]
         token = _resolve_access_token(credentials, access_token_cookie)
         if not token:
             raise _credentials_exception()
-
-        token_data = decode_access_token(token)
-        if token_data is None:
-            raise _credentials_exception()
-
-        if token_data.session_id and not session_service.is_session_active(token_data.session_id):
-            raise _credentials_exception()
-
-        user_raw = None
-        if token_data.user_id not in (None, 0):
-            user_raw = user_service.get_by_id(token_data.user_id)
-        if user_raw is None and token_data.username:
-            user_raw = user_service.get_by_username(token_data.username)
-        if not user_raw:
-            raise _credentials_exception()
-
-        if token_data.session_id:
-            session_service.touch_session(token_data.session_id)
-
-        if not bool(user_raw.get("is_active", True)):
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Inactive user")
-
-        role = str(user_raw.get("role") or token_data.role or "viewer")
-        if not authorization_service.has_permission(
-            role,
-            permission,
-            use_custom_permissions=bool(user_raw.get("use_custom_permissions", False)),
-            custom_permissions=user_raw.get("custom_permissions"),
-        ):
+        user_raw = _fetch_web_user(token)
+        permissions = {
+            str(item or "").strip()
+            for item in (user_raw.get("permissions") if isinstance(user_raw.get("permissions"), list) else [])
+            if str(item or "").strip()
+        }
+        if permission not in permissions:
             raise _forbidden_exception(permission)
 
         return user_raw
@@ -258,6 +259,14 @@ def _model_dump(model: BaseModel) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
     return model.dict()
+
+
+def _web_actor(user: Dict[str, Any]) -> str:
+    for key in ("username", "login", "email", "full_name", "id"):
+        value = str(user.get(key) or "").strip()
+        if value:
+            return value
+    return "authenticated-user"
 
 
 def _request_ip(request: Optional[Request]) -> str:
@@ -511,7 +520,7 @@ def _run_startup_maintenance() -> None:
 async def lifespan(_: FastAPI):
     stop_event.clear()
     watchdog_stop_event.clear()
-    global startup_maintenance_thread
+    global startup_maintenance_thread, metrics_sampler
     startup_maintenance_thread = None
     if worker is None:
         startup_maintenance_thread = threading.Thread(
@@ -534,6 +543,12 @@ async def lifespan(_: FastAPI):
             name="scan-listener-watchdog",
         )
         watchdog_thread.start()
+    metrics_sampler = SystemMetricsSampler(
+        store=store,
+        stop_event=stop_event,
+        interval_sec=SYSTEM_METRICS_INTERVAL_SEC,
+    )
+    metrics_sampler.start()
     logger.info(
         "Scan asyncio runtime: policy=%s loop=%s",
         _policy_descriptor(),
@@ -545,6 +560,8 @@ async def lifespan(_: FastAPI):
     if watchdog_thread is not None and watchdog_thread.is_alive():
         watchdog_thread.join(timeout=5)
     stop_event.set()
+    if metrics_sampler is not None and metrics_sampler.is_alive():
+        metrics_sampler.join(timeout=5)
     if worker is not None and worker.is_alive():
         worker.join(timeout=5)
     logger.info("Scan server stopped")
@@ -581,6 +598,23 @@ async def health() -> Dict[str, Any]:
             "enabled": bool(config.watchdog_enabled),
             "timeout_sec": int(config.watchdog_timeout_sec),
             "failures": int(config.watchdog_failures),
+        },
+        "analysis": {
+            "analysis_version": SCAN_ANALYSIS_VERSION,
+            "ocr_page_limit": SCAN_OCR_PAGE_LIMIT,
+            "text_page_limit": SCAN_TEXT_PAGE_LIMIT,
+            "ocr_lang": str(config.ocr_lang),
+            "ocr_dpi": int(config.ocr_dpi),
+            "focused_ocr_dpi": int(FOCUSED_REGION_DPI),
+            "full_page_max_pixels": int(MAX_RENDERED_PAGE_PIXELS),
+            "focused_region_max_pixels": int(MAX_FOCUSED_REGION_PIXELS),
+            "pdf_max_bytes": int(config.pdf_max_bytes),
+            "job_workers": int(config.scan_job_max_workers),
+            "ocr_workers": int(config.ocr_max_processes),
+        },
+        "system_metrics": {
+            "enabled": bool(metrics_sampler is not None and metrics_sampler.collector.available),
+            "interval_sec": SYSTEM_METRICS_INTERVAL_SEC,
         },
     }
 
@@ -628,10 +662,65 @@ async def ingest_pdf_slice(
     metadata = _model_dump(IngestPayload(**raw_metadata))
     metadata["source_kind"] = "pdf_slice"
     metadata["pdf_slice_b64"] = ""
-    pdf_bytes = await pdf_slice.read()
+    details = metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}
+    details.setdefault("ocr_page_limit", SCAN_OCR_PAGE_LIMIT)
+    details.setdefault("text_page_limit", SCAN_TEXT_PAGE_LIMIT)
+    details.setdefault("pages_in_slice", 0)
+    details.setdefault("extraction_outcomes", [])
+    metadata["metadata"] = details
+    pdf_bytes = await pdf_slice.read(int(config.pdf_max_bytes) + 1)
     if not pdf_bytes:
         raise HTTPException(status_code=400, detail="pdf_slice is empty")
+    if len(pdf_bytes) > int(config.pdf_max_bytes):
+        details["analysis_incomplete_reason"] = "pdf_slice_payload_too_large"
+        outcomes = details.get("extraction_outcomes") if isinstance(details.get("extraction_outcomes"), list) else []
+        outcomes.append({"method": "pdf_slice_upload", "outcome": "too_large"})
+        details["extraction_outcomes"] = outcomes
+        metadata["metadata"] = details
+        metadata["source_kind"] = "analysis_incomplete"
+        return await _run_ingest(metadata, request_ip=_request_ip(request))
     return await _run_ingest(metadata, request_ip=_request_ip(request), pdf_bytes=pdf_bytes)
+
+
+@app.post("/api/v1/scan/ingest/document")
+async def ingest_document(
+    request: Request,
+    metadata_json: str = Form(...),
+    document: UploadFile = File(...),
+    x_api_key: Optional[str] = Header(None),
+) -> Dict[str, Any]:
+    _check_agent_key(x_api_key)
+    try:
+        raw_metadata = json.loads(str(metadata_json or "{}"))
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Invalid metadata_json") from exc
+    if not isinstance(raw_metadata, dict):
+        raise HTTPException(status_code=400, detail="metadata_json must be an object")
+    metadata = _model_dump(IngestPayload(**raw_metadata))
+    metadata.pop("document_b64", None)
+    file_name = str(metadata.get("file_name") or document.filename or "document.bin")
+    extension = Path(file_name).suffix.lower()
+    supported = {
+        ".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp",
+        ".doc", ".docx", ".odt", ".xls", ".xlsx", ".ods",
+        ".ppt", ".pptx", ".odp",
+    }
+    if extension not in supported:
+        raise HTTPException(status_code=415, detail="Unsupported document type")
+    document_bytes = await document.read(int(config.pdf_max_bytes) + 1)
+    if not document_bytes:
+        raise HTTPException(status_code=400, detail="document is empty")
+    if len(document_bytes) > int(config.pdf_max_bytes):
+        details = metadata.get("metadata") if isinstance(metadata.get("metadata"), dict) else {}
+        details["analysis_incomplete_reason"] = "document_payload_too_large"
+        outcomes = details.get("extraction_outcomes") if isinstance(details.get("extraction_outcomes"), list) else []
+        outcomes.append({"method": "document_upload", "outcome": "too_large"})
+        details["extraction_outcomes"] = outcomes
+        metadata["metadata"] = details
+        metadata["source_kind"] = "analysis_incomplete"
+        return await _run_ingest(metadata, request_ip=_request_ip(request))
+    metadata["source_kind"] = "image" if extension in {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".webp"} else "office"
+    return await _run_ingest(metadata, request_ip=_request_ip(request), pdf_bytes=document_bytes)
 
 
 @app.get("/api/v1/scan/tasks/poll")
@@ -703,12 +792,14 @@ def incidents(
     severity: Optional[str] = Query(None),
     branch: Optional[str] = Query(None),
     hostname: Optional[str] = Query(None),
+    task_id: Optional[str] = Query(None),
     source_kind: Optional[str] = Query(None),
     file_ext: Optional[str] = Query(None),
     date_from: Optional[str] = Query(None),
     date_to: Optional[str] = Query(None),
     has_fragment: Optional[bool] = Query(None),
     ack_by: Optional[str] = Query(None),
+    pattern_id: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=5000),
     offset: int = Query(0, ge=0),
@@ -719,12 +810,14 @@ def incidents(
         severity=severity,
         branch=branch,
         hostname=hostname,
+        task_id=task_id,
         source_kind=source_kind,
         file_ext=file_ext,
         date_from=date_from,
         date_to=date_to,
         has_fragment=has_fragment,
         ack_by=ack_by,
+        pattern_id=pattern_id,
         q=q,
         limit=limit,
         offset=offset,
@@ -743,6 +836,7 @@ def incident_inbox_groups(
     date_to: Optional[str] = Query(None),
     has_fragment: Optional[bool] = Query(None),
     ack_by: Optional[str] = Query(None),
+    pattern_id: Optional[str] = Query(None),
     q: Optional[str] = Query(None),
     host_limit: int = Query(25, ge=1, le=100),
     host_offset: int = Query(0, ge=0),
@@ -760,6 +854,7 @@ def incident_inbox_groups(
         date_to=date_to,
         has_fragment=has_fragment,
         ack_by=ack_by,
+        pattern_id=pattern_id,
         q=q,
         host_limit=host_limit,
         host_offset=host_offset,
@@ -771,9 +866,9 @@ def incident_inbox_groups(
 def ack_incident(
     incident_id: str,
     payload: IncidentAckPayload,
-    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_ACK)),
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_ACK)),
 ) -> Dict[str, Any]:
-    acked = store.ack_incident(incident_id=incident_id, ack_by=str(payload.ack_by or "").strip())
+    acked = store.ack_incident(incident_id=incident_id, ack_by=_web_actor(user))
     if acked is None:
         raise HTTPException(status_code=404, detail="Incident not found")
     return {"success": True, "incident": acked}
@@ -782,12 +877,17 @@ def ack_incident(
 @app.post("/api/v1/scan/incidents/bulk-ack")
 def bulk_ack_incidents(
     payload: IncidentBulkAckPayload,
-    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_ACK)),
+    user: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_ACK)),
 ) -> Dict[str, Any]:
+    incident_ids = [str(item or "").strip() for item in (payload.incident_ids or []) if str(item or "").strip()]
+    filters = payload.filters if isinstance(payload.filters, dict) else {}
+    has_filter = any(value not in (None, "", [], {}, False) for value in filters.values())
+    if not incident_ids and not has_filter and not payload.confirm_all:
+        raise HTTPException(status_code=400, detail="Bulk ACK requires incident_ids, a non-empty filter, or confirm_all=true")
     return store.bulk_ack_incidents(
-        incident_ids=payload.incident_ids,
-        filters=payload.filters,
-        ack_by=str(payload.ack_by or "").strip(),
+        incident_ids=incident_ids,
+        filters=filters,
+        ack_by=_web_actor(user),
     )
 
 
@@ -809,6 +909,16 @@ def task_observations(
     _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
 ) -> Dict[str, Any]:
     return store.list_task_observations(task_id=task_id, limit=limit, offset=offset)
+
+
+@app.get("/api/v1/scan/tasks/{task_id}/system-metrics")
+def task_system_metrics(
+    task_id: str,
+    limit: int = Query(5000, ge=1, le=20000),
+    offset: int = Query(0, ge=0),
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    return store.list_task_system_metrics(task_id=task_id, limit=limit, offset=offset)
 
 
 @app.get("/api/v1/scan/tasks/{task_id}/incidents/export")
@@ -840,6 +950,7 @@ def dashboard(
         payload["ingest_backpressure"] = store.ingest_backpressure_status(
             max_pending_pdf_jobs=config.ingest_max_pending_pdf_jobs,
             transient_max_gb=config.transient_max_gb,
+            max_pending_jobs=getattr(config, "ingest_max_pending_jobs", None),
         )
     except Exception as exc:
         stale = _get_stale_dashboard(now_value)
@@ -857,6 +968,15 @@ def dashboard(
     payload["degraded"] = False
     _store_dashboard_cache(payload, now_value)
     return payload
+
+
+@app.get("/api/v1/scan/review-items")
+def review_items(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    _: Dict[str, Any] = Depends(require_web_permission(PERM_SCAN_READ)),
+) -> Dict[str, Any]:
+    return store.list_incomplete_jobs(limit=limit, offset=offset)
 
 
 @app.get("/api/v1/scan/patterns")

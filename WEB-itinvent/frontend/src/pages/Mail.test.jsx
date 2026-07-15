@@ -918,6 +918,7 @@ describe('Mail read-state behavior', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    vi.unstubAllGlobals();
     clearSWRCache();
     window.sessionStorage.clear();
     window.localStorage.clear();
@@ -942,6 +943,95 @@ describe('Mail read-state behavior', () => {
     expect(shell.getAttribute('data-mail-mono-font')).toContain('Cascadia Mono');
     expect(shell.getAttribute('data-mail-radius-md')).toBe('10px');
     expect(shell.getAttribute('data-mail-radius-lg')).toBe('12px');
+  });
+
+  it('starts with a wider folder pane and persists pointer resizing for the current user', async () => {
+    vi.stubGlobal('PointerEvent', MouseEvent);
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-desktop-area')).toBeTruthy();
+    });
+
+    const desktopArea = screen.getByTestId('mail-desktop-area');
+    const folderResizer = screen.getByTestId('mail-folder-pane-resizer');
+    expect(desktopArea.getAttribute('data-folder-pane-width')).toBe('220');
+
+    fireEvent.pointerDown(folderResizer, { button: 0, clientX: 220, pointerId: 1 });
+    fireEvent.pointerMove(window, { clientX: 260, pointerId: 1 });
+    expect(desktopArea.style.getPropertyValue('--mail-folder-pane-width')).toBe('260px');
+    fireEvent.pointerUp(window, { clientX: 260, pointerId: 1 });
+
+    await waitFor(() => {
+      expect(mockUpdatePreferences).toHaveBeenCalledWith({ folder_pane_width: 260 });
+      expect(desktopArea.getAttribute('data-folder-pane-width')).toBe('260');
+    });
+  });
+
+  it('restores saved list width and supports accessible keyboard resizing', async () => {
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      preferences: {
+        preferences: {
+          folder_pane_width: 248,
+          message_list_width: 410,
+          bottom_list_percent: 46,
+        },
+      },
+    }));
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-desktop-area').getAttribute('data-message-list-width')).toBe('410');
+    });
+
+    fireEvent.keyDown(screen.getByTestId('mail-message-list-resizer'), { key: 'ArrowRight' });
+
+    await waitFor(() => {
+      expect(mockUpdatePreferences).toHaveBeenCalledWith({ message_list_width: 420 });
+      expect(screen.getByTestId('mail-desktop-area').getAttribute('data-message-list-width')).toBe('420');
+    });
+  });
+
+  it('resizes and persists the bottom reading pane height', async () => {
+    mockGetBootstrap.mockResolvedValue(buildBootstrapPayload({
+      preferences: {
+        preferences: {
+          reading_pane: 'bottom',
+          bottom_list_percent: 44,
+        },
+      },
+    }));
+
+    render(
+      <MemoryRouter initialEntries={['/mail']}>
+        <Routes>
+          <Route path="/mail" element={<Mail />} />
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    await waitFor(() => {
+      expect(screen.getByTestId('mail-bottom-list-resizer')).toBeTruthy();
+    });
+    fireEvent.keyDown(screen.getByTestId('mail-bottom-list-resizer'), { key: 'ArrowDown' });
+
+    await waitFor(() => {
+      expect(mockUpdatePreferences).toHaveBeenCalledWith({ bottom_list_percent: 46 });
+      expect(screen.getByTestId('mail-desktop-area').getAttribute('data-bottom-list-percent')).toBe('46');
+    });
   });
 
   it('marks an unread deep-linked message as read on open', async () => {
@@ -3302,6 +3392,9 @@ describe('Mail read-state behavior', () => {
         density: 'compact',
         show_preview_snippets: false,
         show_favorites_first: false,
+        folder_pane_width: 220,
+        message_list_width: 360,
+        bottom_list_percent: 42,
       });
     });
     await waitFor(() => {

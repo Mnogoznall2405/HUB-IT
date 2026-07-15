@@ -18,7 +18,7 @@ from threading import Lock
 
 import ldap3
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, select, text
 
 from backend.appdb.db import (
     apply_postgres_local_timeouts,
@@ -27,7 +27,12 @@ from backend.appdb.db import (
     is_app_database_configured,
     run_with_transient_lock_retry,
 )
-from backend.appdb.models import AppTaskDelegateUserLink, AppUser
+from backend.appdb.models import (
+    AppDepartment,
+    AppDepartmentMembership,
+    AppTaskDelegateUserLink,
+    AppUser,
+)
 from local_store import get_local_store
 from backend.config import config
 from backend.services.authorization_service import authorization_service
@@ -114,7 +119,8 @@ class UserService:
         if self._use_app_database:
             def _load_from_app_db() -> list[dict]:
                 with app_session(self._database_url) as session:
-                    apply_postgres_local_timeouts(session, lock_timeout_ms=1500, statement_timeout_ms=5000)
+                    if session.get_bind().dialect.name == "postgresql":
+                        session.execute(text("SET LOCAL statement_timeout = '5000ms'"))
                     rows = session.scalars(select(AppUser).order_by(AppUser.id.asc())).all()
                     return [self._row_to_user_dict(row) for row in rows]
 
@@ -673,6 +679,175 @@ class UserService:
             for user in users
             if not self.is_system_hidden_user(user)
         ]
+
+    def sync_ldap_users_bulk(self, payloads: list[dict]) -> list[dict] | None:
+        """Upsert LDAP users and their AD membership in one app-db transaction.
+
+        Returns ``None`` for the legacy JSON store so callers can retain the
+        existing compatibility path.
+        """
+        if not self._use_app_database:
+            return None
+
+        from backend.services.department_service import (
+            DEPARTMENT_MEMBER_ROLE,
+            department_id_from_name,
+            normalize_department_name,
+        )
+
+        now = datetime.now(timezone.utc)
+        results: list[dict] = []
+        with app_session(self._database_url) as session:
+            apply_postgres_local_timeouts(session, lock_timeout_ms=3000, statement_timeout_ms=10000)
+            existing_rows = session.scalars(select(AppUser)).all()
+            existing_by_username = {
+                self._normalize_username(row.username): row for row in existing_rows
+            }
+            next_id = max((int(row.id) for row in existing_rows), default=0) + 1
+            ad_memberships = session.scalars(
+                select(AppDepartmentMembership).where(
+                    AppDepartmentMembership.source == "ad",
+                    AppDepartmentMembership.role == DEPARTMENT_MEMBER_ROLE,
+                )
+            ).all()
+            memberships_by_user: dict[int, list[AppDepartmentMembership]] = {}
+            for membership in ad_memberships:
+                memberships_by_user.setdefault(int(membership.user_id), []).append(membership)
+            departments_by_id = {
+                str(department.id): department
+                for department in session.scalars(select(AppDepartment)).all()
+            }
+
+            for index, payload in enumerate(payloads, start=1):
+                username = self._normalize_username(payload.get("username"))
+                row = existing_by_username.get(username)
+                if row is not None and str(row.auth_source or "").strip().lower() != "ldap":
+                    results.append({"login": username, "action": "local_conflict", "user": self._sanitize_user(self._row_to_user_dict(row))})
+                    continue
+
+                created = row is None
+                if row is None:
+                    row = AppUser(
+                        id=next_id,
+                        username=username,
+                        role="viewer",
+                        auth_source="ldap",
+                        is_active=True,
+                        use_custom_permissions=False,
+                        custom_permissions_json="[]",
+                        mailbox_password_enc="",
+                        password_hash="",
+                        password_salt="",
+                        totp_secret_enc="",
+                        is_2fa_enabled=False,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    next_id += 1
+                    session.add(row)
+                    existing_by_username[username] = row
+
+                desired = {
+                    "email": str(payload.get("email") or "").strip() or None,
+                    "full_name": str(payload.get("full_name") or "").strip() or username,
+                    "department": normalize_department_name(payload.get("department")) or None,
+                    "job_title": str(payload.get("job_title") or "").strip() or None,
+                    "mailbox_email": str(payload.get("mailbox_email") or "").strip() or None,
+                    "mailbox_login": str(payload.get("mailbox_login") or "").strip() or None,
+                }
+                changed = created
+                for field, value in desired.items():
+                    if getattr(row, field) != value:
+                        setattr(row, field, value)
+                        changed = True
+                if str(row.auth_source or "") != "ldap":
+                    row.auth_source = "ldap"
+                    changed = True
+                if not bool(row.is_active):
+                    row.is_active = True
+                    changed = True
+                if changed:
+                    row.updated_at = now
+                    row.mail_updated_at = now
+
+                department_id = department_id_from_name(desired["department"])
+                current_memberships = memberships_by_user.setdefault(int(row.id), [])
+                membership_changed = False
+                for membership in current_memberships:
+                    should_be_active = bool(department_id and membership.department_id == department_id)
+                    if bool(membership.is_active) != should_be_active:
+                        membership.is_active = should_be_active
+                        membership.updated_at = now
+                        membership_changed = True
+                if department_id:
+                    department = departments_by_id.get(department_id)
+                    if department is None:
+                        department = AppDepartment(
+                            id=department_id,
+                            name=desired["department"],
+                            source="ad",
+                            is_active=True,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        session.add(department)
+                        departments_by_id[department_id] = department
+                    elif department.name != desired["department"] or not department.is_active:
+                        department.name = desired["department"]
+                        department.source = "ad"
+                        department.is_active = True
+                        department.updated_at = now
+                    current = next(
+                        (membership for membership in current_memberships if membership.department_id == department_id),
+                        None,
+                    )
+                    if current is None:
+                        current = AppDepartmentMembership(
+                            department_id=department_id,
+                            user_id=int(row.id),
+                            role=DEPARTMENT_MEMBER_ROLE,
+                            source="ad",
+                            is_active=True,
+                            created_at=now,
+                            updated_at=now,
+                        )
+                        session.add(current)
+                        current_memberships.append(current)
+                        membership_changed = True
+
+                action = "created" if created else ("updated" if changed or membership_changed else "unchanged")
+                session.flush()
+                results.append({
+                    "login": username,
+                    "action": action,
+                    "user": self._sanitize_user(self._row_to_user_dict(row)),
+                })
+                if index % 200 == 0:
+                    session.flush()
+
+        self._invalidate_users_cache()
+        return results
+
+    def deactivate_ldap_users_bulk(self, user_ids: list[int]) -> dict[int, dict] | None:
+        """Deactivate many LDAP users with one app-db transaction."""
+        if not self._use_app_database:
+            return None
+        normalized_ids = {int(user_id) for user_id in user_ids or [] if int(user_id or 0) > 0}
+        if not normalized_ids:
+            return {}
+        now = datetime.now(timezone.utc)
+        updated: dict[int, dict] = {}
+        with app_session(self._database_url) as session:
+            rows = session.scalars(select(AppUser).where(AppUser.id.in_(normalized_ids))).all()
+            for row in rows:
+                if str(row.auth_source or "").strip().lower() != "ldap" or not bool(row.is_active):
+                    continue
+                row.is_active = False
+                row.updated_at = now
+                session.flush()
+                updated[int(row.id)] = self._sanitize_user(self._row_to_user_dict(row))
+        self._invalidate_users_cache()
+        return updated
 
     def get_users_map_by_ids(self, user_ids: list[int] | set[int] | tuple[int, ...]) -> dict[int, dict]:
         normalized_user_ids = {

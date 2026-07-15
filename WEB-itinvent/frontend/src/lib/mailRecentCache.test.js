@@ -51,6 +51,36 @@ describe('mailRecentCache', () => {
     );
   });
 
+  it('keeps the persisted list cursor contiguous with the retained items', () => {
+    const items = Array.from({ length: 240 }, (_, index) => ({ id: `msg-${index + 1}` }));
+
+    writeMailRecentList({
+      scope: 'user-1',
+      contextKey: 'ctx:inbox',
+      listData: {
+        items,
+        total: 500,
+        offset: 0,
+        limit: 50,
+        has_more: true,
+        next_offset: 240,
+        append_offset: 240,
+        loaded_pages: 5,
+      },
+    });
+
+    const hydration = getMailRecentHydration({ scope: 'user-1', contextKey: 'ctx:inbox' });
+
+    expect(hydration.listData.items).toEqual(items.slice(0, 50));
+    expect(hydration.listData).toEqual(expect.objectContaining({
+      offset: 0,
+      has_more: true,
+      next_offset: 50,
+      append_offset: 50,
+      loaded_pages: 1,
+    }));
+  });
+
   it('expires stale snapshots and clears scoped cache', () => {
     const baseNow = 1_700_000_000_000;
     vi.spyOn(Date, 'now').mockReturnValue(baseNow);
@@ -78,6 +108,49 @@ describe('mailRecentCache', () => {
     });
     clearMailRecentCacheForScope('user-2');
     expect(getMailRecentHydration({ scope: 'user-2', contextKey: 'ctx:inbox' })).toBeNull();
+  });
+
+  it('expires recent mail after the 90 second snapshot freshness budget', () => {
+    const baseNow = 1_700_000_000_000;
+    vi.spyOn(Date, 'now').mockReturnValue(baseNow);
+    writeMailRecentList({
+      scope: 'user-1',
+      contextKey: 'ctx:inbox',
+      listData: { items: [{ id: 'msg-1' }], total: 1 },
+    });
+
+    vi.spyOn(Date, 'now').mockReturnValue(baseNow + 90_001);
+
+    expect(getMailRecentHydration({ scope: 'user-1', contextKey: 'ctx:inbox' })).toBeNull();
+  });
+
+  it('keeps message detail longer than list snapshots without retaining it forever', () => {
+    const baseNow = 1_700_000_000_000;
+    vi.spyOn(Date, 'now').mockReturnValue(baseNow);
+    writeMailRecentList({
+      scope: 'user-1',
+      contextKey: 'ctx:inbox',
+      listData: { items: [{ id: 'msg-1' }], total: 1 },
+    });
+    writeMailRecentMessageDetail({
+      scope: 'user-1',
+      message: { id: 'msg-1', subject: 'Cached detail', body_text: 'Body' },
+    });
+
+    vi.spyOn(Date, 'now').mockReturnValue(
+      baseNow + __MAIL_RECENT_CACHE_TESTING__.MAIL_RECENT_CACHE_TTL_MS + 1,
+    );
+
+    expect(getMailRecentHydration({ scope: 'user-1', contextKey: 'ctx:inbox' })).toBeNull();
+    expect(getMailRecentMessageDetail({ scope: 'user-1', messageId: 'msg-1' })).toEqual(
+      expect.objectContaining({ id: 'msg-1', body_text: 'Body' }),
+    );
+
+    vi.spyOn(Date, 'now').mockReturnValue(
+      baseNow + __MAIL_RECENT_CACHE_TESTING__.MAIL_RECENT_DETAIL_TTL_MS + 1,
+    );
+
+    expect(getMailRecentMessageDetail({ scope: 'user-1', messageId: 'msg-1' })).toBeNull();
   });
 
   it('stores and reads recent message detail snapshots without attachment bytes', () => {

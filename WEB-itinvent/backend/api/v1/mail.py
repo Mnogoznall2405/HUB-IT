@@ -20,6 +20,7 @@ from backend.models.auth import User
 from backend.services.authorization_service import PERM_MAIL_ACCESS
 from backend.services.request_auth_context_service import pop_request_session_id, push_request_session_id
 from backend.services.mail_notification_service import mail_notification_service
+from backend.services.mail_runtime_snapshot_service import mail_runtime_snapshot_service
 from backend.services.mail_service import MailPayloadTooLargeError, MailServiceError, mail_service
 from backend.services.user_service import user_service
 
@@ -99,6 +100,10 @@ def _mail_exchange_max_concurrency() -> int:
         return 16
 
 
+def _shared_mail_snapshot_reads_enabled() -> bool:
+    return str(os.getenv("MAIL_SHARED_SNAPSHOT_READ_ENABLED", "1")).strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _get_mail_call_limiter() -> asyncio.Semaphore:
     global _MAIL_CALL_LIMITER, _MAIL_CALL_LIMITER_LIMIT, _MAIL_CALL_LIMITER_LOOP
 
@@ -114,6 +119,25 @@ def _get_mail_call_limiter() -> asyncio.Semaphore:
 async def _run_mail_call(func, /, *args, **kwargs):
     async with _get_mail_call_limiter():
         return await asyncio.to_thread(func, *args, **kwargs)
+
+
+async def _write_through_mail_read_state(**kwargs: Any) -> None:
+    """Keep shared counters coherent without making Exchange mutations depend on app storage."""
+    try:
+        await asyncio.to_thread(mail_runtime_snapshot_service.apply_read_state, **kwargs)
+    except Exception:
+        logger.warning("Mail read-state snapshot write-through failed", exc_info=True)
+
+
+async def _write_through_mail_preferences(*, user_id: int, preferences: dict[str, Any]) -> None:
+    try:
+        await asyncio.to_thread(
+            mail_runtime_snapshot_service.apply_preferences,
+            user_id=int(user_id),
+            preferences=preferences,
+        )
+    except Exception:
+        logger.warning("Mail preferences snapshot write-through failed", exc_info=True)
 
 
 def _run_mail_call_with_metrics_sync(func, args, kwargs):
@@ -328,6 +352,9 @@ class UpdateMailPreferencesPayload(BaseModel):
     mark_read_on_select: Optional[bool] = None
     show_preview_snippets: Optional[bool] = None
     show_favorites_first: Optional[bool] = None
+    folder_pane_width: Optional[int] = Field(default=None, ge=180, le=360)
+    message_list_width: Optional[int] = Field(default=None, ge=280, le=720)
+    bottom_list_percent: Optional[int] = Field(default=None, ge=25, le=75)
 
 
 @router.get("/contacts")
@@ -572,22 +599,58 @@ async def get_mail_bootstrap(
     request: Request,
     limit: int = Query(20, ge=10, le=100),
     mailbox_id: str = Query("", min_length=0),
+    refresh: str = Query("auto", pattern="^(auto|live)$"),
     current_user: User = Depends(get_current_mail_user),
 ):
     started_at = time.perf_counter()
     request_id = _request_id_from_headers(request)
     metrics: dict[str, Any] = {}
+    normalized_mailbox_id = _normalize_text(mailbox_id) or None
+    snapshot_context = f"inbox|current|{int(limit)}"
     try:
+        if refresh == "auto" and _shared_mail_snapshot_reads_enabled():
+            snapshot = await asyncio.to_thread(
+                mail_runtime_snapshot_service.read,
+                user_id=int(current_user.id),
+                mailbox_id=normalized_mailbox_id,
+                snapshot_type="bootstrap",
+                context_key=snapshot_context,
+            )
+            if snapshot.get("state") == "ok" and isinstance(snapshot.get("payload"), dict):
+                return {
+                    **snapshot["payload"],
+                    "state": snapshot["state"],
+                    "source": snapshot["source"],
+                    "as_of": snapshot.get("as_of"),
+                    "last_error": snapshot.get("last_error") or "",
+                }
         result, metrics = await _run_mail_call_with_metrics(
             mail_service.get_bootstrap,
             user_id=int(current_user.id),
-            mailbox_id=_normalize_text(mailbox_id) or None,
+            mailbox_id=normalized_mailbox_id,
             folder="inbox",
             folder_scope="current",
             limit=int(limit),
         )
-        return result
+        await asyncio.to_thread(
+            mail_runtime_snapshot_service.write_success,
+            user_id=int(current_user.id),
+            mailbox_id=normalized_mailbox_id,
+            snapshot_type="bootstrap",
+            context_key=snapshot_context,
+            payload=result,
+            ttl_seconds=90,
+        )
+        return {**result, "state": "ok", "source": "exchange", "as_of": None, "last_error": ""}
     except MailServiceError as exc:
+        await asyncio.to_thread(
+            mail_runtime_snapshot_service.record_error,
+            user_id=int(current_user.id),
+            mailbox_id=normalized_mailbox_id,
+            snapshot_type="bootstrap",
+            context_key=snapshot_context,
+            error=exc,
+        )
         raise _mail_http_exception(exc, current_user=current_user) from exc
     finally:
         _log_request_timing(
@@ -802,6 +865,15 @@ async def mark_message_read(
             mailbox_id=_normalize_text(mailbox_id) or None,
             message_id=message_id,
         )
+        if ok:
+            await _write_through_mail_read_state(
+                user_id=int(current_user.id),
+                mailbox_id=_normalize_text(mailbox_id) or None,
+                unread_delta=-1,
+                is_read=True,
+                message_id=message_id,
+                folder="inbox",
+            )
         return {"ok": ok}
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
@@ -820,6 +892,15 @@ async def mark_message_unread(
             mailbox_id=_normalize_text(mailbox_id) or None,
             message_id=message_id,
         )
+        if ok:
+            await _write_through_mail_read_state(
+                user_id=int(current_user.id),
+                mailbox_id=_normalize_text(mailbox_id) or None,
+                unread_delta=1,
+                is_read=False,
+                message_id=message_id,
+                folder="inbox",
+            )
         return {"ok": ok}
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
@@ -1088,7 +1169,18 @@ async def mark_mail_conversation_read(
         normalized_mailbox_id = _normalize_text(payload.mailbox_id)
         if normalized_mailbox_id:
             kwargs["mailbox_id"] = normalized_mailbox_id
-        return await _run_mail_call(mail_service.mark_conversation_as_read, **kwargs)
+        result = await _run_mail_call(mail_service.mark_conversation_as_read, **kwargs)
+        changed = max(0, int(result.get("changed", 0) or 0)) if isinstance(result, dict) else 0
+        if changed:
+            await _write_through_mail_read_state(
+                user_id=int(current_user.id),
+                mailbox_id=normalized_mailbox_id or None,
+                unread_delta=-changed,
+                is_read=True,
+                conversation_id=_normalize_text(conversation_id),
+                folder=kwargs["folder"],
+            )
+        return result
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 
@@ -1109,7 +1201,18 @@ async def mark_mail_conversation_unread(
         normalized_mailbox_id = _normalize_text(payload.mailbox_id)
         if normalized_mailbox_id:
             kwargs["mailbox_id"] = normalized_mailbox_id
-        return await _run_mail_call(mail_service.mark_conversation_as_unread, **kwargs)
+        result = await _run_mail_call(mail_service.mark_conversation_as_unread, **kwargs)
+        changed = max(0, int(result.get("changed", 0) or 0)) if isinstance(result, dict) else 0
+        if changed:
+            await _write_through_mail_read_state(
+                user_id=int(current_user.id),
+                mailbox_id=normalized_mailbox_id or None,
+                unread_delta=changed,
+                is_read=False,
+                conversation_id=_normalize_text(conversation_id),
+                folder=kwargs["folder"],
+            )
+        return result
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 
@@ -1119,13 +1222,29 @@ async def get_mail_unread_count(
     mailbox_id: str = Query("", min_length=0),
     current_user: User = Depends(get_current_mail_user),
 ):
+    normalized_mailbox_id = _normalize_text(mailbox_id) or None
+    if _shared_mail_snapshot_reads_enabled():
+        snapshot = await asyncio.to_thread(
+            mail_runtime_snapshot_service.read,
+            user_id=int(current_user.id),
+            mailbox_id=normalized_mailbox_id,
+            snapshot_type="unread",
+        )
+        payload = snapshot.get("payload") if isinstance(snapshot.get("payload"), dict) else {}
+        return {
+            "unread_count": int(payload.get("unread_count", 0) or 0),
+            "state": snapshot.get("state") or "unknown",
+            "source": "app_snapshot",
+            "as_of": snapshot.get("as_of"),
+            "last_error": snapshot.get("last_error") or "",
+        }
     try:
         count = await _run_mail_call(
             mail_service.get_unread_count,
             user_id=int(current_user.id),
-            mailbox_id=_normalize_text(mailbox_id) or None,
+            mailbox_id=normalized_mailbox_id,
         )
-        return {"unread_count": count}
+        return {"unread_count": count, "state": "ok", "source": "exchange", "as_of": None}
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 
@@ -1135,6 +1254,21 @@ async def get_mail_notifications_feed(
     limit: int = Query(20, ge=1, le=50),
     current_user: User = Depends(get_current_mail_user),
 ):
+    if _shared_mail_snapshot_reads_enabled():
+        snapshot = await asyncio.to_thread(
+            mail_runtime_snapshot_service.read,
+            user_id=int(current_user.id),
+            mailbox_id=None,
+            snapshot_type="notification_feed",
+        )
+        if isinstance(snapshot.get("payload"), dict):
+            return {
+                **snapshot["payload"],
+                "state": snapshot.get("state") or "unknown",
+                "source": "app_snapshot",
+                "as_of": snapshot.get("as_of"),
+            }
+        return {"items": [], "total_unread": 0, "limit": int(limit), "state": "unknown", "source": "app_snapshot", "as_of": None}
     try:
         return await _run_mail_call(
             mail_service.list_notification_feed,
@@ -1162,11 +1296,16 @@ async def patch_mail_preferences(
 ):
     try:
         payload_data = payload.model_dump(exclude_unset=True) if hasattr(payload, "model_dump") else payload.dict(exclude_unset=True)
-        return await _run_mail_call(
+        result = await _run_mail_call(
             mail_service.update_preferences,
             user_id=int(current_user.id),
             payload=payload_data or {},
         )
+        await _write_through_mail_preferences(
+            user_id=int(current_user.id),
+            preferences=result if isinstance(result, dict) else {"preferences": payload_data or {}},
+        )
+        return result
     except MailServiceError as exc:
         raise _mail_http_exception(exc, current_user=current_user) from exc
 

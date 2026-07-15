@@ -3,50 +3,18 @@
 """
 OCR сервис для распознавания текста с изображений
 
-Использует OpenRouter API для анализа изображений и извлечения серийных номеров.
+Использует shared OpenRouter gateway для анализа изображений и извлечения серийных номеров.
 """
 
-import base64
 import logging
 import re
 from typing import Optional
-from openai import OpenAI
 
-from bot.config import config
+from shared.llm import OpenRouterClientError, openrouter_client, resolve_model
 
 logger = logging.getLogger(__name__)
 
-# Инициализация клиента OpenRouter
-try:
-    client = OpenAI(
-        base_url=config.api.openrouter_base_url,
-        api_key=config.api.openrouter_api_key
-    )
-except Exception as e:
-    logger.error(f"Ошибка инициализации OpenAI клиента: {e}")
-    client = None
-
-
-async def analyze_image(file_path: str) -> str:
-    """
-    Анализирует изображение для извлечения серийного номера
-    
-    Параметры:
-        file_path: Путь к файлу изображения
-        
-    Возвращает:
-        str: Текстовый ответ от AI модели
-    """
-    if client is None:
-        return "OpenAI клиент не инициализирован. Проверьте настройки API."
-    
-    try:
-        # Читаем и кодируем изображение в base64
-        with open(file_path, "rb") as image_file:
-            base64_image = base64.b64encode(image_file.read()).decode('utf-8')
-        
-        # Оптимизированный промпт (короткий и эффективный)
-        prompt = """Find the SERIAL NUMBER on this device image.
+_SERIAL_PROMPT = """Find the SERIAL NUMBER on this device image.
 
 Look for labels: "Serial Number", "S/N", "SN", "Service Tag", or "Серийный номер"
 
@@ -70,31 +38,69 @@ Answer format:
 
 If not found:
 Серийный номер: НЕ НАЙДЕН"""
+
+_DETAILED_PROMPT = """Проанализируй изображение и найди ВСЕ номера, которые видны на устройстве.
+
+Для каждого номера укажи:
+1. Сам номер (точная копия)
+2. Метку рядом с ним (если есть)
+3. Длину номера
+4. Тип (модель, серийный номер, или другое)
+
+Формат ответа:
+Номер 1: [номер] - Метка: [метка] - Длина: [X] - Тип: [тип]
+Номер 2: [номер] - Метка: [метка] - Длина: [X] - Тип: [тип]
+...
+
+ВАЖНО: Различай модель и серийный номер!
+- Модель: короткая (5-10 символов), описывает тип устройства
+- Серийный номер: длинный (8-15+ символов), уникальный для каждого устройства
+- Серийный номер может быть разбит на несколько строк - объедини их!
+
+Затем укажи ТОЛЬКО серийный номер (не модель!), объединив все части если он многострочный:
+Серийный номер: [выбранный номер]
+
+Если серийных номеров нет:
+Серийный номер: НЕ НАЙДЕН"""
+
+
+def _ocr_model() -> str:
+    return resolve_model("ocr")
+
+
+def _read_image_bytes(file_path: str) -> bytes:
+    with open(file_path, "rb") as image_file:
+        return image_file.read()
+
+
+async def analyze_image(file_path: str) -> str:
+    """
+    Анализирует изображение для извлечения серийного номера
+
+    Параметры:
+        file_path: Путь к файлу изображения
         
-        # Отправляем запрос к AI модели с увеличенным max_tokens
-        completion = client.chat.completions.create(
-            model=config.api.ocr_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "text",
-                            "text": prompt
-                        },
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:image/jpeg;base64,{base64_image}"
-                            }
-                        }
-                    ]
-                }
-            ],
-            max_tokens=150,  # Увеличено для более детального анализа
-            temperature=0.1  # Низкая температура для точности
+    Возвращает:
+        str: Текстовый ответ от AI модели
+    """
+    if not openrouter_client.is_configured():
+        return "OpenAI клиент не инициализирован. Проверьте настройки API."
+
+    try:
+        text, _usage = openrouter_client.complete_vision(
+            image_bytes=_read_image_bytes(file_path),
+            mime_type="image/jpeg",
+            prompt=_SERIAL_PROMPT,
+            system_prompt="",
+            model=_ocr_model(),
+            purpose="ocr",
+            temperature=0.1,
+            max_tokens=150,
         )
-        return completion.choices[0].message.content
+        return text
+    except OpenRouterClientError as e:
+        logger.error(f"Ошибка при вызове OCR API: {e}")
+        return "Не удалось обработать изображение из-за ошибки API."
     except Exception as e:
         logger.error(f"Ошибка при вызове OCR API: {e}")
         return "Не удалось обработать изображение из-за ошибки API."
@@ -259,53 +265,24 @@ async def analyze_image_detailed(file_path: str) -> str:
     Возвращает:
         str: Текстовый ответ от AI модели
     """
-    if client is None:
+    if not openrouter_client.is_configured():
         return "OpenAI клиент не инициализирован. Проверьте настройки API."
-    
+
     try:
-        with open(file_path, "rb") as image_file:
-            base64_image = base64.b64encode(image_file.read()).decode('utf-8')
-        
-        # Альтернативный промпт для детального анализа
-        prompt = """Проанализируй изображение и найди ВСЕ номера, которые видны на устройстве.
-
-Для каждого номера укажи:
-1. Сам номер (точная копия)
-2. Метку рядом с ним (если есть)
-3. Длину номера
-4. Тип (модель, серийный номер, или другое)
-
-Формат ответа:
-Номер 1: [номер] - Метка: [метка] - Длина: [X] - Тип: [тип]
-Номер 2: [номер] - Метка: [метка] - Длина: [X] - Тип: [тип]
-...
-
-ВАЖНО: Различай модель и серийный номер!
-- Модель: короткая (5-10 символов), описывает тип устройства
-- Серийный номер: длинный (8-15+ символов), уникальный для каждого устройства
-- Серийный номер может быть разбит на несколько строк - объедини их!
-
-Затем укажи ТОЛЬКО серийный номер (не модель!), объединив все части если он многострочный:
-Серийный номер: [выбранный номер]
-
-Если серийных номеров нет:
-Серийный номер: НЕ НАЙДЕН"""
-        
-        completion = client.chat.completions.create(
-            model=config.api.ocr_model,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{base64_image}"}}
-                    ]
-                }
-            ],
+        text, _usage = openrouter_client.complete_vision(
+            image_bytes=_read_image_bytes(file_path),
+            mime_type="image/jpeg",
+            prompt=_DETAILED_PROMPT,
+            system_prompt="",
+            model=_ocr_model(),
+            purpose="ocr",
+            temperature=0.2,
             max_tokens=300,
-            temperature=0.2
         )
-        return completion.choices[0].message.content
+        return text
+    except OpenRouterClientError as e:
+        logger.error(f"Ошибка при детальном анализе: {e}")
+        return "Ошибка анализа"
     except Exception as e:
         logger.error(f"Ошибка при детальном анализе: {e}")
         return "Ошибка анализа"

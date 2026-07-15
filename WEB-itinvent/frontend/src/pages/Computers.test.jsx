@@ -1,9 +1,24 @@
 import React from 'react';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { MemoryRouter } from 'react-router-dom';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import Computers from './Computers';
 import { equipmentAPI } from '../api/client';
+
+const nativeIntersectionObserver = globalThis.IntersectionObserver;
+let intersectionObservers = [];
+
+async function intersectLatestLoadSentinel() {
+  await waitFor(() => {
+    expect(intersectionObservers.some((observer) => observer.element)).toBe(true);
+  });
+  const observer = intersectionObservers.filter((item) => item.element).at(-1);
+  await act(async () => {
+    observer.callback([{ isIntersecting: true, target: observer.element }]);
+    await Promise.resolve();
+    await Promise.resolve();
+  });
+}
 
 vi.mock('../api/client', () => ({
   equipmentAPI: {
@@ -56,6 +71,33 @@ const sampleComputer = {
     port_name: 'Gi1/0/12',
     socket_code: 'T-12',
     site_name: 'Тюмень / 1 этаж',
+  },
+  network: {
+    summary: { total: 3, enabled: 1, disabled: 2, connected: 1 },
+    devices: [
+      {
+        name: 'Ethernet 1',
+        description: 'Intel Gigabit Ethernet',
+        device_type: 'ethernet',
+        enabled: true,
+        connection_status: 'up',
+        mac_address: 'AA-BB-CC-DD-EE-01',
+        link_speed: '1 Gbps',
+        ipv4: ['10.10.1.11'],
+      },
+      {
+        name: 'Intel Wi-Fi 6 AX201',
+        device_type: 'wifi',
+        enabled: false,
+        connection_status: 'disabled',
+      },
+      {
+        name: 'Intel Wireless Bluetooth',
+        device_type: 'bluetooth',
+        enabled: false,
+        connection_status: 'disabled',
+      },
+    ],
   },
   health: {
     cpu_load_percent: 12.3,
@@ -156,6 +198,21 @@ const sampleComputer = {
 
 describe('Computers page', () => {
   beforeEach(() => {
+    intersectionObservers = [];
+    globalThis.IntersectionObserver = class IntersectionObserverMock {
+      constructor(callback, options) {
+        this.callback = callback;
+        this.options = options;
+        this.element = null;
+        intersectionObservers.push(this);
+      }
+
+      observe(element) {
+        this.element = element;
+      }
+
+      disconnect() {}
+    };
     equipmentAPI.getAgentComputers.mockReset();
     equipmentAPI.searchAgentComputers.mockReset();
     equipmentAPI.getAgentComputerChanges.mockReset();
@@ -186,6 +243,7 @@ describe('Computers page', () => {
 
   afterEach(() => {
     vi.clearAllMocks();
+    globalThis.IntersectionObserver = nativeIntersectionObserver;
   });
 
   it('renders computers data from the backend contract and opens details drawer', async () => {
@@ -204,7 +262,7 @@ describe('Computers page', () => {
     await waitFor(() => {
       expect(equipmentAPI.getAgentComputer).toHaveBeenCalledWith(
         sampleComputer.mac_address,
-        expect.objectContaining({ scope: 'selected' }),
+        expect.objectContaining({ scope: 'all' }),
       );
     });
 
@@ -227,6 +285,48 @@ describe('Computers page', () => {
     expect(screen.getByText('Скрыто системных: 1')).toBeInTheDocument();
     expect(screen.getByText('Music')).toBeInTheDocument();
     expect(screen.getByText('Samsung SSD')).toBeInTheDocument();
+    expect(screen.getByText('Ethernet 1')).toBeInTheDocument();
+    expect(screen.getByText('Intel Wi-Fi 6 AX201')).toBeInTheDocument();
+    expect(screen.getByText('Intel Wireless Bluetooth')).toBeInTheDocument();
+    expect(screen.getByText('Сетевые устройства: 3')).toBeInTheDocument();
+    expect(screen.getAllByText('Отключён')).toHaveLength(2);
+  }, 15000);
+
+  it('keeps unassigned agents visible and shows their count', async () => {
+    const unassignedComputer = {
+      ...sampleComputer,
+      hostname: 'PC-UNASSIGNED',
+      mac_address: 'AA-BB-CC-DD-EE-99',
+      branch_name: 'Без привязки',
+      location_name: '',
+      network_link: null,
+      database_id: '',
+      database_name: 'Без привязки',
+      assignment_source: 'unassigned',
+      is_unassigned: true,
+    };
+    equipmentAPI.searchAgentComputers.mockResolvedValue({
+      items: [unassignedComputer],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      has_more: false,
+      next_offset: null,
+    });
+    equipmentAPI.getComputersSummary.mockResolvedValue({
+      total: 1,
+      unassigned: 1,
+      statuses: { online: 1, stale: 0, offline: 0, unknown: 0 },
+      branches: { 'Без привязки': 1 },
+      outlook: { critical: 1 },
+    });
+    equipmentAPI.getAgentComputer.mockResolvedValue(unassignedComputer);
+
+    renderComputers();
+
+    expect((await screen.findAllByText('Без привязки')).length).toBeGreaterThan(0);
+    fireEvent.click(await screen.findByText('Без местоположения'));
+    expect((await screen.findAllByText('PC-UNASSIGNED')).length).toBeGreaterThan(0);
   }, 15000);
 
   it('keeps full detail payload in drawer when list cards are trimmed', async () => {
@@ -289,7 +389,7 @@ describe('Computers page', () => {
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
         expect.objectContaining({
-          scope: 'selected',
+          scope: 'all',
           sortBy: 'hostname',
           sortDir: 'asc',
           limit: 50,
@@ -317,16 +417,16 @@ describe('Computers page', () => {
       );
     }, { timeout: 2000 });
 
-    fireEvent.click(screen.getByLabelText('Текущая БД'));
+    fireEvent.click(screen.getByLabelText('Показаны все базы'));
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenLastCalledWith(
-        expect.objectContaining({ scope: 'all' })
+        expect.objectContaining({ scope: 'selected' })
       );
     }, { timeout: 2000 });
   }, 15000);
 
-  it('does not load the next page until the user clicks load more', async () => {
+  it('loads the next page in the background when the list sentinel approaches the viewport', async () => {
     const nextComputer = {
       ...sampleComputer,
       hostname: 'PC-02',
@@ -366,8 +466,9 @@ describe('Computers page', () => {
     });
 
     expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(1);
+    expect(screen.getByTestId('computers-load-more-sentinel')).toHaveTextContent('автоматически');
 
-    fireEvent.click(await screen.findByRole('button', { name: /Загрузить ещё/i }));
+    await intersectLatestLoadSentinel();
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
@@ -417,7 +518,7 @@ describe('Computers page', () => {
       );
     });
 
-    fireEvent.click(await screen.findByRole('button', { name: /Загрузить ещё/i }));
+    await intersectLatestLoadSentinel();
 
     await waitFor(() => {
       expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledWith(
@@ -425,9 +526,9 @@ describe('Computers page', () => {
       );
     }, { timeout: 3000 });
 
-    const callsAfterManualLoad = equipmentAPI.searchAgentComputers.mock.calls.length;
+    const callsAfterBackgroundLoad = equipmentAPI.searchAgentComputers.mock.calls.length;
     fireEvent.click(await screen.findByText(sampleComputer.location_name));
-    expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(callsAfterManualLoad);
+    expect(equipmentAPI.searchAgentComputers).toHaveBeenCalledTimes(callsAfterBackgroundLoad);
 
     fireEvent.click(screen.getByRole('button', { name: /Обновить данные/i }));
 

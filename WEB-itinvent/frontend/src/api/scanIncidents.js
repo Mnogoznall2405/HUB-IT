@@ -28,10 +28,8 @@ export const scanIncidentsAPI = {
     return response;
   },
 
-  ackIncident: async (incidentId, ackBy = '') => {
-    const response = await apiClient.post(`/scan/incidents/${encodeURIComponent(incidentId)}/ack`, {
-      ack_by: ackBy,
-    });
+  ackIncident: async (incidentId) => {
+    const response = await apiClient.post(`/scan/incidents/${encodeURIComponent(incidentId)}/ack`, {});
     return response.data;
   },
 
