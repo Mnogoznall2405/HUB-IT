@@ -72,13 +72,11 @@ export const buildOfficeAttachmentPreviewState = async ({
     }
   }
 
-  const metadata = await mailAPI.getAttachmentPreview(messageId, attachmentRef, { mailboxId });
   const pdfResponse = await mailAPI.downloadAttachmentPreviewPdf(messageId, attachmentRef, { mailboxId });
-  const normalized = normalizeAttachmentPreviewMetadata(metadata);
   const { blob, filename: pdfFilename, contentType: pdfContentType } = buildAttachmentBlobPayload({
     response: pdfResponse,
     attachment: {
-      name: normalized.pdfFilename || `${filename.replace(/\.[^.]+$/, '') || 'preview'}.pdf`,
+      name: `${filename.replace(/\.[^.]+$/, '') || 'preview'}.pdf`,
       content_type: 'application/pdf',
     },
   });
@@ -87,16 +85,16 @@ export const buildOfficeAttachmentPreviewState = async ({
     open: true,
     loading: false,
     error: '',
-    filename: normalized.sourceFilename || filename,
+    filename,
     contentType,
     kind: 'office_pdf',
     objectUrl: createObjectUrl(blob),
     previewBlob: blob,
-    sourceKind: normalized.sourceKind || officeSourceKind,
-    previewKind: normalized.previewKind || 'office_pdf',
-    pageCount: normalized.pageCount,
-    sheets: normalized.sheets,
-    pdfFilename: pdfFilename || normalized.pdfFilename,
+    sourceKind: officeSourceKind,
+    previewKind: 'office_pdf',
+    pageCount: 0,
+    sheets: [],
+    pdfFilename,
     pdfContentType,
     blob: null,
     excelWorkbook: null,

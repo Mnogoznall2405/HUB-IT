@@ -159,6 +159,120 @@ def test_mail_service_uses_bounded_ten_minute_detail_cache(temp_dir, monkeypatch
     assert detail_policy.max_entry_bytes == 2 * 1024 * 1024
 
 
+def test_mail_service_fetches_message_detail_with_bounded_exchange_fields(temp_dir, monkeypatch):
+    service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
+    item = SimpleNamespace(id="exchange-1")
+    calls = {"only": [], "get": []}
+
+    class DetailQuery:
+        def only(self, *fields):
+            calls["only"].append(fields)
+            return self
+
+        def get(self, *, id):
+            calls["get"].append(id)
+            return item
+
+    class Folder:
+        def all(self):
+            return DetailQuery()
+
+        def get(self, **_kwargs):
+            raise AssertionError("message detail must not fetch every Exchange field")
+
+    monkeypatch.setattr(service, "_decode_message_ref", lambda _message_id: ("inbox", "exchange-1", None))
+    monkeypatch.setattr(service, "_resolve_mailbox_scope", lambda _explicit, _encoded: "mailbox-1")
+    monkeypatch.setattr(
+        service,
+        "_resolve_account_context",
+        lambda **_kwargs: {
+            "profile": {"email": "user@example.com", "mailbox_id": "mailbox-1"},
+            "account": SimpleNamespace(),
+        },
+    )
+    monkeypatch.setattr(service, "_resolve_folder", lambda _account, _folder_key: (Folder(), "inbox"))
+
+    context = service._get_message_context(user_id=7, mailbox_id="mailbox-1", message_id="msg-1")
+
+    assert context["item"] is item
+    assert calls["get"] == ["exchange-1"]
+    assert len(calls["only"]) == 1
+    requested_fields = set(calls["only"][0])
+    assert {
+        "subject",
+        "body",
+        "text_body",
+        "datetime_received",
+        "datetime_created",
+        "sender",
+        "author",
+        "to_recipients",
+        "cc_recipients",
+        "bcc_recipients",
+        "attachments",
+        "conversation_id",
+        "message_id",
+    } <= requested_fields
+    assert {"mime_content", "headers", "unique_body", "effective_rights"}.isdisjoint(requested_fields)
+
+
+def test_mail_service_fetches_attachment_without_loading_full_message(temp_dir, monkeypatch):
+    service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
+    attachment = SimpleNamespace(attachment_id=SimpleNamespace(id="att-1"))
+    item = SimpleNamespace(attachments=[attachment])
+    calls = {"only": [], "get": []}
+
+    class AttachmentQuery:
+        def only(self, *fields):
+            calls["only"].append(fields)
+            return self
+
+        def get(self, *, id):
+            calls["get"].append(id)
+            return item
+
+    class Folder:
+        def all(self):
+            return AttachmentQuery()
+
+        def get(self, **_kwargs):
+            raise AssertionError("attachment lookup must not fetch every Exchange field")
+
+    monkeypatch.setattr(service, "resolve_attachment_id", lambda _attachment_ref: "att-1")
+    monkeypatch.setattr(
+        service,
+        "_resolve_mail_profile",
+        lambda **_kwargs: {"mailbox_id": "mailbox-1"},
+    )
+    monkeypatch.setattr(service, "_resolve_mailbox_scope", lambda *_args: "mailbox-1")
+    monkeypatch.setattr(service, "_resolve_mailbox_id_from_message", lambda **_kwargs: "mailbox-1")
+    monkeypatch.setattr(service, "_resolve_mailbox_id_from_attachment", lambda **_kwargs: "mailbox-1")
+    monkeypatch.setattr(service, "_decode_message_ref", lambda _message_id: ("inbox", "exchange-1", None))
+    monkeypatch.setattr(
+        service,
+        "_resolve_account_context",
+        lambda **_kwargs: {"account": SimpleNamespace()},
+    )
+    monkeypatch.setattr(service, "_resolve_folder", lambda _account, _folder_key: (Folder(), "inbox"))
+    monkeypatch.setattr(service, "_extract_attachment_raw_id", lambda _attachment: "att-1")
+    monkeypatch.setattr(
+        service,
+        "_build_attachment_download_payload",
+        lambda **_kwargs: ("logo.png", "image/png", b"png"),
+    )
+
+    payload = service.download_attachment(
+        user_id=7,
+        mailbox_id="mailbox-1",
+        message_id="msg-1",
+        attachment_ref="att-1",
+    )
+
+    assert payload == ("logo.png", "image/png", b"png")
+    assert calls["only"] == [("attachments",)]
+    assert calls["get"] == ["exchange-1"]
+
+
 def test_mail_service_caches_conversation_detail_payload(temp_dir, monkeypatch):
     service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
     item = SimpleNamespace(id="exchange-1")
@@ -258,22 +372,26 @@ def test_mail_service_enforces_runtime_cache_lru_limit(temp_dir):
     assert service._cached_message_detail(user_id=7, message_id="msg-300") == {"id": "msg-300"}
 
 
-def test_mail_service_skips_attachment_cache_for_large_payloads(temp_dir):
+def test_mail_service_caches_office_sized_attachment_payloads(temp_dir):
     service = mail_module.MailService(database_url=_sqlite_url(temp_dir))
-    large_payload = ("large.bin", "application/octet-stream", b"x" * (2 * 1024 * 1024 + 1))
+    office_payload = ("report.docx", "application/octet-stream", b"x" * (3 * 1024 * 1024))
 
     service._cache_set(
         user_id=7,
         bucket="attachment_content",
         extra="msg-1|att-1",
-        value=large_payload,
+        value=office_payload,
     )
 
     assert service._cached_attachment_content(
         user_id=7,
         message_id="msg-1",
         attachment_id="att-1",
-    ) is None
+    ) == office_payload
+    policy = service._cache_policy("attachment_content")
+    assert policy.ttl_sec == 600
+    assert policy.max_entry_bytes == 25 * 1024 * 1024
+    assert policy.max_total_bytes == 64 * 1024 * 1024
 
 
 def test_mail_service_limits_filtered_message_scan_window(temp_dir, monkeypatch):

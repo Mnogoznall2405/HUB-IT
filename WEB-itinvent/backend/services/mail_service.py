@@ -316,6 +316,26 @@ class MailService:
     _MAIL_CACHE_TTL_SEC_DEFAULT = 90
     _MAIL_DETAIL_CACHE_TTL_SEC_DEFAULT = 600
     _MAIL_BOOTSTRAP_DEFAULT_LIMIT = 20
+    _MESSAGE_DETAIL_FIELDS = (
+        "subject",
+        "body",
+        "text_body",
+        "attachments",
+        "datetime_received",
+        "datetime_created",
+        "categories",
+        "importance",
+        "reminder_due_by",
+        "reminder_is_set",
+        "conversation_id",
+        "sender",
+        "author",
+        "to_recipients",
+        "cc_recipients",
+        "bcc_recipients",
+        "message_id",
+        "is_read",
+    )
     _CACHE_BUCKET_POLICIES = {
         "folder_summary": RuntimeCachePolicy(max_entries=200, ttl_sec=90),
         "folder_tree": RuntimeCachePolicy(max_entries=100, ttl_sec=90),
@@ -330,9 +350,9 @@ class MailService:
         "conversation_detail": RuntimeCachePolicy(max_entries=100, ttl_sec=120),
         "attachment_content": RuntimeCachePolicy(
             max_entries=32,
-            ttl_sec=60,
+            ttl_sec=600,
             max_total_bytes=64 * 1024 * 1024,
-            max_entry_bytes=2 * 1024 * 1024,
+            max_entry_bytes=25 * 1024 * 1024,
         ),
         "notification_feed": RuntimeCachePolicy(max_entries=100, ttl_sec=30),
     }
@@ -2816,7 +2836,11 @@ class MailService:
         account = mail_context["account"]
         folder_obj, folder_key = self._resolve_folder(account, folder_key)
         try:
-            item = folder_obj.get(id=exchange_id)
+            detail_queryset = folder_obj.all().only(*self._MESSAGE_DETAIL_FIELDS)
+        except Exception:
+            detail_queryset = folder_obj
+        try:
+            item = detail_queryset.get(id=exchange_id)
         except Exception as exc:
             raise MailServiceError(f"Message not found: {exchange_id}") from exc
         return {
@@ -3979,7 +4003,11 @@ class MailService:
         account = mail_context["account"]
         folder_obj, _ = self._resolve_folder(account, folder_key)
         try:
-            item = folder_obj.get(id=exchange_id)
+            attachment_queryset = folder_obj.all().only("attachments")
+        except Exception:
+            attachment_queryset = folder_obj
+        try:
+            item = attachment_queryset.get(id=exchange_id)
         except Exception as exc:
             raise MailServiceError(f"Message not found: {exchange_id}") from exc
 
@@ -3994,7 +4022,6 @@ class MailService:
                             bucket="attachment_content",
                             extra=f"{_normalize_text(message_id)}|{_normalize_text(attachment_id)}",
                             value=payload,
-                            ttl_sec=60,
                             mailbox_scope=resolved_mailbox_id,
                         )
                     raise MailServiceError(f"Attachment type is not supported for download: {type(att).__name__}")

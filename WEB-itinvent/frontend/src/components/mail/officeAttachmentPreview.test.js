@@ -2,13 +2,9 @@ import { describe, expect, it, vi } from 'vitest';
 import { buildOfficeAttachmentPreviewState } from './officeAttachmentPreview';
 
 describe('buildOfficeAttachmentPreviewState', () => {
-  it('waits for preview generation before downloading its PDF artifact', async () => {
-    let resolveMetadata;
-    const metadataPromise = new Promise((resolve) => {
-      resolveMetadata = resolve;
-    });
+  it('downloads a Word PDF preview without a separate metadata request', async () => {
     const mailAPI = {
-      getAttachmentPreview: vi.fn(() => metadataPromise),
+      getAttachmentPreview: vi.fn(),
       downloadAttachmentPreviewPdf: vi.fn().mockResolvedValue({
         data: new Blob(['%PDF'], { type: 'application/pdf' }),
         headers: {
@@ -29,25 +25,14 @@ describe('buildOfficeAttachmentPreviewState', () => {
       createObjectUrl: () => 'blob:preview',
     });
 
-    await Promise.resolve();
-    expect(mailAPI.getAttachmentPreview).toHaveBeenCalledTimes(1);
-    expect(mailAPI.downloadAttachmentPreviewPdf).not.toHaveBeenCalled();
-
-    resolveMetadata({
-      preview_kind: 'office_pdf',
-      source_kind: 'word',
-      source_filename: 'memo.docx',
-      pdf_filename: 'memo.pdf',
-      page_count: 1,
-      sheets: [],
-    });
-
     const result = await resultPromise;
+    expect(mailAPI.getAttachmentPreview).not.toHaveBeenCalled();
     expect(mailAPI.downloadAttachmentPreviewPdf).toHaveBeenCalledTimes(1);
     expect(result).toMatchObject({
       kind: 'office_pdf',
       objectUrl: 'blob:preview',
       pdfFilename: 'memo.pdf',
+      sourceKind: 'word',
     });
   });
 });
